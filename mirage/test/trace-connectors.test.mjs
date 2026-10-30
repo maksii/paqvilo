@@ -128,7 +128,8 @@ test('the http provider forwards the connector span to a loopback service; later
   assert.equal(span.traceId, root.traceId);
   assert.equal(traces.span(span.parentSpanId).kind, 'flow-action', 'the connector span is a child of its action');
   assert.equal(seen.length, 2);
-  for (const request of seen) assert.deepEqual([request.parent, request.trace], [span.spanId, span.traceId]);
+  // No span of this trace names an audit entry: X-Sim-Trace-Id is absent, never the trace id (D-M-4).
+  for (const request of seen) assert.deepEqual([request.parent, request.trace], [span.spanId, undefined]);
   assert.equal(span.attributes.pages, 2);
   assert.deepEqual(
     span.events.map((event) => event.type),

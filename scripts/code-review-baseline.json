@@ -437,94 +437,101 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
-      "key": "runtime:exports:mirage/admin/view-trace.mjs:actorText",
-      "file": "mirage/admin/view-trace.mjs",
-      "type": "exports",
-      "name": "actorText",
-      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
-    },
-    {
-      "key": "runtime:exports:mirage/admin/view-trace.mjs:compareTrees",
-      "file": "mirage/admin/view-trace.mjs",
-      "type": "exports",
-      "name": "compareTrees",
-      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
-    },
-    {
-      "key": "runtime:exports:mirage/admin/view-trace.mjs:duration",
-      "file": "mirage/admin/view-trace.mjs",
-      "type": "exports",
-      "name": "duration",
-      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
-    },
-    {
-      "key": "runtime:exports:mirage/admin/view-trace.mjs:filterQuery",
-      "file": "mirage/admin/view-trace.mjs",
-      "type": "exports",
-      "name": "filterQuery",
-      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
-    },
-    {
-      "key": "runtime:exports:mirage/admin/view-trace.mjs:FILTERS",
-      "file": "mirage/admin/view-trace.mjs",
+      "key": "runtime:exports:mirage/admin/view-activity.mjs:FILTERS",
+      "file": "mirage/admin/view-activity.mjs",
       "type": "exports",
       "name": "FILTERS",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
-      "key": "runtime:exports:mirage/admin/view-trace.mjs:hashOf",
-      "file": "mirage/admin/view-trace.mjs",
-      "type": "exports",
-      "name": "hashOf",
-      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
-    },
-    {
-      "key": "runtime:exports:mirage/admin/view-trace.mjs:LIVE_INTERVAL_MS",
-      "file": "mirage/admin/view-trace.mjs",
+      "key": "runtime:exports:mirage/admin/view-activity.mjs:LIVE_INTERVAL_MS",
+      "file": "mirage/admin/view-activity.mjs",
       "type": "exports",
       "name": "LIVE_INTERVAL_MS",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
-      "key": "runtime:exports:mirage/admin/view-trace.mjs:localTime",
-      "file": "mirage/admin/view-trace.mjs",
-      "type": "exports",
-      "name": "localTime",
-      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
-    },
-    {
-      "key": "runtime:exports:mirage/admin/view-trace.mjs:MODULES",
-      "file": "mirage/admin/view-trace.mjs",
+      "key": "runtime:exports:mirage/admin/view-activity.mjs:MODULES",
+      "file": "mirage/admin/view-activity.mjs",
       "type": "exports",
       "name": "MODULES",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
-      "key": "runtime:exports:mirage/admin/view-trace.mjs:previousWindow",
-      "file": "mirage/admin/view-trace.mjs",
+      "key": "runtime:exports:mirage/admin/view-activity.mjs:auditQuery",
+      "file": "mirage/admin/view-activity.mjs",
+      "type": "exports",
+      "name": "auditQuery",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/admin/view-activity.mjs:compareTrees",
+      "file": "mirage/admin/view-activity.mjs",
+      "type": "exports",
+      "name": "compareTrees",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/admin/view-activity.mjs:duration",
+      "file": "mirage/admin/view-activity.mjs",
+      "type": "exports",
+      "name": "duration",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/admin/view-activity.mjs:hashOf",
+      "file": "mirage/admin/view-activity.mjs",
+      "type": "exports",
+      "name": "hashOf",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/admin/view-activity.mjs:previousWindow",
+      "file": "mirage/admin/view-activity.mjs",
       "type": "exports",
       "name": "previousWindow",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
-      "key": "runtime:exports:mirage/admin/view-trace.mjs:sessionText",
-      "file": "mirage/admin/view-trace.mjs",
-      "type": "exports",
-      "name": "sessionText",
-      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
-    },
-    {
-      "key": "runtime:exports:mirage/admin/view-trace.mjs:spanFilter",
-      "file": "mirage/admin/view-trace.mjs",
+      "key": "runtime:exports:mirage/admin/view-activity.mjs:spanFilter",
+      "file": "mirage/admin/view-activity.mjs",
       "type": "exports",
       "name": "spanFilter",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
-      "key": "runtime:exports:mirage/admin/view-trace.mjs:utcOffset",
-      "file": "mirage/admin/view-trace.mjs",
+      "key": "runtime:exports:mirage/admin/view-activity.mjs:tabsFor",
+      "file": "mirage/admin/view-activity.mjs",
       "type": "exports",
-      "name": "utcOffset",
+      "name": "tabsFor",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/admin/view-activity.mjs:traceQuery",
+      "file": "mirage/admin/view-activity.mjs",
+      "type": "exports",
+      "name": "traceQuery",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/admin/view-activity.mjs:whoFilters",
+      "file": "mirage/admin/view-activity.mjs",
+      "type": "exports",
+      "name": "whoFilters",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/admin/view-activity.mjs:whoText",
+      "file": "mirage/admin/view-activity.mjs",
+      "type": "exports",
+      "name": "whoText",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
+      "key": "runtime:exports:mirage/admin/view-activity.mjs:whyOf",
+      "file": "mirage/admin/view-activity.mjs",
+      "type": "exports",
+      "name": "whyOf",
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {

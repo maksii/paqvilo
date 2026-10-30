@@ -517,6 +517,69 @@ test('the trace channel unsubscribes when its last client disconnects and sends 
   assert.equal(traces.status().listeners, 0);
 });
 
+test('the trace channel filters in the store by events and traceId; one subscription per filter, none once all left', async (t) => {
+  const traces = createTraceStore({ settings: { level: 'full' } });
+  const { url, attached } = await channelServer(t, traces);
+  const open = (query) => {
+    const controller = new AbortController();
+    const response = fetch(url + query, { signal: controller.signal });
+    let text = '';
+    const decoder = new TextDecoder();
+    const until = async (pattern) => {
+      const reader = (await response).body.getReader();
+      while (!pattern.test(text)) text += decoder.decode((await reader.read()).value, { stream: true });
+      reader.releaseLock();
+    };
+    const frames = () =>
+      text
+        .split('\n\n')
+        .filter((frame) => frame.startsWith('event: trace'))
+        .map((frame) => JSON.parse(frame.slice(frame.indexOf('data: ') + 6)));
+    return { controller, until, frames };
+  };
+  const watched = traces.start({ kind: 'http', name: 'GET /watched' });
+  const ends = open('&events=trace-end');
+  const mine = open(`&events=span-end&traceId=${watched.traceId}`);
+  const again = open('&events=trace-end');
+  await Promise.all([ends, mine, again].map((client) => client.until(/"type":"connected"/)));
+  assert.equal(traces.status().listeners, 2, 'clients with the same filter share one subscription');
+  traces.start({ kind: 'http', name: 'GET /other' }).end();
+  traces.run(watched, () => traces.start({ kind: 'internal', name: 'inner' }).end());
+  watched.end();
+  await ends.until(/(?:"type":"trace-end"[\s\S]*){2}/);
+  await mine.until(/(?:"type":"span-end"[\s\S]*){2}/);
+  assert.deepEqual(ends.frames()[0].events, ['trace-end']);
+  assert.deepEqual(
+    ends
+      .frames()
+      .slice(1)
+      .map((frame) => [frame.type, frame.span.name]),
+    [
+      ['trace-end', 'GET /other'],
+      ['trace-end', 'GET /watched'],
+    ],
+  );
+  assert.deepEqual([mine.frames()[0].events, mine.frames()[0].traceId], [['span-end'], watched.traceId]);
+  assert.deepEqual(
+    mine
+      .frames()
+      .slice(1)
+      .map((frame) => [frame.type, frame.span.name]),
+    [
+      ['span-end', 'inner'],
+      ['span-end', 'GET /watched'],
+    ],
+  );
+  const closed = attached.map((res) => finishedStream(res).catch(() => {}));
+  for (const client of [ends, mine, again]) client.controller.abort();
+  await Promise.all(closed);
+  assert.equal(traces.status().listeners, 0);
+  // An unknown frame type ends the stream with one error frame naming the parameter.
+  const refused = await (await fetch(url + '&events=span-done')).text();
+  assert.match(refused, /"type":"error"[^\n]*"code":"InvalidTraceFilter"[^\n]*"parameter":"events"/);
+  assert.equal(traces.status().listeners, 0);
+});
+
 test('the trace channel drops a client that takes nothing past the stall limit, never during a burst', async () => {
   let clock = 0;
   const checks = [];

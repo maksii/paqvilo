@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { parseToolCommand } from './tool-options.mjs';
 import { mirageToolHelp } from './tool-registry.mjs';
 import { connectRuntime, runtimeOrigin } from './testing/runtime.mjs';
-import { checkTraceFilters, searchText } from './lib/trace-store.mjs';
+import { checkTraceFilters, idMatches, searchText } from './lib/trace-store.mjs';
 
 const ACTIONS = ['list', 'show', 'spans', 'stats', 'settings', 'clear', 'flush', 'export', 'watch'];
 // The span filters, which watch also applies to the frames it receives.
@@ -30,6 +30,8 @@ const SPAN_FILTERS = [
   'session-key',
   'visitor-id',
   'portal',
+  'audit-id',
+  'result',
   'search',
   'trace-id',
   'parent-span-id',
@@ -58,6 +60,21 @@ function settingsChange(values) {
   );
 }
 
+// list and spans print local time (YYYY-MM-DD HH:MM:SS.mmm) with the zone named once in the STARTED header, as the _sim
+// Monitor does (DV-N4-18); --utc prints the ISO UTC instant instead. ponytail: one offset (now's) for the header, so a
+// list spanning a daylight-saving change shows the rows of the other side in local time under the current offset.
+const pad = (value, width = 2) => String(value).padStart(width, '0');
+const zoneLabel = (date = new Date()) => {
+  const offset = -date.getTimezoneOffset();
+  return `UTC${offset < 0 ? '-' : '+'}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}`;
+};
+const localTime = (iso) => {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return String(iso ?? '');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+};
+const startedColumn = (utc, pick) =>
+  utc ? ['STARTED (UTC)', pick] : [`STARTED (${zoneLabel()})`, (row) => localTime(pick(row))];
 const ms = (value) => (value === null || value === undefined ? 'running' : `${value} ms`);
 const figure = (value) => (value === null || value === undefined ? '—' : `${value} ms`);
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
@@ -86,12 +103,12 @@ const actorText = (actor) =>
 const figuresLine = (label, value, unit) =>
   `${label}: ${plural(value.count, unit)}, ${value.errors} errors, p50 ${figure(value.p50)}, p95 ${figure(value.p95)}, max ${figure(value.max)}.`;
 
-function human(action, result) {
+function human(action, result, { utc = false } = {}) {
   // DURATION is the root's; TOTAL (what --sort duration sorts by) runs from the first span start to the last span end.
   if (action === 'list')
     return [
       ...table(result.items, [
-        ['STARTED', (t) => t.startedAt],
+        startedColumn(utc, (t) => t.startedAt),
         ['STATUS', (t) => t.status],
         ['DURATION', (t) => ms(t.durationMs)],
         ['TOTAL', (t) => ms(t.totalDurationMs)],
@@ -111,7 +128,7 @@ function human(action, result) {
   if (action === 'spans')
     return [
       ...table(result.items, [
-        ['STARTED', (s) => s.startedAt],
+        startedColumn(utc, (s) => s.startedAt),
         ['KIND', (s) => s.kind],
         ['STATUS', (s) => s.status],
         ['DURATION', (s) => ms(s.durationMs)],
@@ -188,13 +205,21 @@ function frameFilter(filters) {
       inTrace('entity', trace?.entities ?? []) &&
       equal('operation', span.operation) &&
       (f.recordId === undefined ||
-        (span.recordId != null && actorKey(span.recordId) === actorKey(f.recordId).trim())) &&
+        (span.recordId != null && idMatches(actorKey(span.recordId), actorKey(f.recordId).trim()))) &&
       equal('host', span.origin?.host) &&
       equal('actorKind', span.actor?.kind) &&
-      (f.actorId === undefined || (span.actor?.id != null && actorKey(span.actor.id) === actorKey(f.actorId))) &&
-      (f.sessionKey === undefined || span.session?.sessionKey === f.sessionKey) &&
-      (f.visitorId === undefined || span.session?.visitorId === f.visitorId) &&
+      (f.actorId === undefined ||
+        (span.actor?.id != null && idMatches(actorKey(span.actor.id), actorKey(f.actorId)))) &&
+      (f.sessionKey === undefined || idMatches(span.session?.sessionKey ?? null, f.sessionKey)) &&
+      (f.visitorId === undefined || idMatches(span.session?.visitorId ?? null, f.visitorId)) &&
       (f.portal === undefined || span.origin?.portal === f.portal) &&
+      (f.auditId === undefined || span.attributes?.auditId === f.auditId) &&
+      (f.result === undefined ||
+        f.result
+          .toLowerCase()
+          .split(',')
+          .map((value) => value.trim())
+          .includes(lower(trace ? trace.status : span.status))) &&
       (f.traceId === undefined || span.traceId === f.traceId) &&
       (f.parentSpanId === undefined || span.parentSpanId === f.parentSpanId) &&
       (f.depth === undefined || span.depth === Number(f.depth)) &&
@@ -274,6 +299,7 @@ async function main(argv) {
   if (values.count !== undefined && (action !== 'watch' || !/^[1-9]\d{0,8}$/.test(values.count)))
     throw invalid('--count must be a positive integer and applies to trace watch only.');
   if (values['trace-end'] && action !== 'watch') throw invalid('--trace-end applies to trace watch only.');
+  if (values.utc && !['list', 'spans'].includes(action)) throw invalid('--utc applies to trace list and spans only.');
   for (const name of ['format', 'limit'])
     if (values[name] !== undefined && action !== 'export') throw invalid(`--${name} applies to trace export only.`);
   if (values.origin && (values.config || values.site)) throw invalid('Use --origin or --config/--site, not both.');
@@ -296,6 +322,15 @@ async function main(argv) {
       filters,
     });
   for (const name of ['format', 'limit']) if (values[name] !== undefined) filters[name] = values[name];
+  // --format bundle: the activity export bundle (connectRuntime().exportBundle), one NDJSON document per line.
+  if (action === 'export' && filters.format === 'bundle') {
+    const { format: _format, ...bundleFilters } = filters;
+    const documents = await client.exportBundle(bundleFilters);
+    if (values.json)
+      return console.log(JSON.stringify({ schemaVersion: 1, ok: true, command: action, result: documents }));
+    for (const document of documents) console.log(JSON.stringify(document));
+    return;
+  }
   if (action === 'export' && !values.json) return streamExport(client, filters);
   const request = async () => {
     if (action === 'list') return client.trace.query(filters);
@@ -314,7 +349,7 @@ async function main(argv) {
   };
   const result = await request();
   if (values.json) return console.log(JSON.stringify({ schemaVersion: 1, ok: true, command: action, result }));
-  for (const line of human(action, result)) console.log(line);
+  for (const line of human(action, result, { utc: values.utc })) console.log(line);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

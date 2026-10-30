@@ -195,6 +195,47 @@ test('audit filters by path, entity, status class, method and correlation, lists
     ['native-service'],
   );
   assert.equal(audit.list({ correlationId: page.correlationId }).total, 2);
+  const traced = audit.begin({ kind: 'api', path: '/traced', traceId: 'invented-trace', spanId: 'invented-span' });
+  traced.finish({ status: 200 });
+  assert.deepEqual(
+    audit.list({ traceId: 'invented-trace' }).items.map((item) => item.path),
+    ['/traced'],
+    'traceId keeps the entries of one trace',
+  );
+  assert.equal(audit.export({ traceId: 'other' }).items.length, 0);
+  // The browser session fields are additive and default to null; visitorId and sessionKey filter with the prefix rule.
+  assert.deepEqual([audit.entries.at(-1).visitorId, audit.entries.at(-1).sessionKey], [null, null]);
+  const visited = audit.begin({
+    kind: 'page',
+    path: '/visited',
+    visitorId: 'ad87d220-0000-4000-8000-0000000000aa',
+    sessionKey: 'visitor:ad87d220-0000-4000-8000-0000000000aa',
+  });
+  visited.finish({ status: 200 });
+  observed.pop();
+  assert.deepEqual(
+    audit.list({ sessionKey: 'visitor:ad87d220' }).items.map((item) => item.path),
+    ['/visited'],
+  );
+  assert.equal(audit.list({ visitorId: 'ad87d220-0000-4000-8000-0000000000aa' }).total, 1);
+  assert.equal(audit.list({ visitorId: 'ad87d22' }).total, 0, 'fewer than 8 hex characters match exactly only');
+  // A comma list joins a page of activities in one call; more than 200 ids is refused.
+  const second = audit.begin({ kind: 'api', path: '/second', traceId: 'invented-trace-2' });
+  second.finish({ status: 200 });
+  observed.pop();
+  assert.deepEqual(
+    audit
+      .list({ traceId: 'invented-trace, invented-trace-2,unknown' })
+      .items.map((item) => item.path)
+      .sort(),
+    ['/second', '/traced'],
+  );
+  assert.throws(
+    () => audit.list({ traceId: Array.from({ length: 201 }, (_, index) => `t${index}`).join(',') }),
+    (error) => error.status === 400 && error.code === 'InvalidAuditFilter' && error.parameter === 'traceId',
+  );
+  assert.equal(audit.list({ traceId: Array.from({ length: 200 }, (_, index) => `t${index}`).join(',') }).total, 0);
+  observed.pop();
   assert.ok(audit.list().kinds.includes('native-service'));
   assert.ok(audit.list().kinds.includes('entity-query'), 'documented kinds remain selectable before they occur');
   const pending = audit.begin({ kind: 'api', path: '/slow' });

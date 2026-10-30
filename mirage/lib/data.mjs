@@ -336,55 +336,112 @@ const insertSorted = (list, value) => {
  * cannot be keyed: a `wild` index keeps it in a list that every lookup also scans; any other
  * index becomes `linear` and callers scan). The maintenance methods answer false when the
  * owner should drop the index instead of updating it.
+ *
+ * Positions are kept as slots: a row keeps the slot it was indexed at, a removal marks its slot dead in a Fenwick tree of
+ * live slots, and a lookup maps a slot to its row position by counting the live slots before it (O(log n)). A removal is
+ * therefore O(log n), not a shift of every later position, so a cascade delete of n rows stays O(n log n). Until the first
+ * removal a slot is its position; the slots are renumbered once half of them are dead or the tree is full.
  */
 class RowKeyIndex {
   constructor(rows, keyOf, { frame, wild = false } = {}) {
     this.keyOf = keyOf;
     this.frame = frame;
-    this.wild = wild ? [] : null;
+    this.wildSlots = wild ? [] : null;
     this.map = new Map();
     this.linear = false;
     this.length = rows.length;
+    this.slots = rows.length; // the next slot
+    this.live = null; // Fenwick tree (1-based) of live slots, from the first removal on
+    this.dead = 0;
     for (let index = 0; index < rows.length; index++)
-      if (!this.add(keyOf(rows[index]), index)) {
+      if (!this.place(keyOf(rows[index]), index)) {
         this.linear = true;
         this.map.clear();
         break;
       }
   }
-  add(key, index) {
+  // The row position of a slot: the number of live slots before it.
+  position(slot) {
+    if (!this.dead) return slot;
+    let count = 0;
+    for (let i = slot; i > 0; i -= i & -i) count += this.live[i];
+    return count;
+  }
+  // The slot of a row position: the (position + 1)-th live slot (Fenwick descent).
+  slotOf(position) {
+    if (!this.dead) return position;
+    const tree = this.live,
+      size = tree.length - 1;
+    let slot = 0,
+      remaining = position + 1;
+    for (let step = 1 << Math.floor(Math.log2(size)); step; step >>= 1)
+      if (slot + step <= size && tree[slot + step] < remaining) {
+        slot += step;
+        remaining -= tree[slot];
+      }
+    return slot;
+  }
+  // Renumbers every slot to its row position and drops the tree.
+  compact() {
+    const renumber = (list) => {
+      for (let i = 0; i < list.length; i++) list[i] = this.position(list[i]);
+    };
+    this.map.forEach((list, key) => {
+      if (typeof list === 'number') this.map.set(key, this.position(list));
+      else renumber(list);
+    });
+    if (this.wildSlots) renumber(this.wildSlots);
+    this.slots = this.length;
+    this.live = null;
+    this.dead = 0;
+  }
+  /** The positions of the rows that cannot be keyed (a wild index), ascending; null for another index. */
+  get wild() {
+    return this.wildSlots && this.dead ? this.wildSlots.map((slot) => this.position(slot)) : this.wildSlots;
+  }
+  // Indexes key at slot.
+  place(key, slot) {
     if (key === null) return true;
     if (key === undefined) {
-      if (!this.wild) return false;
-      insertSorted(this.wild, index);
+      if (!this.wildSlots) return false;
+      insertSorted(this.wildSlots, slot);
       return true;
     }
     const list = this.map.get(key);
-    if (list === undefined) this.map.set(key, index);
-    else if (typeof list === 'number') this.map.set(key, list <= index ? [list, index] : [index, list]);
-    else insertSorted(list, index);
+    if (list === undefined) this.map.set(key, slot);
+    else if (typeof list === 'number') this.map.set(key, list <= slot ? [list, slot] : [slot, list]);
+    else insertSorted(list, slot);
     return true;
   }
+  add(key, index) {
+    return this.place(key, this.slotOf(index));
+  }
   delete(key, index) {
-    const list = key === undefined ? this.wild : key === null ? null : this.map.get(key);
+    const slot = this.slotOf(index);
+    const list = key === undefined ? this.wildSlots : key === null ? null : this.map.get(key);
     if (typeof list === 'number') {
-      if (list === index) this.map.delete(key);
+      if (list === slot) this.map.delete(key);
       return;
     }
-    const at = list ? list.indexOf(index) : -1;
+    const at = list ? list.indexOf(slot) : -1;
     if (at < 0) return;
     list.splice(at, 1);
     if (!list.length && key != null) this.map.delete(key);
     else if (list.length === 1 && key != null) this.map.set(key, list[0]);
   }
   get(key) {
-    const positions = this.map.get(key);
-    return typeof positions === 'number' ? [positions] : (positions ?? []);
+    const slots = this.map.get(key);
+    if (slots === undefined) return [];
+    if (typeof slots === 'number') return [this.position(slots)];
+    return this.dead ? slots.map((slot) => this.position(slot)) : slots;
   }
   appended(rows, row) {
     if (this.linear || this.length !== rows.length - 1) return false;
+    if (this.live && this.slots >= this.live.length - 1) this.compact();
+    const slot = this.slots++;
+    if (this.live) for (let i = slot + 1; i < this.live.length; i += i & -i) this.live[i]++;
     this.length = rows.length;
-    return this.add(this.keyOf(row), rows.length - 1);
+    return this.place(this.keyOf(row), slot);
   }
   moved(rows, index, previousRow, row, previousKey) {
     if (this.linear || this.length !== rows.length) return false;
@@ -393,23 +450,29 @@ class RowKeyIndex {
     if (arguments.length < 5) previousKey = this.keyOf(previousRow);
     const key = this.keyOf(row);
     if (key === previousKey) return true;
-    if (previousKey === undefined && !this.wild) return false;
+    if (previousKey === undefined && !this.wildSlots) return false;
     this.delete(previousKey, index);
     return this.add(key, index);
   }
   removed(rows, index, row) {
     if (this.linear || this.length !== rows.length + 1) return false;
+    const slot = this.slotOf(index);
     this.delete(this.keyOf(row), index);
-    const shift = (list) => {
-      for (let i = 0; i < list.length; i++) if (list[i] > index) list[i]--;
-    };
-    this.map.forEach((list, key) => {
-      if (typeof list === 'number') {
-        if (list > index) this.map.set(key, list - 1);
-      } else shift(list);
-    });
-    if (this.wild) shift(this.wild);
+    if (!this.live) {
+      // Every slot before the first removal is live: the tree is built in O(n), with room to append as many again.
+      const size = Math.max(16, this.slots * 2),
+        tree = new Int32Array(size + 1);
+      for (let i = 1; i <= size; i++) {
+        if (i <= this.slots) tree[i] += 1;
+        const parent = i + (i & -i);
+        if (parent <= size) tree[parent] += tree[i];
+      }
+      this.live = tree;
+    }
+    for (let i = slot + 1; i < this.live.length; i += i & -i) this.live[i]--;
+    this.dead++;
     this.length = rows.length;
+    if (this.dead * 2 > this.slots) this.compact();
     return true;
   }
 }
@@ -2398,6 +2461,19 @@ export class DataStore {
         'NotImplemented',
       );
   }
+  /**
+   * The lowercase names a table filter value stands for (DV-N4-2): the logical name and the entity set name of the mapped
+   * table it names either way (any case), else the value itself.
+   */
+  entityNames(name) {
+    const wanted = String(name ?? '')
+      .trim()
+      .toLowerCase();
+    for (const [logical, mapping] of Object.entries(this.state.mappings ?? {}))
+      if (logical.toLowerCase() === wanted || String(mapping?.entitySet ?? '').toLowerCase() === wanted)
+        return [logical.toLowerCase(), ...(mapping?.entitySet ? [String(mapping.entitySet).toLowerCase()] : [])];
+    return [wanted];
+  }
   resolveMapping(entity) {
     safeName(entity);
     let logical = entity;
@@ -4144,47 +4220,101 @@ export class DataStore {
         (p.entity === entity || p.entity === '*') &&
         (p.operations ?? ['create', 'update']).includes(operation),
     )) {
-      if (p.when && !compileFilter(p.when)(row)) continue;
-      for (const [key, expr] of Object.entries(p.defaults ?? {}))
-        if (row[key] == null) {
-          safeName(key);
-          row[key] = this.evaluate(expr, context);
-        }
-      for (const [key, expr] of Object.entries(p.set ?? {})) {
-        safeName(key);
-        row[key] = this.evaluate(expr, context);
+      const started = performance.now(),
+        changes = [];
+      const evaluated = (result, extra = {}) =>
+        this.ruleEvaluated({
+          rule: String(p.id ?? p.name ?? 'plugin'),
+          table: entity,
+          operation,
+          result,
+          changes,
+          secondaryEffects: result === 'applied' ? (p.secondary ?? []).length : 0,
+          durationMs: Math.round((performance.now() - started) * 100) / 100,
+          ...extra,
+        });
+      if (p.when && !compileFilter(p.when)(row)) {
+        evaluated('skipped');
+        continue;
       }
-      for (const v of p.validate ?? []) {
-        const value = field(row, v.field ?? '');
-        let valid = true;
-        if (v.required) valid = value != null && value !== '';
-        if (v.pattern) valid = valid && new RegExp(v.pattern).test(String(value ?? ''));
-        if (v.min != null) valid = valid && Number(value) >= v.min;
-        if (v.max != null) valid = valid && Number(value) <= v.max;
-        if (v.oneOf) valid = valid && v.oneOf.some((x) => equal(x, value));
-        if (v.assert) valid = valid && compileFilter(v.assert)(row);
-        if (v.unique) {
-          const m = this.resolveMapping(entity);
-          valid =
-            valid &&
-            !(this.state.tables[entity] ?? []).some(
-              (r) => !equal(r[m.idColumn], row[m.idColumn]) && equal(field(r, v.field), value),
-            );
-        }
-        if (!valid)
-          throw new DataError(
-            v.message ?? `Plugin ${p.id ?? 'validation'} rejected ${v.field ?? 'record'}`,
-            400,
-            'PluginValidation',
-            {
-              innerCode: String(v.innerCode ?? '0x80040265').toLowerCase(),
-              ...(typeof v.message === 'string' && v.message.trim() ? { declaredValidationMessage: true } : {}),
-            },
-          );
+      try {
+        this.applyRule(p, row, context, changes, entity);
+      } catch (error) {
+        evaluated('rejected', { error: { code: error.code ?? 'PLUGIN_ERROR', message: error.message } });
+        throw error;
       }
+      evaluated('applied');
       secondary.push(...(p.secondary ?? []).map((action) => ({ action, context })));
     }
     return secondary;
+  }
+  /**
+   * One declarative plugin rule's evaluation { rule, table, operation, result: applied|skipped|rejected, changes,
+   * secondaryEffects, durationMs, error? } (D-M-4): a `rule` event on the current span, then onRuleEvaluated (the host's
+   * `plugin` log line), so both come from this one hook. Trace level off costs one property read here.
+   */
+  ruleEvaluated(evaluation) {
+    const span = this.traces?.enabled ? this.traces.current() : null;
+    // Under a bulk span the evaluations of every row are one rule event and the span's `rules` counts (traceDecision).
+    traceDecision(span, 'rule', {
+      message: `${evaluation.rule} ${evaluation.result}`,
+      attributes: {
+        rule: evaluation.rule,
+        table: evaluation.table,
+        operation: evaluation.operation,
+        result: evaluation.result,
+        changes: evaluation.changes,
+        secondaryEffects: evaluation.secondaryEffects,
+        ...(evaluation.error ? { code: evaluation.error.code, message: evaluation.error.message } : {}),
+      },
+    });
+    try {
+      this.onRuleEvaluated?.(evaluation, span);
+    } catch {
+      /* an observer failure never affects the write */
+    }
+  }
+  // The defaults, set and validate parts of one plugin rule on row; the names it assigns are pushed to changes.
+  applyRule(p, row, context, changes, entity) {
+    for (const [key, expr] of Object.entries(p.defaults ?? {}))
+      if (row[key] == null) {
+        safeName(key);
+        row[key] = this.evaluate(expr, context);
+        changes.push(key);
+      }
+    for (const [key, expr] of Object.entries(p.set ?? {})) {
+      safeName(key);
+      row[key] = this.evaluate(expr, context);
+      if (!changes.includes(key)) changes.push(key);
+    }
+    for (const v of p.validate ?? []) {
+      const value = field(row, v.field ?? '');
+      let valid = true;
+      if (v.required) valid = value != null && value !== '';
+      if (v.pattern) valid = valid && new RegExp(v.pattern).test(String(value ?? ''));
+      if (v.min != null) valid = valid && Number(value) >= v.min;
+      if (v.max != null) valid = valid && Number(value) <= v.max;
+      if (v.oneOf) valid = valid && v.oneOf.some((x) => equal(x, value));
+      if (v.assert) valid = valid && compileFilter(v.assert)(row);
+      if (v.unique) {
+        const m = this.resolveMapping(entity);
+        valid =
+          valid &&
+          !(this.state.tables[entity] ?? []).some(
+            (r) => !equal(r[m.idColumn], row[m.idColumn]) && equal(field(r, v.field), value),
+          );
+      }
+      if (!valid)
+        throw new DataError(
+          v.message ?? `Plugin ${p.id ?? 'validation'} rejected ${v.field ?? 'record'}`,
+          400,
+          'PluginValidation',
+          {
+            innerCode: String(v.innerCode ?? '0x80040265').toLowerCase(),
+            ...(typeof v.message === 'string' && v.message.trim() ? { declaredValidationMessage: true } : {}),
+          },
+        );
+    }
   }
   applySecondary(effects) {
     for (const { action, context } of effects) {

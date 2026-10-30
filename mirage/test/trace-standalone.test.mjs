@@ -76,6 +76,12 @@ test('a refused administration write names its code, message and status on the s
     [root.origin.host, root.status, root.error.code, root.error.message, root.error.status],
     ['sim', 'denied', answer.error.code, answer.error.message, 403],
   );
+  // The refusal's finding names the request's trace and root span (D-M-4); load findings name none.
+  const { answer: found } = await simApi('GET', '/diagnostics');
+  const finding = found.diagnostics.find(
+    (item) => item.code === answer.error.code && item.message === answer.error.message,
+  );
+  assert.deepEqual([finding?.traceId, finding?.spanId], [root.traceId, root.spanId]);
 });
 
 test('administration reads, the trace routes and the event channel open no root', async () => {

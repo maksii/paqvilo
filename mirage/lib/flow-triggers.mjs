@@ -173,6 +173,15 @@ export function createFlowTriggerRunner({
     closing = false,
     stopSequence = Infinity;
   const record = (code, entry) => diagnostic({ code, ...entry });
+  // The human facts of a trigger finding (D-M-2 Findings): the flow's display name, the trigger table and a sentence.
+  const flowFacts = (workflow, item, entity, status) => {
+    const name = workflow?.name ?? item.name ?? item.processId ?? item.key;
+    return {
+      name,
+      entity: entity ?? null,
+      message: `${name} ${String(status ?? 'ran').toLowerCase()}${entity ? ` on ${entity}` : ''}.`,
+    };
+  };
   const run = async ({ id, payload: { key, chain, attempts }, event }) => {
     // The run joins the committing request's correlation as an asynchronous child of it.
     const correlationId = event.correlationId ?? chain.id;
@@ -289,6 +298,7 @@ export function createFlowTriggerRunner({
                 });
               if (answer.status === 'Skipped') skipped(answer.reason ?? 'Skipped');
               record(answer.status === 'Skipped' ? 'FLOW_TRIGGER_SKIPPED' : 'FLOW_TRIGGER_COMPLETED', {
+                ...flowFacts(workflow, item, event.entity, answer.status),
                 operationKey: item.key,
                 chainId: chain.id,
                 correlationId,
@@ -604,6 +614,7 @@ export function createFlowTriggerRunner({
         diagnostic: (d) => record(d.code, { ...d, operationKey: item.key, correlationId }),
       });
       record(answer?.status === 'Skipped' ? 'FLOW_TRIGGER_SKIPPED' : 'FLOW_TRIGGER_COMPLETED', {
+        ...flowFacts(workflow, item, null, answer?.status ?? null),
         operationKey: item.key,
         trigger: host.kind,
         correlationId,

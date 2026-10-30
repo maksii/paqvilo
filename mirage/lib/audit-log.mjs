@@ -56,6 +56,13 @@ export function auditQuery(value) {
   );
 }
 
+// An id filter of at least 8 hexadecimal characters (after an optional kind: prefix, as in visitor:ad87d220) also
+// matches every id it begins (DV-N4-3); an ambiguous prefix matches all of them. The trace store re-exports it.
+const ID_PREFIX = /^(?:[a-z]+:)?[0-9a-f]{8}[0-9a-f-]*$/i;
+/** True when actual equals wanted, or wanted is an id prefix (8+ hex characters) that actual begins with. */
+export const idMatches = (actual, wanted) =>
+  actual === wanted || (actual != null && ID_PREFIX.test(wanted) && String(actual).startsWith(wanted));
+
 const pathOnly = (value) => {
   try {
     return new URL(String(value ?? '/'), 'http://local.invalid').pathname.slice(0, 600);
@@ -64,6 +71,8 @@ const pathOnly = (value) => {
   }
 };
 const positive = (value, fallback, max) => Math.min(max, Math.max(1, Number.parseInt(value, 10) || fallback));
+// The trace ids one traceId filter may list (a page of Activities joins its audit entries in one call).
+const MAX_TRACE_IDS = 200;
 const AUDIT_KINDS = ['api', 'liquid-fetchxml', 'form', 'page', 'entity-read', 'entity-query'];
 // Runtime services may add their own lowercase kinds (for example native form services).
 const auditKind = (kind) =>
@@ -80,8 +89,10 @@ const statusMatches = (status, filter) => {
 
 /** In-memory, bounded trace ledger. It never retains HTTP headers or row bodies. */
 export class AuditLog {
-  constructor({ limit = 1000 } = {}) {
+  // entityNames(name) -> the lowercase names (logical, entity set) the entity filter stands for; the host sets it.
+  constructor({ limit = 1000, entityNames = null } = {}) {
     this.limit = positive(limit, 1000, 10000);
+    this.entityNames = entityNames;
     this.entries = [];
     this.index = new Map(); // id -> retained entry, kept in sync with eviction and clear
     this.sequence = 0;
@@ -114,6 +125,8 @@ export class AuditLog {
     traceId,
     spanId,
     activeConfigurationPreset,
+    visitorId,
+    sessionKey,
   } = {}) {
     const started = performance.now();
     const id = randomUUID();
@@ -144,6 +157,9 @@ export class AuditLog {
         contactId: limitText(identity?.contactId ?? identity?.id, 100) || null,
         roles: (identity?.roles ?? []).map((role) => auditText(role, 200)).slice(0, 100),
       },
+      // The browser session (D-M-2 Who): the anonymous visitor cookie id, and contact:<id> or visitor:<id> (else null).
+      visitorId: visitorId ? limitText(visitorId, 100) : null,
+      sessionKey: sessionKey ? limitText(sessionKey, 140) : null,
       query: auditQuery(query),
       status: null,
       rowCount: null,
@@ -214,6 +230,14 @@ export class AuditLog {
         .trim()
         .toUpperCase(),
       correlationId = String(get('correlationId') ?? '').trim(),
+      traceIds = new Set(
+        String(get('traceId') ?? '')
+          .split(',')
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+      visitorId = String(get('visitorId') ?? '').trim(),
+      sessionKey = String(get('sessionKey') ?? '').trim(),
       contactId = String(get('contactId') ?? '')
         .trim()
         .replace(/[{}]/g, '')
@@ -224,7 +248,18 @@ export class AuditLog {
           .toLowerCase(),
       search = lower('search'),
       pathFilter = lower('path'),
-      entity = lower('entity');
+      entityValue = lower('entity') || lower('table');
+    // A Web API entry names the entity set (x_items), a Liquid read the logical name (x_item): either finds both.
+    let entities = null;
+    if (entityValue) {
+      let names = [entityValue];
+      try {
+        names = this.entityNames?.(entityValue) ?? names;
+      } catch {
+        /* an unresolvable name filters as itself */
+      }
+      entities = new Set(names.map((name) => String(name).toLowerCase()));
+    }
     const sequenceBound = (key) => {
       const value = get(key);
       if (value === undefined || value === null || value === '') return null;
@@ -235,6 +270,12 @@ export class AuditLog {
         });
       return Number(value);
     };
+    if (traceIds.size > MAX_TRACE_IDS)
+      throw Object.assign(new RangeError(`traceId names at most ${MAX_TRACE_IDS} trace ids.`), {
+        status: 400,
+        code: 'InvalidAuditFilter',
+        parameter: 'traceId',
+      });
     const afterSequence = sequenceBound('afterSequence'),
       throughSequence = sequenceBound('throughSequence');
     return this.entries
@@ -246,6 +287,9 @@ export class AuditLog {
           statusMatches(entry.status, status) &&
           (!method || entry.method === method) &&
           (!correlationId || entry.correlationId === correlationId) &&
+          (!traceIds.size || traceIds.has(entry.traceId)) &&
+          (!visitorId || idMatches(entry.visitorId ?? null, visitorId)) &&
+          (!sessionKey || idMatches(entry.sessionKey ?? null, sessionKey)) &&
           (!contactId ||
             String(entry.identity.contactId ?? '')
               .replace(/[{}]/g, '')
@@ -253,7 +297,7 @@ export class AuditLog {
           (afterSequence === null || entry.sequence > afterSequence) &&
           (throughSequence === null || entry.sequence <= throughSequence) &&
           (!pathFilter || entry.path.toLowerCase().includes(pathFilter)) &&
-          (!entity || String(entry.entity ?? '').toLowerCase() === entity) &&
+          (!entities || entities.has(String(entry.entity ?? '').toLowerCase())) &&
           (!search || JSON.stringify(entry).toLowerCase().includes(search)),
       )
       .slice()

@@ -1732,6 +1732,10 @@ export function createConnectorRuntime({
     const note = (status, error) =>
       diagnostic({
         code: 'CONNECTOR_INVOKE',
+        // Human facts (D-M-2 Findings): the operation, the Dataverse table it names (entityName), a sentence.
+        name: operationId ?? connectorId,
+        entity: typeof parameters?.entityName === 'string' ? parameters.entityName : null,
+        message: `${operationId ?? 'An operation'} of ${connectorId} answered ${status}${error?.message ? `: ${error.message}` : ''}.`,
         connectorId,
         operationId,
         reference: resolved?.referenceLogicalName ?? null,

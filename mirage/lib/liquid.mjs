@@ -1007,7 +1007,9 @@ export function createPortalRenderer(portal, options = {}) {
   async function loadTemplateSource(name, context) {
     // A runtime template has no source reference: its render-template span is named by the include name (D-R3-14).
     const runtime = (label, source) => {
-      if (context?.provenance) context.renderSlot = { name: `${label} ${name}` };
+      // A missing include is marked so its render-template span says the export lacks it (sourceOrigin missing).
+      if (context?.provenance)
+        context.renderSlot = { name: `${label} ${name}`, ...(label === 'missing' ? { missing: true } : {}) };
       return source;
     };
     const record = findTemplate(name);

@@ -1,5 +1,5 @@
 // The end-to-end tracing scenario on the real Power Pages host (docs/design/tracing.md), shared by
-// test/trace-end-to-end.test.mjs and test-browser/trace-view-e2e.test.mjs. A signed-in member's Web API create runs table
+// test/trace-end-to-end.test.mjs and test-browser/activity-e2e.test.mjs. A signed-in member's Web API create runs table
 // permissions, three synchronous plug-in steps (PreValidation, PreOperation, PostOperation) and a plug-in to plug-in chain
 // (the PostOperation step's SDK create of x_audit runs the x_audit step), a synchronous web hook whose loopback receiver
 // writes the receipt back through the portal Web API with the forwarded trace headers, an asynchronous plug-in step job and

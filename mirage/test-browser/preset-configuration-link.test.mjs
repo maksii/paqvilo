@@ -114,8 +114,13 @@ test('preset picker retains edits made during the initial access view load', asy
   await page.locator('#refresh:not([disabled])').waitFor();
   assert.equal(await preset.inputValue(), option);
   assert.equal(await includeConfiguration.isChecked(), true);
+  // Leave for Home (the old #overview address redirects there) and come back: the unsaved choice is gone.
   await page.evaluate(() => (location.hash = 'overview'));
-  await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
+  await page.waitForFunction(
+    () => location.hash === '#home' && document.querySelector('#view-title')?.textContent === 'Home',
+  );
+  assert.equal(await page.locator('#breadcrumb').innerText(), 'Home');
+  await page.locator('[data-panel="checklist"] li').first().waitFor();
   await page.evaluate(() => (location.hash = 'access'));
   await page.locator('#refresh:not([disabled])').waitFor();
   await page.locator('[data-ui-section="preset-picker"] > summary').click();

@@ -1,4 +1,5 @@
-// The four view modules (services, flows, packs, capabilities) inside the real /_sim/ app (index.html + app.mjs) against
+// The shell (navigation, old-address redirects, Home, Health links, links into Activity) and the four view modules
+// (services, flows, packs, capabilities) inside the real /_sim/ app (index.html + app.mjs) against
 // a stateful fake JSON host: data renders on first entry without a manual refresh, actions show their effect,
 // deep links, doc links from GET /status, the published route list instead of probes, load errors with their
 // status, and visible help on every control.
@@ -11,6 +12,7 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { docsLinks } from '../lib/docs-links.mjs';
 import { createTraceStore } from '../lib/trace-store.mjs';
 import { createTraceRoutes } from '../lib/sim-trace-routes.mjs';
+import { measureView } from './readability.mjs';
 
 const SHARED = new Set(['persona-search.mjs', 'persona-picker-view.mjs']);
 const docs = docsLinks('0.9.4', 'https://git.example.test/invented/paqvilo');
@@ -61,6 +63,7 @@ const dashboard = () => ({
   ],
   edges: [],
   activity: {
+    requests: { total: 3, recent: [] },
     messages: { active: 2 },
     jobs: { pending: 0 },
     webhooks: {},
@@ -90,7 +93,8 @@ const packs = {
   library: [{ id: 'fx-empty', name: 'Empty', pack: 'fx-pack', source: 'builtin' }],
 };
 
-async function host(t, { state, status, failPacks = 0, traces, events = true }) {
+// `answers`: route → JSON body (or a function returning one) answered before the fixed routes.
+async function host(t, { state, status, failPacks = 0, traces, events = true, dataverse, answers = {} }) {
   const calls = [];
   // The real trace routes over a real store; the SSE trace channel streams its events as the host does.
   const traceRoutes = traces && createTraceRoutes({ traces, csrf: () => state.csrf });
@@ -105,6 +109,8 @@ async function host(t, { state, status, failPacks = 0, traces, events = true }) 
     processId: 'p1',
     status: id === 'run-1' ? live.runStatus : 'Succeeded',
     starttime: '2026-10-22T09:00:00Z',
+    // The run's flow-run step in the trace store (flow-runs.mjs traceOf): the row links into Activity.
+    ...(id === 'run-1' ? { traceId: 'fx-trace-1', traceSpanId: 'fx-span-1' } : {}),
     journal: { Invented_step: { status: 'Succeeded', outputs: { ok: true } } },
   });
   const server = http.createServer(async (req, res) => {
@@ -124,10 +130,17 @@ async function host(t, { state, status, failPacks = 0, traces, events = true }) 
         res.setHeader('content-type', 'application/json');
         const route = url.pathname.slice('/__sim/api'.length),
           send = (body, code = 200) => res.writeHead(code).end(JSON.stringify(body));
+        if (Object.hasOwn(answers, route) && req.method === 'GET')
+          return send(typeof answers[route] === 'function' ? answers[route]() : answers[route]);
         if (route === '/state') return send(state);
         if (route === '/status') return status ? send(status) : send({ error: 'Not found' }, 404);
         if (route === '/personas') return send({});
         if (route === '/dashboard') return send(dashboard());
+        if (route === '/dataverse')
+          return send(
+            dataverse ?? { enabled: true, applications: [], users: [], roles: [], grantTypes: [], workflows: [] },
+          );
+        if (route === '/dataverse/requests') return send({ requests: [{ status: 200 }, { status: 500 }] });
         if (route === '/messages' && req.method === 'GET')
           return send({
             configured: true,
@@ -191,6 +204,18 @@ async function open(t, origin, hash) {
   await page.locator('#navigation a').first().waitFor();
   return { page, errors };
 }
+/** Links, buttons and fields whose box leaves the viewport or the table frame that holds them. */
+const clippedControls = (page) =>
+  page.evaluate(() =>
+    [...document.querySelectorAll('#content a, #content button, #content input, #content select')]
+      .filter((node) => node.offsetParent && !node.closest('.ui-info-pop'))
+      .filter((node) => {
+        const box = node.getBoundingClientRect(),
+          frame = node.closest('.ui-table-wrap, .table-wrap')?.getBoundingClientRect();
+        return box.right > (frame ? frame.right + 1 : innerWidth + 1);
+      })
+      .map((node) => node.textContent.trim() || node.id),
+  );
 const nav = (page, name) => page.locator('#navigation').getByRole('link', { name, exact: true }).click();
 // Every visible form control except the kit's pager tools has visible help tied by aria-describedby.
 const undescribed = (page) =>
@@ -235,13 +260,24 @@ test(
       status: { docs, routes: POWER_PAGES_ROUTES },
     });
     const { page, errors } = await open(t, origin, '');
-    await page.getByRole('heading', { name: 'Infrastructure', exact: true }).waitFor();
-    // The published list decides for /_sim/api routes: Platform rules shown, audit hidden, nothing probed.
+    await page.getByRole('heading', { name: 'Health', exact: true }).waitFor();
+    // The published list decides for /_sim/api routes: Platform rules shown, nothing probed.
     await page.locator('#navigation').getByRole('link', { name: 'Platform rules', exact: true }).waitFor();
-    assert.equal(
-      await page.locator('#navigation').getByRole('link', { name: 'Request audit', exact: true }).count(),
-      0,
-    );
+    // Navigation groups (D-M-1): Workspace › Home, Monitor › Health (and Activity where the host serves traces).
+    const groups = await page
+      .locator('#navigation details')
+      .evaluateAll((nodes) =>
+        nodes.map((node) => [
+          node.querySelector('summary').textContent.trim(),
+          [...node.querySelectorAll('a')].map((link) => link.lastChild.textContent.trim()),
+        ]),
+      );
+    assert.deepEqual(groups.slice(0, 2), [
+      ['Workspace', ['Home']],
+      ['Monitor', ['Health']],
+    ]);
+    for (const gone of ['Overview', 'Infrastructure', 'Live logs', 'Request audit', 'Traces', 'Render & diagnostics'])
+      assert.equal(await page.locator('#navigation').getByRole('link', { name: gone, exact: true }).count(), 0, gone);
 
     // Providers & services: the first entry already shows the dashboard's storage provider (no manual refresh).
     await nav(page, 'Providers & services');
@@ -274,6 +310,17 @@ test(
     // Flows & jobs: the waiting approval is there on first entry; answering it removes it and the run moves on.
     await nav(page, 'Flows & jobs');
     await page.locator('table[data-table="flow-runs"] tbody tr').nth(1).waitFor();
+    // Results read as in Activity (D-M-2): the platform status follows only when it says more (DV-N4-16).
+    const resultOf = (index) =>
+      page
+        .locator('table[data-table="flow-runs"] tbody tr')
+        .nth(index)
+        .locator('td:nth-child(2)')
+        .innerText()
+        .then((text) => text.replace(/\s+/g, ' ').trim());
+    assert.equal(await resultOf(0), 'running waiting');
+    assert.equal(await resultOf(1), 'ok');
+    assert.equal(await page.getByRole('columnheader', { name: 'Result' }).count(), 1);
     assert.equal(await page.locator('[data-ui-section="flows:waits"] .ui-section-summary').innerText(), '1 waiting');
     await page.locator('[data-ui-section="flows:waits"] > summary').click();
     assert.equal(await page.locator('table[data-table="flow-waits"] tbody tr').count(), 1);
@@ -283,18 +330,68 @@ test(
     await page.getByRole('button', { name: 'Approve', exact: true }).click();
     await page.getByText('No run is waiting.').waitFor();
     assert.equal(await page.locator('[data-ui-section="flows:waits"] .ui-section-summary').innerText(), '0 waiting');
-    await page.locator('table[data-table="flow-runs"] tbody tr').first().getByText('Running').waitFor();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('table[data-table="flow-runs"] tbody tr td:nth-child(2)')?.textContent.trim() ===
+        'running',
+    );
     assert.ok(calls.includes('POST /__sim/api/flow-waits/fx-approval'));
 
+    // Run rows name the flow, show local times (date and UTC on hover) and link the run's step in Activity.
+    const first = page.locator('table[data-table="flow-runs"] tbody tr').first();
+    assert.equal(
+      await first.getByRole('link', { name: 'Activity of run run-1' }).getAttribute('href'),
+      '#activity/fx-trace-1/fx-span-1',
+    );
+    const started = first.locator('time');
+    assert.match(await started.first().innerText(), /^\d{2}:\d{2}:\d{2}\.\d{3}$/);
+    assert.match(
+      await started.first().getAttribute('title'),
+      /^2026-10-2[12] \d{2}:\d{2}:00\.000 UTC[+−]\d{2}:\d{2} · 2026-10-22T09:00:00\.000Z$/,
+    );
+    assert.equal(await started.first().getAttribute('datetime'), '2026-10-22T09:00:00.000Z');
+    // The zone is named once, in the (i) of the Started column.
+    assert.match(
+      await page
+        .locator('table[data-table="flow-runs"] th', { hasText: 'Started' })
+        .locator('.ui-info-text')
+        .textContent(),
+      /^Times are local \(UTC[+−]\d{2}:\d{2}\); hover a time for its date and UTC\.$/,
+    );
+    // M2 §7 defect 1: nothing in the run table is cut off at the right edge.
+    assert.deepEqual(await clippedControls(page), []);
+    // D-M-7: the filters live in a drawer opened from the toolbar; applying closes it and shows the filter as a chip.
+    const toggle = page.locator('[data-filter-toggle="flows-filters"]');
+    assert.equal(await page.locator('#flows-filters').isVisible(), false);
+    await toggle.click();
+    await page.locator('#flows-filters').waitFor();
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'flow-process');
+    await page.locator('#flow-status').selectOption('Succeeded');
+    await page.locator('#flows-filters').getByRole('button', { name: 'Apply filters' }).click();
+    await page.getByRole('button', { name: 'Remove filter Result: ok · succeeded' }).waitFor();
+    assert.equal(await page.locator('#flows-filters').isVisible(), false);
+    assert.equal(await toggle.textContent(), 'Filters · 1');
+    assert.ok(calls.includes('GET /__sim/api/flow-runs?status=Succeeded'));
+    await page.getByRole('button', { name: 'Remove filter Result: ok · succeeded' }).click();
+    await page.waitForFunction(
+      () => document.querySelector('[data-filter-toggle="flows-filters"]')?.textContent === 'Filters',
+    );
+    // Escape closes an open drawer and gives focus back to its toggle.
+    await toggle.click();
+    await page.locator('#flows-filters').waitFor();
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => document.querySelector('#flows-filters')?.hidden === true);
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.filterToggle), 'flows-filters');
     // Run details show the run that was clicked, with its journal.
     await page.getByRole('button', { name: 'Details of run run-1' }).click();
-    await page.getByRole('heading', { name: 'Run run-1' }).waitFor();
-    await page.locator('dl.ui-kv').getByText('p1', { exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Run of p1 run-1' }).waitFor();
+    await page.locator('dl.ui-kv code').getByText('p1', { exact: true }).waitFor();
     // A run deep link loads that run.
     await page.evaluate(() => {
       location.hash = 'flows?run=run-2';
     });
-    await page.getByRole('heading', { name: 'Run run-2' }).waitFor();
+    await page.getByRole('heading', { name: 'Run of p1 run-2' }).waitFor();
 
     // Data packs: the registered pack is listed on first entry and its details expand.
     await nav(page, 'Data packs');
@@ -403,8 +500,10 @@ test(
       },
       status: { docs, routes: POWER_PAGES_ROUTES },
     });
+    // #overview is an old address: it is replaced in place by #home (no extra history entry).
     const { page, errors } = await open(t, origin, '#overview');
-    await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Home', exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => location.hash), '#home');
     // The label is the link's text node after its aria-hidden icon; the group is the summary of its sidebar group.
     const links = await page.locator('#navigation a').evaluateAll((nodes) =>
       nodes.map((node) => ({
@@ -413,6 +512,9 @@ test(
       })),
     );
     assert.ok(links.length >= 15, `${links.length} sidebar links`);
+    // The first link is Home, where the page already is: start elsewhere so every link changes the view.
+    await nav(page, 'Data records');
+    await page.getByRole('heading', { name: 'Data records', exact: true }).waitFor();
     for (const { label, group } of links) {
       // Start from the bottom of the previous view, so a landing that keeps the old scroll position fails.
       await page.evaluate(() => {
@@ -428,7 +530,12 @@ test(
       assert.equal(await page.evaluate(() => window.scrollY), 0, `${label} opens at its top`);
       assert.equal(await page.locator('#breadcrumb').innerText(), label);
       assert.equal(await page.locator('#breadcrumb-group').innerText(), group);
-      assert.equal(await page.locator('#content .eyebrow').first().innerText(), group.toUpperCase());
+      // D-M-7: no title block; the breadcrumb names the page in the accent colour and the H1 stays for focus only.
+      assert.equal(await page.locator('#content .eyebrow').count(), 0, `${label} has no eyebrow`);
+      assert.equal(
+        await page.locator('#view-title').evaluate((node) => node.getBoundingClientRect().height <= 1),
+        true,
+      );
       assert.equal(await page.title(), `${label} · Paqvilo simulator workspace`);
     }
 
@@ -461,190 +568,31 @@ test(
   },
 );
 
-/** A portal page GET and a portal Web API create, recorded the way the host hooks record them. */
-function recordTraffic(traces, name = 'POST /_api/x_items') {
-  const origin = { host: 'power-pages', portal: 'fx-portal', preset: null };
-  const session = { visitorId: 'visitor-1', sessionKey: 'visitor-1' };
-  const page = traces.start({
-    kind: 'http',
-    name: 'GET /fx-page',
-    module: 'portal',
-    operation: 'get',
-    actor: { kind: 'anonymous', id: null, name: null },
-    session,
-    origin,
-    traceId: null,
-    parentSpanId: null,
-  });
-  traces.run(page, () =>
-    traces.wrap({ kind: 'render', name: '/fx-page', module: 'liquid', operation: 'render' }, () => {}),
-  );
-  page.end({ attributes: { statusCode: 200 } });
+/** A portal Web API create with its plug-in step, recorded the way the host hooks record them. */
+function recordTraffic(traces) {
   const api = traces.start({
     kind: 'http',
-    name,
+    name: 'POST /_api/x_items',
     module: 'portal',
     operation: 'post',
     actor: { kind: 'contact', id: 'fx-contact', name: 'Invented Contact' },
-    session,
-    origin,
+    session: { visitorId: 'visitor-1', sessionKey: 'contact:fx-contact' },
+    origin: { host: 'power-pages', portal: 'fx-portal', preset: null },
     traceId: null,
     parentSpanId: null,
   });
   traces.run(api, () =>
-    traces.wrap({ kind: 'webapi', name: 'POST x_items', module: 'webapi', operation: 'create', entity: 'x_item' }, () =>
-      traces.wrap(
-        { kind: 'dataverse', name: 'Create x_item', module: 'dataverse', operation: 'create', entity: 'x_item' },
-        (span) => {
-          span.event('permission', { attributes: { table: 'x_item', operation: 'create', result: 'allow' } });
-          span.set({ recordId: 'fx-item-1' });
-        },
-      ),
+    traces.wrap(
+      { kind: 'dataverse', name: 'Create x_item', module: 'dataverse', operation: 'create', entity: 'x_item' },
+      (span) => span.set({ recordId: 'fx-item-1' }),
     ),
   );
   api.end({ attributes: { statusCode: 201 } });
   return api;
 }
 
-test(
-  'the trace view lists recorded traffic, opens a waterfall, tree and span, filters, saves settings and follows Live',
-  { timeout: 60_000 },
-  async (t) => {
-    const traces = createTraceStore({ settings: { level: 'summary' } });
-    const api = recordTraffic(traces);
-    const { origin, calls } = await host(t, {
-      state: {
-        csrf: 'fixture-csrf',
-        config: {
-          mappings: [],
-          plugins: [],
-          endpoints: [],
-          permissions: [],
-          presets: [],
-          identity: {},
-          platformSettings: [],
-        },
-        data: {},
-        status: { pages: [], scenarios: [] },
-        diagnostics: [],
-      },
-      status: { docs, routes: [...POWER_PAGES_ROUTES, '/trace'] },
-      traces,
-    });
-    const { page, errors } = await open(t, origin, '#overview');
-    await nav(page, 'Traces');
-    await page.getByRole('heading', { name: 'Traces', exact: true }).waitFor();
-    const rows = page.locator('table[data-table="trace-list"] tbody tr');
-    await rows.nth(1).waitFor();
-    assert.equal(await rows.count(), 2);
-    assert.equal(await page.locator('#breadcrumb-group').innerText(), 'Monitor');
-    assert.deepEqual(await undescribed(page), []);
-
-    // A row opens the trace: the waterfall has one row per span; a span opens its drawer.
-    await rows.filter({ hasText: 'POST /_api/x_items' }).click();
-    const waterfall = page.locator('ol.ui-waterfall > li');
-    await waterfall.nth(2).waitFor();
-    assert.equal(await waterfall.count(), 3);
-    assert.match(await page.evaluate(() => location.hash), new RegExp(`^#trace\\?traceId=${api.traceId}$`));
-    await page.getByRole('button', { name: /^Span Create x_item/ }).click();
-    await page.getByRole('heading', { name: 'Create x_item', level: 3 }).waitFor();
-    await page.locator('#trace-span-drawer').getByText('permission', { exact: true }).waitFor();
-    assert.match(await page.evaluate(() => location.hash), /&spanId=/);
-    // The tree tab by keyboard: the details expand and collapse natively.
-    await page.getByRole('tab', { name: 'Waterfall' }).focus();
-    await page.keyboard.press('ArrowRight');
-    await page.locator('ul.ui-tree').waitFor();
-    assert.equal(await page.getByRole('tab', { name: 'Tree' }).getAttribute('aria-selected'), 'true');
-    const webapi = page.locator('ul.ui-tree details').nth(1);
-    await webapi.locator(':scope > summary').focus();
-    await page.keyboard.press('Enter');
-    assert.equal(await webapi.evaluate((node) => node.open), false);
-
-    // A deep link (as the audit Trace link writes it) opens the trace with the span selected.
-    const root = traces.tree(api.traceId).root;
-    await page.evaluate(
-      ([traceId, spanId]) => {
-        location.hash = `trace?traceId=${traceId}&spanId=${spanId}`;
-      },
-      [api.traceId, root.spanId],
-    );
-    await page.getByRole('heading', { name: 'POST /_api/x_items', level: 3 }).waitFor();
-
-    // Filters (collapsed while none is active): one kind narrows the list and lands in the address.
-    await page.locator('[data-ui-section="trace:filters"] > summary').click();
-    await page.getByLabel('Span kind').selectOption('render');
-    await page.getByRole('button', { name: 'Apply filters' }).click();
-    await page.waitForFunction(() => document.querySelectorAll('table[data-table="trace-list"] tbody tr').length === 1);
-    await rows.first().getByText('GET /fx-page').waitFor();
-    assert.equal(await page.evaluate(() => location.hash), '#trace?kind=render');
-    assert.ok(calls.includes('GET /__sim/api/trace?kind=render&page=1&pageSize=10'));
-
-    // Settings: level full is saved with PUT and applies to the store at once.
-    await page.getByRole('button', { name: 'Settings', exact: true }).click();
-    await page.waitForFunction(() => document.querySelector('[data-ui-section="trace:settings"]')?.open === true);
-    await page.getByLabel('full', { exact: true }).check();
-    assert.deepEqual(await undescribed(page), []);
-    await page.getByRole('button', { name: 'Save trace settings' }).click();
-    await page.getByText('Tracing level full.').waitFor();
-    assert.equal(traces.settings().level, 'full');
-    assert.ok(calls.includes('PUT /__sim/api/trace/settings'));
-
-    // Live: once the stream is open, a newly ended trace appears without a refresh.
-    await page.getByRole('button', { name: 'Reset filters' }).click();
-    await page.waitForFunction(() => document.querySelectorAll('table[data-table="trace-list"] tbody tr').length === 2);
-    await page.getByRole('button', { name: 'Live: off' }).click();
-    await page.locator('.ui-toolbar').getByText('Streaming').waitFor();
-    recordTraffic(traces, 'POST /_api/x_others');
-    await rows.filter({ hasText: 'POST /_api/x_others' }).waitFor();
-
-    // Clear asks first, then empties the list.
-    await page.getByRole('button', { name: 'Clear traces' }).click();
-    await page.locator('#confirm').getByRole('button', { name: 'Clear traces', exact: true }).click();
-    await page.getByText('No trace matches.', { exact: false }).waitFor();
-    assert.equal(traces.status().retained, 0);
-    assert.deepEqual(errors, []);
-  },
-);
-
-test(
-  'trace Live on a standalone host without the trace stream turns off with a notice',
-  { timeout: 60_000 },
-  async (t) => {
-    const traces = createTraceStore({ settings: { level: 'summary' } });
-    recordTraffic(traces);
-    const { origin, calls } = await host(t, {
-      state: {
-        csrf: 'fixture-csrf',
-        capabilities: { powerPages: false },
-        config: { platformSettings: [] },
-        data: {},
-        docs,
-        status: { routes: ['/dashboard', '/state', '/status', '/trace'] },
-      },
-      traces,
-      events: false,
-    });
-    const { page, errors } = await open(t, origin, '#trace');
-    await page.getByRole('heading', { name: 'Traces', exact: true }).waitFor();
-    // Root percentiles come from the same stats answer: no second depth=0 read.
-    await page
-      .locator('.ui-tile', { hasText: 'Root p50 / p95' })
-      .getByText(/ms \/ /)
-      .waitFor();
-    assert.ok(calls.some((call) => call.startsWith('GET /__sim/api/trace/stats')));
-    assert.equal(
-      calls.some((call) => call.includes('depth=0')),
-      false,
-    );
-    await page.getByRole('button', { name: 'Live: off' }).click();
-    await page.getByText('This host does not serve the live trace stream', { exact: false }).waitFor();
-    await page.getByRole('button', { name: 'Live: off' }).waitFor();
-    assert.ok(calls.includes('GET /__sim/events?channels=trace'));
-    assert.deepEqual(errors, []);
-  },
-);
-
-const TRACE_STATE = {
+// A Power Pages host that serves traces: Activity is in the sidebar, the places that change things link into it.
+const MONITOR_STATE = {
   csrf: 'fixture-csrf',
   config: {
     mappings: [],
@@ -654,189 +602,861 @@ const TRACE_STATE = {
     presets: [],
     identity: {},
     platformSettings: [],
+    operations: [
+      { key: 'plugin-step:fx-step', kind: 'plugin-step', id: 'fx-step', name: 'Invented.Step', mode: 'placeholder' },
+      {
+        key: 'cloud-flow:fx-flow',
+        kind: 'cloud-flow',
+        id: '{FX-FLOW}',
+        processId: '{FX-FLOW}',
+        name: 'Invented flow',
+        mode: 'exported',
+      },
+      { key: 'server-logic:fx-logic', kind: 'server-logic', name: 'fx-logic', mode: 'placeholder' },
+    ],
   },
-  data: {},
-  status: { pages: [], scenarios: [] },
-  diagnostics: [],
+  data: {
+    x_item: [{ x_itemid: 'fx-item-1', x_name: 'Invented item' }],
+    // A scenario-sized table list (more than ten tables shows the table filter, which once wrapped the toolbar).
+    ...Object.fromEntries(Array.from({ length: 12 }, (_, index) => [`zz_table_${index + 1}`, []])),
+    contact: [{ contactid: 'fx-contact', fullname: 'Invented Contact' }],
+  },
+  status: { pages: [{ name: 'Home', path: '/' }], scenarios: [], tableCounts: { x_item: 1, contact: 1 } },
+  diagnostics: [{ code: 'FX_FINDING', message: 'Invented finding.' }],
 };
-const listCalls = (calls) => calls.filter((call) => call.startsWith('GET /__sim/api/trace?'));
 
 test(
-  'trace view: Reset and deep links replace typed filters, columns sort, two traces compare, spans are searchable and export follows the format',
+  'old addresses land on the view that replaced them, with filters in the Activity vocabulary (Lense deep links)',
+  { timeout: 90_000 },
+  async (t) => {
+    const traces = createTraceStore({ settings: { level: 'summary' } });
+    const api = recordTraffic(traces),
+      root = traces.tree(api.traceId).root;
+    const { origin } = await host(t, {
+      state: structuredClone(MONITOR_STATE),
+      status: { docs, routes: [...POWER_PAGES_ROUTES, '/trace'], eventChannels: ['logs', 'trace'] },
+      traces,
+    });
+    const { page, errors } = await open(t, origin, '#home');
+    await page.getByRole('heading', { name: 'Home', exact: true }).waitFor();
+    const groups = await page
+      .locator('#navigation details')
+      .evaluateAll((nodes) =>
+        nodes.slice(0, 2).map((node) => [...node.querySelectorAll('a')].map((link) => link.getAttribute('href'))),
+      );
+    assert.deepEqual(groups, [['#home'], ['#health', '#activity']]);
+    const land = async (from, to, heading) => {
+      const before = await page.evaluate(() => history.length);
+      await page.evaluate((hash) => {
+        location.hash = hash;
+      }, from);
+      await page.waitForFunction((hash) => location.hash === hash, to);
+      await page.waitForFunction((name) => document.querySelector('#content h1')?.textContent === name, heading);
+      // The old address is replaced in place: Back does not return to it.
+      assert.equal(await page.evaluate(() => history.length), before + 1, from);
+    };
+    // Lense "Requests for this page" and "Diagnostics" (lense/panel-ui.mjs) and every other old Monitor address.
+    await land('audit?path=%2Forder%2F', '#activity?path=%2Forder%2F', 'Activity');
+    assert.equal(await page.locator('#breadcrumb-group').innerText(), 'Monitor');
+    // It lands filtered: the path is a removable filter chip on the Activities tab.
+    await page.getByRole('button', { name: 'Remove filter Path: /order/' }).waitFor();
+    assert.equal(await page.locator('#activity-tabs-tab-activities').getAttribute('aria-selected'), 'true');
+    await land('evidence', '#activity?tab=pages', 'Activity');
+    await page.waitForFunction(
+      () => document.querySelector('#activity-tabs-tab-pages')?.getAttribute('aria-selected') === 'true',
+    );
+    await land(
+      'audit?outcome=success&entity=x_item&search=Ada&status=4xx&kind=api&correlationId=fx-audit&provider=live&panel=list',
+      '#activity?result=ok&table=x_item&q=Ada&httpStatus=4xx&auditKind=api&auditId=fx-audit&provider=live',
+      'Activity',
+    );
+    await land('logs?type=plugin', '#activity?tab=log&type=plugin', 'Activity');
+    await land(
+      `trace?traceId=${api.traceId}&spanId=${root.spanId}&kind=http`,
+      `#activity/${api.traceId}/${root.spanId}?kind=http`,
+      'Activity',
+    );
+    await land('trace?hasErrors=true', '#activity?hasErrors=true', 'Activity');
+    await land('dashboard?panel=blocking', '#health?panel=dashboard-blocking', 'Health');
+    await page.waitForFunction(() => document.querySelector('[data-ui-section="dashboard-blocking"]')?.open === true);
+    await land('overview', '#home', 'Home');
+    assert.deepEqual(errors, []);
+  },
+);
+
+test(
+  'Home guides the first run, Health counters and the places that change things link into Activity',
   { timeout: 90_000 },
   async (t) => {
     const traces = createTraceStore({ settings: { level: 'summary' } });
     recordTraffic(traces);
-    recordTraffic(traces, 'POST /_api/x_items');
-    const { origin, calls } = await host(t, {
-      state: structuredClone(TRACE_STATE),
-      status: { docs, routes: [...POWER_PAGES_ROUTES, '/trace'], eventChannels: ['logs', 'trace'] },
-      traces,
-    });
-    const { page, errors } = await open(t, origin, '#trace');
-    const rows = page.locator('table[data-table="trace-list"] tbody tr');
-    await rows.nth(3).waitFor();
-    // A host that lists the logs channel keeps Live logs in the sidebar (F29).
-    await page.locator('#navigation').getByRole('link', { name: 'Live logs', exact: true }).waitFor();
-
-    // R2C-1: a typed but unapplied filter and an applied one are both gone after Reset; the next Apply sends none.
-    // The filters start collapsed while none is active; once opened they stay open.
-    await page.locator('[data-ui-section="trace:filters"] > summary').click();
-    await page.getByLabel('Span kind').selectOption('webapi');
-    await page.getByRole('button', { name: 'Apply filters' }).click();
-    await page.waitForFunction(() => location.hash === '#trace?kind=webapi');
-    await page.getByLabel('Table', { exact: true }).fill('account');
-    const listed = (query) => page.waitForResponse((response) => response.url().endsWith(`/__sim/api/trace?${query}`));
-    await Promise.all([listed('page=1&pageSize=10'), page.getByRole('button', { name: 'Reset filters' }).click()]);
-    await rows.nth(3).waitFor();
-    await page.waitForFunction(
-      () =>
-        document.querySelector('#trace-kind')?.value === '' && document.querySelector('#trace-entity')?.value === '',
-    );
-    const before = listCalls(calls).length;
-    await page.getByRole('button', { name: 'Apply filters' }).focus();
-    await Promise.all([listed('page=1&pageSize=10'), page.keyboard.press('Enter')]);
-    assert.equal(await page.evaluate(() => location.hash), '#trace');
-    assert.deepEqual(listCalls(calls).slice(before), ['GET /__sim/api/trace?page=1&pageSize=10']);
-    // R2C-8: the keyboard user stays on Apply after the re-render.
-    await page.waitForFunction(() => document.activeElement?.id === 'trace-apply');
-    // A deep link replaces a typed value too.
-    await page.getByLabel('Table', { exact: true }).fill('account');
-    await page.evaluate(() => {
-      location.hash = 'trace?kind=http';
-    });
-    await page.waitForFunction(
-      () =>
-        document.querySelector('#trace-kind')?.value === 'http' &&
-        document.querySelector('#trace-entity')?.value === '',
-    );
-    await page.getByRole('button', { name: 'Remove filter Span kind: http' }).click();
-    await page.waitForFunction(() => location.hash === '#trace');
-    await rows.nth(3).waitFor();
-
-    // Sorting by span count: descending first, then ascending on the second click; focus stays on the heading.
-    // The click updates the hash at once but renders only when the sorted list arrives, and the newest trace
-    // (a POST) already leads the default order: the heading's aria-sort is the signal that the sorted list rendered.
-    const sortedBySpans = (order) =>
-      page.waitForFunction(
-        (value) => document.querySelector('th:has(#trace-sort-spans)')?.getAttribute('aria-sort') === value,
-        order,
-      );
-    await page.locator('#trace-sort-spans').click();
-    await sortedBySpans('descending');
-    assert.equal(await page.evaluate(() => location.hash), '#trace?sort=spans&order=desc');
-    assert.ok((await rows.first().innerText()).includes('POST /_api/x_items'));
-    await page.locator('#trace-sort-spans').click();
-    await sortedBySpans('ascending');
-    assert.equal(await page.evaluate(() => location.hash), '#trace?sort=spans&order=asc');
-    assert.ok((await rows.first().innerText()).includes('GET /fx-page'));
-    assert.equal(await page.evaluate(() => document.activeElement?.id), 'trace-sort-spans');
-    assert.ok(calls.includes('GET /__sim/api/trace?sort=spans&order=asc&page=1&pageSize=10'));
-
-    // Compare the two POST traces: every span matches, so the summary counts three matching spans.
-    const posts = rows.filter({ hasText: 'POST /_api/x_items' });
-    await posts.nth(0).getByRole('checkbox').check();
-    await posts.nth(1).getByRole('checkbox').check();
-    assert.deepEqual(await undescribed(page), []);
-    await page.getByRole('button', { name: 'Compare the 2 ticked traces' }).click();
-    const compare = page.locator('[data-ui-section="trace:compare"]');
-    await compare.locator('.ui-compare ul.ui-tree').nth(1).waitFor();
-    assert.match(await page.evaluate(() => location.hash), /&compare=[^&]+%2C[^&]+$/);
-    assert.equal(await compare.locator('dt:text-is("Matching spans") + dd').innerText(), '3');
-    assert.equal(await compare.locator('.ui-compare .ui-badge', { hasText: /^only in/ }).count(), 0);
-    assert.equal(await compare.locator('dt:text-is("Only in B (added)") + dd').innerText(), '0');
-    await compare.getByRole('button', { name: 'Close comparison' }).click();
-    await compare.waitFor({ state: 'detached' });
-
-    // Span search inside a trace: the matching span and its parent stay, the rest is hidden; typing keeps focus.
-    await posts
-      .first()
-      .getByRole('button', { name: /^Open trace/ })
-      .click();
-    const waterfall = page.locator('ol.ui-waterfall > li');
-    await waterfall.nth(2).waitFor();
-    await page.getByLabel('Find spans').pressSequentially('webapi');
-    await page.waitForFunction(() => document.querySelectorAll('ol.ui-waterfall > li').length === 2);
-    assert.equal(await page.evaluate(() => document.activeElement?.id), 'trace-span-search');
-    assert.equal(await page.getByLabel('Find spans').inputValue(), 'webapi');
-    await page.locator('.ui-span-tools').getByText('1 of 3 spans match').waitFor();
-    assert.match(await page.evaluate(() => location.hash), /&spanSearch=webapi/);
-    assert.equal(await page.locator('ol.ui-waterfall > li.is-context').count(), 1);
-    assert.deepEqual(await undescribed(page), []);
-
-    // Export: NDJSON by default (one trace per line), JSON once chosen; both stream from the export route.
-    const download = async () => {
-      const [file] = await Promise.all([
-        page.waitForEvent('download'),
-        page.getByRole('link', { name: 'Export filtered traces' }).click(),
-      ]);
-      return fs.readFile(await file.path(), 'utf8');
-    };
-    const lines = (await download()).trim().split('\n');
-    assert.equal(lines.length, 4);
-    assert.ok(lines.every((line) => JSON.parse(line).trace.traceId));
-    await page.getByLabel('Export as').selectOption('json');
-    await page.waitForFunction(() => document.querySelector('#trace-export')?.href.includes('format=json'));
-    const exported = JSON.parse(await download());
-    assert.equal(exported.traces.length, 4);
-    assert.ok(calls.some((call) => call.startsWith('GET /__sim/api/trace/export?') && call.includes('format=json')));
-    assert.deepEqual(errors, []);
-  },
-);
-
-test(
-  'trace settings show the level saved elsewhere, not the radio clicked before (R2C-1)',
-  { timeout: 60_000 },
-  async (t) => {
-    const traces = createTraceStore({ settings: { level: 'summary' } });
-    recordTraffic(traces);
     const { origin } = await host(t, {
-      state: structuredClone(TRACE_STATE),
+      state: structuredClone(MONITOR_STATE),
       status: { docs, routes: [...POWER_PAGES_ROUTES, '/trace'], eventChannels: ['logs', 'trace'] },
       traces,
     });
-    const { page, errors } = await open(t, origin, '#trace?panel=settings');
-    await page.waitForFunction(() => document.querySelector('[data-ui-section="trace:settings"]')?.open === true);
-    await page.getByLabel('full', { exact: true }).check();
-    // The level changes through the API (another tab, the CLI), then the view refreshes.
-    traces.configure({ level: 'off' });
-    await page.getByRole('button', { name: 'Refresh traces' }).click();
-    await page.getByText('Tracing is off: new requests are not recorded.', { exact: false }).waitFor();
-    assert.equal(await page.getByLabel('off', { exact: true }).isChecked(), true);
-    assert.equal(await page.getByLabel('full', { exact: true }).isChecked(), false);
+    const { page, errors } = await open(t, origin, '#home');
+    // Home: the checklist states what is done from what the runtime reports; runtime facts are in Runtime state.
+    // Every row has a state from a fact (DV-N4-14): 3 portal requests since start mean the portal was opened; the
+    // last step is done once this browser opened Activity. The counter counts the rows.
+    const steps = () =>
+      page
+        .locator('[data-panel="checklist"] li .row-title')
+        .evaluateAll((items) => items.map((item) => item.textContent.trim().replace(/\s+/g, ' ')));
+    const counter = () => page.locator('[data-panel="checklist"] .panel-heading .badge').innerText();
+    await page
+      .locator('[data-panel="checklist"]')
+      .getByText('3 portal requests since start', { exact: false })
+      .waitFor();
+    assert.deepEqual(await steps(), [
+      'Done Portal sources loaded 1 page in the export',
+      'Done Records to work with 2 records · 14 tables',
+      'Done Open the portal 3 portal requests since start',
+      'To do Sign in as a test person Not signed in',
+      'To do See what happened 1 finding to review',
+    ]);
+    assert.equal(await counter(), '3 of 5 done');
+    await nav(page, 'Activity');
+    await page.getByRole('heading', { name: 'Activity', exact: true }).waitFor();
+    await nav(page, 'Home');
+    await page.waitForFunction(
+      () => document.querySelector('[data-panel="checklist"] .panel-heading .badge')?.textContent === '4 of 5 done',
+    );
+    assert.equal((await steps()).at(-1), 'Done See what happened 1 finding to review');
+    await page.locator('[data-panel="checklist"]').getByRole('link', { name: 'Findings →' }).waitFor();
+    await page.locator('[data-panel="sign-in"] dt', { hasText: 'Sign-in route' }).waitFor();
+    assert.equal(await page.getByRole('heading', { name: 'Runtime & persistence' }).count(), 0);
+    assert.equal(await page.getByRole('heading', { name: 'Workspace configuration' }).count(), 0);
+    assert.deepEqual(await undescribed(page), []);
+    await nav(page, 'Runtime state');
+    await page.getByRole('heading', { name: 'Workspace configuration' }).waitFor();
+
+    // Health: each counter opens the matching activity; the request feed is gone.
+    await nav(page, 'Health');
+    await page.locator('[data-kpi="plugins"] .dm-kpi-link').click();
+    await page.waitForFunction(() => location.hash === '#activity?kind=plugin-step');
+    await nav(page, 'Health');
+    await page.locator('[data-kpi="diagnostics"] .dm-kpi-link').waitFor();
+    assert.equal(await page.locator('[data-kpi="webApi"] .dm-kpi-label').innerText(), 'Dataverse Web API');
+    assert.equal(await page.getByText('What is happening').count(), 0);
+    assert.equal(
+      await page.locator('[data-kpi="diagnostics"] .dm-kpi-link').getAttribute('href'),
+      '#activity?tab=findings',
+    );
+
+    // Backend operations: each row opens its recent activity (plug-in steps and flows by their actor).
+    await nav(page, 'Backend operations');
+    await page.locator('[data-operation-row]').first().waitFor();
+    const hrefs = Object.fromEntries(
+      await page
+        .locator('[data-operation-row]')
+        .evaluateAll((rows) =>
+          rows.map((row) => [
+            row.dataset.operationRow,
+            row.querySelector('a[href^="#activity"]')?.getAttribute('href'),
+          ]),
+        ),
+    );
+    assert.deepEqual(hrefs, {
+      'plugin-step:fx-step': '#activity?kind=plugin-step&actorKind=plugin&actorId=fx-step&whoName=Invented.Step',
+      'cloud-flow:fx-flow': '#activity?kind=flow-run&actorKind=flow&actorId=fx-flow&whoName=Invented+flow',
+      'server-logic:fx-logic': '#activity?kind=server-logic&q=fx-logic',
+    });
+    assert.deepEqual(await clippedControls(page), []);
+    // At phone width the table fits its frame: headings (with their (i) help) and cells wrap, actions stack.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(() => innerWidth === 390);
+    assert.deepEqual(
+      await page.evaluate(() => {
+        const frame = document.querySelector('table[data-table="operations"]').closest('.ui-table-wrap');
+        return [frame.scrollWidth <= frame.clientWidth, document.documentElement.scrollWidth <= innerWidth];
+      }),
+      [true, true],
+    );
+    assert.deepEqual(await clippedControls(page), []);
+    await page.setViewportSize({ width: 1280, height: 900 });
+
+    // Organization identity & API: the request ring is a count with links into Activity, not a fifth request list.
+    await nav(page, 'Organization identity & API');
+    await page
+      .locator('[data-panel="dv-requests"]')
+      .getByText('2 requests on the Dataverse origin (newest 500)', { exact: false })
+      .waitFor();
+    assert.equal(
+      await page.getByRole('link', { name: 'Activity of the Dataverse API →' }).getAttribute('href'),
+      '#activity?host=dataverse-api',
+    );
+    assert.equal(
+      await page.getByRole('link', { name: 'Failed requests →' }).getAttribute('href'),
+      '#activity?host=dataverse-api&result=error,denied',
+    );
+    assert.equal(await page.locator('table[data-table="dv-requests"]').count(), 0);
+
+    // Portal identity & permissions: the selected persona opens what that person did.
+    await nav(page, 'Portal identity & permissions');
+    assert.equal(
+      await page.getByRole('link', { name: 'Activity of Invented Contact →' }).getAttribute('href'),
+      '#activity?who=fx-contact',
+    );
+
+    // Data records: a record opens the activity on it.
+    await page.evaluate(() => {
+      location.hash = 'records?entity=x_item';
+    });
+    await page
+      .getByRole('link', { name: 'Activity of record fx-item-1' })
+      .and(page.locator('[href="#activity?table=x_item&recordId=fx-item-1"]'))
+      .waitFor();
+    assert.deepEqual(await clippedControls(page), []);
     assert.deepEqual(errors, []);
   },
 );
 
 test(
-  'a standalone host that lists the trace channel follows Live and hides Live logs (F29, F31)',
+  'at phone width the navigation collapses behind Menu and every view starts on the first screen',
   { timeout: 60_000 },
+  async (t) => {
+    const { origin } = await host(t, {
+      state: structuredClone(MONITOR_STATE),
+      status: { docs, routes: POWER_PAGES_ROUTES },
+    });
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    t.after(() => context.close());
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto(`${origin}/__sim/#home`);
+    await page.getByRole('heading', { name: 'Home', exact: true }).waitFor();
+    const firstScreen = () =>
+      page.evaluate(() => {
+        const box = document.querySelector('#view-title').getBoundingClientRect();
+        return box.top >= 0 && box.bottom <= innerHeight;
+      });
+    const menu = page.getByRole('button', { name: 'Menu' });
+    assert.equal(await menu.getAttribute('aria-expanded'), 'false');
+    assert.equal(await page.locator('#navigation').isVisible(), false);
+    assert.equal(await firstScreen(), true, 'Home starts on the first screen');
+    await menu.click();
+    assert.equal(await menu.getAttribute('aria-expanded'), 'true');
+    await page.locator('#navigation').getByRole('link', { name: 'Health', exact: true }).click();
+    await page.getByRole('heading', { name: 'Health', exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelector('#nav-toggle').getAttribute('aria-expanded') === 'false');
+    assert.equal(await page.locator('#navigation').isVisible(), false, 'choosing a view closes the menu');
+    assert.equal(await firstScreen(), true, 'Health starts on the first screen');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    assert.deepEqual(errors, []);
+  },
+);
+
+// D-M-6 / D-M-7: every view starts with its content, keeps its prose behind (i) icons and fits the window.
+const LIST_VIEWS = new Set(['flows', 'records', 'operations']);
+test(
+  'every view: content at the top, at most 280 characters of prose, list rows right under the toolbar, no sideways scroll',
+  { timeout: 240_000 },
   async (t) => {
     const traces = createTraceStore({ settings: { level: 'summary' } });
     recordTraffic(traces);
-    const { origin, calls } = await host(t, {
-      state: {
-        csrf: 'fixture-csrf',
-        capabilities: { powerPages: false },
-        config: { platformSettings: [] },
-        data: {},
-        docs,
-        status: { routes: ['/dashboard', '/state', '/status', '/trace'], eventChannels: ['trace'] },
+    // Scenario-sized values (DV-N4c-2): a record with six long columns and long column names and platform settings with long texts.
+    const state = structuredClone(MONITOR_STATE);
+    // Data records opens on contact here.
+    state.data.contact = [
+      {
+        contactid: '73887d67-7fb7-55b4-9677-0b591a803c0f',
+        fullname: 'Invented contact with a long name',
+        x_defaultvalue: 'https://inventedvault.example.test/secrets/x',
+        x_environmentvariableschemaname: 'x_invented_long_schema_name_of_it',
+        x_environmentvariabledisplayname: 'Invented display name of the item',
+        x_environmentvariablesecretstore: 100000005,
       },
+    ];
+    state.config.platformSettings = ['QueryLinkEntityLimit', 'MaxUploadFileSize', 'BlockedAttachments'].map((key) => ({
+      key,
+      description:
+        'Invented organization-wide support-managed budget. Raising it here simulates an approved support change for this runtime only.',
+      access: 'Microsoft support request',
+      coverage: 'FetchXML and SDK QueryExpression joins and attachment writes',
+      origin: 'Default / not configured',
+      type: 'integer',
+      min: 1,
+      max: 99_999_999,
+      value: 5_242_880,
+      sourceValue: 5_242_880,
+    }));
+    const { origin } = await host(t, {
+      state,
+      status: { docs, routes: [...POWER_PAGES_ROUTES, '/trace'], eventChannels: ['logs', 'trace'] },
       traces,
     });
-    const { page, errors } = await open(t, origin, '#trace');
-    const rows = page.locator('table[data-table="trace-list"] tbody tr');
-    await rows.nth(1).waitFor();
-    assert.equal(await page.locator('#navigation').getByRole('link', { name: 'Live logs', exact: true }).count(), 0);
-    await page.getByRole('button', { name: 'Live: off' }).click();
-    await page.locator('.ui-toolbar').getByText('Streaming').waitFor();
-    recordTraffic(traces, 'POST /_api/x_standalone');
-    await rows.filter({ hasText: 'POST /_api/x_standalone' }).waitFor();
-    assert.equal(
-      calls.some((call) => call.startsWith('GET /__sim/events?channels=logs')),
-      false,
+    const { page, errors } = await open(t, origin, '#home');
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const views = await page
+      .locator('#navigation a')
+      .evaluateAll((links) =>
+        links.map((link) => [link.getAttribute('href').slice(1), link.lastChild.textContent.trim()]),
+      );
+    assert.ok(views.length >= 18, `${views.length} views`);
+    const failures = [];
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: width < 500 ? 844 : 1000 });
+      for (const [id, label] of views) {
+        await page.evaluate((hash) => {
+          location.hash = hash;
+        }, id);
+        await page.waitForFunction(
+          (name) =>
+            document.querySelector('#view-title')?.textContent === name &&
+            !document.querySelector('#content [role="status"]')?.textContent.startsWith('Loading') &&
+            document.querySelector('#activity-feedback')?.hidden !== false,
+          label,
+        );
+        const m = await page.evaluate(measureView);
+        if (m.scrollX) failures.push(`${id} @${width}: scrolls sideways`);
+        if (m.infoPairs.length) failures.push(`${id} @${width}: two (i) side by side: ${m.infoPairs.join(', ')}`);
+        // DV-N4c-2: at 1440 every table fits its frame, row actions included (a phone scrolls inside the frame).
+        if (width === 1440 && m.frames.length)
+          failures.push(`${id}: table frame scrolls sideways: ${m.frames.join(', ')}`);
+        // DV-N4b-9: on a phone the content starts within the first quarter of the screen (Activity's own phone
+        // layout is measured by activity-e2e, which owns that view).
+        if (width !== 1440) {
+          if (id !== 'activity' && (m.firstY === null || m.firstY > 844 * 0.25))
+            failures.push(`${id} @390: first content (${m.first}) at y=${m.firstY} (limit ${844 * 0.25})`);
+          continue;
+        }
+        if (m.firstY === null || m.firstY > 250) failures.push(`${id}: first content at y=${m.firstY} (limit 250)`);
+        if (m.prose > 280) failures.push(`${id}: ${m.prose} characters of prose (limit 280): ${m.parts.join(' | ')}`);
+        if (LIST_VIEWS.has(id) && (m.firstRowY === null || m.firstRowY > 180))
+          failures.push(`${id}: first data row at y=${m.firstRowY} (limit 180)`);
+      }
+    }
+    assert.deepEqual(failures, []);
+    assert.deepEqual(errors, []);
+  },
+);
+
+// D-M-8: every converted table is the shared table: its headers sort (aria-sort) and ↑/↓ move between rows.
+test(
+  'the shared table sorts by a header click on every converted view and moves between rows with the arrow keys',
+  { timeout: 180_000 },
+  async (t) => {
+    const state = structuredClone(MONITOR_STATE);
+    Object.assign(state.config, {
+      mappings: [
+        { logicalName: 'x_beta', entitySet: 'x_betas', idColumn: 'x_betaid' },
+        { logicalName: 'x_alpha', entitySet: 'x_alphas', idColumn: 'x_alphaid' },
+      ],
+      endpoints: [
+        { id: 'e2', path: '/beta', method: 'GET', mode: 'local', status: 200 },
+        { id: 'e1', path: '/alpha', method: 'POST', mode: 'live', status: 201 },
+      ],
+      plugins: [
+        { id: 'p2', name: 'Zeta rule', entity: 'x_item', operations: ['create'], enabled: true },
+        { id: 'p1', name: 'Alpha rule', entity: 'contact', operations: ['update'], enabled: false },
+      ],
+      scenarios: [
+        { id: 's2', name: 'Second scenario', permissionMode: 'enforce' },
+        { id: 's1', name: 'First scenario', permissionMode: 'permissive' },
+      ],
+      platformSettings: [
+        { key: 'ZetaLimit', description: 'Invented zeta.', type: 'integer', min: 1, max: 9, value: 2, sourceValue: 2 },
+        {
+          key: 'AlphaLimit',
+          description: 'Invented alpha.',
+          type: 'integer',
+          min: 1,
+          max: 9,
+          value: 1,
+          sourceValue: 1,
+        },
+      ],
+      portalSettings: [
+        { id: 'b', name: 'Beta/setting', value: '2', sourceValue: '2' },
+        { id: 'a', name: 'Alpha/setting', value: '1', sourceValue: '1' },
+      ],
+    });
+    state.data.x_item = [
+      { x_itemid: 'fx-item-2', x_name: 'Zulu item' },
+      { x_itemid: 'fx-item-1', x_name: 'Alpha item' },
+    ];
+    const { origin } = await host(t, {
+      state,
+      status: {
+        docs,
+        routes: [...POWER_PAGES_ROUTES, '/platform-settings', '/trace'],
+        eventChannels: ['logs', 'trace'],
+      },
+      traces: createTraceStore({ settings: { level: 'summary' } }),
+      dataverse: {
+        enabled: true,
+        applications: [
+          { appId: 'app-b', displayName: 'Zeta app', allowedGrants: ['client_credentials'] },
+          { appId: 'app-a', displayName: 'Alpha app', allowedGrants: ['client_credentials'] },
+        ],
+        users: [],
+        roles: [],
+        grantTypes: ['client_credentials'],
+        workflows: [],
+      },
+    });
+    const { page, errors } = await open(t, origin, '#home');
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    // [hash, table, sort key, first column text ascending]
+    const cases = [
+      ['records?entity=x_item', 'records', 'x_name', ['Alpha item', 'Zulu item'], 1],
+      ['mappings', 'mappings', 'logicalName', ['x_alpha', 'x_beta']],
+      ['endpoints', 'endpoints', 'path', ['/alpha', '/beta']],
+      ['plugins', 'plugins', 'name', ['Alpha rule', 'Zeta rule']],
+      ['scenarios', 'scenarios', 'name', ['First scenario', 'Second scenario']],
+      ['platform', 'platform-settings', 'key', ['AlphaLimit', 'ZetaLimit']],
+      ['portal', 'portal-settings', 'name', ['Alpha/setting', 'Beta/setting']],
+      ['dataverse', 'dv-applications', 'displayName', ['Alpha app', 'Zeta app']],
+      ['operations', 'operations', 'name', ['fx-logic', 'Invented flow', 'Invented.Step']],
+    ];
+    for (const [hash, table, key, ascending, column = 0] of cases) {
+      await page.evaluate((target) => {
+        location.hash = target;
+      }, hash);
+      const header = page.locator(`[data-table-sort="${table}"][data-sort-key="${key}"]`);
+      await header.waitFor();
+      const firstColumn = () =>
+        page
+          .locator(`table[data-table="${table}"] tbody tr`)
+          .evaluateAll((rows, index) => rows.map((row) => row.cells[index]?.textContent.trim()), column);
+      const sorted = (order) =>
+        page.waitForFunction(
+          ([name, sortKey, value]) =>
+            document
+              .querySelector(`[data-table-sort="${name}"][data-sort-key="${sortKey}"]`)
+              ?.closest('th')
+              ?.getAttribute('aria-sort') === value,
+          [table, key, order],
+        );
+      await header.click();
+      await sorted('ascending');
+      const up = await firstColumn();
+      assert.deepEqual(
+        up.map((text) => ascending.find((value) => text.startsWith(value))),
+        ascending,
+        `${table} ascending`,
+      );
+      await page.locator(`[data-table-sort="${table}"][data-sort-key="${key}"]`).click();
+      await sorted('descending');
+      const down = await firstColumn();
+      assert.deepEqual(
+        down.map((text) => ascending.find((value) => text.startsWith(value))),
+        [...ascending].reverse(),
+        `${table} descending`,
+      );
+      // The shared look: the bottom controls bar holds the count.
+      assert.match(
+        await page
+          .locator(`.ui-data-table:has(table[data-table="${table}"]) .ui-table-foot .ui-table-count`)
+          .innerText(),
+        new RegExp(`^${ascending.length} results`),
+      );
+    }
+    // Keyboard: ↓ moves from a row's Edit to the next row's Edit, ↑ back.
+    await page.evaluate(() => {
+      location.hash = 'mappings';
+    });
+    const edits = page.locator('table[data-table="mappings"] tbody tr [data-edit]');
+    await edits.nth(1).waitFor();
+    await edits.nth(0).focus();
+    await page.keyboard.press('ArrowDown');
+    assert.equal(await edits.nth(1).evaluate((node) => node === document.activeElement), true);
+    await page.keyboard.press('ArrowUp');
+    assert.equal(await edits.nth(0).evaluate((node) => node === document.activeElement), true);
+    assert.deepEqual(errors, []);
+  },
+);
+
+// DV-N4c-1: every shared table on every view sorts by each data column: header buttons with aria-sort, ascending
+// then descending order of what the column shows. Fixtures give the module tables (packs, services, flows,
+// capabilities, environment variables) two rows or more.
+test(
+  'every shared table has its search, its filters and the bottom bar, and with two rows or more sorts by any data column',
+  { timeout: 240_000 },
+  async (t) => {
+    const state = structuredClone(MONITOR_STATE);
+    state.capabilityReport = {
+      modules: [
+        { name: 'fx-zeta', kind: 'operation', level: 'inventory', operations: [] },
+        { name: 'fx-alpha', kind: 'organization-module', level: 'behaviour', source: 'fx', operations: [{}, {}] },
+      ],
+      missing: [],
+      unsupported: [
+        { id: 'fx-zeta', level: 'inventory', reason: 'Placeholder' },
+        { id: 'fx-beta', level: 'contract', reason: 'Mock' },
+      ],
+    };
+    const base = dashboard();
+    base.nodes.push(
+      {
+        id: 'provider:connectors',
+        kind: 'provider',
+        label: 'Connector runtime',
+        status: 'ready',
+        detail: {
+          providers: [
+            { id: 'fx-zulu', kind: 'mock', level: 'contract', ready: true },
+            { id: 'fx-alpha', kind: 'local', level: 'behaviour', ready: true },
+          ],
+        },
+      },
+      {
+        id: 'org:plugins',
+        kind: 'org',
+        label: 'Business logic',
+        status: 'ready',
+        detail: {
+          webhooks: [
+            { name: 'Zeta hook', host: '127.0.0.1' },
+            { name: 'Alpha hook', host: 'localhost' },
+          ],
+        },
+      },
     );
+    base.activity.asyncOperations = { byState: { Waiting: 1, Succeeded: 12, Failed: 3 } };
+    const packsBody = structuredClone(packs);
+    packsBody.packs.push({ ...structuredClone(packs.packs[0]), id: 'fx-alpha-pack', name: 'Alpha pack' });
+    packsBody.library.push({ id: 'fx-alpha', name: 'Alpha preset', pack: 'fx-alpha-pack', source: 'pack' });
+    const { origin } = await host(t, {
+      state,
+      status: { docs, routes: POWER_PAGES_ROUTES },
+      answers: {
+        '/dashboard': () => ({ ...base, generatedAt: new Date().toISOString() }),
+        '/packs': packsBody,
+        '/messages': {
+          configured: true,
+          entities: [
+            { entity: 'fx-zulu', stats: { active: 2, locked: 0, scheduled: 0, deadLettered: 0 } },
+            { entity: 'fx-alpha', stats: { active: 10, locked: 1, scheduled: 0, deadLettered: 0 } },
+          ],
+          endpoints: {},
+        },
+        '/environment': {
+          environmentVariables: {
+            available: true,
+            definitions: [
+              { schemaname: 'x_zeta', displayname: 'Zeta', type: 'String', defaultvalue: 'z' },
+              { schemaname: 'x_alpha', displayname: 'Alpha', type: 'String', defaultvalue: 'a' },
+            ],
+          },
+        },
+      },
+    });
+    const { page, errors } = await open(t, origin, '#home');
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const views = await page
+      .locator('#navigation a')
+      .evaluateAll((links) =>
+        links.map((link) => [link.getAttribute('href').slice(1), link.lastChild.textContent.trim()]),
+      );
+    const checked = new Set(),
+      audited = new Set(),
+      failures = [];
+    // Every view, Activity included (activity-e2e runs the same rules on each of its tabs).
+    for (const [id, label] of views) {
+      await page.evaluate((hash) => {
+        location.hash = hash;
+      }, id);
+      await page.waitForFunction(
+        (name) =>
+          document.querySelector('#view-title')?.textContent === name &&
+          !document.querySelector('#content [role="status"]')?.textContent.startsWith('Loading'),
+        label,
+      );
+      // Tables with two data rows or more, and their data columns (not the row-action column); closed sections open.
+      await page.evaluate(() => {
+        for (const section of document.querySelectorAll('#content details')) section.open = true;
+      });
+      // D-M-11 table parity, per table (empty ones included): a search box in its toolbar row, "Filters" when more
+      // than one column filters, and the bottom bar with the count, rows per page and Previous/Next. The page's main
+      // list (Data records, Flows runs, Backend operations, the Activity tab lists) takes its search and Filters from the
+      // page toolbar row; Data records pages
+      // on the runtime, where its toolbar search covers every column, so it has no column filters.
+      const parity = await page.evaluate(() => {
+        const chrome = document.querySelector('#content .ui-page-chrome');
+        return [...document.querySelectorAll('#content .ui-data-table')]
+          .filter((wrap) => wrap.checkVisibility())
+          .map((wrap) => {
+            const id = wrap.dataset.dataTable,
+              main = [
+                'records',
+                'flow-runs',
+                'operations',
+                'activity-list',
+                'activity-log',
+                'activity-findings',
+                'activity-pages',
+              ].includes(id);
+            const bar = wrap.querySelector(':scope > .ui-table-bar'),
+              foot = wrap.querySelector(':scope > .ui-table-foot');
+            const problems = [];
+            if (!bar?.querySelector('[data-table-search]') && !(main && chrome?.querySelector('input[type="search"]')))
+              problems.push('no search box');
+            if (
+              id !== 'records' &&
+              wrap.querySelectorAll('thead .ui-sort').length > 1 &&
+              !bar?.querySelector('[data-filter-toggle]') &&
+              !(main && chrome?.querySelector('[data-filter-toggle]'))
+            )
+              problems.push('no Filters');
+            if (!foot?.querySelector('.ui-table-count')) problems.push('no count');
+            if (!foot?.querySelector('[data-table-size]')) problems.push('no rows per page');
+            if (foot?.querySelectorAll('[data-table-page]').length !== 2) problems.push('no Previous/Next');
+            return [id, problems];
+          });
+      });
+      for (const [table, problems] of parity) {
+        audited.add(table);
+        if (problems.length) failures.push(`${id} › ${table}: ${problems.join(', ')}`);
+      }
+      const tables = await page.evaluate(() =>
+        [...document.querySelectorAll('#content .ui-data-table')]
+          .filter((wrap) => wrap.checkVisibility() && wrap.querySelectorAll('tbody tr').length > 1)
+          .map((wrap) => ({
+            id: wrap.dataset.dataTable,
+            columns: [...wrap.querySelectorAll('thead th')].map((th, index) => ({
+              index,
+              label: th.textContent.trim(),
+              sortable: Boolean(th.querySelector('.ui-sort')),
+              key: th.querySelector('.ui-sort')?.dataset.sortKey ?? null,
+              actions: th.textContent.trim() === 'Actions' || /actions/.test(th.className),
+            })),
+          })),
+      );
+      for (const table of tables) {
+        checked.add(table.id);
+        for (const column of table.columns)
+          if (
+            !column.sortable &&
+            !column.actions &&
+            column.label &&
+            !/^(Provenance|Instance override)/.test(column.label)
+          )
+            failures.push(`${id} › ${table.id}: "${column.label}" does not sort`);
+        // A column sorted by what it shows (a key of its own may sort by a value it does not show: aria-sort only).
+        const column =
+          table.columns.find((item) => item.key?.startsWith('col-')) ?? table.columns.find((item) => item.sortable);
+        if (!column) continue;
+        const header = page.locator(`[data-data-table="${table.id}"] thead th`).nth(column.index);
+        const shown = () =>
+          page
+            .locator(`[data-data-table="${table.id}"] tbody tr`)
+            .evaluateAll(
+              (rows, index) => rows.map((row) => row.cells[index]?.innerText.replace(/\s+/g, ' ').trim() ?? ''),
+              column.index,
+            );
+        const inOrder = (values, order) =>
+          values.every(
+            (value, index) =>
+              !index ||
+              (order === 'ascending' ? 1 : -1) * values[index - 1].localeCompare(value, undefined, { numeric: true }) <=
+                0,
+          );
+        for (const order of ['ascending', 'descending']) {
+          await header.locator('.ui-sort').click();
+          await page.waitForFunction(
+            ([name, index, value]) =>
+              document.querySelectorAll(`[data-data-table="${name}"] thead th`)[index]?.getAttribute('aria-sort') ===
+              value,
+            [table.id, column.index, order],
+          );
+          const values = await shown();
+          if (column.key.startsWith('col-') && !inOrder(values, order))
+            failures.push(`${id} › ${table.id} ${order}: ${values.join(' | ')}`);
+        }
+      }
+    }
+    // The tables DV-N4c-1 named that this fixture fills were among the checked ones.
+    for (const name of [
+      'packs-registered',
+      'packs-library',
+      'svc-connector-providers',
+      'svc-entities',
+      'flow-async',
+      'flow-webhooks',
+      'cap-modules',
+      'cap-unsupported',
+      'environment-variables',
+    ])
+      if (!checked.has(name)) failures.push(`${name} was not shown with two rows`);
+    assert.ok(audited.size >= 25, `${audited.size} tables audited`);
+    // A column filter applies from its drawer, shows a chip, and the chip removes it.
+    await page.evaluate(() => {
+      location.hash = 'packs';
+    });
+    const registered = page.locator('table[data-table="packs-registered"] tbody tr');
+    await registered.nth(1).waitFor();
+    await page.locator('[data-data-table="packs-registered"] [data-filter-toggle]').click();
+    await page.getByRole('searchbox', { name: 'Name', exact: true }).fill('Alpha');
+    await page.getByRole('button', { name: 'Apply filters', exact: true }).click();
+    await page.waitForFunction(
+      () => document.querySelectorAll('table[data-table="packs-registered"] tbody tr').length === 1,
+    );
+    assert.match(await registered.first().innerText(), /Alpha pack/);
+    assert.match(
+      await page.locator('[data-data-table="packs-registered"] [data-filter-toggle]').innerText(),
+      /^Filters · 1$/,
+    );
+    await page.getByRole('button', { name: 'Remove filter Name: Alpha', exact: true }).click();
+    await registered.nth(1).waitFor();
+    assert.deepEqual(failures, []);
+    assert.deepEqual(errors, []);
+  },
+);
+
+// DV-N4c-3/4/5: on Health the banner's Errors counts failed activities (the rows its link lists), Expand draws each
+// tile's stats-route timeline since start (a gauge says why it has none, Findings graphs /diagnostics), and every
+// (i) sits on the line of what it explains.
+test(
+  'Health: Errors counts failed activities, Expand graphs timelines since start, each (i) beside its label',
+  { timeout: 90_000 },
+  async (t) => {
+    const traces = createTraceStore({ settings: { level: 'summary' } });
+    recordTraffic(traces);
+    // One failed activity with three failed plug-in steps: four failed steps, one failed activity.
+    const failed = traces.start({
+      kind: 'http',
+      name: 'POST /_api/x_items',
+      module: 'portal',
+      operation: 'post',
+      actor: { kind: 'contact', id: 'fx-contact', name: 'Invented Contact' },
+      origin: { host: 'power-pages', portal: 'fx-portal', preset: null },
+      traceId: null,
+      parentSpanId: null,
+    });
+    traces.run(failed, () => {
+      for (const name of ['Invented.Step one', 'Invented.Step two', 'Invented.Step three'])
+        traces.start({ kind: 'plugin-step', name, module: 'plugins', operation: 'create', entity: 'x_item' }).end({
+          status: 'error',
+          error: new Error('Invented step failure.'),
+        });
+    });
+    failed.end({ status: 'error', error: new Error('Invented failure.'), attributes: { statusCode: 500 } });
+    const startedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    const { origin, calls } = await host(t, {
+      state: structuredClone(MONITOR_STATE),
+      status: { docs, routes: [...POWER_PAGES_ROUTES, '/trace', '/diagnostics'], eventChannels: ['logs', 'trace'] },
+      traces,
+      answers: {
+        '/dashboard': () => {
+          const body = dashboard();
+          return { ...body, runtime: { ...body.runtime, startedAt } };
+        },
+        '/diagnostics': {
+          diagnostics: [
+            { code: 'FX_EARLY', count: 3, time: startedAt },
+            { code: 'FX_LATE', count: 1, time: new Date().toISOString() },
+          ],
+        },
+      },
+    });
+    const { page, errors } = await open(t, origin, '#health');
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const strip = page.locator('.dm-strip a[href="#activity?result=error"] strong');
+    await strip.waitFor();
+    assert.equal(await strip.innerText(), '1', 'one failed activity, not four failed steps');
+    assert.equal(
+      (await traces.stats()).overall.errors,
+      4,
+      'the store holds four failed steps, so the banner number is the activity count',
+    );
+
+    await page.locator('[data-dashboard-expand]').click();
+    const trend = (key) => page.locator(`[data-kpi="${key}"] .dm-kpi-trend`);
+    await page.waitForFunction(() =>
+      /requests per \d+ s since start/.test(
+        document.querySelector('[data-kpi="requests"] .dm-kpi-trend')?.textContent ?? '',
+      ),
+    );
+    assert.ok(calls.some((call) => call.startsWith('GET /__sim/api/trace/stats?host=power-pages&depth=0&from=')));
+    assert.ok(calls.some((call) => call.startsWith('GET /__sim/api/trace/stats?kind=plugin-step&from=')));
+    // A real timeline: the requests of this test are in the last bucket, the earlier ones are empty.
+    const heights = await page.locator('[data-kpi="requests"] .dm-spark-line').evaluate((line) =>
+      line
+        .getAttribute('points')
+        .split(' ')
+        .map((point) => Number(point.split(',')[1])),
+    );
+    assert.ok(heights.length > 10, `${heights.length} buckets`);
+    assert.ok(new Set(heights).size > 1, 'the line rises where the requests are');
+    assert.match(await trend('plugins').innerText(), /runs per \d+ s since start/);
+    assert.match(await trend('jobs').innerText(), /^No timeline: a current level/);
+    assert.equal(await page.locator('[data-kpi="jobs"] .dm-spark').count(), 0);
+    assert.match(await trend('diagnostics').innerText(), /findings per \d+ s since start/);
+    assert.equal(await page.locator('[data-kpi="diagnostics"] .dm-spark').count(), 1);
+
+    // Each (i) on the line of its label: the preflight fields and every band count.
+    const sameLine = (selector) =>
+      page.evaluate((query) => {
+        return [...document.querySelectorAll(query)].map((info) => {
+          const owner = info.previousElementSibling ?? info.parentElement;
+          const a = info.getBoundingClientRect(),
+            b = owner.getBoundingClientRect();
+          return a.top < b.bottom && a.bottom > b.top;
+        });
+      }, selector);
+    assert.deepEqual(await sameLine('#dashboard-preflight .ui-field-info'), [true, true]);
+    const bands = await sameLine('.dm-band-health > .ui-info');
+    assert.ok(bands.length > 0 && bands.every(Boolean), `band (i) beside the count: ${bands}`);
+    assert.deepEqual(errors, []);
+  },
+);
+
+// DV-N4d-1: a group's (i) sits in its legend (Portal identity's web-role memberships, Live connection's confinement
+// exceptions) and the group keeps its title as its name; on a phone a panel title keeps its (i) while its button wraps
+// (Entity mappings).
+test(
+  'a fieldset (i) sits beside its legend, and a phone panel title keeps its (i) beside it',
+  { timeout: 90_000 },
+  async (t) => {
+    const state = structuredClone(MONITOR_STATE);
+    state.status.webRoles = [
+      { id: 'fx-role-1', name: 'Invented role' },
+      { id: 'fx-role-2', name: 'Invented reviewers' },
+    ];
+    const { origin } = await host(t, { state, status: { docs, routes: POWER_PAGES_ROUTES } });
+    const { page, errors } = await open(t, origin, '#home');
+    // The (i) and the title share a line: their boxes overlap vertically.
+    const beside = (title, info) =>
+      page.evaluate(
+        ([titleQuery, infoQuery]) => {
+          const a = document.querySelector(titleQuery)?.getBoundingClientRect(),
+            b = document.querySelector(infoQuery)?.getBoundingClientRect();
+          return Boolean(a && b && b.top < a.bottom && b.bottom > a.top && b.left >= a.right - 1);
+        },
+        [title, info],
+      );
+    for (const [hash, fieldset, name] of [
+      ['access', '#persona-roles', 'Contact web-role memberships'],
+      ['connection', '#confinement-options', 'Exceptions while confined'],
+    ]) {
+      await page.evaluate((target) => {
+        location.hash = target;
+      }, hash);
+      await page.locator(`${fieldset} legend .ui-info`).waitFor();
+      assert.equal(
+        await beside(`${fieldset} legend .ui-legend-text`, `${fieldset} legend .ui-info-button`),
+        true,
+        `${name}: (i) beside the legend`,
+      );
+      assert.equal(await page.locator(fieldset).getAttribute('role'), null);
+      assert.equal(await page.getByRole('group', { name, exact: true }).count(), 1, `${name} keeps its name`);
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.evaluate(() => {
+      location.hash = 'mappings';
+    });
+    const heading = page.getByRole('heading', { name: 'Form & view schema overrides', exact: true });
+    await heading.waitFor();
+    const panel = '.panel:has(> .panel-heading [data-add="componentSchemas"])';
+    assert.equal(
+      await beside(`${panel} h2`, `${panel} h2 + :is(.ui-help-inline, .ui-note) .ui-info-button`),
+      true,
+      'title and (i) on one line',
+    );
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     assert.deepEqual(errors, []);
   },
 );

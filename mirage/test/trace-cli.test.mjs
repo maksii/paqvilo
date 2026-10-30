@@ -10,6 +10,7 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createTraceStore } from '../lib/trace-store.mjs';
 import { createTraceChannel, createTraceRoutes } from '../lib/sim-trace-routes.mjs';
+import { writeActivityBundle } from '../lib/sim-activity.mjs';
 import { connectRuntime } from '../testing/runtime.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -50,6 +51,19 @@ async function fixture(t, { endStream = false } = {}) {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     if (await routes(req, res, url)) return;
+    // The Power Pages host's activity bundle over this store (sim-activity.mjs), with an empty audit, log and findings.
+    if (url.pathname === '/_sim/api/activity/export')
+      return writeActivityBundle(res, url.searchParams, {
+        traces,
+        audit: { entries: [] },
+        logs: () => [],
+        diagnostics: () => [],
+        evidence: async () => null,
+        runtime: () => ({ host: 'invented' }),
+      }).catch((error) => {
+        res.writeHead(error.status ?? 500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { code: error.code, message: error.message, parameter: error.parameter } }));
+      });
     if (url.pathname === '/_sim/api/status') {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ sourceDir: null }));
@@ -125,7 +139,7 @@ test('list, show, spans, stats and export read the runtime trace store in one en
 
   const human = await cli('list', '--origin', origin);
   assert.equal(human.status, 0, human.stderr);
-  assert.match(human.stdout, /^STARTED\s+STATUS\s+DURATION/m);
+  assert.match(human.stdout, /^STARTED \(UTC[+-]\d\d:\d\d\)\s+STATUS\s+DURATION/m);
   assert.match(human.stdout, new RegExp(`GET /invented\\s+${page.traceId}`));
   assert.match(human.stdout, /Page 1 of 1; 1 matching, 1 retained, 0 dropped\./);
 
@@ -168,7 +182,7 @@ test('list prints the total duration it sorts by, the actor, the session and the
   const [header, first, second] = listed.stdout.split('\n');
   assert.match(
     header,
-    /^STARTED\s+STATUS\s+DURATION\s+TOTAL\s+SPANS\s+ERRORS\s+DENIED\s+HOST\s+ACTOR\s+SESSION\s+NAME\s+TRACE$/,
+    /^STARTED \(UTC[+-]\d\d:\d\d\)\s+STATUS\s+DURATION\s+TOTAL\s+SPANS\s+ERRORS\s+DENIED\s+HOST\s+ACTOR\s+SESSION\s+NAME\s+TRACE$/,
   );
   const cells = (line) => line.split(/\s{2,}/);
   assert.deepEqual(cells(first).slice(1, 11), [
@@ -186,6 +200,30 @@ test('list prints the total duration it sorts by, the actor, the session and the
   assert.deepEqual(cells(second).slice(1, 8), ['denied', '0 ms', '0 ms', '1', '0', '1', 'anonymous']);
 });
 
+test('list and spans print local time with the zone once in the header; --utc prints the ISO UTC instant', async (t) => {
+  const { origin } = await fixture(t);
+  // The command runs in this process's time zone: the expected local text and offset come from the same clock rules.
+  const pad = (value, width = 2) => String(value).padStart(width, '0');
+  const at = new Date(START);
+  const local = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}.${pad(at.getMilliseconds(), 3)}`;
+  const offset = -new Date().getTimezoneOffset();
+  const zone = `UTC${offset < 0 ? '-' : '+'}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}`;
+  for (const action of ['list', 'spans']) {
+    const [header, row] = (await cli(action, '--origin', origin)).stdout.split('\n');
+    assert.ok(header.startsWith(`STARTED (${zone})`), header);
+    assert.ok(row.startsWith(local), row);
+    assert.equal(/\d{2}:\d{2}:\d{2}\.\d{3}Z/.test(row), false, 'no UTC instant in the local listing');
+    const [utcHeader, utcRow] = (await cli(action, '--utc', '--origin', origin)).stdout.split('\n');
+    assert.ok(utcHeader.startsWith('STARTED (UTC)'), utcHeader);
+    assert.ok(utcRow.startsWith(new Date(START).toISOString()), utcRow);
+  }
+  const misplaced = await failure('stats', '--utc', '--origin', origin);
+  assert.deepEqual(
+    [misplaced.error.code, misplaced.error.message],
+    ['InvalidArguments', '--utc applies to trace list and spans only.'],
+  );
+});
+
 test('record-id, search over event messages and flush reach the runtime', async (t) => {
   const { origin, page, child } = await fixture(t);
   const byRecord = await json('list', '--record-id', `{${RECORD.toUpperCase()}}`, '--origin', origin);
@@ -194,7 +232,10 @@ test('record-id, search over event messages and flush reach the runtime', async 
     [page.traceId],
   );
   const spans = await cli('spans', '--record-id', RECORD, '--origin', origin);
-  assert.match(spans.stdout, /^STARTED\s+KIND\s+STATUS\s+DURATION\s+ENTITY\s+RECORD\s+ACTOR\s+NAME\s+SPAN$/m);
+  assert.match(
+    spans.stdout,
+    /^STARTED \(UTC[+-]\d\d:\d\d\)\s+KIND\s+STATUS\s+DURATION\s+ENTITY\s+RECORD\s+ACTOR\s+NAME\s+SPAN$/m,
+  );
   assert.match(
     spans.stdout,
     new RegExp(`x_item\\s+${RECORD}\\s+contact:Invented Person\\s+Create x_item\\s+${child.spanId}`),
@@ -237,6 +278,40 @@ test('export prints json, ndjson or otlp, bounded by --limit', async (t) => {
   const human = await cli('export', '--limit', '0', '--origin', origin);
   assert.equal(human.status, 2);
   assert.equal(human.stderr, 'InvalidTraceFilter: limit must be an integer from 1 to 2000.\n');
+});
+
+test('export --format bundle prints the activity bundle through connectRuntime().exportBundle', async (t) => {
+  const { origin, page } = await fixture(t);
+  const printed = await cli('export', '--format', 'bundle', '--origin', origin);
+  assert.equal(printed.status, 0, printed.stderr);
+  const documents = printed.stdout
+    .trimEnd()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(
+    documents.map((document) => document.kind),
+    ['bundle', 'activity', 'end'],
+  );
+  assert.equal(documents[1].trace.traceId, page.traceId);
+  assert.deepEqual(documents[0].filters, { format: 'bundle' });
+  const result = await json('export', '--format', 'bundle', '--trace-id', page.traceId, '--origin', origin);
+  assert.deepEqual(result, [
+    { ...documents[0], exportedAt: result[0].exportedAt, filters: { traceId: page.traceId, format: 'bundle' } },
+    documents[1],
+    documents[2],
+  ]);
+});
+
+test('--audit-id finds the trace whose span names the audit entry', async (t) => {
+  const { origin, page } = await fixture(t);
+  const AUDIT = 'a0d1700d-0000-4000-8000-000000000001';
+  page.set({ auditId: AUDIT }); // an ended span still takes attributes; the store indexes the audit id
+  const listed = await json('list', '--audit-id', AUDIT, '--origin', origin);
+  assert.deepEqual(
+    listed.items.map((item) => [item.traceId, item.auditId]),
+    [[page.traceId, AUDIT]],
+  );
+  assert.equal((await json('list', '--audit-id', 'a0d1700d-0000-4000-8000-000000000002', '--origin', origin)).total, 0);
 });
 
 test('every failure names its code', async (t) => {

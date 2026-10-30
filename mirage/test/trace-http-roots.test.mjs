@@ -342,7 +342,7 @@ test('Power Pages: status lists /trace, the trace routes answer and the trace SS
       dashboard.activity.trace.retained,
       dashboard.activity.trace.dropped,
     ],
-    ['org', 'ready', '#trace', { level: 'full', persist: false, persistError: null }, retained, dropped],
+    ['org', 'ready', '#activity', { level: 'full', persist: false, persistError: null }, retained, dropped],
   );
 });
 
@@ -422,6 +422,11 @@ test('standalone and Dataverse API listener: http roots carry their origin host;
   assert.equal(sim.trace.spans({ kind: 'http', actorKind: 'app', actorId: span.actor.id, search: 'WhoAmI' }).total, 1);
   assert.match(span.attributes.requestId, /^[0-9a-f-]{36}$/);
   assert.equal(JSON.stringify(span).includes(token.access_token), false, 'the bearer token never reaches a span');
+  // The listener's request ring names each request's trace (D-M-4).
+  const { requests } = await (await simApi(sim, 'GET', '/dataverse/requests')).json();
+  const ringed = requests.findLast((entry) => entry.path === '/api/data/v9.2/WhoAmI');
+  assert.deepEqual([ringed.traceId, ringed.spanId], [span.traceId, span.spanId]);
+  assert.equal(whoAmI.headers.get('x-trace-id'), ringed.traceId);
   const denied = await fetch(sim.dataverse.origin + '/api/data/v9.2/WhoAmI');
   assert.equal(denied.status, 401);
   const refused = sim.trace
@@ -828,6 +833,7 @@ test('Power Pages: at level off a root parses no trace header and looks up no au
     const on = await fetch(sim.url + '/_api/x_items?$select=x_name', { headers: { 'x-sim-trace-id': named } });
     await on.text();
     assert.equal(looked.includes(named), true, 'with tracing on the header is looked up as an audit id');
+    assert.notEqual(on.headers.get('x-trace-id'), named, 'an unknown audit id is never used as the trace id (D-M-4)');
   } finally {
     AuditLog.prototype.byId = original;
     await sim.trace.configure({ level: 'full' });

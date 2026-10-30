@@ -32,6 +32,19 @@ function choice(choices, message) {
     return value;
   };
 }
+/** mirage.logs.retain when unset: the log lines the runtime keeps for GET /_sim/api/logs. */
+export const LOG_RETAIN_DEFAULT = 2000;
+const LOG_RETAIN_MAX = 50_000;
+/** mirage.logs: { retain } (0..50000, default 2000; 0 keeps no history); unknown members are refused. */
+export function logSettings(value, label = 'logs') {
+  if (value == null) return { retain: LOG_RETAIN_DEFAULT };
+  if (!isPlainObject(value)) throw new Error(`${label} must be an object`);
+  for (const key of Object.keys(value)) if (key !== 'retain') throw new Error(`${label}.${key} is not a setting`);
+  const retain = value.retain ?? LOG_RETAIN_DEFAULT;
+  if (!Number.isInteger(retain) || retain < 0 || retain > LOG_RETAIN_MAX)
+    throw new Error(`${label}.retain must be an integer from 0 to ${LOG_RETAIN_MAX}`);
+  return { retain };
+}
 const policyKey = (key) => (value) => contentPolicyDefaults({ [key]: value })[key];
 const overrideKey = (key) => (value) => validateLocalOverrides({ [key]: value })[key];
 
@@ -335,6 +348,13 @@ export const MIRAGE_SETTINGS = Object.freeze({
     option: 'trace',
     doc: 'Local request tracing: level (off, summary or full), retained traces, spans per trace, payload bytes, persist.',
     parse: (value, label) => traceSettings(value, label),
+  },
+  // No identity: the history size never changes what a runtime serves.
+  logs: {
+    scopes: ['catalogue', 'project'],
+    option: 'logs',
+    doc: 'Runtime log stream history: retain (log lines kept for the _sim Activity log stream and GET /_sim/api/logs, default 2000; 0 keeps none).',
+    parse: (value, label) => logSettings(value, label),
   },
   sourceMaps: {
     scopes: ['catalogue', 'project', 'portal'],

@@ -60,37 +60,49 @@ test('one burst of 100 large frames reaches a normally reading client whole', as
   assert.ok(refused >= 3, `the burst met back-pressure (${refused} refused writes)`);
 });
 
-test('a client is dropped when the first write after each of three drains is refused again', async () => {
+test('a reader that meets back-pressure on every frame stays and receives every frame', async () => {
   const clients = sseClients();
-  // highWaterMark 1: every write is refused; the test completes the writes by hand, as a socket does once it flushed.
-  const slow = new Writable({
-    highWaterMark: 1,
-    write(_chunk, _encoding, done) {
-      slow.pending = done;
+  // highWaterMark 1 KB and frames of 20 KB: every write is refused, and the reader takes 512 bytes per turn, so each
+  // frame is a drain cycle of its own (a small kernel socket buffer does the same to a healthy reader).
+  const received = [];
+  const reader = new Writable({
+    highWaterMark: 1024,
+    write(chunk, _encoding, done) {
+      const take = (offset) => {
+        if (offset >= chunk.length) {
+          received.push(chunk.toString());
+          return done();
+        }
+        setImmediate(() => take(offset + 512));
+      };
+      take(0);
     },
   });
-  clients.add(slow);
-  // Completes every buffered write and waits for the drain event that follows.
-  const drain = async () => {
-    const drained = once(slow, 'drain');
-    while (slow.pending) {
-      const done = slow.pending;
-      slow.pending = null;
-      done();
-    }
-    await drained;
-  };
-  clients.send('event: a\ndata: 1\n\n'); // refused: cycle 1
-  clients.send('event: a\ndata: 2\n\n'); // still waiting for drain: not counted
-  for (let cycle = 2; cycle <= 3; cycle++) {
-    await drain();
-    clients.send(`event: a\ndata: ${cycle}\n\n`); // refused right after a drain: cycle 2, 3
-    assert.equal(slow.destroyed, false, `cycle ${cycle} keeps the client`);
+  clients.add(reader);
+  const frame = (index) => `event: burst\ndata: ${index} ${'z'.repeat(20 * 1024)}\n\n`;
+  let refused = 0;
+  const closed = once(reader, 'close'); // a dropped reader never drains: wait for whichever comes first
+  for (let index = 0; index < 50; index++) {
+    const drained = Promise.race([once(reader, 'drain'), closed]);
+    const before = reader.writableNeedDrain;
+    clients.send(frame(index));
+    if (!before && reader.writableNeedDrain) refused++;
+    await drained; // the next event arrives once the reader caught up: one drain cycle per frame
+    assert.equal(reader.destroyed, false, `frame ${index} keeps the reader`);
   }
-  await drain();
-  clients.send('event: a\ndata: 4\n\n'); // refused after the third drain in a row
-  assert.equal(slow.destroyed, true);
-  assert.equal(clients.size, 0);
+  assert.equal(refused, 50, 'every frame met back-pressure');
+  // Ten more in one synchronous burst, without waiting: the refused writes are queued, never skipped, and flush
+  // resolves only once the last of them reached the reader (after its last drain), not when the writes were issued.
+  for (let index = 50; index < 60; index++) clients.send(frame(index));
+  assert.ok(reader.writableLength > 0, 'frames are still queued when flush is called');
+  await clients.flush();
+  assert.equal(reader.writableLength, 0);
+  assert.deepEqual(
+    received.filter((chunk) => chunk.startsWith('event: burst')).map((chunk) => Number(chunk.split(' ')[2])),
+    Array.from({ length: 60 }, (_, index) => index),
+  );
+  assert.equal(clients.size, 1);
+  clients.end();
 });
 
 test('a blocked event loop never drops a reader that takes bytes once the loop is free', () => {

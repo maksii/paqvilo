@@ -691,7 +691,7 @@ span.ui-status-dot {
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
-/* Module colours: one per module in MODULES order (view-trace.mjs), each at least 3.7:1 against the bar track. */
+/* Module colours: one per module in MODULES order (view-activity.mjs), each at least 3.7:1 against the bar track. */
 .ui-series-0 {
   fill: #4254dc;
 }
@@ -1440,4 +1440,358 @@ span.ui-status-dot {
     --ui-t-af3f4c: #d18089;
     --ui-t-b33346: #da7e8b;
   }
+}
+
+/* A table column of row actions: the buttons stay on one line, side by side. */
+.ui-table td.ui-actions {
+  white-space: nowrap;
+}
+.ui-table td.ui-actions > * + * {
+  margin-left: 6px;
+}
+/* On a narrow screen a wide table scrolls inside its frame; its row actions stay pinned to the frame's right edge. */
+@media (max-width: 760px) {
+  .ui-table td.ui-actions,
+  .ui-table td.actions,
+  table[data-table] td.actions {
+    position: sticky;
+    right: 0;
+    background: var(--ui-surface);
+    box-shadow: -8px 0 8px -8px rgba(0, 0, 0, 0.25);
+  }
+}
+/* Backend operations on a phone: headings and cells wrap and the row actions stack, so the table fits its frame. */
+@media (max-width: 760px) {
+  table[data-table='operations'] {
+    table-layout: fixed;
+    width: 100%;
+  }
+  table[data-table='operations'] th,
+  table[data-table='operations'] td {
+    padding: 10px 6px;
+    max-width: none;
+    overflow: visible;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  table[data-table='operations'] th:nth-child(1) {
+    width: 31%;
+  }
+  table[data-table='operations'] th:nth-child(2) {
+    width: 24%;
+  }
+  table[data-table='operations'] th:nth-child(3) {
+    width: 23%;
+  }
+  table[data-table='operations'] .ui-badge {
+    padding-inline: 5px;
+    white-space: normal;
+  }
+  table[data-table='operations'] th {
+    letter-spacing: 0;
+  }
+  table[data-table='operations'] td.actions {
+    position: static;
+    box-shadow: none;
+    text-align: left;
+  }
+  table[data-table='operations'] td.actions > * {
+    display: block;
+    width: fit-content;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: normal;
+  }
+  table[data-table='operations'] td.actions > * + * {
+    margin: 6px 0 0;
+  }
+}
+/*
+ * DV-N4c-2: on a wide screen Data records and Platform settings fit their frame. Records share the width evenly and
+ * cut long values (the full value is the cell's title); platform settings wrap their text and override controls.
+ */
+@media (min-width: 761px) {
+  table[data-table='records'] {
+    table-layout: fixed;
+    width: 100%;
+  }
+  table[data-table='records'] th,
+  table[data-table='records'] td:not(.actions) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  table[data-table='records'] th:last-child {
+    width: 232px;
+  }
+  table[data-table='platform-settings'] td {
+    white-space: normal;
+  }
+  table[data-table='platform-settings'] td input,
+  table[data-table='platform-settings'] td select {
+    display: block;
+    width: 100%;
+    max-width: 220px;
+    margin: 4px 0 6px;
+  }
+  table[data-table='platform-settings'] td .button + .button {
+    margin-left: 0;
+  }
+}
+
+/* ---- Page chrome (D-M-7): no title block; one toolbar row, then the content. */
+.ui-page-chrome {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+.ui-page-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 30px;
+}
+.ui-page-summary {
+  color: var(--ui-muted);
+  font-size: 13px;
+}
+.ui-page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.ui-filter-count {
+  font-weight: 700;
+}
+.ui-filter-toggle[aria-expanded='true'] {
+  border-color: var(--ui-accent);
+  color: var(--ui-accent);
+}
+.ui-filter-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  width: min(380px, 100vw);
+  background: var(--ui-surface);
+  color: var(--ui-ink);
+  border-left: 1px solid var(--ui-line);
+  box-shadow: -12px 0 32px rgba(15, 23, 42, 0.18);
+}
+.ui-filter-drawer[hidden] {
+  display: none;
+}
+.ui-filter-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--ui-line);
+}
+.ui-filter-drawer-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.ui-filter-drawer-body {
+  flex: 1;
+  overflow: auto;
+  padding: 16px 18px;
+}
+.ui-filter-drawer-foot {
+  display: flex;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--ui-line);
+}
+@media (min-width: 1200px) {
+  #content:has(> * .ui-filter-drawer:not([hidden])),
+  #content:has(> .ui-filter-drawer:not([hidden])) {
+    padding-right: 380px;
+  }
+}
+/* Section help is an (i) next to the heading, never a sentence under it (D-M-6). */
+.ui-help-inline {
+  display: inline-flex;
+  margin: 0 0 0 6px;
+  vertical-align: middle;
+}
+.ui-section-help {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 6px;
+}
+/* A content block without its own frame (the main list of a page): the shared gap below it. */
+.ui-card {
+  margin: 0 0 16px;
+}
+/* Tables read as rows (td borders in shell.css); the header stays while a long table scrolls. */
+.ui-table thead th,
+.ui-data-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+/* Controls in the page toolbar are compact, so the toolbar stays one short row. */
+.ui-page-actions :is(select, input:not([type='checkbox'], [type='radio'])) {
+  height: 28px;
+  padding-block: 2px;
+  font-size: 13px;
+}
+/* ---- dataTable (D-M-8): bar above, sortable sticky header, row dividers and hover, controls bar below. */
+.ui-data-table {
+  margin: 0 0 16px;
+}
+.ui-table-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.ui-table-bar input[type='search'] {
+  flex: 0 1 280px;
+  min-width: 0;
+  height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+}
+.ui-table-bar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+.ui-table-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px 14px;
+  margin: 8px 0 0;
+}
+.ui-table-foot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-right: auto;
+}
+.ui-data-table tbody tr:hover td {
+  background: var(--ui-info-bg);
+}
+.ui-sort {
+  line-height: 1.2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.ui-sort:focus-visible {
+  outline: 2px solid var(--ui-focus);
+  outline-offset: 2px;
+}
+.ui-sort-mark {
+  color: var(--ui-muted);
+  font-size: 10px;
+}
+th[aria-sort='ascending'] .ui-sort-mark,
+th[aria-sort='descending'] .ui-sort-mark {
+  color: var(--ui-accent);
+}
+/* A section's (i) sits at the right end of its title row instead of on a line of its own. */
+.ui-section {
+  position: relative;
+}
+.ui-section > .ui-section-body > .ui-section-help:first-child {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  margin: 0;
+}
+@media (max-width: 759px) {
+  .ui-page-chrome {
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+  .ui-page-toolbar {
+    min-height: 26px;
+  }
+  .ui-table thead th {
+    padding-block: 6px;
+  }
+}
+.ui-page-actions :is(.button, .ui-button) {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding-block: 0;
+}
+/* The toolbar and its chips never widen the page: they wrap within it. */
+.ui-page-toolbar,
+.ui-page-actions,
+.ui-page-chrome > .ui-chips {
+  min-width: 0;
+  max-width: 100%;
+}
+.ui-page-chrome .ui-chips {
+  flex-wrap: wrap;
+}
+.ui-page-chrome .ui-chip {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * DV-N4d-1: a title keeps its (i) on its line. A heading followed by its (i) leaves room for it, so a long title wraps
+ * with the (i) beside its last line; a legend holds its (i); on a phone a panel heading's button wraps under the title
+ * instead of squeezing it.
+ */
+:is(h2, h3, legend):has(+ :is(.ui-help-inline, .ui-note)) {
+  max-width: calc(100% - 30px);
+}
+legend > .ui-note {
+  margin-left: 6px;
+  vertical-align: middle;
+}
+@media (max-width: 760px) {
+  .panel-heading {
+    flex-wrap: wrap;
+  }
+  .panel-heading > :first-child {
+    flex: 1 1 14rem;
+    min-width: 0;
+  }
+}
+
+/* D-M-11 table parity: the bar's Filters sits after the search box; chips of a table's column filters under its bar;
+   the record search in the Data records toolbar row. */
+.ui-data-table > .ui-chips {
+  margin: 0 0 8px;
+}
+.ui-page-chrome :is(.ui-chrome-search, [data-table-search]) {
+  width: 220px;
+  max-width: 100%;
+  height: 30px;
+  padding: 4px 10px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
 }

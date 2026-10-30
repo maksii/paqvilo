@@ -9,8 +9,8 @@ an **event** on the span where it happened.
 
 Tracing answers questions the request audit cannot: why a save took 900 ms, which plug-in step refused a create, which
 flow a row change started and which connector call inside it failed. The audit log keeps its own sanitized request
-ledger; each audit entry carries the `traceId` and `spanId` of its request, and the `_sim` audit view links to the
-trace.
+ledger; each audit entry carries the `traceId` and `spanId` of its request, the root span of an audited request names
+its entry in the attribute `auditId`, and the `_sim` **Activity** view shows both together.
 
 Tracing is local to one runtime. Every host of that runtime shares one trace store: the Power Pages host, the
 standalone host with its model-driven, canvas and code apps, the Dataverse Web API listener with its SOAP endpoint, the
@@ -320,7 +320,7 @@ the row names the first failed span. Open the trace and select the red bar.
 ## Levels
 
 `mirage.trace.level` sets how much each span records. The value in the catalogue or project file is the start value;
-the `_sim` **Traces** view, `PUT /_sim/api/trace/settings`, `paqvilo mirage trace settings --level <level>` and
+**⚙ Settings** of the `_sim` **Activity** view, `PUT /_sim/api/trace/settings`, `paqvilo mirage trace settings --level <level>` and
 `connectRuntime().trace.configure({ level })` change it on a running runtime without a restart and without touching the
 state file.
 
@@ -334,8 +334,8 @@ Use `summary` for daily work: it shows the shape, the timing and the failure of 
 you investigate one problem, then back. A span only records an input or output when it was opened at `full`; every
 span records the level it was opened at as `level`.
 
-The other members of `mirage.trace` bound memory. The same four ways change them at run time, and the Traces view
-edits the three limits as numbers:
+The other members of `mirage.trace` bound memory. The same four ways change them at run time, and Activity's
+**⚙ Settings** edits the three limits as numbers:
 
 | Member          | Default | Range          | Meaning                                                                                |
 | --------------- | ------- | -------------- | -------------------------------------------------------------------------------------- |
@@ -349,88 +349,107 @@ persistence. With no `_sim` view or CLI watching, a trace costs its records and 
 
 ## Reading a trace
 
-Open `/_sim/#trace` (**Traces**, in the **Monitor** group). The filter bar narrows the list by time, kind, module,
-operation, entity, record id, status, host, actor, session, visitor, portal, free text, minimum duration and errors.
-Every filter, the sort, the open trace and span and a comparison are part of the page address, so a view can be
-bookmarked or shared with a teammate who runs the same project. The active filters show as chips above the list, with
-the filter form folded under them; select a chip's × to drop that filter. Opening `#trace` with nothing after it resets
-the filters, the range, the sort and the open trace. A filter value the runtime refuses shows a banner naming the
-filter, the value and the runtime's message, with a button that removes it. **Live** follows the live channel on either
-host and reloads the list and the overview at most once a second as traces end; a runtime that does not serve the
-channel turns Live off with a notice, and **Refresh traces** still reads the newest traces.
+Open `/_sim/#activity` (**Activity**, in the **Monitor** group). There a trace is an **activity** and a span a
+**step**; [`_sim` administration](sim-administration.md#activity) describes the whole workspace, its tabs and the
+addresses it replaced (`#trace`, `#audit`, `#logs` and `#evidence` redirect to it). Its toolbar row holds the tabs,
+the tab's quick filter, **Live**, **Refresh**, **Export**, **⚙** (tracing settings), the search box (`/` focuses it)
+and **Filters**, which opens the filter drawer on the right. On Activities and Stats the quick filter is **Errors &
+denied**: it sets `result=error,denied` in one click, shown as the Result chip, and clears it on the next, so a failing
+request is two clicks away: the toggle, then its row. On the Log stream it is **Startup** (`type=startup`), so the
+startup lines are two clicks away too. The drawer narrows the list by time range, result, who, table, record id, host and free
+text; **More filters** adds kind, module, operation, step result, failed steps, from, to, minimum duration, session,
+portal and audit id. Every filter, the sort, the open
+activity and step and a comparison are part of the page address, so a view can be bookmarked or shared with a teammate
+who runs the same project. The active filters show as chips under the toolbar; select a chip's × to drop that filter,
+or **Clear all**. Opening `#activity` with nothing after it resets the filters, the range, the sort and the open activity.
+A filter value the runtime refuses shows a banner naming the filter, the value and the runtime's message, with a button
+that removes it. **Live** follows the `trace-end` frames of the live channel on either host and reloads the list and
+the figures at most once a second as activities end; a runtime that does not serve the channel turns Live off with a
+notice, and **Refresh** still reads the newest activities.
 
-From 1200 px wide the list sits on the left and the open trace on the right, in a column that scrolls on its own; on a
-narrower screen the trace follows the list and long names wrap. A link to a trace or a span scrolls its detail into
-view beside the list.
+From 1200 px wide the list sits on the left and the open activity on the right, in a column that scrolls on its own;
+on a narrower screen the activity follows the list and long names wrap. A link to an activity or a step scrolls its
+detail into view beside the list.
 
-Each trace row shows the status, the root duration, when the root request started, its name (`POST /_api/accounts`),
-where it came from (host, actor and session), the span count with its errors and denials, the first error message, and
-the tables involved. Select the **Started**, **Duration**, **Spans** or **Errors** heading to sort the list by it
-(`sort=` in the address, largest or newest first); select it again to reverse the order. The status is `running` while
-any span runs, otherwise the root span's status; a legend under the list explains the five statuses. The session is
-the span's `sessionKey`: `contact:<id>` for a signed-in contact, `visitor:<id>` for a browser with the visitor cookie,
-and empty otherwise; `visitorId` is the visitor cookie alone. Roots on the standalone host and on the Dataverse
-listener are `anonymous` with no session until they authenticate.
+Each row shows the time the root request started, the result with the HTTP status as a badge, its name
+(`POST /_api/accounts`), who made it, the root duration, the step count with its errors, and the first error message
+under the name. On the Power Pages host the row also carries the request audit facts of the request: the provider, the
+rows returned, the reads it made and the portal error code. Select the **Time**, **Duration**, **Steps** or **Errors**
+heading to sort the list by it (`sort=` in the address, largest or newest first); select it again to reverse the order.
+The bottom bar under the list holds **Compare**, **Show reads**, the time zone, the count, **Rows** and paging. The Log
+stream, Findings, Pages & render and the Stats breakdown sort by any data column from its heading in the page (text
+order, numbers numeric). On a phone a log line takes two lines, with **Open activity →** under it. The
+result is `running` while any step runs, otherwise the root step's status; the (i) of the Result heading explains the
+five results. **Who** is the actor and the session: `Ada Member · contact:1a2b3c4d` for a signed-in contact,
+`Visitor accb980f` for a browser with the visitor cookie (its session key `visitor:<id>`), and `Anonymous` otherwise. Roots
+on the standalone host and on the Dataverse listener are `anonymous` with no session until they authenticate.
 
-Times are shown in your local time, and the timeline axis names the UTC offset. A time range matches a trace when any of
-its spans starts in the range, so a timeline bucket that holds only the asynchronous spans of an earlier request still
-lists that request.
+Times show as local `HH:MM:SS.mmm`, with the date and the UTC time on hover, and the bottom bar names the zone once. A
+time range matches an activity when any of its steps starts in the range, so a timeline bucket that holds only the
+asynchronous steps of an earlier request still lists that request.
 
-The trace detail has three readings of the same spans:
+An open activity starts with its **Why** line: the first step that failed or was denied, with its error or denial
+message and **Show this step**. Its **Steps** tab has two readings of the same spans:
 
-- The **waterfall** draws one bar per span, offset from the trace start and as wide as its duration. Bars that sit
+- The **waterfall** draws one bar per step, offset from the activity start and as wide as its duration. Bars that sit
   inside their parent ran synchronously within it. A bar marked async starts a job segment, such as an async plug-in
   step or a flow run started by the row change; the follow-up requests a page sends also start after the page's root
-  span ended, without being async. Read the waterfall to find where time went.
-- The **tree** nests spans by parent. Read it to see what caused what: the request, the Dataverse create, its
+  step ended, without being async. Read the waterfall to find where time went.
+- The **tree** nests steps by parent. Read it to see what caused what: the request, the Dataverse create, its
   PreOperation stage, the step that ran, the SDK update the step issued, and the PostOperation stage under it.
-- **JSON** shows the whole trace as `GET /_sim/api/trace/id/<traceId>` answers it, with **Download trace** and **Copy
-  JSON**.
 
-Opening a trace moves the focus to its heading. Above the waterfall and the tree, **Find spans** keeps the spans whose
-search text contains the text (the same text the `search` filter reads, see [API](#api)), and **Only errors and
-denials** keeps the failing spans; both keep the ancestors of what they match, so the path to a span stays readable.
-**Copy id** and **Copy link** in the detail head copy the trace id and the address of the current view, and the span
-drawer has **Copy span id**.
+The other tabs read what joins the activity by its trace id: **Log & findings** (the log lines and findings written
+during it), **Rendered** (the render, template and Liquid read steps, each template resolved to its source file and
+line through `GET /_sim/api/render-sources`), **Request** (the request audit entry of the root and of its reads) and
+**JSON**, the whole activity as `GET /_sim/api/trace/id/<traceId>` answers it, with **Download activity** and **Copy
+JSON**.
 
-Select a span to open its drawer. A breadcrumb shows its path from the root, and **Parent** and **Root** open those
-spans by name, also when they belong to another retained trace. The drawer shows the attributes, the events in order
-with their offset from the span start, the error code and message, the level the span was captured at, the redacted
-input and output (at level `full`, otherwise a note that says why there is none: the level, nothing passed, or a
-sealed run), and links. Ids in the attributes link to their views: `runId` to the flow run, `jobId` to the system job
-record and `stepId` to the plug-in step. Escape closes the drawer and returns the focus to the span, unless you are
-typing in a field.
+Opening an activity moves the focus to its heading. Above the waterfall and the tree, **Find steps** keeps the steps
+whose search text contains the text (the same text the `search` filter reads, see [API](#api)), and **Only errors and
+denials** keeps the failing steps; both keep the ancestors of what they match, so the path to a step stays readable.
+**Copy id** and **Copy link** in the detail head copy the activity id and the address of the current view, and the
+step drawer has **Copy step id**.
+
+Select a step to open its drawer. A breadcrumb shows its path from the root, and **Parent** and **Root** open those
+steps by name, also when they belong to another retained activity. The drawer shows the attributes, the events in
+order with their offset from the step start, the error code and message, the level the step was captured at, the
+redacted input and output (at level `full`, otherwise a note that says why there is none: the level, nothing passed,
+or a sealed run), and links. Ids in the attributes link to their views: `runId` to the flow run, `jobId` to the system
+job record and `stepId` to the plug-in step. Escape closes the drawer and returns the focus to the step, unless you
+are typing in a field; a second Escape closes the activity.
 
 Links connect spans that are related but not nested: `staged-by` points from a job to the span that staged it,
 `triggered` from the staging span to the job it started, and `parent-request` from a browser follow-up to the page that
-sent it. The pivots in the drawer open the traces of the same session, the same actor, the same table, the same record,
-the parent request or the child traces.
+sent it. **Related** opens the activities of the same session, the same who and the same record, and the flow run or
+job the activity started; the drawer's pivots also open the same table, the parent request and the child activities.
 
-To compare two runs of the same work, tick **Compare** on two rows and select **Compare the 2 ticked traces**, or open
-`#trace?compare=<traceId1>,<traceId2>`. The two trees show side by side. Spans are matched by their kind and name path
-from the root (a repeated span by its position among its siblings), each matched span shows how much longer or shorter
-it took in the second trace, and the spans only one trace has are listed. This answers "why did this save take 900 ms
-today": the matched span with the largest delta is where the time went.
+To compare two runs of the same work, tick **Compare** on two rows and select **Compare the 2 ticked activities**, or
+open `#activity?compare=<traceId1>,<traceId2>`. The two trees show side by side. Steps are matched by their kind and
+name path from the root (a repeated step by its position among its siblings), each matched step shows how much longer
+or shorter it took in the second activity, and the steps only one activity has are listed. This answers "why did this
+save take 900 ms today": the matched step with the largest delta is where the time went.
 
 Durations are wall-clock milliseconds with 0.01 ms precision. `durationMs` of a trace is the root span's duration;
 `totalDurationMs` runs from the first span start to the last span end, including asynchronous segments. A trace ends
 when its last running span ends; an asynchronous segment that starts afterwards reopens it.
 
-To find a slow or failing request quickly, use the **Overview**: the tiles count the traces, the matching spans with
-their p50 and p95 durations, the error and denied spans, and the plug-in steps, flow runs and connector calls. **Root
-p50 / p95** are the durations of the root spans of the matching traces, so a filter on a table or a span kind still
-shows how long the requests that touched it took. With a time range set, **Root p95 vs before** compares the root p95
-with the previous range of the same length. **Slowest spans** and **Latest errors** list the spans to open first.
-Below them, the timeline counts spans per bucket (errors in red), and the breakdown gives counts, errors and
-p50/p95/maximum durations by kind, module, table, operation and actor. Select a timeline bucket to narrow the time range
+To find a slow or failing request quickly, open the **Stats** tab: the tiles count the activities, the matching steps
+with their p50 and p95 durations, the error and denied steps, and the plug-in steps, flow runs and connector calls.
+**Root p50 / p95** are the durations of the root steps of the matching activities, so a filter on a table or a step
+kind still shows how long the requests that touched it took. With a time range set, **Root p95 vs before** compares the
+root p95 with the previous range of the same length. **Slowest steps** and **Latest errors** list the steps to open
+first. Below them, the timeline counts steps per bucket (errors in red), and the breakdown gives counts, errors and
+p50/p95/maximum durations by kind, module, table, operation and who. Select a timeline bucket to narrow the time range
 to it, or **Filter** on a breakdown row to narrow to that value.
 
-The collapsed **Settings** panel changes the level, persistence and the retention limits (`traces`, `spansPerTrace`,
-`payloadBytes`) without a restart; a smaller `traces` limit drops the oldest traces at once and reloads the list.
+**⚙ Settings** changes the level, persistence and the retention limits (`traces`, `spansPerTrace`, `payloadBytes`)
+without a restart; a smaller `traces` limit drops the oldest activities at once and reloads the list. At level `off`
+Activities lists the request audit instead, under a banner, so the page is never blank, and **Live** follows the request
+audit (`Following the request audit`).
 
-**Export filtered traces** downloads the traces the filters match, in the list's order, as NDJSON (one trace per line,
-the default), JSON or OTLP JSON. The runtime streams the file and includes at most 200 traces; see
-[API](#api) for larger exports.
+**Export** downloads, for the current filters, the [activity bundle](#activity-bundle) (the default, also with
+its activities as OTLP) or the activities alone as NDJSON, JSON or OTLP JSON. The runtime streams the file and
+includes at most 200 activities; see [API](#api) for larger exports.
 
 The `_sim` administration pages follow the browser's dark colour scheme; `/_setup/` stays light.
 
@@ -466,8 +485,8 @@ Traces join across loopback HTTP through request headers, and every traced respo
 
 | Header               | Direction | Meaning                                                                                                |
 | -------------------- | --------- | ------------------------------------------------------------------------------------------------------ |
-| `X-Trace-Id`         | inbound   | The trace id the new request joins.                                                                    |
-| `X-Sim-Trace-Id`     | inbound   | The trace id the new request joins when `X-Trace-Id` is absent.                                        |
+| `X-Trace-Id`         | inbound   | The trace id the new request joins. It is the only inbound header read as a trace id.                  |
+| `X-Sim-Trace-Id`     | inbound   | An audit id: the request joins under the span that names that audit entry. Never read as a trace id.   |
 | `X-Sim-Parent-Trace` | inbound   | The span the request belongs under: a span id, or an earlier request's audit entry id (its root span). |
 | `X-Trace-Id`         | response  | The trace id of this request, on every host including the Dataverse Web API listener.                  |
 | `X-Sim-Span-Id`      | response  | The root span id of this request.                                                                      |
@@ -477,8 +496,17 @@ A client that sends back the trace headers of a response joins that response's t
 `X-Sim-Parent-Trace` and `X-Trace-Id` on same-origin `fetch` and `XMLHttpRequest` calls unless the script sets them
 itself, so the Web API calls a page script makes join the page's trace. The model-driven shell (its own API calls,
 custom pages and the `Xrm.WebApi` bridge), the canvas player and the code-app client send the ids of their page root
-the same way; the canvas player's source-watch polls send none. Web hook deliveries, every `http-out` request and the
-flow HTTP provider forward the headers of the current span.
+the same way; the canvas player's source-watch polls send none. Web hook deliveries, every `http-out` request,
+connector calls, Service Bus deliveries and the flow HTTP provider forward the headers of the current span:
+`X-Trace-Id` (its trace), `X-Sim-Parent-Trace` and `X-Sim-Span-Id` (the sending span), and `X-Sim-Trace-Id` only when
+that span or its nearest retained ancestor names an audit entry, with that audit id. The trace id is never sent as
+`X-Sim-Trace-Id`.
+
+`X-Sim-Trace-Id` keeps one meaning in both directions: the audit id. Without `X-Sim-Parent-Trace`, a retained span
+whose `auditId` attribute equals it (the root of that audited request, or a Liquid read) becomes the parent, in that
+span's trace unless `X-Trace-Id` names another. The Power Pages host also resolves it through the audit ledger, whose
+entry keeps its `traceId` and `spanId` after the trace left memory; an entry recorded while tracing was off names no
+span, and the request starts a new trace. An audit id that names nothing is ignored.
 
 An inbound value that is not a UUID (32 hexadecimal digits in the `8-4-4-4-12` form) is ignored, and the request
 starts a new trace; a request can never choose a word such as `stats` as its trace id. When `X-Sim-Parent-Trace` names
@@ -507,34 +535,45 @@ need the `x-sim-csrf` header with the administration token.
 | `POST /trace/flush`       | Waits until every queued persisted line is written and every live channel frame reached its client, then answers the store status. Running spans are not waited for.                                                                                                                                  |
 
 A trace summary carries `status`, `durationMs`, `totalDurationMs`, the span, error and denied counts, the plug-in,
-flow, connector and Dataverse counts, the kinds, tables and modules involved, the root span and, once a span ended
-`error` or `denied`, `firstError`: `{ spanId, kind, name, status, code, message }` of the first one.
+flow, connector and Dataverse counts, the kinds, tables and modules involved, the root span, `auditId` (the audit
+entry id its root names, or `null`) and, once a span ended `error` or `denied`, `firstError`:
+`{ spanId, kind, name, status, code, message }` of the first one.
 
-The Infrastructure view (`GET /_sim/api/dashboard`) shows the trace store as the `org:trace` node (**Tracing**, in the
-**Monitor** group of the map) with its level and persistence, and its counters (`retained`, `spans`, `running`,
-`dropped`, `droppedSpans`, `latestSequence`) as `activity.trace`.
+The Health view (`GET /_sim/api/dashboard`) shows the trace store as the `org:trace` node (**Activity**, in the
+**Monitor** group of the map, linking to `#activity`) with its level and persistence, and its counters (`retained`,
+`spans`, `running`, `dropped`, `droppedSpans`, `latestSequence`) as `activity.trace`.
 
 The list, spans, stats and export routes take the same query parameters:
 
-| Parameter                                            | Matches                                                                                                                                                                                                           |
-| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `from`, `to`                                         | ISO time or epoch milliseconds; a trace when any of its spans starts in the range, a span by its own start.                                                                                                       |
-| `kind`, `status`                                     | Case-insensitive equality with one of the span kinds or the five statuses (`ok`, `error`, `denied`, `cancelled`, `running`).                                                                                      |
-| `module`, `operation`, `entity`, `host`, `actorKind` | Case-insensitive equality (`host` is the origin host).                                                                                                                                                            |
-| `recordId`, `actorId`                                | Equality ignoring braces and case (`recordId` is the span's record id).                                                                                                                                           |
-| `sessionKey`, `visitorId`, `portal`                  | Exact equality (`sessionKey` is `contact:<id>` or `visitor:<id>`).                                                                                                                                                |
-| `search`                                             | Case-insensitive text in the name, kind, module, operation, entity, record id, actor, error, attribute keys and values, event types, messages and attributes, and at level `full` the input and output (bounded). |
-| `traceId`                                            | One trace.                                                                                                                                                                                                        |
-| `minDurationMs`                                      | A trace's total duration or a span's duration (running spans never match).                                                                                                                                        |
-| `hasErrors`                                          | `true` or `false`.                                                                                                                                                                                                |
-| `parentSpanId`, `depth`                              | Spans and stats only.                                                                                                                                                                                             |
-| `page`, `pageSize`, `order`                          | 1-based page, 1 to 200 per page (default 25), `desc` (default) or `asc`.                                                                                                                                          |
-| `sort`                                               | The trace list and export: `start` (default, the order the roots started), `duration` (total), `spans` or `errors`.                                                                                               |
-| `bucketMs`                                           | Stats timeline bucket; chosen automatically for at most 60 buckets when absent.                                                                                                                                   |
-| `format`, `limit`                                    | Export only: `json` (default), `ndjson` or `otlp`, and at most `limit` traces (default 200, 1 to 2000).                                                                                                           |
+| Parameter                                  | Matches                                                                                                                                                                   |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `from`, `to`                               | ISO time or epoch milliseconds; a trace when any of its spans starts in the range, a span by its own start.                                                               |
+| `kind`, `status`                           | Case-insensitive equality with one of the span kinds or the five statuses (`ok`, `error`, `denied`, `cancelled`, `running`).                                              |
+| `result`                                   | A comma list of the five statuses, matched against the trace's own status (`running` while a span runs, else the root's); spans and stats keep the spans of those traces. |
+| `auditId`                                  | Exact; a span whose `auditId` attribute names that audit entry, a trace when any of its spans does (a Liquid read's audit id finds its page).                             |
+| `module`, `operation`, `host`, `actorKind` | Case-insensitive equality (`host` is the origin host).                                                                                                                    |
+| `entity` (or `table`)                      | The table's logical name or its entity set name (`contact` or `contacts`), case-insensitive; a span matches under either name. `/audit` takes the same names.             |
+| `recordId`, `actorId`                      | Equality ignoring braces and case (`recordId` is the span's record id).                                                                                                   |
+| `sessionKey`, `visitorId`, `portal`        | Exact equality (`sessionKey` is `contact:<id>` or `visitor:<id>`).                                                                                                        |
+
+`recordId`, `actorId`, `sessionKey` and `visitorId` also accept a prefix of at least 8 hexadecimal characters, after an
+optional `kind:` (`visitor:ad87d220`, as the `_sim` views show ids): it matches every id that begins with it, so an
+ambiguous prefix matches every candidate. A shorter value matches exactly.
+| `search` | Case-insensitive text in the name, kind, module, operation, entity, record id, actor, error, attribute keys and values, event types, messages and attributes, and at level `full` the input and output (bounded). |
+| `traceId` | One trace. |
+| `minDurationMs` | A trace's total duration or a span's duration (running spans never match). |
+| `hasErrors` | `true` or `false`. |
+| `parentSpanId`, `depth` | Spans and stats only. |
+| `page`, `pageSize`, `order` | 1-based page, 1 to 200 per page (default 25), `desc` (default) or `asc`. |
+| `sort` | The trace list and export: `start` (default, the order the roots started), `duration` (total), `spans` or `errors`. |
+| `bucketMs` | Stats timeline bucket; chosen automatically for at most 60 buckets when absent. |
+| `format`, `limit` | Export only: `json` (default), `ndjson` or `otlp`, and at most `limit` traces (default 200, 1 to 2000). |
+
+`result` keeps an activity whose own result is listed (`result=error,denied` lists the failed and refused requests),
+while `status` keeps one where any span has that status.
 
 A trace matches when one of its spans meets every span filter, so `kind=plugin-step&status=error` lists the traces with
-a failing plug-in step. An invalid value, including a `kind`, `status`, `sort`, `order` or `format` outside its list,
+a failing plug-in step. An invalid value, including a `kind`, `status`, `result`, `sort`, `order` or `format` outside its list,
 answers 400 `{ error: { code: 'InvalidTraceFilter', message, parameter } }`: `parameter` names the filter, and the
 message starts with it and, for a list, names the allowed values and the value it got, such as
 `status must be one of ok, error, denied, cancelled, running (got "bogus").` A runtime without a trace store answers
@@ -567,11 +606,36 @@ The OTLP mapping keeps every span of every exported trace under one resource (`s
   `mirage.relation`. The status is OK for `ok`, ERROR with the error message for `error` and `denied`, and UNSET for a
   span that still runs or was `cancelled`.
 
+### Activity bundle
+
+`GET /_sim/api/activity/export?<filters>&format=bundle` (Power Pages host) takes the filters of `/trace/export`, at most
+`limit` activities (default 200, 1 to 2000), and `traces=ndjson` (default) or `traces=otlp`. It streams the attachment
+`simulator-activity-bundle.ndjson` (`application/x-ndjson`, with `X-Trace-Export-Matched`): one JSON document per line,
+each with a `kind`, in this order:
+
+| `kind`     | Document                                                                                                                                                                                                    |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bundle`   | `{ schemaVersion: 1, exportedAt, timeZone, filters, traces, runtime }`: the runtime's IANA time zone, the query, and the runtime's origin, host, revision, store revision, fingerprints and trace settings. |
+| `activity` | `{ trace, spans }` per matching trace in list order (`traces=ndjson`).                                                                                                                                      |
+| `otlp`     | One `{ resourceSpans }` document with every matching trace (`traces=otlp`), mapped as below.                                                                                                                |
+| `audit`    | `{ entry }` per retained audit entry of a matching trace.                                                                                                                                                   |
+| `log`      | `{ line }` per retained log line of a matching trace.                                                                                                                                                       |
+| `finding`  | `{ diagnostic }` per finding of a matching trace. A plug-in step, flow trigger, connector or flow action finding also carries `name`, `entity` (when there is a table) and, for plug-in steps, `message`.   |
+| `evidence` | `{ path, time, passed, verified, stale, differences, artifactUrls }` when a verification report exists.                                                                                                     |
+| `end`      | `{ counts: { activities, audit, logs, findings, evidence } }`.                                                                                                                                              |
+
+A filter that names nothing but `from` and `to` (or nothing) also takes the log lines and findings that belong to no
+trace, such as startup lines and load findings, when their time is in the range. Any other `format` answers 400
+`InvalidActivityExport` naming `format`, and a `traces` value other than `ndjson` or `otlp` the same naming `traces`.
+
 ### Live channel
 
 Both hosts also serve `GET /_sim/events?channels=trace`: server-sent `event: trace` frames. The first is
-`{ type: 'connected', status }`, then `{ type: 'span-start' | 'span-end' | 'trace-end', span, trace? }` as spans start
-and end. Frames never carry captured inputs or outputs; read the trace for them. A `trace-end` frame carries
+`{ type: 'connected', status, events, traceId }`, then `{ type: 'span-start' | 'span-end' | 'trace-end', span, trace? }`
+as spans start and end. `events=<type>[,<type>]` keeps only those frame types (`span-start`, `span-end`, `trace-end`;
+all three by default) and `traceId=<id>` only the frames of that trace; the runtime filters them, so a type no client
+asks for is never built. An unknown type answers one `{ type: 'error', error: { code: 'InvalidTraceFilter', parameter:
+'events', message } }` frame and ends the stream. Frames never carry captured inputs or outputs; read the trace for them. A `trace-end` frame carries
 `trace.evicted: true` for a trace that left the store while it still ran. Frames are built only while a subscriber is
 connected. Every frame is written, so a client that keeps reading loses none however large a burst is. A client that
 disconnects, even before its first frame, leaves no subscription behind; a client that stops reading is disconnected
@@ -582,7 +646,10 @@ drains in a row (an `EventSource` reconnects by itself).
 
 `connectRuntime()` from `paqvilo/mirage/testing` has a `trace` member over these routes: `query(filters)`,
 `spans(filters)`, `tree(traceId)`, `span(spanId)`, `ancestry(spanId)`, `stats(filters)`, `export(filters)`,
-`settings()`, `status()`, `configure(partial)`, `clear()`, `flush()` and `subscribe(listener, { signal })`.
+`settings()`, `status()`, `configure(partial)`, `clear()`, `flush()` and `subscribe(listener, { signal, events,
+traceId })`. Beside `trace`, `logs({ since, limit, type, traceId })` reads `GET /_sim/api/logs`,
+`diagnostics(filters)` passes `traceId`, `audit({ traceId })` takes one id, a comma list or an array, and
+`exportBundle(filters)` returns the documents of the [activity bundle](#activity-bundle) in order.
 
 - Filters are plain objects, such as `{ recordId, kind: 'plugin-step' }`. A `Date` is sent as its ISO time with
   milliseconds, and `undefined` or `null` members are left out.
@@ -592,16 +659,20 @@ drains in a row (an `EventSource` reconnects by itself).
   `ndjson`.
 - `flush()` resolves with the store status once the runtime wrote its queued persisted lines and handed its live
   frames to the sockets.
-- `subscribe` follows the live channel: the listener receives every frame, `connected` first. It returns an
+- `subscribe` follows the live channel: the listener receives every frame, `connected` first; `events` (a type or an
+  array) and `traceId` narrow the frames as the channel's query does. It returns an
   `unsubscribe()` function whose `closed` promise resolves when the stream ends (unsubscribe, the signal, or the runtime
   stopping) and rejects when the stream cannot be opened or the listener throws.
 - A refused request rejects with the runtime's `status`, `code` and, for a filter, `parameter`. A runtime that does not
-  answer rejects with the code `RuntimeUnreachable`. Writes send the CSRF token for you.
+  answer rejects with the code `RuntimeUnreachable`; one that accepted the connection and closed it before the response
+  completed rejects with `RuntimeConnectionLost`. Both keep the fetch error as `cause`. Writes send the CSRF token for
+  you.
 
 The in-process handle from `createSimulator` exposes the store's reads as `simulator.trace`: `query`, `spans`, `tree`,
 `span`, `ancestry`, `stats`, `export`, `settings`, `status`, `configure` and `clear` answer synchronously, `flush()`
 returns a promise that settles once the queued persisted lines are written and the live frames reached their clients,
-and `subscribe(listener, { payloads })` delivers frozen event copies, with captured payloads unless `payloads: false`.
+and `subscribe(listener, { payloads, events, traceId })` delivers frozen event copies, with captured payloads unless
+`payloads: false`; `events` (a type or an array) and `traceId` narrow the frames as for the testing client.
 
 ```js
 import { connectRuntime } from 'paqvilo/mirage/testing';
@@ -621,24 +692,24 @@ Assert on what a trace contains (the spans, their nesting, their status and erro
 `--origin http://127.0.0.1:<port>` or with `--config FILE --site ID`, which finds the runtime owned by that site the
 way `connectRuntime` does.
 
-| Action          | Prints                                                                                                                                                                  |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list`          | One row per trace: start, status, root duration, total duration, span, error and denied counts, host, actor, session, name, trace id.                                   |
-| `show TRACE_ID` | The trace summary and its span tree, one indented line per span, with errors.                                                                                           |
-| `spans`         | One row per span: start, kind, status, duration, entity, record id, actor, name, span id.                                                                               |
-| `stats`         | The overall and root figures (count, errors, p50, p95, max), the same figures by kind, then the slowest spans. A percentile with no ended span prints `—`.              |
-| `settings`      | The settings in force and the store status; `--level`, `--persist`, `--traces`, `--spans-per-trace` and `--payload-bytes` change them.                                  |
-| `clear`         | Drops every retained trace.                                                                                                                                             |
-| `flush`         | Waits until the runtime wrote its queued persisted lines and live frames, then prints the store status.                                                                 |
-| `export`        | The matching traces as the runtime streams them, in `--format json` (default), `ndjson` or `otlp`, at most `--limit N` (default 200, at most 2000); redirect to a file. |
-| `watch`         | One line per ended span as it happens, or per ended trace with `--trace-end`, until Ctrl+C, `--count N` lines or the runtime stopping.                                  |
+| Action          | Prints                                                                                                                                                                                                                                                           |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list`          | One row per trace: start, status, root duration, total duration, span, error and denied counts, host, actor, session, name, trace id.                                                                                                                            |
+| `show TRACE_ID` | The trace summary and its span tree, one indented line per span, with errors.                                                                                                                                                                                    |
+| `spans`         | One row per span: start, kind, status, duration, entity, record id, actor, name, span id.                                                                                                                                                                        |
+| `stats`         | The overall and root figures (count, errors, p50, p95, max), the same figures by kind, then the slowest spans. A percentile with no ended span prints `—`.                                                                                                       |
+| `settings`      | The settings in force and the store status; `--level`, `--persist`, `--traces`, `--spans-per-trace` and `--payload-bytes` change them.                                                                                                                           |
+| `clear`         | Drops every retained trace.                                                                                                                                                                                                                                      |
+| `flush`         | Waits until the runtime wrote its queued persisted lines and live frames, then prints the store status.                                                                                                                                                          |
+| `export`        | The matching traces as the runtime streams them, in `--format json` (default), `ndjson` or `otlp`, at most `--limit N` (default 200, at most 2000); redirect to a file. `--format bundle` prints the [activity bundle](#activity-bundle), one document per line. |
+| `watch`         | One line per ended span as it happens, or per ended trace with `--trace-end`, until Ctrl+C, `--count N` lines or the runtime stopping.                                                                                                                           |
 
 `list` prints `DURATION` (the root span's) and `TOTAL` (first span start to last span end, what `--sort duration` sorts
-by).
+by). `list` and `spans` print local time (`YYYY-MM-DD HH:MM:SS.mmm`) with the UTC offset once in the `STARTED` header; `--utc` prints ISO UTC instead.
 
 The filters are flags with the parameter names in kebab case: `--from`, `--to`, `--kind`, `--module`, `--operation`,
 `--entity`, `--record-id`, `--status`, `--host`, `--actor-kind`, `--actor-id`, `--session-key`, `--visitor-id`,
-`--portal`, `--search`, `--trace-id`, `--parent-span-id`, `--depth`, `--min-duration-ms`, `--has-errors`, `--page`,
+`--portal`, `--audit-id`, `--result`, `--search`, `--trace-id`, `--parent-span-id`, `--depth`, `--min-duration-ms`, `--has-errors`, `--page`,
 `--page-size`, `--order`, `--sort` and `--bucket-ms`. They apply to `list`, `spans`, `stats` and `export`; on `clear`,
 `flush`, `settings` and `show` they are refused. The command checks the values with the runtime's own rules before it
 connects.
@@ -653,20 +724,21 @@ span of it, `--status error` and `--status denied` match a trace with such a spa
 `--json` prints one envelope for every action: `{ schemaVersion: 1, ok: true, command, result }`. `result` is what the
 matching route answers: the page envelope for `list` and `spans`, the tree for `show`, the stats document for `stats`,
 `{ settings, status }` for `settings`, the store status for `clear` and `flush`, and the export document for `export`
-(the array of lines with `--format ndjson`). `watch --json` prints one envelope per line, with the frame as `result`. A
+(the array of lines with `--format ndjson`, the array of bundle documents with `--format bundle`). `watch --json` prints one envelope per line, with the frame as `result`. A
 failure prints `{ schemaVersion: 1, ok: false, command, error: { code, message, parameter? } }`; without `--json` it
 prints the message on stderr, as `<code>: <message>` when the runtime answered with an error envelope (such as
 `InvalidTraceFilter: limit must be an integer from 1 to 2000.`). A filter or setting that the command or the runtime
 refuses exits 2; every other failure exits 1:
 
-| Code                   | Exit | Meaning                                                                                                |
-| ---------------------- | ---- | ------------------------------------------------------------------------------------------------------ |
-| `InvalidArguments`     | 1    | A flag, action, origin or argument the command refuses before it connects.                             |
-| `RuntimeUnreachable`   | 1    | No runtime answers at the origin.                                                                      |
-| `TraceNotFound`        | 1    | `show` names a trace that is not retained.                                                             |
-| `InvalidTraceFilter`   | 2    | A filter, sort, format or limit is refused; `parameter` names it and the message starts with it.       |
-| `InvalidTraceSettings` | 2    | The runtime refused a settings change.                                                                 |
-| `MIRAGE_FAILED`        | 1    | Any other failure. Other runtime codes, such as `TraceNotConfigured`, are passed through as they come. |
+| Code                    | Exit | Meaning                                                                                                |
+| ----------------------- | ---- | ------------------------------------------------------------------------------------------------------ |
+| `InvalidArguments`      | 1    | A flag, action, origin or argument the command refuses before it connects.                             |
+| `RuntimeUnreachable`    | 1    | No runtime answers at the origin.                                                                      |
+| `RuntimeConnectionLost` | 1    | The runtime accepted the connection and closed it before the response completed.                       |
+| `TraceNotFound`         | 1    | `show` names a trace that is not retained.                                                             |
+| `InvalidTraceFilter`    | 2    | A filter, sort, format or limit is refused; `parameter` names it and the message starts with it.       |
+| `InvalidTraceSettings`  | 2    | The runtime refused a settings change.                                                                 |
+| `MIRAGE_FAILED`         | 1    | Any other failure. Other runtime codes, such as `TraceNotConfigured`, are passed through as they come. |
 
 ```sh
 node bin/paqvilo.mjs mirage trace list --origin http://127.0.0.1:8787 --has-errors true --sort duration
@@ -694,7 +766,7 @@ such as the `triggered` link of a job that ran after the trace ended, writes tha
 Lines are built after the response is sent, never while it is written. Writes are queued in order and never fail a
 request; the settings status reports the directory, the lines written, the failures and the last error, and `flush`
 waits for the queue. A runtime without a state folder (memory-only state or `--simulation dry-run`) accepts
-`persist: true` but writes nothing and reports `lastError: 'NoStateDirectory'`, which the Traces settings panel and
+`persist: true` but writes nothing and reports `lastError: 'NoStateDirectory'`, which Activity's **⚙ Settings** and
 `trace settings` show. Persisted traces are not read back on restart: the files are for your own analysis. Delete them
 like any other local state.
 

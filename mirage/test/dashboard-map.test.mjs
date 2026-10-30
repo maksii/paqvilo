@@ -21,6 +21,8 @@ import {
   factsOf,
   healthOf,
   gutterOf,
+  timelineRange,
+  findingsTimeline,
 } from '../admin/dashboard-map.mjs';
 
 const statuses = ['listening', 'ready', 'declared', 'disabled', 'placeholder', 'missing', 'error'];
@@ -515,7 +517,7 @@ test('sparklines work with empty and full history; counters plot the change per 
   assert.match(sparkline([]), /class="dm-spark is-empty"/);
   assert.match(sparkline([1, 4, 2]), /<polyline class="dm-spark-line" points="0.0,[\d.]+ 50.0,[\d.]+ 100.0,[\d.]+"/);
   const empty = renderDashboard({ nodes: [], edges: [], activity: activity(1) }, { kit });
-  assert.match(empty, /trend appears after two refreshes/);
+  assert.doesNotMatch(empty, /trend appears/, 'no filler text before there is a trend');
   assert.match(empty, /no earlier refresh to compare/);
   const moving = renderDashboard({ nodes: [], edges: [], activity: activity(20) }, { kit, history: full });
   assert.match(moving, /change per refresh, last 11 refreshes/);
@@ -617,4 +619,187 @@ test('the trace node drawer shows its stable detail with the live activity.trace
   const drawer = renderNodeDetail(node, {}, { kit, icons, payload });
   for (const fact of [/Level/, /full/, /Retained/, />7</, /Spans/, />21</]) assert.match(drawer, fact);
   assert.doesNotMatch(renderNodeDetail(node, {}, { kit, icons }), /Retained/);
+});
+
+test('Health KPI tiles link into Activity with the matching filter and name what they count', () => {
+  const now = { ...activity(3), dataverseRequests: { total: 0, other: 0, failed: 0, recent: [] } };
+  now.plugins = { executions: 4, failures: 2 };
+  const html = renderDashboard({ nodes: [], edges: [], activity: now }, { kit, icons });
+  noUnsafeMarkup(html);
+  const tile = (key) => html.match(new RegExp(`<li class="dm-kpi[^"]*" data-kpi="${key}">.*?</li>`, 's'))[0];
+  for (const [key, href] of [
+    ['requests', '#activity?host=power-pages'],
+    ['webApi', '#activity?host=dataverse-api'],
+    ['plugins', '#activity?kind=plugin-step'],
+    ['flows', '#activity?kind=flow-run'],
+    ['jobs', '#activity?kind=job'],
+    ['diagnostics', '#activity?tab=findings'],
+    ['messages', '#services?panel=messaging'],
+    ['outbox', '#services?panel=outbox'],
+    ['storage', '#services?panel=storage'],
+  ])
+    assert.match(tile(key), new RegExp(`<a class="dm-kpi-link" href="${RegExp.escape(kit.escapeHtml(href))}"`), key);
+  // Failures link to the same filter narrowed to errors; a zero count stays plain text.
+  assert.match(
+    tile('plugins'),
+    /<a class="dm-kpi-errors" href="#activity\?kind=plugin-step&amp;result=error">2 failed<\/a>/,
+  );
+  assert.doesNotMatch(tile('webApi'), /dm-kpi-errors/);
+  assert.match(tile('webApi'), /0 failed/);
+  // M2 §7 defect 8: Web API 0 beside portal /_api traffic, and three meanings of "plugin".
+  assert.match(tile('requests'), />Portal requests<.*pages and the portal&#39;s \/_api calls/s);
+  assert.match(tile('webApi'), />Dataverse Web API<.*the organization API, not the portal&#39;s \/_api/s);
+  assert.match(tile('plugins'), />Plug-in step runs<.*exported plug-in steps, not plugin rules/s);
+  assert.match(tile('diagnostics'), />Findings</);
+  // DV-N4-8 / DV-N4b-3: the tile says on hover how it relates to Activity › Stats (either can be the higher number).
+  assert.match(
+    tile('plugins'),
+    /title="Total since this runtime started, on every host, including runs whose activity is no longer kept\. Activity › Stats counts the steps of the kept activities that match its filters \(a run can be several steps\), so either number can be the higher one\."/,
+  );
+  assert.match(tile('jobs'), /title="The current level, not a total\."/);
+  const help = { 'health.tiles': { intro: 'Totals since start. Stats counts the window.' } };
+  assert.match(
+    renderDashboard({ nodes: [], edges: [], activity: now }, { kit, icons, help }),
+    /<span class="dm-kpi-help" id="help-health-tiles"><span class="ui-info"><button type="button" class="ui-info-button" aria-label="About these counters">i<\/button><span class="ui-info-pop" role="tooltip"><span class="ui-info-text">Totals since start\. Stats counts the window\.<\/span>/,
+  );
+  // The request feed is gone: Activity is the one list of requests.
+  assert.doesNotMatch(html, /What is happening|dashboard-activity|Render &amp; diagnostics/);
+});
+
+test('Health arrangement (D-M-9, D-M-11): the hero with readiness and key numbers, Key numbers and System map cards', () => {
+  const { nodes, edges } = large();
+  const payload = {
+    runtime: {
+      kind: 'power-pages',
+      revision: 4,
+      localOrigin: 'http://localhost:5501',
+      startedAt: '2026-10-22T08:00:00Z',
+    },
+    nodes,
+    edges,
+    activity: activity(3),
+  };
+  // The banner counts failed activities (roots), the number the linked list shows, not failed steps.
+  const stats = { overall: { errors: 16 }, roots: { errors: 5, p95: 137.4 } };
+  const now = Date.parse('2026-10-22T10:05:00Z');
+  const actions = '<button class="ui-button ui-small" type="button" data-dashboard-refresh>Refresh now</button>';
+  const html = renderDashboard(payload, {
+    kit,
+    icons,
+    arrangement: 'health',
+    stats,
+    site: 'Invented site',
+    now,
+    actions,
+  });
+  noUnsafeMarkup(html);
+  const banner = html.indexOf('class="dm-hero'),
+    tiles = html.indexOf('data-ui-section="health:numbers"'),
+    map = html.indexOf('data-ui-section="health:map"');
+  assert.ok(banner >= 0 && banner < tiles && tiles < map, 'hero, then the Key numbers card, then the map card');
+  assert.doesNotMatch(html, /dm-banner/, 'the plain banner card is gone');
+  // D-M-11: the hero carries the page action; the tiles card is titled like the map card; the legend is behind an (i).
+  assert.match(
+    html.slice(banner, tiles),
+    /<div class="dm-hero-actions"><button[^>]*data-dashboard-refresh>Refresh now/,
+  );
+  assert.match(
+    html,
+    /<details class="ui-section dm-section dm-kpi-card" data-ui-section="health:numbers" open><summary><span class="ui-section-title" id="dashboard-kpi-title">Key numbers<\/span>/,
+  );
+  assert.match(
+    html.slice(map),
+    // DV-N4e-2: one (i) for the map: what it shows, then the legend under its own heading.
+    /<div class="ui-section-help"><span class="ui-info is-end dm-legend-info"><button type="button" class="ui-info-button" aria-label="About the system map and its legend">i<\/button><span class="ui-info-pop" role="tooltip"><span class="ui-info-text">Six layers[^<]*<\/span><strong class="dm-legend-head">Legend<\/strong><ul class="dm-legend-list"[^>]*>[\s\S]*?<\/span><\/span><\/div>/,
+  );
+  assert.doesNotMatch(html.slice(map), /<details class="dm-legend"/);
+  assert.match(
+    html,
+    /<div class="dm-hero-state"><span class="dm-readiness is-(?:ok|warn|bad)"[^>]*>(?:ok|degraded|blocked)<\/span>/,
+  );
+  for (const fact of [
+    /<li><span>Site<\/span><strong>Invented site<\/strong>/,
+    /<code>http:\/\/localhost:5501<\/code>/,
+    /<li><span>Source version<\/span><strong>4<\/strong>/,
+    /<li><span>Uptime<\/span><strong>2 h 5 min<\/strong>/,
+  ])
+    assert.match(html, fact);
+  for (const [href, value] of [
+    ['#activity?host=power-pages', '19'],
+    ['#activity?result=error', '5'],
+    ['#activity?tab=stats', '137 ms'],
+    ['#activity?kind=plugin-step', '3'],
+    ['#activity?tab=findings', '2'],
+  ])
+    assert.match(
+      html,
+      new RegExp(
+        `<a href="${RegExp.escape(kit.escapeHtml(href))}" title="[^"]*"><strong>${RegExp.escape(value)}</strong>`,
+      ),
+    );
+  // Compact tiles: number, label and change only; Expand shows the graphs.
+  assert.match(
+    html,
+    /<button type="button" class="ui-button ui-small dm-kpi-expand" data-dashboard-expand aria-expanded="false"/,
+  );
+  assert.doesNotMatch(html.slice(tiles, map), /dm-kpi-detail|class="dm-spark/);
+  const expanded = renderDashboard(payload, { kit, icons, arrangement: 'health', expanded: true, now });
+  assert.match(expanded, /aria-expanded="true"[^>]*>Hide graphs/);
+  assert.match(expanded, /class="dm-spark/);
+  assert.match(html, /data-ui-section="health:map" open>/);
+});
+
+// DV-N4c-5: Expand shows the stats-route timeline of each tile and findings over time, or says why there is none.
+test('Health tile graphs are timelines since start, and a tile without one states the reason', () => {
+  const from = Date.parse('2026-10-22T10:00:00Z');
+  const range = timelineRange('2026-10-22T10:00:00Z', from + 23 * 60_000);
+  assert.deepEqual(range, { from, to: from + 23 * 60_000, bucketMs: 60_000 });
+  assert.equal(timelineRange(undefined), null);
+  assert.deepEqual(
+    findingsTimeline(
+      [
+        { time: '2026-10-22T09:59:00Z', count: 4 },
+        { time: '2026-10-22T10:02:30Z' },
+        { time: '2026-10-22T11:00:00Z', count: 9 },
+      ],
+      range,
+    ).slice(0, 4),
+    [4, 0, 1, 0],
+  );
+  const payload = { runtime: { kind: 'power-pages' }, nodes: [], edges: [], activity: { requests: { total: 7 } } };
+  const series = Object.fromEntries(KPIS.filter((kpi) => kpi.timeline).map((kpi) => [kpi.key, [0, 3, 1, 4]]));
+  const html = renderDashboard(payload, {
+    kit,
+    icons,
+    arrangement: 'health',
+    expanded: true,
+    timelines: { bucketMs: 60_000, series, findings: [2, 0, 1, 0] },
+  });
+  noUnsafeMarkup(html);
+  const tile = (key) =>
+    html.slice(html.indexOf(`data-kpi="${key}"`), html.indexOf('</li>', html.indexOf(`data-kpi="${key}"`)));
+  assert.match(tile('requests'), /class="dm-spark"/);
+  assert.match(tile('requests'), /requests per 1 min since start, kept activities/);
+  assert.match(tile('plugins'), /runs per 1 min since start/);
+  assert.match(tile('diagnostics'), /class="dm-spark"[\s\S]*findings per 1 min since start/);
+  for (const key of ['jobs', 'messages', 'outbox', 'storage']) {
+    assert.doesNotMatch(tile(key), /dm-spark/);
+    assert.match(tile(key), /No timeline: /);
+  }
+  const loading = renderDashboard(payload, {
+    kit,
+    icons,
+    arrangement: 'health',
+    expanded: true,
+    timelines: { loading: true },
+  });
+  assert.match(loading, /Loading the timeline…/);
+  const none = renderDashboard(payload, {
+    kit,
+    icons,
+    arrangement: 'health',
+    expanded: true,
+    timelines: { reason: 'the runtime reports no start time' },
+  });
+  assert.match(none, /No timeline: the runtime reports no start time/);
 });

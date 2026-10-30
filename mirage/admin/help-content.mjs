@@ -69,101 +69,116 @@ const ACCESS_MODES = {
 };
 
 const HELP = {
-  // ---- Monitor
-  dashboard: {
+  // ---- Workspace
+  home: {
     intro:
-      'A live map of what this local runtime runs and how busy each part is. It reads local state only and changes nothing.',
+      'Start here: the first steps for this runtime, how this browser signs in and where to go next. Nothing here changes a live environment.',
+    steps: [
+      'Work down the first-run checklist: sources, records, the portal, a test person.',
+      'Open Activity to see what each page and Web API call did.',
+      'Change startup configuration in /_setup/ and restart the preview; Runtime state shows where changes are kept.',
+    ],
+    doc: SIM,
+  },
+  'home.checklist': {
+    intro:
+      'The first steps, in order, each Done or To do from a fact: pages in the export, records, portal requests since start, this browser’s sign-in, and whether this browser opened Activity. The counter counts every step; each links to the view that does it.',
+    doc: SIM,
+  },
+  'home.sign-in': {
+    intro:
+      "How the portal's Sign in button works on this runtime, and who this browser is signed in as. The sign-in belongs to this browser only; other browsers keep their own.",
+    doc: `${PERSONAS}`,
+  },
+  'home.next': {
+    intro:
+      'Where to go for each kind of work. Plugin rules are the declarative rules of Plugins & presets; plug-in steps are the exported Dataverse plug-ins that Backend operations runs.',
+    doc: SIM,
+  },
+
+  // ---- Monitor
+  health: {
+    intro:
+      'Is this runtime wired and up: a live map of every part it runs, whether each one answers and how much it did since start. It reads local state only, works with tracing off and changes nothing.',
     steps: [
       'Read the status of each part: listening, ready, declared (configured, not started by Paqvilo), disabled, placeholder (answers 501), missing, error or planned.',
+      'Select a counter to open the matching activity in Activity, or its failures to see only those.',
       'Select a part to see its facts and open the view that manages it.',
-      'A moving connection means its counters changed since the previous refresh (every 5 seconds while the page is visible).',
       'Under Blocking, run preflight to see what your sources still need from this runtime.',
     ],
     doc: `${STACK}#scope-boundary`,
   },
-  'dashboard.topology': {
+  'health.topology': {
     intro:
       'Columns read left to right: clients, hosts, the organization, providers and declared outside services. Paqvilo never starts outside processes; it declares them and probes them on loopback.',
     doc: `${STACK}#external-but-reachable`,
   },
-  'dashboard.tiles': {
+  'health.tiles': {
     intro:
-      'Counters since this runtime started: portal and Dataverse requests, plug-in and flow runs, pending jobs, queued messages, captured outbox entries and diagnostics. The outbox never sends anything.',
+      "Totals since this runtime started, on every host; select one for the matching activity. Activity › Stats counts only the activities still kept that match its filters, so its numbers (for example plug-in step runs) can be lower than these totals. Portal requests are the portal's pages and its /_api calls; Dataverse Web API counts the organization API on its own port, so it stays 0 while only the portal is used. Plug-in step runs are exported plug-in steps, not the declarative plugin rules of Plugins & presets. Findings are diagnostics. Messages, outbox and storage open Providers & services. The outbox never sends anything.",
     doc: `${MESSAGING}#outbox`,
   },
-  'dashboard.activity': {
-    intro:
-      'The newest portal and Dataverse API requests, then diagnostics grouped by code. Request audit has filters and correlation.',
-    doc: SIM,
-  },
-  'dashboard.blocking': {
+  'health.blocking': {
     intro:
       'Preflight checks what your sources need from this runtime and which needs block. It probes declared local services, so it runs only when you ask; Strict makes every unmet requirement in scope blocking.',
     doc: `${CAPS}#preflight`,
   },
-  'dashboard.configuration': {
+  'health.configuration': {
     intro:
       'What this runtime was started with: runtime kind, simulation level, state file, data packs, Solution layers, configured settings and ports. Change them in /_setup/ and restart.',
     doc: `${SETUP}#during-a-preview`,
   },
-  'dashboard.drawer': {
+  'health.drawer': {
     intro:
       'Facts about the selected part: names, counts and status only. Secrets, connection strings and URL queries are never shown.',
     doc: STACK,
   },
 
-  overview: {
+  activity: {
     intro:
-      'What this local runtime serves, where your changes are kept and where to go next. Nothing here changes a live environment.',
+      'Everything this runtime did, in one place. An activity is one request, job, flow run or startup step; its steps show what ran, its log lines what was written and its findings what to look at. One filter bar narrows every tab and is part of the address, so a filtered view is a link you can share; #activity alone is unfiltered. Times are local, with the date and UTC on hover.',
     steps: [
-      'Check Runtime & persistence: it says whether record changes are kept and where.',
-      'Open Data records or Scenarios to shape the local data.',
-      'Change startup configuration in /_setup/ and restart the preview.',
+      'Open the portal and do the thing you want to understand; it appears here as it ends.',
+      'Narrow the list with the filter bar: time, result, who, table, record, host or text.',
+      'Open an activity: the Why line names the first step that failed or was denied, then read its steps, log lines, rendered templates and request.',
+      'Export bundle saves the activities, request audit entries, log lines and findings of the current filter for a bug report.',
     ],
-    doc: SIM,
-  },
-  'overview.runtime': {
-    intro:
-      'Where this runtime keeps your changes. The simulation level decides it: dry run keeps record changes in memory only, simulation writes declared pack DATA files, deep simulation also allows new tables and columns. Change the level in /_setup/; it takes effect after a restart and never discards edits already made in memory.',
-    doc: LEVELS,
-  },
-  'overview.metrics': {
-    intro:
-      'Counts from this runtime; select a card to open its view. Portal pages are routes found in the export. Plugin rules are the declarative rules of Plugins & presets, not exported plug-in steps (those are under Backend operations). Diagnostics are findings to review. Counting pages does not prove they render like the live portal.',
-    doc: EVIDENCE,
-  },
-  'overview.workspace': {
-    intro:
-      'How this runtime answers requests: who renders pages, where data comes from and who this browser is signed in as. Startup choices (sources, state file, routing) come from the configuration file; edit it in /_setup/ and restart.',
-    doc: `${SETUP}#configure-through-the-page`,
-  },
-  'overview.customize': { intro: 'Common next steps. Each changes local state of this runtime only.', doc: SIM },
-
-  logs: {
-    intro:
-      'What this runtime does as it happens: requests, Liquid and data reads, plug-in rule evaluations, diagnostics and reloads. The stream runs only while this view is open; the page keeps the newest 500 entries and shows 20 per page by default.',
+    doc: `${TRACING}#reading-a-trace`,
     fields: {
-      request: 'request: a portal or API request with method, path, status and duration.',
-      liquid: 'liquid: a Liquid or FetchXML read made while rendering a page.',
-      data: 'data: a local data read or write.',
-      plugin: 'plugin: the declarative plugin rules checked for a table operation.',
-      diagnostic: 'diagnostic: a runtime finding with its code.',
-      reload: 'reload: sources or configuration reloaded, so the runtime revision went up.',
-      connected: 'connected: the log stream (re)connected at the shown revision.',
-    },
-    doc: SIM,
-  },
-  'logs.list': {
-    intro: 'Filter by type or text. Pause holds new entries back so the list stops moving while you read.',
-    fields: {
-      type: 'Only entries of this type; Log types above explains each type.',
-      search: 'Only entries whose path, table, code or message contains this text.',
+      exportFormat:
+        'What Export filtered downloads for the current filters. Bundle: the activities, their request audit entries, log lines and findings, saved rendering evidence, the runtime revision and fingerprints, the filters and the time zone, as NDJSON documents. Bundle (OTLP): the same with the activities as OTLP. Activities NDJSON / JSON / OTLP: the activities alone. At most 200 activities.',
+      exportFormatActivities:
+        'What Export filtered downloads for the current filters: the activities as NDJSON (one per line), JSON or OTLP JSON. At most 200 activities.',
     },
   },
-
-  audit: {
+  'activity.filters': {
     intro:
-      'Every request this runtime answered, with who made it and how it ended. Request bodies, credentials, cookies and tokens are never stored. The ledger keeps the newest 1000 entries; the dropped count shows how many older ones fell off.',
+      'One bar for every tab; the address holds it, so a filtered view is a link you can share and #activity alone is unfiltered. A choice applies at once, text applies with Enter or Apply. A chip removes its filter, Clear all removes every filter; a chip that does not apply to the open tab is dimmed and says so. More filters holds the step filters and the request audit keys.',
+    doc: `${TRACING}#api`,
+    fields: {
+      range: 'Only what started in this window before now.',
+      result:
+        'ok, error, denied (a permission decision or 401 / 403), running or cancelled. The HTTP status is shown beside it.',
+      who: 'A contact, staff user, application or visitor: the person or caller an activity ran as.',
+      table: 'Only activities that touched this table logical name.',
+      recordId: 'Only activities on this record id; braces and case are ignored.',
+      host: 'Where the activity started: power-pages (the portal and its /_api), dataverse-api (the organization API), a job or this workspace.',
+      q: 'Free text over names, paths, tables, ids, error codes and messages.',
+      operation: 'Only activities with a step of this operation, such as create, retrieve or render (lower case).',
+      from: 'Only activities with a step that started at or after this local time.',
+      to: 'Only activities with a step that started at or before this local time.',
+      minDurationMs: 'Only activities that lasted at least this many milliseconds from their first to their last step.',
+      session: 'Only activities of this browser session: contact:<id> once a contact signed in, visitor:<id> before.',
+      portal: 'Only activities of this portal (site) name.',
+      auditId:
+        'Only the activity of this request audit id (the X-Sim-Trace-Id response header); a Liquid read’s id finds its page.',
+      path: 'Only request audit entries whose path contains this text. The list then shows the request audit, each entry opening its activity.',
+    },
+  },
+  'activity.activities': {
+    intro:
+      'One row per activity, newest first: time, result, what it was, who, duration and its first error. The request audit facts (provider, rows returned, portal error code) are on the row. Reads made while rendering a page are folded into it; Show reads lists them.',
+    doc: `${TRACING}#reading-a-trace`,
     fields: {
       api: 'api: a portal Web API request.',
       'liquid-fetchxml': 'liquid-fetchxml: a FetchXML query issued from Liquid.',
@@ -171,45 +186,100 @@ const HELP = {
       page: 'page: a rendered portal page.',
       'entity-read': 'entity-read: a read of one record.',
       'entity-query': 'entity-query: a query over a table.',
-      outcome: 'Outcome: success, error, denied (a permission decision) or pending (still running).',
+      pick: 'Tick two activities, then choose Compare to see their steps side by side with the duration differences.',
     },
+  },
+  'activity.log': {
+    intro:
+      'Log lines of this runtime, kept on the server from startup on, so lines written before this page opened are here too. Each line written during an activity links to it. Findings are folded behind a counter so requests stay readable. Live follows new lines as they are written.',
     doc: SIM,
-  },
-  'audit.filters': {
-    intro:
-      'Narrow the list with any combination of filters. A correlation filter (from Inspect request) isolates the requests of one visitor action.',
     fields: {
-      kind: 'Kind: the request type, such as api, liquid-fetchxml, form, page, entity-read or entity-query.',
-      provider:
-        'Provider: local requests answered by this runtime, or live requests passed to the connected environment.',
-      outcome: 'Outcome: success, error, denied by a permission decision, or pending.',
-      status: 'Status: the HTTP status class of the answer, or pending while running.',
-      path: 'Path: requests whose path contains this text.',
-      entity: 'Table: requests for this table logical name.',
-      search: 'Search: free text over contact, table, path and error.',
+      type: 'Only lines of this type: startup, request, liquid, data, plugin (one line per declarative plugin rule evaluated), diagnostic (a finding) or reload.',
+      request: 'request: a portal or API request with method, path, status and duration.',
+      liquid: 'liquid: a Liquid or FetchXML read made while rendering a page.',
+      data: 'data: a local data read or write.',
+      plugin:
+        'plugin: one declarative plugin rule evaluated for a table operation, with its result and changed fields.',
+      diagnostic: 'diagnostic: a finding with its code.',
+      reload: 'reload: sources or configuration reloaded, so the runtime revision went up.',
+      startup:
+        'startup: one step of starting the runtime (configuration, imports, state, listeners) with its time since start.',
     },
   },
-  'audit.table': {
-    intro: 'One row per request, newest first. Export filtered JSON keeps the rows you see as evidence.',
-  },
-
-  evidence: {
+  'activity.findings': {
     intro:
-      'What went wrong or was checked: runtime diagnostics, rendering evidence and the pages found in your export. Local evidence shows local behaviour on these sources; it does not prove the live site looks the same.',
-    doc: EVIDENCE,
-  },
-  'evidence.diagnostics': {
-    intro:
-      'Findings grouped by code; open a group to see each one and where it happened. The guide of each area explains its codes, for example PROVIDER_* in storage providers, SERVICE_ENDPOINT_* in messaging, FLOW_* in operations, SECRET_* in deployment profiles and PACK_EXPORT_* in data packs.',
+      'Findings (diagnostics) grouped by code. A finding raised during an activity links to it; one raised while loading sources says startup / outside any request. The guide of each area explains its codes, for example PROVIDER_* in storage providers, SERVICE_ENDPOINT_* in messaging, FLOW_* in operations and PACK_EXPORT_* in data packs.',
     doc: STACK,
   },
-  'evidence.rendering': {
+  'activity.pages': {
     intro:
-      'Screenshots and comparisons captured for this runtime. A pass covers only the compared route, data, person and window size; report coverage and skipped cases with it.',
+      'Pages found in the portal export, with the last activity of each route, its render time and the template files it used, plus saved rendering evidence. Local evidence shows local behaviour on these sources; it does not prove the live site looks the same.',
     doc: EVIDENCE,
   },
-  'evidence.pages': {
-    intro: 'Pages found in the portal export. Being listed here does not prove a page works; open it to exercise it.',
+  'activity.stats': {
+    intro:
+      'The filtered activities in numbers: counts, durations (p50 and p95), a timeline, breakdowns and the slowest steps and latest errors, each linking to its activity.',
+    doc: `${TRACING}#reading-a-trace`,
+  },
+  'activity.detail': {
+    intro:
+      'One activity: Why (the first step that failed or was denied), its steps as a waterfall or tree, its log lines and findings, the templates it rendered with their source files, the request as the audit recorded it, and the JSON. Related links open the same session, person or record, and the flow run or job it started.',
+    doc: `${TRACING}#reading-a-trace`,
+    fields: {
+      spanSearch:
+        'Shows only steps whose text contains this, matched like Search: names, kinds, modules, operations, tables, record ids, who, error codes and messages, attributes and events, and at level full the captured input and output. Their parents stay visible, dimmed.',
+      errorsOnly: 'Shows only steps that ended in error or were denied, with their parents dimmed.',
+      copyFallback:
+        'The browser refused clipboard access. The text is selected: press Ctrl+C (Cmd+C on a Mac) to copy it.',
+    },
+  },
+  'activity.detail-steps': {
+    intro:
+      'Every step of the activity as a waterfall (bars start where the step started and last as long as it ran; colour shows the module, red an error, amber a denial, dashed an async job segment, ticks its events) or as a nested tree. Select a step for its path from the root, attributes, events, redacted input and output and links; Parent and Root move up in one step, Escape closes it. Deep activities stop indenting after 12 levels and show the depth as a d-number.',
+    doc: `${TRACING}#reading-a-trace`,
+  },
+  'activity.detail-log': {
+    intro:
+      'The log lines and findings written during this activity, oldest first. The log keeps the newest lines only (mirage.logs.retain), so a long-past activity may have none left.',
+    doc: SIM,
+  },
+  'activity.detail-rendered': {
+    intro:
+      'The render, template and Liquid read steps of this activity with the source file and line each template came from, and the saved rendering evidence of its route. A source changed since the runtime loaded it shows no line.',
+    doc: EVIDENCE,
+  },
+  'activity.detail-request': {
+    intro:
+      'The request as the audit recorded it: result and HTTP status, who with roles, provider, table, rows, duration and save time, the error with its portal code, the query and the reads it made. Bodies are shown only when captured at level full, always redacted; credentials, cookies and tokens are never stored.',
+    doc: SIM,
+  },
+  'activity.detail-json': {
+    intro:
+      'The whole activity as the runtime answers it: summary, root, flat steps and nested children. Download activity saves the same JSON as a file; Copy JSON puts it on the clipboard.',
+    doc: `${TRACING}#api`,
+  },
+  'activity.compare': {
+    intro:
+      'Two activities side by side. Steps match by their kind and name path from the root; the right tree shows how much longer (+) or shorter (−) each matching step ran, and which steps only one activity has.',
+    doc: `${TRACING}#reading-a-trace`,
+  },
+  'activity.settings': {
+    intro:
+      'The tracing level and the retention limits apply at once, without a restart: off records no steps (the request audit keeps recording, and Activities lists it), summary records every step without payloads, full also captures redacted payloads at extra cost. Each step remembers the level it was recorded at. Persisting appends each ended activity to a file under the runtime’s .paqvilo state folder. Clear activities removes every retained activity; the audit, log lines and findings stay.',
+    doc: `${TRACING}#levels`,
+    fields: {
+      persist:
+        'Appends each ended activity as one JSON line to <state folder>/traces/<date>.ndjson; secrets, tokens and cookies are never written.',
+      traces: 'How many activities are kept, from 10 to 10,000; the oldest beyond it are dropped as soon as you save.',
+      spansPerTrace: 'How many steps one activity keeps, from 50 to 20,000; steps beyond it are counted as refused.',
+      payloadBytes:
+        'The largest captured input or output per step at level full, from 256 to 1,048,576 bytes; larger ones are cut and marked truncated.',
+    },
+  },
+  'activity.separate': {
+    intro:
+      'What stays outside Activity, and why: Health answers whether the runtime is wired and up, as totals since start that work with tracing off; Flows & jobs, Backend operations and Organization identity & API are where you change things, and each links here for what happened; Runtime state keeps persistence and state export and import; Data records holds the data itself. Verification evidence is another run’s output bound to fingerprints, shown under Pages & render.',
+    doc: SIM,
   },
 
   // ---- Data
@@ -353,7 +423,7 @@ const HELP = {
       'The outside services your organization uses and their local stand-ins: storage, the local message bus, the outbox, connections, secret references, local services you run yourself and service fixtures. Only names, counts and status are shown; secrets and connection strings never are.',
     steps: [
       'Check each provider is ready or declared as expected.',
-      'Probe declared local services with preflight (Infrastructure, Blocking).',
+      'Probe declared local services with preflight (Health, Blocking).',
       'Change providers in /_setup/ (Providers & services) and restart.',
     ],
     doc: STACK,
@@ -420,9 +490,9 @@ const HELP = {
   },
   'flows.runs': {
     intro:
-      'Flow runs, newest first, filtered by flow (process id) and status. Details shows the run’s action journal (each action with status and outputs), never its trigger input or secure outputs. The newest 200 runs are kept, with the journals of the newest 50 finished runs.',
+      'Flow runs, newest first, filtered by flow (process id) and result. A result reads as in Activity (ok, error, running or cancelled), followed by the flow run status when it says more (timed out, waiting, skipped). Details shows the run’s action journal (each action with status and outputs), never its trigger input or secure outputs. The newest 200 runs are kept, with the journals of the newest 50 finished runs.',
     doc: `${OPS}#flow-runs-waits-and-approvals`,
-    fields: { status: 'Only runs in this status. Any status lists every run that is kept.' },
+    fields: { status: 'Only runs with this result and flow run status. Any result lists every run that is kept.' },
   },
   'flows.journal': {
     intro:
@@ -449,109 +519,6 @@ const HELP = {
     intro:
       'Webhook service endpoints (contract 8) are called only when their host is on this computer (loopback); other hosts are never contacted. Hosts are shown by name only, never with a URL query or auth value.',
     doc: `${MESSAGING}#service-endpoint-delivery`,
-  },
-
-  trace: {
-    intro:
-      'What this runtime did for each request and job, as one trace of nested spans: the HTTP request, Web API and Dataverse operations, permission decisions, plug-in stages and steps, SDK calls, secrets, outbound HTTP, async jobs, flows, connectors and renders. Filter traces, read the timeline, breakdown, slowest spans and latest errors, then open a trace for its waterfall, tree and span details; at 1200 px and wider the open trace sits beside the list. Only the newest traces are kept (500 by default, changeable under Settings); payloads are captured only at level full, always redacted. The view follows the system light or dark theme.',
-    steps: [
-      'Run the portal page or API call you want to understand.',
-      'Narrow the list with filters or a timeline bucket.',
-      'Open the trace (Enter on a row moves to it) and select a span for its attributes, events and payloads; Escape closes the span.',
-      'Climb with the span path, Parent and Root, or follow Related links to the same session, actor, table, record or parent request.',
-    ],
-    doc: `${TRACING}#reading-a-trace`,
-    fields: {
-      exportFormat:
-        'The file Export downloads: NDJSON (one trace per line, streamed), JSON (one document) or OTLP JSON (resourceSpans for an OpenTelemetry viewer). The export follows the filters, up to 200 traces.',
-    },
-  },
-  'trace.filters': {
-    intro:
-      'Every filter narrows the traces, the overview and the export; a trace matches when one of its spans meets all span filters. The filters are part of the address, so a filtered view can be bookmarked or shared as a link; #trace alone is the unfiltered view. A value the runtime refuses (such as an unknown status) is named in a red banner with a button that removes it.',
-    doc: `${TRACING}#api`,
-    fields: {
-      range: 'Only traces with a span that started in this window before now; From and To set an exact window instead.',
-      from: 'Only traces with a span that started at or after this local time.',
-      to: 'Only traces with a span that started at or before this local time.',
-      kind: 'Only traces with a span of this kind, such as http, dataverse, plugin-step or flow-run.',
-      module: 'Only traces with a span from this part of the runtime, such as portal, dataverse, plugins or flows.',
-      operation: 'Only traces with a span of this operation, such as create, retrieve or render (lower case).',
-      entity: 'Only traces with a span on this table logical name.',
-      recordId:
-        'Only traces with a span on this record id (braces and case are ignored); Same record in a span sets it.',
-      status:
-        'Only traces with a span in this status: running, ok, error, denied (a permission decision or 401 / 403) or cancelled (a stopped flow run or action).',
-      host: 'Only traces started by this host: Power Pages, standalone, model-driven, canvas, code app, the Dataverse Web API, TDS or SOAP listener, a job or this workspace.',
-      actorKind: 'Only traces with a span run as this kind of caller, such as contact, staff, app or plugin.',
-      actorId: 'Only traces with a span run by this caller id; braces and case are ignored.',
-      sessionKey:
-        'Only traces of this browser session: contact:<id> once a contact signed in, visitor:<id> before (the visitor cookie).',
-      visitorId: 'Only traces of this visitor cookie id.',
-      portal: 'Only traces of this portal (site) name.',
-      search:
-        'Free text over span names, kinds, modules, operations, tables, record ids, actor names and ids, error codes and messages, attribute names and values, event types, messages and attributes, and at level full the captured input and output (case is ignored).',
-      minDurationMs: 'Only traces that lasted at least this many milliseconds from their first to their last span.',
-      hasErrors: 'Only traces with, or without, a span that ended in error.',
-    },
-  },
-  'trace.overview': {
-    intro:
-      'Counts and durations of the matching spans. Root p50 / p95 are the median and 95th percentile durations of the root spans of the matching traces, whatever span the filters matched; Root p95 vs before compares it with the same filters over the equal-length window just before the chosen time range. Slowest spans and Latest errors link to those spans, with the error code and message. Select a timeline bucket to narrow the time range to it (arrow keys move between buckets); Filter in the breakdown narrows to that kind, module, table, operation or actor. Times are local, with the UTC offset under the timeline.',
-    doc: `${TRACING}#reading-a-trace`,
-  },
-  'trace.list': {
-    intro:
-      'Traces, newest first, one row per trace: when its root started, its status and duration, the root span with its host, actor and session, span and error counts with the first error message, and tables. Select a column heading to sort by it; select it again to reverse. Select a row to open the trace (Enter moves to the trace), or tick two rows and choose Compare. The legend under the list says what each status means. Live reloads the list as traces end, on hosts that stream traces.',
-    doc: `${TRACING}#reading-a-trace`,
-    fields: {
-      pick: 'Tick two traces, then choose Compare to see their span trees side by side with the duration differences.',
-    },
-  },
-  'trace.detail': {
-    intro:
-      'One trace: its facts, then every span as a waterfall, a nested tree or the raw JSON. Select a span for its path from the root, attributes, events (permission decisions, trace lines, staged jobs), redacted input and output, links and related traces; Parent and Root move up in one step, Escape closes the span. Flow run, system job and plug-in step ids link to their own views. Copy id and Copy link put the trace id or a link to this view on the clipboard.',
-    doc: `${TRACING}#reading-a-trace`,
-    fields: {
-      spanSearch:
-        'Shows only spans whose text contains this, matched like the Search filter: span names, kinds, modules, operations, tables, record ids, actor names and ids, error codes and messages, attribute names and values, event types, messages and attributes, and at level full the captured input and output (case is ignored). Their parents stay visible, dimmed.',
-      errorsOnly: 'Shows only spans that ended in error or were denied, with their parents dimmed.',
-      copyFallback:
-        'The browser refused clipboard access. The text is selected: press Ctrl+C (Cmd+C on a Mac) to copy it.',
-    },
-  },
-  'trace.waterfall': {
-    intro:
-      'Bars start where the span started and last as long as it ran, against the whole trace; colour shows the module, a red outline an error, an amber one a denial and a dashed one an async job segment. Ticks on a bar mark its events.',
-    doc: `${TRACING}#reading-a-trace`,
-  },
-  'trace.tree': {
-    intro:
-      'Every span nested under its parent, in start order: expand or collapse a span with its children, and select a name for its details. Very deep traces stop indenting after 12 levels and show the depth as a d-number.',
-    doc: `${TRACING}#reading-a-trace`,
-  },
-  'trace.json': {
-    intro:
-      'The whole trace as the runtime answers it: summary, root, flat spans and nested children. Download trace saves the same JSON as a file; Copy JSON puts it on the clipboard.',
-    doc: `${TRACING}#api`,
-  },
-  'trace.compare': {
-    intro:
-      'Two traces side by side. Spans match by their kind and name path from the root; the right tree shows how much longer (+) or shorter (−) each matching span ran, and which spans only one trace has.',
-    doc: `${TRACING}#reading-a-trace`,
-  },
-  'trace.settings': {
-    intro:
-      'The tracing level and the retention limits apply at once, without a restart: off records nothing, summary records every span without payloads, full also captures redacted payloads at extra cost. Each span remembers the level it was recorded at. Persisting appends each ended trace to a file under the runtime’s .paqvilo state folder.',
-    doc: `${TRACING}#levels`,
-    fields: {
-      persist:
-        'Appends each ended trace as one JSON line to <state folder>/traces/<date>.ndjson; secrets, tokens and cookies are never written.',
-      traces: 'How many traces are kept, from 10 to 10,000; the oldest beyond it are dropped as soon as you save.',
-      spansPerTrace: 'How many spans one trace keeps, from 50 to 20,000; spans beyond it are counted as refused.',
-      payloadBytes:
-        'The largest captured input or output per span at level full, from 256 to 1,048,576 bytes; larger ones are cut and marked truncated.',
-    },
   },
 
   capabilities: {
@@ -824,7 +791,9 @@ const HELP = {
     doc: `${DATAVERSE}#managed-identity-and-federated-credentials`,
   },
   'dataverse.requests': {
-    intro: 'The most recent Web API requests, newest first. Tokens, secrets and bodies are never recorded.',
+    intro:
+      'How many Web API requests this runtime keeps (the newest 500). Activity shows each one with its caller, steps and result. Tokens, secrets and bodies are never recorded.',
+    doc: `${TRACING}#reading-a-trace`,
   },
   'dataverse.reset': {
     intro:
@@ -880,6 +849,11 @@ const HELP = {
     intro:
       'Where this runtime keeps your changes. Dry run keeps record edits, local registrations and password or secret hashes in memory; persistent levels need a private state file under the ignored .paqvilo/ folder, and writes to undeclared business tables fail with SimulationDataTargetRequired.',
     doc: `${LEVELS}#private-runtime-and-identity-state`,
+  },
+  'runtime.workspace': {
+    intro:
+      'How this runtime answers requests: who renders pages, where data comes from, the platform stylesheets and the source folder. Startup choices come from the configuration file; edit it in /_setup/ and restart.',
+    doc: `${SETUP}#configure-through-the-page`,
   },
   'runtime.fingerprints': {
     intro:
@@ -1049,7 +1023,7 @@ const HELP = {
     steps: [
       'Start the preview here.',
       'Open your website and apps.',
-      'Check the simulator (Infrastructure) and what the project needs.',
+      'Check the simulator (Health) and what the project needs.',
     ],
     doc: `${SETUP}#during-a-preview`,
   },

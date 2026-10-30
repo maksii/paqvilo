@@ -199,6 +199,13 @@ test('under a bulk span 50 row decisions and commits are one permission and one 
     for (let index = 0; index < 50; index++) {
       principals.authorize({ user, entity: 'fx_gadget', operation: 'delete', mapping: MAPPING });
       await store.transact(() => store.createRecord('fx_gadget', { fx_name: `Row ${index}` }, { admin: true }));
+      store.ruleEvaluated({
+        rule: 'invented-rule',
+        table: 'fx_gadget',
+        operation: 'delete',
+        result: 'applied',
+        changes: [],
+      });
     }
   });
   bulk.end();
@@ -219,6 +226,8 @@ test('under a bulk span 50 row decisions and commits are one permission and one 
     tables: ['fx_gadget'],
   });
   assert.equal(span.attributes.commits.count, 50);
+  assert.equal(of('rule').length, 1, 'declarative rule evaluations are one event too');
+  assert.deepEqual(span.attributes.rules, { count: 50, failed: 0, tables: ['fx_gadget'], ids: [] });
   assert.equal(span.attributes.commits.failed, 0);
   assert.equal(traces.tree(bulk.traceId).spans.length, 1, 'the rows open no spans');
 

@@ -39,9 +39,6 @@
   .section-gap {
     margin-top: 20px !important;
   }
-  .metric {
-    padding: 20px !important;
-  }
 }
 * {
   box-sizing: border-box;
@@ -216,9 +213,17 @@ nav {
 .top-actions {
   flex: none;
 }
+/* D-M-7: the breadcrumb names the page (there is no title block); the current item carries the accent colour. */
 .breadcrumb strong {
-  color: var(--ui-t-40516a, #40516a);
-  font-weight: 550;
+  color: var(--ui-accent);
+  font-weight: 650;
+}
+.breadcrumb-help {
+  display: inline-flex;
+  margin-right: auto;
+}
+.breadcrumb-help:empty {
+  display: none;
 }
 .top-actions {
   display: flex;
@@ -226,7 +231,7 @@ nav {
   align-items: center;
 }
 main {
-  padding: 34px 36px 40px;
+  padding: 12px 36px 40px;
   max-width: 1600px;
   width: 100%;
   margin: 0 auto;
@@ -315,39 +320,10 @@ h3 {
   padding: 6px 10px;
   font-size: 11px;
 }
-.cards {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
-  margin-bottom: 24px;
-}
-.metric,
 .panel {
   background: var(--ui-c-ffffff, white);
   border: 1px solid var(--line);
   border-radius: 9px;
-}
-.metric {
-  padding: 19px 20px;
-}
-.metric-label {
-  color: var(--ui-t-738198, #738198);
-  font-size: 11px;
-  font-weight: 550;
-}
-.metric-value {
-  font-size: 29px;
-  letter-spacing: -1px;
-  font-weight: 650;
-  margin: 13px 0 8px;
-}
-.metric-detail {
-  font-size: 11px;
-  color: var(--ui-t-8391a6, #8391a6);
-}
-.metric-icon {
-  float: right;
-  color: var(--ui-t-7883da, #7883da);
 }
 .grid-two {
   display: grid;
@@ -470,7 +446,7 @@ th {
   letter-spacing: 0.8px;
   text-align: left;
   background: var(--ui-c-fafbfe, #fafbfe);
-  padding: 13px 18px;
+  padding: 10px 18px;
   white-space: nowrap;
   border-bottom: 1px solid var(--line);
 }
@@ -731,9 +707,6 @@ footer {
   main {
     padding: 28px 24px;
   }
-  .cards {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
   .grid-two {
     grid-template-columns: 1fr;
   }
@@ -781,7 +754,7 @@ footer {
     padding: 15px 18px;
   }
   .breadcrumb {
-    display: none;
+    flex: 1 1 auto;
   }
   .top-actions {
     width: 100%;
@@ -796,15 +769,6 @@ footer {
   }
   h1 {
     font-size: 24px;
-  }
-  .cards {
-    gap: 10px;
-  }
-  .metric {
-    padding: 16px;
-  }
-  .metric-value {
-    font-size: 25px;
   }
   .panel {
     padding: 19px;
@@ -973,4 +937,133 @@ button[aria-busy='true'] {
   font-size: 10px;
   line-height: 1.4;
   color: #8190aa;
+}
+
+/* Phone width: the /_sim/ sidebar collapses behind a Menu button, so each view starts on the first screen. */
+.nav-toggle {
+  display: none;
+}
+@media (max-width: 759px) {
+  .shell:has(> .sidebar[data-nav-collapsible]) {
+    display: block;
+  }
+  .sidebar[data-nav-collapsible] {
+    width: auto;
+    height: auto;
+    position: static;
+    flex-flow: row wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 12px 18px;
+  }
+  .sidebar[data-nav-collapsible] .brand {
+    padding: 0;
+  }
+  .sidebar[data-nav-collapsible] > :not(.brand, .nav-toggle) {
+    flex-basis: 100%;
+  }
+  .sidebar[data-nav-collapsible]:not(.is-open) > :not(.brand, .nav-toggle) {
+    display: none;
+  }
+  .sidebar[data-nav-collapsible] .nav-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    border: 1px solid #3a4660;
+    border-radius: 7px;
+    background: transparent;
+    color: #dbe3f0;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .sidebar[data-nav-collapsible] .nav-toggle:focus-visible {
+    outline: 2px solid #8ca3ff;
+    outline-offset: 2px;
+  }
+}
+/* Phone width: the top bar wraps (breadcrumb with its (i) on one line, the buttons below), never past the screen. */
+@media (max-width: 759px) {
+  .topbar {
+    flex-wrap: wrap;
+    height: auto;
+    padding: 10px 18px;
+  }
+  .breadcrumb {
+    flex: 1 1 0;
+  }
+  .top-actions {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+}
+/* Phone width: the top bar keeps the breadcrumb and one "Apps & actions" menu (DV-N4b-9). */
+.top-more {
+  display: none;
+}
+@media (max-width: 759px) {
+  .topbar {
+    position: relative;
+    flex-wrap: nowrap;
+  }
+  .top-more {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 4px;
+  }
+  .topbar:not(.is-open) .top-actions {
+    display: none;
+  }
+  .topbar.is-open .top-actions {
+    position: absolute;
+    top: 100%;
+    right: 12px;
+    z-index: 60;
+    display: grid;
+    width: min(260px, calc(100vw - 24px));
+    gap: 6px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--ui-surface);
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+  }
+  .topbar.is-open .top-actions .button {
+    justify-content: flex-start;
+    width: 100%;
+  }
+}
+@media (max-width: 759px) {
+  .breadcrumb-root,
+  #workspace-kind {
+    display: none;
+  }
+  .sidebar[data-nav-collapsible] .brand {
+    flex: 1 1 auto;
+  }
+}
+/* Phone width: compact bars so the content starts in the first quarter of the screen (DV-N4b-9). */
+@media (max-width: 759px) {
+  .sidebar[data-nav-collapsible] {
+    padding: 8px 14px;
+  }
+  .sidebar[data-nav-collapsible] .nav-toggle {
+    padding: 6px 10px;
+  }
+  .topbar {
+    min-height: 0;
+    padding: 6px 14px;
+  }
+  main {
+    padding: 10px 14px 32px;
+  }
+}
+@media (max-width: 759px) {
+  .panel {
+    padding: 16px;
+  }
 }

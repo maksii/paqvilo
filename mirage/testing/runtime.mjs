@@ -23,6 +23,11 @@ const unretained = (error) => {
   throw error;
 };
 
+// Query strings for the audit routes: an array traceId is the comma list the route takes.
+const auditQueryOf = (filters = {}) =>
+  new URLSearchParams(
+    Object.entries(filters).map(([key, value]) => [key, Array.isArray(value) ? value.join(',') : String(value)]),
+  );
 // Query strings for the trace routes: a Date keeps its milliseconds (toISOString); undefined and null are left out.
 const traceQuery = (filters = {}) => {
   const query = new URLSearchParams();
@@ -218,10 +223,11 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
     clear: () => request('/trace/clear', { method: 'POST', body: {} }),
     // Resolves with status() once the runtime wrote every queued persisted line and handed its SSE frames to the sockets.
     flush: () => request('/trace/flush', { method: 'POST', body: {} }),
-    // listener(event) receives each trace frame: { type: 'connected', status } first, then payload-free 'span-start',
-    // 'span-end' and 'trace-end' frames. Returns unsubscribe(); unsubscribe.closed resolves when the stream ends
-    // (unsubscribe, signal or runtime shutdown) and rejects only when the stream cannot be opened.
-    subscribe(listener, { signal } = {}) {
+    // listener(event) receives each trace frame: { type: 'connected', status, events, traceId } first, then payload-free
+    // 'span-start', 'span-end' and 'trace-end' frames (only the `events` types and only trace `traceId` when given; the
+    // runtime filters them). Returns unsubscribe(); unsubscribe.closed resolves when the stream ends (unsubscribe, signal
+    // or runtime shutdown) and rejects only when the stream cannot be opened.
+    subscribe(listener, { signal, events, traceId } = {}) {
       if (typeof listener !== 'function') throw new TypeError('Trace listeners must be functions.');
       const controller = new AbortController();
       let stopped = false;
@@ -234,7 +240,10 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
       // Resolves when the stream ends; rejects when it cannot be opened or the listener throws.
       const closed = (async () => {
         try {
-          const response = await reach(`${origin}/_sim/events?channels=trace`, {
+          const query = new URLSearchParams({ channels: 'trace' });
+          if (events) query.set('events', [].concat(events).join(','));
+          if (traceId) query.set('traceId', traceId);
+          const response = await reach(`${origin}/_sim/events?${query}`, {
             headers: { accept: 'text/event-stream', ...(cookie ? { cookie } : {}) },
             redirect: 'error',
             signal: controller.signal,
@@ -281,10 +290,32 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
     state: ({ summary = false } = {}) => request(`/state${summary ? '?summary=1' : ''}`),
     witness: ({ tables } = {}) =>
       request(`/verification-witness?tables=${encodeURIComponent(Array.isArray(tables) ? tables.join(',') : '')}`),
-    audit: (filters = {}) => request(`/audit?${new URLSearchParams(filters)}`),
-    exportAudit: (filters = {}) => request(`/audit/export?${new URLSearchParams(filters)}`),
+    // traceId may be one id, a comma list or an array (at most 200).
+    audit: (filters = {}) => request(`/audit?${auditQueryOf(filters)}`),
+    exportAudit: (filters = {}) => request(`/audit/export?${auditQueryOf(filters)}`),
     trace,
-    diagnostics: () => request('/diagnostics'),
+    diagnostics: (filters = {}) => request(`/diagnostics${traceQuery(filters)}`),
+    // The runtime log stream's retained lines (GET /_sim/api/logs): { items, latestSequence, oldestSequence, retained,
+    // dropped, retain, more }; type may be a list.
+    logs: ({ since, limit, type, traceId } = {}) =>
+      request(`/logs${traceQuery({ since, limit, type: Array.isArray(type) ? type.join(',') : type, traceId })}`),
+    // The activity export bundle (GET /_sim/api/activity/export?format=bundle): its documents in order, each with `kind`
+    // (bundle, activity | otlp, audit, log, finding, evidence, end). filters: any trace filter, traces (ndjson | otlp), limit.
+    async exportBundle(filters = {}) {
+      const response = await reach(
+        `${origin}/_sim/api/activity/export${traceQuery({ ...filters, format: 'bundle' })}`,
+        {
+          headers: cookie ? { cookie } : {},
+          redirect: 'error',
+        },
+      );
+      const text = await bodyOf(response, 'text');
+      if (!response.ok) throw requestError(response.status, /^\s*\{/.test(text) ? JSON.parse(text) : null);
+      return text
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    },
     platformSettings: () => request('/platform-settings'),
     setPlatformSettings: (overrides) => request('/platform-settings', { method: 'PATCH', body: overrides }),
     resetPlatformSetting: (key) => request(`/platform-settings/${encodeURIComponent(key)}`, { method: 'DELETE' }),

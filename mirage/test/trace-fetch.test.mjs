@@ -60,7 +60,8 @@ test('an outbound request is an http-out span under the current span that forwar
   });
   assert.equal(seen[0].headers['x-sim-parent-trace'], span.spanId);
   assert.equal(seen[0].headers['x-trace-id'], span.traceId);
-  assert.equal(seen[0].headers['x-sim-trace-id'], span.traceId);
+  assert.equal(seen[0].headers['x-sim-span-id'], span.spanId);
+  assert.equal('x-sim-trace-id' in seen[0].headers, false, 'no audited span: no audit id, and never the trace id');
   assert.equal(seen[0].headers.authorization, 'Bearer abc.def', 'the request itself is unchanged');
   assert.deepEqual(span.input.body, { name: 'Invented', password: '[redacted]' });
   assert.equal(span.input.headers.authorization, '[redacted]');

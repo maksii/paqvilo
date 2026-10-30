@@ -8,6 +8,7 @@ import path from 'node:path';
 import { importPortal } from '../lib/importer.mjs';
 import { createPortalRenderer } from '../lib/liquid.mjs';
 import { createTraceStore } from '../lib/trace-store.mjs';
+import { resolveRenderSources } from '../lib/sim-activity.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const files = {
@@ -159,4 +160,17 @@ test('a runtime template and a missing include are named by their include name, 
   assert.ok(names.includes('builtin breadcrumbs'), names.join(', '));
   assert.ok(names.includes('missing No such template'), names.join(', '));
   assert.equal(names.includes('template'), false, names.join(', '));
+  // DV-N4-11: an exported snippet names its source and resolves to its file; a template without an exported source
+  // says why (sourceOrigin built-in or missing), so the Rendered tab never shows a bare dash.
+  const spans = tree.spans.filter((span) => span.kind === 'render-template');
+  const snippet = spans.find((span) => /Greeting/.test(span.name));
+  assert.ok(snippet?.attributes.sourceRefId, JSON.stringify(snippet));
+  assert.equal(snippet.attributes.sourceOrigin, 'export');
+  const resolved = resolveRenderSources(renderer.sourceIndex(), [snippet.attributes.sourceRefId], dir);
+  assert.deepEqual(
+    resolved.items.map((item) => [item.path, item.kind, item.name]),
+    [['content-snippets/Greeting.contentsnippet.value.html', 'contentsnippet', 'Greeting']],
+  );
+  assert.equal(spans.find((span) => span.name === 'builtin breadcrumbs').attributes.sourceOrigin, 'built-in');
+  assert.equal(spans.find((span) => span.name === 'missing No such template').attributes.sourceOrigin, 'missing');
 });

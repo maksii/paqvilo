@@ -298,6 +298,8 @@ export function createExternalSignIn({
   /** An audit entry for a record the sign-in flow created (registration, identities). */
   const record = (kind, entity, query, contactId, { method, path } = {}) => {
     const context = trace.getStore();
+    // The entry names the span the write ran in (the sign-in request's trace, D-M-4); none at trace level off.
+    const span = (store?.traces?.enabled ? store.traces.current() : null) ?? context?.traceSpan ?? null;
     audit
       .begin({
         kind,
@@ -308,6 +310,11 @@ export function createExternalSignIn({
         query,
         correlationId: context?.correlationId,
         parentId: context?.spanId,
+        traceId: span?.traceId,
+        spanId: span?.spanId,
+        // The signed-in contact names the session (D-M-2 Who); the visitor cookie stays its own field.
+        visitorId: context?.visitor,
+        sessionKey: contactId ? `contact:${contactId}` : context?.visitor ? `visitor:${context.visitor}` : null,
       })
       .finish({ status: 201, rowCount: 1 });
   };

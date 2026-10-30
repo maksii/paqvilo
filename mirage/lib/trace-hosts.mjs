@@ -31,7 +31,6 @@ export function setTraceHeaders(res, span) {
   if (span?.spanId) res.setHeader('X-Sim-Span-Id', span.spanId);
 }
 
-const STALLED_CYCLES = 3;
 const STALL_MS = 5000;
 const CHECK_MS = 1000;
 
@@ -52,9 +51,11 @@ const deferCheck = (interval) => (fn) => {
  * by default a timer of min(stallMs, 1 s) followed by setImmediate, so it runs after the I/O poll of a responsive loop,
  * never inside a synchronous burst). Each check compares the bytes the client has taken since the last one: any
  * progress restarts the stall clock (now(), default Date.now); a client still waiting with no progress for more than
- * stallMs (default 5 s) is dropped and destroyed. A client whose first write after each of three consecutive drains is
- * refused again is dropped too. So a stalled reader never makes the server buffer without bound, and a blocked event
- * loop (which keeps every reader from draining) never drops a healthy one.
+ * stallMs (default 5 s) is dropped and destroyed; that and a closed response are the only ways a client leaves. A reader
+ * whose every frame meets back-pressure (frames larger than the socket's high-water mark) still drains, so it is making
+ * progress and stays. So a stalled reader never makes the server buffer without bound, and neither back-pressure nor a
+ * blocked event loop (which keeps every reader from draining) ever drops a healthy one. A refused write is still queued:
+ * no frame is ever skipped.
  *
  * flush() resolves once every frame sent so far was handed to each client's socket (or the client left). onEmpty runs
  * whenever the last client leaves (a channel that observes a source only while someone listens).
@@ -65,7 +66,7 @@ export function sseClients({
   stallMs = STALL_MS,
   defer = deferCheck(Math.min(stallMs, CHECK_MS)),
 } = {}) {
-  const clients = new Map(); // res -> { waiting, since, cycles, written, taken, checking }
+  const clients = new Map(); // res -> { waiting, since, written, taken, checking }
   const drop = (res) => {
     if (clients.delete(res) && !clients.size) onEmpty?.();
   };
@@ -98,7 +99,7 @@ export function sseClients({
     [Symbol.iterator]: () => clients.keys(),
     add(res) {
       if (res.destroyed || res.writableEnded) return false;
-      const state = { waiting: false, since: 0, cycles: 0, written: 0, taken: 0, checking: false };
+      const state = { waiting: false, since: 0, written: 0, taken: 0, checking: false };
       clients.set(res, state);
       res.on('drain', () => {
         state.waiting = false;
@@ -113,14 +114,12 @@ export function sseClients({
           continue;
         }
         state.written += Buffer.byteLength(message);
-        if (res.write(message)) {
-          if (!state.waiting) state.cycles = 0;
-        } else if (!state.waiting) {
+        // A refused write is queued by the stream like any other; it only starts the wait for drain.
+        if (!res.write(message) && !state.waiting) {
           state.waiting = true;
           state.since = now();
           state.taken = taken(res, state);
-          if (++state.cycles > STALLED_CYCLES) kill(res);
-          else schedule(res, state);
+          schedule(res, state);
         }
       }
     },

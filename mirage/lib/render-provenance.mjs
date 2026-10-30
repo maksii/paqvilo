@@ -210,6 +210,10 @@ export async function withRenderSource(context, source, run) {
         traceId: parent.traceId,
         attributes: {
           sourceRefId: invocation.sourceRefId,
+          // Where the template text came from (D-M-4, the Rendered tab): an exported source (resolvable through
+          // /_sim/api/render-sources), a built-in template or layout, or a source the export lacks (an empty slot, a
+          // missing include).
+          sourceOrigin: invocation.sourceRefId ? 'export' : slot?.empty || slot?.missing ? 'missing' : 'built-in',
           ...(callSite ? { callSite: `${callSite.start}-${callSite.end}` } : {}),
           ...(slot?.empty ? { empty: true } : {}),
         },

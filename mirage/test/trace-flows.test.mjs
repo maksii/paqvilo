@@ -223,13 +223,15 @@ test('a flow job whose staging had no span still opens an async job span; a fals
   assert.equal(traces.spans({ kind: 'flow-run' }).total, 1, 'a skipped trigger opens no flow-run span');
 });
 
-test('a waiting run ends its span ok with a suspended event; its resume opens a linked async flow-run span', async (t) => {
+// A tracked run store on a manual scheduler with one flow (FLOW) that waits 5 minutes, then answers 200 { ok: true }.
+// connectors: true gives the run store's flows (and the caller) a connector runtime on the same scheduler.
+async function waitingFlow(t, { level = 'full', connectors: withConnectors = false } = {}) {
   const clock = fixedClock();
   const store = await new DataStore({ state: emptyState(), clock, ids: sequentialIds() }).init();
-  const traces = traced(store);
+  const traces = traced(store, level);
   const scheduler = createScheduler({ clock, manual: true });
   ownedFixture(t).add(() => scheduler.close());
-  const connectors = createConnectorRuntime({ store, scheduler, clock });
+  const connectors = withConnectors ? createConnectorRuntime({ store, scheduler, clock }) : undefined;
   const definition = {
     triggers: manual,
     actions: {
@@ -241,10 +243,15 @@ test('a waiting run ends its span ok with a suspended event; its resume opens a 
     store,
     clock,
     scheduler,
-    flowOf: (id) => (id === FLOW ? { definition, mode: 'exported', connectors } : null),
+    flowOf: (id) => (id === FLOW ? { definition, mode: 'exported', ...(connectors ? { connectors } : {}) } : null),
   });
   runs.attach({});
   ownedFixture(t).add(() => runs.close());
+  return { clock, store, traces, scheduler, connectors, definition, runs };
+}
+
+test('a waiting run ends its span ok with a suspended event; its resume opens a linked async flow-run span', async (t) => {
+  const { store, traces, scheduler, connectors, definition, runs } = await waitingFlow(t, { connectors: true });
   const waiting = await runTrackedFlow({
     runs,
     processId: FLOW,
@@ -265,6 +272,7 @@ test('a waiting run ends its span ok with a suspended event; its resume opens a 
   const pause = traces.spans({ kind: 'flow-action' }).items[0];
   assert.deepEqual([pause.name, pause.attributes.status, pause.attributes.waiting], ['pause', 'Waiting', true]);
   assert.equal(runs.get(waiting.runId).traceId, first.traceId);
+  assert.equal(runs.get(waiting.runId).traceSpanId, first.spanId, 'the run view names its flow-run span (D-M-4)');
 
   await scheduler.advance(300000);
   assert.equal(runs.get(waiting.runId).status, 'Succeeded');
@@ -288,6 +296,22 @@ test('a waiting run ends its span ok with a suspended event; its resume opens a 
       ['pause', true],
       ['done', false],
     ],
+  );
+});
+
+test('a resume the trace registry no longer knows becomes the run span the run view names', async (t) => {
+  const { store, traces, scheduler, definition, runs } = await waitingFlow(t, { level: 'summary' });
+  const waiting = await runTrackedFlow({ runs, processId: FLOW, trigger: 'Test', definition, input: {}, store });
+  assert.equal(waiting.status, 'Waiting');
+  // The in-memory registry is gone (as after a restart): the resume is a new root and is remembered as the run's span.
+  traces.clear();
+  assert.deepEqual([runs.get(waiting.runId).traceId, runs.get(waiting.runId).traceSpanId], [undefined, undefined]);
+  await scheduler.advance(300000);
+  const [resumed] = traces.spans({ kind: 'flow-run' }).items;
+  assert.equal(resumed.attributes.resume, true);
+  assert.deepEqual(
+    [runs.get(waiting.runId).traceId, runs.get(waiting.runId).traceSpanId],
+    [resumed.traceId, resumed.spanId],
   );
 });
 

@@ -636,11 +636,11 @@ test('headers and fromHeaders carry a trace across loopback HTTP', () => {
   const headers = traces.run(sender, () => traces.headers());
   assert.deepEqual(headers, {
     'x-sim-parent-trace': sender.spanId,
-    'x-sim-trace-id': sender.traceId,
+    'x-sim-span-id': sender.spanId,
     'x-trace-id': sender.traceId,
   });
   assert.deepEqual(traces.headers(), {}, 'no current span, no headers');
-  // x-trace-id wins over x-sim-trace-id; either one alone names the trace.
+  // Only x-trace-id names a trace; x-sim-trace-id is an audit id (D-M-4) and an unknown one is ignored.
   const A = '0a0a0a0a-0000-4000-8000-00000000000a',
     B = '0b0b0b0b-0000-4000-8000-00000000000b';
   assert.deepEqual(traces.fromHeaders(new Headers({ 'X-Trace-Id': A, 'X-Sim-Trace-Id': B })), {
@@ -648,8 +648,8 @@ test('headers and fromHeaders carry a trace across loopback HTTP', () => {
     parentSpanId: null,
   });
   assert.equal(traces.fromHeaders({ 'x-trace-id': A }).traceId, A);
-  assert.equal(traces.fromHeaders({ 'x-sim-trace-id': B }).traceId, B);
-  assert.equal(traces.fromHeaders({ 'x-trace-id': 'bad value', 'x-sim-trace-id': B }).traceId, B);
+  assert.deepEqual(traces.fromHeaders({ 'x-sim-trace-id': B }), { traceId: null, parentSpanId: null });
+  assert.equal(traces.fromHeaders({ 'x-trace-id': 'bad value', 'x-sim-trace-id': B }).traceId, null);
   assert.equal(traces.fromHeaders({ 'x-trace-id': A.toUpperCase() }).traceId, A, 'ids are lowercased');
   const inbound = traces.start({ kind: 'http', name: 'POST /hook', ...traces.fromHeaders(headers) });
   assert.equal(inbound.parentSpanId, sender.spanId);
@@ -665,7 +665,178 @@ test('headers and fromHeaders carry a trace across loopback HTTP', () => {
   ]);
   assert.equal(roots[0].parentSpanId, null);
   assert.notEqual(roots[0].traceId, sender.traceId);
-  assert.equal(roots[1].traceId, A);
+  assert.ok(![A, B, sender.traceId].includes(roots[1].traceId), 'an unknown audit id never names the trace');
+});
+
+test('x-sim-trace-id resolves as an audit id: the span naming it is the parent; summaries and filters expose auditId', () => {
+  const { traces } = store();
+  const AUDIT = '0c0c0c0c-0000-4000-8000-00000000000c',
+    READ_AUDIT = '0d0d0d0d-0000-4000-8000-00000000000d',
+    OTHER = '0e0e0e0e-0000-4000-8000-00000000000e';
+  const root = traces.start({ kind: 'http', name: 'GET /' });
+  root.set({ auditId: AUDIT });
+  const read = traces.run(root, () =>
+    traces.start({ kind: 'read', name: 'read', attributes: { auditId: READ_AUDIT } }),
+  );
+  read.end();
+  root.end();
+  assert.deepEqual(traces.fromHeaders({ 'x-sim-trace-id': AUDIT }), {
+    traceId: root.traceId,
+    parentSpanId: root.spanId,
+  });
+  assert.deepEqual(traces.fromHeaders(new Headers({ 'X-Sim-Trace-Id': READ_AUDIT.toUpperCase() })), {
+    traceId: root.traceId,
+    parentSpanId: read.spanId,
+  });
+  // X-Trace-Id still names the trace; a parent header wins over the audit id.
+  assert.deepEqual(traces.fromHeaders({ 'x-sim-trace-id': AUDIT, 'x-trace-id': OTHER }), {
+    traceId: OTHER,
+    parentSpanId: root.spanId,
+  });
+  assert.deepEqual(traces.fromHeaders({ 'x-sim-trace-id': AUDIT, 'x-sim-parent-trace': read.spanId }), {
+    traceId: null,
+    parentSpanId: read.spanId,
+  });
+  const [summary] = traces.query({ auditId: AUDIT }).items;
+  assert.equal(summary.traceId, root.traceId);
+  assert.equal(summary.auditId, AUDIT);
+  assert.deepEqual(
+    traces.query({ auditId: READ_AUDIT }).items.map((item) => item.traceId),
+    [root.traceId],
+  );
+  assert.deepEqual(
+    traces.spans({ auditId: READ_AUDIT }).items.map((span) => span.spanId),
+    [read.spanId],
+  );
+  assert.equal(traces.query({ auditId: OTHER }).total, 0);
+  assert.equal(traces.start({ kind: 'http' }).end() && traces.query({ pageSize: 1 }).items[0].auditId, null);
+  // An evicted or cleared trace no longer resolves its audit ids.
+  traces.clear();
+  assert.deepEqual(traces.fromHeaders({ 'x-sim-trace-id': AUDIT }), { traceId: null, parentSpanId: null });
+});
+
+test('headers send x-sim-trace-id only as the audit id of the nearest audited span, never the trace id', () => {
+  const { traces } = store();
+  const AUDIT = '0f0f0f0f-0000-4000-8000-00000000000f',
+    NESTED = '0f0f0f0f-0000-4000-8000-0000000000f0';
+  const root = traces.start({ kind: 'http', name: 'GET /' });
+  assert.equal('x-sim-trace-id' in traces.headers(root), false, 'an unaudited root sends no x-sim-trace-id');
+  root.set({ auditId: AUDIT });
+  const child = traces.run(root, () => traces.start({ kind: 'dataverse', name: 'Create' }));
+  assert.deepEqual(traces.headers(child), {
+    'x-sim-parent-trace': child.spanId,
+    'x-sim-span-id': child.spanId,
+    'x-trace-id': root.traceId,
+    'x-sim-trace-id': AUDIT,
+  });
+  // A nested audited request (a Web API call under the page) names its own entry.
+  const api = traces.run(child, () =>
+    traces.start({ kind: 'http', name: 'POST /_api', attributes: { auditId: NESTED } }),
+  );
+  const write = traces.run(api, () => traces.start({ kind: 'dataverse' }));
+  assert.equal(traces.headers(write)['x-sim-trace-id'], NESTED);
+  // The receiver resolves it back to that span (a parent header still wins).
+  const { 'x-sim-parent-trace': _parent, ...withoutParent } = traces.headers(write);
+  assert.deepEqual(traces.fromHeaders(withoutParent), { traceId: root.traceId, parentSpanId: api.spanId });
+  for (const span of [write, api, child, root]) span.end();
+});
+
+test('result filters traces by their summary status, a comma list counted in the totals; status keeps matching any span', () => {
+  const { traces } = store();
+  const ok = traces.start({ kind: 'http', name: 'ok' });
+  traces.run(ok, () => traces.start({ kind: 'internal', name: 'failed child' }).fail(new Error('inner')));
+  ok.end({ status: 'ok' });
+  traces.start({ kind: 'http', name: 'error' }).fail(new Error('outer'));
+  traces.start({ kind: 'http', name: 'denied' }).end({ status: 'denied' });
+  const running = traces.start({ kind: 'http', name: 'running' });
+  const names = (filters) => traces.query({ ...filters, order: 'asc' }).items.map((item) => item.root.name);
+  assert.deepEqual(names({ result: 'error,denied' }), ['error', 'denied'], 'the root result, not a failed child');
+  assert.deepEqual(names({ result: 'OK' }), ['ok']);
+  assert.deepEqual(names({ result: 'running' }), ['running']);
+  assert.equal(traces.query({ result: 'error, denied', pageSize: 1 }).total, 2, 'the total counts every match');
+  assert.deepEqual(names({ status: 'error' }), ['ok', 'error'], 'status still matches any span');
+  assert.equal(traces.stats({ result: 'denied' }).roots.count, 1);
+  assert.equal(traces.export({ result: 'ok' }).traces.length, 1);
+  assert.throws(
+    () => traces.query({ result: 'error,failed' }),
+    (error) => error.code === 'InvalidTraceFilter' && error.parameter === 'result' && error.status === 400,
+  );
+  running.end();
+});
+
+test('id filters take an 8+ hex prefix (an ambiguous one matches every candidate); table names resolve both ways', () => {
+  const traces = createTraceStore({
+    settings: { level: 'summary' },
+    // The organization host resolves through the store mappings; this one knows x_item / x_items.
+    entityNames: (name) => (['x_item', 'x_items'].includes(name) ? ['x_item', 'x_items'] : [name]),
+  });
+  const VISITOR_A = 'ad87d220-0000-4000-8000-00000000000a',
+    VISITOR_B = 'ad87d220-0000-4000-8000-00000000000b',
+    RECORD = 'bead0000-1111-4111-8111-000000000001';
+  for (const [name, visitorId] of [
+    ['a', VISITOR_A],
+    ['b', VISITOR_B],
+  ])
+    traces
+      .start({
+        kind: 'http',
+        name,
+        entity: 'x_item',
+        recordId: RECORD,
+        actor: { kind: 'contact', id: `${visitorId.slice(0, 8)}-cccc-4000-8000-0000000000${name}0` },
+        session: { visitorId, sessionKey: `visitor:${visitorId}` },
+      })
+      .end();
+  const names = (filters) =>
+    traces
+      .query({ ...filters, order: 'asc' })
+      .items.map((item) => item.root.name)
+      .join(',');
+  assert.equal(names({ sessionKey: 'visitor:ad87d220' }), 'a,b', 'an ambiguous prefix matches all candidates');
+  assert.equal(names({ sessionKey: `visitor:${VISITOR_B}` }), 'b', 'a whole key still matches exactly');
+  assert.equal(names({ visitorId: 'ad87d220-0000-4000-8000-00000000000a' }), 'a');
+  assert.equal(names({ visitorId: 'ad87d22' }), '', 'fewer than 8 hex characters match exactly only');
+  assert.equal(names({ actorId: '{AD87D220}' }), 'a,b', 'braces and case are ignored as for whole ids');
+  assert.equal(names({ recordId: 'BEAD0000' }), 'a,b');
+  assert.equal(names({ recordId: 'bead000' }), '');
+  assert.equal(names({ sessionKey: 'visitor:' }), '', 'a bare kind is no prefix');
+  assert.equal(names({ entity: 'X_ITEMS' }), 'a,b', 'the entity set name finds the logical name');
+  assert.equal(names({ table: 'x_items' }), 'a,b', 'table is the D-M-2 name of entity');
+  assert.equal(names({ entity: 'x_other' }), '');
+  assert.deepEqual(
+    [...new Set(traces.spans({ entity: 'x_items' }).items.map((span) => span.entity))],
+    ['x_item'],
+    'spans keep their logical name',
+  );
+});
+
+test('subscribe events: a listener receives only the frame types it names', () => {
+  const { traces } = store();
+  const ends = [],
+    all = [];
+  const stopEnds = traces.subscribe((event) => ends.push(event.type), { events: ['trace-end'] });
+  const stopAll = traces.subscribe((event) => all.push(event.type));
+  const root = traces.start({ kind: 'http' });
+  traces.run(root, () => traces.start({ kind: 'internal' }).end());
+  root.end();
+  assert.deepEqual(ends, ['trace-end']);
+  assert.deepEqual(all, ['span-start', 'span-start', 'span-end', 'span-end', 'trace-end']);
+  stopEnds();
+  stopAll();
+  for (const events of [['span-done'], 'span-done', [], [1]])
+    assert.throws(() => traces.subscribe(() => {}, { events }), TypeError, JSON.stringify(events));
+  assert.throws(() => traces.subscribe(() => {}, { traceId: 7 }), TypeError);
+  // One type as a string, and traceId: only that trace's frames (the in-process simulator.trace.subscribe takes both).
+  const mine = [];
+  const watched = traces.start({ kind: 'http', name: 'watched' });
+  const stopMine = traces.subscribe((event) => mine.push([event.type, event.span.name]), {
+    events: 'span-end',
+    traceId: watched.traceId,
+  });
+  traces.start({ kind: 'http', name: 'other' }).end();
+  watched.end();
+  stopMine();
+  assert.deepEqual(mine, [['span-end', 'watched']]);
 });
 
 test('fromHeaders ignores reserved and non-UUID ids, so a client can never name a route', () => {
@@ -850,7 +1021,7 @@ test('a full trace hands out its overflow handle, and the refused chain stays in
     assert.equal(traces.current(), refused);
     assert.equal(traces.start({ kind: 'render' }), refused);
   });
-  assert.deepEqual(traces.headers(refused), { 'x-sim-trace-id': root.traceId, 'x-trace-id': root.traceId });
+  assert.deepEqual(traces.headers(refused), { 'x-trace-id': root.traceId });
   // A request root parented explicitly into the full trace (a page's follow-up call) and its whole chain.
   const followUp = traces.start({ kind: 'http', traceId: root.traceId, parentSpanId: root.spanId });
   assert.equal(followUp, refused);

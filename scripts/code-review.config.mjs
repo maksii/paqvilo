@@ -14,7 +14,7 @@ export const runtimeEntries = [
   'lense/setup/quick.mjs',
   'mirage/admin/view-services.mjs',
   'mirage/admin/view-packs.mjs',
-  'mirage/admin/view-trace.mjs',
+  'mirage/admin/view-activity.mjs',
   'mirage/admin/view-flows.mjs',
   'mirage/admin/view-common.mjs',
   'mirage/admin/view-capabilities.mjs',

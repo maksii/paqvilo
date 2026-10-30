@@ -1625,6 +1625,11 @@ export function executeFlowDefinition({
   const trace = (key, action, status, error, span = flowSpan) => {
     diagnostic({
       code: 'FLOW_ACTION',
+      // Human facts (D-M-2 Findings): the action name, its flow and trigger table (from the flow-run span, when traced).
+      name: key,
+      flow: flowSpan?.name ?? null,
+      entity: flowSpan?.entity ?? null,
+      message: `${key} (${action.type}) ${status}${flowSpan?.name ? ` in ${flowSpan.name}` : ''}${error?.message ? `: ${error.message}` : ''}.`,
       action: key,
       type: action.type,
       mode: steps[key]?.mode ?? 'exported',
@@ -2574,6 +2579,9 @@ async function trackedFlow(
       resume: true,
       parent: first,
     });
+    // A resume the registry knows nothing about (after a restart) is the run's span from now on (D-M-4).
+    if (!first?.traceId && trace.span?.traceId)
+      traces.remember?.('flow-run:' + runId, { traceId: trace.span.traceId, spanId: trace.span.spanId ?? null });
     trace.sealed = sealed;
   } else {
     const declared = flowParameters(args.definition, args.store);

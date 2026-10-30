@@ -101,10 +101,11 @@ export function createFlowRunStore({
     return { index, row: table()[index], entry };
   };
   const setRow = (index, values) => store.mutateRow('flowrun', table(), index, values);
-  // The trace of a run's first flow-run span, while the trace store remembers it (flow-runtime.mjs runTrackedFlow).
+  // The trace and span of a run's first flow-run span (a run resumed after a restart: its resume span), while the trace
+  // store remembers it (flow-runtime.mjs runTrackedFlow).
   const traceOf = (id) => {
     const first = store.traces?.recall?.('flow-run:' + id);
-    return first?.traceId ? { traceId: first.traceId } : {};
+    return first?.traceId ? { traceId: first.traceId, traceSpanId: first.spanId ?? null } : {};
   };
 
   function view(id, { journal = true } = {}) {

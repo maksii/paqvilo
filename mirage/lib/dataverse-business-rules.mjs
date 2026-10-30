@@ -32,6 +32,7 @@
 // ponytail: a workflow row written by a store-level path (not the records pipeline) inside an open transaction is seen by later
 // writes of that transaction only after it commits; workflow writes through the records pipeline drop the index at once.
 import { DataError } from './data-error.mjs';
+import { traceDecision } from './dataverse-security.mjs';
 import { parseSolutionXml } from './solution-xml.mjs';
 import { packCheck, registerPackExport } from './pack-exports.mjs';
 import { onceReporter, packOverrides } from './dataverse-addon-common.mjs';
@@ -337,12 +338,13 @@ function runRule(state, c, mapping, rule, { operation, data, merged, creating, r
 }
 
 // Tracing: each rule run is one business-rule event on the write's span, naming the rule, how it ran, the columns it set and
-// the error it raised (a raised error fails the write).
+// the error it raised (a raised error fails the write); under a bulk span the rows' runs are one event and the span's
+// `businessRules` counts (dataverse-security.mjs traceDecision), never one event per row.
 function tracedRule(span, state, c, mapping, rule, facts) {
   if (!span) return runRule(state, c, mapping, rule, facts);
   const before = { ...facts.data };
   const event = (attributes) =>
-    span.event('business-rule', {
+    traceDecision(span, 'business-rule', {
       attributes: {
         workflowId: rule.workflowId,
         name: rule.name ?? null,

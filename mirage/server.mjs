@@ -207,6 +207,8 @@ import { createRequestContext, currentRequest, runWithRequest, correlationOf } f
 import { createMessagingRoutes, routes as MESSAGING_ROUTES } from './lib/sim-messaging-routes.mjs';
 import { createFlowRoutes, routes as FLOW_ROUTES } from './lib/sim-flow-routes.mjs';
 import { createTraceChannel, createTraceRoutes, routes as TRACE_ROUTES } from './lib/sim-trace-routes.mjs';
+import { logPage, resolveRenderSources, writeActivityBundle } from './lib/sim-activity.mjs';
+import { LOG_RETAIN_DEFAULT } from './lib/config-keys.mjs';
 import { recordHttpError, statusFromHttp } from './lib/trace-store.mjs';
 import { setTraceHeaders, sseClients, traceSessionKey } from './lib/trace-hosts.mjs';
 import { buildSourceGraph } from './lib/source-graph.mjs';
@@ -632,7 +634,47 @@ async function createPowerPagesSimulator({
 } = {}) {
   const startedAt = performance.now(),
     bootstrapTimings = {};
+  // The runtime log stream (D-M-4): every line goes to a bounded ring (mirage.logs.retain, default 2000; 0 keeps none) that
+  // GET /_sim/api/logs reads, and is serialised only for /__sim/events?channels=logs subscribers. A line names the span it
+  // was emitted in (traceId/spanId, null outside any span) unless its payload names them. ponytail: Array#shift ring, a
+  // circular buffer if retain ever grows past tens of thousands.
+  const logRetain = settingOptionsRest.logs?.retain ?? LOG_RETAIN_DEFAULT;
+  const logLines = [],
+    logClients = sseClients();
+  let logSequence = 0,
+    logDropped = 0,
+    logTraces = null;
+  const publishLog = (type, payload = {}) => {
+    const span = 'traceId' in payload || !logTraces?.enabled ? null : logTraces.current();
+    const line = {
+      sequence: ++logSequence,
+      type,
+      time: new Date().toISOString(),
+      level: 'info',
+      traceId: span?.traceId ?? null,
+      spanId: span?.spanId ?? null,
+      ...payload,
+    };
+    if (logRetain > 0) {
+      logLines.push(line);
+      if (logLines.length > logRetain) {
+        logLines.shift();
+        logDropped++;
+      }
+    }
+    if (logClients.size) logClients.send(`event: log\ndata: ${JSON.stringify(line)}\n\n`);
+  };
   const startupPhase = (phase) => {
+    const elapsedMs = Math.round(performance.now() - startedAt);
+    publishLog('startup', {
+      phase,
+      elapsedMs,
+      message:
+        phase === 'listener-ready'
+          ? `Runtime ready at ${localOrigin} after ${elapsedMs} ms.`
+          : `Startup phase ${phase} at ${elapsedMs} ms.`,
+      ...(phase === 'listener-ready' ? { origin: localOrigin } : {}),
+    });
     try {
       Promise.resolve(onStartup?.({ phase, elapsedMs: Math.round(performance.now() - startedAt) })).catch(() => {});
     } catch {
@@ -1404,7 +1446,7 @@ async function createPowerPagesSimulator({
     const credential = segments.findIndex((segment) => /password|token|secret|invit|confirm|redeem/i.test(segment));
     return credential < 0 ? segments.join('/') : `${segments.slice(0, credential + 1).join('/')}/…`;
   };
-  const audit = new AuditLog(),
+  const audit = new AuditLog({ entityNames: (name) => store.entityNames(name) }),
     trace = new AsyncLocalStorage();
   // The organization host's trace store (docs/design/tracing.md): every portal request opens an http root span in it.
   const traces = organizationHost.traces;
@@ -1428,16 +1470,7 @@ async function createPowerPagesSimulator({
         return invoke(...args);
       };
     }
-  // Admin live log stream: `log` events on /__sim/events?channels=logs. Nothing is
-  // serialized while no administrator is subscribed.
-  const logClients = sseClients();
-  let logSequence = 0;
-  const publishLog = (type, payload = {}) => {
-    if (!logClients.size) return;
-    logClients.send(
-      `event: log\ndata: ${JSON.stringify({ sequence: ++logSequence, type, time: new Date().toISOString(), ...payload })}\n\n`,
-    );
-  };
+  logTraces = traces;
   // Admin trace stream: `trace` events on /__sim/events?channels=trace (sim-trace-routes.mjs createTraceChannel).
   const traceChannel = createTraceChannel(traces);
   audit.subscribe((entry) =>
@@ -1449,47 +1482,30 @@ async function createPowerPagesSimulator({
           : 'request',
       {
         level: entry.outcome === 'error' ? 'error' : entry.outcome === 'denied' ? 'warning' : 'info',
+        traceId: entry.traceId,
+        spanId: entry.spanId,
         entry,
       },
     ),
   );
-  // Declarative backend rules run inside DataStore transactions; observe their evaluation.
-  const evaluatePlugins = store.applyPlugins.bind(store);
-  store.applyPlugins = (entity, operation, row, previous, identity) => {
-    if (!logClients.size) return evaluatePlugins(entity, operation, row, previous, identity);
-    const plugins = (store.snapshot({ sections: ['plugins'] }).plugins ?? [])
-      .filter(
-        (plugin) =>
-          plugin.enabled !== false &&
-          (plugin.entity === entity || plugin.entity === '*') &&
-          (plugin.operations ?? ['create', 'update']).includes(operation),
-      )
-      .map((plugin) => plugin.id ?? plugin.name ?? 'plugin');
-    const started = Date.now();
-    try {
-      const effects = evaluatePlugins(entity, operation, row, previous, identity);
-      publishLog('plugin', {
-        level: 'info',
-        entity,
-        operation,
-        plugins,
-        outcome: 'evaluated',
-        secondaryEffects: effects.length,
-        durationMs: Date.now() - started,
-      });
-      return effects;
-    } catch (cause) {
-      publishLog('plugin', {
-        level: 'error',
-        entity,
-        operation,
-        plugins,
-        outcome: 'rejected',
-        error: { code: cause.code ?? 'PLUGIN_ERROR', message: cause.message },
-      });
-      throw cause;
-    }
-  };
+  // Declarative plugin rules (Plugins & presets): DataStore.ruleEvaluated adds the `rule` event to the current span and
+  // calls this for the `plugin` log line, one per rule that matched the table and operation.
+  store.onRuleEvaluated = (evaluation, span) =>
+    publishLog('plugin', {
+      level: evaluation.result === 'rejected' ? 'error' : 'info',
+      traceId: span?.traceId ?? null,
+      spanId: span?.spanId ?? null,
+      entity: evaluation.table,
+      operation: evaluation.operation,
+      rule: evaluation.rule,
+      plugins: [evaluation.rule],
+      result: evaluation.result,
+      outcome: evaluation.result === 'rejected' ? 'rejected' : 'evaluated',
+      changes: evaluation.changes,
+      secondaryEffects: evaluation.secondaryEffects,
+      durationMs: evaluation.durationMs,
+      ...(evaluation.error ? { error: evaluation.error } : {}),
+    });
   const config = (selectedSimulator) => {
     const simulator = selectedSimulator ??
       store.snapshot({ sections: ['simulator'] }).simulator ?? {
@@ -1602,11 +1618,20 @@ async function createPowerPagesSimulator({
         diagnostics.splice(previous, 1);
       }
     }
-    diagnostics.push({ ...d, time: new Date().toISOString() });
+    // A diagnostic raised in a span (a request, a job) names it; load and source findings name none (D-M-4).
+    const span = d.traceId || !traces.enabled ? null : traces.current();
+    diagnostics.push({
+      ...d,
+      ...(span?.traceId ? { traceId: span.traceId, spanId: span.spanId } : {}),
+      time: new Date().toISOString(),
+    });
     if (diagnostics.length > 300) diagnostics.shift();
+    const recorded = diagnostics.at(-1);
     publishLog('diagnostic', {
       level: /error|fail/i.test(`${d.severity ?? ''} ${d.code ?? ''}`) ? 'error' : 'warning',
-      diagnostic: diagnostics.at(-1),
+      traceId: recorded.traceId ?? null,
+      spanId: recorded.spanId ?? null,
+      diagnostic: recorded,
     });
   };
   sourceDiagnostic = recordDiagnostic;
@@ -1635,21 +1660,9 @@ async function createPowerPagesSimulator({
   const auditRead = async (kind, entity, query, identity, fn) => {
     const context = trace.getStore(),
       provider = config().mode;
-    const span = audit.begin({
-      kind,
-      entity,
-      query,
-      identity,
-      provider,
-      method: context?.method,
-      path: context?.path,
-      correlationId: context?.correlationId,
-      parentId: context?.spanId,
-      traceId: context?.traceSpan?.traceId,
-      spanId: context?.traceSpan?.spanId,
-    });
     // A Liquid read is a retrieve (entities.<table>[id]) or a retrievemultiple (fetchxml, an entity query) with its source
-    // as an attribute (D-R3-9); the query and the rows read are captured (redacted) only at level full.
+    // as an attribute (D-R3-9); the query and the rows read are captured (redacted) only at level full. Its audit entry
+    // names this read span and the span names the entry (attributes.auditId, D-M-4).
     const single = kind === 'entity-read';
     const read = traces.start({
       kind: 'read',
@@ -1661,6 +1674,22 @@ async function createPowerPagesSimulator({
       attributes: { provider, source: kind, ...(kind === 'liquid-fetchxml' ? { query: 'fetchxml' } : {}) },
       input: () => query,
     });
+    const span = audit.begin({
+      kind,
+      entity,
+      query,
+      identity,
+      provider,
+      method: context?.method,
+      path: context?.path,
+      correlationId: context?.correlationId,
+      parentId: context?.spanId,
+      traceId: read.traceId ?? context?.traceSpan?.traceId,
+      spanId: read.spanId ?? context?.traceSpan?.spanId,
+      visitorId: context?.visitor,
+      sessionKey: traceSessionKey(identity?.contactId ?? identity?.id ?? null, context?.visitor),
+    });
+    read.set({ auditId: span.id });
     try {
       const result = await traces.run(read, fn);
       const rowCount = Array.isArray(result?.entities)
@@ -2424,6 +2453,7 @@ async function createPowerPagesSimulator({
     if (reload) {
       renderer = buildRenderer();
       revision++;
+      publishLog('reload', { revision, message: `Runtime configuration reloaded (revision ${revision}).` });
       events.send(`event: reload\ndata: ${revision}\n\n`);
     }
     appliedManagementRecords = structuredClone(store.state.simulator?.modelDriven?.records ?? {});
@@ -2460,6 +2490,7 @@ async function createPowerPagesSimulator({
       appliedManagementRecords = records;
       renderer = buildRenderer();
       revision++;
+      publishLog('reload', { revision, message: `Model-driven source records recompiled (revision ${revision}).` });
       events.send(`event: reload\ndata: ${revision}\n\n`);
       return;
     }
@@ -3211,7 +3242,7 @@ async function createPowerPagesSimulator({
             pages: portal.pages.length,
             deploymentProfile: portal.deploymentProfile ?? null,
           },
-          link: '#overview',
+          link: '#home',
         },
         {
           id: 'host:model-driven',
@@ -3425,12 +3456,13 @@ async function createPowerPagesSimulator({
         requests: {
           total: portalRequestTotal,
           retained: requests.length,
-          recent: requests.slice(-20).map(({ at = null, method, path: route, status, durationMs }) => ({
+          recent: requests.slice(-20).map(({ at = null, method, path: route, status, durationMs, traceId = null }) => ({
             at: typeof at === 'number' ? new Date(at).toISOString() : at,
             method,
             path: route,
             status,
             ms: durationMs,
+            traceId,
           })),
         },
         diagnostics: { total: all.length, byCode: diagnosticsByCode(all) },
@@ -3598,6 +3630,9 @@ async function createPowerPagesSimulator({
       '/state',
       '/diagnostics',
       '/audit',
+      '/logs',
+      '/render-sources',
+      '/activity',
       '/shutdown',
       '/persona-catalog',
       '/reference',
@@ -3620,6 +3655,50 @@ async function createPowerPagesSimulator({
     ].map((prefix) => [prefix, portalAdmin]),
   ];
   const PORTAL_ADMIN_ROUTES = PORTAL_ADMIN.map(([prefix]) => prefix);
+  // The /state payload with its verification evidence re-read (evidence/latest/report.json) and the implementation
+  // fingerprints recomputed: browser adapters and admin assets are read on demand, so a startup-only digest cannot detect
+  // their edits during a comparison against this process.
+  const evidenceState = async (summary) => {
+    if (evidenceDir)
+      try {
+        evidence = JSON.parse(await fs.readFile(path.join(evidenceDir, 'report.json'), 'utf8'));
+      } catch {
+        evidence = null;
+      }
+    const current = exposedState({ summary });
+    Object.assign(
+      current.status,
+      implementationEvidence(implementationFingerprint, await cachedImplementationSourceFingerprint(ROOT)),
+    );
+    return current;
+  };
+  // GET /_sim/api/logs?since=&limit=&type=&traceId= (D-M-4): retained log lines, oldest first.
+  const logHistory = (query) =>
+    logPage(logLines, query, { retain: logRetain, latest: logSequence, dropped: logDropped });
+  // GET /_sim/api/render-sources?refs= (D-M-4): render-template sourceRefIds resolved to their exported file and line.
+  const renderSources = (refs) => resolveRenderSources(renderer.sourceIndex(), refs, portal.sourceDir ?? null);
+  // GET /_sim/api/activity/export?<trace filters>&format=bundle (D-M-4): one NDJSON bundle of the matching activities and
+  // what is correlated with them.
+  const activityExport = (query, res) =>
+    writeActivityBundle(res, query, {
+      traces,
+      audit,
+      logs: () => logLines,
+      diagnostics: () => allDiagnostics(),
+      evidence: async () => {
+        const current = await evidenceState(true);
+        return observedEvidence(evidence, current);
+      },
+      runtime: () => ({
+        origin: localOrigin,
+        host: 'power-pages',
+        revision,
+        storeRevision: store.revision,
+        sourceFingerprint: fingerprint,
+        implementationFingerprint,
+        traceSettings: traces.settings(),
+      }),
+    });
   async function admin(req, res, url) {
     if (await messaging(req, res, url)) return;
     if (await coreAdmin(req, res, url)) return;
@@ -3725,21 +3804,7 @@ async function createPowerPagesSimulator({
       );
     }
     if (method === 'GET' && relative === '/state') {
-      if (evidenceDir)
-        try {
-          evidence = JSON.parse(await fs.readFile(path.join(evidenceDir, 'report.json'), 'utf8'));
-        } catch {
-          evidence = null;
-        }
-      const current = exposedState({
-        summary: url.searchParams.get('summary') === '1',
-      });
-      // Browser adapters/admin assets are read on demand. A startup-only digest
-      // cannot detect their edits during a comparison against this process.
-      Object.assign(
-        current.status,
-        implementationEvidence(implementationFingerprint, await cachedImplementationSourceFingerprint(ROOT)),
-      );
+      const current = await evidenceState(url.searchParams.get('summary') === '1');
       current.status.solutionMetadata = {
         ...solutionMetadata.summary,
         data: solutionData.stats,
@@ -3762,11 +3827,16 @@ async function createPowerPagesSimulator({
           : null,
       });
     }
-    if (method === 'GET' && relative === '/diagnostics')
-      return json(res, 200, {
-        diagnostics: allDiagnostics(),
-        requests,
-      });
+    if (method === 'GET' && relative === '/diagnostics') {
+      // traceId (optional): the findings and portal requests of one trace (D-M-4).
+      const traceId = url.searchParams.get('traceId')?.trim();
+      const of = (items) => (traceId ? items.filter((item) => item.traceId === traceId) : items);
+      return json(res, 200, { diagnostics: of(allDiagnostics()), requests: of(requests) });
+    }
+    if (method === 'GET' && relative === '/logs') return json(res, 200, logHistory(url.searchParams));
+    if (method === 'GET' && relative === '/render-sources')
+      return json(res, 200, renderSources(url.searchParams.getAll('refs')));
+    if (method === 'GET' && relative === '/activity/export') return activityExport(url.searchParams, res);
     if (method === 'GET' && relative === '/audit') return json(res, 200, audit.list(url.searchParams));
     if (method === 'GET' && relative === '/audit/export')
       return json(res, 200, audit.export(url.searchParams), {
@@ -5268,11 +5338,12 @@ async function createPowerPagesSimulator({
       events.add(res);
       // Administrators opt into the runtime log channel; portal pages only receive reloads.
       const channels = (url.searchParams.get('channels') ?? '').split(',');
+      // The connected frame names the latest retained sequence (GET /_sim/api/logs answers the history up to it).
       if (channels.includes('logs') && logClients.add(res))
         res.write(
-          `event: log\ndata: ${JSON.stringify({ sequence: ++logSequence, type: 'connected', time: new Date().toISOString(), level: 'info', revision })}\n\n`,
+          `event: log\ndata: ${JSON.stringify({ sequence: logSequence, type: 'connected', time: new Date().toISOString(), level: 'info', traceId: null, spanId: null, retained: logLines.length, oldestSequence: logLines[0]?.sequence ?? null, revision })}\n\n`,
         );
-      if (channels.includes('trace')) traceChannel(res);
+      if (channels.includes('trace')) traceChannel(res, url);
       return;
     }
     if (url.pathname === '/__sim/sign-in') {
@@ -6626,9 +6697,9 @@ async function createPowerPagesSimulator({
     let rootSpan = null;
     // The http root of the request. At level off nothing here runs: no trace header parsing, no audit lookup (D-R3-13).
     const openRoot = (who) => {
-      // X-Trace-Id (else X-Sim-Trace-Id) names the trace and X-Sim-Parent-Trace the parent span. An audit id in either
-      // (the response's X-Sim-Trace-Id echoed back, or the browser runtime's parent) stands for its entry's root span;
-      // an entry recorded while tracing was off names no span and starts a new trace.
+      // X-Trace-Id names the trace and X-Sim-Parent-Trace the parent span. An audit id (X-Sim-Trace-Id, always an audit id:
+      // the response header echoed back or a loopback caller's audited request; or the browser runtime's parent) stands
+      // for its entry's span; an entry recorded while tracing was off names no span and starts a new trace.
       const inbound = traces.fromHeaders(req.headers);
       const linked = parent ?? (inbound.parentSpanId ? null : audit.byId(req.headers['x-sim-trace-id']));
       if (linked) Object.assign(inbound, { traceId: linked.traceId ?? null, parentSpanId: linked.spanId ?? null });
@@ -6692,8 +6763,12 @@ async function createPowerPagesSimulator({
           correlationId: parent?.correlationId,
           traceId: rootSpan?.traceId,
           spanId: rootSpan?.spanId,
+          visitorId: visitor,
+          sessionKey: traceSessionKey(identity?.contactId ?? identity?.id ?? null, visitor),
         })
       : null;
+    // The audit <-> trace link both ways (D-M-4): the entry names the root, the root names the entry.
+    if (span) rootSpan?.set({ auditId: span.id });
     const context = {
       spanId: span?.id,
       correlationId: span?.correlationId,
@@ -6783,6 +6858,7 @@ async function createPowerPagesSimulator({
         path: ringPath(req.url),
         status: res.statusCode,
         durationMs: Date.now() - started,
+        traceId: rootSpan?.traceId ?? null,
       });
       if (requests.length > 300) requests.shift();
     });
@@ -6816,15 +6892,20 @@ async function createPowerPagesSimulator({
       )
       .catch((err) => {
         context.error = err;
-        if (err.code?.startsWith('PACK_CONFIGURATION_PRESET_'))
+        // This handler runs after the request's span stack: its findings name the request's root explicitly (D-M-4).
+        const requestDiagnostic = (d) =>
           recordDiagnostic(
+            context.traceSpan ? { ...d, traceId: context.traceSpan.traceId, spanId: context.traceSpan.spanId } : d,
+          );
+        if (err.code?.startsWith('PACK_CONFIGURATION_PRESET_'))
+          requestDiagnostic(
             err.details?.configurationPresetDiagnostic ?? { code: err.code, severity: 'error', message: err.message },
           );
         if (err.details?.permissionDiagnostic)
-          recordDiagnostic({ ...err.details.permissionDiagnostic, path: req.url?.split('?')[0] });
+          requestDiagnostic({ ...err.details.permissionDiagnostic, path: req.url?.split('?')[0] });
         // Administration API errors are answered to their caller; they are not portal runtime observations.
         if (!req.url?.startsWith('/__sim/api') && !err.details?.permissionDiagnostic)
-          recordDiagnostic({
+          requestDiagnostic({
             code: err.code ?? 'RUNTIME_ERROR',
             message: err.message,
             path: req.url?.split('?')[0],
@@ -7066,6 +7147,10 @@ async function createPowerPagesSimulator({
             message: `Reloaded portal and solution sources (${changed.length} changed path(s)); mappings, schemas and the permission model were recompiled.`,
           });
           if (watch && watchedLayers !== layerSignature()) await restartWatcher();
+          publishLog('reload', {
+            revision,
+            message: `Sources reloaded (revision ${revision}, ${changed.length} changed path(s)).`,
+          });
           events.send(`event: reload\ndata: ${revision}\n\n`);
         } catch (err) {
           portal = previous.portal;

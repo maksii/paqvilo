@@ -234,8 +234,12 @@ export async function createStandaloneRuntime(options = {}) {
     mutation = next.catch(() => {});
     return next;
   };
+  // A finding raised while a span is current names it (D-M-4); load and source findings name none. The trace store exists
+  // once the organization host is composed (diagnosticTraces below); findings before that have no span to name.
+  let diagnosticTraces = null;
   const diagnostic = (entry) => {
-    diagnostics.push(entry);
+    const span = entry.traceId || !diagnosticTraces?.enabled ? null : diagnosticTraces.current();
+    diagnostics.push(span?.traceId ? { ...entry, traceId: span.traceId, spanId: span.spanId } : entry);
     if (diagnostics.length > 500) diagnostics.shift();
   };
   sourceDiagnostic = diagnostic;
@@ -301,6 +305,7 @@ export async function createStandaloneRuntime(options = {}) {
     trace: options.trace,
   });
   const { operations, traces } = organizationHost;
+  diagnosticTraces = traces;
   // Every JSON answer of 400 or more of this host's routers is its request root's error (recordHttpError, D-R3-4).
   const json = (res, status, value, ...rest) => {
     if (status >= 400)
@@ -944,7 +949,12 @@ export async function createStandaloneRuntime(options = {}) {
         .run(() => traces.run(span, () => runWithRequest(context, handle)))
         .catch((error) => {
           failure = error;
-          diagnostic({ code: error.code ?? 'RuntimeError', message: error.message });
+          // This handler runs after the request's span stack: the finding names the request's root explicitly.
+          diagnostic({
+            code: error.code ?? 'RuntimeError',
+            message: error.message,
+            ...(span?.traceId ? { traceId: span.traceId, spanId: span.spanId } : {}),
+          });
           if (!res.headersSent)
             json(res, error.status ?? 500, { error: { code: error.code ?? 'RuntimeError', message: error.message } });
           else res.destroy();

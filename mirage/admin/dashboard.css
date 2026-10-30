@@ -551,6 +551,41 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* A tile's face (label, value, sparkline) opens what it counts; its failures link on their own. */
+.dm-kpi:has(> .dm-kpi-link) {
+  grid-template-rows: auto auto auto;
+}
+.dm-kpi-link {
+  display: grid;
+  grid-template-rows: auto auto 30px;
+  gap: 2px;
+  min-width: 0;
+  margin: -4px -6px 0;
+  padding: 4px 6px 0;
+  border-radius: 8px;
+  color: inherit;
+  text-decoration: none;
+}
+.dm-kpi-diagnostics > .dm-kpi-link {
+  grid-template-rows: auto auto;
+}
+.dm-kpi-link:hover .dm-kpi-label,
+.dm-kpi-link:focus-visible .dm-kpi-label {
+  color: var(--dm-active);
+  text-decoration: underline;
+}
+.dm-kpi-link:focus-visible,
+.dm-kpi-errors:focus-visible {
+  outline: 2px solid var(--dm-active);
+  outline-offset: 2px;
+}
+.dm-kpi-detail {
+  white-space: normal;
+}
+.dm-kpi-errors {
+  color: var(--dm-bad);
+  font-weight: 600;
+}
 .dm-kpi-trend {
   color: var(--ui-t-7a8599, #7a8599);
   font-size: 11.5px;
@@ -559,8 +594,9 @@
   color: var(--dm-ink-2);
   white-space: normal;
 }
-.dm-kpi-diagnostics {
-  grid-template-rows: auto auto 1fr auto;
+.dm-kpi-diagnostics,
+.dm-kpi-diagnostics:has(> .dm-kpi-link) {
+  grid-template-rows: auto 1fr auto;
 }
 
 /* ---------- Legend ---------- */
@@ -775,11 +811,18 @@
   gap: 7px;
   min-width: 0;
 }
+/* The band's (i) stays beside its count: a long count wraps inside the pill. */
 .dm-band-health {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+}
+.dm-band-health > .dm-pill {
+  min-width: 0;
+}
+.dm-band-health > :not(.dm-pill) {
+  flex: none;
 }
 .dm-band-index {
   flex: none;
@@ -1894,4 +1937,138 @@
 }
 .dm-canvas:has(.dm-k119:hover, .dm-k119:focus-within) .dm-p119 {
   --dm-on: 1;
+}
+
+/* ---------- Health hero (D-M-9, D-M-11): the dashboard hero with readiness, site, uptime and the key-number strip ---------- */
+.dm-brand:has(.dm-hero-actions) {
+  justify-content: space-between;
+}
+.dm-brand > div:not(.dm-hero-actions) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.dm-hero-actions .ui-button {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+.dm-hero-actions .ui-button:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+.dm-hero-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.dm-readiness {
+  padding: 4px 14px;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #b6f2cd;
+  background: rgba(46, 204, 113, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(46, 204, 113, 0.45);
+}
+.dm-readiness.is-warn {
+  color: #ffe3a3;
+  background: rgba(255, 196, 70, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(255, 196, 70, 0.5);
+}
+.dm-readiness.is-bad {
+  color: #ffc4c4;
+  background: rgba(255, 99, 99, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(255, 120, 120, 0.55);
+}
+.dm-hero > .dm-strip {
+  grid-column: 1 / -1;
+}
+.dm-hero .dm-strip a {
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+.dm-hero .dm-strip a:hover,
+.dm-hero .dm-strip a:focus-visible {
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(156, 194, 255, 0.8);
+}
+.dm-hero .dm-strip strong {
+  color: #fff;
+}
+.dm-hero .dm-strip span {
+  color: #9fb3dc;
+}
+/* The map legend behind the section's (i): light text on the popover's dark surface. */
+.dm-legend-info .ui-info-pop {
+  max-width: min(560px, 90vw);
+}
+.dm-legend-info .dm-legend-list {
+  color: #cdd6ea;
+}
+.dm-legend-info .dm-legend-list + .dm-legend-list {
+  margin-top: 8px;
+}
+.dm-legend-info .dm-legend-list strong {
+  color: #fff;
+}
+.dm-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dm-strip a {
+  display: grid;
+  min-width: 88px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  color: inherit;
+  text-decoration: none;
+  box-shadow: 0 0 0 1px var(--dm-line);
+}
+.dm-strip a:hover,
+.dm-strip a:focus-visible {
+  box-shadow: 0 0 0 2px var(--dm-active);
+  outline: none;
+}
+.dm-strip strong {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+.dm-strip span {
+  color: var(--dm-muted);
+  font-size: 12px;
+}
+/* Compact tiles: number, label and change only; Expand reveals the per-tile graphs. */
+.dm-kpi-head {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 6px;
+}
+.dm-kpis.is-compact .dm-kpi,
+.dm-kpis.is-compact .dm-kpi:has(> .dm-kpi-link) {
+  grid-template-rows: auto;
+  padding: 10px 12px 8px;
+}
+.dm-kpis.is-compact .dm-kpi-link {
+  grid-template-rows: auto auto;
+}
+.dm-kpis.is-compact.is-expanded .dm-kpi-link {
+  grid-template-rows: auto auto 30px;
+}
+.dm-kpis.is-compact .dm-kpi-value {
+  font-size: 22px;
+}
+.dm-kpi-head {
+  align-items: center;
+  gap: 8px;
+}
+.dm-legend-info .dm-legend-head {
+  margin-top: 4px;
+  color: #fff;
+  font-weight: 650;
 }

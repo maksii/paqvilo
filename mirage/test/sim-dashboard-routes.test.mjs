@@ -378,6 +378,14 @@ test('Power Pages dashboard adds the portal listener, admin hosts and the portal
   clock.advance(5000);
   const again = await json(await fetch(`${sim.url}/_sim/api/dashboard`));
   assert.deepEqual(again.nodes, body.nodes);
+  // The runtime's start is fixed; its uptime is read fresh on every answer, across the 5-second topology cache.
+  assert.ok(!Number.isNaN(Date.parse(body.runtime.startedAt)), body.runtime.startedAt);
+  assert.equal(again.runtime.startedAt, body.runtime.startedAt);
+  assert.equal(
+    again.runtime.uptimeMs - body.runtime.uptimeMs,
+    Date.parse(again.generatedAt) - Date.parse(body.generatedAt),
+  );
+  assert.ok(again.runtime.uptimeMs >= 5000);
   assert.ok(again.activity.trace.latestSequence >= busy.activity.trace.latestSequence);
   assert.equal(
     (await json(await fetch(`${sim.url}/_sim/api/status`))).docs.simAdministration.path,

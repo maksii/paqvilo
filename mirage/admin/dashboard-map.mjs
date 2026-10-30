@@ -1,4 +1,4 @@
-// Infrastructure dashboard ("mission control") shared by `/_sim/#dashboard` (live, `GET /_sim/api/dashboard`) and
+// Health dashboard ("mission control") shared by `/_sim/#health` (live, `GET /_sim/api/dashboard`) and
 // `/_setup/#system` (planned, `status.topology`). Pure string builders: no DOM access and no imports. The page passes
 // the UI kit (`import * as kit from './ui-kit.mjs'`) and, optionally, the icon set (`import * as icons from
 // './dashboard-icons.mjs'`) in the options. Styles live in dashboard.css (`dm-` classes, `--dm-` tokens).
@@ -184,8 +184,8 @@ const ORG = Object.freeze({
   'dataverse-addon-workqueues': ['tables', 'Work queues'],
   'dataverse-calendar-messages': ['tables', 'Calendars and scheduling'],
   usersettings: ['org-other', 'Staff user settings'],
-  // The trace store of the host: the Monitor group, next to the Traces view of the Monitor navigation group.
-  trace: ['monitor', 'Tracing'],
+  // The trace store of the host: the Monitor group, next to the Activity view of the Monitor navigation group.
+  trace: ['monitor', 'Activity'],
   'dataverse-webhooks': ['messaging', 'Webhooks'],
   'dataverse-service-endpoints': ['messaging', 'Service endpoints'],
   'dataverse-solutions': ['solutions', 'Solutions and layers'],
@@ -1182,19 +1182,29 @@ const EDGE_LEGEND = [
   ['webhook', 'web hook'],
   ['reads', 'reads'],
 ];
-function legend(planned) {
+function legendLists(planned) {
   const swatch = (kind) =>
     `<svg class="dm-swatch" viewBox="0 0 28 8" width="28" height="8" aria-hidden="true" focusable="false"><g class="dm-wire is-${kind}"><line class="dm-seg" x1="1" y1="4" x2="27" y2="4"></line>${kind === 'process' ? '<line class="dm-seg-inner" x1="1" y1="4" x2="27" y2="4"></line>' : ''}</g></svg>`;
   const statuses = ['listening', 'ready', 'planned', 'declared', 'placeholder', 'disabled', 'missing', 'error'];
   return (
-    `<details class="dm-legend" data-ui-section="dashboard-legend"><summary>Legend</summary><ul class="dm-legend-list" aria-label="Status legend">${statuses.map((status) => `<li><span class="dm-dot is-${status}" aria-hidden="true"></span><strong>${STATUS_TEXT[status]}</strong> ${e(STATUS_MEANING[status])}</li>`).join('')}</ul>` +
+    `<ul class="dm-legend-list" aria-label="Status legend">${statuses.map((status) => `<li><span class="dm-dot is-${status}" aria-hidden="true"></span><strong>${STATUS_TEXT[status]}</strong> ${e(STATUS_MEANING[status])}</li>`).join('')}</ul>` +
     `<ul class="dm-legend-list dm-legend-edges" aria-label="Connection legend">${EDGE_LEGEND.map(([kind, text]) => `<li>${swatch(kind)}<strong>${e(text)}</strong></li>`).join('')}` +
-    `${planned ? '' : `<li><svg class="dm-swatch" viewBox="0 0 28 8" width="28" height="8" aria-hidden="true" focusable="false"><g class="dm-wire is-http is-active"><line class="dm-seg" x1="1" y1="4" x2="27" y2="4"></line><line class="dm-pulse" x1="1" y1="4" x2="27" y2="4"></line></g></svg><strong>active</strong> counters moved since the previous refresh</li>`}</ul></details>`
+    `${planned ? '' : `<li><svg class="dm-swatch" viewBox="0 0 28 8" width="28" height="8" aria-hidden="true" focusable="false"><g class="dm-wire is-http is-active"><line class="dm-seg" x1="1" y1="4" x2="27" y2="4"></line><line class="dm-pulse" x1="1" y1="4" x2="27" y2="4"></line></g></svg><strong>active</strong> counters moved since the previous refresh</li>`}</ul>`
   );
 }
+const legend = (planned) =>
+  `<details class="dm-legend" data-ui-section="dashboard-legend"><summary>Legend</summary>${legendLists(planned)}</details>`;
+const MAP_TEXT =
+  'Six layers from the people who call this runtime down to the services it declares. Hover or focus a card to light up the cards it connects to directly; select it (click, Enter or Space) for its facts, every connection in words and the view that manages it.';
+/**
+ * The map section's one (i) (Health, D-M-11, DV-N4e-2): what the map shows, then the legend under its own heading, in
+ * one popover.
+ */
+const legendInfo = (planned) =>
+  `<span class="ui-info is-end dm-legend-info"><button type="button" class="ui-info-button" aria-label="About the system map and its legend">i</button><span class="ui-info-pop" role="tooltip"><span class="ui-info-text">${e(MAP_TEXT)}</span><strong class="dm-legend-head">Legend</strong>${legendLists(planned)}</span></span>`;
 
 /** The layered map: bands of cards, the connector SVG (role="img" with a text summary), and the legend. */
-export function renderTopology(layout, { mode = 'live', id = 'dashboard-topology', icons } = {}) {
+export function renderTopology(layout, { mode = 'live', id = 'dashboard-topology', icons, withLegend = true } = {}) {
   const planned = mode === 'planned';
   const total = layout.nodes.length,
     ready = layout.nodes.filter((node) => READY.has(node.status)).length;
@@ -1230,7 +1240,7 @@ export function renderTopology(layout, { mode = 'live', id = 'dashboard-topology
     })
     .join('');
   return (
-    `<div class="dm-map" data-dashboard-mode="${planned ? 'planned' : 'live'}">${legend(planned)}` +
+    `<div class="dm-map" data-dashboard-mode="${planned ? 'planned' : 'live'}">${withLegend ? legend(planned) : ''}` +
     `<div class="dm-frame"><div class="dm-canvas" data-columns="${layout.columns}">${wires}${bands}${layout.tail ? `<div class="dm-tail dm-gap-${Math.min(layout.tail, GEOMETRY.maxLanes)}" aria-hidden="true"></div>` : ''}` +
     `<svg class="dm-wire-labels" width="100%" height="${layout.height}" aria-hidden="true" focusable="false">${layout.edges.map((edge) => wireLabel(edge, layout.cards)).join('')}</svg></div></div></div>`
   );
@@ -1345,30 +1355,6 @@ export function renderNodeDetail(node, docs, { kit, icons, payload } = {}) {
   );
 }
 
-/** `at` as an ISO string: hosts send epoch milliseconds or ISO text; anything unreadable becomes null. */
-const isoTime = (at) => {
-  const time =
-    at == null || at === '' ? NaN : new Date(typeof at === 'string' && /^\d+$/.test(at) ? Number(at) : at).getTime();
-  return Number.isFinite(time) ? new Date(time).toISOString() : null;
-};
-const activityRows = (activity) =>
-  [
-    ...(activity?.requests?.recent ?? []).map((item) => ({ ...item, at: isoTime(item.at), source: 'Portal' })),
-    ...(activity?.dataverseRequests?.recent ?? []).map((item) => ({
-      ...item,
-      at: isoTime(item.at),
-      source: 'Dataverse',
-    })),
-  ]
-    .sort((a, b) => String(b.at ?? '').localeCompare(String(a.at ?? '')))
-    .concat(
-      Object.entries(activity?.diagnostics?.byCode ?? {}).map(([code, count]) => ({
-        source: 'Diagnostic',
-        code,
-        count,
-      })),
-    );
-
 const storageTotal = (activity, name) =>
   (activity?.storage?.byProvider ?? []).reduce((total, item) => total + (Number(item[name]) || 0), 0);
 const flowRuns = (flows) =>
@@ -1377,40 +1363,53 @@ const flowRuns = (flows) =>
     0,
   );
 // KPI tiles. counter: cumulative since start (the sparkline plots the change per refresh); gauge: a current level.
+// `activity`: the Activity filter of what the tile counts (the tile links to `#activity?<filter>`, its failures to the
+// same filter with result=error); `link`: the view that manages a count Activity has no steps for. `errors`: failures.
 export const KPIS = Object.freeze([
   {
     key: 'requests',
-    label: 'Requests',
+    label: 'Portal requests',
     type: 'counter',
     value: (a) => num(a?.requests?.total),
     detail: (a) =>
       a?.requests
-        ? `portal pages · ${fmt(a.requests.retained ?? a.requests.recent?.length ?? 0)} retained`
+        ? `pages and the portal's /_api calls · ${fmt(a.requests.retained ?? a.requests.recent?.length ?? 0)} retained`
         : 'no portal on this runtime',
+    activity: 'host=power-pages',
+    timeline: 'host=power-pages&depth=0',
   },
   {
     key: 'webApi',
-    label: 'Web API',
+    label: 'Dataverse Web API',
     type: 'counter',
     value: (a) => num(a?.dataverseRequests?.total),
-    detail: (a) => `${fmt(a?.dataverseRequests?.other ?? 0)} other · ${fmt(a?.dataverseRequests?.failed ?? 0)} failed`,
+    detail: (a) => `the organization API, not the portal's /_api · ${fmt(a?.dataverseRequests?.other ?? 0)} other`,
+    errors: (a) => num(a?.dataverseRequests?.failed),
     tone: (a) => (a?.dataverseRequests?.failed ? 'warn' : 'info'),
+    activity: 'host=dataverse-api',
+    timeline: 'host=dataverse-api&depth=0',
   },
   {
     key: 'plugins',
-    label: 'Plug-in runs',
+    label: 'Plug-in step runs',
     type: 'counter',
     value: (a) => num(a?.plugins?.executions),
-    detail: (a) => `${fmt(a?.plugins?.failures ?? 0)} failed`,
+    detail: () => 'exported plug-in steps, not plugin rules',
+    errors: (a) => num(a?.plugins?.failures),
     tone: (a) => (a?.plugins?.failures ? 'bad' : 'ok'),
+    activity: 'kind=plugin-step',
+    timeline: 'kind=plugin-step',
   },
   {
     key: 'flows',
     label: 'Flow runs',
     type: 'counter',
     value: (a) => (a?.flows ? flowRuns(a.flows) : null),
-    detail: (a) => `${fmt(a?.flows?.failed ?? 0)} failed · ${fmt(a?.flows?.waiting ?? 0)} waiting`,
+    detail: (a) => `${fmt(a?.flows?.waiting ?? 0)} waiting`,
+    errors: (a) => num(a?.flows?.failed),
     tone: (a) => (a?.flows?.failed ? 'bad' : 'ok'),
+    activity: 'kind=flow-run',
+    timeline: 'kind=flow-run',
   },
   {
     key: 'jobs',
@@ -1419,6 +1418,8 @@ export const KPIS = Object.freeze([
     value: (a) => num(a?.jobs?.pending),
     detail: (a) => `${fmt(a?.jobs?.running ?? 0)} running · ${fmt(a?.jobs?.poisoned ?? 0)} poisoned`,
     tone: (a) => (a?.jobs?.poisoned ? 'bad' : 'neutral'),
+    activity: 'kind=job',
+    noTimeline: 'a current level; the runtime keeps no history of it',
   },
   {
     key: 'messages',
@@ -1427,6 +1428,8 @@ export const KPIS = Object.freeze([
     value: (a) => num(a?.messages?.active),
     detail: (a) => `${fmt(a?.messages?.deadLettered ?? 0)} dead-lettered · ${fmt(a?.messages?.entities ?? 0)} queues`,
     tone: (a) => (a?.messages?.deadLettered ? 'warn' : 'neutral'),
+    link: '#services?panel=messaging',
+    noTimeline: 'a current level; the runtime keeps no history of it',
   },
   {
     key: 'outbox',
@@ -1435,6 +1438,8 @@ export const KPIS = Object.freeze([
     value: (a) => num(a?.outbox?.queued),
     detail: (a) => `${fmt(a?.outbox?.delivered ?? 0)} captured · ${fmt(a?.outbox?.failed ?? 0)} failed`,
     tone: (a) => (a?.outbox?.failed ? 'warn' : 'neutral'),
+    link: '#services?panel=outbox',
+    noTimeline: 'a current level; the runtime keeps no history of it',
   },
   {
     key: 'storage',
@@ -1442,9 +1447,48 @@ export const KPIS = Object.freeze([
     type: 'counter',
     value: (a) => (a?.storage?.byProvider ? storageTotal(a, 'writes') : null),
     detail: (a) => `${fmt(storageTotal(a, 'deletes'))} deletes · ${fmt(storageTotal(a, 'bytesWritten'))} bytes`,
+    link: '#services?panel=storage',
+    noTimeline: 'storage providers count writes; they are not recorded as activity steps',
   },
 ]);
+// Why a tile and Activity › Stats can show different numbers for the same thing (DV-N4-8), on hover.
+const KPI_HINT = Object.freeze({
+  counter:
+    'Total since this runtime started, on every host, including runs whose activity is no longer kept. Activity › Stats counts the steps of the kept activities that match its filters (a run can be several steps), so either number can be the higher one.',
+  gauge: 'The current level, not a total.',
+});
+/** Where a KPI tile leads: its Activity filter, else the view that manages the count. */
+const kpiHref = (kpi, { errors = false } = {}) =>
+  kpi.activity ? `#activity?${kpi.activity}${errors ? '&result=error' : ''}` : errors ? null : (kpi.link ?? null);
 
+/** A bucket width in words: "30 s", "2 min", "1 h". */
+const interval = (ms) =>
+  ms < 60_000
+    ? `${Math.round(ms / 1000)} s`
+    : ms < 3_600_000
+      ? `${Math.round(ms / 60_000)} min`
+      : `${Math.round(ms / 3_600_000)} h`;
+/**
+ * The time range of the tile graphs (DV-N4c-5): from the runtime start to `now` in about 24 buckets of at least 1 s.
+ * Null without a start time.
+ */
+export function timelineRange(startedAt, now = Date.now(), buckets = 24) {
+  const from = Date.parse(startedAt ?? '');
+  if (!Number.isFinite(from) || now < from) return null;
+  return { from, to: now, bucketMs: Math.max(1000, Math.ceil((now - from) / (buckets - 1)) || 1000) };
+}
+/** Findings per bucket of `range` from the /diagnostics items (`time`, `count`; a grouped finding at its time). */
+export function findingsTimeline(items, range) {
+  if (!range) return null;
+  const values = Array.from({ length: Math.floor((range.to - range.from) / range.bucketMs) + 1 }, () => 0);
+  for (const item of Array.isArray(items) ? items : []) {
+    const at = Date.parse(item?.time ?? '');
+    if (!Number.isFinite(at) || at > range.to) continue;
+    // A finding recorded before the start (source loading) counts in the first bucket.
+    values[Math.max(0, Math.floor((at - range.from) / range.bucketMs))] += num(item.count) ?? 1;
+  }
+  return values;
+}
 /** The activity series for sparklines: `history` (oldest first) plus the current activity, at most `points` long. */
 export function activitySeries(history, activity, points = 12) {
   const past = (Array.isArray(history) ? history : []).filter(
@@ -1477,7 +1521,30 @@ export function sparkline(values, { width = 100, height = 26 } = {}) {
   );
 }
 
-function kpiTiles(activity, series, previous, icons) {
+/**
+ * `timelines` (Health with Expand, DV-N4c-5): { loading } while it loads, { reason } when there is none, else
+ * { bucketMs, series: { <kpi key>: counts per bucket | null }, findings: counts | null } from the stats route and /diagnostics. Without it the graphs are the
+ * per-refresh change (the default arrangement).
+ */
+function timelineOf(kpi, timelines) {
+  if (timelines.loading) return { trend: 'Loading the timeline…' };
+  if (!kpi.timeline) return { trend: `No timeline: ${kpi.noTimeline}` };
+  if (timelines.reason) return { trend: `No timeline: ${timelines.reason}` };
+  const values = timelines.series?.[kpi.key];
+  return values
+    ? {
+        values,
+        trend: `${kpi.key === 'requests' || kpi.key === 'webApi' ? 'requests' : 'runs'} per ${interval(timelines.bucketMs)} since start, kept activities`,
+      }
+    : { trend: 'No timeline: the activity stats did not answer' };
+}
+function kpiTiles(
+  activity,
+  series,
+  previous,
+  icons,
+  { compact = false, expanded = false, helpHtml = '', timelines = null } = {},
+) {
   const delta = (kpi) => {
     const now = kpi.value(activity),
       before = previous ? kpi.value(previous) : null;
@@ -1489,27 +1556,122 @@ function kpiTiles(activity, series, previous, icons) {
     return `<span class="dm-delta is-${direction}">${iconFor(icons, arrow) || (change > 0 ? '▲' : change < 0 ? '▼' : '–')}<span>${change === 0 ? 'no change' : `${change > 0 ? '+' : '−'}${fmt(Math.abs(change))}`}</span><span class="ui-sr-only"> since the previous refresh</span></span>`;
   };
   const tiles = KPIS.map((kpi) => {
-    const value = kpi.value(activity),
-      values = sparkValues(kpi, series);
-    const trend =
-      values.length >= 2
+    const value = kpi.value(activity);
+    const timeline = timelines ? timelineOf(kpi, timelines) : null;
+    const values = timeline ? (timeline.values ?? []) : sparkValues(kpi, series);
+    const trend = timeline
+      ? timeline.trend
+      : values.length >= 2
         ? `${kpi.type === 'counter' ? 'change per refresh' : 'level'}, last ${values.length} refreshes`
-        : 'trend appears after two refreshes';
+        : ''; // no trend line until two refreshes (D-M-6: no filler text)
+    const graph = timeline && !timeline.values ? '' : sparkline(values);
+    const href = kpiHref(kpi),
+      errors = kpi.errors?.(activity) ?? null,
+      errorsHref = kpiHref(kpi, { errors: true });
+    const failed =
+      errors === null
+        ? ''
+        : ` · ${errors && errorsHref ? `<a class="dm-kpi-errors" href="${e(errorsHref)}">${e(fmt(errors))} failed</a>` : `${e(fmt(errors))} failed`}`;
+    const face =
+      `<span class="dm-kpi-label">${e(kpi.label)}</span>` +
+      `<span class="dm-kpi-row"><strong class="dm-kpi-value">${e(fmt(value))}</strong>${delta(kpi)}</span>${!compact || expanded ? graph : ''}`;
     return (
-      `<li class="dm-kpi is-${kpi.tone?.(activity) ?? 'info'}" data-kpi="${kpi.key}"><span class="dm-kpi-label">${e(kpi.label)}</span>` +
-      `<span class="dm-kpi-row"><strong class="dm-kpi-value">${e(fmt(value))}</strong>${delta(kpi)}</span>` +
-      `${sparkline(values)}<span class="dm-kpi-detail">${e(kpi.detail(activity))}</span><span class="dm-kpi-trend">${e(trend)}</span></li>`
+      `<li class="dm-kpi is-${kpi.tone?.(activity) ?? 'info'}" data-kpi="${kpi.key}">` +
+      (href
+        ? `<a class="dm-kpi-link" href="${e(href)}" title="${e(KPI_HINT[kpi.type])}" aria-label="${e(`${kpi.label}: ${fmt(value)}. ${kpi.activity ? 'Open the matching activity' : 'Open the view that manages it'}`)}">${face}</a>`
+        : face) +
+      (compact
+        ? expanded && trend
+          ? `<span class="dm-kpi-trend">${e(trend)}</span>`
+          : ''
+        : `<span class="dm-kpi-detail">${e(kpi.detail(activity))}${failed}</span><span class="dm-kpi-trend">${e(trend)}</span>`) +
+      '</li>'
     );
   });
   const codes = Object.entries(activity?.diagnostics?.byCode ?? {}).sort((a, b) => b[1] - a[1]);
   const diagnostics = num(activity?.diagnostics?.total) ?? 0;
+  const findings =
+    compact && expanded && timelines
+      ? timelines.loading
+        ? '<span class="dm-kpi-trend">Loading the timeline…</span>'
+        : timelines.reason
+          ? `<span class="dm-kpi-trend">No timeline: ${e(timelines.reason)}</span>`
+          : timelines.findings
+            ? `${sparkline(timelines.findings)}<span class="dm-kpi-trend">findings per ${e(interval(timelines.bucketMs))} since start</span>`
+            : '<span class="dm-kpi-trend">No timeline: this runtime serves no findings list</span>'
+      : '';
   tiles.push(
-    `<li class="dm-kpi dm-kpi-diagnostics is-${diagnostics ? 'warn' : 'ok'}" data-kpi="diagnostics"><span class="dm-kpi-label">Diagnostics</span>` +
-      `<span class="dm-kpi-row"><strong class="dm-kpi-value">${e(fmt(diagnostics))}</strong></span>` +
-      `<span class="dm-kpi-top">${codes.length ? `Top <code>${e(codes[0][0])}</code> ×${e(fmt(codes[0][1]))}` : 'No diagnostics recorded'}</span>` +
-      `<span class="dm-kpi-detail">${codes.length > 1 ? `${e(plural(codes.length, 'code'))} in total` : 'see Render & diagnostics'}</span></li>`,
+    `<li class="dm-kpi dm-kpi-diagnostics is-${diagnostics ? 'warn' : 'ok'}" data-kpi="diagnostics"><a class="dm-kpi-link" href="#activity?tab=findings" aria-label="${e(`Findings: ${fmt(diagnostics)}. Open them in Activity`)}"><span class="dm-kpi-label">Findings</span>` +
+      `<span class="dm-kpi-row"><strong class="dm-kpi-value">${e(fmt(diagnostics))}</strong></span></a>` +
+      (compact
+        ? findings
+        : `<span class="dm-kpi-top">${codes.length ? `Top <code>${e(codes[0][0])}</code> ×${e(fmt(codes[0][1]))}` : 'No findings recorded'}</span>` +
+          `<span class="dm-kpi-detail">${codes.length > 1 ? `${e(plural(codes.length, 'code'))} in total · ` : ''}diagnostics since start</span>`) +
+      '</li>',
   );
-  return `<section class="dm-kpis" aria-labelledby="dashboard-kpi-title"><h2 id="dashboard-kpi-title" class="ui-sr-only">Activity since start</h2><ul class="dm-kpi-list">${tiles.join('')}</ul></section>`;
+  const toggle = compact
+    ? `<button type="button" class="ui-button ui-small dm-kpi-expand" data-dashboard-expand aria-expanded="${expanded}" aria-controls="dashboard-kpi-list">${expanded ? 'Hide graphs' : 'Expand'}</button>`
+    : '';
+  const list = `<ul class="dm-kpi-list" id="dashboard-kpi-list">${tiles.join('')}</ul>`;
+  // Health (D-M-11): the tiles are a section card like the system map, with Expand / Hide graphs and the (i) in its
+  // header.
+  if (compact)
+    return (
+      `<details class="ui-section dm-section dm-kpi-card" data-ui-section="health:numbers" open><summary><span class="ui-section-title" id="dashboard-kpi-title">Key numbers</span>` +
+      `<span class="ui-section-summary">since this runtime started</span></summary><div class="ui-section-body"><p class="ui-section-help dm-kpi-head">${helpHtml}${toggle}</p>` +
+      `<section class="dm-kpis is-compact${expanded ? ' is-expanded' : ''}" aria-labelledby="dashboard-kpi-title">${list}</section></div></details>`
+    );
+  return `<section class="dm-kpis${expanded ? ' is-expanded' : ''}" aria-labelledby="dashboard-kpi-title"><div class="dm-kpi-head"><h2 id="dashboard-kpi-title" class="ui-sr-only">Activity since start</h2>${helpHtml}${toggle}</div>${list}</section>`;
+}
+
+/** Uptime of a runtime that reports its start (`runtime.startedAt`), as "2 h 5 min"; null when it does not. */
+const uptime = (startedAt, now) => {
+  const start = Date.parse(startedAt ?? '');
+  if (!Number.isFinite(start) || now < start) return null;
+  const minutes = Math.floor((now - start) / 60_000);
+  return minutes < 1
+    ? 'under a minute'
+    : minutes < 60
+      ? `${minutes} min`
+      : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+};
+const ms = (value) =>
+  value === null || value === undefined
+    ? '—'
+    : value >= 1000
+      ? `${(value / 1000).toFixed(2)} s`
+      : `${Math.round(value)} ms`;
+/**
+ * What the Health hero adds (D-M-9, D-M-11): readiness (ok, degraded, blocked), the site, the uptime and one strip of
+ * key numbers, each opening the matching activity. `stats` is the trace stats answer (failed activities, p95), when
+ * this host serves it.
+ */
+function healthFacts(payload, { stats, preflight, site, now }) {
+  const runtime = payload.runtime ?? {},
+    activity = payload.activity ?? {},
+    nodes = (payload.nodes ?? []).map((node) => ({ ...node, status: statusOf(node.status) }));
+  const c = tallyStatus(nodes);
+  const blocking = num(preflight?.summary?.blocking ?? preflight?.blocking);
+  const readiness = blocking ? 'blocked' : c.bad ? 'degraded' : 'ok';
+  const strip = [
+    ['Requests', num(activity.requests?.total), '#activity?host=power-pages'],
+    ['Errors', num(stats?.roots?.errors), '#activity?result=error'],
+    ['p95', stats?.roots?.p95 ?? null, '#activity?tab=stats', ms],
+    ['Plug-in step runs', num(activity.plugins?.executions), '#activity?kind=plugin-step'],
+    ['Flow runs', activity.flows ? flowRuns(activity.flows) : null, '#activity?kind=flow-run'],
+    ['Findings', num(activity.diagnostics?.total), '#activity?tab=findings'],
+  ];
+  return {
+    site,
+    uptime: uptime(runtime.startedAt, now),
+    readiness: `<span class="dm-readiness is-${{ ok: 'ok', degraded: 'warn', blocked: 'bad' }[readiness]}" title="${e(readiness === 'blocked' ? 'Preflight reports blocking requirements' : readiness === 'degraded' ? 'Some components report errors or are missing' : 'Every component reports ready or declared')}">${e(readiness)}</span>`,
+    strip: `<ul class="dm-strip" aria-label="Key numbers">${strip
+      .map(
+        ([label, value, href, format = fmt]) =>
+          `<li><a href="${e(href)}" title="${e(KPI_HINT.counter)}"><strong>${e(value === null || value === undefined ? '—' : format(value))}</strong><span>${e(label)}</span></a></li>`,
+      )
+      .join('')}</ul>`,
+  };
 }
 
 const CHANGES = Object.freeze({
@@ -1523,7 +1685,7 @@ const KIND_NAMES = Object.freeze({
   'dataverse-api': 'Dataverse API runtime',
   'model-driven': 'Model-driven runtime',
 });
-function hero(payload, { planned, starting, preflight, now, icons, compact }) {
+function hero(payload, { planned, starting, preflight, now, icons, compact, health = null, actions = '' }) {
   const runtime = payload.runtime ?? {},
     nodes = (payload.nodes ?? []).map((node) => ({ ...node, status: statusOf(node.status) }));
   const c = tallyStatus(nodes),
@@ -1543,14 +1705,14 @@ function hero(payload, { planned, starting, preflight, now, icons, compact }) {
       : `<li><span>${e(label)}</span><strong>${e(value)}</strong>${tip(`About ${label.toLowerCase()}`, help)}</li>`;
   const level = runtime.simulationLevel ?? null;
   const chips =
-    `<ul class="dm-chips">${chip('Record changes', level ? (CHANGES[level] ?? level) : planned ? 'from configuration' : 'not reported', 'What happens to records you add or change in the preview. Set in setup (Data step, or Simulation & state).')}` +
+    `<ul class="dm-chips">${health ? `${chip('Site', health.site, 'The portal site this runtime serves.')}${chip('Uptime', health.uptime, 'How long this runtime has been running since it started.')}` : ''}${chip('Record changes', level ? (CHANGES[level] ?? level) : planned ? 'from configuration' : 'not reported', 'What happens to records you add or change in the preview. Set in setup (Data step, or Simulation & state).')}` +
     `${planned ? '' : chip('Clock', runtime.clock === 'system' ? 'real time' : runtime.clock === 'fixed' ? 'fixed time' : runtime.clock, 'The time the preview uses for dates and scheduled work: real time follows this computer, fixed time stays at a set moment for repeatable tests.')}` +
     `${planned || runtime.revision == null ? '' : chip('Source version', runtime.revision, 'Starts at 1 and goes up each time the preview picks up changed export files without a restart.')}` +
     `${chip('Deployment profile', runtime.deploymentProfile, 'The deployment settings applied, such as a test or production stage of your site.')}${runtime.reloading ? chip('Reload', 'in progress', 'The preview is reading changed export files.') : ''}</ul>`;
   const origin =
     !planned && runtime.localOrigin
-      ? `<p class="dm-hero-meta"><span>Address</span> <code>${e(runtime.localOrigin)}</code>${tip('About the address', 'Where the preview answers on this computer. Only this computer can open it.')}` +
-        `${runtime.stateFile ? ` <span>Changes saved in</span> <code>${e(runtime.stateFile)}</code>${tip('About the changes file', 'The file in your project folder where the preview keeps the records you add or change. Delete it to start again from the starting data.')}` : ''}</p>`
+      ? `<div class="dm-hero-meta"><span>Address</span> <code>${e(runtime.localOrigin)}</code>${tip('About the address', 'Where the preview answers on this computer. Only this computer can open it.')}` +
+        `${runtime.stateFile ? ` <span>Changes saved in</span> <code>${e(runtime.stateFile)}</code>${tip('About the changes file', 'The file in your project folder where the preview keeps the records you add or change. Delete it to start again from the starting data.')}` : ''}</div>`
       : '';
   const segments = planned
     ? [
@@ -1599,12 +1761,13 @@ function hero(payload, { planned, starting, preflight, now, icons, compact }) {
     (runtime.kind ? `${runtime.kind} runtime` : planned ? 'Planned runtime' : 'Mirage runtime');
   return (
     `<section class="dm-hero${planned ? ' is-planned' : ''}${starting ? ' is-starting' : ''}${compact ? ' is-compact' : ''}" aria-labelledby="dashboard-hero-title">` +
-    `<div class="dm-hero-main"><div class="dm-brand"><span class="dm-mark">${iconFor(icons, 'mark')}</span><div><p class="dm-eyebrow">${e(runtime.product ?? 'Mirage')} · local Power Platform runtime</p>` +
-    `<h2 id="dashboard-hero-title">${e(title)}</h2></div></div>${state}${chips}${origin}</div>` +
+    `<div class="dm-hero-main"><div class="dm-brand"><span class="dm-mark">${iconFor(icons, 'mark')}</span><div><div class="dm-eyebrow">${e(runtime.product ?? 'Mirage')} · local Power Platform runtime</div>` +
+    `<h2 id="dashboard-hero-title">${e(title)}</h2></div>${actions ? `<div class="dm-hero-actions">${actions}</div>` : ''}</div>${health ? `<div class="dm-hero-state">${health.readiness}${state}</div>` : state}${chips}${origin}</div>` +
     (starting
       ? ''
       : `<div class="dm-hero-health" role="group" aria-label="${e(`Health: ${headline} of ${total} components ${planned ? 'planned' : 'ready'}`)}">` +
         `<div class="dm-health-ring">${ring(segments, compact ? { size: 64, stroke: 7, className: 'dm-ring dm-ring-lg' } : { size: 112, stroke: 11, className: 'dm-ring dm-ring-lg' })}<span class="dm-health-value"><strong>${e(headline)}</strong>${compact ? '' : `<span>of ${e(total)} ${planned ? 'planned' : 'ready'}</span>`}</span></div>${stats}${compact ? tip('About these counts', 'Components of the preview by state. Ready: answering. Local stand-in: a simplified local version replaces a real service. Error or missing: needed but not available; hover a count for names. Switched off: turned off in the configuration.') : ''}</div>`) +
+    (health ? health.strip : '') +
     (planned ? '<p class="dm-ribbon">Planned from configuration — start the preview to see live status.</p>' : '') +
     (starting
       ? '<p class="dm-ribbon is-starting">The runtime is starting. Components appear once the organization is ready; this page keeps polling.</p>'
@@ -1618,7 +1781,8 @@ function hero(payload, { planned, starting, preflight, now, icons, compact }) {
  * `{ status: 'starting' }` payload) shows the waiting state. `history`: earlier `activity` objects, oldest first (the
  * caller keeps the last 11 or more); sparklines use the last 12 points including the current one. `preflight`: the last
  * preflight report, for the blocking count in the header. `icons`: the dashboard-icons.mjs module. `parts` turns sections off
- * ({ guide, kpis, feed, blocking, configuration }: false), and `compact` shrinks the header; /_setup/ shows the header and the map only.
+ * ({ guide, kpis, blocking, configuration }: false), and `compact` shrinks the header; /_setup/ shows the header and the map only.
+ * `arrangement: 'health'` (/_sim/#health) puts the counters first and the map in a collapsible card.
  */
 export function renderDashboard(
   payload = {},
@@ -1628,17 +1792,22 @@ export function renderDashboard(
     previousActivity,
     help,
     kit,
-    pager,
     history = [],
     icons,
     preflight,
     now = Date.now(),
     parts = {},
     compact = false,
+    arrangement = 'default',
+    stats = null,
+    site = null,
+    expanded = false,
+    timelines = null,
+    actions = '',
   } = {},
 ) {
   needKit(kit);
-  const show = { guide: true, kpis: true, feed: true, blocking: true, configuration: true, ...parts };
+  const show = { guide: true, kpis: true, blocking: true, configuration: true, ...parts };
   const starting = mode === 'starting' || payload?.status === 'starting';
   const planned = mode === 'planned',
     runtime = payload.runtime ?? {},
@@ -1652,7 +1821,7 @@ export function renderDashboard(
   }));
   const docOf = (path) => kit.docLink(path, docs ?? payload.docs);
   const guideFor = (key) => help?.[key];
-  const intro = guideFor('dashboard');
+  const intro = guideFor('health');
   const guide =
     intro && show.guide
       ? kit.guide({
@@ -1663,17 +1832,48 @@ export function renderDashboard(
           docs: intro.doc ? [docOf(intro.doc)] : [],
         })
       : '';
-  const head = hero(payload, { planned, starting, preflight, now, icons, compact });
-  const kpis = planned || starting || !show.kpis ? '' : kpiTiles(activity, series, previous, icons);
+  const healthArrangement = arrangement === 'health' && !planned && !starting;
+  const head = hero(payload, {
+    planned,
+    starting,
+    preflight,
+    now,
+    icons,
+    compact,
+    actions,
+    health: healthArrangement ? healthFacts(payload, { stats, preflight, site, now }) : null,
+  });
+  const tilesHelp = guideFor('health.tiles');
+  const kpis =
+    planned || starting || !show.kpis
+      ? ''
+      : kpiTiles(activity, series, previous, icons, {
+          compact: arrangement === 'health',
+          expanded,
+          timelines: arrangement === 'health' ? timelines : null,
+          // The counters' (i) sits on the tile row's head, next to Expand (never a line of its own).
+          helpHtml: tilesHelp
+            ? `<span class="dm-kpi-help" id="help-health-tiles">${kit.info({
+                label: 'About these counters',
+                text: tilesHelp.intro,
+                docs: tilesHelp.doc ? [docOf(tilesHelp.doc)] : [],
+              })}</span>`
+            : '',
+        });
   const mapInfo =
     kit.info?.({
       label: 'About the system map',
-      text: 'Six layers from the people who call this runtime down to the services it declares. Hover or focus a card to light up the cards it connects to directly; select it (click, Enter or Space) for its facts, every connection in words and the view that manages it.',
+      text: MAP_TEXT,
     }) ?? '';
   const layout = layoutTopology(nodes, edges);
-  const map =
-    `<section class="ui-dash-map dm-section" aria-labelledby="dashboard-map-title"><div class="dm-section-head"><h2 id="dashboard-map-title">System map</h2>${mapInfo}</div>` +
-    `${renderTopology(layout, { mode: planned ? 'planned' : 'live', icons })}<div id="dashboard-node-detail" class="ui-drawer-slot"></div></section>`;
+  // arrangement 'health' (/_sim/#health, D-M-6): the counters come first and the map is a collapsible card.
+  const health = arrangement === 'health' && !planned && !starting;
+  const map = health
+    ? `<details class="ui-section ui-dash-map dm-section dm-map-card" data-ui-section="health:map" open><summary><span class="ui-section-title" id="dashboard-map-title">System map</span>` +
+      `<span class="ui-section-summary">${e(healthOf(nodes).text)}</span></summary><div class="ui-section-body"><div class="ui-section-help">${legendInfo(false)}</div>` +
+      `${renderTopology(layout, { mode: 'live', icons, withLegend: false })}<div id="dashboard-node-detail" class="ui-drawer-slot"></div></div></details>`
+    : `<section class="ui-dash-map dm-section" aria-labelledby="dashboard-map-title"><div class="dm-section-head"><h2 id="dashboard-map-title">System map</h2>${mapInfo}</div>` +
+      `${renderTopology(layout, { mode: planned ? 'planned' : 'live', icons })}<div id="dashboard-node-detail" class="ui-drawer-slot"></div></section>`;
   if (starting)
     return (
       `<div class="ui-dashboard dm-dashboard" data-dashboard-mode="starting">${head}${guide}<section class="ui-dash-map dm-section" aria-labelledby="dashboard-map-title">` +
@@ -1681,53 +1881,20 @@ export function renderDashboard(
       `<ol class="dm-skeleton">${BANDS.map((band, index) => `<li><span class="dm-band-index dm-band-${band.id}" aria-hidden="true">${index + 1}</span><strong>${e(band.title)}</strong><span>${e(band.description)}</span></li>`).join('')}</ol>` +
       '<div id="dashboard-node-detail" class="ui-drawer-slot"></div></section></div>'
     );
-  if (!show.feed && !show.blocking && !show.configuration)
+  if (!show.blocking && !show.configuration)
     return `<div class="ui-dashboard dm-dashboard${compact ? ' is-compact' : ''}" data-dashboard-mode="${planned ? 'planned' : 'live'}">${head}${guide}${kpis}${map}</div>`;
-  const rows = planned ? [] : activityRows(activity);
-  const result = kit.pageItems(rows, pager ?? {}, {
-    text: (item) => `${item.source} ${item.method ?? ''} ${item.path ?? ''} ${item.status ?? ''} ${item.code ?? ''}`,
-  });
-  const feed =
-    `<section class="ui-dash-feed dm-section" aria-labelledby="dashboard-feed-title"><h2 id="dashboard-feed-title">What is happening</h2>` +
-    (planned
-      ? kit.notice('Activity appears once the preview runs.', 'neutral')
-      : kit.table({
-          key: 'dashboard-activity',
-          result,
-          caption: 'Recent requests and diagnostics',
-          emptyText: 'No requests or diagnostics recorded yet. Open a page of the preview to see traffic.',
-          columns: [
-            { label: 'When', render: (item) => e(item.at ? String(item.at).slice(11, 19) : '—') },
-            {
-              label: 'Source',
-              render: (item) => kit.badge(item.source, item.source === 'Diagnostic' ? 'warn' : 'info'),
-            },
-            {
-              label: 'What',
-              render: (item) =>
-                item.code ? `<code>${e(item.code)}</code>` : `${e(item.method)} <code>${e(item.path)}</code>`,
-            },
-            {
-              label: 'Result',
-              render: (item) =>
-                item.code
-                  ? `${e(item.count)} recorded`
-                  : `${kit.badge(item.status ?? 'pending', item.status >= 400 ? 'bad' : 'ok')}${item.ms !== undefined ? ` ${e(item.ms)} ms` : ''}`,
-            },
-          ],
-        })) +
-    '</section>';
   const blockingBody = planned
     ? kit.notice(
         'Preflight needs a running preview. From a terminal, run: paqvilo mirage preflight --config <file> --site <id> (or --project <file>).',
         'neutral',
       )
-    : `<p class="ui-empty">Nothing is listed until you run preflight. It probes declared local services and rebuilds the source graph, so it runs on demand only.</p>` +
-      `<form id="dashboard-preflight" class="ui-form"><label for="dashboard-preflight-requires">Requirements (ids or globs, separated by spaces)</label>` +
+    : `<p class="ui-empty">Run preflight to list what your sources still need.</p>` +
+      // Each field's (i) sits on its label's line: the label and its (i) share one row, the checkbox's (i) is in its label.
+      `<form id="dashboard-preflight" class="ui-form"><div><label for="dashboard-preflight-requires">Requirements (ids or globs, separated by spaces)</label>` +
+      `${kit.fieldHelp('dashboard-preflight-requires', 'Empty checks everything. * matches any characters and matching ignores case.')}</div>` +
       `<input id="dashboard-preflight-requires" name="requires" type="text" placeholder="cloud-flow:* table:x_item" aria-describedby="dashboard-preflight-requires-help">` +
-      `${kit.fieldHelp('dashboard-preflight-requires', 'Empty checks everything. * matches any characters and matching ignores case.')}` +
-      `<label class="ui-check"><input id="dashboard-preflight-strict" name="strict" type="checkbox" aria-describedby="dashboard-preflight-strict-help"> Strict</label>` +
-      `${kit.fieldHelp('dashboard-preflight-strict', 'Strict makes every unsatisfied requirement in scope blocking.')}` +
+      `<label class="ui-check"><input id="dashboard-preflight-strict" name="strict" type="checkbox" aria-describedby="dashboard-preflight-strict-help"> Strict` +
+      `${kit.fieldHelp('dashboard-preflight-strict', 'Strict makes every unsatisfied requirement in scope blocking.')}</label>` +
       `<button type="submit" class="ui-button ui-primary">Run preflight</button></form><div id="dashboard-preflight-result"></div>`;
   const blocking = kit.section({
     key: 'dashboard-blocking',
@@ -1735,11 +1902,12 @@ export function renderDashboard(
     summary: planned ? 'available while the preview runs' : 'run preflight on demand',
     open: !planned,
     body: blockingBody,
-    help: guideFor('dashboard.blocking')
-      ? {
-          text: guideFor('dashboard.blocking').intro,
-          doc: guideFor('dashboard.blocking').doc ? docOf(guideFor('dashboard.blocking').doc) : undefined,
-        }
+    help: guideFor('health.blocking')
+      ? `<p class="ui-section-help">${kit.info({
+          label: 'About Blocking',
+          text: guideFor('health.blocking').intro,
+          docs: guideFor('health.blocking').doc ? [docOf(guideFor('health.blocking').doc)] : [],
+        })}</p>`
       : undefined,
   });
   const configuration = payload.configuration ?? {};
@@ -1785,5 +1953,6 @@ export function renderDashboard(
       ],
     ]),
   });
-  return `<div class="ui-dashboard dm-dashboard${compact ? ' is-compact' : ''}" data-dashboard-mode="${planned ? 'planned' : 'live'}">${head}${guide}${kpis}${map}${show.feed ? feed : ''}${show.blocking ? blocking : ''}${show.configuration ? summary : ''}</div>`;
+  const body = health ? `${head}${guide}${kpis}${map}` : `${head}${guide}${kpis}${map}`;
+  return `<div class="ui-dashboard dm-dashboard${compact ? ' is-compact' : ''}" data-dashboard-mode="${planned ? 'planned' : 'live'}">${body}${show.blocking ? blocking : ''}${show.configuration ? summary : ''}</div>`;
 }

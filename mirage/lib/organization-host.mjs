@@ -878,11 +878,18 @@ export async function composeOrganizationHost(options) {
   // a memory-only runtime (dry-run, no state file) passes null and the store reports why it writes nothing.
   c.traces =
     options.traces ??
-    createTraceStore({ settings: options.trace ?? {}, stateDirectory: () => c.stateDirectory ?? null });
+    createTraceStore({
+      settings: options.trace ?? {},
+      stateDirectory: () => c.stateDirectory ?? null,
+      // A table filter names the logical or the entity set name (DV-N4-2).
+      entityNames: (name) => options.store.entityNames?.(name) ?? [name],
+    });
   options.store.traces = c.traces;
   hostCatalogues(c);
   c.registry = hostRegistry(c);
   const host = {
+    // When this organization runtime started (epoch milliseconds on its clock): the dashboard's runtime.startedAt/uptimeMs.
+    startedAt: (options.store.clock ?? systemClock).now(),
     packs: c.packs,
     handlers: c.handlers,
     descriptors: c.descriptors,
@@ -2002,7 +2009,7 @@ function orgNodes({
         persist: trace.persist?.enabled ?? false,
         persistError: trace.persist?.lastError ?? null,
       },
-      { link: '#trace' },
+      { link: '#activity' },
     );
   edge('org:store', 'org:plugins', 'process', 'ready', 'pipeline');
   edge('org:plugins', 'org:store', 'process', 'ready', 'SDK calls');

@@ -1623,6 +1623,9 @@ export function createDataverseHandler(deps) {
         userId: meta.userId,
         grant: meta.grant,
         kind: meta.kind,
+        // The request's trace (D-M-4); null at trace level off.
+        traceId: span?.traceId ?? null,
+        spanId: span?.spanId ?? null,
       }),
     );
     const reply = (result) =>

@@ -5,6 +5,15 @@ import { createRequestContext, runWithRequest } from './request-context.mjs';
 
 // Each run gets its own request context: the starting request's correlation (carried by the committed event, else the chain)
 // as the parent, mode async, the writer as principal; a plug-in trace log and nested events then carry that correlation.
+// The human facts of an asynchronous step finding (D-M-2 Findings): the step's display name, the table and a sentence.
+const stepFacts = (item, itemId, event, outcome) => {
+  const name = item?.name ?? itemId;
+  return {
+    name,
+    entity: event?.entity ?? item?.entity ?? null,
+    message: `${name} ${outcome}${event?.entity ? ` on ${event.entity}` : ''}${item?.message ? ` (${item.message})` : ''}.`,
+  };
+};
 const runContext = (store, event, chain) =>
   createRequestContext({ correlationId: event.correlationId ?? chain.id, clock: store.clock, ids: store.ids }).child({
     mode: 'async',
@@ -160,6 +169,7 @@ export function createAsyncPluginRunner({
         await store.transact(() => (answer?.canceled ? job.cancel(answer.canceled) : job.finish(null)));
         diagnostic({
           code: 'PLUGIN_ASYNC_COMPLETED',
+          ...stepFacts(item, itemId, event, 'completed'),
           stepId: itemId,
           chainId: chain.id,
           sourceFile: item.sourceFile,
@@ -170,6 +180,7 @@ export function createAsyncPluginRunner({
         await store.transact(() => job.finish(error));
         diagnostic({
           code: 'PLUGIN_ASYNC_FAILED',
+          ...stepFacts(item, itemId, event, `failed: ${error.message}`),
           stepId: itemId,
           chainId: chain.id,
           error: { code: error.code ?? 'LocalPluginAsyncError', message: error.message },
@@ -232,6 +243,7 @@ export function createAsyncPluginRunner({
           else job.finish(null);
           diagnostic({
             code: 'PLUGIN_ASYNC_COMPLETED',
+            ...stepFacts(item, itemId, event, skipped ? 'was canceled: nothing was executed' : 'completed'),
             stepId: itemId,
             chainId: chain.id,
             sourceFile: item.sourceFile,
@@ -242,6 +254,7 @@ export function createAsyncPluginRunner({
           job?.finish(error);
           diagnostic({
             code: 'PLUGIN_ASYNC_FAILED',
+            ...stepFacts(item, itemId, event, `failed: ${error.message}`),
             stepId: itemId,
             chainId: chain.id,
             error: { code: error.code ?? 'LocalPluginAsyncError', message: error.message },

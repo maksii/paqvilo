@@ -122,6 +122,13 @@ test('an external sign-in traces the provider calls, its identity-provider roots
     assert.ok(served, `the provider request of ${call.name} joins under it`);
     assert.equal(served.traceId, call.traceId);
   }
+  // The registration's audit entries name the callback's trace (D-M-4).
+  const registrations = (await (await fetch(`${app.url}/_sim/api/audit?kind=registration`)).json()).items;
+  assert.ok(registrations.length > 0);
+  assert.ok(
+    registrations.every((entry) => entry.traceId === callback.trace.traceId && entry.spanId),
+    JSON.stringify(registrations.map((entry) => [entry.traceId, entry.spanId])),
+  );
   // No token or secret value reaches the trace.
   const exported = JSON.stringify(app.trace.export({}));
   for (const needle of ['id_token=', '"access_token":"ey', 'client_secret='])

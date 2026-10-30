@@ -531,24 +531,32 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
       server.closeAllConnections();
       return new Promise((resolve) => server.close(resolve));
     });
+    // One runner session: every owned Edge session costs seconds on a loaded host, while each flow
+    // has its own page and observation. The second flow checks step deadline validation.
     const result = await runAcceptance({
       localUrl: `http://127.0.0.1:${server.address().port}`,
       flows: [
         {
           name: 'DOM ready with outstanding image request',
           // The never-finishing image fails only the settlement, at its own deadline. Navigation keeps the
-          // default deadline, which it would exhaust if it waited for the load event.
+          // default deadline, which it would exhaust if it waited for the load event; its bounded
+          // post-load quiet wait spends that deadline and records the open image.
           steps: [
             { action: 'navigate', path: '/' },
             { action: 'visible', selector: '#ready' },
             { action: 'settle', timeout: 1000 },
           ],
         },
+        { name: 'Invalid step deadline', steps: [{ action: 'navigate', path: '/', timeout: 0 }] },
       ],
       outputDir: path.join(directory, 'evidence'),
     });
     assert.equal(result.flows[0].steps[0].passed, true, JSON.stringify(result.flows[0]));
     assert.equal(result.flows[0].steps[1].passed, true);
+    assert.deepEqual(
+      result.flows[0].loadWaits.map(({ settled, pending }) => ({ settled, pending })),
+      [{ settled: false, pending: ['GET /never-finishes.png'] }],
+    );
     assert.equal(result.flows[0].passed, false);
     assert.match(result.flows[0].error, /Portal requests did not settle/);
     assert.ok(result.flows[0].pendingRequests.some((request) => request.url.endsWith('/never-finishes.png')));
@@ -561,12 +569,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
       result.flows[0].steps.map((step) => step.timeout),
       [undefined, undefined, 1000],
     );
-    const invalid = await runAcceptance({
-      localUrl: `http://127.0.0.1:${server.address().port}`,
-      flows: [{ name: 'Invalid step deadline', steps: [{ action: 'navigate', path: '/', timeout: 0 }] }],
-      outputDir: path.join(directory, 'invalid'),
-    });
-    assert.equal(invalid.flows[0].passed, false);
-    assert.match(invalid.flows[0].error, /step timeout must be a positive finite number/);
+    assert.equal(result.flows[1].passed, false);
+    assert.match(result.flows[1].error, /step timeout must be a positive finite number/);
   });
 });

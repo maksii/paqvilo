@@ -59,7 +59,8 @@ const SYSTEM_ADMINISTRATOR_ONLY = new Set(['prvBypassCustomPlugins', 'prvBypassC
 // Under a bulk span (one span per bulk message or BulkDelete job; docs/design/tracing.md, D-R3-11) the per-row permission
 // decisions and commits are never one event each: the first of each type is one event (`permission` result 'evaluated',
 // `commit`; a first denial keeps its own deny event with the reason), and the running counts are the span's structured
-// attributes `permissions` { evaluated, allowed, denied, filtered, tables } and `commits` { count, failed, eventsStaged }.
+// attributes `permissions` { evaluated, allowed, denied, filtered, tables } and `commits` { count, failed, eventsStaged };
+// declarative `rule` and `business-rule` evaluations likewise ({ count, failed, tables, ids } as `rules`, `businessRules`).
 const bulkTallies = new WeakMap();
 /**
  * Records one permission decision or commit (`type` 'permission' | 'commit', its event attributes and message) on span: an
@@ -72,7 +73,6 @@ export function traceDecision(span, type, { attributes = {}, message } = {}) {
   if (!tally) {
     tally = {
       permissions: { evaluated: 0, allowed: 0, denied: 0, filtered: 0, tables: [] },
-      commits: { count: 0, failed: 0, eventsStaged: 0 },
       first: new Set(),
     };
     bulkTallies.set(span, tally);
@@ -104,16 +104,28 @@ export function traceDecision(span, type, { attributes = {}, message } = {}) {
     }
     return span.set({ permissions: counts });
   }
-  const counts = tally.commits;
+  // A commit, a declarative rule or a business rule: { count, failed, tables, ids (the first ten records) } under the
+  // attribute TALLIED names (a commit also sums eventsStaged).
+  const counts = (tally[type] ??= {
+    count: 0,
+    failed: 0,
+    ...(type === 'commit' ? { eventsStaged: 0 } : { tables: [], ids: [] }),
+  });
   counts.count++;
-  if (attributes.error) counts.failed++;
-  counts.eventsStaged += Number(attributes.eventsStaged) || 0;
+  if (attributes.error || attributes.mode === 'error' || attributes.result === 'rejected') counts.failed++;
+  if (type === 'commit') counts.eventsStaged += Number(attributes.eventsStaged) || 0;
+  else {
+    if (attributes.table && !counts.tables.includes(attributes.table) && counts.tables.length < 100)
+      counts.tables.push(attributes.table);
+    if (attributes.recordId != null && counts.ids.length < 10) counts.ids.push(String(attributes.recordId));
+  }
   if (!tally.first.has(type)) {
     tally.first.add(type);
     span.event(type, { message, attributes: { ...attributes, aggregated: true } });
   }
-  return span.set({ commits: counts });
+  return span.set({ [TALLIED[type] ?? `${type}s`]: counts });
 }
+const TALLIED = { commit: 'commits', rule: 'rules', 'business-rule': 'businessRules' };
 const GLOBAL_PRIVILEGES = [
   'prvActOnBehalfOfAnotherUser',
   'prvBypassCustomPlugins',

@@ -6,7 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { auditQuery, auditText } from './audit-log.mjs';
+import { auditQuery, auditText, idMatches } from './audit-log.mjs';
 import { currentRequest } from './request-context.mjs';
 import { mergeTraceSettings, traceSettings } from './trace-settings.mjs';
 
@@ -77,9 +77,12 @@ const NICE_BUCKETS = [
 const NO_SESSION = Object.freeze({ visitorId: null, sessionKey: null });
 const NO_ORIGIN = Object.freeze({ host: null, portal: null, preset: null });
 const SYSTEM_ACTOR = Object.freeze({ kind: 'system', id: null, name: null });
+/** The frame types a store listener observes (subscribe's `events` option). */
+export const TRACE_EVENTS = Object.freeze(['span-start', 'span-end', 'trace-end']);
 const PARENT_HEADER = 'x-sim-parent-trace';
 const TRACE_HEADER = 'x-sim-trace-id';
 const TRACE_ID_HEADER = 'x-trace-id';
+const SPAN_HEADER = 'x-sim-span-id';
 
 const round = (value) => Math.round(value * 100) / 100;
 const validId = (value) => (typeof value === 'string' && ID.test(value) ? value : null);
@@ -474,7 +477,9 @@ class Span {
     return this;
   }
   set(attributes) {
-    this.#core.grow(this.#trace, merge(this.#record.attributes, flat(attributes)));
+    const value = flat(attributes);
+    this.#core.grow(this.#trace, merge(this.#record.attributes, value));
+    if ('auditId' in value) this.#core.audited(this);
     if (this.#record.status !== 'running') this.#core.changed(this.#trace, this.#record);
     return this;
   }
@@ -509,7 +514,11 @@ const oneOf = (key, value, allowed) => {
   return value;
 };
 
-function parseFilters(filters = {}) {
+// The id prefix rule (DV-N4-3) is the audit log's, so traces and audit entries filter alike.
+export { idMatches };
+
+// entityNames(name) -> the lowercase table names a table filter stands for (a logical name and its entity set name).
+function parseFilters(filters = {}, { entityNames = null } = {}) {
   const get = (key) => {
     const value = filters instanceof URLSearchParams ? filters.get(key) : filters?.[key];
     return value === undefined || value === null || value === '' ? null : value;
@@ -541,13 +550,21 @@ function parseFilters(filters = {}) {
   const flag = get('hasErrors');
   if (flag !== null && ![true, false, 'true', 'false', '1', '0'].includes(flag))
     throw invalid('hasErrors', 'must be true or false');
+  // result (D-M-2): a comma list of trace results; a trace matches when its summary status (running while a span runs,
+  // else the root's status) is one of them.
+  const resultList = text('result')
+    ?.split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const value of resultList ?? []) oneOf('result', value, SPAN_STATUSES);
   const order = oneOf('order', text('order'), ['desc', 'asc']);
   const sort = oneOf('sort', text('sort'), SORTS);
   const span = {
     kind: oneOf('kind', text('kind'), SPAN_KINDS),
     module: text('module'),
     operation: text('operation'),
-    entity: text('entity'),
+    // entity (or its D-M-2 name table): a logical or entity set name, matched as every name of that table.
+    entity: tableNames(text('entity') ?? text('table'), entityNames),
     recordId: get('recordId') === null ? null : actorKey(get('recordId')).trim() || null,
     status: oneOf('status', text('status'), SPAN_STATUSES),
     host: text('host'),
@@ -556,6 +573,7 @@ function parseFilters(filters = {}) {
     sessionKey: exact('sessionKey'),
     visitorId: exact('visitorId'),
     portal: exact('portal'),
+    auditId: exact('auditId'),
     search: text('search'),
   };
   return {
@@ -564,6 +582,7 @@ function parseFilters(filters = {}) {
     from: time('from'),
     to: time('to'),
     traceId: exact('traceId'),
+    result: resultList?.length ? new Set(resultList) : null,
     minDurationMs: minDuration === null ? null : Number(minDuration),
     hasErrors: flag === null ? null : [true, 'true', '1'].includes(flag),
     parentSpanId: exact('parentSpanId'),
@@ -575,6 +594,17 @@ function parseFilters(filters = {}) {
     bucketMs: integer('bucketMs', 1, Number.MAX_SAFE_INTEGER),
   };
 }
+
+const tableNames = (value, entityNames) => {
+  if (value === null) return null;
+  let names = [value];
+  try {
+    if (entityNames) names = entityNames(value) ?? names;
+  } catch {
+    /* an unresolvable name filters as itself */
+  }
+  return new Set(names.map((name) => String(name).toLowerCase()));
+};
 
 /**
  * The lowercase text the `search` filter looks in for a span record: name, kind, module, operation, entity, record id,
@@ -624,15 +654,16 @@ function spanMatches(record, f, searchOf = searchText) {
     (!f.kind || record.kind === f.kind) &&
     (!f.module || lower(record.module) === f.module) &&
     (!f.operation || lower(record.operation) === f.operation) &&
-    (!f.entity || lower(record.entity) === f.entity) &&
-    (!f.recordId || (record.recordId !== null && actorKey(record.recordId) === f.recordId)) &&
+    (!f.entity || f.entity.has(lower(record.entity))) &&
+    (!f.recordId || (record.recordId !== null && idMatches(actorKey(record.recordId), f.recordId))) &&
     (!f.status || record.status === f.status) &&
     (!f.host || lower(record.origin.host) === f.host) &&
     (!f.actorKind || lower(record.actor.kind) === f.actorKind) &&
-    (!f.actorId || actorKey(record.actor.id) === f.actorId) &&
-    (!f.sessionKey || record.session.sessionKey === f.sessionKey) &&
-    (!f.visitorId || record.session.visitorId === f.visitorId) &&
+    (!f.actorId || (record.actor.id !== null && idMatches(actorKey(record.actor.id), f.actorId))) &&
+    (!f.sessionKey || idMatches(record.session.sessionKey, f.sessionKey)) &&
+    (!f.visitorId || idMatches(record.session.visitorId, f.visitorId)) &&
     (!f.portal || record.origin.portal === f.portal) &&
+    (!f.auditId || record.attributes.auditId === f.auditId) &&
     (!f.search || searchOf(record).includes(f.search))
   );
 }
@@ -679,6 +710,7 @@ const bare = ({ input: _input, output: _output, ...rest }) => rest;
 export function createTraceStore({
   settings: initial = {},
   stateDirectory = null,
+  entityNames = null,
   now = () => performance.timeOrigin + performance.now(),
 } = {}) {
   let settings = traceSettings(initial);
@@ -691,7 +723,8 @@ export function createTraceStore({
   const traces = new Map(); // traceId -> trace, least recently touched first
   const spans = new Map(); // spanId -> Span
   const remembered = new Map(); // key -> { traceId, spanId }, least recently used first
-  const listeners = new Map(); // listener -> { payloads, flush }
+  const listeners = new Map(); // listener -> { payloads, flush, events }
+  const audits = new Map(); // audit entry id -> the retained span whose attributes.auditId names it
   const searches = new WeakMap(); // ended span record -> its search text, built by the first search that reads it
   const als = new AsyncLocalStorage();
   const persistence = { written: 0, failures: 0, lastError: null };
@@ -711,6 +744,8 @@ export function createTraceStore({
       sequence: rootRecord.sequence,
       latestSequence: recordOf(trace.spans.at(-1)).sequence,
       startedAt: rootRecord.startedAt,
+      // The root's audit entry (Power Pages: the X-Sim-Trace-Id of the request), or null.
+      auditId: typeof rootRecord.attributes.auditId === 'string' ? rootRecord.attributes.auditId : null,
       status: trace.running ? 'running' : rootRecord.status,
       ended: trace.running === 0,
       durationMs: rootRecord.durationMs,
@@ -735,7 +770,8 @@ export function createTraceStore({
   const emit = (type, record, summary) => {
     if (!listeners.size) return;
     let full, slim;
-    for (const [listener, { payloads }] of listeners) {
+    for (const [listener, { payloads, events, traceId }] of listeners) {
+      if ((events && !events.has(type)) || (traceId && record.traceId !== traceId)) continue;
       const event = payloads
         ? (full ??= Object.freeze({ type, span: Object.freeze(copy(record)), ...(summary ? { trace: summary } : {}) }))
         : (slim ??= Object.freeze({
@@ -795,7 +831,11 @@ export function createTraceStore({
 
   const evict = (trace) => {
     traces.delete(trace.traceId);
-    for (const span of trace.spans) spans.delete(recordOf(span).spanId);
+    for (const span of trace.spans) {
+      const record = recordOf(span);
+      spans.delete(record.spanId);
+      if (audits.get(record.attributes.auditId) === span) audits.delete(record.attributes.auditId);
+    }
     dropped++;
     running -= trace.running;
     droppedSpans -= trace.droppedSpans;
@@ -840,6 +880,11 @@ export function createTraceStore({
         persist(trace);
       }
     },
+    // A span that names an audit entry (attributes.auditId): fromHeaders resolves an inbound X-Sim-Trace-Id through it.
+    audited(span) {
+      const auditId = recordOf(span).attributes.auditId;
+      if (typeof auditId === 'string' && traces.has(recordOf(span).traceId)) audits.set(auditId, span);
+    },
     // An ended span changed (a late event or attribute): its cached search text is stale.
     changed(trace, record) {
       const text = searches.get(record);
@@ -867,6 +912,9 @@ export function createTraceStore({
     spans: (trace) => trace.spans.length,
     errors: (trace) => trace.errorCount * 1e6 + trace.deniedCount,
   };
+  // The result filter: the trace's summary status is one of the listed results.
+  const resultMatches = (trace, f) =>
+    !f.result || f.result.has(trace.running ? 'running' : recordOf(trace.root).status);
   // The matching traces (internal objects), sorted; summaries are built only for what a caller returns.
   function matchedTraces(f) {
     const rows = [];
@@ -874,6 +922,7 @@ export function createTraceStore({
     const inRange = (start) => (f.from === null || start >= f.from) && (f.to === null || start <= f.to);
     for (const trace of traces.values()) {
       if (f.traceId && trace.traceId !== f.traceId) continue;
+      if (!resultMatches(trace, f)) continue;
       // A trace matches the time range when any of its spans starts in it.
       if (timed) {
         if ((f.from !== null && trace.lastStart < f.from) || (f.to !== null && trace.first > f.to)) continue;
@@ -895,6 +944,7 @@ export function createTraceStore({
     const rows = [];
     for (const trace of traces.values()) {
       if (f.traceId && trace.traceId !== f.traceId) continue;
+      if (!resultMatches(trace, f)) continue;
       for (const span of trace.spans) {
         const record = recordOf(span),
           start = startOf(span);
@@ -1056,6 +1106,7 @@ export function createTraceStore({
       trace.bytes += bytes;
       memoryBytes += bytes;
       spans.set(record.spanId, span);
+      if ('auditId' in record.attributes) core.audited(span);
       emit('span-start', record);
       return span;
     },
@@ -1104,15 +1155,34 @@ export function createTraceStore({
       const trace = traces.get(validId(request?.traceId));
       return trace && trace.spans.length >= settings.spansPerTrace ? overflowOf(trace) : null;
     },
-    /** Outbound loopback headers that make the receiving root join the span's trace (trace ids only for an overflow handle). */
+    /**
+     * Outbound loopback headers that make the receiving root join the span's trace (D-M-4): x-trace-id, and for a
+     * recorded span x-sim-parent-trace and x-sim-span-id (the span id). x-sim-trace-id is sent only when the span or a
+     * retained ancestor names an audit entry (attributes.auditId), with that audit id, never the trace id. An overflow
+     * handle sends x-trace-id (and the audit id of its trace's root).
+     */
     headers(span = store.current()) {
+      const audited = (start) => {
+        for (let at = start; at; at = spans.get(recordOf(at).parentSpanId)) {
+          const auditId = recordOf(at).attributes.auditId;
+          if (typeof auditId === 'string') return { [TRACE_HEADER]: auditId };
+        }
+        return {};
+      };
       if (span instanceof Span)
-        return { [PARENT_HEADER]: span.spanId, [TRACE_HEADER]: span.traceId, [TRACE_ID_HEADER]: span.traceId };
-      return OVERFLOWS.has(span) ? { [TRACE_HEADER]: span.traceId, [TRACE_ID_HEADER]: span.traceId } : {};
+        return {
+          [PARENT_HEADER]: span.spanId,
+          [SPAN_HEADER]: span.spanId,
+          [TRACE_ID_HEADER]: span.traceId,
+          ...audited(span),
+        };
+      return OVERFLOWS.has(span) ? { [TRACE_ID_HEADER]: span.traceId, ...audited(traces.get(span.traceId)?.root) } : {};
     },
     /**
      * { traceId, parentSpanId } from inbound headers (null when absent or not a UUID); spread into start for a root. The
-     * trace id is x-trace-id, else x-sim-trace-id; the parent is x-sim-parent-trace.
+     * trace id is x-trace-id only and the parent x-sim-parent-trace. x-sim-trace-id is an audit id (D-M-4), never a trace
+     * id: without a parent header, a retained span whose attributes.auditId names it is the parent (its trace unless
+     * x-trace-id names one); an unknown audit id is ignored.
      */
     fromHeaders(headers = {}) {
       const read = (name) => {
@@ -1120,7 +1190,12 @@ export function createTraceStore({
         const value = Array.isArray(raw) ? raw[0] : raw;
         return typeof value === 'string' && UUID.test(value) ? value.toLowerCase() : null;
       };
-      return { traceId: read(TRACE_ID_HEADER) ?? read(TRACE_HEADER), parentSpanId: read(PARENT_HEADER) };
+      const traceId = read(TRACE_ID_HEADER),
+        parentSpanId = read(PARENT_HEADER);
+      const audited = parentSpanId ? null : audits.get(read(TRACE_HEADER));
+      return audited
+        ? { traceId: traceId ?? audited.traceId, parentSpanId: audited.spanId }
+        : { traceId, parentSpanId };
     },
     /** Remembers which span a later piece of work (a job, a flow run) belongs to: key -> { traceId, spanId }. */
     remember(key, { traceId, spanId } = {}) {
@@ -1163,12 +1238,12 @@ export function createTraceStore({
     },
     /** Trace summaries matching the filters, newest first by default, paged. */
     query(filters = {}) {
-      const f = parseFilters(filters);
+      const f = parseFilters(filters, { entityNames });
       return paged(matchedTraces(f), f, (trace) => summarize(trace));
     },
     /** Flat spans matching the filters (also parentSpanId and depth), paged. */
     spans(filters = {}) {
-      const f = parseFilters(filters);
+      const f = parseFilters(filters, { entityNames });
       return paged(matchedSpans(f), f, (span) => copy(recordOf(span)));
     },
     /** One trace: its summary, root, flat spans in sequence order and the nested children tree; null when unknown. */
@@ -1190,7 +1265,7 @@ export function createTraceStore({
     },
     /** Duration percentiles and counts by kind, module, entity, operation, actor and status, a timeline and the slowest and failed spans. */
     stats(filters = {}) {
-      const f = parseFilters(filters);
+      const f = parseFilters(filters, { entityNames });
       const matched = matchedSpans({ ...f, order: 'asc' });
       const groups = {
         byKind: new Map(),
@@ -1270,17 +1345,28 @@ export function createTraceStore({
     /**
      * Observes { type: 'span-start'|'span-end'|'trace-end', span, trace? } with frozen copies (without input and output
      * when payloads is false); returns an unsubscribe function. flush: an optional () => Promise that flush() awaits
-     * (an SSE channel resolves it once its frames reached every client).
+     * (an SSE channel resolves it once its frames reached every client). events: one TRACE_EVENTS type or a list of
+     * them the listener receives (default all); traceId: only frames of that trace. No copy is made for a frame no
+     * listener takes.
      */
-    subscribe(listener, { payloads = true, flush = null } = {}) {
+    subscribe(listener, { payloads = true, flush = null, events = null, traceId = null } = {}) {
       if (typeof listener !== 'function') throw new TypeError('Trace listeners must be functions.');
       if (flush !== null && typeof flush !== 'function') throw new TypeError('A listener flush must be a function.');
-      listeners.set(listener, { payloads: payloads !== false, flush });
+      const types = events === null ? null : [].concat(events);
+      if (types && (!types.length || types.some((type) => !TRACE_EVENTS.includes(type))))
+        throw new TypeError(`Trace listener events must be one or more of ${TRACE_EVENTS.join(', ')}.`);
+      if (traceId !== null && typeof traceId !== 'string') throw new TypeError('A listener traceId must be a string.');
+      listeners.set(listener, {
+        payloads: payloads !== false,
+        flush,
+        events: types && new Set(types),
+        traceId: traceId || null,
+      });
       return () => listeners.delete(listener);
     },
     /** Every trace matching the filters (no paging) as trees, with the settings in force. */
     export(filters = {}) {
-      const f = parseFilters(filters);
+      const f = parseFilters(filters, { entityNames });
       return {
         exportedAt: new Date(now()).toISOString(),
         settings: { ...settings },
@@ -1291,6 +1377,7 @@ export function createTraceStore({
     clear() {
       traces.clear();
       spans.clear();
+      audits.clear();
       remembered.clear();
       dropped = 0;
       running = 0;

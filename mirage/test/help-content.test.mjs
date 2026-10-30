@@ -8,7 +8,7 @@ import { DOC_PATHS } from '../lib/docs-links.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const CURRENT_VIEWS = [
-  'overview',
+  'home',
   'records',
   'portal',
   'platform',
@@ -23,11 +23,8 @@ const CURRENT_VIEWS = [
   'environment',
   'connection',
   'runtime',
-  'evidence',
-  'audit',
-  'logs',
 ];
-const NEW_VIEWS = ['dashboard', 'services', 'flows', 'capabilities', 'packs'];
+const NEW_VIEWS = ['health', 'activity', 'services', 'flows', 'capabilities', 'packs'];
 const strings = (value) =>
   typeof value === 'string' ? [value] : value && typeof value === 'object' ? Object.values(value).flatMap(strings) : [];
 const slug = (heading) =>
@@ -53,8 +50,22 @@ test('every current and new view, its main panels and every setup stage have gui
   for (const id of [...new Set([...CURRENT_VIEWS, ...declared, ...NEW_VIEWS])])
     assert.ok(helpFor(id).intro.length > 20, `view ${id}`);
   for (const key of [
-    'dashboard.topology',
-    'dashboard.blocking',
+    'home.checklist',
+    'home.sign-in',
+    'home.next',
+    'health.topology',
+    'health.tiles',
+    'health.blocking',
+    'health.drawer',
+    'activity.filters',
+    'activity.activities',
+    'activity.log',
+    'activity.findings',
+    'activity.pages',
+    'activity.stats',
+    'activity.detail',
+    'activity.separate',
+    'runtime.workspace',
     'services.storage',
     'services.messaging',
     'services.outbox',
@@ -73,8 +84,6 @@ test('every current and new view, its main panels and every setup stage have gui
     'packs.lifecycle',
     'operations.mode',
     'records.table',
-    'audit.table',
-    'logs.list',
     'dataverse.applications',
     'dataverse.users',
     'environment.variables',
@@ -101,10 +110,18 @@ test('required topics are covered', () => {
   ])
     assert.ok(HELP['dataverse.applications'].fields[grant], grant);
   assert.equal(Object.keys(HELP['dataverse.users'].fields).length, 6);
-  for (const type of ['request', 'liquid', 'data', 'plugin', 'diagnostic', 'reload', 'connected'])
-    assert.ok(HELP.logs.fields[type], type);
+  for (const type of ['startup', 'request', 'liquid', 'data', 'plugin', 'diagnostic', 'reload'])
+    assert.ok(HELP['activity.log'].fields[type], type);
+  assert.match(HELP['activity.log'].fields.type, /one line per declarative plugin rule/);
   for (const kind of ['api', 'liquid-fetchxml', 'form', 'page', 'entity-read', 'entity-query'])
-    assert.ok(HELP.audit.fields[kind], kind);
+    assert.ok(HELP['activity.activities'].fields[kind], kind);
+  // The vocabulary of the Monitor area: what stays separate says why, and "plugin" names two different things.
+  for (const place of ['Health', 'Flows & jobs', 'Backend operations', 'Organization identity & API', 'Runtime state'])
+    assert.match(HELP['activity.separate'].intro, new RegExp(place), place);
+  assert.match(HELP['health.tiles'].intro, /not the declarative plugin rules/);
+  assert.match(HELP['health.tiles'].intro, /Dataverse Web API counts the organization API/);
+  for (const gone of ['overview', 'logs', 'audit', 'evidence', 'dashboard'])
+    assert.equal(Object.hasOwn(HELP, gone), false, `${gone} was replaced`);
   for (const level of ['inventory', 'contract', 'behaviour', 'native-qualified'])
     assert.ok(HELP.capabilities.fields[level], level);
   assert.match(HELP.scenarios.intro, /Three different things/);

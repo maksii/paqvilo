@@ -12,6 +12,8 @@ import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
+
+const HOOK_AUDIT = '0a0d1700-0000-4000-8000-0000000000a1';
 import { webhookDelivery } from '../lib/dataverse-webhooks.mjs';
 import { workflowExtension, workflowHandlers } from '../lib/dataverse-workflows.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
@@ -309,7 +311,8 @@ async function receiver(t, status = 200) {
 test('a synchronous web hook step posts under an http-out span that names the path only and forwards the trace', async (t) => {
   const hook = await receiver(t);
   const { store, traces } = await webhookWorld(t, { mode: 0, url: `${hook.origin}/hooks/sync` });
-  const request = traces.start({ kind: 'http', name: 'POST /invented' });
+  // An audited request root (the Power Pages host names its audit entry): the delivery forwards that audit id.
+  const request = traces.start({ kind: 'http', name: 'POST /invented', attributes: { auditId: HOOK_AUDIT } });
   await traces.run(request, () => store.create('contoso_widget', { contoso_name: 'Hooked' }, { admin: true }));
   request.end();
   assert.equal(hook.received.length, 1);
@@ -322,7 +325,8 @@ test('a synchronous web hook step posts under an http-out span that names the pa
   assert.equal(post.status, 'ok');
   assert.equal(spans.find((span) => span.spanId === post.parentSpanId).kind, 'plugin-step');
   assert.equal(hook.received[0].headers['x-sim-parent-trace'], post.spanId);
-  assert.equal(hook.received[0].headers['x-sim-trace-id'], request.traceId);
+  assert.equal(hook.received[0].headers['x-trace-id'], request.traceId);
+  assert.equal(hook.received[0].headers['x-sim-trace-id'], HOOK_AUDIT, 'X-Sim-Trace-Id is the audit id (D-M-4)');
   assert.match(hook.received[0].url, /code=invented-code/, 'the receiver gets the WebhookKey code');
   assert.equal(JSON.stringify(traces.export({})).includes('invented-code'), false, 'no span holds the code');
 });
@@ -347,7 +351,7 @@ test('a web hook answer maps to the span status like every HTTP answer: 403 deni
 test('an asynchronous web hook job delivers under its job span in the staging trace', async (t) => {
   const hook = await receiver(t);
   const { store, runner, traces } = await webhookWorld(t, { mode: 1, url: `${hook.origin}/hooks/async` });
-  const request = traces.start({ kind: 'http', name: 'POST /invented' });
+  const request = traces.start({ kind: 'http', name: 'POST /invented', attributes: { auditId: HOOK_AUDIT } });
   await traces.run(request, () => store.create('contoso_widget', { contoso_name: 'Later' }, { admin: true }));
   request.end();
   await runner.drain();
@@ -359,7 +363,8 @@ test('an asynchronous web hook job delivers under its job span in the staging tr
   const post = spans.find((span) => span.kind === 'http-out');
   assert.equal(post.parentSpanId, job.spanId);
   assert.equal(hook.received[0].headers['x-sim-parent-trace'], post.spanId);
-  assert.equal(hook.received[0].headers['x-sim-trace-id'], request.traceId);
+  assert.equal(hook.received[0].headers['x-trace-id'], request.traceId);
+  assert.equal(hook.received[0].headers['x-sim-trace-id'], HOOK_AUDIT, 'the async job forwards its staging audit id');
 });
 
 test('a background classic workflow runs as a job span with its workflow span in the staging trace', async (t) => {

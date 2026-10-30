@@ -495,7 +495,7 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
     return id == null ? null : String(id);
   };
   // Tracing (docs/design/tracing.md): one http-out span per POST, named by the URL path only (never the query, which can carry
-  // the WebhookKey code, nor the authentication value); the request forwards the span as X-Sim-Parent-Trace/X-Sim-Trace-Id so
+  // the WebhookKey code, nor the authentication value); the request forwards traces.headers() of the span so
   // a loopback receiver joins the trace. post(request) answers { status } or a status, synchronously or as a promise.
   // At level full the span input is the request as built before the authentication is applied ({ url, headers, body }: the
   // RemoteExecutionContext; no code, header or query value of the endpoint's authentication), and its output the receiver's

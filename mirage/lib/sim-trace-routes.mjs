@@ -10,6 +10,7 @@
 // stream.
 import { createHash } from 'node:crypto';
 import { sseClients } from './trace-hosts.mjs';
+import { TRACE_EVENTS } from './trace-store.mjs';
 
 const MAX_BODY = 64 * 1024;
 const PREFIX = /^\/(?:_sim|__sim)\/api(?=\/|$)/;
@@ -56,31 +57,76 @@ const segment = (value) => {
 
 const traceFrame = (event) => `event: trace\ndata: ${JSON.stringify(event)}\n\n`;
 /**
- * createTraceChannel(traces, { now, stallMs, defer }) -> attach(res): the `trace` channel of a host's /_sim/events stream,
- * shared by both hosts. attach writes a `connected` frame with the store status, then one payload-free frame per store
- * event until the response finishes or closes; the store is observed only while a client listens, and its flush() waits
- * until the frames reached every client. Client bookkeeping (closed responses never join; every frame is written; a
- * reader that takes nothing for stallMs while the loop is free is dropped) is trace-hosts.mjs sseClients, which takes
- * now, stallMs and defer. traces: the trace store, or a function returning it.
+ * createTraceChannel(traces, { now, stallMs, defer }) -> attach(res, url?): the `trace` channel of a host's /_sim/events
+ * stream, shared by both hosts. attach writes a `connected` frame with the store status, then one payload-free frame per
+ * store event until the response finishes or closes. The stream query (url, else the request's own URL) may name
+ * `events` (a comma list of span-start, span-end, trace-end; default all) and `traceId`: the client then receives only
+ * those frame types (filtered in the store, D-M-4) of that trace; an unknown event name answers one `error` frame and
+ * ends the stream. Clients with the same filter share one store subscription, held only while one of them listens; the
+ * store's flush() waits until the frames reached every client. Client bookkeeping (closed responses never join; every
+ * frame is written; a reader that takes nothing for stallMs while the loop is free is dropped) is trace-hosts.mjs
+ * sseClients, which takes now, stallMs and defer. traces: the trace store, or a function returning it.
  */
 export function createTraceChannel(traces, { now, stallMs, defer } = {}) {
   const store = typeof traces === 'function' ? traces : () => traces;
-  let unsubscribe = null;
-  const clients = sseClients({
-    now,
-    stallMs,
-    defer,
-    onEmpty() {
-      unsubscribe?.();
-      unsubscribe = null;
-    },
-  });
-  const publish = (event) => clients.send(traceFrame(event));
-  return (res) => {
+  const groups = new Map(); // filter key -> { clients, unsubscribe, subscribe }
+  const group = (t, events, traceId) => {
+    const key = JSON.stringify([events, traceId]);
+    let entry = groups.get(key);
+    if (entry) return entry;
+    const clients = sseClients({
+      now,
+      stallMs,
+      defer,
+      onEmpty() {
+        entry.unsubscribe?.();
+        entry.unsubscribe = null;
+        groups.delete(key);
+      },
+    });
+    const publish = (event) => clients.send(traceFrame(event));
+    entry = {
+      clients,
+      unsubscribe: null,
+      subscribe: () =>
+        (entry.unsubscribe ??= t.subscribe(publish, {
+          payloads: false,
+          flush: () => clients.flush(),
+          events,
+          traceId,
+        })),
+    };
+    groups.set(key, entry);
+    return entry;
+  };
+  return (res, url = res.req?.url ? new URL(res.req.url, 'http://local.invalid') : null) => {
     const t = store();
-    if (!t || !clients.add(res)) return;
-    unsubscribe ??= t.subscribe(publish, { payloads: false, flush: () => clients.flush() });
-    res.write(traceFrame({ type: 'connected', status: t.status() }));
+    if (!t || res.destroyed || res.writableEnded) return;
+    const query = url?.searchParams ?? new URLSearchParams();
+    const named = (query.get('events') ?? '')
+      .split(',')
+      .map((type) => type.trim())
+      .filter(Boolean);
+    const unknown = named.find((type) => !TRACE_EVENTS.includes(type));
+    if (unknown !== undefined) {
+      res.end(
+        traceFrame({
+          type: 'error',
+          error: {
+            code: 'InvalidTraceFilter',
+            parameter: 'events',
+            message: `events must name ${TRACE_EVENTS.join(', ')} (got ${JSON.stringify(unknown)}).`,
+          },
+        }),
+      );
+      return;
+    }
+    const events = named.length ? TRACE_EVENTS.filter((type) => named.includes(type)) : null;
+    const traceId = query.get('traceId')?.trim() || null;
+    const entry = group(t, events, traceId);
+    if (!entry.clients.add(res)) return;
+    entry.subscribe();
+    res.write(traceFrame({ type: 'connected', status: t.status(), events: events ?? [...TRACE_EVENTS], traceId }));
   };
 }
 
@@ -102,7 +148,8 @@ const keyValues = (entries) =>
     .filter(([, value]) => value !== null && value !== undefined)
     .map(([key, value]) => ({ key, value: anyValue(value) }));
 const nanos = (ms) => (BigInt(Math.round(ms * 1000)) * 1000n).toString();
-function otlpSpan(record) {
+/** One span record as an OTLP/JSON span (the /trace/export?format=otlp and activity bundle shape). */
+export function otlpSpan(record) {
   const start = Date.parse(record.startedAt);
   return {
     traceId: hex(record.traceId, 32),
@@ -155,6 +202,43 @@ function otlpSpan(record) {
   };
 }
 
+/**
+ * The traces an export writes: the ids of the traces matching filters (URLSearchParams; format, traces, limit, page and
+ * pageSize are not filters) in the list order, at most `limit` (default 200, at most 2000; another value is the 400
+ * InvalidTraceFilter). Returns { ids, total } (total: every match).
+ */
+export function exportedTraceIds(t, filters) {
+  const limitText = filters.get('limit');
+  if (limitText && !(/^\d+$/.test(limitText) && Number(limitText) >= 1 && Number(limitText) <= EXPORT_MAX))
+    throw failure(400, 'InvalidTraceFilter', `limit must be an integer from 1 to ${EXPORT_MAX}.`, 'limit');
+  const limit = limitText ? Number(limitText) : EXPORT_LIMIT;
+  const query = new URLSearchParams(filters);
+  for (const key of ['format', 'traces', 'limit', 'page', 'pageSize']) query.delete(key);
+  query.set('pageSize', String(QUERY_PAGE));
+  const ids = [];
+  let total = 0;
+  for (let page = 1; ids.length < limit; page++) {
+    query.set('page', String(page));
+    const result = t.query(query);
+    total = result.total;
+    ids.push(...result.items.slice(0, limit - ids.length).map((summary) => summary.traceId));
+    if (page >= result.pageCount) break;
+  }
+  return { ids, total };
+}
+/** Writes chunk to res; the promise resolves at once, or on drain (or close) when the response buffer is full. */
+export const writeChunk = (res, chunk) =>
+  res.write(chunk) ||
+  new Promise((resolve) => {
+    const done = () => {
+      res.off('drain', done);
+      res.off('close', done);
+      resolve();
+    };
+    res.on('drain', done);
+    res.on('close', done);
+  });
+
 const FORMATS = {
   json: { type: 'application/json; charset=utf-8', file: 'simulator-traces.json' },
   ndjson: { type: 'application/x-ndjson; charset=utf-8', file: 'simulator-traces.ndjson' },
@@ -171,39 +255,14 @@ async function exportTraces(t, filters, res) {
       `format must be one of json, ndjson, otlp (got ${JSON.stringify(format)}).`,
       'format',
     );
-  const limitText = filters.get('limit');
-  if (limitText && !(/^\d+$/.test(limitText) && Number(limitText) >= 1 && Number(limitText) <= EXPORT_MAX))
-    throw failure(400, 'InvalidTraceFilter', `limit must be an integer from 1 to ${EXPORT_MAX}.`, 'limit');
-  const limit = limitText ? Number(limitText) : EXPORT_LIMIT;
-  const query = new URLSearchParams(filters);
-  for (const key of ['format', 'limit', 'page', 'pageSize']) query.delete(key);
-  query.set('pageSize', String(QUERY_PAGE));
-  const ids = [];
-  let total = 0;
-  for (let page = 1; ids.length < limit; page++) {
-    query.set('page', String(page));
-    const result = t.query(query);
-    total = result.total;
-    ids.push(...result.items.slice(0, limit - ids.length).map((summary) => summary.traceId));
-    if (page >= result.pageCount) break;
-  }
+  const { ids, total } = exportedTraceIds(t, filters);
   res.writeHead(200, {
     'content-type': FORMATS[format].type,
     'cache-control': 'no-store',
     'content-disposition': `attachment; filename="${FORMATS[format].file}"`,
     'x-trace-export-matched': String(total),
   });
-  const write = (chunk) =>
-    res.write(chunk) ||
-    new Promise((resolve) => {
-      const done = () => {
-        res.off('drain', done);
-        res.off('close', done);
-        resolve();
-      };
-      res.on('drain', done);
-      res.on('close', done);
-    });
+  const write = (chunk) => writeChunk(res, chunk);
   const [open, close] = {
     json: [
       `{"exportedAt":${JSON.stringify(new Date().toISOString())},"settings":${JSON.stringify(t.settings())},"traces":[`,

@@ -186,10 +186,17 @@ test('ONE trace holds every hop with exactly the expected parent at each', () =>
   // headers it forwarded.
   const delivery = byKind(spans, 'http-out')[0];
   const hookHeaders = run.hook.deliveries[0].headers;
+  // X-Sim-Trace-Id carries the audit id of the nearest audited span above the delivery (the Web API request), never the
+  // trace id (D-M-4).
+  const byId = new Map(spans.map((span) => [span.spanId, span]));
+  let audited = delivery;
+  while (audited && !audited.attributes.auditId) audited = byId.get(audited.parentSpanId);
+  assert.ok(audited, 'the delivery runs under an audited request');
   assert.deepEqual(
     [hookHeaders['x-sim-parent-trace'], hookHeaders['x-trace-id'], hookHeaders['x-sim-trace-id']],
-    [delivery.spanId, traceId, traceId],
+    [delivery.spanId, traceId, audited.attributes.auditId],
   );
+  assert.notEqual(hookHeaders['x-sim-trace-id'], traceId);
   const writeBack = sim.trace.span(run.writeBack.spanId);
   assert.deepEqual([writeBack.kind, writeBack.parentSpanId], ['http', delivery.spanId]);
   // Jobs are async segments parented (and linked staged-by) by the span that staged them: the Create x_order span.
