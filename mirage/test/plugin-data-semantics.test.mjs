@@ -85,13 +85,22 @@ async function fixture(t, edit = () => {}) {
 const keysAt = (seen, message, stage) =>
   Object.keys(seen.find((entry) => entry.message === message && entry.stage === stage)?.target ?? {}).sort();
 
+// @test-kind parity: native dev-environment recorder corpus 2026-10-30, Create stage 10/20/40 Target columns repeated across the crud, upsert, reads and pipelineEffects scenarios (organizationid from the organization-owned child create)
 test('a Create Target gains platform stamps at PreOperation and the derived currency values only at PostOperation', async (t) => {
   const f = await fixture(t);
   const created = await f.request('POST', '/x_items', { x_itemid: id, x_name: 'Created', x_amount: 3.5 });
   assert(created.status < 300, await created.text());
   assert.deepEqual(keysAt(f.seen, 'Create', 10), ['transactioncurrencyid', 'x_amount', 'x_itemid', 'x_name']);
   const pre = keysAt(f.seen, 'Create', 20);
-  for (const name of ['createdby', 'createdon', 'modifiedby', 'modifiedon', 'modifiedonbehalfby', 'statecode'])
+  for (const name of [
+    'createdby',
+    'createdon',
+    'modifiedby',
+    'modifiedon',
+    'modifiedonbehalfby',
+    'statecode',
+    'organizationid',
+  ])
     assert(pre.includes(name), `PreOperation Target carries ${name}`);
   for (const name of ['versionnumber', 'createdonbehalfby', 'owningteam', 'exchangerate', 'x_amount_base'])
     assert(!pre.includes(name), `PreOperation Target omits ${name}`);
@@ -103,6 +112,7 @@ test('a Create Target gains platform stamps at PreOperation and the derived curr
   assert.equal(row.x_amount_base, 3.5);
 });
 
+// @test-kind unproven: base amounts follow the PreOperation money value; no native capture of a PreOperation money edit
 test('base amounts derive from the money value PreOperation leaves, not the submitted one', async (t) => {
   const f = await fixture(t, (context) => {
     if (context.MessageName === 'Create' && context.Stage === 20) context.InputParameters.Target.x_amount = 8;
@@ -112,6 +122,7 @@ test('base amounts derive from the money value PreOperation leaves, not the subm
   assert.equal(f.store.tableRows('x_item')[0].x_amount_base, 8);
 });
 
+// @test-kind parity+observation: Update stage 20/40 modification stamps repeated in the native recorder corpus 2026-10-30 (crud, upsert, pipelineEffects); the cleared text as an empty string is a single capture (crud third PATCH)
 test('an Update Target gains the modification stamps after PreValidation; a cleared text column shows an empty string', async (t) => {
   const f = await fixture(t);
   assert((await f.request('POST', '/x_items', { x_itemid: id, x_name: 'Created', x_note: 'Note' })).status < 300);
@@ -131,6 +142,7 @@ test('an Update Target gains the modification stamps after PreValidation; a clea
   assert.equal(f.store.tableRows('x_item')[0].x_note, null);
 });
 
+// @test-kind parity: native dev-environment recorder corpus 2026-10-30, every bare PATCH in the crud and upsert scenarios (Upsert parent, existence RetrieveMultiple inputs and query, If-Match on a missing row)
 test('a bare PATCH checks existence with a RetrieveMultiple pipeline under its Upsert main operation', async (t) => {
   const f = await fixture(t);
   const created = await f.request('PATCH', `/x_items(${id})`, { x_name: 'Upserted' });
@@ -175,6 +187,7 @@ test('a bare PATCH checks existence with a RetrieveMultiple pipeline under its U
   assert.equal(f.seen.length, 0);
 });
 
+// @test-kind parity: native recorder corpus 2026-10-30 Targets and images repeated across scenarios (metadata types, unnamed Target references, TimeZoneIndependent kinds per stage, ten-place decimals, yominame companions, unnamed owninguser)
 test('SDK values: platform columns typed from metadata, unnamed Target references, retrieved decimals at storage scale', () => {
   const state = emptyState();
   state.mappings.x_item = {
@@ -219,6 +232,7 @@ test('SDK values: platform columns typed from metadata, unnamed Target reference
   assert.equal(image.attributes.owninguser.name, null);
 });
 
+// @test-kind unproven: local store form of an option list a step hands back
 test('a choices value a step hands back as an option list is stored, not read as a Web API payload', async (t) => {
   const f = await fixture(t, (context) => {
     if (context.MessageName === 'Create' && context.Stage === 10) context.InputParameters.Target.x_choices = [1, 2];
@@ -228,6 +242,7 @@ test('a choices value a step hands back as an option list is stored, not read as
   assert.deepEqual(f.store.tableRows('x_item')[0].x_choices, [1, 2]);
 });
 
+// @test-kind compatibility: Web API lookup properties _<lookup>_value name the logical lookup column (Microsoft Learn, lookup properties)
 test('a Web API lookup value property reads as its logical lookup column in an SDK query', () => {
   const query = odataToSdkQuery('x_item', { $select: '_x_parentid_value', $filter: `_x_parentid_value eq ${keyed}` });
   assert.deepEqual(query.columnSet.columns, ['x_parentid']);

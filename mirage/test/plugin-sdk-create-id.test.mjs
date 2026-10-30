@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of SDK and HTTP Create identity channels and derived-column timing
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -245,6 +246,8 @@ test('early Target projection retains authored inputs without changing unchanged
   }
 });
 
+// @test-kind unproven: local model of Create identity channels; its PreOperation Target never carrying versionnumber is native
+// (dev-environment recorder corpus 2026-10-30, crud/upsert/reads/pipelineEffects Create stage 20 and 40 Targets).
 test(
   'original CLR direct and named SDK Create preserve Entity.Id and primary Attribute input channels',
   { skip: CLR_SKIP },

@@ -2954,6 +2954,7 @@ export class DataStore {
           columns,
           holder,
           changedAttributes: [],
+          ...(options.readInitialFrame ? { initialFrame: options.readInitialFrame } : {}),
           bypassCustomPlugins: options.bypassCustomPlugins === true,
           bypassStepIds: options.bypassStepIds,
           portalRequest: options.portalRequest === true,

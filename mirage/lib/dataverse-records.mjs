@@ -406,6 +406,26 @@ export function createRecordHandlers({
       ...(fs?.rowMask ? { backendRowsMask: (name) => fs.rowMask(c.user, name) } : {}),
     };
   };
+  // Web API reads add their request inputs to the Retrieve/RetrieveMultiple Target-less parameters (native recorder
+  // parity corpus, reads): IncludeAnnotations (whether Prefer asks for annotations), and for collections the app-module
+  // inputs of a request outside an app.
+  const webApiReadFrame = (c, multiple) =>
+    c.method === 'GET' && !c.portal
+      ? {
+          inputParameters: {
+            $type: 'ParameterCollection',
+            values: {
+              IncludeAnnotations: Boolean(c.prefer?.annotations),
+              ...(multiple
+                ? {
+                    AppModuleId: { $type: 'Guid', value: '00000000-0000-0000-0000-000000000000' },
+                    IsAppModuleContext: false,
+                  }
+                : { ReturnNotifications: false }),
+            },
+          },
+        }
+      : undefined;
   const secured = (c, extra = {}) =>
     queryOptions({
       bypassCustomPlugins: c.bypassCustomPlugins === true,
@@ -1079,8 +1099,14 @@ export function createRecordHandlers({
                 .get('$select')
                 .split(',')
                 .some((column) => column.trim() === '*'),
-            columns: parseSelect(params.get('$select')) ?? [],
+            // The ColumnSet names the caller's columns; the projection's own primary key is not one of them.
+            columns: (parseSelect(params.get('$select')) ?? []).filter(
+              (column) =>
+                column !== mapping.idColumn ||
+                (parseSelect(c.url?.searchParams?.get('$select')) ?? []).includes(column),
+            ),
           },
+          ...(c.sdkColumns ? {} : { readInitialFrame: webApiReadFrame(c, false) }),
           sdkTarget: c.sdkTarget,
           ...(c.sdkTarget
             ? {
@@ -1376,7 +1402,7 @@ export function createRecordHandlers({
     const after =
       cookie && cookie.countOfRecords === undefined ? { id: cookie.lastId, values: cookie.orderValues ?? {} } : null;
     const paging = { params, offset, pageSize, after, preferenceApplied: null, nextLink: () => null };
-    const options = secured(c, ids ? { ids } : {});
+    const options = secured(c, { ...(ids ? { ids } : {}), readInitialFrame: webApiReadFrame(c, true) });
     // The filter resolves field definitions per row; they are derived once for the whole synchronous query.
     const result =
       ids?.length === 0
@@ -1778,7 +1804,15 @@ export function createRecordHandlers({
     versionnumber: nextRowVersion(store),
     ...currencyOnWrite(mapping, input),
     ...timeZoneOnWrite(mapping, input),
+    ...organizationOnCreate(mapping, create),
   });
+  // An organization-owned row records its organization when created (native PreOperation Create Target: organizationid).
+  function organizationOnCreate(mapping, create) {
+    const organizationId = organizationRecord(store)?.organizationid;
+    return create && organizationId && ownershipOf(mapping.logicalName, undefined, mapping) === 'org'
+      ? { organizationid: { id: organizationId, logical_name: 'organization' } }
+      : {};
+  }
   // The main operation (after PreOperation, before the row is stored) runs the synchronous mainOperation hooks on the
   // final row: platform values derived from it, such as the exchange rate and base amounts (dataverse-currency.mjs).
   const mainOperation = (c) =>

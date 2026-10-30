@@ -631,12 +631,26 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
     id,
     attributes,
     ...(versionColumn ? { rowVersion } : {}),
-    ...(Object.keys(formattedValues).length ? { formattedValues } : {}),
+    // A message Target carries formatted values only once PostOperation runs (native PreValidation/PreOperation: none).
+    ...(Object.keys(formattedValues).length && !(columns.target && !columns.postOperation) ? { formattedValues } : {}),
   };
 }
 export function recordToSdkReadEntity(store, entity, row, columns) {
   const present = Object.fromEntries(Object.entries(row ?? {}).filter(([, value]) => value != null));
-  return recordToSdkEntity(store, entity, present, { ...sdkReadColumns(store, entity, columns), retrieved: true });
+  const result = recordToSdkEntity(store, entity, present, {
+    ...sdkReadColumns(store, entity, columns),
+    retrieved: true,
+  });
+  // A retrieved Dataverse row reports its stored row version as Entity.RowVersion (native Retrieve/RetrieveMultiple).
+  if (result.rowVersion == null && store.platformFields) {
+    const mapping = store.resolveMapping(entity),
+      stored = store
+        .tableRows(mapping.logicalName)
+        .find((source) => canon(source[mapping.idColumn]) === canon(result.id))?.versionnumber;
+    const version = stored == null ? null : String(stored?.value ?? stored);
+    if (version !== null && /^\d+$/.test(version)) result.rowVersion = version;
+  }
+  return result;
 }
 export function sdkQueryParameters(query) {
   if (query.pageInfo?.returnTotalRecordCount === true)
@@ -1859,7 +1873,12 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
                                         submitted: true,
                                         target: true,
                                       }
-                                    : { allColumns: true, submitted: stage === 10, target: true },
+                                    : {
+                                        allColumns: true,
+                                        submitted: stage === 10,
+                                        target: true,
+                                        postOperation: stage === 40,
+                                      },
                                 ),
                                 id: frame.inputParameters?.values?.Target?.id ?? record[primary],
                               },

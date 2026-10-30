@@ -497,7 +497,11 @@ export function createAsyncPluginRunner({
         if (String(item.message).toLowerCase() !== event.operation) {
           const mapping = store.resolveMapping(event.entity),
             id = event.row[mapping.idColumn];
-          const target = recordToSdkEntity(store, event.entity, event.target ?? {}, { allColumns: true, target: true });
+          const target = recordToSdkEntity(store, event.entity, event.target ?? {}, {
+            allColumns: true,
+            target: true,
+            postOperation: true,
+          });
           target.id = id;
           const multipleFrame = event.frame?.multipleFrame,
             sourceParent = event.frame?.asyncSourceParent,

@@ -59,7 +59,7 @@ export function singleMultiplePipeline(store, items, execute) {
         store,
         mapping.logicalName,
         context.operation === 'update' ? { ...context.target, [primary]: context.record[primary] } : context.target,
-        { allColumns: true, submitted: context.stage === 10, target: true },
+        { allColumns: true, submitted: context.stage === 10, target: true, postOperation: context.stage === 40 },
       );
       target.id = currentTargetId();
       if (context.operation === 'create' && !frame.authoredPrimary && context.stage === 10)
