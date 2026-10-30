@@ -45,6 +45,7 @@ import {
 } from './plugin-sdk-messages.mjs';
 import { formatPipelineTargets, pipelineFormattedValues } from './plugin-formatted-values.mjs';
 import { privilegeDeniedError } from './dataverse-security.mjs';
+import { bridgeTargetInputs, bulkTargetsCollection } from './plugin-single-multiple.mjs';
 const sha = (value) => createHash('sha256').update(value).digest('hex'),
   uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const fail = (message, code = 'LocalPluginClrConfiguration', status = 409) => {
@@ -1970,7 +1971,20 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
     executionMode: session ? 'pooled-fresh-instance' : 'fresh-host',
   };
 }
-export function clrContext({ runtime, store, step, entity, operation, stage, target, record, previous, frame, depth }) {
+export function clrContext({
+  runtime,
+  store,
+  step,
+  entity,
+  operation,
+  stage,
+  target,
+  record,
+  previous,
+  frame,
+  depth,
+  bridged = false,
+}) {
   const descriptor = runtime.descriptor,
     context = descriptor.context,
     parent = frame.delegatedParentContext ?? store.pluginParentContext ?? pluginInvocationSdkParent(store),
@@ -1989,7 +2003,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
   const preValidationParent =
     stage !== 10 &&
     (step.contract?.mode ?? 0) === 0 &&
-    ['create', 'update', 'delete'].includes(operation) &&
+    ['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation) &&
     frame.preValidationContext;
   if (preValidationParent && !frame.preValidationSharedDetached) {
     const prior = frame.sharedVariables?.values ?? {};
@@ -2075,6 +2089,8 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
         onexternalupdated: 'OnExternalUpdated',
         onexternaldeleted: 'OnExternalDeleted',
       }[operation] ??
+      // A bridged step runs the single message's pipeline under its own multiple message name.
+      (bridged ? operation[0].toUpperCase() + operation.slice(1) + 'Multiple' : null) ??
       operation[0].toUpperCase() + operation.slice(1);
   const externalParameters = frame.externalEvent
     ? {
@@ -2149,23 +2165,29 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     IsApplicationUser:
       inherited('IsApplicationUser') ?? context.isApplicationUser ?? Boolean(user(authenticatedUserId)?.applicationid),
   };
+  // A queued bulk job has no pre-image sets unless its registration asks for pre images (native sdkSurface, both
+  // captures: an SDK UpdateMultiple of two targets queues PreEntityImagesCollection length 0, PostEntityImagesCollection 2).
   const bulkImages = (rows, post) => ({
     $type: 'EntityImageCollectionArray',
-    values: frame.targets.map((_, index) => ({
-      $type: 'EntityImageCollection',
-      values: Object.fromEntries(
-        (step.images ?? [])
-          .filter((registration) => (post ? [1, 2] : [0, 2]).includes(registration.type) && rows[index])
-          .map((registration) => [registration.alias || registration.name, image(rows[index], registration)]),
-      ),
-    })),
+    values:
+      !post && asynchronous && !(step.images ?? []).some((registration) => [0, 2].includes(registration.type))
+        ? []
+        : frame.targets.map((_, index) => ({
+            $type: 'EntityImageCollection',
+            values: Object.fromEntries(
+              (step.images ?? [])
+                .filter((registration) => (post ? [1, 2] : [0, 2]).includes(registration.type) && rows[index])
+                .map((registration) => [registration.alias || registration.name, image(rows[index], registration)]),
+            ),
+          })),
   });
   // The main operation populates system results once. Keep custom values and
   // subsequent PostOperation replacements across ranks for every message shape.
   frame.outputParameters ??= { $type: 'ParameterCollection', values: {} };
   initializePluginOperation(frame, store, parent, { createdOn: context.operationCreatedOn });
   // Create's PreOperation/PostOperation collection carries the platform's telemetry root (a JSON string).
-  if (['create', 'createmultiple'].includes(operation) && stage !== 10 && !asynchronous && !frame.telemetryRootSeeded) {
+  // A bulk CreateMultiple's collections have none (native bulk); each delegated Create's have.
+  if (operation === 'create' && stage !== 10 && !asynchronous && !frame.telemetryRootSeeded) {
     frame.sharedVariables ??= { $type: 'ParameterCollection', values: {} };
     frame.sharedVariables.values.telemetryrootcontext ??= JSON.stringify({
       serviceRequestId: frame.requestId,
@@ -2228,7 +2250,8 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       PrimaryEntityName: ['associate', 'disassociate'].includes(operation) ? 'none' : entity,
       PrimaryEntityId: typed(
         'Guid',
-        ['associate', 'disassociate'].includes(operation)
+        // A queued DeleteMultiple job names no row (native crud, async, upsert: its context and parents carry Guid.Empty).
+        ['associate', 'disassociate'].includes(operation) || (bridged && asynchronous && operation === 'delete')
           ? '00000000-0000-0000-0000-000000000000'
           : primary
             ? (record[primary] ?? '00000000-0000-0000-0000-000000000000')
@@ -2278,18 +2301,15 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
           : (frame.associationParameters ??
             (bulk
               ? {
-                  Targets: {
-                    $type: 'EntityCollection',
-                    entities:
-                      stage === 40 &&
+                  Targets: bulkTargetsCollection(
+                    entity,
+                    stage === 40 &&
                       frame.inputParametersStage === 40 &&
                       frame.inputParameters?.values?.Targets?.$type === 'EntityCollection'
-                        ? frame.inputParameters.values.Targets.entities
-                        : frame.targets,
-                    moreRecords: false,
-                    totalRecordCount: -1,
-                    pagingCookie: null,
-                  },
+                      ? frame.inputParameters.values.Targets.entities
+                      : frame.targets,
+                    { submitted: stage === 10 && !asynchronous },
+                  ),
                 }
               : operation === 'retrievemultiple'
                 ? { Query: frame.query, ...readRequestParameters }
@@ -2361,32 +2381,39 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
   // PreOperation and PostOperation (and the asynchronous copies) see the main operation as their parent. A record
   // operation a named message's main operation delegates sees that message's stage-30 context instead (native
   // sdkMessages: Update/20/d2 < Assign/30/d2 < Update/40/d1).
-  if (crud && stage !== 10 && !frame.delegatedSourceOperation && !frame.namedMainOperation)
+  // A bulk CreateMultiple/UpdateMultiple has its own main operation too (native bulk: CreateMultiple/30).
+  if ((crud || bulk) && stage !== 10 && !frame.delegatedSourceOperation && !frame.namedMainOperation)
     answer.context.ParentContext = mainOperationParent({
       frame,
-      context: answer.context,
+      // A bridged multiple step's parent is the single message's main operation.
+      context: bridged
+        ? { ...answer.context, MessageName: operation[0].toUpperCase() + operation.slice(1) }
+        : answer.context,
       parent: asynchronous ? (frame.mainOuterParent ?? null) : parent,
       userId: executionUserId,
       objectId,
-      inputs: () => ({
-        ...cloneStateData(frame.mainOperationInputs ?? {}),
-        Target:
-          operation === 'delete'
-            ? { $type: 'EntityReference', logicalName: entity, id: record[primary] }
-            : {
-                ...recordToSdkEntity(
-                  store,
-                  entity,
-                  operation === 'create' && Object.hasOwn(frame.mainOperationTarget ?? {}, primary)
-                    ? frame.mainOperationTarget
-                    : { ...frame.mainOperationTarget, [primary]: record[primary] },
-                  operation === 'create'
-                    ? { allColumns: false, columns: Object.keys(frame.mainOperationTarget ?? {}) }
-                    : { allColumns: true },
-                ),
-                id: record[primary],
-              },
-      }),
+      inputs: () =>
+        bulk
+          ? { ...cloneStateData(frame.mainOperationInputs ?? {}), Targets: cloneStateData(frame.mainOperationTargets) }
+          : {
+              ...cloneStateData(frame.mainOperationInputs ?? {}),
+              Target:
+                operation === 'delete'
+                  ? { $type: 'EntityReference', logicalName: entity, id: record[primary] }
+                  : {
+                      ...recordToSdkEntity(
+                        store,
+                        entity,
+                        operation === 'create' && Object.hasOwn(frame.mainOperationTarget ?? {}, primary)
+                          ? frame.mainOperationTarget
+                          : { ...frame.mainOperationTarget, [primary]: record[primary] },
+                        operation === 'create'
+                          ? { allColumns: false, columns: Object.keys(frame.mainOperationTarget ?? {}) }
+                          : { allColumns: true },
+                      ),
+                      id: record[primary],
+                    },
+            },
       images: stageCollection(10, false),
     });
   // The Create main operation's Target names the key it allocated after PreValidation (native upsert and
@@ -2405,7 +2432,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       ...mainParentTarget.attributes,
       ...recordToSdkEntity(store, entity, { [primary]: record[primary] }).attributes,
     };
-  if (!asynchronous && crud && stage !== 10) frame.mainOuterParent ??= parent ? cloneStateData(parent) : null;
+  if (!asynchronous && (crud || bulk) && stage !== 10) frame.mainOuterParent ??= parent ? cloneStateData(parent) : null;
   // An asynchronous job sees the committed synchronous chain as its own operation: every level reports the job's
   // mode, depth, message, row, step, operation id and time, outside a transaction.
   if (asynchronous)
@@ -2437,5 +2464,6 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     values: answer.inputParameters.values,
     currencyId: bulk ? undefined : record?.transactioncurrencyid,
   });
+  if (bridged) answer.inputParameters.values = bridgeTargetInputs(answer.inputParameters.values, entity);
   return answer;
 }

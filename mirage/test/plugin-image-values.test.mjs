@@ -167,7 +167,9 @@ for (const message of ['CreateMultiple', 'UpdateMultiple'])
       [
         'Invented.AsyncImages',
         ({ context }) => {
-          assert.deepEqual(context.PreEntityImagesCollection, message === 'CreateMultiple' ? [] : [{}, {}]);
+          // @parity-evidence: native recorder captures native and native-r2, sdkSurface: a queued UpdateMultiple job of two
+          // targets without a pre-image registration has PreEntityImagesCollection length 0 (PostEntityImagesCollection 2).
+          assert.deepEqual(context.PreEntityImagesCollection, []);
           assert.deepEqual(context.PostEntityImagesCollection, [{}, {}]);
         },
       ],

@@ -30,6 +30,7 @@ import { recordToSdkEntity } from './plugin-clr.mjs';
 import { imageAttributes } from './plugin-images.mjs';
 import { PLATFORM_TYPES } from './dataverse-operation-contracts.mjs';
 import { delegatedPluginParent } from './plugin-delegation.mjs';
+import { bridgeTargetInputs, multipleMessage } from './plugin-single-multiple.mjs';
 import { exactNumeric, stringifyExactJson } from './exact-numeric.mjs';
 
 const LOOPBACK = /^(?:(?:[a-z0-9-]+\.)*localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i;
@@ -449,6 +450,19 @@ export function remoteExecutionContext(store, facts) {
       );
     }
   }
+  // A bridged multiple step (plugin-single-multiple.mjs) receives the single Target as one Targets record.
+  if (facts.bridged) {
+    const sdkTarget =
+      operation === 'delete'
+        ? { $type: 'EntityReference', logicalName: entity, id: record?.[idColumn] }
+        : frame.inputParametersStage === stage && frame.inputParameters?.values?.Target?.$type === 'Entity'
+          ? frame.inputParameters.values.Target
+          : recordToSdkEntity(store, entity, { [idColumn]: record?.[idColumn], ...target }, { allColumns: true });
+    inputs = [
+      ...inputs.filter((entry) => entry.key !== 'Target'),
+      ...pairs(bridgeTargetInputs({ Target: sdkTarget }, entity)),
+    ];
+  }
   const outputs =
     facts.messageParameters?.outputParameters?.values ??
     frame.outputParameters?.values ??
@@ -474,7 +488,7 @@ export function remoteExecutionContext(store, facts) {
     IsInTransaction: !asyncExecution && store.pluginInTransaction === true,
     IsOfflinePlayback: false,
     IsolationMode: 1, // as in the documented sample
-    MessageName: facts.customApi?.name ?? messageNameOf(operation),
+    MessageName: facts.customApi?.name ?? messageNameOf(facts.bridged ? multipleMessage(operation) : operation),
     Mode: asyncExecution ? 1 : 0,
     OperationCreatedOn: `/Date(${asyncExecution && frame.asyncOperation ? operationTimeEpoch(frame.asyncOperation.createdOn) : frame.createdOn == null ? (store.clock ?? systemClock).now() : operationTimeEpoch(frame.createdOn)})/`,
     OperationId:
@@ -495,11 +509,12 @@ export function remoteExecutionContext(store, facts) {
     ),
     PostEntityImages: stage === 40 && operation !== 'delete' ? images(record, [1, 2]) : [],
     PreEntityImages: images(previous, [0, 2]),
-    PrimaryEntityId: ['associate', 'disassociate'].includes(operation)
-      ? '00000000-0000-0000-0000-000000000000'
-      : (record?.[idColumn] ??
-        previous?.[idColumn] ??
-        (facts.customApi ? '00000000-0000-0000-0000-000000000000' : null)),
+    PrimaryEntityId:
+      ['associate', 'disassociate'].includes(operation) || (facts.bridged && asyncExecution && operation === 'delete')
+        ? '00000000-0000-0000-0000-000000000000'
+        : (record?.[idColumn] ??
+          previous?.[idColumn] ??
+          (facts.customApi ? '00000000-0000-0000-0000-000000000000' : null)),
     PrimaryEntityName: ['associate', 'disassociate'].includes(operation)
       ? 'none'
       : entity || (facts.customApi ? 'none' : entity),
@@ -519,7 +534,7 @@ export function remoteExecutionContext(store, facts) {
       ),
     );
   }
-  const asyncParent = asyncMultiplePluginParent(frame, operation, entity);
+  const asyncParent = asyncMultiplePluginParent(frame, facts.bridged ? multipleMessage(operation) : operation, entity);
   if (asyncParent) context.ParentContext = dataContract(asyncParent);
   return context;
 }
