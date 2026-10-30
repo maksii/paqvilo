@@ -1,4 +1,4 @@
-// @test-kind observation: native dataverse-recorder faults.json, one capture: a PATCH (Upsert) whose Update PreOperation step threw (400) still ran the existence read's asynchronous RetrieveMultiple step, with the request's RequestId
+// @test-kind parity: native dataverse-recorder faults.json, reproduced in native-r2 faults.json: a PATCH (Upsert) whose Update PreOperation step threw (400) still ran the existence read's asynchronous RetrieveMultiple step, with the request's RequestId
 // Invented schema and handlers.
 import test from 'node:test';
 import assert from 'node:assert/strict';
