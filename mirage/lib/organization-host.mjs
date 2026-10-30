@@ -1410,7 +1410,8 @@ function hostReports(c) {
     /**
      * The shared part of GET /_sim/api/dashboard (sim-dashboard-routes.mjs): { runtime, nodes, edges, activity } from the
      * registry, providers, configuration, the Dataverse listener and cheap table counts. Memoised on the store revision, the
-     * counters tick and a 5-second time bucket; never reads a secret value, connection settings or a service endpoint URL beyond its hostname.
+     * counters tick and a 5-second time bucket, except activity.trace, which is read per call; never reads a secret value,
+     * connection settings or a service endpoint URL beyond its hostname.
      */
     topology: () => {
       // A 5-second time bucket refreshes counts that change with time alone (message locks and schedules, overdue waits).
@@ -1444,7 +1445,14 @@ function hostReports(c) {
             projectRoot: c.projectRoot,
           }),
         };
-      return structuredClone(c.topologyMemo.value);
+      const value = structuredClone(c.topologyMemo.value);
+      // Every traced request moves the trace counters without a store write or counter tick, so they are read per call.
+      const trace = store.traces ? attempt(() => store.traces.status(), null) : null;
+      if (trace) {
+        const { retained, spans, running, dropped, droppedSpans, latestSequence } = trace;
+        value.activity.trace = { retained, spans, running, dropped, droppedSpans, latestSequence };
+      }
+      return value;
     },
     /** Status payload fields: the legacy boolean summary and the registry report. */
     capabilityStatus: ({ reuse = false } = {}) =>
@@ -1954,7 +1962,8 @@ function orgNodes({
     },
     { link: '#flows' },
   );
-  // The trace store of this host (docs/design/tracing.md): its level and what it retains, linking to the trace view.
+  // The trace store of this host (docs/design/tracing.md): its level and persistence, linking to the trace view. What it
+  // retains changes with every traced request, so those counters are activity.trace (topology()), not node detail.
   const trace = store.traces ? attempt(() => store.traces.status(), null) : null;
   if (trace)
     node(
@@ -1964,10 +1973,6 @@ function orgNodes({
       trace.enabled ? 'ready' : 'disabled',
       {
         level: trace.level,
-        retained: trace.retained,
-        spans: trace.spans,
-        dropped: trace.dropped,
-        droppedSpans: trace.droppedSpans,
         persist: trace.persist?.enabled ?? false,
         persistError: trace.persist?.lastError ?? null,
       },

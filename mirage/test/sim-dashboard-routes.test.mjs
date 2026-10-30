@@ -7,6 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
+import { fixedClock } from '../lib/runtime-clock.mjs';
 import { createDashboardRoutes, DASHBOARD_STATUSES, activityFacts } from '../lib/sim-dashboard-routes.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
@@ -313,11 +314,14 @@ test('Power Pages dashboard adds the portal listener, admin hosts and the portal
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await fs.writeFile(path.join(dir, name), body);
   }
+  // A fixed clock decides when the shared topology is rebuilt (its 5-second bucket), so the test does not race it.
+  const clock = fixedClock(Date.now());
   const sim = await createSimulator({
     sourceDir: dir,
     stateFile: path.join(dir, 'state.json'),
     port: 0,
     watch: false,
+    clock,
     initial: {
       version: 1,
       mappings: {},
@@ -367,8 +371,14 @@ test('Power Pages dashboard adds the portal listener, admin hosts and the portal
   const busy = await json(await fetch(`${sim.url}/_sim/api/dashboard`));
   assert.equal(busy.activity.requests.retained, 300);
   assert.ok(busy.activity.requests.total >= 301, `total ${busy.activity.requests.total}`);
+  // Traced requests move activity.trace on every read, while the nodes stay the same topology even after the shared part
+  // is rebuilt in the next 5-second bucket (a node that carried the trace counters changed here).
+  assert.ok(busy.activity.trace.retained > body.activity.trace.retained, JSON.stringify(busy.activity.trace));
+  assert.ok(busy.activity.trace.spans > body.activity.trace.spans);
+  clock.advance(5000);
   const again = await json(await fetch(`${sim.url}/_sim/api/dashboard`));
   assert.deepEqual(again.nodes, body.nodes);
+  assert.ok(again.activity.trace.latestSequence >= busy.activity.trace.latestSequence);
   assert.equal(
     (await json(await fetch(`${sim.url}/_sim/api/status`))).docs.simAdministration.path,
     'mirage/docs/sim-administration.md',

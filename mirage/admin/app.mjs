@@ -1,6 +1,6 @@
 import { personaSessionPanel, personaManagementPanel, mountPersonaAdministration } from './persona-manager.mjs';
 import * as kit from './ui-kit.mjs';
-import { renderDashboard, renderNodeDetail } from './dashboard-map.mjs';
+import { nodeActivity, renderDashboard, renderNodeDetail } from './dashboard-map.mjs';
 import * as icons from './dashboard-icons.mjs';
 import { HELP } from './help-content.mjs';
 import { view as servicesView } from './view-services.mjs';
@@ -4895,7 +4895,7 @@ function dashboardModule() {
     mounted(context) {
       const node = payload?.nodes?.find((item) => item.id === selected);
       const slot = document.getElementById('dashboard-node-detail');
-      const key = node ? JSON.stringify(node) : null;
+      const key = node ? JSON.stringify([node, nodeActivity(node, payload)]) : null;
       if (slot && node) {
         if (drawer?.key === key) slot.replaceChildren(...drawer.nodes);
         else {

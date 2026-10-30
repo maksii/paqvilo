@@ -610,3 +610,11 @@ test('the wide map stylesheet matches GEOMETRY, so connectors meet the cards', (
   ]);
   assert.match(rule('.dm-card'), new RegExp(`height: ${GEOMETRY.cardH}px`));
 });
+
+test('the trace node drawer shows its stable detail with the live activity.trace counters', () => {
+  const node = { id: 'org:trace', kind: 'org', label: 'Tracing', status: 'ready', detail: { level: 'full' } };
+  const payload = { nodes: [node], edges: [], activity: { trace: { retained: 7, spans: 21 } } };
+  const drawer = renderNodeDetail(node, {}, { kit, icons, payload });
+  for (const fact of [/Level/, /full/, /Retained/, />7</, /Spans/, />21</]) assert.match(drawer, fact);
+  assert.doesNotMatch(renderNodeDetail(node, {}, { kit, icons }), /Retained/);
+});

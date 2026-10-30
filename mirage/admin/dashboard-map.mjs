@@ -1289,16 +1289,25 @@ function factValue(kit, value) {
   return `<code>${kit.escapeHtml(JSON.stringify(value))}</code>`;
 }
 
+// The activity key whose counters the drawer of a node shows with its facts (org:trace: what the trace store retains).
+const NODE_ACTIVITY = Object.freeze({ 'org:trace': 'trace' });
+/** The live counters of a node from the feed's activity ({} for a node without any): its detail stays stable topology. */
+export function nodeActivity(node, payload) {
+  const live = payload?.activity?.[NODE_ACTIVITY[node?.id]];
+  return live && typeof live === 'object' && !Array.isArray(live) ? live : {};
+}
+
 /**
- * Drawer for one node: product name, status with its meaning, level, safe facts, connections (when `payload` is passed),
- * the owning view link and its reference doc. Keeps `#dashboard-drawer`, `.ui-drawer` and `[data-drawer-close]`.
+ * Drawer for one node: product name, status with its meaning, level, safe facts, connections and live counters (both from
+ * `payload` when it is passed), the owning view link and its reference doc. Keeps `#dashboard-drawer`, `.ui-drawer` and
+ * `[data-drawer-close]`.
  */
 export function renderNodeDetail(node, docs, { kit, icons, payload } = {}) {
   needKit(kit);
   const id = `node-detail-${String(node.id).replace(/[^a-z0-9-]+/gi, '-')}`;
   const product = PRODUCT_OF(node.id, node.kind, node.label),
     status = statusOf(node.status);
-  const facts = Object.entries(node.detail ?? {}).map(([label, value]) => [
+  const facts = Object.entries({ ...node.detail, ...nodeActivity(node, payload) }).map(([label, value]) => [
     humanize(label).replace(/^./, (char) => char.toUpperCase()),
     factValue(kit, value),
   ]);

@@ -247,6 +247,10 @@ need the `x-sim-csrf` header with the administration token.
 | `PUT /trace/settings`     | Applies a partial settings change, such as `{ "level": "full" }`, and answers `{ settings, status }`. An invalid value is 400 `InvalidTraceSettings` and keeps the old settings.                                                                                                                      |
 | `POST /trace/clear`       | Drops every retained trace and answers the store status.                                                                                                                                                                                                                                              |
 
+The Infrastructure view (`GET /_sim/api/dashboard`) shows the trace store as the `org:trace` node with its level and
+persistence, and its counters (`retained`, `spans`, `running`, `dropped`, `droppedSpans`, `latestSequence`) as
+`activity.trace`.
+
 The list, spans, stats and export routes take the same query parameters:
 
 | Parameter                                                              | Matches                                                                                                             |

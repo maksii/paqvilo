@@ -308,13 +308,20 @@ test('Power Pages: status lists /trace, the trace routes answer and the trace SS
   }
   const listed = await (await simApi(sim, 'GET', '/trace?kind=render')).json();
   assert.ok(listed.items.length >= 1);
-  // The dashboard map shows the trace layer with its level and retention, linking to the trace view.
+  // The dashboard map shows the trace layer with its level, linking to the trace view; its retention is activity.trace.
   const dashboard = await (await simApi(sim, 'GET', '/dashboard')).json();
   const layer = dashboard.nodes.find((node) => node.id === 'org:trace');
   const { retained, dropped } = sim.trace.status();
   assert.deepEqual(
-    [layer.kind, layer.status, layer.link, layer.detail.level, layer.detail.retained, layer.detail.dropped],
-    ['org', 'ready', '#trace', 'full', retained, dropped],
+    [
+      layer.kind,
+      layer.status,
+      layer.link,
+      layer.detail,
+      dashboard.activity.trace.retained,
+      dashboard.activity.trace.dropped,
+    ],
+    ['org', 'ready', '#trace', { level: 'full', persist: false, persistError: null }, retained, dropped],
   );
 });
 
@@ -677,6 +684,14 @@ test('a memory-only runtime accepts persist but writes nothing and says why on t
     const dashboard = await (await simApi(sim, 'GET', '/dashboard')).json();
     const layer = dashboard.nodes.find((node) => node.id === 'org:trace');
     assert.deepEqual([layer.detail.persist, layer.detail.persistError], [true, 'NoStateDirectory']);
+    assert.deepEqual(Object.keys(dashboard.activity.trace), [
+      'retained',
+      'spans',
+      'running',
+      'dropped',
+      'droppedSpans',
+      'latestSequence',
+    ]);
   } finally {
     sim.trace.configure(settings);
   }
