@@ -1147,7 +1147,8 @@ export async function operationCall(d, route, common) {
   if (!op) return notFound({ url: common.url, requestId: common.requestId });
   let target;
   if (binding === 'entity') {
-    const row = d.store.get(entity, id, common.identity);
+    // The platform loads a bound operation's target without a Retrieve pipeline (recorded native customApi).
+    const row = d.store.get(entity, id, common.identity, { skipPluginRead: true });
     if (!row) throw new DataError(`${entity} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id });
     target = { mapping, id, row };
   } else if (binding === 'collection') target = { mapping };
