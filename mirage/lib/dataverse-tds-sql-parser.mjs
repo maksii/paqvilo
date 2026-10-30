@@ -130,8 +130,12 @@ export function parseBatch(sql) {
       while (s.pos < tokens.length) {
         if (eatPunct(s, ';')) continue;
         const line = peek(s).line;
+        const first = s.pos;
         const statement = parseStatement(s);
         statement.line = batch.line + line - 1;
+        // The statement's own text, read only when a trace asks for it (not enumerable: the AST shape is unchanged).
+        const last = s.pos - 1;
+        Object.defineProperty(statement, 'source', { get: () => statementSource(batch.sql, tokens, first, last) });
         statements.push(statement);
         if (!eatPunct(s, ';') && s.pos < tokens.length) checkSeparator(s);
       }
@@ -144,6 +148,22 @@ export function parseBatch(sql) {
     }
   }
   return { statements };
+}
+
+// A statement's text from its first to its last token: { text, redacted }, where redacted has every string and number
+// literal replaced by `?` (the trace keeps that form at level summary). Whitespace and comments between tokens stay.
+function statementSource(sql, tokens, first, last) {
+  const from = tokens[first]?.pos ?? 0;
+  const to = tokens[last]?.end ?? from;
+  let redacted = '';
+  let cursor = from;
+  for (let i = first; i <= last; i++) {
+    const tok = tokens[i];
+    redacted +=
+      sql.slice(cursor, tok.pos) + (tok.type === 'string' || tok.type === 'number' ? '?' : sql.slice(tok.pos, tok.end));
+    cursor = tok.end;
+  }
+  return { text: sql.slice(from, to), redacted };
 }
 
 // ---- token rules

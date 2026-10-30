@@ -525,11 +525,14 @@ const siteSetting = (portal, name) => {
   const entry = Object.entries(portal?.settings ?? {}).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
   return entry?.value ?? entry ?? null;
 };
+// The error a handler answered itself, read by the request's http root (server.mjs, D-R3-4).
+const HTTP_ERROR = Symbol.for('paqvilo.mirage.httpError');
 const answer = (res, status, body, headers = {}) => {
   if (res.headersSent) {
     res.end();
     return true;
   }
+  if (status >= 400 && body?.error) res[HTTP_ERROR] = body.error;
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
@@ -633,6 +636,24 @@ export function createPortalDocumentService({
           failureBody({ code: 'NotFound', message: `${mapping.logicalName} With Id = ${id} Does Not Exist` }),
         );
       const regarding = { logicalName: mapping.logicalName, id: row[mapping.idColumn] };
+      // The document transfer on the request's span (D-R3-10): the regarding record, the operation and the file facts.
+      const span = store.traces?.enabled ? store.traces.current() : null;
+      const transfer = (facts) => span?.set({ documents: 'sharepoint', ...facts });
+      span?.setEntity(mapping.logicalName, String(regarding.id));
+      transfer({
+        transfer:
+          req.method === 'GET'
+            ? name
+              ? 'download'
+              : 'list'
+            : req.method === 'DELETE'
+              ? 'delete'
+              : newFolder != null
+                ? 'create-folder'
+                : 'upload',
+        ...(name ? { fileName: name } : {}),
+        ...(path.length ? { folder: path.join('/') } : {}),
+      });
       const location =
         activeLocations(
           store,
@@ -695,6 +716,7 @@ export function createPortalDocumentService({
             }),
           );
         const file = await sharepoint.download(location.sharepointdocumentlocationid, name, system, { path });
+        transfer({ fileName: file.name, fileSize: file.bytes?.length ?? null, mimetype: file.contentType ?? null });
         res.writeHead(200, {
           'content-type': file.contentType,
           'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
@@ -809,6 +831,7 @@ export function createPortalDocumentService({
         },
         system,
       );
+      transfer({ fileName: stored.name, fileSize: stored.size, mimetype: stored.contentType ?? null });
       return answer(res, 201, {
         name: stored.name,
         size: stored.size,

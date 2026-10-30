@@ -73,6 +73,20 @@ export function createRuntimeAdminRouter({
         const rows = store
           .rows(entity, identity)
           .filter((row) => !search || JSON.stringify(row).toLowerCase().includes(search));
+        // sort=<column>&order=asc|desc: the admin's sortable record table sorts the whole table before paging.
+        const sortKey = url.searchParams.get('sort');
+        if (sortKey) {
+          const direction = url.searchParams.get('order') === 'desc' ? -1 : 1;
+          const empty = (value) => value === null || value === undefined || value === '';
+          rows.sort((a, b) => {
+            const x = a[sortKey],
+              y = b[sortKey];
+            if (empty(x) || empty(y)) return empty(x) === empty(y) ? 0 : empty(x) ? 1 : -1;
+            return (
+              (typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y))) * direction
+            );
+          });
+        }
         const total = rows.length,
           pageCount = Math.max(1, Math.ceil(total / pageSize)),
           page = Math.min(pageCount, Math.max(1, Number.parseInt(url.searchParams.get('page'), 10) || 1));

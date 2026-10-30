@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 import test, { before, after } from 'node:test';
@@ -370,7 +371,7 @@ test(
     );
     assert.match(
       await verify.getByRole('link', { name: /Open the live system map/ }).getAttribute('href'),
-      /\/_sim\/#dashboard$/,
+      /\/_sim\/#health$/,
     );
 
     // Narrow screens keep every opened section inside the viewport.

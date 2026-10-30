@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -18,6 +19,8 @@ import {
   docLink,
   leadHelp,
   splitLead,
+  sortable,
+  sortItems,
 } from '../admin/ui-kit.mjs';
 
 const items = Array.from({ length: 23 }, (_, index) => ({
@@ -111,7 +114,7 @@ test('section is collapsed by default and opens on request', () => {
 test('help, fieldHelp and guide render their documented markup', () => {
   assert.equal(
     fieldHelp('dv-port', 'Port to listen on'),
-    '<small class="ui-field-help" id="dv-port-help">Port to listen on</small>',
+    '<span class="ui-info ui-field-info"><button type="button" class="ui-info-button" aria-label="About this field" aria-describedby="dv-port-help">i</button><span class="ui-info-pop ui-field-help" role="tooltip" id="dv-port-help">Port to listen on</span></span>',
   );
   const doc = { href: 'https://example.test/blob/main/mirage/docs/x.md', label: 'X', path: 'mirage/docs/x.md' };
   assert.match(
@@ -199,5 +202,71 @@ test('leadHelp keeps the first sentence visible and the rest, steps and doc behi
       columns: [{ label: 'Level', info: 'What <levels> mean', render: (item) => item.a }],
     }),
     /<th scope="col">Level<span class="ui-info"><button type="button" class="ui-info-button" aria-label="About Level">i<\/button><span class="ui-info-pop" role="tooltip"><span class="ui-info-text">What &lt;levels&gt; mean<\/span><\/span><\/span><\/th>/,
+  );
+});
+
+// DV-N4c-1: every data column of a client-side table sorts by the text it shows; row actions never sort.
+test('sortable gives each data column a sort key by its shown text, numbers in numeric order', () => {
+  const columns = sortable([
+    { label: 'Name', render: (item) => `<code>${escapeHtml(item.name)}</code>` },
+    { label: 'Count', render: (item) => `${item.count} runs` },
+    { label: 'Own', sortKey: 'own', render: () => '' },
+    { label: 'Inspect', sortKey: false, render: () => '<button>Inspect</button>' },
+    { label: 'Actions', render: () => '<button>Edit</button>' },
+    { label: 'More', className: 'ui-actions', render: () => '<button>Open</button>' },
+  ]);
+  assert.deepEqual(
+    columns.map((column) => column.sortKey ?? null),
+    ['col-0', 'col-1', 'own', false, null, null],
+  );
+  const rows = [
+    { name: 'b & c', count: 10 },
+    { name: 'a', count: 9 },
+  ];
+  assert.deepEqual(
+    sortItems(rows, columns, { key: 'col-0', order: 'asc' }).map((row) => row.name),
+    ['a', 'b & c'],
+  );
+  assert.deepEqual(
+    sortItems(rows, columns, { key: 'col-1', order: 'desc' }).map((row) => row.count),
+    [10, 9],
+  );
+});
+
+// D-M-11: every shared table has the bottom bar (count, rows per page, Previous/Next) and, with more than one sortable
+// column, Filters with a drawer of column filters; filterItems keeps the rows whose column holds the text.
+test('dataTable: the bottom bar on one page, Filters for column filters, filterItems by column', async () => {
+  const kit = await import('../admin/ui-kit.mjs');
+  const columns = kit.sortable([
+    { label: 'Name', render: (item) => escapeHtml(item.name) },
+    { label: 'Tag', render: (item) => escapeHtml(item.tag) },
+  ]);
+  const html = kit.dataTable({
+    id: 'fx table',
+    caption: 'Invented',
+    columns,
+    result: kit.pageItems(items.slice(0, 2), {}),
+    search: true,
+    filters: { 'col-1': 'Odd' },
+  });
+  assert.match(
+    html,
+    /<span class="ui-table-count">2 results<\/span><label class="ui-table-size">Rows <select data-table-size="fx table"/,
+  );
+  assert.match(html, /data-table-page="fx table" data-delta="-1" disabled>Previous<\/button>/);
+  assert.match(html, /data-table-page="fx table" data-delta="1" disabled>Next<\/button>/);
+  assert.match(html, /data-filter-toggle="fx-table-filters"[^>]*>Filters · 1<\/button>/);
+  assert.match(html, /<aside class="ui-filter-drawer" id="fx-table-filters"/);
+  assert.match(html, /<input id="fx-table-filters-1" type="search" name="col-1" value="Odd"/);
+  assert.match(html, /aria-label="Remove filter Tag: Odd" data-table-unfilter="fx table" data-filter-key="col-1"/);
+  assert.deepEqual(
+    kit.filterItems(items, columns, { 'col-1': 'odd', 'col-0': 'invented 1' }).map((item) => item.id),
+    [10, 12, 14, 16, 18],
+  );
+  // One sortable column: no Filters; the page's main list (bar: false) keeps chips and drawer, not the bar.
+  assert.doesNotMatch(kit.dataTable({ id: 'one', columns: columns.slice(0, 1), items: [], filters: {} }), /Filters/);
+  assert.doesNotMatch(
+    kit.dataTable({ id: 'main', columns, items: [], search: true, filters: {}, bar: false }),
+    /ui-table-bar/,
   );
 });

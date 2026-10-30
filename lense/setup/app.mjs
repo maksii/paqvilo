@@ -2240,7 +2240,7 @@ function guidanceBody() {
       : '';
   return (
     `<div class="title-row"><h3>Run your project</h3></div>${choose ? `<p class="run-site">${choose} <span class="muted small">Each website runs as a preview of its own.</span></p>` : ''}<div id="guidance-run" class="quick-run">${runHtml()}</div>` +
-    `<p class="row">${simLink('capabilities', 'Check what the project needs that the preview cannot provide')} ${simLink('dashboard', 'Open the live system map')}</p>` +
+    `<p class="row">${simLink('capabilities', 'Check what the project needs that the preview cannot provide')} ${simLink('health', 'Open the live system map')}</p>` +
     `<details class="disclosure" data-section-key="commands"><summary>For developers: terminal commands</summary><div class="title-row"><h3>Commands for this configuration</h3>${note(`Run these from ${state.directory}. Setup never deploys, synchronizes, installs, imports pack code or contacts a live portal. Lense browser actions can affect live data; follow the user's scope and let them handle sign-in and MFA. Paqvilo ${state.version}: guide links open this release's tag (main for prereleases); the installed CLI --help and bundled docs describe the installed version.`, 'About these commands')}</div>` +
     `<dl class="command-list">${steps.map(([title, text]) => `<dt>${esc(title)}</dt><dd>${text}</dd>`).join('')}</dl>` +
     `<div class="toolbar">${featured.map((item) => `<a href="${esc(item.href)}" target="_blank" rel="noreferrer">${esc(item.label)} ↗</a>`).join('')}</div></details>` +

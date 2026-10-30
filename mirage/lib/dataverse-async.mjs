@@ -6,12 +6,19 @@
 //    not delete.
 //  - A custom API call with Prefer: respond-async is a background operation (backgroundoperations row): 202 with its
 //    status monitor location. The status monitor, GET or DELETE on /api/backgroundoperation/<id>, is outside /api/data.
+// Tracing (docs/design/tracing.md decision 4): every job here (BulkDelete, api.systemJob, background operations) is staged by
+// stageJob, which remembers the submitting span under job:<id>, and runs through runJob: detached from whatever context the
+// scheduler inherited, under a `job` span parented by the remembered span (staged-by link; the staging span gets a triggered
+// link), else a new root. Callbacks are http-out spans (tracedFetch). A bulk delete's per-row deletes run under one `bulk`
+// span and end in one `rows` event, never one span per row.
 import { DataError } from './data-error.mjs';
 import { fromBulkDeleteJson, toFetchXml } from './dataverse-soap-query.mjs';
 import { dataverseIdentity, ownerColumns, privilegeDeniedError } from './dataverse-security.mjs';
 import { dataverseError, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
 import { createScheduler, systemIds } from './runtime-clock.mjs';
+import { detached, jobOrigin } from './committed-work.mjs';
+import { tracedFetch } from './trace-hosts.mjs';
 
 const BULK_DELETE_TYPE = 13; // asyncoperation.operationtype: Bulk Delete
 // asyncoperation.operationtype: Bulk Duplicate Detection. Used by dataverse-duplicates.mjs.
@@ -364,13 +371,98 @@ export function close(api) {
 // Milliseconds until a postponed job's time; 0 when it is not postponed or already due.
 const waitFor = (now, postponeuntil) => (postponeuntil ? Math.max(0, Date.parse(postponeuntil) - now) : 0);
 // ponytail: a plain POST with no retry; a failed callback is logged and the operation keeps its result.
-const postCallback = (url, body) =>
-  loopbackFetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(5000),
+const postCallback = (traces, url, body) =>
+  tracedFetch(traces, {
+    module: 'jobs',
+    operation: 'callback',
+    url,
+    fetch: loopbackFetch,
+    init: {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000),
+    },
   });
+
+/**
+ * The staging half of a traced job (docs/design/tracing.md decision 4): remembers the current span under `key`
+ * (`job:<id>`) for the runner and records a `job-staged` event on it. Nothing happens at level off or without a current
+ * span (the job then starts a new root). A remembered overflow handle keeps the job in its full trace.
+ */
+export function stageJob(store, key, attributes = {}) {
+  const traces = store?.traces;
+  if (!traces?.enabled) return;
+  const staging = traces.current();
+  if (!staging?.traceId) return;
+  traces.remember(key, { traceId: staging.traceId, spanId: staging.spanId ?? null });
+  staging.event('job-staged', { attributes });
+}
+
+/**
+ * The running half: work(span) runs detached (outside every span and request context the scheduler inherited) under a
+ * `job` span (module `jobs`, operation `run`, async, origin host `job`) named by the process display name alone
+ * (D-R3-24), parented by the span stageJob remembered for `key` (a `staged-by` link on the job, a `triggered` link on the staging span), else a new root. A throw or
+ * rejection fails the span; work may fail or end it itself (a job that records its failure on its row). span is null
+ * without tracing.
+ */
+export function runJob(
+  store,
+  { key = null, name, kind, entity = null, recordId = null, actor = null, attributes = {} },
+  work,
+) {
+  return detached(store, () => {
+    const traces = store?.traces;
+    if (!traces?.enabled) return work(null);
+    const parent = key ? traces.recall(key) : null,
+      traceId = parent?.traceId ?? null,
+      parentSpanId = parent?.spanId ?? null;
+    const span = traces.start({
+      kind: 'job',
+      name: name ?? kind,
+      module: 'jobs',
+      operation: 'run',
+      entity,
+      recordId,
+      async: true,
+      traceId,
+      parentSpanId,
+      origin: jobOrigin(traces, parentSpanId),
+      ...(actor ? { actor } : {}),
+      links: parentSpanId ? [{ traceId, spanId: parentSpanId, relation: 'staged-by' }] : [],
+      // D-R3-24: processType and processName name the process, as committed-work.mjs traceJob does.
+      attributes: { kind, processType: kind, processName: name ?? null, ...attributes },
+    });
+    if (parentSpanId && span.spanId)
+      traces.link(parentSpanId, { traceId: span.traceId, spanId: span.spanId, relation: 'triggered' });
+    let result;
+    try {
+      result = traces.run(span, () => work(span));
+    } catch (error) {
+      span.fail(error);
+      throw error;
+    }
+    return Promise.resolve(result).then(
+      (value) => {
+        span.end();
+        return value;
+      },
+      (error) => {
+        span.fail(error);
+        throw error;
+      },
+    );
+  });
+}
+
+// The staff actor of a job that runs under a user's identity (the submitter of a bulk delete or system job).
+const userActor = (user, id = user?.systemuserid) =>
+  id ? { kind: user?.applicationid ? 'app' : 'staff', id: String(id), name: user?.fullname ?? null } : null;
+// The entity and record id a regardingobjectid lookup names ({ id, logical_name }), else nulls.
+const regardingOf = (value) =>
+  value && typeof value === 'object'
+    ? { entity: value.logical_name ?? null, recordId: value.id ?? null }
+    : { entity: null, recordId: value ?? null };
 
 // reset runs on every reseed (/_sim/ reset, state import) inside the change queue, so it writes through the store only.
 // Clearing the run tokens stops in-flight runs at their next row (their job rows are gone). Timers already queued find no
@@ -388,7 +480,11 @@ export function reset(api) {
  */
 export async function install(
   api,
-  { schedule = (task, delayMs) => defaultSchedule(api, task, delayMs), pageSize = 5000, notify = postCallback } = {},
+  {
+    schedule = (task, delayMs) => defaultSchedule(api, task, delayMs),
+    pageSize = 5000,
+    notify = (url, body) => postCallback(api.store.traces, url, body),
+  } = {},
 ) {
   const { store } = api;
   seedMappings(store);
@@ -417,10 +513,11 @@ export async function install(
   const liveRuns = new Map(); // requestId of a run's deletes -> its live check, read by the delete hook (see beforeWrite)
 
   // One Ready bulk delete job and its operation row. The submission (QuerySet and submitter ids, no tokens) is kept on the
-  // job row, so the job runs again after a restart.
+  // job row, so the job runs again after a restart. The submitting span stages the job; a recurring job's next occurrence
+  // (enqueued by the occurrence before it, staged: false) is a new root, so a recurrence never keeps joining the first trace.
   async function enqueue(
     submission,
-    { name, postponeuntil = null, recurrencepattern = null, recurrencestarttime = null },
+    { name, postponeuntil = null, recurrencepattern = null, recurrencestarttime = null, staged = true },
   ) {
     const jobId = uuid();
     const owner = ownerColumns(store, { id: submission.callerId, logical_name: 'systemuser' });
@@ -447,6 +544,7 @@ export async function install(
         ...owner,
       });
     });
+    if (staged) stageJob(store, `job:${jobId}`, { kind: 'bulk-delete', asyncOperationId: jobId });
     defer(() => start(jobId), waitFor(api.clock(), postponeuntil));
     return jobId;
   }
@@ -470,30 +568,50 @@ export async function install(
         ...owner,
       });
     });
-    defer(async () => {
-      await setRow('asyncoperation', jobId, {
-        statecode: STATE.Locked,
-        statuscode: STATUS.InProgress,
-        startedon: stamp(),
-      });
-      try {
-        const message = await work();
+    const key = `job:${jobId}`;
+    stageJob(store, key, { kind: 'system-job', asyncOperationId: jobId });
+    const traced = {
+      key,
+      name,
+      kind: 'system-job',
+      ...regardingOf(columns.regardingobjectid ?? regardingobjectid),
+      actor: userActor(api.principals?.byId?.(callerId), callerId),
+      attributes: { jobId, operationType: operationtype ?? null },
+    };
+    defer(() =>
+      runJob(store, traced, async (span) => {
         await setRow('asyncoperation', jobId, {
-          statecode: STATE.Completed,
-          statuscode: STATUS.Succeeded,
-          completedon: stamp(),
-          message: message ?? null,
+          statecode: STATE.Locked,
+          statuscode: STATUS.InProgress,
+          startedon: stamp(),
         });
-      } catch (error) {
-        await setRow('asyncoperation', jobId, {
-          statecode: STATE.Completed,
-          statuscode: error?.jobStatus ?? STATUS.Failed,
-          completedon: stamp(),
-          message: error.message,
-          errorcode: errorNumber(error),
-        });
-      }
-    });
+        try {
+          const message = await work();
+          span?.output(() => ({ message: message ?? null }));
+          await setRow('asyncoperation', jobId, {
+            statecode: STATE.Completed,
+            statuscode: STATUS.Succeeded,
+            completedon: stamp(),
+            message: message ?? null,
+          });
+        } catch (error) {
+          const statuscode = error?.jobStatus ?? STATUS.Failed;
+          await setRow('asyncoperation', jobId, {
+            statecode: STATE.Completed,
+            statuscode,
+            completedon: stamp(),
+            message: error.message,
+            errorcode: errorNumber(error),
+          });
+          // The row records the failure; the span says so too (a Canceled job ends cancelled).
+          span?.end({
+            status: statuscode === STATUS.Canceled ? 'cancelled' : 'error',
+            error,
+            attributes: { jobStatus: statuscode },
+          });
+        }
+      }),
+    );
     return jobId;
   };
 
@@ -590,6 +708,29 @@ export async function install(
     const wait = waitFor(api.clock(), row.postponeuntil);
     if (wait > 0) return defer(() => start(jobId), wait);
     const submission = JSON.parse(row.submission);
+    const tables = [...new Set(submission.querySet.map((item) => String(item.EntityName ?? '').toLowerCase()))];
+    return runJob(
+      store,
+      {
+        key: `job:${jobId}`,
+        name: row.name,
+        kind: 'bulk-delete',
+        entity: tables.length === 1 ? tables[0] : null,
+        actor: userActor(api.principals?.byId?.(submission.callerId), submission.callerId),
+        attributes: {
+          jobId,
+          operationType: BULK_DELETE_TYPE,
+          tables,
+          recurring: Boolean(row.recurrencepattern),
+        },
+      },
+      (span) => runBulkDelete(jobId, submission, tables, span),
+    );
+  }
+
+  // One bulk delete run under its job span: the ids are collected (one read span per FetchXML page), then deleted under one
+  // `bulk` span (its per-row deletes open no spans; one `rows` event counts them), and the job ends with the row's outcome.
+  async function runBulkDelete(jobId, submission, tables, span) {
     const token = {};
     const requestId = uuid();
     active.set(jobId, token);
@@ -622,19 +763,62 @@ export async function install(
       const targets = [];
       for (const [queryIndex, item] of submission.querySet.entries())
         targets.push(...(await collectIds(job, item, queryIndex)));
-      for (const { mapping, id, queryIndex, retained } of targets) {
-        if (!live()) break;
-        try {
-          if (retained) await deleteRetainedRow(job, mapping, id);
-          else await deleteRow(job, mapping, id);
-          await bumpCount(jobId, 'successcount');
-        } catch (error) {
-          // A row refused because the run stopped (reset, cancel or a newer run) is not a failure of the job.
-          if (!live()) break;
-          await bumpCount(jobId, 'failurecount');
-          await recordFailure(jobId, mapping, id, error, queryIndex);
+      const counts = { deleted: 0, failed: 0, stopped: false, firstError: null };
+      const deleteAll = async () => {
+        for (const { mapping, id, queryIndex, retained } of targets) {
+          if (!live()) {
+            counts.stopped = true;
+            break;
+          }
+          try {
+            if (retained) await deleteRetainedRow(job, mapping, id);
+            else await deleteRow(job, mapping, id);
+            await bumpCount(jobId, 'successcount');
+            counts.deleted += 1;
+          } catch (error) {
+            // A row refused because the run stopped (reset, cancel or a newer run) is not a failure of the job.
+            if (!live()) {
+              counts.stopped = true;
+              break;
+            }
+            await bumpCount(jobId, 'failurecount');
+            await recordFailure(jobId, mapping, id, error, queryIndex);
+            counts.failed += 1;
+            counts.firstError ??= `${error?.code ?? 'Error'}: ${error?.message ?? error}`;
+          }
         }
+      };
+      const rowsEvent = (target) =>
+        target?.event('rows', {
+          attributes: {
+            operation: 'delete',
+            targets: targets.length,
+            deleted: counts.deleted,
+            failed: counts.failed,
+            stopped: counts.stopped,
+            ...(counts.firstError ? { firstError: counts.firstError } : {}),
+          },
+        });
+      if (span && targets.length)
+        await store.traces.wrap(
+          {
+            kind: 'bulk',
+            name: `BulkDelete ${tables.join(', ')}`,
+            module: 'dataverse',
+            operation: 'delete',
+            entity: tables.length === 1 ? tables[0] : null,
+            attributes: { message: 'BulkDelete', targets: targets.length, tables },
+          },
+          async (bulk) => {
+            await deleteAll();
+            rowsEvent(bulk);
+          },
+        );
+      else {
+        await deleteAll();
+        rowsEvent(span);
       }
+      span?.set({ deleted: counts.deleted, failed: counts.failed });
       // The run that is still active finishes the job: a cancel or pause requested while it ran ends Canceled or Suspended.
       const ended = rowOf(store, 'asyncoperation', jobId);
       if (active.get(jobId) === token && ended?.statecode === STATE.Locked) {
@@ -663,14 +847,19 @@ export async function install(
           errorcode: errorNumber(error),
         });
       }
+      span?.fail(error);
     } finally {
       // Only the run still active at its end owns the job; a superseded run must not queue a second occurrence.
       owned = active.get(jobId) === token;
       if (owned) active.delete(jobId);
       liveRuns.delete(requestId);
     }
-    // A recurring job queues its next occurrence once this one has completed (a cancelled or paused one does not recur).
     const done = rowOf(store, 'asyncoperation', jobId);
+    // The job span ends with the row's outcome: Canceled is cancelled, Suspended (paused) ok with its status.
+    if (done?.statuscode === STATUS.Canceled)
+      span?.end({ status: 'cancelled', attributes: { jobStatus: done.statuscode } });
+    else span?.set({ jobStatus: done?.statuscode ?? null });
+    // A recurring job queues its next occurrence once this one has completed (a cancelled or paused one does not recur).
     if (owned && done?.statecode === STATE.Completed && done.statuscode !== STATUS.Canceled && done.recurrencepattern) {
       const rule = parseRecurrence(done.recurrencepattern);
       // Stepped from this occurrence's own start, so the cadence does not drift. Occurrences a late or resumed job has
@@ -683,6 +872,7 @@ export async function install(
         postponeuntil: at,
         recurrencepattern: done.recurrencepattern,
         recurrencestarttime: at,
+        staged: false,
       });
     }
   }
@@ -814,7 +1004,7 @@ export async function install(
     }
   }
 
-  async function runBackground(id, op, call, callback, location) {
+  async function runBackground(id, op, call, callback, location, span = null) {
     const current = rowOf(store, 'backgroundoperation', id);
     if (!current) return;
     let patch = { backgroundoperationstatuscode: STATUS.Canceled };
@@ -833,7 +1023,19 @@ export async function install(
       endtime: stamp(),
       ...patch,
     });
-    if (!callback) return;
+    // The job span carries the outcome the monitor reports: the output parameters, or the failure.
+    if (patch.backgroundoperationstatuscode === STATUS.Succeeded)
+      span?.output(() => ({ outputParameters: JSON.parse(patch.outputparameters ?? '[]') }));
+    const settle = () =>
+      patch.backgroundoperationstatuscode === STATUS.Canceled
+        ? span?.end({ status: 'cancelled' })
+        : patch.backgroundoperationstatuscode === STATUS.Failed
+          ? span?.end({
+              status: 'error',
+              error: { code: `0x${(patch.errorcode >>> 0).toString(16)}`, message: patch.errormessage },
+            })
+          : span?.end();
+    if (!callback) return settle();
     // The callback carries the status and any error, never the output: the receiver reads the output from the monitor.
     const done = rowOf(store, 'backgroundoperation', id);
     const body = {
@@ -852,6 +1054,7 @@ export async function install(
     } catch (error) {
       api.log?.('background operation callback failed', { id, message: error?.message });
     }
+    settle();
   }
 
   // The router's hook for a registered operation: a respond-async call to a custom API is queued and answered 202; any
@@ -885,7 +1088,27 @@ export async function install(
           ...owner,
         });
       });
-      defer(() => runBackground(id, op, call, callback, location));
+      stageJob(store, `job:${id}`, { kind: 'background-operation', backgroundOperationId: id });
+      // A row a reset removed, or one no longer Ready (and not being canceled), runs nothing and opens no job span.
+      defer(() => {
+        const queued = rowOf(store, 'backgroundoperation', id);
+        if (
+          !queued ||
+          (queued.backgroundoperationstatuscode !== CANCELING && queued.backgroundoperationstatecode !== STATE.Ready)
+        )
+          return Promise.resolve();
+        return runJob(
+          store,
+          {
+            key: `job:${id}`,
+            name: op.name,
+            kind: 'background-operation',
+            actor: userActor(call.user),
+            attributes: { backgroundOperationId: id, message: op.name, callback: callback !== null },
+          },
+          (span) => runBackground(id, op, call, callback, location, span),
+        );
+      });
       const headers = {
         Location: location,
         'x-ms-dyn-backgroundoperationid': id,
@@ -981,8 +1204,16 @@ export async function install(
     const before = Number(existing?.statecode);
     checkJobUpdate(data, existing, active.has(existing.asyncoperationid));
     // Resume: the job starts again on the next tick, if the write survives (a rollback leaves it Suspended and start() does nothing).
-    if (before === STATE.Suspended && Number(data.statecode) === STATE.Ready)
+    if (before === STATE.Suspended && Number(data.statecode) === STATE.Ready) {
+      // The resuming request stages the run (its trace shows the job it restarted).
+      if (existing.submission)
+        stageJob(store, `job:${existing.asyncoperationid}`, {
+          kind: 'bulk-delete',
+          asyncOperationId: existing.asyncoperationid,
+          resumed: true,
+        });
       defer(() => start(existing.asyncoperationid));
+    }
   });
 
   // A restart. A bulk delete still Ready or Locked runs again, since its submission is on its row. A background operation

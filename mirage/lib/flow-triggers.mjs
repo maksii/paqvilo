@@ -11,7 +11,7 @@ import {
 import { flowRunsOf } from './flow-runs.mjs';
 import { compileODataPredicate, parseODataExpression } from './odata-query.mjs';
 import { validateServiceProfile } from './local-organization-service.mjs';
-import { committedJobs, liveJob, stageCommittedJobs } from './committed-work.mjs';
+import { committedJobs, detached, jobOrigin, jobParent, liveJob, stageCommittedJobs } from './committed-work.mjs';
 import { systemIds, storeScheduler } from './runtime-clock.mjs';
 import { registerPackExport } from './pack-exports.mjs';
 import { createRequestContext, runWithRequest } from './request-context.mjs';
@@ -20,6 +20,43 @@ const definitionOf = (workflow) => workflow?.definition?.properties?.definition 
 const flowItems = (items) =>
   items().filter((i) => i.kind === 'cloud-flow' && i.contract?.trigger?.kind === 'dataverse');
 const hostedRunners = new WeakMap();
+// Tracing (docs/design/tracing.md): a flow job's span is parented explicitly by the span that staged it (remembered by the
+// trace store for the job id: committed-work.mjs jobParent), never by the scheduler's inherited context. Without it the job
+// is the root of a new trace; the committing request's correlation stays an attribute.
+function jobSpan(store, name, parent, attributes = {}) {
+  const traces = store.traces;
+  if (!traces?.enabled) return null;
+  const traceId = parent?.traceId ?? null,
+    parentSpanId = parent?.spanId ?? null;
+  return traces.start({
+    kind: 'job',
+    name,
+    module: 'jobs',
+    operation: 'run',
+    async: true,
+    traceId,
+    parentSpanId,
+    origin: jobOrigin(traces, parentSpanId),
+    links: parentSpanId ? [{ traceId, spanId: parentSpanId, relation: 'staged-by' }] : [],
+    attributes,
+  });
+}
+// The id of a committed event's row (its table's id column), or null.
+function rowIdOf(store, event) {
+  try {
+    const value = event.row?.[store.resolveMapping(event.entity).idColumn];
+    return value == null ? null : String(value);
+  } catch {
+    return null;
+  }
+}
+// A flow job span names its process (D-R3-24, amended): the flow display name alone (trees print "<kind> <name>"), with
+// processType cloud-flow, processId and processName.
+function nameFlowJob(job, processId, name) {
+  job?.set({ processType: 'cloud-flow', processId, processName: name ?? null });
+  if (name) job?.setName(name);
+}
+const within = (store, span, fn) => (span ? store.traces.run(span, fn) : fn());
 /** The trigger runner of this DataStore's organization (its trigger hosts), or null. */
 export const flowTriggersOf = (store) => (store && hostedRunners.get(store)) ?? null;
 // The next occurrence of a recurrence after now: from startTime (or the time it was armed) in whole intervals. Missed
@@ -136,9 +173,33 @@ export function createFlowTriggerRunner({
     closing = false,
     stopSequence = Infinity;
   const record = (code, entry) => diagnostic({ code, ...entry });
-  const run = async ({ id, payload: { key, chain }, event }) => {
+  // The human facts of a trigger finding (D-M-2 Findings): the flow's display name, the trigger table and a sentence.
+  const flowFacts = (workflow, item, entity, status) => {
+    const name = workflow?.name ?? item.name ?? item.processId ?? item.key;
+    return {
+      name,
+      entity: entity ?? null,
+      message: `${name} ${String(status ?? 'ran').toLowerCase()}${entity ? ` on ${entity}` : ''}.`,
+    };
+  };
+  const run = async ({ id, payload: { key, chain, attempts }, event }) => {
     // The run joins the committing request's correlation as an asynchronous child of it.
     const correlationId = event.correlationId ?? chain.id;
+    const job = jobSpan(store, key, jobParent(store, id), {
+      kind: 'flow',
+      jobId: id,
+      attempt: (Number(attempts) || 0) + 1,
+      chainId: chain.id,
+      depth: chain.depth + 1,
+      correlationId,
+    });
+    // The trigger row (D-R3-1): the job and flow-run spans name its table and id, so record filters find the run.
+    const target = { entity: event.entity ?? null, recordId: rowIdOf(store, event) };
+    if (target.entity) job?.setEntity(target.entity, target.recordId);
+    const skipped = (reason) => {
+      job?.event('flow-trigger-skipped', { attributes: { reason } });
+      return null;
+    };
     await runWithRequest(
       createRequestContext({
         correlationId,
@@ -146,128 +207,147 @@ export function createFlowTriggerRunner({
         mode: 'async',
         ids: store.ids,
         clock: store.clock,
+        ...(job ? { traceId: job.traceId, spanId: job.spanId } : {}),
       }),
       () =>
-        store.transact(async () => {
-          const { rows, index } = liveJob(store, id);
-          if (index < 0 || rows[index].statecode !== 0) return null;
-          store.removeRow('asyncoperation', rows, index);
-          const oldChain = store.flowChain;
-          store.flowChain = { id: chain.id, depth: chain.depth + 1 };
-          try {
-            const item = flowItems(items).find((i) => i.key === key);
-            if (!item) throw new Error('The flow trigger registration is no longer available.');
-            const workflow = workflows().get(item.processId),
-              definition = definitionOf(workflow),
-              trigger = inspectFlowTrigger(definition),
-              mapping = store.resolveMapping(trigger.table);
-            if (!trigger.supported) throw new Error(trigger.errors.join(' '));
-            if (workflow.active !== true) {
-              if (item.configuration?.activation !== 'local-enabled')
+        within(store, job, () =>
+          store.transact(async () => {
+            const { rows, index } = liveJob(store, id);
+            if (index < 0 || rows[index].statecode !== 0) return null;
+            store.removeRow('asyncoperation', rows, index);
+            const oldChain = store.flowChain;
+            store.flowChain = { id: chain.id, depth: chain.depth + 1 };
+            try {
+              const item = flowItems(items).find((i) => i.key === key);
+              if (!item) throw new Error('The flow trigger registration is no longer available.');
+              const workflow = workflows().get(item.processId),
+                definition = definitionOf(workflow),
+                trigger = inspectFlowTrigger(definition),
+                mapping = store.resolveMapping(trigger.table);
+              nameFlowJob(job, item.processId, workflow?.name);
+              if (!trigger.supported) throw new Error(trigger.errors.join(' '));
+              if (workflow.active !== true) {
+                if (item.configuration?.activation !== 'local-enabled')
+                  throw new Error(
+                    'The imported workflow activation state is not Activated. Choose explicit local activation to exercise this source.',
+                  );
+                record('FLOW_TRIGGER_ACTIVATION_OVERRIDE', {
+                  operationKey: item.key,
+                  sourceActivation: workflow.active ?? null,
+                  sourceFile: workflow.file,
+                  message: 'User selected local activation; exported activation remains unchanged.',
+                });
+              }
+              const connectionReferences = workflow.definition?.properties?.connectionReferences;
+              const profile =
+                identities().get(item.processId) ?? triggerPrincipal(connectors, definition, connectionReferences);
+              validateServiceProfile(profile);
+              const grants = profile.grants.filter((g) => g.entity === event.entity && g.operations.includes('read'));
+              if (!grants.some((g) => !g.predicate || g.predicate(structuredClone(event.row), 'read') === true))
+                throw new Error('Trigger backend profile has no matching read grant for the committed source row.');
+              if (event.operation === 'update' && trigger.selectColumns.length) {
+                const scalar = trigger.selectColumns.filter((name) => {
+                  const field = store.fieldDefinition(event.entity, name);
+                  if (!field) throw new Error('Select-column field kind is absent from the imported metadata: ' + name);
+                  return !['lookup', 'customer', 'owner'].includes(
+                    String(field.dataverseType ?? field.type ?? '').toLowerCase(),
+                  );
+                });
+                if (!scalar.some((name) => event.submittedAttributes.includes(name))) return skipped('SelectColumns');
+              }
+              if (trigger.filter) {
+                if (event.operation === 'delete')
+                  throw new Error(
+                    'Delete trigger filters require native payload/filter evidence; this combination is not yet implemented.',
+                  );
+                const ctx = store.queryContext({ admin: true, id: profile.userId }, { dialect: 'dataverse' });
+                if (
+                  !compileODataPredicate(
+                    parseODataExpression(trigger.filter, { dialect: 'dataverse' }),
+                    mapping,
+                    ctx,
+                  )(event.row)
+                )
+                  return skipped('FilterExpression');
+              }
+              if (item.mode !== 'exported')
                 throw new Error(
-                  'The imported workflow activation state is not Activated. Choose explicit local activation to exercise this source.',
+                  'Automatic Dataverse triggers support imported definitions, explicit mock or disabled mode.',
                 );
-              record('FLOW_TRIGGER_ACTIVATION_OVERRIDE', {
+              const input = {
+                  ...structuredClone(event.row),
+                  SdkMessage: { create: 'Create', update: 'Update', delete: 'Delete' }[event.operation],
+                },
+                answer = await runTrackedFlow({
+                  runs: flowRunsOf(store),
+                  processId: item.processId,
+                  name: workflow.name ?? null,
+                  trigger: 'Automated',
+                  depth: chain.depth + 1,
+                  definition,
+                  input,
+                  store,
+                  serviceProfile: profile,
+                  steps: item.configuration?.steps,
+                  connectors: connectors ?? undefined,
+                  connectionReferences,
+                  secrets,
+                  context: { correlationId },
+                  target,
+                  diagnostic: (d) => record(d.code, { ...d, operationKey: item.key, chainId: chain.id, correlationId }),
+                });
+              if (answer.status === 'Skipped') skipped(answer.reason ?? 'Skipped');
+              record(answer.status === 'Skipped' ? 'FLOW_TRIGGER_SKIPPED' : 'FLOW_TRIGGER_COMPLETED', {
+                ...flowFacts(workflow, item, event.entity, answer.status),
                 operationKey: item.key,
-                sourceActivation: workflow.active ?? null,
-                sourceFile: workflow.file,
-                message: 'User selected local activation; exported activation remains unchanged.',
+                chainId: chain.id,
+                correlationId,
+                status: answer.status,
+                ...(answer.runId ? { runId: answer.runId } : {}),
+                sourceFile: item.sourceFile,
+                payloadScope: 'Local committed row snapshot; native payload parity requires separate capture',
               });
-            }
-            const connectionReferences = workflow.definition?.properties?.connectionReferences;
-            const profile =
-              identities().get(item.processId) ?? triggerPrincipal(connectors, definition, connectionReferences);
-            validateServiceProfile(profile);
-            const grants = profile.grants.filter((g) => g.entity === event.entity && g.operations.includes('read'));
-            if (!grants.some((g) => !g.predicate || g.predicate(structuredClone(event.row), 'read') === true))
-              throw new Error('Trigger backend profile has no matching read grant for the committed source row.');
-            if (event.operation === 'update' && trigger.selectColumns.length) {
-              const scalar = trigger.selectColumns.filter((name) => {
-                const field = store.fieldDefinition(event.entity, name);
-                if (!field) throw new Error('Select-column field kind is absent from the imported metadata: ' + name);
-                return !['lookup', 'customer', 'owner'].includes(
-                  String(field.dataverseType ?? field.type ?? '').toLowerCase(),
-                );
+            } catch (error) {
+              job?.fail(error);
+              record('FLOW_TRIGGER_FAILED', {
+                operationKey: key,
+                chainId: chain.id,
+                error: { code: error.code ?? 'LocalFlowTriggerUnsupported', message: error.message },
               });
-              if (!scalar.some((name) => event.submittedAttributes.includes(name))) return null;
+            } finally {
+              store.flowChain = oldChain;
             }
-            if (trigger.filter) {
-              if (event.operation === 'delete')
-                throw new Error(
-                  'Delete trigger filters require native payload/filter evidence; this combination is not yet implemented.',
-                );
-              const ctx = store.queryContext({ admin: true, id: profile.userId }, { dialect: 'dataverse' });
-              if (
-                !compileODataPredicate(
-                  parseODataExpression(trigger.filter, { dialect: 'dataverse' }),
-                  mapping,
-                  ctx,
-                )(event.row)
-              )
-                return null;
-            }
-            if (item.mode !== 'exported')
-              throw new Error(
-                'Automatic Dataverse triggers support imported definitions, explicit mock or disabled mode.',
-              );
-            const input = {
-                ...structuredClone(event.row),
-                SdkMessage: { create: 'Create', update: 'Update', delete: 'Delete' }[event.operation],
-              },
-              answer = await runTrackedFlow({
-                runs: flowRunsOf(store),
-                processId: item.processId,
-                trigger: 'Automated',
-                depth: chain.depth + 1,
-                definition,
-                input,
-                store,
-                serviceProfile: profile,
-                steps: item.configuration?.steps,
-                connectors: connectors ?? undefined,
-                connectionReferences,
-                secrets,
-                context: { correlationId },
-                diagnostic: (d) => record(d.code, { ...d, operationKey: item.key, chainId: chain.id, correlationId }),
-              });
-            record(answer.status === 'Skipped' ? 'FLOW_TRIGGER_SKIPPED' : 'FLOW_TRIGGER_COMPLETED', {
-              operationKey: item.key,
-              chainId: chain.id,
-              correlationId,
-              status: answer.status,
-              ...(answer.runId ? { runId: answer.runId } : {}),
-              sourceFile: item.sourceFile,
-              payloadScope: 'Local committed row snapshot; native payload parity requires separate capture',
-            });
-          } catch (error) {
-            record('FLOW_TRIGGER_FAILED', {
-              operationKey: key,
-              chainId: chain.id,
-              error: { code: error.code ?? 'LocalFlowTriggerUnsupported', message: error.message },
-            });
-          } finally {
-            store.flowChain = oldChain;
-          }
-          return null;
-        }),
+            return null;
+          }),
+        ),
     )
-      .catch((error) =>
-        record('FLOW_TRIGGER_QUEUE_FAILED', { operationKey: key, error: { code: error.code, message: error.message } }),
-      )
-      .finally(() => own.delete(id));
+      .catch((error) => {
+        job?.fail(error);
+        record('FLOW_TRIGGER_QUEUE_FAILED', { operationKey: key, error: { code: error.code, message: error.message } });
+      })
+      .finally(() => {
+        job?.end();
+        own.delete(id);
+      });
   };
   const unregister = jobs.register('flow', run);
   const same = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
   // One durable "When an action is performed" job: its row is removed and its run executes in one transaction, as a row-trigger
   // job, so a restart before it ran still runs it (committedJobs resume).
-  const runAction = ({ id, payload: { key, input } }) =>
-    store
-      .transact(
+  const runAction = ({ id, payload: { key, input, attempts } }) => {
+    const job = jobSpan(store, key, jobParent(store, id), {
+      kind: 'flow-action',
+      jobId: id,
+      attempt: (Number(attempts) || 0) + 1,
+    });
+    return within(store, job, () =>
+      store.transact(
         async () => {
           const { rows, index } = liveJob(store, id);
           if (index < 0 || rows[index].statecode !== 0) return null;
           store.removeRow('asyncoperation', rows, index);
           const current = candidates().get(key);
+          if (current) nameFlowJob(job, current.item.processId, current.workflow?.name);
           await start(
             hosts.get(key) ?? {
               key,
@@ -279,21 +359,32 @@ export function createFlowTriggerRunner({
           return null;
         },
         { cloneResult: false },
-      )
-      .catch((error) =>
-        record('FLOW_TRIGGER_QUEUE_FAILED', { operationKey: key, error: { code: error.code, message: error.message } }),
-      );
+      ),
+    )
+      .catch((error) => {
+        job?.fail(error);
+        record('FLOW_TRIGGER_QUEUE_FAILED', { operationKey: key, error: { code: error.code, message: error.message } });
+      })
+      .finally(() => job?.end());
+  };
   const unregisterAction = jobs.register('flow-action', runAction);
   // Selection runs inside the committing transaction (a data.mjs commit stager): the Ready rows commit or roll back with
   // the triggering rows. Chain counters, diagnostics and the runner start apply only after that commit.
   const stage = (events, { sequence = 0 } = {}) => {
     if (closed) return null;
+    // Tracing: a skipped trigger is a flow-trigger-skipped event on the span that recorded the committed event (else the
+    // current one), emitted with the diagnostics once the commit saved. A flow-action job names that span as its staging.
+    const traces = store.traces?.enabled ? store.traces : null,
+      current = traces?.current() ?? null,
+      stagingOf = (event) => (traces ? (store.stagingSpan?.(event) ?? current) : null);
+    let source = null;
     const entries = [],
       notes = [],
       counts = new Map(),
-      note = (code, entry) => notes.push([code, entry]);
+      note = (code, entry) => notes.push([code, entry, code === 'FLOW_TRIGGER_BACKLOG' ? null : stagingOf(source)]);
     for (const event of events) {
       if (event.messageEvent) continue;
+      source = event;
       // A committed custom API action (dataverse-customapi.mjs): one durable job per enabled "When an action is performed" host.
       if (event.operation === 'action') {
         for (const host of hosts.values())
@@ -312,6 +403,7 @@ export function createFlowTriggerRunner({
               columns: { name: host.key, correlationid: event.correlationId ?? null },
               key: host.key,
               input: { InputParameters: event.inputs ?? {}, OutputParameters: event.outputs ?? {} },
+              staging: stagingOf(event),
               event: {},
             });
           }
@@ -403,7 +495,13 @@ export function createFlowTriggerRunner({
     return stageCommittedJobs(store, {
       entries,
       diagnostics: notes,
-      report: ([code, entry]) => record(code, entry),
+      report: ([code, entry, staging]) => {
+        if (typeof staging?.event === 'function')
+          staging.event('flow-trigger-skipped', {
+            attributes: { reason: code, operationKey: entry.operationKey ?? null },
+          });
+        record(code, entry);
+      },
       counts,
       ledger: { runs: chainRuns, accepted: acceptedChains, own },
     });
@@ -480,7 +578,11 @@ export function createFlowTriggerRunner({
     return result;
   };
   // One hosted run: a tracked run (trigger type Recurrence or Automated) in its own transaction, reported by FLOW_TRIGGER_* diagnostics.
-  async function start(host, { input, trigger, wrap = (fn) => store.transact(fn, { cloneResult: false }) }) {
+  // job: the occurrence's job span, failed (with the run's own error) when the run fails.
+  async function start(
+    host,
+    { input, trigger, job = null, wrap = (fn) => store.transact(fn, { cloneResult: false }) },
+  ) {
     const current = candidates().get(host.key);
     if (closed || !current || !eligible(current.item) || flowDefinitionHash(current.definition) !== host.hash) {
       record('FLOW_TRIGGER_STOPPED', {
@@ -498,6 +600,7 @@ export function createFlowTriggerRunner({
       const answer = await runTrackedFlow({
         runs: flowRunsOf(store),
         processId: item.processId,
+        name: workflow.name ?? null,
         trigger,
         definition,
         input,
@@ -512,6 +615,7 @@ export function createFlowTriggerRunner({
         diagnostic: (d) => record(d.code, { ...d, operationKey: item.key, correlationId }),
       });
       record(answer?.status === 'Skipped' ? 'FLOW_TRIGGER_SKIPPED' : 'FLOW_TRIGGER_COMPLETED', {
+        ...flowFacts(workflow, item, null, answer?.status ?? null),
         operationKey: item.key,
         trigger: host.kind,
         correlationId,
@@ -526,9 +630,25 @@ export function createFlowTriggerRunner({
         correlationId,
         error: { code: error.code ?? 'LocalFlowTriggerFailed', message: error.message },
       });
+      job?.fail(error);
       return null;
     }
   }
+  // One hosted occurrence (a recurrence tick, a connector-trigger poll, a pack trigger's fire()): its own job root named
+  // after the flow (the display name alone, D-R3-24), detached from the context that scheduled or fired it (D-R3-6), so it
+  // never inherits an ended span. staging: the running span a fire() came from, which stages the job (explicit parent, staged-by link).
+  const occurrence = (host, attributes, fn, staging = null) =>
+    detached(store, async () => {
+      const name = workflows().get(host.processId)?.name || host.key,
+        job = jobSpan(store, name, staging, { processId: host.processId, ...attributes });
+      try {
+        return await within(store, job, () => fn(job));
+      } finally {
+        job?.end();
+      }
+    });
+  const scheduleOf = ({ frequency, interval, zone = 'UTC', schedule = null }) =>
+    `Every ${interval} ${frequency}${zone && zone !== 'UTC' ? ' ' + zone : ''}${schedule ? ' ' + JSON.stringify(schedule) : ''}`;
   const arm = (host, fn) => {
     const next = nextOccurrence(host.recurrence, now(), host.armedAt);
     host.next = next;
@@ -539,11 +659,23 @@ export function createFlowTriggerRunner({
       });
       return;
     }
+    // An occurrence runs detached (committed-work.mjs): it never joins the context that armed the schedule. Its root names the
+    // trigger (recurrence, or poll for a polling connector trigger), the schedule and the occurrence it stands for.
     host.handle = scheduler().schedule(
       async () => {
         host.handle = null;
         if (hosts.get(host.key) !== host) return;
-        await fn();
+        await occurrence(
+          host,
+          {
+            kind: 'flow-schedule',
+            trigger: host.kind === 'recurrence' ? 'recurrence' : 'poll',
+            schedule: scheduleOf(host.recurrence),
+            scheduledFor: new Date(next).toISOString(),
+            ...(host.connectorId ? { connectorId: host.connectorId, operationId: host.operationId } : {}),
+          },
+          fn,
+        );
         if (hosts.get(host.key) === host) arm(host, fn);
       },
       Math.max(0, next - now()),
@@ -557,11 +689,22 @@ export function createFlowTriggerRunner({
     operationId: host.operationId,
     parameters: structuredClone(host.parameters ?? {}),
     clock: store.clock ?? null,
-    fire: (body) =>
-      start(host, {
-        input: body && typeof body === 'object' && !Array.isArray(body) ? body : {},
-        trigger: 'Automated',
-      }),
+    // A pack trigger's fire(body) may come from a timer, a callback or a request: it runs as its own detached occurrence,
+    // staged by the span it was called from while that span runs (never by an ended one).
+    fire: (body) => {
+      const caller = store.traces?.enabled ? store.traces.current() : null;
+      return occurrence(
+        host,
+        { kind: 'flow-trigger', trigger: 'connector', connectorId: host.connectorId, operationId: host.operationId },
+        (job) =>
+          start(host, {
+            input: body && typeof body === 'object' && !Array.isArray(body) ? body : {},
+            trigger: 'Automated',
+            job,
+          }),
+        caller?.spanId && caller.status === 'running' ? { traceId: caller.traceId, spanId: caller.spanId } : null,
+      );
+    },
   });
   async function startHost(key, { item, definition, trigger }) {
     const host = {
@@ -576,7 +719,7 @@ export function createFlowTriggerRunner({
     hosts.set(key, host);
     if (trigger.kind === 'recurrence') {
       host.recurrence = trigger.recurrence;
-      arm(host, () => start(host, { input: {}, trigger: 'Recurrence' }));
+      arm(host, (job) => start(host, { input: {}, trigger: 'Recurrence', job }));
       return;
     }
     // "When an action is performed": the committed custom API action event (dataverse-customapi.mjs invoke) is staged by stage()
@@ -613,16 +756,17 @@ export function createFlowTriggerRunner({
     }
     if (trigger.polling) {
       host.recurrence = trigger.recurrence;
-      arm(host, async () => {
+      // A poll failure fails the occurrence's job span with the pack's own error, beside the diagnostic.
+      arm(host, async (job) => {
         try {
-          const found = await entry.poll({ ...context(host), subscription: host.subscription });
-          for (const body of Array.isArray(found) ? found : [])
-            await start(host, { input: body, trigger: 'Automated' });
+          const found = await entry.poll({ ...context(host), subscription: host.subscription }),
+            bodies = Array.isArray(found) ? found : [];
+          job?.set({ found: bodies.length });
+          for (const body of bodies) await start(host, { input: body, trigger: 'Automated', job });
         } catch (error) {
-          record('FLOW_TRIGGER_POLL_FAILED', {
-            operationKey: key,
-            error: { code: error.code ?? 'FlowTriggerPollFailed', message: error.message },
-          });
+          const failure = { code: error.code ?? 'FlowTriggerPollFailed', message: error.message };
+          record('FLOW_TRIGGER_POLL_FAILED', { operationKey: key, error: failure });
+          job?.fail(failure);
         }
       });
     }

@@ -9,8 +9,54 @@ function requestError(status, value, label = 'Local runtime request') {
   return Object.assign(new Error(`${label} failed (${status})${detail ? `: ${detail}` : ''}`), {
     status,
     code: value?.error?.code,
+    ...(value?.error?.parameter ? { parameter: value.error.parameter } : {}),
     response: value,
   });
+}
+
+// Socket failures after the runtime accepted the connection (undici and Node codes).
+const CONNECTION_LOST = new Set(['UND_ERR_SOCKET', 'UND_ERR_CLOSED', 'ECONNRESET', 'EPIPE', 'ECONNABORTED']);
+
+// An unknown trace or span answers null, like the in-process trace store.
+const unretained = (error) => {
+  if (error.code === 'TraceNotFound' || error.code === 'SpanNotFound') return null;
+  throw error;
+};
+
+// Query strings for the audit routes: an array traceId is the comma list the route takes.
+const auditQueryOf = (filters = {}) =>
+  new URLSearchParams(
+    Object.entries(filters).map(([key, value]) => [key, Array.isArray(value) ? value.join(',') : String(value)]),
+  );
+// Query strings for the trace routes: a Date keeps its milliseconds (toISOString); undefined and null are left out.
+const traceQuery = (filters = {}) => {
+  const query = new URLSearchParams();
+  for (const [key, value] of filters instanceof URLSearchParams ? filters : Object.entries(filters))
+    if (value !== undefined && value !== null)
+      query.set(key, value instanceof Date ? value.toISOString() : String(value));
+  return query.size ? `?${query}` : '';
+};
+
+// The parsed data of each `event: trace` frame of a server-sent event body.
+async function* traceFrames(body) {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for await (const chunk of body) {
+    buffer += decoder.decode(chunk, { stream: true }).replace(/\r\n?/g, '\n');
+    let end;
+    while ((end = buffer.indexOf('\n\n')) >= 0) {
+      const frame = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      let event = 'message';
+      const data = [];
+      for (const line of frame.split('\n')) {
+        const [, name, value] = /^([^:]*):? ?(.*)$/.exec(line);
+        if (name === 'event') event = value;
+        else if (name === 'data') data.push(value);
+      }
+      if (event === 'trace') yield JSON.parse(data.join('\n'));
+    }
+  }
 }
 
 export function runtimeOrigin(value) {
@@ -51,6 +97,31 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
   }
   origin = runtimeOrigin(origin);
   let cookie = '';
+  // A fetch TypeError named for what happened instead of a bare "fetch failed": a connection the runtime accepted and
+  // then closed or reset (undici `terminated`, UND_ERR_SOCKET, ECONNRESET, EPIPE; any failure while reading a body) is
+  // RuntimeConnectionLost; no connection at all (refused, unresolvable, a bad port) is RuntimeUnreachable.
+  const lost = (cause) =>
+    cause?.message === 'terminated' || CONNECTION_LOST.has(cause?.code) || CONNECTION_LOST.has(cause?.cause?.code);
+  const fetchFailure = (cause, { reading = false } = {}) =>
+    reading || lost(cause)
+      ? Object.assign(
+          new Error(`The Mirage runtime at ${origin} closed the connection before the response completed.`, { cause }),
+          { code: 'RuntimeConnectionLost' },
+        )
+      : Object.assign(new Error(`No Mirage runtime answers at ${origin}; start one or pass --origin.`, { cause }), {
+          code: 'RuntimeUnreachable',
+        });
+  const reach = (url, init) =>
+    fetchImpl(url, init).catch((cause) => {
+      if (init.signal?.aborted || !(cause instanceof TypeError)) throw cause;
+      throw fetchFailure(cause);
+    });
+  // A response body, with a connection lost while reading it reported as RuntimeConnectionLost.
+  const bodyOf = (response, read, signal) =>
+    response[read]().catch((cause) => {
+      if (signal?.aborted || !(cause instanceof TypeError)) throw cause;
+      throw fetchFailure(cause, { reading: true });
+    });
   const request = async (
     route,
     { method = 'GET', body, headers = {}, captureReport = false, timeoutMs = 30000 } = {},
@@ -60,7 +131,7 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
     if (method !== 'GET') headers['x-sim-csrf'] = (await request('/state?summary=1')).csrf;
     const signal = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
     try {
-      const response = await fetchImpl(`${origin}/_sim/api${route}`, {
+      const response = await reach(`${origin}/_sim/api${route}`, {
         method,
         headers: {
           ...(cookie ? { cookie } : {}),
@@ -72,10 +143,14 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
         ...(signal ? { signal } : {}),
       });
       if (response.status === 204) return null;
-      const value = await response.json().catch((error) => {
-        if (signal?.aborted) throw error;
-        return null;
-      });
+      // A body that is not JSON reads as null; a connection lost mid-body is RuntimeConnectionLost.
+      const text = await bodyOf(response, 'text', signal);
+      let value = null;
+      try {
+        value = JSON.parse(text);
+      } catch {
+        /* not JSON: null */
+      }
       if (
         !response.ok &&
         !(captureReport && response.status === 409 && value?.shellProfile && Array.isArray(value.failures))
@@ -106,6 +181,97 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
       ? request(`/${section}/${encodeURIComponent(name)}`, { method: 'PATCH', body: { value } })
       : request(`/${section}`, { method: 'POST', body: { name, value } });
   };
+  // /_sim/api/trace (sim-trace-routes.mjs): the read methods of the in-process simulator.trace, settings, status,
+  // configure and clear, and subscribe over the runtime's /_sim/events trace channel.
+  const traceTree = (traceId) => request(`/trace/id/${encodeURIComponent(traceId)}`).catch(unretained);
+  const traceSpan = (spanId) => request(`/trace/span/${encodeURIComponent(spanId)}`).catch(unretained);
+  const trace = Object.freeze({
+    query: (filters) => request(`/trace${traceQuery(filters)}`),
+    spans: (filters) => request(`/trace/spans${traceQuery(filters)}`),
+    tree: traceTree,
+    span: traceSpan,
+    // The retained spans from the trace root down to spanId (inclusive); [] when the span is not retained.
+    async ancestry(spanId) {
+      const span = await traceSpan(spanId);
+      const tree = span && (await traceTree(span.traceId));
+      if (!tree) return span ? [span] : [];
+      const byId = new Map(tree.spans.map((record) => [record.spanId, record]));
+      const chain = [];
+      for (let record = byId.get(spanId); record; record = byId.get(record.parentSpanId)) chain.unshift(record);
+      return chain;
+    },
+    stats: (filters) => request(`/trace/stats${traceQuery(filters)}`),
+    // format json (the default) and otlp answer the parsed document; ndjson answers the { trace, spans } lines.
+    async export(filters = {}) {
+      const query = traceQuery(filters);
+      const response = await reach(`${origin}/_sim/api/trace/export${query}`, {
+        headers: cookie ? { cookie } : {},
+        redirect: 'error',
+      });
+      const text = await bodyOf(response, 'text');
+      if (!response.ok) throw requestError(response.status, /^\s*\{/.test(text) ? JSON.parse(text) : null);
+      return new URLSearchParams(query).get('format') === 'ndjson'
+        ? text
+            .split('\n')
+            .filter(Boolean)
+            .map((line) => JSON.parse(line))
+        : JSON.parse(text);
+    },
+    settings: async () => (await request('/trace/settings')).settings,
+    status: async () => (await request('/trace/settings')).status,
+    configure: async (partial) => (await request('/trace/settings', { method: 'PUT', body: partial })).settings,
+    clear: () => request('/trace/clear', { method: 'POST', body: {} }),
+    // Resolves with status() once the runtime wrote every queued persisted line and handed its SSE frames to the sockets.
+    flush: () => request('/trace/flush', { method: 'POST', body: {} }),
+    // listener(event) receives each trace frame: { type: 'connected', status, events, traceId } first, then payload-free
+    // 'span-start', 'span-end' and 'trace-end' frames (only the `events` types and only trace `traceId` when given; the
+    // runtime filters them). Returns unsubscribe(); unsubscribe.closed resolves when the stream ends (unsubscribe, signal
+    // or runtime shutdown) and rejects only when the stream cannot be opened.
+    subscribe(listener, { signal, events, traceId } = {}) {
+      if (typeof listener !== 'function') throw new TypeError('Trace listeners must be functions.');
+      const controller = new AbortController();
+      let stopped = false;
+      const unsubscribe = () => {
+        stopped = true;
+        controller.abort();
+      };
+      signal?.addEventListener('abort', unsubscribe, { once: true });
+      if (signal?.aborted) unsubscribe();
+      // Resolves when the stream ends; rejects when it cannot be opened or the listener throws.
+      const closed = (async () => {
+        try {
+          const query = new URLSearchParams({ channels: 'trace' });
+          if (events) query.set('events', [].concat(events).join(','));
+          if (traceId) query.set('traceId', traceId);
+          const response = await reach(`${origin}/_sim/events?${query}`, {
+            headers: { accept: 'text/event-stream', ...(cookie ? { cookie } : {}) },
+            redirect: 'error',
+            signal: controller.signal,
+          });
+          if (!response.ok)
+            throw requestError(response.status, await response.json().catch(() => null), 'Trace stream');
+          const frames = traceFrames(response.body);
+          for (;;) {
+            let next;
+            try {
+              next = await frames.next();
+            } catch {
+              break; // a runtime that stops (or unsubscribe) ends the body mid-read: the stream has ended
+            }
+            if (next.done) break;
+            listener(next.value);
+          }
+        } catch (error) {
+          if (!stopped) throw error;
+        } finally {
+          controller.abort();
+          signal?.removeEventListener('abort', unsubscribe);
+        }
+      })();
+      closed.catch(() => {}); // a caller that never awaits closed sees no unhandled rejection
+      return Object.assign(unsubscribe, { closed });
+    },
+  });
   return Object.freeze({
     origin,
     createSession: (options = {}) =>
@@ -124,9 +290,32 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
     state: ({ summary = false } = {}) => request(`/state${summary ? '?summary=1' : ''}`),
     witness: ({ tables } = {}) =>
       request(`/verification-witness?tables=${encodeURIComponent(Array.isArray(tables) ? tables.join(',') : '')}`),
-    audit: (filters = {}) => request(`/audit?${new URLSearchParams(filters)}`),
-    exportAudit: (filters = {}) => request(`/audit/export?${new URLSearchParams(filters)}`),
-    diagnostics: () => request('/diagnostics'),
+    // traceId may be one id, a comma list or an array (at most 200).
+    audit: (filters = {}) => request(`/audit?${auditQueryOf(filters)}`),
+    exportAudit: (filters = {}) => request(`/audit/export?${auditQueryOf(filters)}`),
+    trace,
+    diagnostics: (filters = {}) => request(`/diagnostics${traceQuery(filters)}`),
+    // The runtime log stream's retained lines (GET /_sim/api/logs): { items, latestSequence, oldestSequence, retained,
+    // dropped, retain, more }; type may be a list.
+    logs: ({ since, limit, type, traceId } = {}) =>
+      request(`/logs${traceQuery({ since, limit, type: Array.isArray(type) ? type.join(',') : type, traceId })}`),
+    // The activity export bundle (GET /_sim/api/activity/export?format=bundle): its documents in order, each with `kind`
+    // (bundle, activity | otlp, audit, log, finding, evidence, end). filters: any trace filter, traces (ndjson | otlp), limit.
+    async exportBundle(filters = {}) {
+      const response = await reach(
+        `${origin}/_sim/api/activity/export${traceQuery({ ...filters, format: 'bundle' })}`,
+        {
+          headers: cookie ? { cookie } : {},
+          redirect: 'error',
+        },
+      );
+      const text = await bodyOf(response, 'text');
+      if (!response.ok) throw requestError(response.status, /^\s*\{/.test(text) ? JSON.parse(text) : null);
+      return text
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    },
     platformSettings: () => request('/platform-settings'),
     setPlatformSettings: (overrides) => request('/platform-settings', { method: 'PATCH', body: overrides }),
     resetPlatformSetting: (key) => request(`/platform-settings/${encodeURIComponent(key)}`, { method: 'DELETE' }),
