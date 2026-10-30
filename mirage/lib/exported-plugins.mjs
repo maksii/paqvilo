@@ -505,14 +505,17 @@ const handlerOf = (handlers, step) => handlers.get(step.id) ?? handlers.get(step
 // deeper (Depth). The counter is the one CLR steps use (plugin-clr.mjs pluginExecutionDepth), so a JS/CLR chain shares one
 // Depth. Handlers must return synchronously, so it is balanced within one call stack. Depth past PLUGIN_MAX_DEPTH fails.
 // A plug-in type handler's exception is the InvalidPluginExecutionException fault: 0x80040265 with the SubErrorCode native sends.
-const pluginFault = (cause, item) =>
+// A step-id handler's exception is one only when it says so ({ pluginFault: 'InvalidPluginExecutionException' }, as for custom
+// API handlers); any other throw is an ordinary exception: 400 0x80040224 with the authored message (native faults: a plug-in's
+// ordinary exception during Update PreOperation answered 400 0x80040224 'Scenario ordinary exception').
+const pluginFault = (cause, item, fault = true) =>
   pluginFailure(
     {
       message: cause?.message ?? String(cause),
       errorCode: cause?.errorCode,
-      pluginFault: 'InvalidPluginExecutionException',
+      ...(fault ? { pluginFault: 'InvalidPluginExecutionException' } : {}),
     },
-    { name: item.name, id: item.id, type: item.typeName, traces: [] },
+    { name: item.name, id: item.id, type: item.typeName ?? item.name ?? item.id, traces: [], label: item.name },
     0,
   );
 // The IPluginExecutionContext-like context a plug-in type handler receives: registered images keyed by alias, and the
@@ -1990,7 +1993,10 @@ export function runPluginPhase({
           note('PLUGIN_STEP_SIMULATED', `Local ${item.mode} completed; compiled .NET was not executed.`);
       } catch (cause) {
         // A plug-in type handler's exception surfaces as the documented fault; the write rolls back with the throw.
-        const failure = typed && !(cause instanceof DataError) ? pluginFault(cause, item) : cause;
+        const failure =
+          cause instanceof DataError || item.mode !== 'handler'
+            ? cause
+            : pluginFault(cause, item, typed || cause?.pluginFault === 'InvalidPluginExecutionException');
         if (executed) journal(failure);
         store?.counters?.increment('plugins.failures');
         note('PLUGIN_STEP_REJECTED', failure.message);

@@ -351,8 +351,19 @@ test('webhook parent selection excludes async PreValidation snapshots and retain
     for (const stage of [20, 40]) {
       const sync = remoteExecutionContext(store, facts(operation, { stage, initialFrame }));
       assert.equal(sync.ParentContext.Stage, 10);
-      const async = remoteExecutionContext(store, facts(operation, { stage, initialFrame, asyncExecution: true }));
-      assert.equal(async.ParentContext.MessageName, 'x_Outer');
+      // An asynchronous record job reports its own main operation (stage 30, mode 1) as the parent, as native
+      // asynchronous web hook payloads do (dataverse-recorder crud/async/upsert web hook events).
+      const async = remoteExecutionContext(
+        store,
+        facts(operation, {
+          stage,
+          initialFrame: { ...initialFrame, createdOn: '2001-02-03T04:05:06' },
+          asyncExecution: true,
+        }),
+      );
+      assert.equal(async.ParentContext.MessageName, operation[0].toUpperCase() + operation.slice(1));
+      assert.equal(async.ParentContext.Stage, 30);
+      assert.equal(async.ParentContext.Mode, 1);
       const modeOne = remoteExecutionContext(
         store,
         facts(operation, {

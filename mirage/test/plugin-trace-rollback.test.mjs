@@ -1,3 +1,4 @@
+// @test-kind compatibility: Learn plug-in tracing (plugintracelog survives the rolled-back request) and plug-in error codes; the ordinary-exception code is the native faults.json fact
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -94,7 +95,10 @@ test('a rejected plugin leaves its correlated trace queryable over Web API while
     { 'x-ms-correlation-request-id': CORRELATION },
   );
   assert.ok(response.status >= 400);
-  assert.equal((await response.json()).error.code, '0x80040216');
+  // An ordinary exception from a step handler is the platform's unhandled plug-in fault (native faults.json: a
+  // plug-in's ordinary exception answered 400 0x80040224 with its message).
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error.code, '0x80040224');
   const logs = await json(await request('GET', `/plugintracelogs?$filter=correlationid eq ${CORRELATION}`), 200);
   assert.equal(logs.value.length, 1);
   assert.equal(logs.value[0].messageblock, 'Synthetic rejection detail');

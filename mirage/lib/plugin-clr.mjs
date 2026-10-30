@@ -8,6 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { Worker, MessageChannel, receiveMessageOnPort } from 'node:worker_threads';
 import { DataError } from './data-error.mjs';
+import { pluginFailure } from './plugin-fault.mjs';
 import { bypassStepIds as parseBypassStepIds } from './plugin-bypass.mjs';
 import { pluginInvocationDepth, pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
 import {
@@ -88,7 +89,7 @@ process.once('exit', () => {
       }
 });
 // One Depth per synchronous execution chain, shared by CLR steps and JavaScript handlers (exported-plugins.mjs), so an
-// alternating JS/CLR chain is capped at eight in total and each side reports the same contiguous Depth. Both paths run
+// alternating JS/CLR chain is capped at PLUGIN_MAX_DEPTH in total and each side reports the same contiguous Depth. Both paths run
 // synchronously (CLR waits with Atomics.wait), so the counter is balanced within one call stack.
 export const pluginExecutionDepth = () => executionDepth;
 export const enterPluginExecution = () => ++executionDepth;
@@ -99,7 +100,7 @@ function clrTimeout(descriptor) {
   const value = descriptor.timeoutMs;
   if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
     fail('CLR timeoutMs must be a positive safe integer in milliseconds.');
-  return Math.max(100, Math.min(value ?? 2000, CLR_MAX_TIMEOUT_MS));
+  return Math.max(100, Math.min(value ?? CLR_MAX_TIMEOUT_MS, CLR_MAX_TIMEOUT_MS));
 }
 export function validateClrDescriptor(value) {
   if (!value || typeof value !== 'object' || value.trust !== 'execute-local-assembly')
@@ -1529,6 +1530,19 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
     port1.postMessage({ kind: 'invoke', invocationId, input: invocation, timeout });
   } else worker.on('error', () => {});
   const deadline = Date.now() + timeout + 1000;
+  // A step that outlives its deadline is the platform's unhandled timeout fault (400 0x80040224, the message names the type),
+  // as for a custom API (plugin-fault.mjs); the code stays LocalPluginTimeout for local callers.
+  const traces = [];
+  const timedOut = () => {
+    const owner = input.context?.OwningExtension;
+    const failure = pluginFailure(
+      { timedOut: true },
+      { name: owner?.name, id: owner?.id, type: runtime.descriptor.typeName, traces, label: owner?.name ?? '' },
+      timeout,
+    );
+    failure.code = 'LocalPluginTimeout';
+    return failure;
+  };
   let calls = 0,
     result,
     ownedPid = session?.pid,
@@ -1579,8 +1593,10 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
         } else if (message.kind === 'trace') {
           if (typeof message.message !== 'string' || message.message.length > 16384)
             fail('CLR trace exceeds the local limit.', 'LocalPluginOutputLimit', 413);
+          traces.push(message.message);
           diagnostic({ code: 'PLUGIN_CLR_TRACE', message: message.message });
         } else if (message.kind === 'failure') {
+          if (message.code === 'LocalPluginTimeout') throw timedOut();
           const details = {
             sourceException: {
               type: message.exceptionType ?? null,
@@ -1605,7 +1621,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
             details.innerCode = '0x80040224';
           throw new DataError(
             message.message,
-            message.code === 'LocalPluginTimeout' ? 504 : 400,
+            400,
             details.innerCode === '0x8009000c' ? 'PluginTransactionAborted' : (message.code ?? 'PluginValidation'),
             details,
           );
@@ -1615,8 +1631,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
         } else fail('Unknown CLR protocol result.', 'LocalPluginProtocol', 500);
       }
       if (result) break;
-      if (Date.now() > deadline)
-        fail('CLR host/worker did not complete within the configured deadline.', 'LocalPluginTimeout', 504);
+      if (Date.now() > deadline) throw timedOut();
       Atomics.wait(flags, 0, 0, 20);
       Atomics.store(flags, 0, 0);
     }
@@ -2047,7 +2062,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     answer.context.ParentContext = mainOperationParent({
       frame,
       context: answer.context,
-      parent: asynchronous ? (frame.mainOuterParent ?? null) : parent,
+      parent: asynchronous ? (frame.mainOuterParent ?? frame.asyncCallerParent ?? null) : parent,
       callerUserId,
       objectId,
       inputs: () => ({
@@ -2088,11 +2103,17 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       ...recordToSdkEntity(store, entity, { [primary]: record[primary] }).attributes,
     };
   if (!asynchronous && crud && stage !== 10) frame.mainOuterParent ??= parent ? cloneStateData(parent) : null;
-  // An asynchronous job sees the committed synchronous chain as its own operation: every level reports the job's
-  // mode, depth, message, row, step, operation id and time, outside a transaction.
+  // An asynchronous job sees the synchronous step parent chain as its own operation (plugin-sdk-parent.mjs).
   if (asynchronous)
-    answer.context.ParentContext = asynchronousParentChain(answer.context.ParentContext, answer.context);
-  answer.context.ParentContext = asyncMultiplePluginParent(frame, operation, entity) ?? answer.context.ParentContext;
+    answer.context.ParentContext = asynchronousParentChain(
+      answer.context.ParentContext ?? frame.asyncCallerParent,
+      answer.context,
+    );
+  const multipleParent = asyncMultiplePluginParent(frame, operation, entity);
+  if (multipleParent)
+    answer.context.ParentContext = asynchronousParentChain(multipleParent, answer.context, {
+      primaryEntityId: multipleParent.values.PrimaryEntityId,
+    });
   formatPipelineTargets(store, {
     entity,
     operation,

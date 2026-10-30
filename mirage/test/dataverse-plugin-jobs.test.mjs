@@ -135,7 +135,7 @@ describe('async steps write asyncoperation system jobs when the Dataverse API is
     assert.ok(Date.parse(job.startedon) <= Date.parse(job.completedon), `${job.startedon} .. ${job.completedon}`);
   });
 
-  it('a failing run ends Completed/Failed with the message, the friendly message and error code 0 for an error without a Dataverse code', async () => {
+  it('a failing run ends Completed/Failed with the message, the friendly message and the ordinary plug-in exception code', async () => {
     const handlers = pluginHandlers([
       {
         id: 'invented',
@@ -154,7 +154,9 @@ describe('async steps write asyncoperation system jobs when the Dataverse API is
     assert.equal(job.statuscode, 31);
     assert.equal(job.message, 'Invented asynchronous rejection');
     assert.equal(job.friendlymessage, 'Invented asynchronous rejection');
-    assert.equal(job.errorcode, 0);
+    // A step handler's ordinary exception is the unhandled plug-in fault 0x80040224 (native faults.json ordinary
+    // exception), so its job carries that code.
+    assert.equal(job.errorcode, 0x80040224 | 0);
   });
 
   it('asyncautodelete removes a succeeded job row only, and a failed one stays', async () => {

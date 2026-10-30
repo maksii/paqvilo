@@ -137,11 +137,21 @@ export function mainOperationParent({ frame, context, parent, callerUserId, obje
   };
 }
 
-/** An asynchronous job's view of the committed synchronous parent chain: native keeps each level's stage, inputs,
- * shared variables and identities, but reports the job's mode, depth, message, row, step (unnamed), operation id
- * and creation time, outside a transaction. */
-export function asynchronousParentChain(node, context) {
-  if (!node?.values) return node ?? null;
+/** Native async parents hold at most three frames (corpus depth.json: Depth 2-10 jobs all report X/30 < X/40 < X/30). */
+const ASYNC_PARENT_FRAMES = 3;
+
+/** An asynchronous job's ParentContext: the parent chain its message's synchronous PostOperation step sees, cut after
+ * three frames. Each frame keeps its stage, inputs, outputs, shared variables, entity name and identities, but reports
+ * the job's mode, depth, message, operation row (a bridged multiple's single row), isolation, step (unnamed),
+ * operation id and creation time, outside a
+ * transaction, with no images (native corpus: depth, bulk, faults, ownerAndState, customApi asynchronous contexts and
+ * their web hook copies). */
+export function asynchronousParentChain(
+  node,
+  context,
+  { remaining = ASYNC_PARENT_FRAMES, primaryEntityId = context.PrimaryEntityId } = {},
+) {
+  if (!node?.values || remaining <= 0) return null;
   return {
     $type: 'ExecutionContext',
     values: {
@@ -149,12 +159,31 @@ export function asynchronousParentChain(node, context) {
       Mode: 1,
       Depth: context.Depth,
       MessageName: context.MessageName,
-      PrimaryEntityId: cloneStateData(context.PrimaryEntityId),
+      PrimaryEntityId: cloneStateData(primaryEntityId),
       IsInTransaction: false,
+      IsolationMode: context.IsolationMode,
       OwningExtension: cloneStateData(context.OwningExtension),
       OperationId: cloneStateData(context.OperationId),
       OperationCreatedOn: cloneStateData(context.OperationCreatedOn),
-      ParentContext: asynchronousParentChain(node.values.ParentContext, context),
+      PreEntityImages: { $type: 'EntityImageCollection', values: {} },
+      PostEntityImages: { $type: 'EntityImageCollection', values: {} },
+      PreEntityImagesCollection: { $type: 'EntityImageCollectionArray', values: [] },
+      PostEntityImagesCollection: { $type: 'EntityImageCollectionArray', values: [] },
+      ParentContext: asynchronousParentChain(node.values.ParentContext, context, {
+        remaining: remaining - 1,
+        primaryEntityId,
+      }),
     },
+  };
+}
+
+/** The caller chain a committed message event keeps for its asynchronous jobs: the synchronous step parent
+ * (store.pluginParentContext, else the invoking plug-in's SDK context), cut to the frames a job can report. */
+export function asyncCallerParent(parent, remaining = ASYNC_PARENT_FRAMES) {
+  if (!parent?.values || remaining <= 0) return null;
+  const { ParentContext: next, ...values } = parent.values;
+  return {
+    $type: 'ExecutionContext',
+    values: { ...cloneStateData(values), ParentContext: asyncCallerParent(next, remaining - 1) },
   };
 }

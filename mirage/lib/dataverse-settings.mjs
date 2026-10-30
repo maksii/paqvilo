@@ -34,6 +34,7 @@ const TOP_KEYS = [
   'auditing',
   'duplicateDetection',
   'pluginTimeoutSeconds',
+  'asyncStartDelayMs',
   'currencyCode',
   'currencySymbol',
   'localeId',
@@ -317,6 +318,9 @@ export function dataverseSettings(value, label = 'dataverse') {
     duplicateDetection: boolean(input.duplicateDetection, `${label}.duplicateDetection`, true),
     // The plug-in execution limit of a custom API's handler; the platform's sandbox limit is 2 minutes.
     pluginTimeoutSeconds: integer(input.pluginTimeoutSeconds, `${label}.pluginTimeoutSeconds`, 120, 1, 3600),
+    // How long an asynchronous plug-in or web hook job waits before it may start. Native start latency varies (1-6 s
+    // observed); 0 starts it on the next scheduler turn. A job regarding a row deleted meanwhile never runs.
+    asyncStartDelayMs: integer(input.asyncStartDelayMs, `${label}.asyncStartDelayMs`, 0, 0, 600000),
     currencyCode: text(input.currencyCode, `${label}.currencyCode`, 'USD', /^[A-Z]{3}$/),
     currencySymbol: text(input.currencySymbol, `${label}.currencySymbol`, '$'),
     localeId: integer(input.localeId, `${label}.localeId`, 1033, 1, 65535),

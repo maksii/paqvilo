@@ -13,8 +13,11 @@ export function initializePluginOperation(frame, store, parent, { createdOn, req
   frame.requestId ??= values?.RequestId?.value ?? requestId ?? (store?.ids ?? systemIds).uuid();
   frame.operationId ??= values?.OperationId?.value ?? frame.requestId;
   frame.correlationId ??= values?.CorrelationId?.value ?? (store?.ids ?? systemIds).uuid();
+  // Native OperationCreatedOn is whole seconds in every context (corpus: all 1736 occurrences).
   frame.createdOn ??=
-    values?.OperationCreatedOn?.value ?? createdOn ?? new Date((store?.clock ?? systemClock).now()).toISOString();
+    values?.OperationCreatedOn?.value ??
+    createdOn ??
+    new Date(Math.floor((store?.clock ?? systemClock).now() / 1000) * 1000).toISOString();
   frame.createdOn = utcClockStamp(frame.createdOn);
   frame.createdOnWire ??=
     values?.OperationCreatedOn?.$type === 'DateTime'

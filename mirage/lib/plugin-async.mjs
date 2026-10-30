@@ -5,7 +5,7 @@ import {
   pluginPhaseMatches,
   pluginStepMatchesAttributes,
 } from './exported-plugins.mjs';
-import { committedJobs, liveJob, stageCommittedJobs, retryCommittedJob } from './committed-work.mjs';
+import { committedJobs, liveJob, stageCommittedJobs, retryCommittedJob, wholeSecond } from './committed-work.mjs';
 import { clockFunction, systemClock, systemIds } from './runtime-clock.mjs';
 import { createRequestContext, runWithRequest } from './request-context.mjs';
 import { recordToSdkEntity } from './plugin-clr.mjs';
@@ -57,6 +57,8 @@ function jobColumns(store, item, event, chain) {
     messagename: event.customApi?.name ?? messageNameOf(event.operation),
     correlationid: chain.id,
     depth: event.frame?.operationDepth ?? chain.depth + 1,
+    // Created when its operation's PostOperation began (data.mjs operationMark).
+    ...(Number.isFinite(event.operationMark?.at) ? { createdon: wholeSecond(event.operationMark.at) } : {}),
     ...(requestId == null ? {} : { requestid: requestId }),
   };
 }
@@ -219,6 +221,9 @@ export function createAsyncPluginRunner({
   limits = {},
   acceptedChains = new Set(),
   systemJobs = () => false,
+  // Calibration knob: milliseconds a staged job waits before it may start (asyncoperation.postponeuntil). Native jobs
+  // started 1.2-6 s after their operation; the default 0 starts them on the next scheduler turn.
+  startDelayMs = () => 0,
 }) {
   const runs = new Map(),
     own = new Set(),
@@ -455,9 +460,10 @@ export function createAsyncPluginRunner({
     jobs.register('plugin', inContext(runStep), { diagnostic }),
     jobs.register('webhook', inContext(deliverWebhook), { concurrent: true, diagnostic }),
   ];
-  // Native corpus (async, crud, ownerAndState): an asynchronous Create/Update step whose row is deleted before its job
-  // runs never executes, also when a retry waits. Inside the deleting transaction, the row's waiting plug-in jobs fail
-  // with the row's absence (the native job's own error text is not recorded).
+  // Native corpus (async, crud, ownerAndState, sdkMessages): an asynchronous step or web hook whose row is deleted before
+  // its job starts never executes, for every message (Create, Update, Assign, SetStateDynamicEntity, sharing), also when a
+  // retry waits; jobs regarding other rows still run. Inside the deleting transaction, every waiting plug-in and web hook
+  // job regarding the row fails with the row's absence (the native job's own state and error text are not recorded).
   const failWaitingWrites = (event) => {
     let idColumn;
     try {
@@ -473,10 +479,9 @@ export function createAsyncPluginRunner({
       const job = rows[index];
       if (
         job.statecode !== 0 ||
-        !['Create', 'Update'].includes(job.messagename) ||
         job.regardingobjectid?.logical_name !== event.entity ||
         !sameId(job.regardingobjectid?.id, rowId) ||
-        !String(job.data ?? '').includes('"kind":"plugin"')
+        !/"kind":"(?:plugin|webhook)"/.test(String(job.data ?? ''))
       )
         continue;
       own.delete(job.asyncoperationid);
@@ -498,8 +503,14 @@ export function createAsyncPluginRunner({
     if (closed) return null;
     const entries = [],
       notes = [],
-      counts = new Map();
-    for (const event of events) {
+      counts = new Map(),
+      delay = Number(startDelayMs()) || 0,
+      postpone =
+        delay > 0 ? { postponeuntil: new Date(clockFunction(store.clock ?? systemClock)() + delay).toISOString() } : {};
+    // Jobs are created in operation order, so an outer operation's jobs precede those of the nested operations its
+    // PostOperation steps ran, although the nested ones committed their events first (native depth.json).
+    const ordered = [...events].sort((a, b) => (a.operationMark?.sequence ?? 0) - (b.operationMark?.sequence ?? 0));
+    for (const event of ordered) {
       if (event.operation === 'delete') failWaitingWrites(event);
       if (closing && sequence > stopSequence && !acceptedChains.has(event.chain?.id)) {
         notes.push({
@@ -625,7 +636,7 @@ export function createAsyncPluginRunner({
         entries.push({
           id: (store.ids ?? systemIds).uuid(),
           kind: item.mode === 'webhook' ? 'webhook' : 'plugin',
-          columns: jobColumns(store, item, invocation, chain),
+          columns: { ...jobColumns(store, item, invocation, chain), ...postpone },
           itemId: item.id,
           chain,
           event: invocation,

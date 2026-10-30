@@ -384,8 +384,10 @@ namespace Invented {public sealed class Original:IPlugin {public void Execute(IS
     try {
       await assert.rejects(store.create('widgets', { title: 'timeout' }, editor), (error) => {
         assert.equal(error.code, 'LocalPluginTimeout');
-        assert.equal(error.status, 504);
-        return /timeout|deadline/i.test(error.message);
+        // The platform's unhandled timeout fault, as for a custom API (Learn: 2-minute plug-in limit, 0x80040224).
+        assert.equal(error.status, 400);
+        assert.equal(error.details?.innerCode, '0x80040224');
+        return /System\.TimeoutException: .* within the [\d.]+-second limit/.test(error.message);
       });
       assert.deepEqual(store.snapshot(), timeoutBefore);
     } finally {

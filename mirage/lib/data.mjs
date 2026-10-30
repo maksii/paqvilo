@@ -65,7 +65,12 @@ import { recordToSdkEntity, recordToSdkReadEntity, sdkQueryParameters, executeSd
 import { queryExpressionToFetch, fetchResultToSdkCollection } from './plugin-sdk-query.mjs';
 import { sdkValueToRecord } from './local-organization-service.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
-import { assertPluginExecutionActive, pluginInvocationDepth } from './plugin-execution-lifetime.mjs';
+import {
+  assertPluginExecutionActive,
+  pluginInvocationDepth,
+  pluginInvocationSdkParent,
+} from './plugin-execution-lifetime.mjs';
+import { asyncCallerParent } from './plugin-sdk-parent.mjs';
 import { runStateMessage } from './plugin-platform-messages.mjs';
 import {
   storeOperationFields,
@@ -2219,6 +2224,12 @@ export class DataStore {
     this.deleteGuards.add(fn);
     return () => this.deleteGuards.delete(fn);
   }
+  /** When and in which order an operation's PostOperation began: native creates its asynchronous jobs then, so a nested
+   * operation's job is created after its caller's (corpus depth.json: job createdon and ids rise with Depth). */
+  operationMark() {
+    this.operationSequence = (this.operationSequence ?? 0) + 1;
+    return { at: this.clock.now(), sequence: this.operationSequence };
+  }
   recordCommittedEvent(entity, operation, row, attributes, details = {}) {
     if (
       !this.mutationObservers?.size &&
@@ -2236,7 +2247,12 @@ export class DataStore {
       frame: clone(details.frame ?? this.pluginFrames?.get(row) ?? {}),
       chain: this.flowChain ? clone(this.flowChain) : null,
       correlationId: currentRequest()?.correlationId ?? null,
+      operationMark: details.operationMark ?? this.operationMark(),
     };
+    // The operation's synchronous caller chain, for its asynchronous jobs' ParentContext (plugin-sdk-parent.mjs
+    // asynchronousParentChain): a named message's steps see it directly, a record operation under its main operation.
+    if (event.frame.asyncCallerParent === undefined)
+      event.frame.asyncCallerParent = asyncCallerParent(this.pluginParentContext ?? pluginInvocationSdkParent(this));
     for (const observer of details.messageEvent ? [] : (this.mutationObservers ?? [])) {
       const matched = observer.matches ? observer.matches(clone(event)) : true;
       if (matched && typeof matched.then === 'function') {
@@ -3791,8 +3807,29 @@ export class DataStore {
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,
       });
-      if (this.committedEventCandidates) this.recordCommittedEvent(entity, 'retrievemultiple', record, [], readEvent);
-      else if (this.commitStagers?.size)
+      if (this.committedEventCandidates) {
+        this.recordCommittedEvent(entity, 'retrievemultiple', record, [], readEvent);
+        // The read itself completed outside the transaction (IsInTransaction false): a later rollback of the
+        // enclosing request does not withdraw its asynchronous job (native faults: a failed Upsert's existence read
+        // still ran its asynchronous RetrieveMultiple step).
+        if (this.commitStagers?.size) {
+          const deferred = clone(readEvent),
+            readRecord = clone(record);
+          deferred.frame.asyncCallerParent ??= asyncCallerParent(
+            this.pluginParentContext ?? pluginInvocationSdkParent(this),
+          );
+          this.onRollback(() =>
+            this.transact(() => this.recordCommittedEvent(entity, 'retrievemultiple', readRecord, [], deferred), {
+              skipSaveIfUnchanged: true,
+            }).catch((error) => {
+              (this.committedEventErrors ??= []).push({
+                code: error.code ?? 'CommitStagerError',
+                message: error.message,
+              });
+            }),
+          );
+        }
+      } else if (this.commitStagers?.size)
         this.transact(() => this.recordCommittedEvent(entity, 'retrievemultiple', clone(record), [], readEvent), {
           skipSaveIfUnchanged: true,
         }).catch((error) => {
@@ -4921,7 +4958,8 @@ export class DataStore {
         pluginTarget[name] = clone(value);
     const asyncSourceParent = committedPluginParent(this, m, 'create', pluginTarget, row, options),
       asyncTarget = clone(pluginTarget),
-      beforePost = prePostOperationFrame(this.pluginFrames?.get(row));
+      beforePost = prePostOperationFrame(this.pluginFrames?.get(row)),
+      operationMark = this.operationMark();
     // Values the main operation derived after PreOperation (exchangerate, <money>_base) belong to the Target the
     // asynchronous steps see (native crud: asynchronous Create Target carries them).
     const queuedTarget = beforePost.inputParameters?.values?.Target;
@@ -4952,6 +4990,7 @@ export class DataStore {
         target: asyncTarget,
         previous: null,
         identity,
+        operationMark,
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,
         frame: queuedFrame(this.pluginFrames?.get(row), beforePost, asyncSourceParent),
@@ -5108,7 +5147,8 @@ export class DataStore {
     const asyncSourceParent = committedPluginParent(this, mapping, 'update', target, row, options),
       asyncTarget = committedTarget(),
       submitted = Object.keys(target),
-      beforePost = prePostOperationFrame(this.pluginFrames?.get(row));
+      beforePost = prePostOperationFrame(this.pluginFrames?.get(row)),
+      operationMark = this.operationMark();
     if (isElastic(mapping)) {
       this.recordCommittedEvent(mapping.logicalName, 'update', row, Object.keys(target), {
         target: committedTarget(),
@@ -5126,6 +5166,7 @@ export class DataStore {
         target: asyncTarget,
         previous,
         identity,
+        operationMark,
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,
         frame: queuedFrame(this.pluginFrames?.get(row), beforePost, asyncSourceParent),
@@ -5389,12 +5430,14 @@ export class DataStore {
       });
       this.checkpointElastic(mapping, row, true);
     }
+    const operationMark = this.operationMark();
     yield [mapping, 'delete', 40, target, row, row, identity, attributes, options];
     if (!isElastic(mapping))
       this.recordCommittedEvent(mapping.logicalName, 'delete', row, attributes, {
         target,
         previous: row,
         identity,
+        operationMark,
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,
       });
