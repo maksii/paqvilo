@@ -84,9 +84,13 @@ for (const moment of ['after start', 'during start'])
     const [started, report] = written.trim().split('\n').map(JSON.parse);
     t.diagnostic(JSON.stringify(report));
     if (moment === 'after start') assert.equal(started.cliClosed, true, 'the CLI was observed to close');
-    assert.equal(trackedCliEnded(started.cli, started.cliClosed), true, 'the tracked CLI ended');
     // Once a child closes, Windows can reuse its PID for an unrelated process. Match the unique workspace instead.
     const named = await processesNaming(directory);
+    assert.equal(
+      trackedCliEnded(started.cli, started.cliClosed, (pid) => named.includes(pid)),
+      true,
+      'the tracked CLI ended',
+    );
     assert.equal(named.includes(started.cli), false, 'the reaper waited for the CLI belonging to this workspace');
     if (moment === 'after start') {
       assert.equal(typeof started.runtime, 'number', 'the CLI started a runtime');
@@ -122,4 +126,19 @@ test('a live unrelated process does not count as a workspace CLI when a PID is r
   const named = await processesNaming(directory);
   assert.equal(named.includes(matching.pid), true, 'a live process naming the workspace is found');
   assert.equal(named.includes(child.pid), false, 'a live unrelated process is excluded');
+  assert.equal(
+    trackedCliEnded(child.pid, false),
+    false,
+    'raw numeric liveness alone cannot prove that a reused PID belongs to the tracked CLI',
+  );
+  assert.equal(
+    trackedCliEnded(child.pid, false, (pid) => named.includes(pid)),
+    true,
+    'a live unrelated process cannot revive the ended workspace CLI',
+  );
+  assert.equal(
+    trackedCliEnded(matching.pid, false, (pid) => named.includes(pid)),
+    false,
+    'an actual live workspace CLI must still be reported as running',
+  );
 });
