@@ -1818,8 +1818,8 @@ export function createRecordHandlers({
   // final row: platform values derived from it, such as the exchange rate and base amounts (dataverse-currency.mjs).
   const mainOperation = (c) =>
     hookList('mainOperation').length
-      ? (mapping, operation, row, previous, target) =>
-          runHooks('mainOperation', c, mapping, { operation, row, previous, target })
+      ? (mapping, operation, row, previous, target, request = {}) =>
+          runHooks('mainOperation', c, mapping, { operation, row, previous, target, ...request })
       : undefined;
   const derivedCreateColumns = new WeakMap();
   const createOptions = (c, extra = {}, data) =>

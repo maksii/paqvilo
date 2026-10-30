@@ -4838,7 +4838,7 @@ export class DataStore {
       };
     }
     yield [m, 'create', 20, pluginTarget, row, null, identity, changedAttributes, options];
-    options.mainOperation?.(m, 'create', row, null, pluginTarget);
+    options.mainOperation?.(m, 'create', row, null, pluginTarget, { identity, options });
     const effects = this.applyPlugins(m.logicalName, 'create', row, null, identity);
     assertAttachmentPolicy(this.state, m.logicalName, row);
     assertUniqueIdentity();

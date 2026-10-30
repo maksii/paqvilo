@@ -14,8 +14,10 @@ const messages = new Set([
 ]);
 // Named platform messages with their own local pipeline (plugin-platform-messages.mjs): issued by a plug-in through the
 // SDK, an Update setting statecode (SetStateDynamicEntity) and Web API DeleteMultiple on a standard table (PreValidation
-// before the native refusal). Their other entry points (SOAP, Web API actions) still refuse their steps.
+// before the native refusal), and RetrieveExchangeRate, which a Create writing a money value issues at internal stage 25.
+// Their other entry points (SOAP, Web API actions) still refuse their steps.
 const PLATFORM_MESSAGES = new Set([
+  'retrieveexchangerate',
   'assign',
   'setstatedynamicentity',
   'grantaccess',

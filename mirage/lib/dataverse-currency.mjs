@@ -23,6 +23,7 @@
 import { DataError } from './data-error.mjs';
 import { fieldKind } from './dataverse-values.mjs';
 import { isExactNumeric } from './exact-numeric.mjs';
+import { runRetrieveExchangeRate } from './plugin-platform-messages.mjs';
 
 const CURRENCY_TABLE = 'transactioncurrency';
 const ORGANIZATION_TABLE = 'organization';
@@ -154,7 +155,7 @@ function stamp(api, state, mapping, { operation: _operation, data, existing }) {
 // The main operation derives the exchange rate and base amounts from the row as PreOperation left it (native Create:
 // they first appear in the PostOperation Target). An update re-derives them only when it writes a money column or the
 // currency; clearing a money value clears its base amount.
-function settle(api, mapping, { operation, row, target }) {
+function settle(api, mapping, { operation, row, target, identity, options }) {
   const money = moneyColumnsOf(api, mapping.logicalName);
   if (!money.length) return;
   const touched = operation === 'create' ? null : new Set(Object.keys(target ?? {}));
@@ -164,7 +165,11 @@ function settle(api, mapping, { operation, row, target }) {
   if (!id || (touched && !touched.has('transactioncurrencyid') && !money.some(([name]) => touched.has(name)))) return;
   const currency = currencyById(api, id);
   if (!currency) throw notFound(id);
-  const rate = rateOf(currency, baseCurrencyOf(api));
+  let rate = rateOf(currency, baseCurrencyOf(api));
+  // A Create that writes a money value runs the platform's RetrieveExchangeRate sub-operation (internal stage 25) with
+  // its own plug-in pipeline; its ExchangeRate output prices the base amounts (recorded native crud).
+  if (operation === 'create' && money.some(([name]) => !empty(row[name])))
+    rate = runRetrieveExchangeRate(api.store, { mapping, row, target, currencyId: id, rate, identity, options });
   row.exchangerate = rate;
   for (const [name, definition] of money) {
     if (empty(row[name])) continue;

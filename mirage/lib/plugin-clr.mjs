@@ -18,6 +18,7 @@ import {
   selectSdkEntryParent,
 } from './plugin-sdk-parent.mjs';
 import { delegatedPluginParent } from './plugin-delegation.mjs';
+import { internalStageContext, internalStageSource, internalStepReference } from './plugin-internal-stage.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { localOrganizationService, validateServiceProfile, sdkValueToRecord } from './local-organization-service.mjs';
 import {
@@ -1663,6 +1664,26 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
   };
 }
 export function clrContext({ runtime, store, step, entity, operation, stage, target, record, previous, frame, depth }) {
+  // A message an internal platform stage issues (plugin-internal-stage.mjs) sees the issuing operation's PreOperation
+  // context, as a PreOperation step would see it then, reported as that stage: built once, kept for later stages.
+  const internal = !frame.internalParentBuilt && internalStageSource(record);
+  if (internal) {
+    const issuing = clrContext({
+      runtime,
+      store,
+      step: { ...internalStepReference(internal.owner, internal.message), contract: { mode: 0 } },
+      entity: internal.entity,
+      operation: internal.operation,
+      stage: 20,
+      target: internal.target,
+      record: internal.record,
+      previous: null,
+      frame: internal.frame,
+      depth,
+    });
+    frame.delegatedParentContext = internalStageContext(clrSdkEntryContext(issuing), internal.stage);
+    frame.internalParentBuilt = true;
+  }
   const descriptor = runtime.descriptor,
     context = descriptor.context,
     parent = frame.delegatedParentContext ?? store.pluginParentContext ?? pluginInvocationSdkParent(store),

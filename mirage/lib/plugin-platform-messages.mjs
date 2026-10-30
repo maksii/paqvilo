@@ -7,7 +7,9 @@ import { DataError } from './data-error.mjs';
 import { cloneStateData } from './state-clone.mjs';
 import { initializePluginOperation } from './plugin-operation-context.mjs';
 import { pluginInvocationDepth, pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
-import { PLUGIN_DEPTH_MESSAGE, PLUGIN_MAX_DEPTH } from './plugin-clr.mjs';
+import { PLUGIN_DEPTH_MESSAGE, PLUGIN_MAX_DEPTH, recordToSdkEntity } from './plugin-clr.mjs';
+import { mainOperationParent } from './plugin-sdk-parent.mjs';
+import { internalStepReference, setInternalStageSource } from './plugin-internal-stage.mjs';
 import { authorizeGrant } from './local-organization-service.mjs';
 import { ACCESS_RIGHTS, createPrincipals, grantAccessNow, revokeAccessNow } from './dataverse-security.mjs';
 
@@ -103,28 +105,37 @@ function runMessagePipeline(
     // A message the platform refuses after PreValidation (DeleteMultiple on a standard table): only stage 10 runs, and
     // main runs the per-record PreValidation it delegates, with the stage-10 context as their parent.
     preValidationOnly = false,
+    // A message an internal platform stage issues (runRetrieveExchangeRate) has no PreValidation stage, no tag input,
+    // outputs the platform computed before PreOperation and a frame that joins the issuing operation (frame).
+    preValidation = true,
+    inputTag = true,
+    outputs: initialOutputs = {},
+    frame: frameFacts = {},
+    record: suppliedRecord,
   },
 ) {
   const operation = message.toLowerCase(),
     mapping = store.resolveMapping(entity),
-    record = { [mapping.idColumn]: id ?? EMPTY },
+    record = suppliedRecord ?? { [mapping.idColumn]: id ?? EMPTY },
     customApi = { name: message, platformMessage: true, bindingType: 0, parameters: [], properties: [] },
     requestTag = store.pluginSdkTag;
   const values = { ...inputs };
-  if (requestTag !== undefined) values.tag = requestTag;
+  if (requestTag !== undefined && inputTag) values.tag = requestTag;
   if (Object.hasOwn(inputs, 'FromSandbox')) {
     delete values.FromSandbox;
     values.FromSandbox = inputs.FromSandbox;
   }
   const messageParameters = {
     inputParameters: { $type: 'ParameterCollection', values },
-    outputParameters: { $type: 'ParameterCollection', values: {} },
+    outputParameters: { $type: 'ParameterCollection', values: { ...initialOutputs } },
   };
   const active =
     Boolean(store.pluginPipeline) &&
     store.pluginPipelineActive({ entity: mapping.logicalName, operation, bypassCustomPlugins, bypassStepIds });
   const parentContext = store.pluginParentContext ?? pluginInvocationSdkParent(store);
   let frame = {
+    ...frameFacts,
+    ...(inputTag ? {} : { inputTagConsumed: true }),
     requestTag,
     operationDepth: depth,
     suppliedRequestId: store.pluginRequestId,
@@ -138,9 +149,12 @@ function runMessagePipeline(
     },
   };
   const inherited = store.pluginInTransaction;
+  let first = true;
   const phase = (stage) => {
     if (stage !== 10) store.pluginInTransaction = true;
     if (!active) return;
+    const initial = first;
+    first = false;
     frame =
       store.pluginPipeline({
         store,
@@ -154,11 +168,11 @@ function runMessagePipeline(
         bypassCustomPlugins,
         customApi,
         messageParameters,
-        ...(stage === 10 ? { initialFrame: frame } : {}),
+        ...(initial ? { initialFrame: frame } : {}),
       }) ?? frame;
   };
   try {
-    phase(10);
+    if (preValidation) phase(10);
     if (!preValidationOnly) phase(20);
     initializePluginOperation(frame, store, parentContext);
     const executionUser = store.pluginExecutionUserId ?? identity?.systemUserId ?? identity?.id ?? null;
@@ -450,6 +464,122 @@ function mergeUnsupported(logical) {
     'MergeUnsupported',
     { innerCode: '0x80040800' },
   );
+}
+
+/**
+ * The RetrieveExchangeRate the platform's MultiCurrencyPlugin issues at internal stage 25 of a Create that writes a money
+ * value (recorded native crud): PreOperation and PostOperation (no PreValidation, even with a registered step) inside the
+ * Create's transaction, at its depth and request, executing as SYSTEM for the caller, with TransactionCurrencyId as the
+ * only input and the ExchangeRate output already present at PreOperation; the asynchronous steps queue once the Create
+ * commits. ParentContext is the Create's PreOperation context reported as stage 25 (plugin-internal-stage.mjs). Answers
+ * the ExchangeRate the message ends with (a PostOperation step may replace it).
+ */
+export function runRetrieveExchangeRate(store, { mapping, row, target, currencyId, rate, identity, options = {} }) {
+  const entity = 'transactioncurrency',
+    operation = 'retrieveexchangerate',
+    bypass = { bypassStepIds: options.bypassStepIds, bypassCustomPlugins: options.bypassCustomPlugins === true };
+  if (!store.pluginPipeline || !store.pluginPipelineActive({ entity, operation, ...bypass })) return rate;
+  const system = store.tableRows('systemuser').find((user) => user.fullname === 'SYSTEM')?.systemuserid;
+  const callerId = identity?.systemUserId ?? identity?.id ?? null,
+    executing = system ?? callerId;
+  const issuing = store.pluginFrames?.get(row) ?? {},
+    outer = issuing.delegatedParentContext ?? store.pluginParentContext ?? pluginInvocationSdkParent(store) ?? null,
+    depth = issuing.operationDepth ?? messageDepth(store);
+  issuing.callerIdentity ??= identity;
+  initializePluginOperation(issuing, store, outer, { requestId: issuing.suppliedRequestId ?? store.pluginRequestId });
+  const guid = (value) => ({ $type: 'Guid', value });
+  const id = row[mapping.idColumn],
+    owner = internalStepReference('MultiCurrencyPlugin', 'Create'),
+    initiating = outer?.values?.InitiatingUserId ?? guid(callerId ?? executing);
+  // The issuing Create's PreOperation context for steps that are not CLR (a CLR step builds the full one itself).
+  const createValues = {
+    MessageName: 'Create',
+    PrimaryEntityName: mapping.logicalName,
+    SecondaryEntityName: 'none',
+    PrimaryEntityId: guid(id),
+    Stage: 25,
+    Mode: 0,
+    Depth: depth,
+    IsInTransaction: true,
+    IsolationMode: 2,
+    UserId: guid(executing),
+    InitiatingUserId: initiating,
+    RequestId: guid(issuing.requestId),
+    OperationId: guid(issuing.operationId),
+    CorrelationId: guid(issuing.correlationId),
+    OperationCreatedOn: cloneStateData(issuing.createdOnWire),
+    InputParameters: {
+      $type: 'ParameterCollection',
+      values: { Target: recordToSdkEntity(store, mapping.logicalName, { ...target, [mapping.idColumn]: id }) },
+    },
+    OutputParameters: { $type: 'ParameterCollection', values: {} },
+    SharedVariables: cloneStateData(issuing.sharedVariables ?? { $type: 'ParameterCollection', values: {} }),
+    PreEntityImages: { $type: 'EntityImageCollection', values: {} },
+    PostEntityImages: { $type: 'EntityImageCollection', values: {} },
+    OwningExtension: owner,
+  };
+  createValues.ParentContext = mainOperationParent({
+    frame: issuing,
+    context: { ...createValues, ParentContext: outer },
+    parent: outer,
+    callerUserId: executing,
+    objectId: () => EMPTY,
+    inputs: () => ({
+      ...cloneStateData(issuing.mainOperationInputs ?? {}),
+      Target: recordToSdkEntity(
+        store,
+        mapping.logicalName,
+        { ...(issuing.mainOperationTarget ?? target), [mapping.idColumn]: id },
+        { allColumns: false, columns: [...Object.keys(issuing.mainOperationTarget ?? target), mapping.idColumn] },
+      ),
+    }),
+  });
+  const record = { [store.resolveMapping(entity).idColumn]: EMPTY };
+  setInternalStageSource(record, {
+    entity: mapping.logicalName,
+    operation: 'create',
+    message: 'Create',
+    target,
+    record: row,
+    frame: issuing,
+    stage: 25,
+    owner: 'MultiCurrencyPlugin',
+  });
+  const exchangeRate = (value) => ({ $type: 'Decimal', value: Number(value).toFixed(12) });
+  const previousUser = store.pluginExecutionUserId;
+  store.pluginExecutionUserId = executing;
+  try {
+    const outputs = runMessagePipeline(store, {
+      message: 'RetrieveExchangeRate',
+      entity,
+      record,
+      inputs: { TransactionCurrencyId: guid(currencyId) },
+      outputs: { ExchangeRate: exchangeRate(rate) },
+      // The caller's request facts stay (application, user agent); SYSTEM executes, also the asynchronous steps.
+      identity: { ...identity, id: executing, systemUserId: executing, admin: true },
+      depth,
+      acceptLanguage: issuing.sharedVariables?.values?.AcceptLang ?? options.pluginAcceptLanguage ?? '',
+      ...bypass,
+      bypassCustomAsync: options.bypassCustomAsync === true,
+      preValidation: false,
+      inputTag: false,
+      frame: {
+        requestId: issuing.requestId,
+        operationId: issuing.operationId,
+        correlationId: issuing.correlationId,
+        createdOn: issuing.createdOn,
+        createdOnWire: cloneStateData(issuing.createdOnWire),
+        delegatedParentContext: { $type: 'ExecutionContext', values: createValues },
+        delegatedDepth: depth,
+        exactDepth: true,
+      },
+      main: () => ({ ExchangeRate: exchangeRate(rate) }),
+    });
+    const answered = Number(outputs?.ExchangeRate?.value ?? outputs?.ExchangeRate);
+    return Number.isFinite(answered) && answered > 0 ? answered : rate;
+  } finally {
+    store.pluginExecutionUserId = previousUser;
+  }
 }
 
 /** The SetStateDynamicEntity pipeline of an Update that sets statecode (data.mjs commitUpdateSteps), one level below it. */
