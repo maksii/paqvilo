@@ -497,7 +497,7 @@ export function createAsyncPluginRunner({
         if (String(item.message).toLowerCase() !== event.operation) {
           const mapping = store.resolveMapping(event.entity),
             id = event.row[mapping.idColumn];
-          const target = recordToSdkEntity(store, event.entity, event.target ?? {});
+          const target = recordToSdkEntity(store, event.entity, event.target ?? {}, { allColumns: true, target: true });
           target.id = id;
           const multipleFrame = event.frame?.multipleFrame,
             sourceParent = event.frame?.asyncSourceParent,
@@ -508,7 +508,10 @@ export function createAsyncPluginRunner({
                     $type: 'ParameterCollection',
                     values: {
                       ...sourceParent.inputParameters?.values,
-                      Target: recordToSdkEntity(store, event.entity, sourceParent.target),
+                      Target: recordToSdkEntity(store, event.entity, sourceParent.target, {
+                        allColumns: true,
+                        target: true,
+                      }),
                     },
                   },
                 }

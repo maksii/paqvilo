@@ -5,6 +5,8 @@
 //   1. transactioncurrencyid: the payload's currency (plain key or transactioncurrencyid@odata.bind), else the currency the stored
 //      row already holds (update), else the organization base currency (organization.basecurrencyid, else the first
 //      transactioncurrency row). No base currency: CURRENCY_BASE_MISSING once per table, and the stamp is skipped.
+//      The payload carries it, so plug-ins see it in the PreValidation Target.
+//   Steps 2 and 3 run at the main operation, on the row PreOperation left (the PostOperation Target shows them):
 //   2. exchangerate: the currency's exchangerate. The base currency is 1, whatever its stored value.
 //   3. <column>_base = <column> / exchangerate, rounded to the currency's currencyprecision (fallback: the column's precision, then
 //      2), for each money column that holds a value.
@@ -118,9 +120,6 @@ function moneyColumnsOf(api, logical) {
 function stamp(api, state, mapping, { operation: _operation, data, existing }) {
   const money = moneyColumnsOf(api, mapping.logicalName);
   if (!money.length) return;
-  // Clearing a money value clears its stored base companion as well, while the
-  // row retains any currency it acquired on an earlier write.
-  for (const [name] of money) if (Object.hasOwn(data, name) && data[name] === null) data[`${name}_base`] = null;
   const explicit = currencyOfPayload(data);
   const moneyGiven = money.some(([name]) => !empty(data[name]));
   if (explicit === null && !moneyGiven) return;
@@ -143,27 +142,42 @@ function stamp(api, state, mapping, { operation: _operation, data, existing }) {
     }
     row = base;
   }
-  const rate = rateOf(row, base);
+  // A non-positive rate fails the write before any plug-in runs.
+  rateOf(row, base);
   // Source navigation names may use PascalCase (TransactionCurrencyId), and
   // native forms may post an empty lookup. Once stamping selects a currency,
   // consume its binding before emitting the plain lookup value.
   for (const binding of currencyBindings(data)) delete data[binding];
   data.transactioncurrencyid = row.transactioncurrencyid;
-  data.exchangerate = rate;
+}
 
-  const merged = { ...(existing ?? {}), ...data };
+// The main operation derives the exchange rate and base amounts from the row as PreOperation left it (native Create:
+// they first appear in the PostOperation Target). An update re-derives them only when it writes a money column or the
+// currency; clearing a money value clears its base amount.
+function settle(api, mapping, { operation, row, target }) {
+  const money = moneyColumnsOf(api, mapping.logicalName);
+  if (!money.length) return;
+  const touched = operation === 'create' ? null : new Set(Object.keys(target ?? {}));
+  for (const [name] of money)
+    if (touched?.has(name) && empty(row[name]) && row[`${name}_base`] != null) row[`${name}_base`] = null;
+  const id = bare(refId(row.transactioncurrencyid));
+  if (!id || (touched && !touched.has('transactioncurrencyid') && !money.some(([name]) => touched.has(name)))) return;
+  const currency = currencyById(api, id);
+  if (!currency) throw notFound(id);
+  const rate = rateOf(currency, baseCurrencyOf(api));
+  row.exchangerate = rate;
   for (const [name, definition] of money) {
-    if (empty(merged[name])) continue;
-    const amount = Number(isExactNumeric(merged[name]) ? merged[name].value : merged[name]);
+    if (empty(row[name])) continue;
+    const amount = Number(isExactNumeric(row[name]) ? row[name].value : row[name]);
     // The shared payload validator owns invalid decimal values and their OData
     // error envelope. A derived amount must not replace that validation error.
     if (!Number.isFinite(amount)) continue;
-    const digits = isCount(row.currencyprecision)
-      ? Number(row.currencyprecision)
+    const digits = isCount(currency.currencyprecision)
+      ? Number(currency.currencyprecision)
       : isCount(definition.precision)
         ? Number(definition.precision)
         : 2;
-    data[`${name}_base`] = roundTo(amount / rate, digits);
+    row[`${name}_base`] = roundTo(amount / rate, digits);
   }
 }
 
@@ -176,6 +190,7 @@ function install(api, { diagnostic } = {}) {
     if (info.operation === 'delete' || !info.data) return;
     stamp(api, state, mapping, info);
   });
+  api.recordHooks.add('mainOperation', (c, mapping, info) => settle(api, mapping, info));
 }
 
 // Runs on every reseed, inside the server's change queue.

@@ -4,6 +4,7 @@ import { sdkValueToRecord } from './local-organization-service.mjs';
 import { pluginInvocationDepth, pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
 import { pluginStepMatchesEntity } from './exported-plugins.mjs';
+import { upsertSourceOperation } from './plugin-delegation.mjs';
 
 const empty = '00000000-0000-0000-0000-000000000000';
 const operationFields = ['requestId', 'operationId', 'correlationId', 'createdOn', 'createdOnWire', 'operationDepth'];
@@ -58,6 +59,7 @@ export function singleMultiplePipeline(store, items, execute) {
         store,
         mapping.logicalName,
         context.operation === 'update' ? { ...context.target, [primary]: context.record[primary] } : context.target,
+        { allColumns: true, submitted: context.stage === 10, target: true },
       );
       target.id = currentTargetId();
       if (context.operation === 'create' && !frame.authoredPrimary && context.stage === 10)
@@ -184,12 +186,54 @@ export function singleMultiplePipeline(store, items, execute) {
             },
           },
         };
-        const preValidationUpsert =
-          context.operation === 'update' && context.stage === 10 && context.preValidationSourceOperation === 'upsert';
+        const upsertOrigin = context.preValidationSourceOperation === 'upsert',
+          preValidationUpsert = upsertOrigin && context.stage === 10;
+        // The single message's main operation Target is the one PreValidation left (context.mainTarget).
+        const mainTarget = context.stage === 10 ? context.target : (context.mainTarget ?? context.target);
         const sourceTarget =
           context.operation === 'update'
-            ? recordToSdkEntity(store, mapping.logicalName, { ...context.target, [primary]: context.record[primary] })
-            : { ...recordToSdkEntity(store, mapping.logicalName, context.target), id: currentTargetId() };
+            ? recordToSdkEntity(
+                store,
+                mapping.logicalName,
+                { ...mainTarget, [primary]: context.record[primary] },
+                { allColumns: true, submitted: true, target: true },
+              )
+            : {
+                ...recordToSdkEntity(
+                  store,
+                  mapping.logicalName,
+                  // The Create main operation's Target names its allocated key (native Create/30 parent).
+                  context.stage === 10 ? mainTarget : { ...mainTarget, [primary]: context.record[primary] },
+                  { allColumns: true, submitted: true, target: true },
+                ),
+                id: currentTargetId(),
+              };
+        const depth = Math.max(pluginInvocationDepth(store) + 1, Number(parent?.values?.Depth ?? 0) + 1);
+        const upsertSource = () =>
+          upsertSourceOperation({
+            target:
+              context.stage === 10
+                ? sourceTarget
+                : context.operation === 'update'
+                  ? recordToSdkEntity(
+                      store,
+                      mapping.logicalName,
+                      { ...mainTarget, [primary]: context.record[primary] },
+                      { allColumns: true, submitted: true, target: true },
+                    )
+                  : {
+                      ...recordToSdkEntity(store, mapping.logicalName, mainTarget, {
+                        allColumns: true,
+                        submitted: true,
+                        target: true,
+                      }),
+                      id: currentTargetId(),
+                    },
+            acceptLanguage: context.acceptLanguage,
+            tag: store.pluginSdkTag,
+            identity: context.identity,
+            depth,
+          });
         Object.assign(base, {
           operation,
           record: frame.record,
@@ -206,34 +250,33 @@ export function singleMultiplePipeline(store, items, execute) {
             inputParametersStage: context.stage,
             ...(context.stage === 10 && !preValidationUpsert
               ? {}
-              : {
-                  delegatedSourceOperation: {
-                    operation: preValidationUpsert ? 'upsert' : context.operation,
-                    entity: context.entity,
-                    primaryId: preValidationUpsert ? empty : context.record[primary],
-                    target: sourceTarget,
-                    ...(context.operation === 'update' && (context.stage !== 10 || preValidationUpsert)
-                      ? {
-                          inputParameters: {
-                            $type: 'ParameterCollection',
-                            values: {
-                              Target: sourceTarget,
-                              ...(preValidationUpsert
-                                ? { ReturnRowVersion: null }
-                                : {
-                                    ...(context.sdkFromSandbox === true ? { FromSandbox: true } : {}),
-                                    ConcurrencyBehavior: concurrencyBehavior,
-                                  }),
+              : preValidationUpsert
+                ? { delegatedSourceOperation: upsertSource() }
+                : {
+                    delegatedSourceOperation: {
+                      ...(upsertOrigin ? { parent: upsertSource() } : {}),
+                      operation: context.operation,
+                      entity: context.entity,
+                      primaryId: context.record[primary],
+                      target: sourceTarget,
+                      ...(context.operation === 'update'
+                        ? {
+                            inputParameters: {
+                              $type: 'ParameterCollection',
+                              values: {
+                                Target: sourceTarget,
+                                ...(context.sdkFromSandbox === true ? { FromSandbox: true } : {}),
+                                ConcurrencyBehavior: concurrencyBehavior,
+                              },
                             },
-                          },
-                        }
-                      : {}),
-                    frame: frame.singleFrame ?? {},
-                    identity: context.identity,
-                    depth: Math.max(pluginInvocationDepth(store) + 1, Number(parent?.values?.Depth ?? 0) + 1),
-                    isInTransaction: store.pluginInTransaction === true,
-                  },
-                }),
+                          }
+                        : {}),
+                      frame: frame.singleFrame ?? {},
+                      identity: context.identity,
+                      depth,
+                      isInTransaction: store.pluginInTransaction === true,
+                    },
+                  }),
           },
         });
         multipleStarted = true;
