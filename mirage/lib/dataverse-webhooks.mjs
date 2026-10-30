@@ -399,6 +399,8 @@ function asyncRecordContext(store, facts, initiating) {
   const { item, entity, operation, stage, target = {}, record, previous, identity, depth } = facts;
   const frame = facts.initialFrame;
   frame.callerIdentity ??= identity;
+  // The job runs under its request's correlation (x-ms-correlation-request-id), as the delivery does.
+  frame.correlationId ??= facts.correlationId;
   const answer = clrContext({
     runtime: { descriptor: { context: {}, serviceProfile: { userId: initiating } } },
     store,

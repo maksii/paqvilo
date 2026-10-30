@@ -14,10 +14,14 @@ import { wireRegisteredSteps } from './support/service-endpoint-pipeline.mjs';
 const WIDGET = '77777777-7777-4777-8777-777777777701';
 const ENDPOINT = '77777777-7777-4777-8777-777777777702';
 const STEP = '77777777-7777-4777-8777-777777777703';
+// The 30 RemoteExecutionContext properties of a native asynchronous record web hook payload (dataverse-recorder crud,
+// async and upsert captures), including the caller's Entra object ids and user agent.
 const PROPERTIES = [
   'BusinessUnitId',
   'CorrelationId',
   'Depth',
+  'InitiatingUserAgent',
+  'InitiatingUserAzureActiveDirectoryObjectId',
   'InitiatingUserId',
   'InputParameters',
   'IsExecutingOffline',
@@ -41,6 +45,7 @@ const PROPERTIES = [
   'SecondaryEntityName',
   'SharedVariables',
   'Stage',
+  'UserAzureActiveDirectoryObjectId',
   'UserId',
 ];
 
