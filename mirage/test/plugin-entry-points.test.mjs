@@ -438,3 +438,14 @@ test('SOAP Assign and SetState run their message pipelines around a main-operati
   );
   assert.notEqual(f.seen.find((entry) => entry.at === 'Update/20').executing, system);
 });
+
+// @test-kind parity: native recorder captures 2026-10-30 privilege (native and native-r2): a Create reusing an existing primary key runs its PreValidation and PreOperation steps, then answers 412 0x80040237
+test('a Create with a duplicate primary key runs PreValidation and PreOperation before its 412', async (t) => {
+  const f = await messageFixture(t, stages(60, 'Create', { entity: 'account' }));
+  const duplicate = await f.request('POST', '/accounts', { accountid: row, name: 'Again' });
+  assert.equal(duplicate.status, 412, await duplicate.text());
+  assert.deepEqual(
+    f.seen.map((entry) => entry.at),
+    ['Create/10', 'Create/20'],
+  );
+});

@@ -5108,7 +5108,8 @@ export class DataStore {
           innerCode: '0x80040237',
         });
     };
-    assertUniqueIdentity();
+    // A duplicate primary key is refused after PreValidation and PreOperation, at the main operation (recorded native
+    // privilege: Create 10 and 20 run, then 412 0x80040237); assertUniqueIdentity runs again before the row is stored.
     if (
       !identity.admin &&
       this.state.settings.permissionMode !== 'permissive' &&
