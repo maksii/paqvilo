@@ -239,6 +239,9 @@ export function parsePluginDocument(xml) {
             name: value(image, 'Name') || '',
             alias: value(image, 'EntityAlias') || '',
             type: numeric(value(image, 'ImageType')),
+            ...(value(image, 'MessagePropertyName')
+              ? { messagePropertyName: value(image, 'MessagePropertyName') }
+              : {}),
             attributes: String(value(image, 'Attributes') ?? '')
               .split(',')
               .map(canonical)
