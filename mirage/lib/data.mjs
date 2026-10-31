@@ -3271,6 +3271,7 @@ export class DataStore {
           bypassCustomPlugins: options.bypassCustomPlugins === true,
           bypassStepIds: options.bypassStepIds,
           portalRequest: options.portalRequest === true,
+          sdkFromSandbox: options.sdkFromSandbox === true,
         });
         this.pluginPipeline({
           entity: m.logicalName,
@@ -3284,6 +3285,7 @@ export class DataStore {
           bypassCustomPlugins: options.bypassCustomPlugins === true,
           bypassStepIds: options.bypassStepIds,
           portalRequest: options.portalRequest === true,
+          sdkFromSandbox: options.sdkFromSandbox === true,
         });
         if (
           holder.target?.$type !== 'EntityReference' ||
@@ -3316,6 +3318,7 @@ export class DataStore {
           bypassCustomPlugins: options.bypassCustomPlugins === true,
           bypassStepIds: options.bypassStepIds,
           portalRequest: options.portalRequest === true,
+          sdkFromSandbox: options.sdkFromSandbox === true,
         });
         handoffPluginResponse(this, 'retrieve', m.logicalName, responseFrame, options.sdkResponseToken);
         if (

@@ -1257,6 +1257,9 @@ export function runPluginPhase({
     if (mainOperation.exactDepth) phaseFrame.exactDepth = true;
     if (mainOperation.internalRead && operation === 'retrievemultiple') phaseFrame.internalRead = true;
     if (mainOperation.namedMessage) phaseFrame.namedMainOperation = true;
+    // A Retrieve a platform main operation runs has the platform's read input shape (clrContext sdkShapedRead).
+    if (operation === 'retrieve' && !(store?.pluginParentContext || pluginInvocationSdkParent(store)))
+      phaseFrame.platformRead = true;
     // A refused message's per-record PreValidation (DeleteMultiple) has no platform SharedVariables (native bulk).
     if (mainOperation.preValidationOnly) phaseFrame.platformSharedSeeded = true;
     // The request tag is an input of the message, not of the operations it delegates (SDK Upsert keeps it).
@@ -1398,6 +1401,11 @@ export function runPluginPhase({
       phaseFrame.inputParameters.values.FromSandbox ??= true;
     }
     phaseFrame.mainOperationInputs ??= cloneStateData(phaseFrame.inputParameters?.values ?? {});
+  }
+  // A sandboxed plug-in's SDK Retrieve is marked FromSandbox as well (recorded native async Depth 2).
+  if (stage === 10 && !asyncExecution && operation === 'retrieve' && sdkFromSandbox) {
+    phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
+    phaseFrame.inputParameters.values.FromSandbox ??= true;
   }
   if (
     store &&

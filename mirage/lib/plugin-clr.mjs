@@ -2383,6 +2383,10 @@ export function clrContext({
           },
     ).filter(([key]) => !(portalRequest && Object.hasOwn(context.portalInputParameters ?? {}, key))),
   );
+  // A Retrieve an SDK request or a platform main operation issues has the SDK input shape (recorded native async Depth 2
+  // and mergeAccount reads): RelatedEntitiesQuery null, ReturnNotifications false, no IncludeAnnotations.
+  const sdkShapedRead =
+    operation === 'retrieve' && (frame.sdkIssued === true || !outsidePlugin || frame.platformRead === true);
   const answer = {
     ...(frame.sdkFrameworkSource ? { sdkFrameworkSource: frame.sdkFrameworkSource } : {}),
     expectedAssemblyName: step.assemblyName ?? null,
@@ -2465,11 +2469,18 @@ export function clrContext({
                         id: record[primary],
                       },
                       ColumnSet: { $type: 'ColumnSet', ...frame.columns },
-                      // Every Retrieve request carries its (empty) RelatedEntitiesQuery (recorded native reads).
-                      RelatedEntitiesQuery: { $type: 'RelationshipQueryCollection', values: [] },
-                      ...(readRequestParameters.IncludeAnnotations === undefined
-                        ? {}
-                        : { IncludeAnnotations: false, ReturnNotifications: false }),
+                      // Every Retrieve request carries its RelatedEntitiesQuery (recorded native reads): empty from a Web API
+                      // GET, null from an SDK or platform read; a supplied value is kept.
+                      RelatedEntitiesQuery: Object.hasOwn(frame.inputParameters?.values ?? {}, 'RelatedEntitiesQuery')
+                        ? frame.inputParameters.values.RelatedEntitiesQuery
+                        : sdkShapedRead
+                          ? null
+                          : { $type: 'RelationshipQueryCollection', values: [] },
+                      ...(sdkShapedRead
+                        ? { ReturnNotifications: false }
+                        : readRequestParameters.IncludeAnnotations === undefined
+                          ? {}
+                          : { IncludeAnnotations: false, ReturnNotifications: false }),
                     }
                   : {
                       Target:

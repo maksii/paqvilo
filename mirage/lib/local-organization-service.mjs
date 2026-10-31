@@ -280,6 +280,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
       sdkResponseToken: responseToken,
       bypassStepIds: requestOptions.bypassStepIds,
       bypassCustomPlugins: requestOptions.bypassCustomPlugins === true,
+      sdkFromSandbox: requestOptions.sdkFromSandbox === true,
       ...(id?.$type === 'EntityReference' ? { sdkTarget: id } : {}),
       resolveTarget: (target) =>
         id && typeof id === 'object' && target.id !== id.id
