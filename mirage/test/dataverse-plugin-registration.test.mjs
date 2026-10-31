@@ -1564,6 +1564,32 @@ describe('plug-in registration: assembly content and plug-in types', () => {
     assert.equal(typesOf().length, 0);
   });
 
+  // @test-kind parity: native trial captures native-trial and native-trial-r2 (dataverse-recorder round 2, n3-package): a package-owned assembly has sourcetype 4, and PATCH of the package version and name answer 204 (contrary to Microsoft Learn)
+  it('a plug-in package registers its assembly with sourcetype 4, and its name and version can be changed', async () => {
+    const { store, run } = await registry();
+    const content = zipOf([
+      {
+        name: 'Contoso.Package.nuspec',
+        data: Buffer.from(
+          '<?xml version="1.0"?><package><metadata><id>Contoso.Package</id><version>1.0.0</version></metadata></package>',
+        ),
+      },
+      { name: 'lib/net462/Contoso.Unsigned.dll', data: Buffer.from(UNSIGNED, 'base64') },
+    ]).toString('base64');
+    const pkg = { content };
+    await run('pluginpackage', 'create', pkg);
+    const owned = store.tableRows('pluginassembly').find((row) => row.packageid === pkg.pluginpackageid);
+    assert.equal(owned.sourcetype, 4);
+    assert.equal(owned.isolationmode, 2);
+    const existing = { pluginpackageid: pkg.pluginpackageid, name: pkg.name, version: pkg.version };
+    const version = { version: '1.0.1' };
+    await run('pluginpackage', 'update', version, existing);
+    assert.equal(version.version, '1.0.1');
+    const name = { name: 'Contoso.Package.Renamed' };
+    await run('pluginpackage', 'update', name, { ...existing, version: '1.0.1' });
+    assert.equal(name.name, 'Contoso.Package.Renamed');
+  });
+
   // @test-kind contract: SolutionPackager step image XML carries MessagePropertyName; the mirrored row keeps it
   it('a Solution step image keeps its exported MessagePropertyName', () => {
     const facts = parsePluginDocument(

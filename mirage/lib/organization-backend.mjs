@@ -1,5 +1,6 @@
 import { runPluginPhase, pluginStepMatchesEntity, pluginPhaseRequiresCheckpoint } from './exported-plugins.mjs';
 import { prepareClrRuntime, closeClrHostPool } from './plugin-clr.mjs';
+import { releaseUploadedRuntime } from './plugin-uploaded.mjs';
 import { createAsyncPluginRunner } from './plugin-async.mjs';
 import { createFlowTriggerRunner } from './flow-triggers.mjs';
 import { settleCommittedWork, committedJobs } from './committed-work.mjs';
@@ -17,6 +18,8 @@ export async function createOrganizationBackend({
   handlers = new Map(),
   runtimes = new Map(),
   descriptors = new Map(),
+  // { cacheRoot, sdkAssembly }: where registered uploaded assemblies are prepared and the SDK they bind (plugin-uploaded.mjs).
+  clrUploads,
   operations = () => [],
   workflows = () => new Map(),
   identities = () => ({}),
@@ -40,6 +43,7 @@ export async function createOrganizationBackend({
       ...context,
       store,
       runtimes,
+      clrUploads,
       items: context.pluginStepIds ? items().filter((step) => context.pluginStepIds.includes(step.id)) : items(),
       handlers,
       webhooks,
@@ -70,7 +74,10 @@ export async function createOrganizationBackend({
         pluginPhaseRequiresCheckpoint(items(), { ...context, store, operation: multipleMessage(context.operation) }),
       ),
   );
-  for (const item of items().filter((item) => item.mode === 'clr'))
+  // Uploaded assemblies without a trusted descriptor are prepared when their step first runs (plugin-uploaded.mjs).
+  for (const item of items().filter(
+    (item) => item.mode === 'clr' && !(item.uploadedAssemblyId && !descriptors.has(item.id)),
+  ))
     try {
       if (!item.clrAvailable) throw new Error('No exact trusted descriptor');
       runtimes.set(item.id, await prepareClrRuntime(descriptors.get(item.id)));
@@ -93,6 +100,7 @@ export async function createOrganizationBackend({
     items,
     handlers,
     runtimes,
+    clrUploads,
     webhooks,
     diagnostic,
     acceptedChains,
@@ -114,7 +122,9 @@ export async function createOrganizationBackend({
     close: () =>
       (closed ??= (async () => {
         await settleCommittedWork(store, [triggerRunner, asyncPluginRunner], { close: true });
-        for (const runtime of runtimes.values()) await closeClrHostPool({ runtime, diagnostic });
+        for (const [id, runtime] of [...runtimes])
+          if (runtime.uploaded) releaseUploadedRuntime(runtimes, id, diagnostic);
+          else await closeClrHostPool({ runtime, diagnostic });
       })()),
   };
 }

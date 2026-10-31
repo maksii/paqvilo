@@ -731,6 +731,18 @@ export function overlayRegisteredSteps(plugins, store) {
         };
     return copyStepConstructorSettings(step, { ...next, unsupported: pluginUnsupported(next) });
   };
+  // A step whose plug-in type lives in an assembly with uploaded content carries that assembly's id: the pipeline runs the
+  // stored bytes (plugin-uploaded.mjs). A Solution step without uploaded content is unchanged.
+  const uploaded = (step) => {
+    const type = rowById(store, 'plugintype', 'plugintypeid', step.typeId);
+    const assembly = rowById(store, 'pluginassembly', 'pluginassemblyid', type?.pluginassemblyid ?? step.assemblyId);
+    return typeof assembly?.content === 'string' && assembly.content !== '' && step.typeName && !step.serviceEndpointId
+      ? copyStepConstructorSettings(step, {
+          ...step,
+          uploadedAssemblyId: String(idOfValue(assembly.pluginassemblyid)).toLowerCase(),
+        })
+      : step;
+  };
   const steps = [],
     solutionIds = new Set();
   for (const source of plugins?.steps ?? []) {
@@ -766,7 +778,7 @@ export function overlayRegisteredSteps(plugins, store) {
     const id = String(row.sdkmessageprocessingstepid).toLowerCase();
     if (!solutionIds.has(id)) steps.push(stepFromRow(store, row, imagesOf(id)));
   }
-  return { ...plugins, steps };
+  return { ...plugins, steps: steps.map(uploaded) };
 }
 
 // Insert-or-replace by id: a row with the same id is removed first, so the seeded rows match the Solution on every reseed.
@@ -933,12 +945,13 @@ function validateAssembly({ store, data, existing }) {
 
 // A plug-in package (dependent assemblies, Microsoft Learn): the content is a NuGet package; each lib/ assembly that declares
 // an IPlugin type is registered as a pluginassembly row of the package (packageid, no strong name needed) with a plugintype row
-// per plug-in type (workflow activities are not supported in packages). The bytes are inspected, never loaded. Native (N3
-// package trial) accepts a PATCH of the name or version, contrary to Microsoft Learn; registers package-owned assemblies with
-// source type 4 (file store), sandbox isolation and the literal public key token 'null' when unsigned; refuses a second
-// package whose assembly duplicates a registered one (0x80040265, the database unique key); and drops plug-in types the new
-// content no longer declares. An update that drops an assembly or type that steps use is refused (Learn; 0x8004418b, the
-// documented "required types / content cannot be updated" error, is a guess).
+// per plug-in type (workflow activities are not supported in packages). Registration inspects the bytes; a registered step
+// runs them (plugin-uploaded.mjs, with the package's other lib/ assemblies as dependencies). Native (N3 package trial)
+// accepts a PATCH of the name or version, contrary to Microsoft Learn; registers package-owned assemblies with source type 4
+// (file store), sandbox isolation and the literal public key token 'null' when unsigned; refuses a second package whose
+// assembly duplicates a registered one (0x80040265, the database unique key); and drops plug-in types the new content no
+// longer declares. An update that drops an assembly or type that steps use is refused (Learn; 0x8004418b, the documented
+// "required types / content cannot be updated" error, is a guess).
 function validatePackage({ store, data, existing, operation }) {
   const val = (column) => valueOf(data, existing, column);
   const content = typeof data.content === 'string' && data.content !== '' ? data.content : null;
