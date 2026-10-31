@@ -697,8 +697,11 @@ test('Full-text SDK Contains cannot be silently executed as substring LIKE', () 
     q.linkEntities[0].linkCriteria.conditions = [{ attributeName: 'amount', operatorName, values: ['12'] }];
     assert.throws(
       () => run(store, q),
+      // The platform fault of a column without a full-text index (audit C2-05), not a local 501.
       (error) =>
-        error.code === 'LocalPluginQueryUnsupported' && error.status === 501 && /full-text/.test(error.message),
+        error.status === 400 &&
+        error.details?.innerCode === '0x80041120' &&
+        error.message === `Unknown Condition Operator: ${operatorName}. FetchXml does not support it`,
     );
   }
   q.linkEntities[0].linkCriteria.conditions = [{ attributeName: 'amount', operatorName: 'GreaterThan', values: [10] }];
@@ -834,4 +837,52 @@ test('aliased values named like the primary column cannot become SDK Entity.Id',
       });
     }
   }
+});
+
+// @test-kind compatibility: Microsoft.Xrm.Sdk.Query.ConditionOperator NotOn is the FetchXML not-on operator; Contains needs a full-text index (FetchXML answers 0x80041120 without one); QueryExpression.TopCount is the FetchXML top attribute, so one query answers the same with and without TopCount
+test('SDK QueryExpression answers the same rows with and without TopCount, NotOn included', () => {
+  const store = data();
+  store.state.mappings.root.fields.due = { type: 'datetime' };
+  store.state.tables.root = [
+    { rootid: rootId, title: 'Due on the day', due: '2026-03-04T10:00:00Z' },
+    { rootid: childId, title: 'Due later', due: '2026-03-05T10:00:00Z' },
+  ];
+  const titles = (topCount) =>
+    run(store, {
+      $type: 'QueryExpression',
+      entityName: 'root',
+      columnSet: { allColumns: false, columns: ['title'] },
+      criteria: {
+        operatorName: 'And',
+        conditions: [
+          {
+            attributeName: 'due',
+            operatorName: 'NotOn',
+            values: [{ $type: 'DateTime', value: '2026-03-04T00:00:00Z' }],
+          },
+          { attributeName: 'title', operatorName: 'Like', values: ['Due%'] },
+        ],
+      },
+      orders: [],
+      linkEntities: [],
+      ...(topCount ? { topCount } : {}),
+    }).entities.map((entity) => entity.attributes.title);
+  assert.deepEqual(titles(null), ['Due later']);
+  assert.deepEqual(titles(5), ['Due later']);
+  // A full-text condition answers the platform fault of a column without a full-text index, with and without TopCount.
+  for (const topCount of [null, 5])
+    assert.throws(
+      () =>
+        run(store, {
+          $type: 'QueryExpression',
+          entityName: 'root',
+          columnSet: { allColumns: true },
+          criteria: {
+            operatorName: 'And',
+            conditions: [{ attributeName: 'title', operatorName: 'Contains', values: ['Due'] }],
+          },
+          ...(topCount ? { topCount } : {}),
+        }),
+      (error) => error.status === 400 && error.details?.innerCode === '0x80041120',
+    );
 });

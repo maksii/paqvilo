@@ -33,6 +33,7 @@ const VALUE_OPERATORS = new Set([
   'ends-with',
   'not-end-with',
   'on',
+  'not-on',
   'on-or-before',
   'on-or-after',
 ]);
@@ -216,6 +217,7 @@ export function compileOperator(
       return (x) => !isNullValue(x) && match(x) !== negate;
     }
     case 'on':
+    case 'not-on':
     case 'on-or-before':
     case 'on-or-after': {
       const day = localDay(first, { timeZoneOffsetMinutes });
@@ -228,7 +230,8 @@ export function compileOperator(
       return (x) => {
         const value = localDay(x, { timeZoneOffsetMinutes });
         if (value == null) return false;
-        return op === 'on' ? value === day : op === 'on-or-before' ? value <= day : value >= day;
+        if (op === 'on' || op === 'not-on') return (value === day) === (op === 'on');
+        return op === 'on-or-before' ? value <= day : value >= day;
       };
     }
     case 'eq-userid':

@@ -1590,9 +1590,10 @@ function executeSdkMethod({ store, service, message, responseToken }) {
       const structured = ['QueryExpression', 'QueryByAttribute'].includes(query.$type);
       const mapping = structured ? service.mapping(entity) : null;
       const provider = structured ? store.recordPipeline?.virtualProviders?.status?.(entity) : null;
+      // Every structured query of a table Mirage stores runs on the one FetchXML engine, with or without TopCount, so an
+      // operator or shape answers the same either way; a virtual table answers through its provider's OData query.
       const defaultPaging =
         structured &&
-        query.topCount == null &&
         !mapping.isVirtual &&
         !/^virtual$/i.test(mapping.tableType ?? '') &&
         !mapping.dataSourceId &&
