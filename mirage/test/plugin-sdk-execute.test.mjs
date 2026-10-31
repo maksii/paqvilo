@@ -41,7 +41,7 @@ const request = (requestName, values) => ({
 const invoke = (store, value) =>
   dispatchSdkCall({ store, profile, message: { method: 'Execute', userId: user, arguments: [value] } });
 
-test('Named SDK Execute validates parameter contracts before writes and retains typed responses', () => {
+test('Named SDK Execute validates parameter contracts before writes and retains typed responses', async () => {
   const store = storeOf(),
     before = store.snapshot();
   assert.throws(
@@ -107,11 +107,14 @@ test('Named SDK Execute validates parameter contracts before writes and retains 
     ).results.Entity.id,
     id,
   );
-  assert.throws(
-    () => invoke(store, request('Delete', { Target: { $type: 'EntityReference', logicalName: 'secondary', id } })),
-    /serialized read-operation/,
-  );
+  // An independent read's step write commits in a transaction of its own (data.mjs openReadLane): the read sees it at
+  // once, the committed state after the lane closes and its commit settles.
+  invoke(store, request('Delete', { Target: { $type: 'EntityReference', logicalName: 'secondary', id } }));
+  assert.equal(store.tableRows('secondary').length, 0);
+  store.closeReadLane(null);
   assert.equal(store.snapshot().tables.secondary.length, 1);
+  await store.settleReadLanes();
+  assert.equal(store.snapshot().tables.secondary.length, 0);
 });
 
 test(

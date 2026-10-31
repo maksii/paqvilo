@@ -1116,7 +1116,7 @@ export function pluginCatalogue({
         typeName: step.typeName,
         unsupported,
         boundary:
-          'Top-level PreValidation SDK requests commit independently; PreOperation/PostOperation and nested PreValidation join the caller transaction. Read observer writes require a serialized readOperation boundary and explicit backend grants; top-level read SDK writes commit independently. CLR runs registered uploaded assembly bytes by default, or an explicitly trusted original assembly with a separate project backend security profile.',
+          'Top-level PreValidation SDK requests commit independently; PreOperation/PostOperation and nested PreValidation join the caller transaction. Read step SDK writes need explicit backend grants and commit in their own transaction (a read-operation boundary, or a read lane queued behind an open transaction). CLR runs registered uploaded assembly bytes by default, or an explicitly trusted original assembly with a separate project backend security profile.',
       },
     });
   });
