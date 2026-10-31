@@ -76,6 +76,13 @@ export function resolveXrmSdk({ sdkAssembly, env = process.env } = {}) {
   );
 }
 
+/** The registered assembly with uploaded content that holds plug-in type typeId, else null. */
+export function uploadedAssemblyOfType(store, typeId) {
+  const type = rowOf(store, 'plugintype', typeId);
+  const assembly = type ? rowOf(store, 'pluginassembly', type.pluginassemblyid) : null;
+  return typeof assembly?.content === 'string' && assembly.content !== '' ? assembly : null;
+}
+
 // The stored bytes of an uploaded assembly and, for a package-owned one, its package's other lib/ assemblies.
 function uploadedSource(store, assemblyId) {
   const assembly = rowOf(store, 'pluginassembly', assemblyId);
@@ -228,13 +235,19 @@ export function releaseUploadedRuntime(runtimes, stepId, diagnostic = () => {}) 
   }
 }
 
-/** Closes the uploaded runtimes whose step is gone, no longer uploaded, or whose stored content changed. */
+/** Closes the uploaded runtimes whose step (or custom API main operation) is gone, no longer uploaded, or whose stored
+ * content changed. */
 export function releaseStaleUploadedRuntimes(store, runtimes, steps, diagnostic = () => {}) {
   const byId = new Map(steps.map((step) => [step.id, step]));
   for (const [id, runtime] of [...runtimes]) {
     if (!runtime.uploaded) continue;
     const step = byId.get(id);
-    const assembly = step?.uploadedAssemblyId ? rowOf(store, 'pluginassembly', step.uploadedAssemblyId) : null;
+    const api = step ? null : rowOf(store, 'customapi', id);
+    const assembly = step?.uploadedAssemblyId
+      ? rowOf(store, 'pluginassembly', step.uploadedAssemblyId)
+      : api?.plugintypeid
+        ? uploadedAssemblyOfType(store, api.plugintypeid)
+        : null;
     if (
       !assembly ||
       canon(assembly.pluginassemblyid) !== runtime.uploaded.assemblyId ||

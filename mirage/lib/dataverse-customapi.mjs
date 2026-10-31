@@ -45,6 +45,7 @@ import {
   PLUGIN_DEPTH_MESSAGE,
 } from './plugin-clr.mjs';
 import { recordPluginTrace } from './plugin-trace.mjs';
+import { uploadedAssemblyOfType, uploadedClrRuntime } from './plugin-uploaded.mjs';
 import { pluginStepBypassed, pluginBypassOwnership } from './plugin-bypass.mjs';
 import { denied } from './dataverse-fls.mjs';
 import { changedColumns, dataverseHost } from './power-fx-dataverse.mjs';
@@ -553,13 +554,16 @@ function typeRegistration(store, row, pluginTypes) {
   return handler ? { handler, pluginType: type.typename } : undefined;
 }
 
+// Without a descriptor, a plug-in type in an assembly with uploaded content runs those bytes, as a registered step does
+// (plugin-uploaded.mjs, user decision C08).
 function clrRegistration(store, row, options) {
   const id = key(row.customapiid).replace(/[{}]/g, '');
   const descriptor = options.pluginRuntimes?.get(id);
-  if (!descriptor) return null;
   const typeId = row.plugintypeid?.id ?? row.plugintypeid;
+  const uploaded = !descriptor && typeId ? uploadedAssemblyOfType(store, typeId) : null;
+  if (!descriptor && !uploaded) return null;
   const type = store.tableRows('plugintype').find((entry) => key(entry.plugintypeid) === key(typeId));
-  if (!type || descriptor.typeName !== type.typename)
+  if (!uploaded && (!type || descriptor.typeName !== type.typename))
     return { id, reason: 'The trusted main-operation runtime does not match the exported plug-in type.' };
   const messageIds = new Set(
     store
@@ -576,6 +580,25 @@ function clrRegistration(store, row, options) {
         key(entry.plugintypeid?.id ?? entry.plugintypeid ?? entry.eventhandler?.id ?? entry.eventhandler) ===
           key(typeId),
     );
+  if (uploaded)
+    return {
+      id,
+      type,
+      uploaded: {
+        id,
+        uploadedAssemblyId: key(uploaded.pluginassemblyid),
+        typeName: type.typename,
+        assemblyName: uploaded.name,
+      },
+      // The platform creates the main operation's step; without that row the local step id derives from the API id.
+      step:
+        steps.length === 1
+          ? steps[0]
+          : {
+              sdkmessageprocessingstepid: uuidV5(id, 'customapi:main-operation'),
+              name: `CustomApi '${row.uniquename}' implementation`,
+            },
+    };
   const context = descriptor.context;
   const witnessed =
     /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(context?.mainOperationStepId ?? '') &&
@@ -733,7 +756,7 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
   if (!properties.length && row.isfunction) throw notFound(name);
   const registration = handlers.get(key(name)) ?? typeRegistration(store, row, pluginTypes);
   const original = !registration && !fxIdOf(row) ? clrRegistration(store, row, options) : null;
-  if (row.plugintypeid && !registration && !fxIdOf(row) && !original?.descriptor)
+  if (row.plugintypeid && !registration && !fxIdOf(row) && !original?.descriptor && !original?.uploaded)
     throw new DataError(
       `Custom API '${row.uniquename}' names an original main-operation plug-in with no trusted local implementation.`,
       501,
@@ -744,7 +767,13 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
   span?.set({
     isFunction: row.isfunction === true,
     bindingType: Number(row.bindingtype ?? 0),
-    handler: registration ? 'handler' : fxIdOf(row) ? 'powerfx' : original?.descriptor ? 'clr' : 'none',
+    handler: registration
+      ? 'handler'
+      : fxIdOf(row)
+        ? 'powerfx'
+        : original?.descriptor || original?.uploaded
+          ? 'clr'
+          : 'none',
   });
   // The plug-in's type (the custom API name when the pack names none) and the trace lines its handler writes; it runs as
   // the main operation (stage 30) at the main operation's depth (its fault identity, D-R3-19).
@@ -918,7 +947,15 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
     }
     const originalOutputs = function* () {
       let runtime = options.runtimes.get(original.id);
-      if (runtime?.descriptor !== original.descriptor) {
+      if (original.uploaded)
+        runtime = uploadedClrRuntime({
+          store,
+          item: original.uploaded,
+          runtimes: options.runtimes,
+          uploads: store.pluginPipeline?.clrUploads,
+          diagnostic: api.diagnostic,
+        });
+      else if (runtime?.descriptor !== original.descriptor) {
         if (synchronous)
           throw new DataError(
             'The explicitly trusted custom API main-operation runtime must be prepared before a synchronous SDK call.',
@@ -1010,7 +1047,7 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
         ? synchronous
           ? fxOutputsSync(api, row, ctx.inputs, properties, c, contextOf)
           : yield fxOutputs(api, row, ctx.inputs, properties, c, contextOf, timeoutMs)
-        : original?.descriptor
+        : original?.descriptor || original?.uploaded
           ? yield* originalOutputs()
           : {};
     // Native MainOperation and synchronous PostOperation contain only authored
@@ -1418,6 +1455,7 @@ export function describeCustomApis(api) {
               configured?.handlers.get(key(row.uniquename)) ??
               typeRegistration(store, row, configured?.pluginTypes ?? new Map()),
             ) ||
+            Boolean(runtime?.uploaded) ||
             Boolean(
               runtime?.descriptor &&
               runtime.step &&
@@ -1478,6 +1516,7 @@ export function powerFxRequirements(store, powerFx) {
     )
       return [];
     const runtime = clrRegistration(store, row, configured ?? {});
+    if (runtime?.uploaded) return [];
     if (runtime?.step && runtime.descriptor && configured?.runtimes.get(runtime.id)?.descriptor === runtime.descriptor)
       return [];
     return [

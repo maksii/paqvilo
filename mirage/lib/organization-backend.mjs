@@ -55,6 +55,8 @@ export async function createOrganizationBackend({
   // A getter keeps API registration edits visible without caching source facts.
   pipeline.steps = items;
   pipeline.diagnostic = diagnostic;
+  // A custom API main operation on uploaded bytes prepares them where the steps do (dataverse-customapi.mjs).
+  pipeline.clrUploads = clrUploads;
   store.setPluginPipeline(
     pipeline,
     ({ entity, operation, bypassCustomPlugins = false, bypassStepIds = [] }) =>

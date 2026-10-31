@@ -17,6 +17,7 @@ import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { releaseStaleUploadedRuntimes, resolveXrmSdk } from '../lib/plugin-uploaded.mjs';
 import { zipOf } from '../lib/dataverse-solutions.mjs';
+import { install as installCustomApis } from '../lib/dataverse-customapi.mjs';
 import { CLR_SKIP, clrSdk, compileClr, strongNameKey } from './fixtures/clr-sdk.mjs';
 import { makeTemporaryDirectory, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
@@ -33,6 +34,28 @@ namespace ${namespace} {
       var target = (Entity)context.InputParameters["Target"];
       var name = target.GetAttributeValue<string>("contoso_name");
       target["contoso_name"] = ${expression};
+    }
+  }
+}`;
+
+// A custom API main operation (Reply = Text + "-api") and a PostOperation step that refuses unless the platform's
+// ChangedEntityTypes shared variable (on the root ancestor, its main operation) is a Dictionary<string, string> holding
+// the written user-owned table.
+const platform = `using System; using System.Collections.Generic; using Microsoft.Xrm.Sdk;
+[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
+namespace Contoso.Platform {
+  public sealed class Echo : IPlugin {
+    public void Execute(IServiceProvider services) {
+      var context = (IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));
+      context.OutputParameters["Reply"] = (string)context.InputParameters["Text"] + "-api";
+    }
+  }
+  public sealed class ChangedTypes : IPlugin {
+    public void Execute(IServiceProvider services) {
+      var context = (IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));
+      var changed = context.ParentContext.SharedVariables["ChangedEntityTypes"];
+      if (!(changed is Dictionary<string, string>)) throw new InvalidPluginExecutionException("ChangedEntityTypes is " + changed.GetType().FullName);
+      if (((Dictionary<string, string>)changed)["contoso_gadget"] != "Update") throw new InvalidPluginExecutionException("ChangedEntityTypes lost its entry");
     }
   }
 }`;
@@ -100,6 +123,7 @@ describe('uploaded plug-in assemblies run by default', { skip: CLR_SKIP }, () =>
     bytes.v1 = build('Contoso.Uploaded', stamp('Contoso.Uploaded', 'name + "-v1"'), { keyFile: key });
     bytes.v2 = build('Contoso.Uploaded', stamp('Contoso.Uploaded', 'name + "-v2"'), { keyFile: key, folder: 'v2' });
     bytes.unloadable = build('Contoso.Unloadable', stamp('Contoso.Unloadable', 'name + "-never"'), { keyFile: key });
+    bytes.platform = build('Contoso.Platform', platform, { keyFile: key });
     const helper = path.join(work, 'Contoso.Packaged.Helpers.dll');
     bytes.helpers = build(
       'Contoso.Packaged.Helpers',
@@ -121,7 +145,19 @@ describe('uploaded plug-in assemblies run by default', { skip: CLR_SKIP }, () =>
       relationships: {},
     };
     state.tables.contoso_widget = [];
+    state.mappings.contoso_gadget = {
+      logicalName: 'contoso_gadget',
+      entitySet: 'contoso_gadgets',
+      idColumn: 'contoso_gadgetid',
+      nameColumn: 'contoso_name',
+      ownership: 'UserOwned',
+      userConfigured: true,
+      fields: { contoso_name: { dataverseType: 'nvarchar' } },
+      relationships: {},
+    };
+    state.tables.contoso_gadget = [];
     store = await new DataStore({ state }).init();
+    runtimes = new Map();
     api = await startDataverseApi({
       store,
       settings: dataverseSettings({
@@ -131,7 +167,14 @@ describe('uploaded plug-in assemblies run by default', { skip: CLR_SKIP }, () =>
         ],
       }),
       log: () => {},
-      extensions: [...EXTENSIONS],
+      // The custom API extension shares the step runtime cache, as the host wires it (source-organization-extensions.mjs).
+      extensions: [
+        ...EXTENSIONS,
+        {
+          name: 'customapi',
+          install: (installed) => installCustomApis({ ...installed, change: (fn) => fn() }, { runtimes }).ready,
+        },
+      ],
     });
     origin = api.origin;
     token = (
@@ -155,7 +198,6 @@ describe('uploaded plug-in assemblies run by default', { skip: CLR_SKIP }, () =>
         (row) => row.sdkmessageid === createMessage && row.primaryobjecttypecode === 'contoso_widget',
       ).sdkmessagefilterid;
     // The host's wiring (organization-host.mjs): the registered rows are the step list; no handler, descriptor or mode choice.
-    runtimes = new Map();
     items = () => pluginCatalogue({ plugins: overlayRegisteredSteps({ steps: [] }, store), runtimes });
     backend = await createOrganizationBackend({
       store,
@@ -233,6 +275,84 @@ describe('uploaded plug-in assemblies run by default', { skip: CLR_SKIP }, () =>
     const { response, id } = await createWidget('gamma');
     assert.equal(response.status, 204, await response.clone().text());
     assert.equal(await nameOf(id), 'gamma-helper');
+  });
+
+  let platformId;
+  const platformAssembly = async () =>
+    (platformId ??= await post('pluginassemblies', { content: bytes.platform.toString('base64') }));
+  // Registers plug-in type `typename` on `assembly` and an unbound custom API (Text in, Reply out) whose main operation it is.
+  async function customApi(uniquename, assembly, typename) {
+    const type = await post('plugintypes', {
+      typename,
+      name: typename,
+      'pluginassemblyid@odata.bind': `/pluginassemblies(${assembly})`,
+    });
+    await post('customapis', {
+      uniquename,
+      name: uniquename,
+      displayname: uniquename,
+      description: 'Invented uploaded main operation',
+      bindingtype: 0,
+      isfunction: false,
+      allowedcustomprocessingsteptype: 2,
+      'PluginTypeId@odata.bind': `/plugintypes(${type})`,
+      CustomAPIRequestParameters: [
+        { uniquename: 'Text', name: `${uniquename}.Text`, displayname: 'Text', description: 'Text', type: 10 },
+      ],
+      CustomAPIResponseProperties: [
+        { uniquename: 'Reply', name: `${uniquename}.Reply`, displayname: 'Reply', description: 'Reply', type: 10 },
+      ],
+    });
+    return type;
+  }
+
+  // @test-kind contract: user decision 2026-10-30 (C08 "Run by default"): a custom API main operation on uploaded bytes runs without a trusted descriptor; the load fault is the step's local model
+  it('a custom API whose plug-in type is in uploaded content runs those bytes as its main operation, and faults 0x80040224 while they cannot load', async () => {
+    await customApi('contoso_Echo', await platformAssembly(), 'Contoso.Platform.Echo');
+    const previous = uploads.sdkAssembly;
+    uploads.sdkAssembly = path.join(uploads.cacheRoot, 'missing', 'Microsoft.Xrm.Sdk.dll');
+    try {
+      const refused = await call('contoso_Echo', { method: 'POST', body: { Text: 'hello' } });
+      assert.equal(refused.status, 400, await refused.clone().text());
+      const { error } = await refused.json();
+      assert.equal(error.code, '0x80040224');
+      assert.match(error.message, /Contoso\.Platform\.Echo/);
+    } finally {
+      uploads.sdkAssembly = previous;
+    }
+    const answer = await call('contoso_Echo', { method: 'POST', body: { Text: 'hello' } });
+    assert.equal(answer.status, 200, await answer.clone().text());
+    assert.equal((await answer.json()).Reply, 'hello-api', 'no trusted descriptor is needed');
+    const api = store.tableRows('customapi').find((row) => row.uniquename === 'contoso_Echo');
+    assert.ok(runtimes.get(api.customapiid).directory.startsWith(fs.realpathSync(uploads.cacheRoot)));
+    releaseStaleUploadedRuntimes(store, runtimes, items());
+    assert.ok(runtimes.has(api.customapiid), 'the host sweep keeps the main operation runtime of a live custom API');
+  });
+
+  // @test-kind observation: native recorder capture native-r2 (crud, depth, upsert, bulk; every ChangedEntityTypes value, Create/40 at depth 1 included) types it System.Collections.Generic.Dictionary<System.String,System.String>; the first capture predates value typing
+  it('a PostOperation step reads the platform ChangedEntityTypes as a Dictionary<string, string>', async () => {
+    const assembly = await platformAssembly();
+    const type = await post('plugintypes', {
+      typename: 'Contoso.Platform.ChangedTypes',
+      name: 'Contoso.Platform.ChangedTypes',
+      'pluginassemblyid@odata.bind': `/pluginassemblies(${assembly})`,
+    });
+    const filter = store
+      .tableRows('sdkmessagefilter')
+      .find((row) => row.sdkmessageid === createMessage && row.primaryobjecttypecode === 'contoso_gadget');
+    created.push(
+      await post('sdkmessageprocessingsteps', {
+        name: 'Uploaded changed types',
+        stage: 40,
+        mode: 0,
+        rank: 1,
+        'sdkmessageid@odata.bind': `/sdkmessages(${createMessage})`,
+        'sdkmessagefilterid@odata.bind': `/sdkmessagefilters(${filter.sdkmessagefilterid})`,
+        'eventhandler_plugintype@odata.bind': `/plugintypes(${type})`,
+      }),
+    );
+    const response = await call('contoso_gadgets', { method: 'POST', body: { contoso_name: 'one' } });
+    assert.equal(response.status, 204, await response.clone().text());
   });
 
   // @test-kind contract: user decision 2026-10-30 (C08): an uploaded assembly that cannot load faults 0x80040224 and rolls back; the message wording is a local model

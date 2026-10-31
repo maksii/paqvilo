@@ -1780,6 +1780,10 @@ export function tokenKind(claims = {}) {
   return 'delegated';
 }
 
+// Native trial n6-registration: a principal without privileges registering a step is refused naming prvReadSolution,
+// not prvCreateSdkMessageProcessingStep. operation:table -> [privilege, its table].
+const CHECKED_FIRST = { 'create:sdkmessageprocessingstep': ['prvReadSolution', 'solution'] };
+
 /** Principal and privilege checks for the Dataverse layer. Read-only apart from the cached index. */
 export function createPrincipals(store, settings = {}) {
   const idx = () => indexOf(store);
@@ -1804,7 +1808,12 @@ export function createPrincipals(store, settings = {}) {
       name = names[0];
     const owned = ownershipOf(logical, schema, m) === 'user';
     const grants = names.flatMap((n) => grantsNamed(index, user, n, { hierarchy: (Boolean(row) || filter) && owned }));
-    if (!grants.length) throw privilegeDenied(index, settings, user, logical, name, schema);
+    if (!grants.length) {
+      // A privilege native checks before the table's own; it is named only when the request is refused anyway.
+      const [first, table] = CHECKED_FIRST[`${operation}:${logical}`] ?? [];
+      if (first && !grantsNamed(index, user, first).length) throw privilegeDenied(index, settings, user, table, first);
+      throw privilegeDenied(index, settings, user, logical, name, schema);
+    }
     if (!row || ownershipOf(logical, schema, m) === 'org')
       return { m, grants, depth: deepest(grants), privilege: name };
     const idColumn = m.idColumn ?? `${logical}id`;
