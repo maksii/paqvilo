@@ -3525,20 +3525,66 @@ export function createRecordHandlers({
           writeNavigation = reverse[0][0];
           writeRelated = [rowId];
         }
-        for (const relatedId of writeRelated)
-          yield {
-            name: 'store',
-            value: change.call(
-              store,
-              writeMapping.logicalName,
-              writeId,
-              writeNavigation,
-              relatedId,
-              c.identity ?? {},
-              associate,
-              updateOptions(actorOf(c), extra),
-            ),
-          };
+        // A one-to-many association updates the child's lookup as its main operation's delegated write: an Update
+        // pipeline one level deeper, under the message's stage-30 context, with Target as its only input (recorded native
+        // relationsReads). A many-to-many intersect write runs no Update.
+        const delegated =
+          !rel.intersect && store.pluginPipeline
+            ? {
+                context: {
+                  $type: 'ExecutionContext',
+                  values: {
+                    MessageName: associate ? 'Associate' : 'Disassociate',
+                    PrimaryEntityName: 'none',
+                    PrimaryEntityId: { $type: 'Guid', value: '00000000-0000-0000-0000-000000000000' },
+                    Stage: 30,
+                    Mode: 0,
+                    Depth: (finalFrame?.operationDepth ?? 1) + 1,
+                    IsInTransaction: true,
+                    // The delegated Update joins the association's request.
+                    ...Object.fromEntries(
+                      [
+                        ['RequestId', finalFrame?.requestId],
+                        ['OperationId', finalFrame?.operationId],
+                        ['CorrelationId', finalFrame?.correlationId],
+                      ]
+                        .filter(([, value]) => value)
+                        .map(([name, value]) => [name, { $type: 'Guid', value }]),
+                    ),
+                    ...(finalFrame?.createdOnWire
+                      ? { OperationCreatedOn: cloneStateData(finalFrame.createdOnWire) }
+                      : {}),
+                    InputParameters: { $type: 'ParameterCollection', values: cloneStateData(parameters) },
+                    ...(finalFrame?.sharedVariables
+                      ? { SharedVariables: cloneStateData(finalFrame.sharedVariables) }
+                      : {}),
+                    ParentContext: null,
+                  },
+                },
+                depth: (finalFrame?.operationDepth ?? 1) + 1,
+                exactDepth: true,
+              }
+            : null;
+        const previousMain = store.pluginMainOperation;
+        if (delegated) store.pluginMainOperation = delegated;
+        try {
+          for (const relatedId of writeRelated)
+            yield {
+              name: 'store',
+              value: change.call(
+                store,
+                writeMapping.logicalName,
+                writeId,
+                writeNavigation,
+                relatedId,
+                c.identity ?? {},
+                associate,
+                updateOptions(actorOf(c), { ...extra, ...(delegated ? { omitConcurrencyBehavior: true } : {}) }),
+              ),
+            };
+        } finally {
+          store.pluginMainOperation = previousMain;
+        }
         yield* phase(40);
         store.recordCommittedEvent(mapping.logicalName, operation, holder, [], {
           target: {},

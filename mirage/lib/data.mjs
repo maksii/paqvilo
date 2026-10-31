@@ -5953,6 +5953,8 @@ export class DataStore {
           bypassCustomPlugins: options.bypassCustomPlugins === true,
           bypassCustomAsync: options.bypassCustomAsync === true,
           bypassStepIds: options.bypassStepIds,
+          // The association's main-operation Update has no ConcurrencyBehavior input (recorded native relationsReads).
+          ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
         });
       }
     }

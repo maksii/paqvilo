@@ -482,7 +482,8 @@ test('a caller without the table privilege is refused at the stage native refuse
   await attempt('DELETE', `/accounts(${row})`, undefined, []);
 });
 
-// @test-kind parity: native recorder captures 2026-10-30/31 relationsReads (both captures): a $ref on a one-to-many collection navigation runs Associate with Relationship.PrimaryEntityRole Referenced and PrimaryEntityName none around the child's delegated Update
+// @parity-evidence: native recorder captures 2026-10-30/31 relationsReads (native and native-r2): the child Update runs at depth 2 under Associate/30 with Target as its only input; the assertion now checks that delegated write instead of only its presence
+// @test-kind parity: native recorder captures 2026-10-30/31 relationsReads (both captures): a $ref on a one-to-many collection navigation runs Associate with Relationship.PrimaryEntityRole Referenced and PrimaryEntityName none around the child's delegated Update at depth 2 without ConcurrencyBehavior
 test('a one-to-many collection $ref runs Associate (Referenced) around the child Update', async (t) => {
   const parent = '20000000-0000-0000-0000-0000000000a7',
     child = '20000000-0000-0000-0000-0000000000a8';
@@ -517,6 +518,8 @@ test('a one-to-many collection $ref runs Associate (Referenced) around the child
         seen.push({
           at: `${context.MessageName}/${context.Stage}`,
           entity: context.PrimaryEntityName,
+          depth: context.Depth,
+          inputs: Object.keys(context.InputParameters).sort(),
           role:
             context.InputParameters.Relationship?.PrimaryEntityRole ??
             context.InputParameters.Relationship?.primaryEntityRole ??
@@ -546,8 +549,9 @@ test('a one-to-many collection $ref runs Associate (Referenced) around the child
     associates.map((entry) => `${entry.at}:${entry.entity}:${entry.role}`),
     ['Associate/10:none:Referenced', 'Associate/20:none:Referenced', 'Associate/40:none:Referenced'],
   );
-  assert.ok(
-    seen.some((entry) => entry.at === 'Update/20' && entry.entity === 'x_child'),
-    JSON.stringify(seen),
-  );
+  // The child's lookup Update is the association's delegated write: one level deeper, with no ConcurrencyBehavior.
+  const update = seen.find((entry) => entry.at === 'Update/20' && entry.entity === 'x_child');
+  assert.ok(update, JSON.stringify(seen));
+  assert.equal(update.depth, 2);
+  assert.ok(!update.inputs.includes('ConcurrencyBehavior'), update.inputs.join(','));
 });
