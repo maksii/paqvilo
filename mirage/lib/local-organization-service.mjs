@@ -92,7 +92,7 @@ const invalidBulkTable = (table) =>
 
 // The lower-case message names the organization's sdkmessagefilter rows cover for a table; null without a catalogue.
 const lowerId = (value) => String(value && typeof value === 'object' ? value.id : (value ?? '')).toLowerCase();
-function messageFilters(store, entity) {
+export function messageFilters(store, entity) {
   const filters = store.tableRows('sdkmessagefilter');
   if (!filters.length) return null;
   const names = new Map(store.tableRows('sdkmessage').map((row) => [lowerId(row.sdkmessageid), row.name]));

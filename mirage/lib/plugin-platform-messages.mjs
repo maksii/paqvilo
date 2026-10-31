@@ -2,7 +2,7 @@
 // (PreValidation, PreOperation, main operation, PostOperation and the committed asynchronous event), as the recorded
 // native corpus shows: Assign, SetState (executed as SetStateDynamicEntity), GrantAccess, ModifyAccess, RevokeAccess,
 // RetrievePrincipalAccess, RetrieveSharedPrincipalsAndAccess. Upsert runs no pipeline of its own: its existence query
-// and the delegated Create or Update run instead. Merge refuses tables the platform cannot merge.
+// and the delegated Create or Update run instead. Merge runs the Web API Merge main operation on a table with a Merge message filter and refuses others.
 import { DataError } from './data-error.mjs';
 import { cloneStateData } from './state-clone.mjs';
 import { initializePluginOperation } from './plugin-operation-context.mjs';
@@ -11,13 +11,12 @@ import { pluginDepthFault, PLUGIN_MAX_DEPTH, pluginExecutionDepth, recordToSdkEn
 import { mainOperationParent, recordRequestRootChange, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
 import { internalStepReference, setInternalStageSource } from './plugin-internal-stage.mjs';
 import { pluginEntryStep } from './plugin-message-admission.mjs';
-import { authorizeGrant, sdkRecordKey } from './local-organization-service.mjs';
+import { authorizeGrant, messageFilters, sdkRecordKey, sdkValueToRecord } from './local-organization-service.mjs';
+import { relationshipsOf } from './dataverse-standard.mjs';
 import { ACCESS_RIGHTS, createPrincipals, grantAccessNow, revokeAccessNow } from './dataverse-security.mjs';
 
 const EMPTY = '00000000-0000-0000-0000-000000000000';
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-// The tables with a Merge message filter (dataverse-record-messages.mjs implements Merge for them over the Web API).
-const MERGE_TABLES = new Set(['account', 'contact', 'lead', 'incident']);
 const SHAPES = {
   Assign: ['Target', 'Assignee'],
   SetState: ['EntityMoniker', 'State', 'Status'],
@@ -551,8 +550,52 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
     }
     case 'Merge': {
       const target = reference(parameters.Target, 'Target');
-      if (!MERGE_TABLES.has(target.logicalName)) throw mergeUnsupported(target.logicalName);
-      return fail('SDK Merge requires the Web API Merge message adapter.');
+      // The table's Merge message filter makes Merge available (native sdkMerge: none on a custom table, 0x80040800).
+      if (!messageFilters(store, target.logicalName)?.has('merge')) throw mergeUnsupported(target.logicalName);
+      const subordinate = {
+        logicalName: target.logicalName,
+        id: parameters.SubordinateId?.$type === 'Guid' ? parameters.SubordinateId.value : null,
+      };
+      const content = parameters.UpdateContent;
+      if (!GUID.test(subordinate.id ?? '') || same(subordinate.id, target.id))
+        fail('SDK Merge requires a SubordinateId Guid of another record.', 'InvalidArgument', 400, {
+          innerCode: '0x80040203',
+        });
+      if (content != null && content.$type !== 'Entity') fail('SDK Merge UpdateContent requires an Entity.');
+      if (typeof parameters.PerformParentingChecks !== 'boolean')
+        fail('The PerformParentingChecks parameter is required.', 'InvalidArgument', 400, { innerCode: '0x80040203' });
+      const mapping = store.resolveMapping(target.logicalName),
+        targetRow = existing(target, 'update'),
+        subordinateRow = existing(subordinate, 'update');
+      const values = Object.fromEntries(
+        Object.entries(sdkValueToRecord(content ?? { $type: 'Entity', attributes: {} })).filter(
+          ([column]) => column !== mapping.idColumn,
+        ),
+      );
+      // The main operation is the Web API Merge's (dataverse-record-messages.mjs): the same changes, as Updates.
+      named(
+        {
+          Target: parameters.Target,
+          SubordinateId: parameters.SubordinateId,
+          UpdateContent: content,
+          PerformParentingChecks: parameters.PerformParentingChecks,
+        },
+        target,
+        () => {
+          const changes = mergeChanges(store, mapping, targetRow, subordinateRow, {
+            content: values,
+            performParentingChecks: parameters.PerformParentingChecks,
+          });
+          innerUpdate(target, changes.target);
+          innerUpdate(subordinate, changes.subordinate);
+          for (const { childMapping, row, rel } of changes.children)
+            innerUpdate(
+              { logicalName: childMapping.logicalName, id: row[childMapping.idColumn] },
+              { [rel.to]: { id: target.id, logical_name: mapping.logicalName } },
+            );
+        },
+      );
+      return respond();
     }
   }
 }
@@ -630,6 +673,69 @@ export async function runEntryMessage(store, { message, entity, id, inputs, cont
     autoTransact: !['RetrievePrincipalAccess', 'RetrieveSharedPrincipalsAndAccess'].includes(message),
     main,
   });
+}
+
+// Never copied by a merge: ownership, audit and state columns.
+const MERGE_SYSTEM_COLUMNS = new Set([
+  'createdby',
+  'createdon',
+  'createdonbehalfby',
+  'modifiedby',
+  'modifiedon',
+  'modifiedonbehalfby',
+  'ownerid',
+  'owninguser',
+  'owningteam',
+  'owningbusinessunit',
+  'versionnumber',
+  'statecode',
+  'statuscode',
+  'masterid',
+]);
+const refOf = (value) => (value !== null && typeof value === 'object' ? value.id : value);
+
+/**
+ * The writes of a Merge main operation, for the Web API and the SDK: target gets the subordinate's values it lacks and
+ * content (the UpdateContent columns; an incident merge ignores them), subordinate is deactivated (and takes masterid
+ * when declared), and its child rows ({ childMapping, row, rel }; rel.to is the child's lookup column) move to the target.
+ * performParentingChecks refuses two different non-null parents on the table's self lookup.
+ * ponytail: the missing-parent variant of PerformParentingChecks (async cascade docs) is not modelled.
+ */
+export function mergeChanges(store, mapping, targetRow, subRow, { content = {}, performParentingChecks = false } = {}) {
+  const { idColumn } = mapping,
+    fields = mapping.fields ?? {},
+    relationships = Object.entries(relationshipsOf(store, mapping.logicalName, mapping.relationships));
+  const sameRef = (a, b) => a != null && b != null && same(a, b);
+  if (performParentingChecks)
+    for (const [nav, rel] of relationships) {
+      if (rel.many || rel.entity !== mapping.logicalName) continue;
+      const left = refOf(targetRow[rel.from ?? nav]),
+        right = refOf(subRow[rel.from ?? nav]);
+      if (left != null && right != null && !sameRef(left, right))
+        fail('The Target and Subordinate records have different parent records.', 'InvalidRequest', 400, {
+          innerCode: '0x80040203',
+        });
+    }
+  const copied = Object.fromEntries(
+    Object.keys(fields)
+      .filter(
+        (name) =>
+          name !== idColumn && !MERGE_SYSTEM_COLUMNS.has(name) && subRow[name] != null && targetRow[name] == null,
+      )
+      .map((name) => [name, subRow[name]]),
+  );
+  const children = [];
+  for (const [, rel] of relationships) {
+    if (!rel.many || rel.intersect) continue;
+    const childMapping = store.resolveMapping(rel.entity);
+    for (const row of store.tableRows(childMapping.logicalName))
+      if (sameRef(refOf(row[rel.to]), refOf(subRow[rel.from ?? idColumn]))) children.push({ childMapping, row, rel });
+  }
+  return {
+    target: { ...copied, ...(mapping.logicalName === 'incident' ? {} : content) },
+    subordinate: { statecode: 1, ...(Object.hasOwn(fields, 'masterid') ? { masterid: targetRow[idColumn] } : {}) },
+    children,
+  };
 }
 
 /** The platform's refusal of Merge on a table without a Merge message filter (recorded native fault 0x80040800). */
