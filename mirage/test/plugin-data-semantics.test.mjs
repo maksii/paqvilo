@@ -434,3 +434,91 @@ test('a $ref association of a 1:N child sends a lookup-only Update 10 Target and
     assert(!keys(stage).includes('versionnumber'));
   }
 });
+
+// @test-kind parity: native-r2 currency Update/40 and UpdateMultiple/40 (7050, 7053), Web API CreateMultiple/40 and bridged Create/40 (7082, 7086), nullSemantics Update/40 full and all-null PATCH (6965, 6991)
+test('a PATCH that writes a money value gives Update 40 and its async copy the rate and base amount; a null PATCH keeps only the null base', async (t) => {
+  const f = await fixture(t, undefined, { extraSteps: [{ ...step(32, 'Update', 40), mode: 1 }] });
+  assert((await f.request('POST', '/x_items', { x_itemid: id, x_name: 'Created' })).status < 300);
+  f.seen.length = 0;
+  const written = await f.request('PATCH', `/x_items(${id})`, { x_amount: 3.5 }, { 'If-Match': '*' });
+  assert(written.status < 300, await written.text());
+  await f.backend.settle();
+  const updates = (stage) => f.seen.filter((entry) => entry.message === 'Update' && entry.stage === stage);
+  assert.equal(updates(20).length, 1);
+  for (const name of ['exchangerate', 'x_amount_base'])
+    assert(!Object.hasOwn(updates(20)[0].target, name), `Update 20 Target omits ${name}`);
+  assert.equal(updates(40).length, 2);
+  for (const entry of updates(40)) {
+    assert.equal(entry.target.exchangerate, 1);
+    assert.equal(entry.target.x_amount_base, 3.5);
+  }
+  f.seen.length = 0;
+  const cleared = await f.request('PATCH', `/x_items(${id})`, { x_amount: null }, { 'If-Match': '*' });
+  assert(cleared.status < 300, await cleared.text());
+  await f.backend.settle();
+  assert.equal(updates(40).length, 2);
+  for (const entry of updates(40)) {
+    assert(Object.hasOwn(entry.target, 'x_amount_base'));
+    assert.equal(entry.target.x_amount_base, null);
+    assert(!Object.hasOwn(entry.target, 'exchangerate'));
+  }
+});
+
+// @test-kind parity: native-r2 currency Update/40 and UpdateMultiple/40 (7050, 7053), Web API CreateMultiple/40 and bridged Create/40 (7082, 7086), nullSemantics Update/40 full and all-null PATCH (6965, 6991)
+test('a Web API CreateMultiple gives its stage-40 Targets the rate and base amounts; stage 20 has neither', async (t) => {
+  const bulk = [];
+  const f = await fixture(
+    t,
+    (context) => {
+      if (context.MessageName === 'CreateMultiple')
+        bulk.push({ stage: context.Stage, targets: context.InputParameters.Targets });
+    },
+    { extraSteps: [step(33, 'CreateMultiple', 20), step(34, 'CreateMultiple', 40)] },
+  );
+  const response = await f.request('POST', '/x_items/Microsoft.Dynamics.CRM.CreateMultiple', {
+    Targets: [
+      { x_name: 'One', x_amount: 3.5 },
+      { x_name: 'Two', x_amount: 7 },
+    ],
+  });
+  assert.equal(response.status, 200, await response.text());
+  const entities = (stage) => bulk.find((entry) => entry.stage === stage).targets;
+  for (const entity of entities(20)) assert(!Object.hasOwn(entity.attributes, 'exchangerate'));
+  for (const entity of entities(20)) assert(!Object.hasOwn(entity.attributes, 'x_amount_base'));
+  assert.deepEqual(
+    entities(40).map((entity) => entity.attributes.x_amount_base.value),
+    ['3.5', '7'],
+  );
+  for (const entity of entities(40)) assert.equal(entity.attributes.exchangerate.value, '1.000000000000');
+  for (const entry of f.seen.filter((item) => item.message === 'Create' && item.stage === 20))
+    assert(!Object.hasOwn(entry.target, 'x_amount_base'));
+  const creates = f.seen.filter((item) => item.message === 'Create' && item.stage === 40);
+  assert.deepEqual(
+    creates.map((entry) => entry.target.x_amount_base),
+    [3.5, 7],
+  );
+  for (const entry of creates) assert.equal(entry.target.exchangerate, 1);
+});
+
+// @test-kind parity: native-r2 currency Update/40 and UpdateMultiple/40 (7050, 7053), Web API CreateMultiple/40 and bridged Create/40 (7082, 7086), nullSemantics Update/40 full and all-null PATCH (6965, 6991)
+test('a Web API UpdateMultiple money write gives its stage-40 Targets the rate and base amount; stage 20 has neither', async (t) => {
+  const bulk = [];
+  const f = await fixture(
+    t,
+    (context) => {
+      if (context.MessageName === 'UpdateMultiple')
+        bulk.push({ stage: context.Stage, targets: context.InputParameters.Targets });
+    },
+    { extraSteps: [step(35, 'UpdateMultiple', 20), step(36, 'UpdateMultiple', 40)] },
+  );
+  assert((await f.request('POST', '/x_items', { x_itemid: id, x_name: 'Created' })).status < 300);
+  const response = await f.request('POST', '/x_items/Microsoft.Dynamics.CRM.UpdateMultiple', {
+    Targets: [{ x_itemid: id, x_amount: 3.5 }],
+  });
+  assert(response.status < 300, await response.text());
+  const bulkAt = (stage) => bulk.find((entry) => entry.stage === stage).targets[0].attributes;
+  assert(!Object.hasOwn(bulkAt(20), 'exchangerate'));
+  assert(!Object.hasOwn(bulkAt(20), 'x_amount_base'));
+  assert.equal(bulkAt(40).exchangerate.value, '1.000000000000');
+  assert.equal(bulkAt(40).x_amount_base.value, '3.5');
+});

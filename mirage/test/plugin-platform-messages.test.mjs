@@ -1,8 +1,12 @@
 // @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30 (sdkMessages, sdkMerge, ownerAndState, bulk and associate scenarios), reproduced by the local recorder replay
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DataStore } from '../lib/data.mjs';
-import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
+// @parity-evidence: import lines only (no assertion changes); the appended Assign test cites native sdkMessages 5179
+import { DataStore, emptyState } from '../lib/data.mjs';
+import { dispatchSdkCall, recordToSdkEntity } from '../lib/plugin-clr.mjs';
+import { createPrincipals, ensureSecurityModel } from '../lib/dataverse-security.mjs';
+import { createRecordHandlers, createRecordHooks } from '../lib/dataverse-records.mjs';
+import { createChangeLog } from '../lib/dataverse-changes.mjs';
 import { assertPluginMessageAdmission, pluginMessageHasPipeline } from '../lib/plugin-message-admission.mjs';
 import { pluginStepMatchesEntity, pluginUnsupported } from '../lib/exported-plugins.mjs';
 
@@ -422,4 +426,126 @@ test('a read observer receives Web API lookup properties as their logical attrib
   const query = odataToSdkQuery('widget', { $select: '_ownerid_value,title', $filter: `_ownerid_value eq ${caller}` });
   assert.deepEqual(query.columnSet.columns, ['ownerid', 'title']);
   assert.equal(query.criteria.conditions[0].attributeName, 'ownerid');
+});
+
+// A user-owned widget on the records layer: the owner columns come from the principals' system columns (as served).
+const ASSIGNEE = 'Invented Assignee';
+const SETTINGS = {
+  organizationId: '6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f',
+  tenantId: 'tenant-test',
+  uniqueName: 'testorg',
+  friendlyName: 'Test Org',
+  version: '9.2.25041.00000',
+  users: [
+    {
+      objectId: 'aaaaaaaa-0000-4000-8000-000000000011',
+      upn: 'caller@example.test',
+      displayName: 'Invented caller',
+      roles: ['System Administrator'],
+    },
+    {
+      objectId: 'aaaaaaaa-0000-4000-8000-000000000012',
+      upn: 'assignee@example.test',
+      displayName: ASSIGNEE,
+      roles: [],
+    },
+  ],
+};
+async function ownedWidgetStore() {
+  const state = emptyState();
+  state.mappings.widget = {
+    logicalName: 'widget',
+    entitySet: 'widgets',
+    idColumn: 'widgetid',
+    nameColumn: 'title',
+    ownership: 'UserOwned',
+    fields: { title: { dataverseType: 'nvarchar' } },
+  };
+  const store = new DataStore({ state });
+  await ensureSecurityModel(store, SETTINGS);
+  const principals = createPrincipals(store, SETTINGS);
+  const callerId = principals.byObjectId(SETTINGS.users[0].objectId).systemuserid,
+    assigneeId = principals.byObjectId(SETTINGS.users[1].objectId).systemuserid;
+  store.state.tables.widget = [
+    {
+      widgetid: id,
+      title: 'Before',
+      ownerid: { id: callerId, logical_name: 'systemuser' },
+      owninguser: { id: callerId, logical_name: 'systemuser' },
+    },
+  ];
+  store.recordPipeline = createRecordHandlers({
+    store,
+    change: (fn) => fn(),
+    principals,
+    changes: createChangeLog(store),
+    hooks: createRecordHooks(),
+  });
+  return { store, callerId, assigneeId };
+}
+
+// @test-kind parity: native and native-r2 sdkMessages 5179, imagesOrder 7843 and soapMessages 5962: Update/20 under Assign/30 carries owninguser, owningbusinessunit, a named ownerid and owneridyominame equal to the assignee's fullname
+test('an SDK Assign Update/20 Target names the assignee through ownerid and owneridyominame', async () => {
+  const { store, callerId, assigneeId } = await ownedWidgetStore();
+  const targets = [];
+  store.setPluginPipeline(
+    (context) => {
+      if (context.operation === 'update' && context.stage === 20) targets.push(structuredClone(context.target));
+    },
+    (context) => ['assign', 'update'].includes(context.operation),
+  );
+  const response = await dispatchSdkCall({
+    store,
+    profile: { ...profile, userId: callerId, grants: [{ entity: 'widget', operations: ['read', 'update'] }] },
+    sdkFromSandbox: true,
+    message: {
+      method: 'Execute',
+      userId: callerId,
+      arguments: [
+        {
+          $type: 'OrganizationRequest',
+          requestName: 'Assign',
+          parameters: {
+            $type: 'ParameterCollection',
+            values: {
+              Target: { $type: 'EntityReference', logicalName: 'widget', id, name: null },
+              Assignee: { $type: 'EntityReference', logicalName: 'systemuser', id: assigneeId, name: null },
+            },
+          },
+        },
+      ],
+    },
+  });
+  assert.equal(response.responseName, 'Assign');
+  assert.equal(targets.length, 1);
+  const [target] = targets;
+  for (const key of ['owninguser', 'owningbusinessunit', 'ownerid', 'owneridyominame'])
+    assert.ok(Object.hasOwn(target, key), key);
+  assert.equal(target.ownerid.name, ASSIGNEE);
+  assert.equal(target.owneridyominame, ASSIGNEE);
+  // A Target projection names a lookup only when the Target also carries its yominame (the native Assign Target).
+  const projected = recordToSdkEntity(store, 'widget', target, { allColumns: true, target: true });
+  assert.equal(projected.attributes.ownerid.name, ASSIGNEE);
+});
+
+// @test-kind unproven: local guard only; no native capture of a Web API ownerid bind's Update Target is reproduced here, so the absence of owneridyominame on that path is not proven
+test('a Web API ownerid bind does not add owneridyominame to its Update Target', async () => {
+  const { store, callerId, assigneeId } = await ownedWidgetStore();
+  const targets = [];
+  store.setPluginPipeline(
+    (context) => {
+      if (context.operation === 'update' && context.stage === 20) targets.push(structuredClone(context.target));
+    },
+    (context) => context.operation === 'update',
+  );
+  await store.recordPipeline.updateInternal(
+    { userId: callerId, identity: { admin: true, id: callerId, systemUserId: callerId } },
+    'widget',
+    id,
+    { 'ownerid@odata.bind': `/systemusers(${assigneeId})` },
+    {},
+  );
+  assert.equal(store.tableRows('widget')[0].ownerid.id, assigneeId);
+  assert.equal(targets.length, 1);
+  assert.equal(Object.hasOwn(targets[0], 'owneridyominame'), false);
 });

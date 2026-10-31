@@ -509,7 +509,7 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
     attributes = {},
     formattedValues = {};
   let platform;
-  const reference = (logicalName, id, suppliedName, partitionId) => {
+  const reference = (logicalName, id, suppliedName, partitionId, key) => {
     let target;
     try {
       target = store.resolveMapping(logicalName);
@@ -533,9 +533,10 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
             )
         : null,
       name = suppliedName ?? record?.[primaryName] ?? null;
-    // A message Target's references carry no resolved names (native Create/Update Targets: Name null);
-    // retrieved rows and images name them.
-    return { $type: 'EntityReference', logicalName, id, name: columns.target ? null : name };
+    // A message Target's references carry no resolved names (native Create/Update Targets: Name null), unless the
+    // Target also carries the lookup's yominame (Assign's ownerid and owneridyominame); retrieved rows and images name them.
+    const namedTarget = key != null && Object.hasOwn(row ?? {}, key + 'yominame') && row[key + 'yominame'] != null;
+    return { $type: 'EntityReference', logicalName, id, name: columns.target && !namedTarget ? null : name };
   };
   for (const [key, value] of Object.entries(row ?? {})) {
     if (!columns.allColumns && !(columns.columns ?? []).includes(key)) continue;
@@ -554,7 +555,7 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
         {},
       type = String(field.dataverseType ?? field.type ?? '').toLowerCase();
     if (value && typeof value === 'object' && value.id && value.logical_name)
-      attributes[key] = reference(value.logical_name, value.id, value.name, value.partitionid ?? row[`${key}pid`]);
+      attributes[key] = reference(value.logical_name, value.id, value.name, value.partitionid ?? row[`${key}pid`], key);
     else if (['lookup', 'customer', 'owner'].includes(type) && typeof value === 'string') {
       let targets = field.targets;
       if (targets === undefined && type === 'lookup') {
@@ -597,7 +598,7 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
         !/^[a-z][\w]*$/i.test(targets[0])
       )
         fail('SDK lookup GUID requires one exact source-declared target table.', 'LocalPluginSdkUnsupported', 501);
-      attributes[key] = reference(targets[0], canon(value), undefined, row[`${key}pid`]);
+      attributes[key] = reference(targets[0], canon(value), undefined, row[`${key}pid`], key);
     } else if (['money', 'decimal'].includes(type)) {
       let text = String(value?.value ?? value);
       // A stored decimal (an image row, or a value only the platform writes) carries its storage scale: ten

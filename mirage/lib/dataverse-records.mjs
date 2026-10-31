@@ -19,7 +19,7 @@ import { recordToSdkEntity } from './plugin-clr.mjs';
 import { odataToSdkQuery } from './plugin-query.mjs';
 import { upsertSourceOperation } from './plugin-delegation.mjs';
 import { isElastic, recordKey, samePartition } from './dataverse-elastic.mjs';
-import { parseEntityReference, parseFetchXml, uncheckedLookup } from './data.mjs';
+import { notInTarget, parseEntityReference, parseFetchXml, uncheckedLookup } from './data.mjs';
 import { DATAVERSE_SYSTEM_COLUMNS, parseXmlDocument, webApiPagingCookie } from './fetchxml-engine.mjs';
 import {
   expressionPaths,
@@ -33,7 +33,7 @@ import {
 import { assertExpand, assertExpandText, childLinks } from './dataverse-expand.mjs';
 import { FORMATTED, NAVIGATION, createWebApiFormatter } from './webapi-format.mjs';
 import { baseCurrencyRow, ownershipOf, privilegeDeniedError, privilegeName, uuidV5 } from './dataverse-security.mjs';
-import { dateTimeBehavior, fieldKind, formattedValue, guidKey, isDateOnlyField } from './dataverse-values.mjs';
+import { dateTimeBehavior, fieldKind, formattedValue, guidKey, isDateOnlyField, isoUtc } from './dataverse-values.mjs';
 import { fixedScaleNumeric } from './exact-numeric.mjs';
 import { isSecuredField, maskedOperand } from './dataverse-fls.mjs';
 import { createChangeLog, encodeDeltaToken, nextRowVersion } from './dataverse-changes.mjs';
@@ -2845,7 +2845,8 @@ export function createRecordHandlers({
     const targets = [],
       stamps = [],
       derived = [];
-    const now = new Date(store.clock.now()).toISOString();
+    // Whole seconds, as a single write stamps them (touchRow, createdon ??= in data.mjs).
+    const now = isoUtc(store.clock.now());
     for (const target of raw) {
       const text = target[mapping.idColumn];
       if (update && text == null) throw invalid(`The ${mapping.idColumn} property is required.`);
@@ -2866,16 +2867,22 @@ export function createRecordHandlers({
             fieldKind(store.fieldDefinition(mapping.logicalName, name, fieldsOf)) === 'boolean'
           )
             input[name] = structuredClone(value);
+      // UpdateMultiple's Targets name the key (native bulk: the UpdateMultiple and bridged Update Targets at 10/20/40).
       targets.push({
-        ...recordToSdkEntity(store, mapping.logicalName, input),
+        ...recordToSdkEntity(store, mapping.logicalName, update ? { ...input, [mapping.idColumn]: id } : input),
         id: id ?? '00000000-0000-0000-0000-000000000000',
       });
       derived.push(created);
-      stamps.push({
-        ...store.systemColumnsFor(systemColumns(c, !update), mapping, data),
-        ...(update ? { modifiedon: now } : { createdon: now, modifiedon: now }),
-        ...created,
-      });
+      // Columns a write's Target never shows (versionnumber, empty on-behalf/team lookups) are left out (data.mjs).
+      stamps.push(
+        Object.fromEntries(
+          Object.entries({
+            ...store.systemColumnsFor(systemColumns(c, !update), mapping, data),
+            ...(update ? { modifiedon: now } : { createdon: now, modifiedon: now }),
+            ...created,
+          }).filter(([name, value]) => !notInTarget(name, value)),
+        ),
+      );
     }
     return executeBulkRecordsAsync({
       store,

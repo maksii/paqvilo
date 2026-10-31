@@ -7,6 +7,7 @@ import { messageNameOf, pluginStepMatchesEntity } from './exported-plugins.mjs';
 import { initializePluginOperation } from './plugin-operation-context.mjs';
 import { pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
 import { bulkTargetsCollection } from './plugin-single-multiple.mjs';
+import { fieldKind } from './dataverse-values.mjs';
 import { isDeepStrictEqual } from 'node:util';
 const emptyId = '00000000-0000-0000-0000-000000000000';
 const samePrimary = (target, primary) =>
@@ -252,7 +253,11 @@ function* bulkSteps(
       ...extra,
     });
     {
-      const encoded = recordToSdkEntity(store, mapping.logicalName, singleFrame.target);
+      const encoded = recordToSdkEntity(store, mapping.logicalName, singleFrame.target, {
+        allColumns: true,
+        target: true,
+        postOperation: stage === 40,
+      });
       if (!Object.hasOwn(target.attributes, primary) || !samePrimary(encoded, primary))
         delete encoded.attributes[primary];
       target.attributes = encoded.attributes;
@@ -450,6 +455,38 @@ function* bulkSteps(
     if (update) {
       const persisted = new Map(writeIndexes.map((index) => [targets[index].id, rows[index]]));
       for (const [index, target] of targets.entries()) rows[index] ??= persisted.get(target.id);
+    }
+    // The currency columns the main operation derived on each written row reach the stage-40 and async Targets, as a
+    // single Create's and Update's do (dataverse-currency.mjs; commitUpdateSteps and createStepsCore).
+    const moneyColumn = (name) => fieldKind(store.fieldDefinition(mapping.logicalName, name)) === 'money';
+    for (const index of writeIndexes) {
+      const row = rows[index],
+        target = targets[index],
+        derived = {};
+      if (update) {
+        const moneyKeys = Object.keys(target.attributes).filter((name) => !name.endsWith('_base') && moneyColumn(name));
+        for (const name of moneyKeys)
+          if (Object.hasOwn(row, `${name}_base`) || Object.hasOwn(previous[index], `${name}_base`))
+            derived[`${name}_base`] = structuredClone(row[`${name}_base`] ?? null);
+        if (
+          moneyKeys.length &&
+          Object.hasOwn(row, 'exchangerate') &&
+          !isDeepStrictEqual(row.exchangerate, previous[index].exchangerate)
+        )
+          derived.exchangerate = structuredClone(row.exchangerate);
+      } else {
+        for (const name of Object.keys(row))
+          if (name.endsWith('_base') && moneyColumn(name.slice(0, -5))) derived[name] = structuredClone(row[name]);
+        if (Object.hasOwn(row, 'exchangerate')) derived.exchangerate = structuredClone(row.exchangerate);
+      }
+      const missing = Object.fromEntries(
+        Object.entries(derived).filter(([name]) => !Object.hasOwn(target.attributes, name)),
+      );
+      if (Object.keys(missing).length)
+        target.attributes = {
+          ...target.attributes,
+          ...recordToSdkEntity(store, mapping.logicalName, missing, { allColumns: true, target: true }).attributes,
+        };
     }
     holder.bulkIds = rows.map((row) => row[primary]);
     yield* phase(40, rows);

@@ -147,7 +147,7 @@ const rowCountOf = (value) =>
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 // Row columns a write's Target never shows: the row version, and empty on-behalf/team ownership lookups
 // (native Create Targets carry an empty modifiedonbehalfby, never an empty createdonbehalfby or owningteam).
-const notInTarget = (name, value) =>
+export const notInTarget = (name, value) =>
   name === 'versionnumber' || (value == null && (name === 'createdonbehalfby' || name === 'owningteam'));
 // Update stamps the platform adds to the Target after PreValidation (native PreOperation/PostOperation Update).
 const UPDATE_TARGET_STAMPS = ['modifiedon', 'modifiedby', 'modifiedonbehalfby'];
@@ -5513,9 +5513,25 @@ export class DataStore {
         ? ['owninguser', 'owningteam', 'owningbusinessunit']
         : ['owningbusinessunit'])
         if (row[name] != null && !own(target, name)) target[name] = clone(row[name]);
+    // Native Assign's Target names the new owner: ownerid and owneridyominame carry the assignee's primary name.
+    // A store that maps no table for the owner (a test store) leaves the reference unnamed.
+    let assigneeName = null;
+    if (ownerChanged && options.assignOwner) {
+      let owner = null;
+      try {
+        owner = this.resolveMapping(row.ownerid.logical_name);
+      } catch (error) {
+        if (error.code !== 'UnknownEntity') throw error;
+      }
+      if (owner) {
+        assigneeName = primaryNameValue(owner, this.findByKey(owner, row.ownerid.id)) ?? '';
+        target.ownerid = { ...clone(row.ownerid), name: assigneeName };
+      }
+    }
     if (onBehalf && options.assignOwner) row.modifiedonbehalfby = clone(row.modifiedby);
     for (const name of UPDATE_TARGET_STAMPS)
       if (authorizedWrite && !own(target, name) && own(row, name)) target[name] = clone(row[name]);
+    if (assigneeName !== null) target.owneridyominame = assigneeName;
     // A write of a date-time value also stamps the row's time zone rule version (native Update 20/40 and async).
     if (
       authorizedWrite &&
@@ -5561,6 +5577,27 @@ export class DataStore {
       );
     }
     options.mainOperation?.(mapping, 'update', row, latest, target, { identity, options });
+    // The derived currency columns the main operation wrote reach the stage-40 and asynchronous Targets of a written money
+    // column (native currency and nullSemantics: Update/40 and async end with them; stages 10 and 20 do not).
+    const moneyKeys = authorizedWrite
+      ? Object.keys(target).filter(
+          (name) =>
+            !name.endsWith('_base') &&
+            fieldKind(this.fieldDefinition(mapping.logicalName, name, options.metadata)) === 'money',
+        )
+      : [];
+    const derivedTarget = {};
+    for (const name of moneyKeys)
+      if (!own(target, `${name}_base`) && (own(row, `${name}_base`) || own(previous, `${name}_base`)))
+        derivedTarget[`${name}_base`] = clone(row[`${name}_base`] ?? null);
+    if (
+      moneyKeys.length &&
+      own(row, 'exchangerate') &&
+      !own(target, 'exchangerate') &&
+      !isDeepStrictEqual(row.exchangerate, previous.exchangerate)
+    )
+      derivedTarget.exchangerate = clone(row.exchangerate);
+    Object.assign(target, derivedTarget);
     const effects = this.applyPlugins(mapping.logicalName, 'update', row, rows[index], identity);
     // Declarative plugins mutate the row directly, independently of Target. Only changed columns reach the
     // attachment policy, so files already stored are not revalidated.
@@ -5589,6 +5626,18 @@ export class DataStore {
       submitted = Object.keys(target),
       beforePost = prePostOperationFrame(this.pluginFrames?.get(row)),
       operationMark = this.operationMark();
+    // The asynchronous steps read the Target the queued frame holds, so the derived values join it as Create's do.
+    const queuedTarget = beforePost.inputParameters?.values?.Target;
+    if (queuedTarget?.$type === 'Entity' && Object.keys(derivedTarget).length) {
+      const missing = Object.fromEntries(
+        Object.entries(derivedTarget).filter(([name]) => !own(queuedTarget.attributes ?? {}, name)),
+      );
+      if (Object.keys(missing).length)
+        Object.assign(
+          (queuedTarget.attributes ??= {}),
+          recordToSdkEntity(this, mapping.logicalName, missing, { allColumns: true, target: true }).attributes,
+        );
+    }
     if (isElastic(mapping)) {
       this.recordCommittedEvent(mapping.logicalName, 'update', row, Object.keys(target), {
         target: committedTarget(),
