@@ -31,7 +31,14 @@ import {
 } from './plugin-sdk-query.mjs';
 import { isExactNumeric } from './exact-numeric.mjs';
 import { dateTimeBehavior } from './dataverse-values.mjs';
-import { imageAttributes } from './plugin-images.mjs';
+import {
+  BUSINESS_ENTITY_IMAGE,
+  PRIMARY_NAME_IMAGE,
+  imageAttributes,
+  primaryNameAttributes,
+  primaryNameSide,
+  stageImageSet,
+} from './plugin-images.mjs';
 import { captureSdkResponse } from './plugin-response.mjs';
 import { isElastic, samePartition } from './dataverse-elastic.mjs';
 import { convertSdkQuery } from './plugin-query-conversion.mjs';
@@ -2138,7 +2145,8 @@ export function clrContext({
   const image = (row, registration) => {
     if (!row) return null;
     const { formattedValues: _, ...value } = recordToSdkEntity(store, entity, imageAttributes(row), {
-      allColumns: !registration.attributes?.length,
+      // PreBusinessEntity names its attributes exactly, also none.
+      allColumns: !registration.exact && !registration.attributes?.length,
       columns: registration.attributes ?? [],
       image: true,
     });
@@ -2151,13 +2159,18 @@ export function clrContext({
   };
   const asynchronous = (step.contract?.mode ?? 0) === 1,
     crud = ['create', 'update', 'delete'].includes(operation),
+    bulk = ['createmultiple', 'updatemultiple'].includes(operation),
+    primaryNameOn = primaryNameSide(operation),
     nameColumn = primary ? store.resolveMapping(entity).nameColumn : null;
-  // The platform's own image for asynchronous registrations: the row's primary name and key (pre for Delete).
-  const asyncPrimaryName = () => {
-    const row = operation === 'delete' ? previous : record;
+  // The platform's own image for asynchronous registrations: the row's primary name and key, from the row before the
+  // operation for Delete and Assign (native crud, sdkMessages).
+  const asyncPrimaryName = (row) => {
     if (!row || !nameColumn) return null;
     const columns = [nameColumn, primary];
-    return recordToSdkEntity(store, entity, imageAttributes(row, columns), { allColumns: false, columns });
+    return recordToSdkEntity(store, entity, primaryNameAttributes(row, nameColumn, primary), {
+      allColumns: false,
+      columns,
+    });
   };
   const collectImages = (registrations, post, target) => {
     for (const registration of registrations)
@@ -2168,46 +2181,82 @@ export function clrContext({
   const postAvailable = stage === 40 && operation !== 'delete';
   const preImages = collectImages(step.images ?? [], false, {}),
     postImages = postAvailable ? collectImages(step.images ?? [], true, {}) : {};
-  if (asynchronous && crud) {
-    const name = asyncPrimaryName();
-    if (name) (operation === 'delete' ? preImages : postImages).AsynchronousStepPrimaryName = name;
-  }
-  // IPluginExecutionContext4 collections of a single-record message: every registration of the stage (see
-  // runPluginPhase stageImages), plus the asynchronous primary-name image at PostOperation.
-  const stageCollection = (viewStage, post) => {
-    const registrations =
-      frame.stageImages?.[viewStage]?.registrations ?? (viewStage === stage ? [step.images ?? []] : []);
-    const values = {};
-    if (!post || (viewStage === 40 && operation !== 'delete'))
-      for (const images of registrations) collectImages(images, post, values);
-    if (
-      crud &&
-      viewStage === 40 &&
-      post === (operation !== 'delete') &&
-      (asynchronous || frame.stageImages?.[40]?.asynchronous)
-    ) {
-      const name = asyncPrimaryName();
-      if (name) values.AsynchronousStepPrimaryName = name;
-    }
-    return {
-      $type: 'EntityImageCollectionArray',
-      values: Object.keys(values).length ? [{ $type: 'EntityImageCollection', values }] : [],
-    };
+  // A bulk-origin *Multiple step's own collections hold no primary-name image (native bulk); its Context4 sets do.
+  // A single-origin *Multiple lane names its one target's row (native crud ev 1648/1653).
+  const laneRow = () => {
+    const id = frame.targets?.[0]?.id ?? record?.bulkIds?.[0];
+    return (
+      (primaryNameOn === 'pre' ? frame.previousRecords?.[0] : frame.records?.[0]) ??
+      store.tableRows(entity).find((row) => canon(row[primary]) === canon(id))
+    );
   };
-  const bulk = ['createmultiple', 'updatemultiple'].includes(operation),
-    messageName =
-      frame.customApi?.name ??
-      {
-        retrievemultiple: 'RetrieveMultiple',
-        createmultiple: 'CreateMultiple',
-        updatemultiple: 'UpdateMultiple',
-        onexternalcreated: 'OnExternalCreated',
-        onexternalupdated: 'OnExternalUpdated',
-        onexternaldeleted: 'OnExternalDeleted',
-      }[operation] ??
-      // A bridged step runs the single message's pipeline under its own multiple message name.
-      (bridged ? operation[0].toUpperCase() + operation.slice(1) + 'Multiple' : null) ??
-      operation[0].toUpperCase() + operation.slice(1);
+  if (asynchronous && primaryNameOn && !(bulk && frame.bulkOrigin)) {
+    const name = asyncPrimaryName(bulk ? laneRow() : primaryNameOn === 'pre' ? previous : record);
+    if (name) (primaryNameOn === 'pre' ? preImages : postImages)[PRIMARY_NAME_IMAGE] = name;
+  }
+  // IPluginExecutionContext4 collections: the stage's image set as this step sees it (runPluginPhase stageImages,
+  // plugin-images.mjs stageImageSet); without one, the step's own registrations. Each entry is rendered from the row
+  // before the operation (pre) or the saved row (post, PostOperation only).
+  const stageSet = (viewStage) =>
+    frame.stageImages?.[viewStage] ??
+    (viewStage === stage
+      ? stageImageSet({
+          stage,
+          steps: [{ images: step.images ?? [], asynchronous }],
+          primaryName: primaryNameOn,
+        })
+      : { pre: {}, post: {} });
+  const renderImages = (entries, row) =>
+    Object.fromEntries(
+      Object.entries(entries ?? {})
+        .map(([alias, source]) => [
+          alias,
+          !row
+            ? null
+            : source.platform === PRIMARY_NAME_IMAGE
+              ? asyncPrimaryName(row)
+              : source.platform === BUSINESS_ENTITY_IMAGE
+                ? image(row, { attributes: source.attributes, exact: true })
+                : image(row, source),
+        ])
+        .filter(([, value]) => value),
+    );
+  // One collection per record: a single-record message has one, a *Multiple message one per target; none when every
+  // set is empty (native crud and bulk: [] before PostOperation and without registered or platform images).
+  const imageArray = (sets) => ({
+    $type: 'EntityImageCollectionArray',
+    values: sets.some((values) => Object.keys(values).length)
+      ? sets.map((values) => ({ $type: 'EntityImageCollection', values }))
+      : [],
+  });
+  const stageCollection = (viewStage, post) => {
+    const set = stageSet(viewStage),
+      postRows = viewStage === 40 && operation !== 'delete';
+    if (bulk)
+      return imageArray(
+        (frame.targets ?? []).map((_, index) =>
+          post
+            ? postRows
+              ? renderImages(set.post, frame.records?.[index])
+              : {}
+            : renderImages(set.pre, frame.previousRecords?.[index]),
+        ),
+      );
+    return imageArray([post ? (postRows ? renderImages(set.post, record) : {}) : renderImages(set.pre, previous)]);
+  };
+  const messageName =
+    frame.customApi?.name ??
+    {
+      retrievemultiple: 'RetrieveMultiple',
+      createmultiple: 'CreateMultiple',
+      updatemultiple: 'UpdateMultiple',
+      onexternalcreated: 'OnExternalCreated',
+      onexternalupdated: 'OnExternalUpdated',
+      onexternaldeleted: 'OnExternalDeleted',
+    }[operation] ??
+    // A bridged step runs the single message's pipeline under its own multiple message name.
+    (bridged ? operation[0].toUpperCase() + operation.slice(1) + 'Multiple' : null) ??
+    operation[0].toUpperCase() + operation.slice(1);
   const externalParameters = frame.externalEvent
     ? {
         PreImage: frame.externalEvent.previous ? recordToSdkEntity(store, entity, frame.externalEvent.previous) : null,
@@ -2281,22 +2330,6 @@ export function clrContext({
     IsApplicationUser:
       inherited('IsApplicationUser') ?? context.isApplicationUser ?? Boolean(user(authenticatedUserId)?.applicationid),
   };
-  // A queued bulk job has no pre-image sets unless its registration asks for pre images (native sdkSurface, both
-  // captures: an SDK UpdateMultiple of two targets queues PreEntityImagesCollection length 0, PostEntityImagesCollection 2).
-  const bulkImages = (rows, post) => ({
-    $type: 'EntityImageCollectionArray',
-    values:
-      !post && asynchronous && !(step.images ?? []).some((registration) => [0, 2].includes(registration.type))
-        ? []
-        : frame.targets.map((_, index) => ({
-            $type: 'EntityImageCollection',
-            values: Object.fromEntries(
-              (step.images ?? [])
-                .filter((registration) => (post ? [1, 2] : [0, 2]).includes(registration.type) && rows[index])
-                .map((registration) => [registration.alias || registration.name, image(rows[index], registration)]),
-            ),
-          })),
-  });
   // The main operation populates system results once. Keep custom values and
   // subsequent PostOperation replacements across ranks for every message shape.
   frame.outputParameters ??= { $type: 'ParameterCollection', values: {} };
@@ -2395,18 +2428,8 @@ export function clrContext({
         name: asynchronous ? null : step.name,
       },
       ParentContext: parent || null,
-      ...(bulk
-        ? {
-            PreEntityImagesCollection:
-              operation === 'createmultiple' && (step.contract?.mode ?? 0) === 1
-                ? { $type: 'EntityImageCollectionArray', values: [] }
-                : bulkImages(frame.previousRecords ?? [], false),
-            PostEntityImagesCollection: bulkImages(stage === 40 ? (frame.records ?? []) : [], true),
-          }
-        : {
-            PreEntityImagesCollection: stageCollection(stage, false),
-            PostEntityImagesCollection: stageCollection(stage, true),
-          }),
+      PreEntityImagesCollection: stageCollection(stage, false),
+      PostEntityImagesCollection: stageCollection(stage, true),
     },
     inputParameters: {
       $type: 'ParameterCollection',
@@ -2505,6 +2528,12 @@ export function clrContext({
       context.initiatingUserId ??
       descriptor.serviceProfile.userId;
     answer.context.ParentContext = delegatedPluginParent(source, answer.context, caller);
+    // A single-origin *Multiple lane's parent is the single message's main operation with its image set (native crud
+    // UpdateMultiple PreOperation/PostOperation: Update/30 [pre, PreBusinessEntity]).
+    if (bulk && source.operation === operation.replace(/multiple$/, '') && frame.mainImages)
+      answer.context.ParentContext.values.PreEntityImagesCollection = imageArray([
+        renderImages(frame.mainImages.pre, frame.previousRecords?.[0]),
+      ]);
   }
   // PreOperation and PostOperation (and the asynchronous copies) see the main operation as their parent. A record
   // operation a named message's main operation delegates sees that message's stage-30 context instead (native
@@ -2550,7 +2579,8 @@ export function clrContext({
                       id: record[primary],
                     },
             },
-      images: stageCollection(10, false),
+      // The main operation's set: the final PreValidation images plus PreBusinessEntity (runPluginPhase mainImages).
+      images: imageArray([renderImages((frame.mainImages ?? stageSet(10)).pre, previous)]),
     });
   // The Create main operation's Target names the key it allocated after PreValidation (native upsert and
   // nested-SDK creates: the Create/30 parent Target carries the primary-key attribute).

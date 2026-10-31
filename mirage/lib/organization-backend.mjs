@@ -47,6 +47,7 @@ export async function createOrganizationBackend({
       runtimes,
       clrUploads,
       items: context.pluginStepIds ? items().filter((step) => context.pluginStepIds.includes(step.id)) : items(),
+      stageItems: items(),
       handlers,
       webhooks,
       diagnostic,

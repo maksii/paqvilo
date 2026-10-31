@@ -446,6 +446,8 @@ export function createAsyncPluginRunner({
           runPluginPhase({
             store,
             items: [item],
+            // The stage's Context4 image sets as they stood at this job's slot; a delegated record's job has none (native bulk).
+            stageItems: event.fromBulk ? null : items(),
             handlers,
             runtimes,
             clrUploads,

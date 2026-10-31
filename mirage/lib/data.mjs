@@ -5467,6 +5467,24 @@ export class DataStore {
     if (!options.skipPreValidation)
       yield [mapping, 'update', 10, target, row, previous, identity, changedAttributes, options];
     options.afterPreValidation?.(mapping.logicalName, 'update', target, previous);
+    // An owner change (a Web API ownerid bind, the Assign main operation) adds the new owner's business unit to the
+    // Target after PreValidation; Assign's Target also names the owning user or team (native ownerAndState,
+    // sdkMessages). The platform changes the owner on behalf of the caller: the saved row's modifiedonbehalfby is the
+    // calling user, which Assign's Target shows and a Web API Update's stamped Target does not.
+    const idOf = (value) => String(value?.id ?? value ?? '').toLowerCase(),
+      // Only where the write maintains the owner columns (the Dataverse layer's system columns derive them from ownerid).
+      ownerChanged =
+        authorizedWrite &&
+        own(target, 'ownerid') &&
+        idOf(previous.ownerid) !== idOf(row.ownerid) &&
+        idOf(row.owninguser ?? row.owningteam) === idOf(row.ownerid),
+      onBehalf = ownerChanged && own(row, 'modifiedonbehalfby') && row.modifiedby != null;
+    if (ownerChanged)
+      for (const name of options.assignOwner
+        ? ['owninguser', 'owningteam', 'owningbusinessunit']
+        : ['owningbusinessunit'])
+        if (row[name] != null && !own(target, name)) target[name] = clone(row[name]);
+    if (onBehalf && options.assignOwner) row.modifiedonbehalfby = clone(row.modifiedby);
     for (const name of UPDATE_TARGET_STAMPS)
       if (authorizedWrite && !own(target, name) && own(row, name)) target[name] = clone(row[name]);
     yield [mapping, 'update', 20, target, row, previous, identity, changedAttributes, options];
@@ -5489,6 +5507,7 @@ export class DataStore {
     Object.assign(row, merged);
     if (!isDeepStrictEqual(latest, previous))
       this.touchRow(latest, row, this.systemColumnsFor(options.systemColumns, mapping, row));
+    if (onBehalf) row.modifiedonbehalfby = clone(row.modifiedby);
     if (authorizedWrite && this.pluginPipeline) {
       this.assertAllowed(mapping.logicalName, 'update', row, identity);
       this.validateBindings(

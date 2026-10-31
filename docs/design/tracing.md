@@ -135,7 +135,9 @@ status name */, message, pluginType, step, stage, depth }` on the step span, and
 preImages: { <alias>: attributes }, postImages: { <alias>: attributes }, sharedVariables, context: { messageName, stage,
 mode, depth, correlationId, initiatingUserId, userId, businessUnitId, isolationMode } }` and its output
     `{ outputParameters, sharedVariables }`. Images hold the registered alias and attribute filter, never the whole row.
-    The CLR host fills the same shape.
+    The CLR host fills the same shape and adds the IPluginExecutionContext4 sets the step saw (`preImagesCollection`,
+    `postImagesCollection`: one `{ <alias>: attributes }` per record, with the platform's `PreBusinessEntity` and
+    `AsynchronousStepPrimaryName`); a JavaScript CreateMultiple/UpdateMultiple step adds its per-target sets.
 27. **Bypass is visible (D-R3-22).** `MSCRM.BypassCustomPluginExecution` and `MSCRM.BypassBusinessLogicExecution`
     headers emit one `bypass` event on the dispatch span `{ header, value, skipped: ['sync-plugins' | 'async-plugins' |
 'flows'] }`.

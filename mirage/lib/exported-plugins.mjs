@@ -1,7 +1,14 @@
 import { initializePluginOperation } from './plugin-operation-context.mjs';
 import { canonicalTagVariables } from './plugin-request-tag.mjs';
 import { cloneStateData } from './state-clone.mjs';
-import { imageAttributes } from './plugin-images.mjs';
+import {
+  BUSINESS_ENTITY_IMAGE,
+  PRIMARY_NAME_IMAGE,
+  imageAttributes,
+  primaryNameAttributes,
+  primaryNameSide,
+  stageImageSet,
+} from './plugin-images.mjs';
 import { currentRequest } from './request-context.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { createHash } from 'node:crypto';
@@ -582,6 +589,8 @@ const guidOf = (value) => value?.value ?? value ?? null;
 const sdkRecord = (value) => (value?.$type === 'Entity' ? sdkValueToRecord(value) : (value ?? null));
 const sdkImages = (images) =>
   Object.fromEntries(Object.entries(images ?? {}).map(([alias, image]) => [alias, sdkRecord(image)]));
+// The IPluginExecutionContext4 image sets the step saw (plugin-images.mjs stageImageSet), one entry per record.
+const sdkImageSets = (collection) => (collection?.values ?? []).map((set) => sdkImages(set.values));
 function clrStepInput({ context, inputParameters, sharedVariables, preImages, postImages }) {
   const parameters = inputParameters?.values ?? {};
   return {
@@ -589,6 +598,8 @@ function clrStepInput({ context, inputParameters, sharedVariables, preImages, po
     inputParameters: parameters,
     preImages: sdkImages(preImages),
     postImages: sdkImages(postImages),
+    preImagesCollection: sdkImageSets(context.PreEntityImagesCollection),
+    postImagesCollection: sdkImageSets(context.PostEntityImagesCollection),
     sharedVariables: sharedVariables?.values ?? {},
     context: {
       messageName: context.MessageName,
@@ -612,6 +623,12 @@ function contextStepInput(context, store) {
     inputParameters: inputs,
     preImages: context.PreEntityImages ?? {},
     postImages: context.PostEntityImages ?? {},
+    ...(context.PreEntityImagesCollection
+      ? {
+          preImagesCollection: context.PreEntityImagesCollection,
+          postImagesCollection: context.PostEntityImagesCollection ?? [],
+        }
+      : {}),
     sharedVariables: context.SharedVariables ?? {},
     context: {
       messageName: context.MessageName,
@@ -730,14 +747,28 @@ function typedContext({
     trace,
   };
   if (['createmultiple', 'updatemultiple'].includes(operation)) {
-    // A queued bulk job has no pre-image sets unless its registration asks for pre images (native sdkSurface).
-    result.PreEntityImagesCollection =
-      (item.contract?.mode ?? 0) === 1 && !(item.images ?? []).some((spec) => [0, 2].includes(spec.type))
-        ? []
-        : (targets ?? []).map((_, index) => images([0, 2], previousRecords?.[index]));
-    result.PostEntityImagesCollection = (targets ?? []).map((_, index) =>
-      stage === 40 ? images([1, 2], records?.[index]) : {},
-    );
+    // The stage's Context4 set (runPluginPhase stageImages) per target; none when every target's set is empty.
+    const set = frame?.stageImages?.[stage] ?? { pre: {}, post: {} },
+      nameColumn = idColumn ? store.resolveMapping(entity).nameColumn : null;
+    const render = (entries, row) =>
+      Object.fromEntries(
+        Object.entries(row ? entries : {})
+          .map(([alias, source]) => [
+            alias,
+            source.platform === PRIMARY_NAME_IMAGE
+              ? nameColumn && detachedRecord(primaryNameAttributes(row, nameColumn, idColumn))
+              : source.platform
+                ? null
+                : detachedRecord(imageAttributes(row, source.attributes)),
+          ])
+          .filter(([, value]) => value),
+      );
+    const collection = (entries, rows) => {
+      const sets = (targets ?? []).map((_, index) => render(entries, rows?.[index]));
+      return sets.some((values) => Object.keys(values).length) ? sets : [];
+    };
+    result.PreEntityImagesCollection = collection(set.pre, previousRecords);
+    result.PostEntityImagesCollection = collection(set.post, stage === 40 ? records : []);
   }
   if (frame?.requestTag !== undefined && !frame.inputTagConsumed)
     result.InputParameters = { tag: frame.requestTag, ...result.InputParameters };
@@ -1148,6 +1179,8 @@ export function pluginPhaseRequiresCheckpoint(items, context) {
  * post answered; a failed post rejects it. Without awaitIo the post runs on the synchronous I/O bridge (webhooks.sync). */
 export function runPluginPhase({
   items,
+  // Every registration of the pipeline (items may be one step of a per-step call): the Context4 image sets are the stage's.
+  stageItems = items,
   handlers,
   runtimes = new Map(),
   // Where uploaded assemblies are prepared and which SDK they bind (plugin-uploaded.mjs uploadedClrRuntime).
@@ -1489,41 +1522,101 @@ export function runPluginPhase({
     // faults, depth single-origin Create/Update/Delete always ran Create > CreateMultiple, whatever the step ids).
     (a, b) => a.rank - b.rank || bridgedStep(a) - bridgedStep(b) || a.id.localeCompare(b.id),
   );
-  // Context4 image collections are shared by a stage: they hold the images of every registration of that stage
-  // (at PostOperation including queued asynchronous ones). Asynchronous jobs reuse the committed record.
-  if (!asyncExecution && !bulk && !customApi) {
-    const live = (list) =>
-      list.filter(
+  // IPluginExecutionContext4 image sets (plugin-images.mjs stageImageSet): the registrations of the stage in execution order,
+  // synchronous and (PostOperation) queued asynchronous ones. A single-record request shares one set with its *Multiple
+  // lane; a bulk-origin message and each record it delegates have their own. An asynchronous job of a delegated record has
+  // none (stageItems null; native bulk).
+  const singleOperation = { createmultiple: 'create', updatemultiple: 'update' }[operation] ?? operation,
+    bulkLane = bulkOrigin || phaseFrame.bulkOrigin,
+    lanes =
+      !bulkLane && ['create', 'update'].includes(singleOperation)
+        ? [singleOperation, singleOperation + 'multiple']
+        : [operation];
+  // The order the steps run in (matched above): rank, then a single-origin request's own message before its multiple one.
+  const stageOrder = (a, b) =>
+    a.rank - b.rank ||
+    Number(lanes.length > 1 && String(a.message).toLowerCase() === lanes[1]) -
+      Number(lanes.length > 1 && String(b.message).toLowerCase() === lanes[1]) ||
+    a.id.localeCompare(b.id);
+  const stageSteps = (forStage) =>
+    (stageItems ? [false, ...(forStage === 40 ? [true] : [])] : [])
+      .flatMap((asynchronous) =>
+        lanes.flatMap((lane) =>
+          matchingPluginSteps(stageItems, {
+            store,
+            entity,
+            operation: lane,
+            stage: forStage,
+            asyncExecution: asynchronous,
+            ignoreFiltering: true,
+            bypassStepIds: bypassStepIds ?? initialFrame?.bypassStepIds ?? [],
+            bypassCustomPlugins,
+            diagnostic: () => {},
+          }),
+        ),
+      )
+      .filter(
         (item) =>
           item.mode !== 'disabled' &&
-          pluginStepMatchesAttributes(item, { store, entity, operation, changedAttributes }),
-      );
-    const queued =
-      stage === 40
-        ? live(
-            matchingPluginSteps(items, {
-              store,
-              entity,
-              operation,
-              stage,
-              changedAttributes,
-              asyncExecution: true,
-              ignoreFiltering: true,
-              bypassStepIds: bypassStepIds ?? [],
-              bypassCustomPlugins,
-              diagnostic: () => {},
-              bridgedMessage,
-            }),
-          )
-        : [];
-    phaseFrame.stageImages = {
-      ...phaseFrame.stageImages,
-      [stage]: {
-        registrations: [...live(matched), ...queued].map((item) => item.images ?? []).filter((images) => images.length),
-        asynchronous: queued.length > 0,
-      },
+          pluginStepMatchesAttributes(item, {
+            store,
+            entity,
+            operation: String(item.message).toLowerCase(),
+            changedAttributes,
+          }),
+      )
+      .sort(stageOrder)
+      .map((item) => ({
+        id: item.id,
+        rank: item.rank,
+        message: String(item.message).toLowerCase(),
+        images: item.images ?? [],
+        asynchronous: item.contract?.mode === 1,
+      }));
+  // The platform's PreBusinessEntity image of an Update (single record, a delegated record, a single-origin UpdateMultiple
+  // lane): the row's statecode before the operation unless the request changes it (observed attribute set, native crud,
+  // bulk, ownerAndState; other columns it sometimes carries follow no rule the corpus establishes).
+  const businessEntity = () =>
+    stageItems && singleOperation === 'update' && (operation === 'update' || !bulkLane)
+      ? {
+          [BUSINESS_ENTITY_IMAGE]: {
+            platform: BUSINESS_ENTITY_IMAGE,
+            attributes: ['statecode'].filter((name) => !changedAttributes.map(canonical).includes(name)),
+          },
+        }
+      : {};
+  // The set a step sees: the stage's registrations up to its own slot. PostOperation starts from the final PreOperation
+  // pre-image set plus PreBusinessEntity (native bulk: the first PostOperation step sees the PreOperation image).
+  const stageView = (item) => {
+    if (!stageItems) return { pre: {}, post: {} };
+    const steps = stageSteps(stage);
+    let upTo = steps.findIndex((entry) => entry.id === item.id);
+    if (upTo < 0) {
+      const entry = {
+        id: item.id,
+        rank: item.rank,
+        message: String(item.message).toLowerCase(),
+        images: item.images ?? [],
+        asynchronous: item.contract?.mode === 1,
+      };
+      upTo = steps.filter((other) => stageOrder(other, entry) < 0).length;
+      steps.splice(upTo, 0, entry);
+    }
+    return stageImageSet({
+      stage,
+      steps,
+      upTo,
+      seed: stage === 40 ? { ...stageImageSet({ stage: 20, steps: stageSteps(20) }).pre, ...businessEntity() } : {},
+      primaryName: primaryNameSide(operation),
+    });
+  };
+  // The main operation (stage 30, the ParentContext of PreOperation and PostOperation) holds the final PreValidation set
+  // plus PreBusinessEntity (native crud Update/30 [pre, PreBusinessEntity], Delete/30 [pre]).
+  if (stage !== 10 && !asyncExecution)
+    phaseFrame.mainImages = {
+      pre: { ...stageImageSet({ stage: 10, steps: stageSteps(10) }).pre, ...businessEntity() },
+      post: {},
     };
-  }
   // Mock/handler read outputs also belong to the SDK response frame. Ordinary reads
   // without an executing observer keep the plain projection path.
   if (
@@ -1671,6 +1764,7 @@ export function runPluginPhase({
       else if (operation === 'updatemultiple')
         changedAttributes = [...new Set((targets ?? []).flatMap((entry) => Object.keys(entry.attributes ?? {})))];
       if (!pluginStepMatchesAttributes(item, { store, entity, operation, changedAttributes })) continue;
+      phaseFrame.stageImages = { ...phaseFrame.stageImages, [stage]: stageView(item) };
       const note = (code, message) => {
         // Skipped, simulated and rejected steps are events on the current (stage or step) span.
         tracing?.current()?.event('plugin', { message, attributes: { code, stepId: item.id } });

@@ -260,6 +260,11 @@ test(
     assert.deepEqual(pre.output.sharedVariables, { ...platform, marker: 'clr-shared' });
     assert.equal(post.input.postImages.after.x_code, 'B-2');
     assert.equal('x_name' in post.input.postImages.after, false);
+    // The Context4 sets the steps saw: the PreOperation image, then (PostOperation) that image, the platform's
+    // PreBusinessEntity and the step's own post image.
+    assert.deepEqual(pre.input.preImagesCollection.map(Object.keys), [['before']]);
+    assert.deepEqual(post.input.preImagesCollection.map(Object.keys), [['before', 'PreBusinessEntity']]);
+    assert.deepEqual(post.input.postImagesCollection, [post.input.postImages]);
     assert.deepEqual(
       post.input.sharedVariables,
       { ...platform, marker: 'clr-shared' },
