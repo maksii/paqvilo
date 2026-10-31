@@ -137,9 +137,10 @@ const REQUEST_ROOT_LIMIT = 256;
 /** Records what a request changed in its root SharedVariables collection: the outermost main operation of the
  * request, as every ancestor chain shows it live (native: ChangedEntityTypes appears only on the root ancestor, also
  * for tables a nested plug-in request wrote, and principalobjectaccess with POADistributionChanged after a sharing
- * message). table is the ChangedEntityTypes key; sharing marks a principalobjectaccess change. */
-export function recordRequestRootChange(store, requestId, { table, sharing = false } = {}) {
-  if (!store || !requestId || (!table && !sharing)) return;
+ * message, and fileattachment once a single-record operation queues asynchronous work). table is the
+ * ChangedEntityTypes key; sharing marks a principalobjectaccess change; asyncQueued the queued job attachment. */
+export function recordRequestRootChange(store, requestId, { table, sharing = false, asyncQueued = false } = {}) {
+  if (!store || !requestId || (!table && !sharing && !asyncQueued)) return;
   const roots = (store.pluginRequestRoots ??= new Map());
   let root = roots.get(requestId);
   if (!root) {
@@ -148,6 +149,9 @@ export function recordRequestRootChange(store, requestId, { table, sharing = fal
   }
   for (const key of [table, sharing ? 'principalobjectaccess' : null].filter(Boolean))
     root.ChangedEntityTypes = { ...(root.ChangedEntityTypes ?? {}), [key]: 'Update' };
+  // The platform's asynchronous job attachment (recorded value 'Create'), once per request.
+  if (asyncQueued && !root.ChangedEntityTypes?.fileattachment)
+    root.ChangedEntityTypes = { ...(root.ChangedEntityTypes ?? {}), fileattachment: 'Create' };
   // The recorded platform value after GrantAccess, ModifyAccess and RevokeAccess.
   if (sharing) root.POADistributionChanged = 10760;
 }
