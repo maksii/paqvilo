@@ -82,9 +82,11 @@ export function committedJobs(store) {
   const scheduler = () => storeScheduler(store);
   const nowMs = () => clockFunction(store.clock ?? systemClock)();
   const now = () => new Date(nowMs()).toISOString();
-  // A Ready row with a later postponeuntil waits until then (an async start delay); 0 when it is due.
+  // A Ready row waits until its start time: the job's internal start latency (data startAfter, plugin-async.mjs; its
+  // postponeuntil stays null as natively) or a postponeuntil; 0 when it is due.
   const waitOf = (row) => {
-    const until = row?.postponeuntil ? Date.parse(row.postponeuntil) : NaN;
+    const after = jobOf(row)?.startAfter,
+      until = Number.isFinite(after) ? after : row?.postponeuntil ? Date.parse(row.postponeuntil) : NaN;
     return Number.isFinite(until) ? Math.max(0, until - nowMs()) : 0;
   };
   const autoRuns = () => {

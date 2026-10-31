@@ -114,6 +114,8 @@ test('SDK SetState runs as SetStateDynamicEntity with IsValid and no nested stat
   assert.deepEqual([store.tableRows('widget')[0].statecode, store.tableRows('widget')[0].statuscode], [1, 2]);
 });
 
+// @parity-evidence: no new proof; retag from the file's parity. native ownerAndState (both captures) shows a PATCH statecode's SetStateDynamicEntity at depth 2 under an Upsert/30 frame, and sdkMessages (both) shows SetState under an Update at stage 40; no capture of a plain Update that sets statecode
+// @test-kind unproven: local model of a plain Update that sets statecode (no Web API Upsert frame); native-r2 needs an SDK Update that sets statecode, recorded without the Upsert frame, to prove the one-level-deeper order
 test('an Update that sets statecode runs SetStateDynamicEntity inside its main operation, one level deeper', () => {
   const store = storeOf(),
     seen = recording(store, ['update', 'setstatedynamicentity']);

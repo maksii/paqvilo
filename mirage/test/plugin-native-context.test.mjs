@@ -104,6 +104,8 @@ test('every pipeline collection starts with the platform SharedVariables and Pre
   assert.equal(read.sharedVariables.values.IsAutoTransact, false);
 });
 
+// @parity-evidence: no new proof; retag from the file's parity. native crud.json (both captures) shows Delete stage 10 with ConcurrencyBehavior and no FromSandbox (no SDK-issued Delete recorded); FromSandbox is recorded only for SDK Create (depth, faults, both captures)
+// @test-kind unproven: FromSandbox on a Delete PreValidation is a local model; no native capture records an SDK-issued Delete; a native plug-in Delete on native and native-r2 would prove it
 test('Delete carries ConcurrencyBehavior and a sandbox SDK request FromSandbox only in its PreValidation inputs', () => {
   const store = fixture(),
     record = { gadgetid: id, title: 'Before' },
@@ -294,6 +296,8 @@ test('Context4 collections hold the stage set the step sees while PreEntityImage
   assert.deepEqual(answer.context.PostEntityImagesCollection.values, []);
 });
 
+// @parity-evidence: no new proof; retag from the file's parity. native reads.json (both captures) shows an outside-plug-in RetrieveMultiple with an empty AppModuleId and IsAppModuleContext and IncludeAnnotations false; no capture shows a read issued from inside a plug-in (readNested.json has no depth 2+ RetrieveMultiple)
+// @test-kind unproven: the nested-read input set (Query only) is a local model; a native read issued from inside a plug-in step on native and native-r2 would prove it
 test('Create PreOperation collections carry the telemetry root and reads outside a plug-in carry client inputs', () => {
   const store = fixture(),
     ledger = { ledgerid: '20000000-0000-0000-0000-000000000009', title: 'Created' };

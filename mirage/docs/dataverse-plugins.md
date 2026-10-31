@@ -147,11 +147,15 @@ plug-in and web hook job regarding it, whatever its message (a first attempt or
 a retry, including a multiple bridged from the row's operation), inside the
 deleting transaction: the step never executes and its job ends Canceled (3/32)
 without `errorcode` or `message`, with the friendly message "This system job
-was canceled because a referenced record was deleted.", as recorded natively. Native jobs started 1 to 6 seconds after their operation, so whether
-one beats a quick deletion is a platform timing race. Local jobs start on the
-next scheduler turn; the Dataverse setting `asyncStartDelayMs` (default 0)
-postpones each new plug-in and web hook job (`asyncoperation.postponeuntil`) to
-calibrate that latency, and settling does not wait for a job that is not due.
+was canceled because a referenced record was deleted.", as recorded natively. Native jobs started 0 to 6 seconds after their operation (median 1 to 2), and a
+deletion of the row or of the step sent right after the triggering response
+reached the waiting job. An organization's job waits the Dataverse setting
+`asyncStartDelayMs` (default 1000, the native floor; 0 starts it on the next
+scheduler turn) before it may start, so such a follow-up write reaches it
+locally too. The start time is internal to the job; `asyncoperation.postponeuntil`
+stays null, as natively. A job whose start time came claims its row in a
+transaction queued behind every write already queued, and settling does not
+wait for a job that is not due.
 Each job is created when its operation's PostOperation begins, in whole seconds,
 so a nested operation's job follows its caller's. Infrastructure transaction failures use the separate
 committed-work recovery budget.

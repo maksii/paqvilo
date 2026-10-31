@@ -301,8 +301,9 @@ export function createAsyncPluginRunner({
   limits = {},
   acceptedChains = new Set(),
   systemJobs = () => false,
-  // Calibration knob: milliseconds a staged job waits before it may start (asyncoperation.postponeuntil). Native jobs
-  // started 1.2-6 s after their operation; the default 0 starts them on the next scheduler turn.
+  // Calibration knob: milliseconds a staged job waits before it may start (an internal start time in the job's data;
+  // postponeuntil stays null, as natively). 0 starts it on the next scheduler turn; an organization's default is
+  // ASYNC_START_DELAY_MS (dataverse-settings.mjs).
   startDelayMs = () => 0,
 }) {
   const runs = new Map(),
@@ -617,8 +618,7 @@ export function createAsyncPluginRunner({
       notes = [],
       counts = new Map(),
       delay = Number(startDelayMs()) || 0,
-      postpone =
-        delay > 0 ? { postponeuntil: new Date(clockFunction(store.clock ?? systemClock)() + delay).toISOString() } : {};
+      start = delay > 0 ? { startAfter: clockFunction(store.clock ?? systemClock)() + delay } : {};
     // Jobs are created in operation order, so an outer operation's jobs precede those of the nested operations its
     // PostOperation steps ran, although the nested ones committed their events first (native depth.json).
     const ordered = [...events].sort((a, b) => (a.operationMark?.sequence ?? 0) - (b.operationMark?.sequence ?? 0));
@@ -708,7 +708,8 @@ export function createAsyncPluginRunner({
         entries.push({
           id: (store.ids ?? systemIds).uuid(),
           kind: item.mode === 'webhook' ? 'webhook' : 'plugin',
-          columns: { ...jobColumns(store, item, invocation, chain), ...postpone },
+          columns: jobColumns(store, item, invocation, chain),
+          ...start,
           itemId: item.id,
           chain,
           event: invocation,

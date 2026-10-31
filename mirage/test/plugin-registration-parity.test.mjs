@@ -69,6 +69,8 @@ async function fixture(t) {
   return { ...f, message, filter, register, steps };
 }
 
+// @parity-evidence: native-filters.json (one metadata read of the dev environment's sdkmessagefilter rows for a user-owned and an organization-owned custom table and 'none'); no second capture
+// @test-kind observation: per-table sdkmessagefilter sets, message ids and flags from the single native filter catalogue read (native-filters.json)
 test('per-table filters follow table capability, with the native message ids and flags', async (t) => {
   const f = await fixture(t);
   const messages = (table) =>
@@ -109,6 +111,8 @@ test('per-table filters follow table capability, with the native message ids and
   assert.equal(f.message('Archive').isprivate, true);
 });
 
+// @parity-evidence: native-filters.json (one metadata read): account 26 and transactioncurrency 8 filter rows and the 'none' filters with their flags and availability; no second capture
+// @test-kind observation: standard-table filter sets, flags and availability from the single native filter catalogue read (native-filters.json)
 // Native sdkmessagefilter rows of the standard tables account and transactioncurrency, and of the 'none' filters.
 test('standard tables take their native filter sets, flags and availability', async (t) => {
   const f = await fixture(t);
@@ -164,6 +168,8 @@ test('standard tables take their native filter sets, flags and availability', as
   assert.equal((await refused.json()).error.code, '0x80044187');
 });
 
+// @parity-evidence: native-filters-2.json (one metadata read): contact, task, systemuser, team, elastic, virtual and intersect filter rows; no second capture
+// @test-kind observation: filter sets of further standard tables and table kinds from the single native filter catalogue read round 2 (native-filters-2.json)
 // Native filter catalogue round 2: filter sets of contact, task, systemuser and team, and of an elastic, a virtual and an
 // N:N intersect table (invented tables of those kinds here).
 test('table kinds and further standard tables take their native filter sets', async (t) => {
@@ -237,6 +243,8 @@ test('table kinds and further standard tables take their native filter sets', as
   });
 });
 
+// @parity-evidence: native _registration-probes.json (single capture): global Upsert, UpsertMultiple and Merge steps accepted; native-filters.json: Upsert's 'none' filter refuses custom steps (allowed false); no second capture
+// @test-kind observation: global-step acceptance (_registration-probes.json) and the refusing 'none' filter (native-filters.json), each a single native capture
 // Native accepted global (no filter) steps on every existing message: PublishAll and RetrieveExchangeRate (no table filter
 // in scope), Upsert (its 'none' filter refuses custom steps); a step registered on that refusing 'none' filter is refused.
 test('a step without a filter is accepted on any existing message; a refusing filter still refuses', async (t) => {
@@ -248,6 +256,8 @@ test('a step without a filter is accepted on any existing message; a refusing fi
   assert.equal((await refused.json()).error.code, '0x80044187');
 });
 
+// @parity-evidence: native _registration-probes-2.json (single capture; native-r2 has only _registration.json, existence rows, and no round 2 codes): WhoAmI and RetrieveVersion 0x80044187, image refusals, supporteddeployment 0x80040203
+// @test-kind observation: registration probes round 2 (_registration-probes-2.json, native capture only); no native-r2 counterpart
 // Native registration round 2 (single capture of deterministic validation): global WhoAmI/RetrieveVersion refused, images
 // on SetStateDynamicEntity, GrantAccess and DeleteMultiple accepted, an unknown image attribute refused, a step without a
 // stage accepted, a missing message refused, a client deployment on a server-only filter refused, and a plug-in type with a
@@ -332,6 +342,8 @@ test('registration round 2 rules answer with the native codes and texts', async 
   assert.equal((await f.request('GET', `/sdkmessageprocessingsteps(${kept})`)).status, 200, 'the step survives');
 });
 
+// @parity-evidence: native _registration-probes.json (single capture; native-r2 has no validation probe rows): async stage 0x80040203 text, IsValidStateTransition 0x80044187, unknown attribute 0x8004f036, image type 0x8004416d
+// @test-kind observation: registration validation probes (_registration-probes.json, native capture only); no native-r2 counterpart
 test('registration validation answers with the native codes and texts', async (t) => {
   const f = await fixture(t);
   const refused = async (response, code, pattern) => {
@@ -393,6 +405,8 @@ test('registration validation answers with the native codes and texts', async (t
   assert.equal((await image(await step('Update', { stage: 40 }), 0)).status, 201, 'image on a global Update');
 });
 
+// @parity-evidence: native _registration-probes.json (single capture) shows the global Upsert, UpsertMultiple, Merge and async Retrieve registrations accepted; their execution is in mergeAccount and readAsync (both captures), the inert Upsert and UpsertMultiple in sdkMessages and bulk (both)
+// @test-kind observation: registration admission of global steps (_registration-probes.json, native capture only) combined with execution in mergeAccount and readAsync (both captures); the test mixes both, so it is not split
 test('execution admission: globals run on the actual table, Upsert/Merge globals are inert and async Retrieve runs', async (t) => {
   const f = await fixture(t);
   for (const [name, over] of [
@@ -433,6 +447,8 @@ test('execution admission: globals run on the actual table, Upsert/Merge globals
   );
 });
 
+// @parity-evidence: native _registration-probes.json (single capture) shows the global Create and async RetrieveMultiple registrations accepted; the async read after a Web API GET is in reads and readAsync (both captures), but a global Create running on another table is in no capture
+// @test-kind observation: global Create execution across tables (no native capture) and the async read after a GET (reads and readAsync, both captures); the registration acceptance comes from _registration-probes.json (native only)
 test('a global Create runs for the table it fires on, and an asynchronous RetrieveMultiple runs after the read', async (t) => {
   const f = await fixture(t);
   assert.equal((await f.register('Create', { name: 'Global create' })).status, 201);
@@ -476,6 +492,8 @@ test('a global Create runs for the table it fires on, and an asynchronous Retrie
   assert.equal(seen[0].context.OutputParameters.BusinessEntityCollection.length, 1);
 });
 
+// @parity-evidence: no new proof; retag from the file's parity. native and native-r2 customApi show the stage 10 edit seen at 20 and 40 and the asynchronous step, but no corpus file holds the custom API's sdkmessagefilter row (iscustomprocessingstepallowed) asserted here
+// @test-kind unproven: the custom API sdkmessage and its 'none' filter row are a local model; the execution part is native (customApi, both captures); a native sdkmessagefilter read after a Web API custom API create on native and native-r2 would prove the row
 // Native customApi scenario: custom APIs provisioned over the Web API took steps at stages 10, 20, 40 and asynchronous
 // PostOperation; the stage-10 step edited the Text input that later stages saw, and the reply carried the stage-40 output.
 test('a custom API created at runtime gets its message and filter, and its registered steps run around it', async (t) => {
