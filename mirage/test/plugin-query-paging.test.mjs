@@ -1,3 +1,4 @@
+// @test-kind parity: official Microsoft.Xrm.Sdk.dll executed by the probe: QueryByAttribute and QueryExpression constructor PageInfo, null and populated paging round trip
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

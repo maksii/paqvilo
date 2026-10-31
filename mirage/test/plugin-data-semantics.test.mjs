@@ -87,7 +87,8 @@ async function fixture(t, edit = () => {}, { fields = {}, extraSteps = [] } = {}
 const keysAt = (seen, message, stage) =>
   Object.keys(seen.find((entry) => entry.message === message && entry.stage === stage)?.target ?? {}).sort();
 
-// @test-kind parity: native dev-environment recorder corpus 2026-10-30, Create stage 10/20/40 Target columns repeated across the crud, upsert, reads and pipelineEffects scenarios (organizationid from the organization-owned child create)
+// @test-kind parity: native dev-environment recorder corpus 2026-10-30, single Create stage 10/20/40 Target columns repeated across the crud, upsert, reads and pipelineEffects scenarios (organizationid from the organization-owned child create); Update and bulk Targets have their own tests below
+// @parity-evidence: reason text only (C2-68), no assertion change; the same native scenarios
 test('a Create Target gains platform stamps at PreOperation and the derived currency values only at PostOperation', async (t) => {
   const f = await fixture(t);
   const created = await f.request('POST', '/x_items', { x_itemid: id, x_name: 'Created', x_amount: 3.5 });
@@ -124,7 +125,8 @@ test('base amounts derive from the money value PreOperation leaves, not the subm
   assert.equal(f.store.tableRows('x_item')[0].x_amount_base, 8);
 });
 
-// @test-kind parity+observation: Update stage 20/40 modification stamps repeated in the native recorder corpus 2026-10-30 (crud, upsert, pipelineEffects); the cleared text as an empty string is a single capture (crud third PATCH)
+// @test-kind parity: Update stage 20/40 modification stamps repeated in the native recorder corpus 2026-10-30 (crud, upsert, pipelineEffects); the cleared text as an empty string reproduced in native and native-r2 crud, nullSemantics, imagesOrder
+// @parity-evidence: native and native-r2 crud, nullSemantics and imagesOrder Update 10/20/40 Targets carry the cleared text as '' (reason text only, no assertion change)
 test('an Update Target gains the modification stamps after PreValidation; a cleared text column shows an empty string', async (t) => {
   const f = await fixture(t);
   assert((await f.request('POST', '/x_items', { x_itemid: id, x_name: 'Created', x_note: 'Note' })).status < 300);
@@ -189,7 +191,8 @@ test('a bare PATCH checks existence with a RetrieveMultiple pipeline under its U
   assert.equal(f.seen.length, 0);
 });
 
-// @test-kind parity: native recorder corpus 2026-10-30 Targets and images repeated across scenarios (metadata types, unnamed Target references, TimeZoneIndependent kinds per stage, ten-place decimals, yominame companions, unnamed owninguser)
+// @test-kind parity: native recorder corpus 2026-10-30 Targets and images repeated across scenarios (metadata types, unnamed Target references, the submitted TimeZoneIndependent kind of the encoder's submitted projection, which only Create/CreateMultiple PreValidation uses, ten-place decimals, yominame companions, unnamed owninguser)
+// @parity-evidence: reason text only (C2-68); native and native-r2 nullSemantics Update/10 and UpdateMultiple/10 kinds are asserted in the TimeZoneIndependent pipeline test below
 test('SDK values: platform columns typed from metadata, unnamed Target references, retrieved decimals at storage scale', () => {
   const state = emptyState();
   state.mappings.x_item = {

@@ -648,11 +648,24 @@ function mergeUnsupported(logical) {
  * TransactionCurrencyId as the only input and the ExchangeRate output already present at PreOperation; the asynchronous
  * steps queue once the issuer commits. ParentContext is the issuer's PreOperation context reported as stage 25
  * (plugin-internal-stage.mjs). Answers the ExchangeRate the message ends with (a PostOperation step may replace it).
- * ponytail: a CreateMultiple runs it once per target; natively once per request under Create/20 < CreateMultiple/25.
+ * A CreateMultiple runs it once per request (dataverse-currency.mjs bulkRates; bulk names the issuing contexts): its
+ * parent is the last record's Create/20 step context, under the last CreateMultiple/20 step context reported as stage 25
+ * (native currency, both captures).
  */
 export function runRetrieveExchangeRate(
   store,
-  { mapping, operation: issuer = 'create', row, previous = null, target, currencyId, rate, identity, options = {} },
+  {
+    mapping,
+    operation: issuer = 'create',
+    row,
+    previous = null,
+    target,
+    currencyId,
+    rate,
+    identity,
+    options = {},
+    bulk = null,
+  },
 ) {
   const issuerMessage = issuer === 'update' ? 'Update' : 'Create';
   const entity = 'transactioncurrency',
@@ -662,14 +675,16 @@ export function runRetrieveExchangeRate(
   const system = store.tableRows('systemuser').find((user) => user.fullname === 'SYSTEM')?.systemuserid;
   const callerId = identity?.systemUserId ?? identity?.id ?? null,
     executing = system ?? callerId;
-  const issuing = store.pluginFrames?.get(row) ?? {},
+  const issuing = bulk ? bulk.frame : (store.pluginFrames?.get(row) ?? {}),
     outer = issuing.delegatedParentContext ?? store.pluginParentContext ?? pluginInvocationSdkParent(store) ?? null,
     depth = issuing.operationDepth ?? messageDepth(store);
   issuing.callerIdentity ??= identity;
   initializePluginOperation(issuing, store, outer, { requestId: issuing.suppliedRequestId ?? store.pluginRequestId });
   const guid = (value) => ({ $type: 'Guid', value });
+  const stepReference = (step) =>
+    step && { $type: 'EntityReference', logicalName: 'sdkmessageprocessingstep', id: step.id, name: step.name ?? null };
   const id = row[mapping.idColumn],
-    owner = internalStepReference('MultiCurrencyPlugin', issuerMessage),
+    owner = stepReference(bulk?.step) ?? internalStepReference('MultiCurrencyPlugin', issuerMessage),
     initiating = outer?.values?.InitiatingUserId ?? guid(callerId ?? executing);
   // The issuing Create's PreOperation context for steps that are not CLR (a CLR step builds the full one itself).
   const createValues = {
@@ -677,7 +692,7 @@ export function runRetrieveExchangeRate(
     PrimaryEntityName: mapping.logicalName,
     SecondaryEntityName: 'none',
     PrimaryEntityId: guid(id),
-    Stage: 25,
+    Stage: bulk ? 20 : 25,
     Mode: 0,
     Depth: depth,
     IsInTransaction: true,
@@ -698,22 +713,44 @@ export function runRetrieveExchangeRate(
     PostEntityImages: { $type: 'EntityImageCollection', values: {} },
     OwningExtension: owner,
   };
-  createValues.ParentContext = mainOperationParent({
-    frame: issuing,
-    context: { ...createValues, ParentContext: outer },
-    parent: outer,
-    userId: executing,
-    objectId: () => EMPTY,
-    inputs: () => ({
-      ...cloneStateData(issuing.mainOperationInputs ?? {}),
-      Target: recordToSdkEntity(
-        store,
-        mapping.logicalName,
-        { ...(issuing.mainOperationTarget ?? target), [mapping.idColumn]: id },
-        { allColumns: false, columns: [...Object.keys(issuing.mainOperationTarget ?? target), mapping.idColumn] },
-      ),
-    }),
-  });
+  // A CreateMultiple's: its last PreOperation step context reported as stage 25, with the request's Targets.
+  const bulkLevel = bulk && {
+    $type: 'ExecutionContext',
+    values: {
+      ...createValues,
+      MessageName: 'CreateMultiple',
+      PrimaryEntityId: guid(EMPTY),
+      Stage: 25,
+      UserId: initiating,
+      InputParameters: {
+        $type: 'ParameterCollection',
+        values: {
+          Targets: { $type: 'EntityCollection', entityName: mapping.logicalName, entities: bulk.bulk.targets },
+        },
+      },
+      SharedVariables: cloneStateData(bulk.bulk.frame.sharedVariables ?? { $type: 'ParameterCollection', values: {} }),
+      OwningExtension: stepReference(bulk.bulk.step) ?? internalStepReference('MultiCurrencyPlugin', 'CreateMultiple'),
+      ParentContext: outer,
+    },
+  };
+  createValues.ParentContext =
+    bulkLevel ||
+    mainOperationParent({
+      frame: issuing,
+      context: { ...createValues, ParentContext: outer },
+      parent: outer,
+      userId: executing,
+      objectId: () => EMPTY,
+      inputs: () => ({
+        ...cloneStateData(issuing.mainOperationInputs ?? {}),
+        Target: recordToSdkEntity(
+          store,
+          mapping.logicalName,
+          { ...(issuing.mainOperationTarget ?? target), [mapping.idColumn]: id },
+          { allColumns: false, columns: [...Object.keys(issuing.mainOperationTarget ?? target), mapping.idColumn] },
+        ),
+      }),
+    });
   const record = { [store.resolveMapping(entity).idColumn]: EMPTY };
   setInternalStageSource(record, {
     entity: mapping.logicalName,
@@ -723,9 +760,10 @@ export function runRetrieveExchangeRate(
     target,
     record: row,
     frame: issuing,
-    stage: 25,
+    stage: bulk ? 20 : 25,
     owner: 'MultiCurrencyPlugin',
     userId: executing,
+    ...(bulk ? { step: bulk.step, bulk: bulk.bulk } : {}),
   });
   const exchangeRate = (value) => ({ $type: 'Decimal', value: Number(value).toFixed(12) });
   // SYSTEM executes through the pipeline identity; the caller stays the initiating user (an SDK run-as user, which

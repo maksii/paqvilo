@@ -8,6 +8,7 @@ import { initializePluginOperation } from './plugin-operation-context.mjs';
 import { pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
 import { bulkTargetsCollection } from './plugin-single-multiple.mjs';
 import { fieldKind } from './dataverse-values.mjs';
+import { organizationApiOf } from './plugin-sdk-messages.mjs';
 import { isDeepStrictEqual } from 'node:util';
 const emptyId = '00000000-0000-0000-0000-000000000000';
 const samePrimary = (target, primary) =>
@@ -106,7 +107,9 @@ function* bulkSteps(
   const previous = [],
     targets = [],
     writeIndexes = [],
-    ids = new Set();
+    ids = new Set(),
+    // Targets whose Entity.Id the platform allocated: a step may still name their identity, as at an empty Entity.Id.
+    allocated = new Set();
   for (const target of suppliedTargets) {
     if (
       target?.$type !== 'Entity' ||
@@ -130,6 +133,12 @@ function* bulkSteps(
       duplicate = update && ids.has(target.id.toLowerCase());
       ids.add(target.id.toLowerCase());
     }
+    // Dataverse allocates a new record's Entity.Id before PreValidation (native sdkSurface CreateMultiple/10), as a
+    // single Create's; the key attribute follows at PreOperation.
+    if (!update && target.id === emptyId) {
+      target.id = store.ids.uuid();
+      allocated.add(target);
+    }
     const before = update ? store.get(entity, target.id, identity, { skipPluginRead: true }) : null;
     if (update && !before) fail('Bulk target record not found.', 'NotFound', 404);
     const input = sdkValueToRecord(target);
@@ -140,7 +149,10 @@ function* bulkSteps(
     previous.push(before);
     targets.push(target);
   }
-  const original = targets.map((target) => ({ id: target.id ?? emptyId, logicalName: target.logicalName })),
+  const original = targets.map((target) => ({
+      id: allocated.has(target) ? emptyId : (target.id ?? emptyId),
+      logicalName: target.logicalName,
+    })),
     holder = { [primary]: emptyId },
     inherited = store.pluginInTransaction;
   const singleFrames = targets.map((target, index) => ({
@@ -157,7 +169,10 @@ function* bulkSteps(
   const operationIdentity = {};
   initializePluginOperation(operationIdentity, store, store.pluginParentContext ?? pluginInvocationSdkParent(store));
   let bulkFrameStarted = false,
-    submittedTargets;
+    submittedTargets,
+    // The step that ran last on the bulk message and on a delegated record (an internal stage's issuing contexts).
+    lastBulkStep = null,
+    lastSingle = null;
   const bulkFrame = () => {
     if (bulkFrameStarted) return {};
     bulkFrameStarted = true;
@@ -347,6 +362,7 @@ function* bulkSteps(
             });
             bulkStarted = true;
             stageStep = entry;
+            lastBulkStep = { stage, step: entry };
             finalBulkFrame = frame;
             if (stage === 40) handoffPluginResponse(store, operation, mapping.logicalName, frame, responseToken);
           } else {
@@ -355,6 +371,7 @@ function* bulkSteps(
               continuePhase: singleStarted.has(index),
             });
             singleStarted.add(index);
+            lastSingle = { stage, index, step: entry };
           }
           check();
         }
@@ -392,11 +409,12 @@ function* bulkSteps(
       const values = Object.fromEntries(
         Object.entries(preOperationStamps[index] ?? {}).filter(([name]) => !Object.hasOwn(target.attributes, name)),
       );
-      target.attributes = {
-        ...target.attributes,
-        ...recordToSdkEntity(store, mapping.logicalName, values, { allColumns: true, target: true }).attributes,
-      };
-      return values;
+      // Every record's key attribute from PreOperation on (native bulk and sdkSurface CreateMultiple/UpdateMultiple/20).
+      if (!Object.hasOwn(target.attributes, primary) && target.id !== emptyId) values[primary] = target.id;
+      const encoded = recordToSdkEntity(store, mapping.logicalName, values, { allColumns: true, target: true });
+      target.attributes = { ...target.attributes, ...encoded.attributes };
+      // As the Target carries them, so an unchanged stamp compares equal below.
+      return sdkValueToRecord({ ...encoded, attributes: encoded.attributes });
     });
     yield* phase(20, []);
     // Preimages retain the original request snapshot. Authorization must see
@@ -414,6 +432,35 @@ function* bulkSteps(
       authorize(single, update ? { ...current, ...values } : values, current);
       return { index, target, values };
     });
+    // A CreateMultiple's platform currency step runs RetrieveExchangeRate once for the request, before the first
+    // record's main operation (native currency: under the last record's Create/20 < CreateMultiple/25 < /30); the
+    // records' main operations price their base amounts with its rates (dataverse-currency.mjs).
+    const currency = update ? null : organizationApiOf(store)?.currency;
+    const currencyRates = currency?.bulkRates
+      ? currency.bulkRates(
+          mapping,
+          writes.map(({ values }) => values),
+          {
+            identity,
+            options: { bypassCustomPlugins, bypassCustomAsync, bypassStepIds },
+            issuer: () => {
+              const last = lastSingle?.stage === 20 ? lastSingle.index : targets.length - 1;
+              return {
+                record: singleFrames[last].record,
+                target: singleFrames[last].target,
+                frame: singleFrames[last].frame ?? {},
+                step: lastSingle?.stage === 20 ? lastSingle.step : null,
+                bulk: {
+                  frame: finalBulkFrame ?? {},
+                  step: lastBulkStep?.stage === 20 ? lastBulkStep.step : null,
+                  record: holder,
+                  targets: structuredClone(targets),
+                },
+              };
+            },
+          },
+        )
+      : null;
     const rows = new Array(targets.length),
       postWriteEffects = [];
     for (const { index, target, values } of writes) {
@@ -430,6 +477,7 @@ function* bulkSteps(
             bypassStepIds,
             postWriteEffects,
             targetIndex: index,
+            ...(currencyRates ? { currencyRates } : {}),
           })
         : update
           ? store.updateRecord(entity, target.id, data, identity, {
@@ -442,6 +490,7 @@ function* bulkSteps(
               bypassStepIds,
             })
           : store.createRecord(entity, data, identity, {
+              ...(currencyRates ? { currencyRates } : {}),
               coerce: true,
               bypassCustomPlugins,
               // Every record ran its own message's steps in the phases above.

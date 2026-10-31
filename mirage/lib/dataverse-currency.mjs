@@ -184,12 +184,15 @@ function settle(api, mapping, { operation, row, previous, target, identity, opti
   const currency = currencyById(api, id);
   if (!currency) throw notFound(id);
   let rate = rateOf(currency, baseCurrencyOf(api));
+  // A CreateMultiple record's rate: the request's one RetrieveExchangeRate already ran (bulkRates).
+  const preset = options?.currencyRates && Object.hasOwn(options.currencyRates, id) ? options.currencyRates[id] : null;
   // The platform's RetrieveExchangeRate sub-operation (internal stage 25) runs with its own plug-in pipeline; its
   // ExchangeRate output prices the base amounts (recorded native crud and currency). An Update that writes a money column
   // runs it also when the value is null (native nullSemantics: an all-null PATCH on a row holding a currency runs it under
   // Update/25 < Update/30). A Create runs it only for a non-empty money value (a POST with money null runs none).
   const rerDue = touched ? money.some(([name]) => touched.has(name)) : money.some(([name]) => !empty(row[name]));
-  if (rerDue)
+  if (preset != null) rate = preset;
+  else if (rerDue)
     rate = runRetrieveExchangeRate(api.store, {
       mapping,
       operation,
@@ -213,11 +216,49 @@ function settle(api, mapping, { operation, row, previous, target, identity, opti
   }
 }
 
-/** install(api, { diagnostic }): diagnostic receives each diagnostic once. Exposes api.currency = { diagnostics() }. */
+// A CreateMultiple (Web API or SDK) runs RetrieveExchangeRate once per request before its first record's main operation,
+// once per distinct currency of the records that write a money value, in record order (native currency: one
+// RetrieveExchangeRate 20/40/async for two records). values: each record's columns; ctx.issuer() names the issuing
+// contexts. Answers { currencyId: rate } for the records' main operations, or null.
+function bulkRates(api, mapping, values, { identity, options, issuer }) {
+  const money = moneyColumnsOf(api, mapping.logicalName);
+  if (!money.length) return null;
+  const base = baseCurrencyOf(api),
+    rates = {};
+  for (const record of values) {
+    if (!money.some(([name]) => !empty(record[name]))) continue;
+    const held = bare(refId(record.transactioncurrencyid));
+    const currency = held ? currencyById(api, held) : base;
+    if (!currency) {
+      if (held) throw notFound(held);
+      continue;
+    }
+    const id = bare(currency.transactioncurrencyid);
+    if (Object.hasOwn(rates, id)) continue;
+    const issuing = issuer();
+    rates[id] = runRetrieveExchangeRate(api.store, {
+      mapping,
+      operation: 'create',
+      row: issuing.record,
+      target: issuing.target,
+      currencyId: id,
+      rate: rateOf(currency, base),
+      identity,
+      options,
+      bulk: issuing,
+    });
+  }
+  return Object.keys(rates).length ? rates : null;
+}
+
+/** install(api, { diagnostic }): diagnostic receives each diagnostic once. Exposes api.currency = { diagnostics(), bulkRates }. */
 function install(api, { diagnostic } = {}) {
   const state = stateOf(api);
   state.diagnostic = diagnostic ?? api.diagnostic ?? null;
-  api.currency = { diagnostics: () => [...state.diagnostics] };
+  api.currency = {
+    diagnostics: () => [...state.diagnostics],
+    bulkRates: (mapping, values, ctx) => bulkRates(api, mapping, values, ctx),
+  };
   api.recordHooks.add('beforeWrite', (c, mapping, info) => {
     if (info.operation === 'delete' || !info.data) return;
     stamp(api, state, mapping, info);

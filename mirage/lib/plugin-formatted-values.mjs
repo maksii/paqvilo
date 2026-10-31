@@ -15,6 +15,7 @@ import { exactNumeric } from './exact-numeric.mjs';
 import { TIME_ZONE_IDS } from './platform-time-zones.mjs';
 import { baseCurrencyRow } from './dataverse-security.mjs';
 import { organizationRecord } from './organization-context.mjs';
+import { standardFieldDefinition } from './dataverse-standard.mjs';
 
 const UTC_CODE = 92;
 const bare = (value) =>
@@ -46,7 +47,12 @@ function isoText(ms, offset) {
 
 function definitionOf(store, entity, key, cache) {
   cache.platform ??= store.platformFields?.(entity) ?? {};
-  return store.fieldDefinition?.(entity, key) ?? cache.platform[key];
+  // A standard table's labels come from the catalogue (native mergeAccount: 'Allow', 'Default Value', 'Any', 'Active').
+  return (
+    (store.state ? standardFieldDefinition(store, entity, key) : undefined) ??
+    store.fieldDefinition?.(entity, key) ??
+    cache.platform[key]
+  );
 }
 // The record's currency (an image or Target may omit transactioncurrencyid), else the organization's base currency.
 function currencySymbol(store, attributes, currencyId) {

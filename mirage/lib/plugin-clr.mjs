@@ -21,6 +21,7 @@ import {
 } from './plugin-sdk-parent.mjs';
 import { delegatedPluginParent } from './plugin-delegation.mjs';
 import { internalStageContext, internalStageSource, internalStepReference } from './plugin-internal-stage.mjs';
+import { standardFieldDefinition } from './dataverse-standard.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { localOrganizationService, validateServiceProfile, sdkValueToRecord } from './local-organization-service.mjs';
 import {
@@ -543,6 +544,13 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
     // Native plug-in entities carry the row version only as Entity.RowVersion: all-column and Target/image projections
     // omit the versionnumber attribute; an explicit ColumnSet that names it keeps it.
     if (key === 'versionnumber' && (columns.allColumns || columns.target || columns.image)) continue;
+    // An image omits a column the table marks unreadable (native mergeAccount images: no isprivate; Targets keep it).
+    if (
+      columns.image &&
+      (standardFieldDefinition(store, mapping.logicalName, key) ?? store.fieldDefinition(mapping.logicalName, key))
+        ?.validForRead === false
+    )
+      continue;
     if (value == null) {
       attributes[key] = null;
       continue;
@@ -2105,7 +2113,7 @@ export function clrContext({
     const issuing = clrContext({
       runtime,
       store,
-      step: { ...internalStepReference(internal.owner, internal.message), contract: { mode: 0 } },
+      step: internal.step ?? { ...internalStepReference(internal.owner, internal.message), contract: { mode: 0 } },
       entity: internal.entity,
       operation: internal.operation,
       stage: 20,
@@ -2115,7 +2123,32 @@ export function clrContext({
       frame: internal.frame,
       depth,
     });
-    frame.delegatedParentContext = internalStageContext(clrSdkEntryContext(issuing), internal.stage, internal.userId);
+    let parentContext = internalStageContext(clrSdkEntryContext(issuing), internal.stage, internal.userId);
+    // A CreateMultiple's issuing record context sits under the bulk message's PreOperation context reported as stage
+    // 25 (native currency): the last CreateMultiple/20 step's view, with the request's Targets, as the caller's user.
+    if (internal.bulk) {
+      const bulkIssuing = clrContext({
+        runtime,
+        store,
+        step: internal.bulk.step ?? {
+          ...internalStepReference(internal.owner, 'CreateMultiple'),
+          contract: { mode: 0 },
+        },
+        entity: internal.entity,
+        operation: 'createmultiple',
+        stage: 20,
+        target: {},
+        record: internal.bulk.record,
+        previous: null,
+        frame: internal.bulk.frame,
+        depth,
+      });
+      parentContext = {
+        ...parentContext,
+        values: { ...parentContext.values, ParentContext: internalStageContext(clrSdkEntryContext(bulkIssuing), 25) },
+      };
+    }
+    frame.delegatedParentContext = parentContext;
     frame.internalParentBuilt = true;
   }
   const descriptor = runtime.descriptor,
@@ -2472,8 +2505,11 @@ export function clrContext({
                         id: record[primary],
                       },
                       ColumnSet: { $type: 'ColumnSet', ...frame.columns },
-                      // Every Retrieve request carries its (empty) RelatedEntitiesQuery (recorded native reads).
-                      RelatedEntitiesQuery: { $type: 'RelationshipQueryCollection', values: [] },
+                      // Every Retrieve request carries its RelatedEntitiesQuery: empty, or a Web API $expand's queries
+                      // (recorded native reads, relationsReads).
+                      RelatedEntitiesQuery: cloneStateData(
+                        frame.relatedEntitiesQuery ?? { $type: 'RelationshipQueryCollection', values: [] },
+                      ),
                       ...(readRequestParameters.IncludeAnnotations === undefined
                         ? {}
                         : { IncludeAnnotations: false, ReturnNotifications: false }),
@@ -2643,6 +2679,56 @@ export function clrContext({
     values: answer.inputParameters.values,
     currencyId: bulk ? undefined : record?.transactioncurrencyid,
   });
-  if (bridged) answer.inputParameters.values = bridgeTargetInputs(answer.inputParameters.values, entity);
+  answer.inputParameters.values = nativeInputOrder(answer.inputParameters.values);
+  if (bridged) {
+    answer.inputParameters.values = bridgeTargetInputs(answer.inputParameters.values, entity);
+    // A bridged DeleteMultiple names its Targets before ConcurrencyBehavior (native crud, depth, async).
+    if (operation === 'delete' && Object.hasOwn(answer.inputParameters.values, 'ConcurrencyBehavior')) {
+      const { ConcurrencyBehavior: behavior, ...rest } = answer.inputParameters.values;
+      answer.inputParameters.values = { ...rest, ConcurrencyBehavior: behavior };
+    }
+  }
+  if (answer.sharedVariables?.values)
+    answer.sharedVariables = { ...answer.sharedVariables, values: nativeSharedOrder(answer.sharedVariables.values) };
+  for (let level = answer.context.ParentContext; level?.values; level = level.values.ParentContext) {
+    const { InputParameters: inputs, SharedVariables: shared } = level.values;
+    if (inputs?.values) inputs.values = nativeInputOrder(inputs.values);
+    if (shared?.values) shared.values = nativeSharedOrder(shared.values);
+  }
   return answer;
+}
+
+// Native ParameterCollections enumerate as the platform fills them (native and native-r2: no order difference between
+// the captures): the request's own parameters, the request tag and FromSandbox, then the parameters the platform adds
+// (a bridged multiple message's Targets replaces its Target last); SharedVariables start with IsAutoTransact,
+// AcceptLang, tag and DefaultsAddedFlag, then the entries steps and the main operation add.
+const LATE_INPUTS = [
+  'ConcurrencyBehavior',
+  'IncludeAnnotations',
+  'ReturnNotifications',
+  'AppModuleId',
+  'IsAppModuleContext',
+  'UpdateContent',
+  'BypassCustomPluginExecution',
+  'BypassBusinessLogicExecution',
+  'BypassBusinessLogicExecutionStepIds',
+];
+function nativeInputOrder(values) {
+  // An SDK Retrieve's RelatedEntitiesQuery is the platform's (after the tag); a Web API Retrieve names it.
+  const late = Object.hasOwn(values, 'IncludeAnnotations') ? LATE_INPUTS : ['RelatedEntitiesQuery', ...LATE_INPUTS];
+  const keys = Object.keys(values),
+    order = [
+      ...keys.filter((key) => key !== 'tag' && key !== 'FromSandbox' && !late.includes(key)),
+      ...['tag', 'FromSandbox'].filter((key) => Object.hasOwn(values, key)),
+      ...keys.filter((key) => late.includes(key)),
+    ];
+  return Object.fromEntries(order.map((key) => [key, values[key]]));
+}
+function nativeSharedOrder(values) {
+  const first = ['IsAutoTransact', 'AcceptLang', 'tag', 'DefaultsAddedFlag'].filter((key) =>
+    Object.hasOwn(values, key),
+  );
+  return Object.fromEntries(
+    [...first, ...Object.keys(values).filter((key) => !first.includes(key))].map((key) => [key, values[key]]),
+  );
 }

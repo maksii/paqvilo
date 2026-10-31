@@ -24,7 +24,8 @@ const step = (n, message, stage, mode = 0) => ({
   assemblyId: 'invented',
 });
 
-async function fixture(t) {
+// @parity-evidence: fixture signature only (an optional extra step list, default none); no assertion changes
+async function fixture(t, extraSteps = []) {
   const f = await contractModuleFixture(t, {
     mappings: {
       x_order: {
@@ -46,6 +47,7 @@ async function fixture(t) {
     step(4, 'RetrieveExchangeRate', 20),
     step(5, 'RetrieveExchangeRate', 40),
     step(6, 'RetrieveExchangeRate', 40, 1),
+    ...extraSteps,
   ];
   const handlers = new Map([
     [
@@ -61,6 +63,10 @@ async function fixture(t) {
           initiating: context.InitiatingUserId,
           inputs: structuredClone(context.InputParameters),
           outputs: structuredClone(context.OutputParameters),
+          parentId: parent?.PrimaryEntityId ?? null,
+          grandparentTargets: ((targets) => (Array.isArray(targets) ? targets.length : targets?.entities?.length))(
+            parent?.ParentContext?.InputParameters?.Targets,
+          ),
           chain: [parent, parent?.ParentContext].map((level) =>
             level ? `${level.MessageName}/${level.Stage}/${level.UserId}` : null,
           ),
@@ -191,5 +197,33 @@ test('a POST with money null and a PATCH without money run no RetrieveExchangeRa
   assert.deepEqual(
     f.seen.filter((entry) => entry.at.startsWith('RetrieveExchangeRate')),
     [],
+  );
+});
+
+// @test-kind parity: native and native-r2 currency Web API CreateMultiple of two money rows (7075-7077): one RetrieveExchangeRate 20/40/async for the request, under the last record's Create/20 step context (SYSTEM) < CreateMultiple/25 (the caller, both Targets) < CreateMultiple/30
+test('a Web API CreateMultiple runs RetrieveExchangeRate once for the request', async (t) => {
+  const f = await fixture(t, [step(8, 'CreateMultiple', 20)]);
+  const created = await f.request('POST', '/x_orders/Microsoft.Dynamics.CRM.CreateMultiple', {
+    Targets: [
+      { '@odata.type': 'Microsoft.Dynamics.CRM.x_order', x_orderid: priced, x_name: 'One', x_total: 3.5 },
+      { '@odata.type': 'Microsoft.Dynamics.CRM.x_order', x_orderid: plain, x_name: 'Two', x_total: 7 },
+    ],
+  });
+  assert(created.status < 300, await created.text());
+  await f.backend.settle();
+  const system = f.store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM').systemuserid;
+  const runs = f.seen.filter((entry) => entry.at.startsWith('RetrieveExchangeRate'));
+  assert.deepEqual(
+    runs.map((entry) => entry.at),
+    ['RetrieveExchangeRate/20/0', 'RetrieveExchangeRate/40/0', 'RetrieveExchangeRate/40/1'],
+  );
+  const pre = runs[0],
+    caller = f.seen.find((entry) => entry.at === 'CreateMultiple/20/0').user;
+  assert.deepEqual(pre.chain, [`Create/20/${system}`, `CreateMultiple/25/${caller}`]);
+  assert.equal(pre.parentId, plain);
+  assert.equal(pre.grandparentTargets, 2);
+  assert.deepEqual(
+    f.store.tableRows('x_order').map((row) => row.x_total_base),
+    [3.5, 7],
   );
 });

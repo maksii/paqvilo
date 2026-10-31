@@ -1941,6 +1941,7 @@ export function runPluginPhase({
             frame.entity = holder?.entity;
             frame.columns = columns;
             frame.retrieveTarget = holder?.target;
+            frame.relatedEntitiesQuery = holder?.relatedEntitiesQuery;
           }
           if (bulk) {
             frame.targets = targets;

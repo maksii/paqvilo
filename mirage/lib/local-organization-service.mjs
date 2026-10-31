@@ -759,6 +759,8 @@ export function localOrganizationService(store, profile, records, { diagnostic =
           entity,
           operation,
           targets: cloneStateData(targets),
+          // The records' PreOperation stamps, as a Web API bulk request's (native sdkSurface CreateMultiple/UpdateMultiple).
+          preOperationStamps: records?.bulkStampsInternal?.(context(), entity, targets, operation === 'updatemultiple'),
           identity: localIdentity,
           responseToken,
           bypassCustomPlugins: requestOptions.bypassCustomPlugins === true,

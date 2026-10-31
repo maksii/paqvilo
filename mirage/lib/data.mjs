@@ -33,7 +33,7 @@ import {
   duplicateAlternateKey,
 } from './alternate-key-values.mjs';
 import { assertElasticRecord, isElastic, samePartition, recordKey } from './dataverse-elastic.mjs';
-import { relationshipsOf } from './dataverse-standard.mjs';
+import { customerAddressColumns, relationshipsOf, standardTableDef } from './dataverse-standard.mjs';
 import { traceDecision } from './dataverse-security.mjs';
 import { StateStorage } from './state-storage.mjs';
 import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
@@ -182,10 +182,11 @@ function committedPluginParent(store, mapping, operation, target, row, options) 
     childSharedVariables: {
       $type: 'ParameterCollection',
       values: {
-        AcceptLang: options.pluginAcceptLanguage ?? '',
+        // The native SharedVariables order: IsAutoTransact, AcceptLang, tag, DefaultsAddedFlag.
         IsAutoTransact: true,
-        ...(operation === 'create' ? { DefaultsAddedFlag: true } : {}),
+        AcceptLang: options.pluginAcceptLanguage ?? '',
         ...(tag === undefined ? {} : { tag }),
+        ...(operation === 'create' ? { DefaultsAddedFlag: true } : {}),
       },
     },
   };
@@ -3252,8 +3253,14 @@ export class DataStore {
             })();
       const record = { [m.idColumn]: originalId },
         columns = clone(options.sdkColumns ?? { allColumns: true, columns: [] }),
+        related = options.sdkRelatedEntities ?? [],
         holder = {
           target: clone(options.sdkTarget ?? { $type: 'EntityReference', logicalName: m.logicalName, id: originalId }),
+          // A Web API $expand's RelatedEntitiesQuery (dataverse-records.mjs expandRelatedEntities).
+          relatedEntitiesQuery: {
+            $type: 'RelationshipQueryCollection',
+            values: related.map(({ relationship, query }) => clone({ relationship, query })),
+          },
         },
         previousReadOnly = this.pluginReadOnly;
       this.pluginReadOnly = !this.pluginRollbackBoundary;
@@ -3304,6 +3311,11 @@ export class DataStore {
         if (!row) return null;
         Object.assign(record, row, { [m.idColumn]: originalId });
         holder.entity = recordToSdkReadEntity(this, m.logicalName, row, columns);
+        if (related.length)
+          holder.entity.relatedEntities = related.map(({ relationship, collection }) => ({
+            relationship: clone(relationship),
+            entities: collection(row),
+          }));
         const responseFrame = this.pluginPipeline({
           entity: m.logicalName,
           operation: 'retrieve',
@@ -5160,7 +5172,13 @@ export class DataStore {
     for (const [key, value] of Object.entries(m.recordDefaults ?? {}))
       if (key !== 'statuscode' && !own(row, key)) {
         row[safeName(key)] = clone(value);
-        if (fieldKind(this.fieldDefinition(m.logicalName, key, options.metadata)) === 'boolean')
+        // Two-option defaults reach the PreValidation Target, and so do a standard table's choice defaults; the state
+        // follows from PreOperation (native mergeAccount account Create/10; probe Create/10: the two-option default).
+        if (
+          key !== 'statecode' &&
+          (standardTableDef(m.logicalName) ||
+            fieldKind(this.fieldDefinition(m.logicalName, key, options.metadata)) === 'boolean')
+        )
           pluginTarget[key] = clone(value);
       }
     const changedAttributes = Object.keys(pluginTarget);
@@ -5283,12 +5301,29 @@ export class DataStore {
     }
     yield [m, 'create', 20, pluginTarget, row, null, identity, changedAttributes, options];
     options.mainOperation?.(m, 'create', row, null, pluginTarget, { identity, options });
+    // The platform's customer address rows of an account or contact: their ids are on the row, never in a Create
+    // Target (native mergeAccount). ponytail: the address rows are stored directly, without a pipeline of their own.
+    const addresses = isElastic(m)
+      ? []
+      : customerAddressColumns(m.logicalName).filter(({ column }) => row[column] == null && !own(pluginTarget, column));
+    for (const { column } of addresses) row[column] = this.ids.uuid();
     const effects = this.applyPlugins(m.logicalName, 'create', row, null, identity);
     assertAttachmentPolicy(this.state, m.logicalName, row);
     assertUniqueIdentity();
     this.assertAlternateKeys(m, row, rows, -1);
     options.authorizeEffectiveWrite?.(m.logicalName, 'create', row, null);
     this.insertRow(m.logicalName, rows, row);
+    if (addresses.length && this.state.mappings?.customeraddress) {
+      const table = (this.state.tables.customeraddress ??= []);
+      for (const { column, n } of addresses)
+        this.insertRow('customeraddress', table, {
+          customeraddressid: row[column],
+          parentid: { id: row[m.idColumn], logical_name: m.logicalName },
+          parentidtypecode: m.logicalName,
+          objecttypecode: m.logicalName,
+          addressnumber: n,
+        });
+    }
     this.applySecondary(effects);
     try {
       this.assertAllowed(m.logicalName, 'create', row, identity);
@@ -5361,7 +5396,11 @@ export class DataStore {
     // main-operation fields, as they stood before PostOperation ran (never the row version or empty on-behalf/team
     // lookups).
     for (const [name, value] of Object.entries(row))
-      if (!notInTarget(name, value) && !(pluginTarget[name] === '' && value === null))
+      if (
+        !notInTarget(name, value) &&
+        !(pluginTarget[name] === '' && value === null) &&
+        !addresses.some(({ column }) => column === name)
+      )
         pluginTarget[name] = clone(value);
     const asyncSourceParent = committedPluginParent(this, m, 'create', pluginTarget, row, options),
       asyncTarget = clone(pluginTarget),
