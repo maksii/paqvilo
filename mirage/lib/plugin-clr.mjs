@@ -562,11 +562,11 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
       attributes[key] = reference(targets[0], canon(value), undefined, row[`${key}pid`]);
     } else if (['money', 'decimal'].includes(type)) {
       let text = String(value?.value ?? value);
-      // A stored decimal (a retrieved row, or a value only the platform writes) carries its storage scale: ten
+      // A stored decimal (an image row, or a value only the platform writes) carries its storage scale: ten
       // places, or the column's precision when larger (native images: 1.5000000000; exchangerate 1.000000000000).
       const scale = Math.max(10, Number.isInteger(field.precision) ? field.precision : 0),
         match = /^-?\d+(?:\.(\d*))?$/.exec(text);
-      if (type === 'decimal' && (columns.retrieved || field.validForCreate === false) && match)
+      if (type === 'decimal' && (columns.image || field.validForCreate === false) && match)
         text = (match[1] === undefined ? text + '.' : text) + '0'.repeat(Math.max(0, scale - (match[1] ?? '').length));
       attributes[key] = typed(type === 'money' ? 'Money' : 'Decimal', text);
     } else if (type === 'bigint') attributes[key] = typed('Int64', String(value?.value ?? value));
@@ -636,10 +636,10 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
     if (attributes[key]?.$type === 'EntityReference' && typeof attributes[key].name === 'string')
       formattedValues[key] = attributes[key].name;
   }
-  // A retrieved row carries the phonetic-name companion of a lookup whose metadata declares one
+  // An image carries the phonetic-name companion of a lookup whose metadata declares one
   // (native images: createdbyyominame, owneridyominame), valued from the referenced row.
-  // A lookup without a name companion (owninguser, owningteam) is retrieved unnamed.
-  if (columns.retrieved)
+  // A lookup without a name companion (owninguser, owningteam) is unnamed in an image.
+  if (columns.image)
     for (const [key, value] of Object.entries(attributes)) {
       const companion = `${key}yominame`,
         declared = (name) =>
@@ -689,10 +689,9 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
 }
 export function recordToSdkReadEntity(store, entity, row, columns) {
   const present = Object.fromEntries(Object.entries(row ?? {}).filter(([, value]) => value != null));
-  const result = recordToSdkEntity(store, entity, present, {
-    ...sdkReadColumns(store, entity, columns),
-    retrieved: true,
-  });
+  // Image-only facts (storage-scale decimals, phonetic companions) are not applied: the corpus proves them for
+  // pre/post images, not for SDK Retrieve results.
+  const result = recordToSdkEntity(store, entity, present, sdkReadColumns(store, entity, columns));
   // A retrieved Dataverse row reports its stored row version as Entity.RowVersion (native Retrieve/RetrieveMultiple).
   if (result.rowVersion == null && store.platformFields) {
     const mapping = store.resolveMapping(entity),
@@ -1819,6 +1818,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
       input.context?.OwningExtension?.id,
       constructorConfiguration,
       runtime.descriptor,
+      { mainOperation: Number(input.context?.Stage) === 30 },
     ),
   };
   const worker =
@@ -2031,7 +2031,7 @@ export function clrContext({
       // PreBusinessEntity names its attributes exactly, also none.
       allColumns: !registration.exact && !registration.attributes?.length,
       columns: registration.attributes ?? [],
-      retrieved: true,
+      image: true,
     });
     const formattedValues = pipelineFormattedValues(store, entity, value, {
       userId: formatUserId,
