@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo simulation persistence design (declared pack DATA owners, normalized schema and schemaRecords, private runtime checkpoint)
 // Loopback fixtures exercise the same policy through actual HTTP hosts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -251,6 +252,17 @@ test('deep declared operation schema keeps source API edits and deletions after 
   const metadata = await (await c.org('GET', '/$metadata')).text();
   assert.match(metadata, /Name="new_Authored"/);
   assert.doesNotMatch(metadata, /Name="new_Kept"|Name="new_Deleted"/);
+  // The message catalogue a custom API edit rewrites is platform-derived runtime state, never pack DATA: the restart
+  // reseeds it from the authoritative schemaRecords, so steps can still register on the renamed API.
+  const messages = sim.store.tableRows('sdkmessage').map((row) => row.name);
+  assert.ok(messages.includes('new_Authored'));
+  assert.equal(messages.includes('new_Kept') || messages.includes('new_Deleted'), false);
+  assert.ok(sim.store.tableRows('sdkmessagefilter').some((row) => row.primaryobjecttypecode === 'none'));
+  const packData = JSON.parse(await fs.readFile(data.file, 'utf8'));
+  for (const table of ['sdkmessage', 'sdkmessagefilter']) {
+    assert.equal(Object.hasOwn(packData.newTables, table), false);
+    assert.equal(Object.hasOwn(packData.schema.schemaRecords ?? {}, table), false);
+  }
   await body(await c.org('DELETE', `/customapis(${keep.customapiid})`), 204);
   await sim.close();
   await fs.rm(fixture.stateFile);

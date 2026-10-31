@@ -52,6 +52,10 @@ const runtimeTables = new Set([
   // level, never pack DATA (a preset that carries them replaces the runtime rows; organization-presets keeps the seeded ones).
   'sdkmessageprocessingstep',
   'sdkmessageprocessingstepimage',
+  // The message catalogue: seeded from the platform, the registry and customapi rows at every start, and rewritten when a
+  // custom API is created, renamed, rebound or deleted. Derived from its sources, never pack DATA.
+  'sdkmessage',
+  'sdkmessagefilter',
   'plugintype',
   'pluginassembly',
   'serviceendpoint',
