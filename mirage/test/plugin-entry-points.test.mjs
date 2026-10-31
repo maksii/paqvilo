@@ -252,7 +252,7 @@ async function messageFixture(t, steps, { register } = {}) {
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
   t.after(() => backend.close());
-  return { ...f, seen };
+  return { ...f, seen, backend };
 }
 const stages = (n, message, extra) => [10, 20, 40].map((stage, i) => step(n + i, message, stage, extra));
 
@@ -554,4 +554,69 @@ test('a one-to-many collection $ref runs Associate (Referenced) around the child
   assert.ok(update, JSON.stringify(seen));
   assert.equal(update.depth, 2);
   assert.ok(!update.inputs.includes('ConcurrencyBehavior'), update.inputs.join(','));
+});
+
+// @test-kind parity: native webApiNamed: each Web API sharing or access message runs its asynchronous PostOperation step once after the request
+// @parity-evidence: native and native-r2 webApiNamed: GrantAccess, ModifyAccess, RevokeAccess, RetrievePrincipalAccess and RetrieveSharedPrincipalsAndAccess /40/m1 one event each
+test('Web API sharing and access messages run their asynchronous steps once', async (t) => {
+  const messages = [
+    'GrantAccess',
+    'ModifyAccess',
+    'RetrievePrincipalAccess',
+    'RetrieveSharedPrincipalsAndAccess',
+    'RevokeAccess',
+  ];
+  const f = await messageFixture(
+    t,
+    messages.map((message, n) => step(60 + n, message, 40, { entity: 'account', mode: 1 })),
+  );
+  const team = '10000000-0000-0000-0000-0000000000e1';
+  f.store.state.tables.team = [...(f.store.state.tables.team ?? []), { teamid: team, name: 'Invented team' }];
+  const principal = { '@odata.type': 'Microsoft.Dynamics.CRM.team', teamid: team };
+  const target = { '@odata.type': 'Microsoft.Dynamics.CRM.account', accountid: row };
+  const answers = [
+    await f.request('POST', '/GrantAccess', {
+      Target: target,
+      PrincipalAccess: { Principal: principal, AccessMask: 'ReadAccess' },
+    }),
+    await f.request('POST', '/ModifyAccess', {
+      Target: target,
+      PrincipalAccess: { Principal: principal, AccessMask: 'ReadAccess, WriteAccess' },
+    }),
+    await f.request(
+      'GET',
+      `/teams(${team})/Microsoft.Dynamics.CRM.RetrievePrincipalAccess(Target=@t)?@t={'@odata.id':'accounts(${row})'}`,
+    ),
+    await f.request('GET', `/RetrieveSharedPrincipalsAndAccess(Target=@t)?@t={'@odata.id':'accounts(${row})'}`),
+    await f.request('POST', '/RevokeAccess', { Target: target, Revokee: principal }),
+  ];
+  for (const answer of answers) assert(answer.status < 300, await answer.clone().text());
+  await f.backend.settle();
+  assert.deepEqual(f.seen.map((entry) => entry.at).toSorted(), messages.map((message) => `${message}/40`).toSorted());
+});
+
+// @test-kind parity: native mergeAccount: a Merge succeeds while a system job regarding the subordinate still waits (its asynchronous Update steps ran after the merge)
+// @parity-evidence: native and native-r2 mergeAccount: POST Merge 204 and the account Update/40 and UpdateMultiple/40 asynchronous steps queued by the scenario's earlier writes ran after it
+test('Web API Merge leaves a waiting system job regarding the subordinate alone', async (t) => {
+  const f = await messageFixture(t, [step(70, 'Update', 20, { entity: 'account' })]);
+  const job = '50000000-0000-0000-0000-0000000000c3';
+  await f.store.transact(() => {
+    (f.store.state.tables.asyncoperation ??= []).push({
+      asyncoperationid: job,
+      name: 'Invented waiting job',
+      operationtype: 1,
+      statecode: 0,
+      statuscode: 0,
+      regardingobjectid: { id: peer, logical_name: 'account' },
+    });
+  });
+  const merged = await f.request('POST', '/Merge', {
+    Target: { '@odata.type': 'Microsoft.Dynamics.CRM.account', accountid: row },
+    Subordinate: { '@odata.type': 'Microsoft.Dynamics.CRM.account', accountid: peer },
+    UpdateContent: { '@odata.type': 'Microsoft.Dynamics.CRM.account', name: 'Merged' },
+    PerformParentingChecks: false,
+  });
+  assert(merged.status < 300, await merged.text());
+  const waiting = f.store.tableRows('asyncoperation').find((item) => item.asyncoperationid === job);
+  assert.equal(waiting.regardingobjectid.id, peer);
 });

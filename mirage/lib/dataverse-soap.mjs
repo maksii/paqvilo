@@ -394,6 +394,13 @@ async function namedUpdate(s, logical, id, data, system = false) {
     store.pluginExecutionUserId = previous;
   }
 }
+// A named message and the Update its main operation delegates commit as one request transaction, so the message's
+// asynchronous steps and those of the delegated Update and UpdateMultiple are queued together on commit (recorded native
+// soapMessages: Assign/40 or SetStateDynamicEntity/40 with Update/40 and UpdateMultiple/40, all Mode 1, Depth 1).
+function namedTransaction(s, fn) {
+  const atomic = () => (s.api.runAtomic ? s.api.runAtomic(fn) : s.api.store.transact(fn));
+  return s.api.change ? s.api.change(atomic) : atomic();
+}
 async function captureSoapResponse(s, operation, entity, execute) {
   const captured = await captureSdkResponseAsync(s.api.store, operation, entity, execute);
   s.sdkResults = captured.results;
@@ -941,15 +948,23 @@ async function runRequestCore(base, { name, params }) {
         logical = primaryTable(s.api, target.logicalName) ?? target.logicalName,
         assigneeTable = primaryTable(s.api, assignee.logicalName) ?? assignee.logicalName;
       // Assign runs its own pipeline; its main operation updates the owner as SYSTEM (recorded native soapMessages).
-      await runEntryMessage(s.api.store, {
-        message: 'Assign',
-        entity: logical,
-        id,
-        inputs: { Target: sdkRef(logical, id), Assignee: sdkRef(assigneeTable, assigneeId) },
-        context: s,
-        main: () =>
-          namedUpdate(s, logical, id, { 'ownerid@odata.bind': `/${setOf(s.api, assigneeTable)}(${assigneeId})` }, true),
-      });
+      await namedTransaction(s, () =>
+        runEntryMessage(s.api.store, {
+          message: 'Assign',
+          entity: logical,
+          id,
+          inputs: { Target: sdkRef(logical, id), Assignee: sdkRef(assigneeTable, assigneeId) },
+          context: s,
+          main: () =>
+            namedUpdate(
+              s,
+              logical,
+              id,
+              { 'ownerid@odata.bind': `/${setOf(s.api, assigneeTable)}(${assigneeId})` },
+              true,
+            ),
+        }),
+      );
       return reply(name, new Map(), NS.g);
     }
     case 'SetState': {
@@ -960,22 +975,24 @@ async function runRequestCore(base, { name, params }) {
         status = p('Status')?.value == null ? null : num(p('Status').value);
       // SetState runs as SetStateDynamicEntity; its main operation updates the state as the caller (recorded native
       // soapMessages). Registered SetState steps never run.
-      await runEntryMessage(s.api.store, {
-        message: 'SetStateDynamicEntity',
-        entity: logical,
-        id,
-        inputs: {
-          EntityMoniker: sdkRef(logical, id),
-          State: { $type: 'OptionSetValue', value: state },
-          Status: { $type: 'OptionSetValue', value: status ?? -1 },
-        },
-        context: s,
-        main: () =>
-          namedUpdate(s, logical, id, {
-            statecode: state,
-            ...(status == null || status === -1 ? {} : { statuscode: status }),
-          }).then(() => ({ IsValid: true })),
-      });
+      await namedTransaction(s, () =>
+        runEntryMessage(s.api.store, {
+          message: 'SetStateDynamicEntity',
+          entity: logical,
+          id,
+          inputs: {
+            EntityMoniker: sdkRef(logical, id),
+            State: { $type: 'OptionSetValue', value: state },
+            Status: { $type: 'OptionSetValue', value: status ?? -1 },
+          },
+          context: s,
+          main: () =>
+            namedUpdate(s, logical, id, {
+              statecode: state,
+              ...(status == null || status === -1 ? {} : { statuscode: status }),
+            }).then(() => ({ IsValid: true })),
+        }),
+      );
       return reply(name, new Map(), NS.g);
     }
     case 'WhoAmI': {

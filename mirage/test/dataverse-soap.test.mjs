@@ -2029,3 +2029,39 @@ test('SOAP exact Boolean duplicate detection controls reach the real create and 
   assert.match(unsupported.body, /Unsupported SOAP Create request parameter: InventedOptional/);
   assert.deepEqual(t.store.tableRows('widget'), before, 'Configured unknown controls must fail before record effects');
 });
+
+// @test-kind parity: native soapMessages: a SOAP Assign or SetState queues the message's own asynchronous step and the asynchronous Update and UpdateMultiple steps of its delegated owner or state Update, once each
+// @parity-evidence: native and native-r2 soapMessages requests 1 and 2: Update/40/m1 x3, UpdateMultiple/40/m1 and Assign/40/m1 (resp. SetStateDynamicEntity/40/m1) at Depth 1
+for (const message of ['Assign', 'SetState']) {
+  test(`SOAP ${message} queues its own and its delegated Update's asynchronous steps`, async (t) => {
+    const f = await specializedFixture(message);
+    const named = message === 'Assign' ? 'Assign' : 'SetStateDynamicEntity';
+    const asyncStep = (n, stepMessage) => ({
+      id: `40000000-0000-4000-8000-0000000000${String(n).padStart(2, '0')}`,
+      name: `Invented async ${stepMessage}`,
+      enabled: true,
+      entity: f.logical,
+      message: stepMessage,
+      stage: 40,
+      mode: 1,
+      rank: 1,
+      supportedDeployment: 0,
+      filteringAttributes: [],
+      images: [],
+      typeName: `Invented.Async${stepMessage}`,
+      assemblyId: 'invented',
+    });
+    const ran = [];
+    const steps = [asyncStep(1, named), asyncStep(2, 'Update'), asyncStep(3, 'UpdateMultiple')];
+    const handlers = new Map(
+      steps.map((step) => [step.typeName, ({ context }) => ran.push(`${context.MessageName}/${context.Depth}`)]),
+    );
+    const items = pluginCatalogue({ plugins: { steps }, handlers });
+    const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
+    t.after(() => backend.close());
+    const result = await f.send(specializedRequest(message, f.logical, f.id, f.basic.systemuserid));
+    assert.equal(result.status, 200, result.body);
+    await backend.settle();
+    assert.deepEqual(ran.toSorted(), [`${named}/1`, 'Update/1', 'UpdateMultiple/1'].toSorted());
+  });
+}
