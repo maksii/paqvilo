@@ -403,6 +403,8 @@ export function createAsyncPluginRunner({
             associationParameters: event.associationParameters,
             query: structuredClone(event.query),
             collection: structuredClone(event.collection),
+            columns: structuredClone(event.columns),
+            holder: structuredClone(event.holder),
             targets: event.targets,
             previousRecords: event.previousRecords,
             records: event.records,

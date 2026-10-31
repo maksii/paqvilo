@@ -225,7 +225,9 @@ test('SDK values: platform columns typed from metadata, unnamed Target reference
   assert.equal(submitted.attributes.exchangerate.value, '1.000000000000');
   const later = recordToSdkEntity(store, 'x_item', row, { allColumns: true, target: true });
   assert.equal(later.attributes.x_when.value, '2026-01-02T03:04:05');
-  const image = recordToSdkEntity(store, 'x_item', row, { allColumns: true, retrieved: true });
+  // @parity-evidence: unchanged guarantee, renamed encoder option only; the native recorder corpus 2026-10-30 proves these
+  // values for pre/post images (crud, upsert, reads, pipelineEffects), so the rules now apply to images, not SDK reads.
+  const image = recordToSdkEntity(store, 'x_item', row, { allColumns: true, image: true });
   assert.equal(image.attributes.x_ratio.value, '1.5000000000');
   assert.equal(image.attributes.ownerid.name, 'Invented User');
   assert.equal(image.attributes.owneridyominame, 'Invented User');

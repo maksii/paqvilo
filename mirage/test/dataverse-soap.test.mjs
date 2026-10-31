@@ -721,7 +721,10 @@ for (const message of ['Assign', 'SetState']) {
   test(`SOAP ${message} entity-set aliases cannot bypass a configured named step`, async () => {
     const t = await specializedFixture(message);
     const before = structuredClone(t.store.tableRows(t.logical));
-    t.store.setPluginPipeline(() => {});
+    const phases = [];
+    t.store.setPluginPipeline((context) => {
+      phases.push(`${context.operation}:${context.entity}:${context.stage}`);
+    });
     t.store.pluginPipeline.steps = () => namedStep(message, t.logical);
     const result = await t.send(
       specializedRequest(message, t.store.resolveMapping(t.logical).entitySet, t.id, t.basic.systemuserid),
@@ -732,9 +735,11 @@ for (const message of ['Assign', 'SetState']) {
       assert.equal(result.status, 200, result.body);
       return;
     }
-    assert.equal(result.status, 500, result.body);
-    assert.match(result.body, /plug-in pipeline is not implemented/);
-    assert.deepEqual(t.store.tableRows(t.logical), before);
+    // Assign runs its own pipeline (plugin-platform-messages.mjs runEntryMessage) for the canonical table the alias
+    // names, then its delegated owner Update.
+    assert.equal(result.status, 200, result.body);
+    for (const stage of [10, 20, 40]) assert.ok(phases.includes(`assign:${t.logical}:${stage}`), phases.join(' '));
+    assert.notDeepEqual(t.store.tableRows(t.logical), before);
   });
 }
 

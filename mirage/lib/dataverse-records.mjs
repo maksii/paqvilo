@@ -14,7 +14,7 @@ import { refuseDeleteMultiple } from './plugin-platform-messages.mjs';
 import { isConnectorDataverseSpan } from './connector-definition.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
 import { executeBulkRecordsAsync } from './plugin-bulk.mjs';
-import { associationRequestBinding } from './plugin-association.mjs';
+import { associationRequestBinding, navigationRole } from './plugin-association.mjs';
 import { recordToSdkEntity } from './plugin-clr.mjs';
 import { odataToSdkQuery } from './plugin-query.mjs';
 import { upsertSourceOperation } from './plugin-delegation.mjs';
@@ -596,6 +596,13 @@ export function createRecordHandlers({
           },
         }
       : undefined;
+  // A collection GET's FetchXML for its steps names the client's own $select, without the key the Web API adds.
+  const fetchPresentation = (c, mapping) => {
+    const selected = c.url.searchParams.get('$select');
+    return selected && !selected.split(',').some((name) => name.trim() === mapping.idColumn)
+      ? { hidden: mapping.idColumn }
+      : {};
+  };
   const secured = (c, extra = {}) =>
     queryOptions({
       bypassCustomPlugins: c.bypassCustomPlugins === true,
@@ -1572,7 +1579,12 @@ export function createRecordHandlers({
     const after =
       cookie && cookie.countOfRecords === undefined ? { id: cookie.lastId, values: cookie.orderValues ?? {} } : null;
     const paging = { params, offset, pageSize, after, preferenceApplied: null, nextLink: () => null };
-    const options = secured(c, { ...(ids ? { ids } : {}), readInitialFrame: webApiReadFrame(c, true) });
+    const readFrame = webApiReadFrame(c, true);
+    const options = secured(c, {
+      ...(ids ? { ids } : {}),
+      readInitialFrame: readFrame,
+      ...(readFrame ? { webApiFetchQuery: fetchPresentation(c, mapping) } : {}),
+    });
     // The filter resolves field definitions per row; they are derived once for the whole synchronous query.
     const result =
       ids?.length === 0
@@ -1987,8 +1999,8 @@ export function createRecordHandlers({
   // final row: platform values derived from it, such as the exchange rate and base amounts (dataverse-currency.mjs).
   const mainOperation = (c) =>
     hookList('mainOperation').length
-      ? (mapping, operation, row, previous, target) =>
-          runHooks('mainOperation', c, mapping, { operation, row, previous, target })
+      ? (mapping, operation, row, previous, target, request = {}) =>
+          runHooks('mainOperation', c, mapping, { operation, row, previous, target, ...request })
       : undefined;
   const derivedCreateColumns = new WeakMap();
   const createOptions = (c, extra = {}, data) =>
@@ -2121,6 +2133,8 @@ export function createRecordHandlers({
       bypassCustomPlugins: c.bypassCustomPlugins === true,
       bypassStepIds: c.bypassStepIds,
       readInitialFrame: {
+        // The platform's own read: no IncludeAnnotations input (recorded native crud and upsert).
+        internalRead: true,
         inputParameters: {
           $type: 'ParameterCollection',
           values: { AppModuleId: { $type: 'Guid', value: empty }, IsAppModuleContext: false },
@@ -2313,7 +2327,10 @@ export function createRecordHandlers({
         mapping.logicalName,
         key.row[mapping.idColumn],
         c.identity,
-        updateOptions(c, { ifMatch: c.headers['if-match'] }),
+        updateOptions(c, {
+          ifMatch: c.headers['if-match'],
+          ...(key.alternate ? { targetKeyAttributes: { ...key.alternate } } : {}),
+        }),
       );
       await afterWrite(c, mapping, { operation: 'delete', id: key.row[mapping.idColumn] });
     });
@@ -3302,7 +3319,11 @@ export function createRecordHandlers({
         ? cloneStateData(suppliedParameters)
         : {
             Target: { $type: 'EntityReference', logicalName: mapping.logicalName, id: rowId, name: null },
-            Relationship: { $type: 'Relationship', schemaName: rel.schemaName ?? navigation, primaryEntityRole: null },
+            Relationship: {
+              $type: 'Relationship',
+              schemaName: rel.schemaName ?? navigation,
+              primaryEntityRole: navigationRole(mapping, navigation, rel),
+            },
             RelatedEntities: {
               $type: 'EntityReferenceCollection',
               values: relatedIds.map((relatedId) => ({
@@ -3361,7 +3382,12 @@ export function createRecordHandlers({
             }),
             'value',
             undefined,
-            { bypassStepIds: c.bypassStepIds, bypassCustomPlugins: c.bypassCustomPlugins === true },
+            {
+              bypassStepIds: c.bypassStepIds,
+              bypassCustomPlugins: c.bypassCustomPlugins === true,
+              // The platform's own read: no IncludeAnnotations input (recorded native associate).
+              readInitialFrame: { internalRead: true },
+            },
           );
         }
       const phase = function* (stage) {
@@ -3404,7 +3430,9 @@ export function createRecordHandlers({
           parameters.Target?.logicalName === originalBinding.entity &&
           String(parameters.Relationship?.schemaName ?? '').toLowerCase() ===
             originalBinding.schemaName.toLowerCase() &&
-          (parameters.Relationship?.primaryEntityRole ?? null) === (originalBinding.role ?? null) &&
+          // A step that drops the role keeps the source-qualified direction; only another role changes it.
+          (parameters.Relationship?.primaryEntityRole ?? originalBinding.role ?? null) ===
+            (originalBinding.role ?? null) &&
           parameters.RelatedEntities?.values?.every(
             (reference) => reference.logicalName === originalBinding.relatedEntity,
           );
