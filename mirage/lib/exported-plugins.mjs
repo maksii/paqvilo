@@ -42,7 +42,13 @@ import {
   pluginInvocationSdkParent,
   pluginInvocationParent,
 } from './plugin-execution-lifetime.mjs';
-import { asyncMultiplePluginParent, recordRequestRootChange, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
+import {
+  asyncMultiplePluginParent,
+  recordRequestRootChange,
+  requestRootSnapshot,
+  selectSdkEntryParent,
+  withRequestRootChanges,
+} from './plugin-sdk-parent.mjs';
 import { recordPluginTrace } from './plugin-trace.mjs';
 import { delegatedPluginParent, upsertSourceOperation } from './plugin-delegation.mjs';
 import { populatePluginSystemOutputs } from './plugin-response.mjs';
@@ -1527,6 +1533,24 @@ export function runPluginPhase({
     frame.inputParameters = messageParameters.inputParameters ?? { $type: 'ParameterCollection', values: {} };
     frame.outputParameters = messageParameters.outputParameters ?? { $type: 'ParameterCollection', values: {} };
     executionFrames.set(record, frame);
+  }
+  if (stage === 40 && !asyncExecution) {
+    // The request root's changes when PostOperation began: this operation's asynchronous jobs report them
+    // (plugin-sdk-parent requestRootSnapshot).
+    phaseFrame.requestRootAtPostOperation ??= requestRootSnapshot(store, phaseFrame.requestId);
+    // A named message no plug-in or platform operation issued is the request root: its PostOperation collection, and
+    // its jobs', list the request's changes (native webApiNamed GrantAccess/40, soapMessages Assign/40, mergeAccount
+    // Merge/40, sync and asynchronous); its PreValidation and PreOperation ones do not.
+    if (
+      customApi?.platformMessage &&
+      phaseFrame.requestRootAtPostOperation &&
+      !phaseFrame.delegatedParentContext &&
+      !(store?.pluginParentContext || pluginInvocationSdkParent(store))
+    )
+      phaseFrame.sharedVariables = {
+        $type: 'ParameterCollection',
+        values: withRequestRootChanges(phaseFrame.sharedVariables?.values ?? {}, phaseFrame.requestRootAtPostOperation),
+      };
   }
   const read = ['retrieve', 'retrievemultiple'].includes(operation),
     multiple = operation === 'retrievemultiple',

@@ -66,6 +66,14 @@ export const maskOfNames = (names) =>
     .split(',')
     .map((part) => ACCESS_RIGHTS[part.trim().replace(/Access$/, '')] ?? 0)
     .reduce((mask, right) => mask | right, 0);
+/** The request root's record of a sharing change made by the running named message's main operation (GrantAccess,
+ * ModifyAccess, RevokeAccess: POADistributionChanged 10760; Merge: 1). */
+export const recordSharingChange = (store, table, distribution = 10760) =>
+  recordRequestRootChange(store, store.pluginMainOperation?.context?.values?.RequestId?.value, {
+    sharing: true,
+    table,
+    distribution,
+  });
 const sharesOf = (store, target) =>
   store
     .tableRows('principalobjectaccess')
@@ -270,6 +278,8 @@ function runMessagePipeline(
         messageEvent: true,
         bypassCustomAsync,
         bypassStepIds,
+        // The frame travels with the event: a staged copy of the record no longer finds it in store.pluginFrames.
+        frame,
       };
       if (store.committedEventCandidates || !store.commitStagers?.size)
         store.recordCommittedEvent(mapping.logicalName, operation, record, [], event);
@@ -426,8 +436,9 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
           ? { Target: parameters.Target, Revokee: parameters.Revokee }
           : { Target: parameters.Target, PrincipalAccess: parameters.PrincipalAccess };
       named(inputs, target, () => {
-        // The request's root collection records the sharing change (native sdkMessages root after each message).
-        recordRequestRootChange(store, store.pluginMainOperation?.context?.values?.RequestId?.value, { sharing: true });
+        // The request's root collection records the sharing change (native sdkMessages root after each message,
+        // webApiNamed: principalobjectaccess, then the shared table).
+        recordSharingChange(store, target.logicalName);
         const share = {
           target: { logical: target.logicalName, id: target.id },
           principal: { id: principal.id, logical_name: principal.logicalName },

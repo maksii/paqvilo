@@ -139,7 +139,11 @@ const REQUEST_ROOT_LIMIT = 256;
  * for tables a nested plug-in request wrote, and principalobjectaccess with POADistributionChanged after a sharing
  * message, and fileattachment once a single-record operation queues asynchronous work). table is the
  * ChangedEntityTypes key; sharing marks a principalobjectaccess change; asyncQueued the queued job attachment. */
-export function recordRequestRootChange(store, requestId, { table, sharing = false, asyncQueued = false } = {}) {
+export function recordRequestRootChange(
+  store,
+  requestId,
+  { table, sharing = false, asyncQueued = false, distribution = 10760 } = {},
+) {
   if (!store || !requestId || (!table && !sharing && !asyncQueued)) return;
   const roots = (store.pluginRequestRoots ??= new Map());
   let root = roots.get(requestId);
@@ -147,13 +151,34 @@ export function recordRequestRootChange(store, requestId, { table, sharing = fal
     roots.set(requestId, (root = {}));
     if (roots.size > REQUEST_ROOT_LIMIT) roots.delete(roots.keys().next().value);
   }
-  for (const key of [table, sharing ? 'principalobjectaccess' : null].filter(Boolean))
+  // A sharing change lists principalobjectaccess before the shared table (native webApiNamed, mergeAccount).
+  for (const key of [sharing ? 'principalobjectaccess' : null, table].filter(Boolean))
     root.ChangedEntityTypes = { ...(root.ChangedEntityTypes ?? {}), [key]: 'Update' };
   // The platform's asynchronous job attachment (recorded value 'Create'), once per request.
   if (asyncQueued && !root.ChangedEntityTypes?.fileattachment)
     root.ChangedEntityTypes = { ...(root.ChangedEntityTypes ?? {}), fileattachment: 'Create' };
-  // The recorded platform value after GrantAccess, ModifyAccess and RevokeAccess.
-  if (sharing) root.POADistributionChanged = 10760;
+  // The recorded platform value: 10760 after GrantAccess, ModifyAccess and RevokeAccess, 1 for Merge (native
+  // sdkMessages, webApiNamed, mergeAccount).
+  if (sharing) root.POADistributionChanged = distribution;
+}
+
+/** The request root's changes as they stood when an operation's PostOperation began: its asynchronous jobs report
+ * that snapshot, not the request's later changes (native sdkMessages: the jobs of operations that ran before a nested
+ * GrantAccess have no POADistributionChanged, later ones have; crud: an Upsert's existence-query job has no
+ * ChangedEntityTypes). */
+export function requestRootSnapshot(store, requestId) {
+  const root = requestId ? store?.pluginRequestRoots?.get(requestId) : null;
+  return root ? cloneStateData(root) : null;
+}
+
+/** Merges a request root's changes into a collection's values (ChangedEntityTypes, then POADistributionChanged). */
+export function withRequestRootChanges(values, root) {
+  if (!root) return values;
+  const shared = { ...values };
+  if (root.ChangedEntityTypes)
+    shared.ChangedEntityTypes = { ...(shared.ChangedEntityTypes ?? {}), ...root.ChangedEntityTypes };
+  if (root.POADistributionChanged !== undefined) shared.POADistributionChanged = root.POADistributionChanged;
+  return shared;
 }
 
 /** The ParentContext chain as a step observes it. Native never leaves an ancestor property unavailable: a platform
@@ -185,10 +210,7 @@ export function observedParentChain(node, context, objectId, roots) {
   if ((values.Stage === 30 && Object.hasOwn(values.SharedVariables.values ?? {}, 'telemetryrootcontext')) || root) {
     const { telemetryrootcontext, ...shared } = values.SharedVariables.values ?? {};
     if (values.Stage !== 30 && telemetryrootcontext !== undefined) shared.telemetryrootcontext = telemetryrootcontext;
-    if (root?.ChangedEntityTypes)
-      shared.ChangedEntityTypes = { ...(shared.ChangedEntityTypes ?? {}), ...root.ChangedEntityTypes };
-    if (root?.POADistributionChanged !== undefined) shared.POADistributionChanged = root.POADistributionChanged;
-    values.SharedVariables = { $type: 'ParameterCollection', values: shared };
+    values.SharedVariables = { $type: 'ParameterCollection', values: withRequestRootChanges(shared, root) };
   }
   values.PreEntityImages ??= { $type: 'EntityImageCollection', values: {} };
   values.PostEntityImages ??= { $type: 'EntityImageCollection', values: {} };

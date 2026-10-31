@@ -34,7 +34,7 @@ import {
 } from './alternate-key-values.mjs';
 import { assertElasticRecord, isElastic, samePartition, recordKey } from './dataverse-elastic.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
-import { traceDecision } from './dataverse-security.mjs';
+import { ownershipOf, traceDecision } from './dataverse-security.mjs';
 import { StateStorage } from './state-storage.mjs';
 import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
 import { jsonChunks, stateDigest } from './state-stream.mjs';
@@ -77,7 +77,7 @@ import {
   pluginInvocationDepth,
   pluginInvocationSdkParent,
 } from './plugin-execution-lifetime.mjs';
-import { asyncCallerParent } from './plugin-sdk-parent.mjs';
+import { asyncCallerParent, recordRequestRootChange } from './plugin-sdk-parent.mjs';
 import { runStateMessage } from './plugin-platform-messages.mjs';
 import {
   storeOperationFields,
@@ -2612,8 +2612,20 @@ export class DataStore {
         bypassCustomPlugins: options.bypassCustomPlugins,
         bypassStepIds: options.bypassStepIds,
       })
-    )
+    ) {
+      // A named message's main-operation write without steps of its own still changes the request root its
+      // PostOperation lists (native soapMessages Assign/40, mergeAccount Merge/40; exported-plugins runPluginPhase
+      // records it when the write runs a pipeline).
+      if (
+        stage === 40 &&
+        this.pluginMainOperation?.namedMessage &&
+        ownershipOf(mapping.logicalName, null, mapping) === 'user'
+      )
+        recordRequestRootChange(this, this.pluginMainOperation.context?.values?.RequestId?.value, {
+          table: mapping.logicalName,
+        });
       return;
+    }
     if (
       this.rowTransaction &&
       this.pluginPipelineRequiresCheckpoint({

@@ -3,6 +3,7 @@ import {
   accessNamesOf,
   entryMessageActive,
   maskOfNames,
+  recordSharingChange,
   runEntryMessage,
   sharedMaskOf,
 } from './plugin-platform-messages.mjs';
@@ -789,7 +790,10 @@ async function shareAction(d, c, route, common) {
             }),
       },
       context: common,
-      main: () => run().then(() => ({})),
+      main: () => {
+        recordSharingChange(d.store, target.logical);
+        return run().then(() => ({}));
+      },
     });
   const shared = entryMessageActive(d.store, route.name, target.logical, common) ? pipelined : run;
   // Inside a $batch the batch already holds the change slot (see ownsChange); a nested change call would wait on itself.

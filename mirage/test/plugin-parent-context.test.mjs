@@ -545,6 +545,46 @@ test('sharing messages mark the request root and access reads are not auto-trans
   assert.equal(at('GrantAccess/20').shared.values.IsAutoTransact, true);
 });
 
+// Native sdkMessages (native and native-r2): an asynchronous job reports the request root as it stood when its
+// operation's PostOperation began: the calling Update's jobs (queued before its step's GrantAccess) have no
+// principalobjectaccess or POADistributionChanged, a Create the step issues after the GrantAccess has both.
+test('an asynchronous job reports the request root as its PostOperation began', () => {
+  const store = storeOf();
+  probe(store, (at) => at === 'update/40', {
+    act: (answer) => {
+      if (answer.context.Depth !== 1) return;
+      sdk(
+        store,
+        answer,
+        'Execute',
+        executeRequest('GrantAccess', { Target: ref('widget', id), PrincipalAccess: access(1) }),
+      );
+      sdk(store, answer, 'Create', [{ $type: 'Entity', logicalName: 'gizmo', attributes: { title: 'After sharing' } }]);
+    },
+  });
+  store.updateRecord('widget', id, { title: 'Renamed' }, { admin: true });
+  const job = (entity, operation, row) =>
+    clrContext({
+      runtime,
+      store,
+      step: step({ mode: 1 }),
+      entity,
+      operation,
+      stage: 40,
+      target: { title: row.title },
+      record: row,
+      previous: row,
+      frame: structuredClone(store.pluginFrames.get(row)),
+      depth: 1,
+    }).context;
+  const before = rootOf(job('widget', 'update', store.tableRows('widget')[0]));
+  assert.deepEqual(before.ChangedEntityTypes, { widget: 'Update' });
+  assert.equal(before.POADistributionChanged, undefined);
+  const after = rootOf(job('gizmo', 'create', store.tableRows('gizmo')[0]));
+  assert.equal(after.ChangedEntityTypes.principalobjectaccess, 'Update');
+  assert.equal(after.POADistributionChanged, 10760);
+});
+
 // Native upsert/crud/bulk: ChangedEntityTypes appears only on the root ancestor (no other ancestor or own collection of
 // a parented context carries it): an upsert-created row's Create/30 has none, its Upsert/30 root lists the table.
 test('only the request root lists the changed tables', () => {

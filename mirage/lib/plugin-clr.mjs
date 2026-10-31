@@ -2636,7 +2636,8 @@ export function clrContext({
     answer.context.ParentContext,
     answer.context,
     objectId,
-    store.pluginRequestRoots,
+    // A job reports the request root as it stood when its operation's PostOperation began (requestRootSnapshot).
+    asynchronous ? { get: () => frame.requestRootAtPostOperation ?? null } : store.pluginRequestRoots,
   );
   formatPipelineTargets(store, {
     entity,
