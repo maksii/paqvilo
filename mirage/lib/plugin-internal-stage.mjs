@@ -20,7 +20,21 @@ export const internalStepReference = (owner, message) => ({
 export const setInternalStageSource = (record, source) => sources.set(record, source);
 export const internalStageSource = (record) => sources.get(record);
 
-/** The issuing operation's PreOperation context (typed ExecutionContext), reported as the internal stage. */
-export function internalStageContext(context, stage) {
-  return { $type: 'ExecutionContext', values: { ...context.values, Stage: stage } };
+/** The issuing operation's PreOperation context (typed ExecutionContext), reported as the internal stage, with that
+ * level and the issuer's main operation reporting the platform step's executing user (no Entra object id). */
+export function internalStageContext(context, stage, userId) {
+  const run = (values) =>
+    userId
+      ? {
+          ...values,
+          UserId: { $type: 'Guid', value: userId },
+          UserAzureActiveDirectoryObjectId: { $type: 'Guid', value: '00000000-0000-0000-0000-000000000000' },
+        }
+      : values;
+  const main = context.values.ParentContext;
+  const mainOperation =
+    main?.values?.Stage === 30 && main.values.MessageName === context.values.MessageName
+      ? { ...main, values: run(main.values) }
+      : main;
+  return { $type: 'ExecutionContext', values: { ...run(context.values), Stage: stage, ParentContext: mainOperation } };
 }

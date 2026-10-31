@@ -173,3 +173,42 @@ test('an asynchronous Retrieve step runs once after a single-row GET', async (t)
   );
   assert.equal(String(f.seen[0].target?.id ?? f.seen[0].target).toLowerCase(), id);
 });
+
+test('a Retrieve hands its steps an empty RelatedEntitiesQuery collection', async (t) => {
+  const f = await fixture(t);
+  const caller = '10000000-0000-0000-0000-0000000000d9';
+  const runtime = {
+    descriptor: {
+      context: { executionUserId: caller, initiatingUserId: caller, organizationId: caller, businessUnitId: caller },
+      serviceProfile: { userId: caller, evidence: 'Invented Retrieve inputs', grants: [] },
+    },
+  };
+  const record = { x_itemid: id };
+  const frame = runPluginPhase({
+    items: [],
+    handlers: new Map(),
+    store: f.store,
+    entity: 'x_item',
+    operation: 'retrieve',
+    stage: 10,
+    record,
+    identity: {},
+    columns: { allColumns: false, columns: ['x_name'] },
+    holder: { target: { $type: 'EntityReference', logicalName: 'x_item', id } },
+  });
+  const answer = clrContext({
+    runtime,
+    store: f.store,
+    step: { id: '30000000-0000-0000-0000-0000000000da', name: 'Invented read', images: [], contract: {} },
+    entity: 'x_item',
+    operation: 'retrieve',
+    stage: 10,
+    record,
+    frame,
+    depth: 1,
+  });
+  assert.deepEqual(answer.inputParameters.values.RelatedEntitiesQuery, {
+    $type: 'RelationshipQueryCollection',
+    values: [],
+  });
+});

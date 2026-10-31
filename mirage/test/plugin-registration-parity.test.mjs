@@ -8,6 +8,8 @@ import { overlayRegisteredSteps } from '../lib/dataverse-plugin-registration.mjs
 import { pluginCatalogue, pluginHandlers, pluginStepMatchesEntity, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { assertPluginMessageAdmission } from '../lib/plugin-message-admission.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
+import { install as installCustomApi } from '../lib/dataverse-customapi.mjs';
+import { createTraceStore } from '../lib/trace-store.mjs';
 
 const ASSEMBLY = '40000000-0000-4000-8000-0000000000a1';
 const TYPE = '50000000-0000-4000-8000-0000000000a1';
@@ -26,6 +28,14 @@ const mappings = {
     idColumn: 'x_sharedid',
     ownership: 'OrganizationOwned',
     fields: { x_name: { dataverseType: 'nvarchar' } },
+  },
+  // Platform tables (no business data): their native filter sets are platform constants.
+  account: { logicalName: 'account', entitySet: 'accounts', idColumn: 'accountid', fields: {} },
+  transactioncurrency: {
+    logicalName: 'transactioncurrency',
+    entitySet: 'transactioncurrencies',
+    idColumn: 'transactioncurrencyid',
+    fields: {},
   },
 };
 
@@ -97,6 +107,229 @@ test('per-table filters follow table capability, with the native message ids and
   assert.equal(f.message('RetrievePrincipalAccess').autotransact, false);
   assert.equal(f.message('Create').autotransact, true);
   assert.equal(f.message('Archive').isprivate, true);
+});
+
+// Native sdkmessagefilter rows of the standard tables account and transactioncurrency, and of the 'none' filters.
+test('standard tables take their native filter sets, flags and availability', async (t) => {
+  const f = await fixture(t);
+  const filters = (table) =>
+    Object.fromEntries(
+      f.store
+        .tableRows('sdkmessagefilter')
+        .filter((row) => row.primaryobjecttypecode === table)
+        .map((row) => [
+          f.store.tableRows('sdkmessage').find((m) => m.sdkmessageid === row.sdkmessageid).name,
+          [row.iscustomprocessingstepallowed, row.availability],
+        ]),
+    );
+  assert.deepEqual(filters('transactioncurrency'), {
+    Create: [true, 0],
+    Delete: [true, 0],
+    Retrieve: [false, 2],
+    RetrieveExchangeRate: [true, 2],
+    RetrieveMultiple: [false, 2],
+    SetState: [true, 0],
+    SetStateDynamicEntity: [true, 0],
+    Update: [true, 0],
+  });
+  const account = filters('account');
+  assert.equal(Object.keys(account).length, 26);
+  assert.equal(Object.hasOwn(account, 'DeleteMultiple'), false);
+  assert.deepEqual(account.IsValidStateTransition, [true, 0]);
+  assert.deepEqual(account.Assign, [true, 0]);
+  assert.deepEqual(account.Merge, [true, 0]);
+  assert.deepEqual(account.Create, [true, 2]);
+  assert.ok(Object.values(account).every(([allowed]) => allowed));
+  // Custom tables keep availability 0; the platform 'none' filters carry theirs.
+  assert.equal(f.filter('Create', 'x_owned').availability, 0);
+  assert.deepEqual(
+    ['Associate', 'Upsert', 'Merge', 'WhoAmI', 'PublishAll'].map((name) => [
+      f.filter(name, 'none').iscustomprocessingstepallowed,
+      f.filter(name, 'none').availability,
+    ]),
+    [
+      [true, 2],
+      [false, 2],
+      [false, 2],
+      [false, 2],
+      [true, 0],
+    ],
+  );
+  assert.equal(f.message('PublishAll').sdkmessageid, 'debdbb1b-ea3e-db11-86a7-000a3a5473e8');
+  assert.deepEqual([f.message('PublishAll').availability, f.message('PublishAll').autotransact], [0, false]);
+  assert.equal(f.message('RetrieveEntityChanges').availability, 2);
+  assert.equal((await f.register('IsValidStateTransition', { table: 'account' })).status, 201);
+  const refused = await f.register('Retrieve', { table: 'transactioncurrency' });
+  assert.equal(refused.status, 400);
+  assert.equal((await refused.json()).error.code, '0x80044187');
+});
+
+// Native filter catalogue round 2: filter sets of contact, task, systemuser and team, and of an elastic, a virtual and an
+// N:N intersect table (invented tables of those kinds here).
+test('table kinds and further standard tables take their native filter sets', async (t) => {
+  const kind = (logicalName, extra = {}) => ({
+    logicalName,
+    entitySet: `${logicalName}s`,
+    idColumn: `${logicalName}id`,
+    fields: {},
+    ...extra,
+  });
+  const f = await contractModuleFixture(t, {
+    mappings: {
+      contact: kind('contact'),
+      task: kind('task'),
+      systemuser: kind('systemuser'),
+      team: kind('team'),
+      x_elastic: kind('x_elastic', { tableType: 'Elastic', ownership: 'UserOwned' }),
+      x_virtual: kind('x_virtual', { isVirtual: true }),
+      x_peer: kind('x_peer', { intersect: true }),
+    },
+    extension: { name: 'registration-kinds-probe', install: () => {} },
+  });
+  const names = new Map(f.store.tableRows('sdkmessage').map((row) => [row.sdkmessageid, row.name]));
+  const filters = (table) =>
+    Object.fromEntries(
+      f.store
+        .tableRows('sdkmessagefilter')
+        .filter((row) => row.primaryobjecttypecode === table)
+        .map((row) => [names.get(row.sdkmessageid), [row.iscustomprocessingstepallowed, row.availability]]),
+    );
+  assert.deepEqual(filters('x_peer'), { RetrieveMultiple: [true, 0] });
+  assert.deepEqual(
+    Object.keys(filters('x_virtual'))
+      .filter((name) => name && !name.startsWith('OnExternal')) // the local external-event filters, see dataverse-plugins.md
+      .sort(),
+    [
+      'Create',
+      'CreateMultipleLegacy',
+      'Delete',
+      'Retrieve',
+      'RetrieveEntityChanges',
+      'RetrieveMultiple',
+      'Update',
+      'UpdateMultipleLegacy',
+    ],
+  );
+  const elastic = filters('x_elastic');
+  assert.deepEqual(
+    [elastic.Upsert, elastic.UpsertMultiple, elastic.RetrieveEntityChanges],
+    [
+      [true, 0],
+      [true, 0],
+      [true, 0],
+    ],
+  );
+  for (const name of ['SetState', 'IsValidStateTransition', 'GrantAccess'])
+    assert.equal(elastic[name], undefined, name);
+  assert.equal(Object.keys(filters('contact')).length, 17);
+  assert.equal(filters('contact').Retain, undefined);
+  assert.deepEqual(filters('contact').IsValidStateTransition, [true, 0]);
+  assert.deepEqual(filters('task').SetState, [true, 2]);
+  assert.deepEqual(filters('systemuser').Retrieve, [false, 2]);
+  assert.deepEqual(filters('systemuser').Update, [true, 0]);
+  assert.deepEqual(filters('team'), {
+    Archive: [true, 2],
+    Create: [true, 0],
+    Delete: [true, 0],
+    Retrieve: [true, 2],
+    RetrieveMultiple: [true, 2],
+    Update: [true, 0],
+  });
+});
+
+// Native accepted global (no filter) steps on every existing message: PublishAll and RetrieveExchangeRate (no table filter
+// in scope), Upsert (its 'none' filter refuses custom steps); a step registered on that refusing 'none' filter is refused.
+test('a step without a filter is accepted on any existing message; a refusing filter still refuses', async (t) => {
+  const f = await fixture(t);
+  for (const name of ['PublishAll', 'Upsert', 'RetrieveExchangeRate', 'RetrieveEntityChanges', 'SetLocLabels'])
+    assert.equal((await f.register(name)).status, 201, name);
+  const refused = await f.register('Upsert', { table: 'none' });
+  assert.equal(refused.status, 400);
+  assert.equal((await refused.json()).error.code, '0x80044187');
+});
+
+// Native registration round 2 (single capture of deterministic validation): global WhoAmI/RetrieveVersion refused, images
+// on SetStateDynamicEntity, GrantAccess and DeleteMultiple accepted, an unknown image attribute refused, a step without a
+// stage accepted, a missing message refused, a client deployment on a server-only filter refused, and a plug-in type with a
+// step not deleted.
+test('registration round 2 rules answer with the native codes and texts', async (t) => {
+  const f = await fixture(t);
+  const refused = async (response, status, code, pattern) => {
+    const { error } = await response.json();
+    assert.equal(response.status, status, error?.message);
+    assert.equal(error.code, code);
+    assert.match(error.message, pattern);
+  };
+  for (const name of ['WhoAmI', 'RetrieveVersion'])
+    await refused(
+      await f.register(name),
+      400,
+      '0x80044187',
+      new RegExp(
+        `^Custom SdkMessageProcessingStep with Id: '[0-9a-f-]{36}' is not allowed on the message with SdkMessageId: '${f.message(name).sdkmessageid}'\\.$`,
+      ),
+    );
+  const stepOf = async (name, over) => {
+    const response = await f.register(name, over);
+    assert.equal(response.status, 201, name);
+    return (await response.json()).sdkmessageprocessingstepid;
+  };
+  const image = (stepId, imagetype, messagepropertyname, attributes) =>
+    f.request('POST', '/sdkmessageprocessingstepimages', {
+      name: 'img',
+      entityalias: 'img',
+      imagetype,
+      messagepropertyname,
+      ...(attributes ? { attributes } : {}),
+      'sdkmessageprocessingstepid@odata.bind': `/sdkmessageprocessingsteps(${stepId})`,
+    });
+  for (const [name, type, property] of [
+    ['SetStateDynamicEntity', 1, 'EntityMoniker'],
+    ['GrantAccess', 0, 'Target'],
+    ['DeleteMultiple', 0, 'Targets'],
+  ])
+    assert.equal(
+      (await image(await stepOf(name, { table: 'x_owned', stage: 40 }), type, property)).status,
+      201,
+      `${name} image`,
+    );
+  await refused(
+    await image(await stepOf('Update', { table: 'x_owned', stage: 40 }), 0, 'Target', 'x_nope'),
+    400,
+    '0x80081119',
+    /^The step image 'img' \(id '[0-9a-f-]{36}'\) references attribute 'x_nope', which does not exist on entity 'x_owned'\. This step image is entity-specific/,
+  );
+  assert.equal(
+    (await f.register('Update', { table: 'x_owned', stage: undefined })).status,
+    201,
+    'a step without a stage',
+  );
+  await refused(
+    await f.request('POST', '/sdkmessageprocessingsteps', {
+      name: 'No message',
+      stage: 20,
+      'eventhandler_plugintype@odata.bind': `/plugintypes(${TYPE})`,
+    }),
+    400,
+    '0x80040200',
+    /^sdkmessageid is missing\.$/,
+  );
+  await refused(
+    await f.register('Update', { table: 'x_owned', supporteddeployment: 1 }),
+    400,
+    '0x80040203',
+    /^Supported deployment does not agree with message availability$/,
+  );
+  const kept = await stepOf('Update', { table: 'x_owned' });
+  await refused(
+    await f.request('DELETE', `/plugintypes(${TYPE})`),
+    400,
+    '0x8004f01f',
+    new RegExp(
+      `^The PluginType\\(${TYPE}\\) component cannot be deleted because it is referenced by \\d+ other components\\. For a list of referenced components, use the RetrieveDependenciesForDeleteRequest\\.$`,
+    ),
+  );
+  assert.equal((await f.request('GET', `/sdkmessageprocessingsteps(${kept})`)).status, 200, 'the step survives');
 });
 
 test('registration validation answers with the native codes and texts', async (t) => {
@@ -241,6 +474,76 @@ test('a global Create runs for the table it fires on, and an asynchronous Retrie
   // @parity-evidence: native recorder corpus 2026-10-30 reads: a Web API collection GET hands RetrieveMultiple (also its asynchronous step) a FetchExpression of the read table, not a QueryExpression
   assert.match(seen[0].context.InputParameters.Query.query, /<entity name="x_shared">/);
   assert.equal(seen[0].context.OutputParameters.BusinessEntityCollection.length, 1);
+});
+
+// Native customApi scenario: custom APIs provisioned over the Web API took steps at stages 10, 20, 40 and asynchronous
+// PostOperation; the stage-10 step edited the Text input that later stages saw, and the reply carried the stage-40 output.
+test('a custom API created at runtime gets its message and filter, and its registered steps run around it', async (t) => {
+  const f = await fixture(t);
+  await installCustomApi(f.api).ready; // the custom API extension the host installs
+  f.store.traces = createTraceStore({ settings: { level: 'full' } }); // traced steps of an unbound API name no record
+  const api = '41000000-0000-4000-8000-0000000000a1';
+  const created = await f.request('POST', '/customapis', {
+    customapiid: api,
+    uniquename: 'x_Ping',
+    name: 'x_Ping',
+    displayname: 'Invented ping',
+    description: 'Invented runtime custom API',
+    bindingtype: 0,
+    isfunction: false,
+    allowedcustomprocessingsteptype: 2,
+    CustomAPIRequestParameters: [{ uniquename: 'Text', name: 'Text', displayname: 'Text', description: 'x', type: 10 }],
+    CustomAPIResponseProperties: [
+      { uniquename: 'Reply', name: 'Reply', displayname: 'Reply', description: 'x', type: 10 },
+    ],
+  });
+  assert.equal(created.status, 201, await created.clone().text());
+  const listed = await f.json(
+    await f.request('GET', "/sdkmessages?$filter=name eq 'x_Ping'&$select=sdkmessageid"),
+    200,
+  );
+  assert.equal(listed.value.length, 1);
+  assert.equal(f.filter('x_Ping', 'none').iscustomprocessingstepallowed, true);
+  for (const [stage, mode] of [
+    [10, 0],
+    [20, 0],
+    [40, 0],
+  ])
+    assert.equal((await f.register('x_Ping', { name: `Ping ${stage}`, stage, mode })).status, 201, `stage ${stage}`);
+  // The registered steps run the invented type's handler: stage 10 edits the input, stage 40 sets the reply.
+  const seen = [];
+  const ping = ({ context }) => {
+    seen.push([context.Stage, context.InputParameters.Text]);
+    if (context.Stage === 10) context.InputParameters.Text = 'edited at 10';
+    if (context.Stage === 40) context.OutputParameters.Reply = `post ${context.InputParameters.Text}`;
+  };
+  const handlers = pluginHandlers([{ id: 'invented', pluginTypes: { [TYPE_NAME]: ping } }]);
+  const running = () =>
+    pluginCatalogue({ plugins: { steps: f.steps() }, handlers })
+      .filter((item) => item.message === 'x_Ping')
+      .map((item) => Object.assign(item, { mode: 'handler' }));
+  f.store.setPluginPipeline(
+    (phase) => runPluginPhase({ ...phase, store: f.store, items: running(), handlers }),
+    ({ operation }) => operation === 'x_ping' && running().length > 0,
+  );
+  const reply = await f.json(await f.request('POST', '/x_Ping', { Text: 'hello' }), 200);
+  assert.equal(reply.Reply, 'post edited at 10');
+  assert.deepEqual(seen, [
+    [10, 'hello'],
+    [20, 'edited at 10'],
+    [40, 'edited at 10'],
+  ]);
+  for (const step of f.store.tableRows('sdkmessageprocessingstep'))
+    assert.equal(
+      (await f.request('DELETE', `/sdkmessageprocessingsteps(${step.sdkmessageprocessingstepid})`)).status,
+      204,
+    );
+  assert.equal((await f.request('DELETE', `/customapis(${api})`)).status, 204);
+  assert.equal(f.message('x_Ping'), undefined, 'deleting the API removes its message');
+  assert.equal(
+    f.store.tableRows('sdkmessagefilter').some((row) => row.sdkmessageid === listed.value[0].sdkmessageid),
+    false,
+  );
 });
 
 // A global Create runs PreValidation for every create; its Target round trip carries SDK values (an option array for a

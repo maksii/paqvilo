@@ -17,6 +17,7 @@ import {
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import {
   importSolutionPlugins,
+  parsePluginDocument,
   pluginCatalogue,
   pluginHandlers,
   pluginPhaseRequiresCheckpoint,
@@ -35,6 +36,7 @@ import { createHash } from 'node:crypto';
 import { assemblyBase64, fakePublicKey, certificateInspectionFixture } from './clr-assembly-fixture.mjs';
 import { createSelfSignedCertificate } from '../lib/dataverse-tls.mjs';
 import { X509Certificate } from 'node:crypto';
+import { zipOf } from '../lib/dataverse-solutions.mjs';
 
 const ORIGIN = 'http://127.0.0.1:5555';
 
@@ -351,24 +353,25 @@ describe('plug-in registration over HTTP', () => {
   // Native accepts a negative rank (registration probe: Update at stage 20 with rank -1).
   it('accepts any whole rank, a negative one included, and defaults a missing rank to 1', async () => {
     assert.equal((await createStep({ rank: -1 })).status, 204);
-    assert.equal((await errorOf(await createStep({ rank: 1.5 }))).code, '0x80040203');
+    // @parity-evidence: native registration round 2 (_registration-probes-2.json) "rank 1.5": 0x80048d19, the OData payload reader cannot convert 1.5 to Edm.Int32
+    assert.equal((await errorOf(await createStep({ rank: 1.5 }))).code, '0x80048d19');
     const response = await createStep({ name: 'Default rank' });
     const step = await (await call(`sdkmessageprocessingsteps(${idFromLocation(response)})`)).json();
     assert.equal(step.rank, 1);
   });
 
-  it('refuses a filter of another message with 0x80044187', async () => {
-    const error = await errorOf(
-      await createStep({ 'sdkmessagefilterid@odata.bind': `/sdkmessagefilters(${ids.updateFilter})` }),
+  // @parity-evidence: native registration round 2 (_registration-probes-2.json): "Merge with the probe Update filter" is accepted, "Merge with an unknown filter" answers
+  // 404 0x80040217; the earlier refusal of another message's filter had no native basis
+  it('accepts a filter of another message, and answers 404 for an unknown filter', async () => {
+    assert.equal(
+      (await createStep({ 'sdkmessagefilterid@odata.bind': `/sdkmessagefilters(${ids.updateFilter})` })).status,
+      204,
     );
-    assert.equal(error.code, '0x80044187');
-    // Native text names the step and the filter (registration probe on IsValidStateTransition).
-    assert.match(
-      error.message,
-      new RegExp(
-        `^Custom SdkMessageProcessingStep is not allowed on the specified message and entity\\. SdkMessageProcessingStepId: '[0-9a-f-]{36}', SdkMessageFilterId: '${ids.updateFilter}'\\.$`,
-      ),
-    );
+    const unknown = await createStep({
+      'sdkmessagefilterid@odata.bind': '/sdkmessagefilters(a1000000-0000-4000-8000-0000000000e8)',
+    });
+    assert.equal(unknown.status, 404);
+    assert.equal((await unknown.json()).error.code, '0x80040217');
   });
 
   it('refuses a filter the table does not allow a custom step on with 0x80044187', async () => {
@@ -378,15 +381,22 @@ describe('plug-in registration over HTTP', () => {
     assert.equal(error.code, '0x80044187');
   });
 
-  it('refuses a step on a message with no filters with 0x80090307', async () => {
-    const error = await errorOf(
-      await createStep({
-        'sdkmessageid@odata.bind': `/sdkmessages(${ids.WhoAmI})`,
-        'sdkmessagefilterid@odata.bind': undefined,
-      }),
-    );
-    assert.equal(error.code, '0x80090307');
-    assert.equal(error.message, 'Custom Sdkmessageprocessingsteps are not allowed for this message.');
+  // @test-kind parity: native accepted steps without a filter on every existing message, including messages with no filter
+  // row at all (registered global RetrieveExchangeRate, AddMembers, Send steps) and messages whose 'none' filter refuses
+  // custom steps (Upsert, Merge, RetrieveEntityChanges)
+  // @parity-evidence: native _steps.json global "Recorder: <message>" registrations on 156 platform messages, classified
+  // against native sdkmessagefilter rows (audit C02a); the earlier 0x80090307 refusal had no native basis
+  it('accepts a step with no filter on any existing message, and answers 404 for a message that does not exist', async () => {
+    const accepted = await createStep({
+      'sdkmessageid@odata.bind': `/sdkmessages(${messageId(store, 'RetrieveExchangeRate')})`,
+      'sdkmessagefilterid@odata.bind': undefined,
+    });
+    assert.equal(accepted.status, 204, await accepted.clone().text());
+    const missing = await createStep({
+      'sdkmessageid@odata.bind': '/sdkmessages(a1000000-0000-4000-8000-0000000000e9)',
+      'sdkmessagefilterid@odata.bind': undefined,
+    });
+    assert.equal(missing.status, 404);
   });
 
   it('refuses filtering attributes that are not columns of the filter table', async () => {
@@ -412,9 +422,12 @@ describe('plug-in registration over HTTP', () => {
     });
     assert.equal(secure.status, 204);
     const secureId = idFromLocation(secure);
+    // An unfiltered Create step: the message's availability (2) admits deployment 2, so the secure-configuration rule
+    // answers (a custom table filter is server-only and answers the availability error first).
     const error = await errorOf(
       await createStep({
         supporteddeployment: 2,
+        'sdkmessagefilterid@odata.bind': undefined,
         'sdkmessageprocessingstepsecureconfigid@odata.bind': `/sdkmessageprocessingstepsecureconfigs(${secureId})`,
       }),
     );
@@ -453,12 +466,13 @@ describe('plug-in registration over HTTP', () => {
     );
   });
 
+  // @parity-evidence: native registration round 2 (_registration-probes-2.json) "step without event handler": 0x80040200 "plugintypeid is missing."
   it('refuses a step without its handler (the eventhandler is required)', async () => {
     const error = await errorOf(
       await createStep({ 'plugintypeid@odata.bind': undefined, 'eventhandler_plugintype@odata.bind': undefined }),
     );
-    assert.equal(error.code, '0x80040203');
-    assert.equal(error.message, "The 'eventhandler' attribute is required.");
+    assert.equal(error.code, '0x80040200');
+    assert.equal(error.message, 'plugintypeid is missing.');
   });
 
   // Images: each rule with the step it needs. The step on Update is valid for a pre-image; the others need their message.
@@ -511,7 +525,9 @@ describe('plug-in registration over HTTP', () => {
     assert.equal((await errorOf(await postImage(imageBody(deleteStep, { imagetype: 1 })))).code, '0x8004416d');
   });
 
-  it('builds the assembly, type and step chain, and deletes the assembly with its steps and images', async () => {
+  // Native registration round 2: deleting a plug-in type with a step answers 0x8004f01f and the step survives; Learn
+  // register-plug-in: no assembly is unregistered while steps depend on it; images go with their step.
+  it('builds the assembly, type and step chain; refuses to delete the assembly or type while a step uses it', async () => {
     const assembly = await call('pluginassemblies', {
       method: 'POST',
       body: { name: 'Contoso.Probe', version: '2.0.0.0', culture: 'neutral', publickeytoken: 'fedcba9876543210' },
@@ -541,10 +557,22 @@ describe('plug-in registration over HTTP', () => {
     const image = await postImage(imageBody(probeStep, { imagetype: 1, messagepropertyname: 'Id' }));
     assert.equal(image.status, 204);
     const probeImage = idFromLocation(image);
+    for (const path of [`pluginassemblies(${probeAssembly})`, `plugintypes(${probeType})`]) {
+      const refused = await call(path, { method: 'DELETE' });
+      assert.equal(refused.status, 400, path);
+      const { error } = await refused.json();
+      assert.equal(error.code, '0x8004f01f');
+      assert.match(error.message, /component cannot be deleted because it is referenced by 1 other components\./);
+    }
+    assert.equal((await call(`sdkmessageprocessingsteps(${probeStep})`)).status, 200, 'the step remains');
+    assert.equal((await call(`sdkmessageprocessingsteps(${probeStep})`, { method: 'DELETE' })).status, 204);
+    assert.equal(
+      (await call(`sdkmessageprocessingstepimages(${probeImage})`)).status,
+      404,
+      'the image went with its step',
+    );
     assert.equal((await call(`pluginassemblies(${probeAssembly})`, { method: 'DELETE' })).status, 204);
-    assert.equal((await call(`plugintypes(${probeType})`)).status, 404);
-    assert.equal((await call(`sdkmessageprocessingsteps(${probeStep})`)).status, 404);
-    assert.equal((await call(`sdkmessageprocessingstepimages(${probeImage})`)).status, 404);
+    assert.equal((await call(`plugintypes(${probeType})`)).status, 404, 'the type went with its assembly');
   });
 
   it('refuses a second assembly with the same fullname, ignoring the build and revision, with 0x8004417B', async () => {
@@ -661,12 +689,15 @@ describe('plug-in registration: unit rules and mirror shape', () => {
     await step(customizer.run);
   });
 
-  it('an assembly content over 16 MB is refused', async () => {
+  it('an assembly content over 16 MB is refused with the documented 0x8004418f', async () => {
     const { run } = await harness();
     const content = 'A'.repeat(Math.ceil(((16 * 1024 * 1024 + 1) * 4) / 3));
     await assert.rejects(
       run('pluginassembly', 'create', { name: 'Contoso.Big', version: '1.0.0.0', content }),
-      (error) => error.message === 'Plug-in assembly content is larger than 16 MB.',
+      (error) =>
+        error.details?.innerCode === '0x8004418f' &&
+        error.message ===
+          "The assembly content size '16777217 bytes' has exceeded the maximum value allowed for isolated plug-ins '16777216 bytes'.",
     );
   });
 
@@ -691,7 +722,9 @@ describe('plug-in registration: unit rules and mirror shape', () => {
     };
     await assert.rejects(
       run('sdkmessageprocessingstep', 'update', { name: 'changed' }, existing),
-      (error) => error.details?.innerCode === '0x8004419a',
+      (error) =>
+        error.details?.innerCode === '0x8004419a' &&
+        error.message === 'A Microsoft registered SDK message processing step cannot be modified.',
     );
   });
 });
@@ -1343,7 +1376,9 @@ describe('plug-in registration: assembly content and plug-in types', () => {
     });
   });
 
-  it('a plug-in type must be declared in the assembly (0x8004418c), and an activity type is flagged isworkflowactivity', async () => {
+  // @parity-evidence: native registration round 2 (_registration-probes-2.json) "plugintype that does not implement IPlugin": 0x8004418b "PluginType [..] not found in
+  // PluginAssembly [..] which has a total of [n] plugin/workflow activity types."
+  it('a plug-in type must be one of the assembly plug-in types (0x8004418b), and an activity type is flagged isworkflowactivity', async () => {
     const { store, run } = await registry();
     store.insertRow('pluginassembly', store.state.tables.pluginassembly, {
       pluginassemblyid: ASSEMBLY,
@@ -1356,7 +1391,10 @@ describe('plug-in registration: assembly content and plug-in types', () => {
     const bind = { 'pluginassemblyid@odata.bind': `/pluginassemblies(${ASSEMBLY})` };
     await assert.rejects(
       run('plugintype', 'create', { typename: 'Contoso.Plugins.Missing', name: 'Contoso.Plugins.Missing', ...bind }),
-      (error) => error.details?.innerCode === '0x8004418c',
+      (error) =>
+        error.details?.innerCode === '0x8004418b' &&
+        error.message ===
+          `PluginType [Contoso.Plugins.Missing] not found in PluginAssembly [Contoso.Signed, Version=1.2.3.4, Culture=en-US, PublicKeyToken=${tokenOf(fakePublicKey)}] which has a total of [2] plugin/workflow activity types.`,
     );
     const check = { typename: CONTOSO, name: CONTOSO, ...bind };
     await run('plugintype', 'create', check);
@@ -1380,5 +1418,146 @@ describe('plug-in registration: assembly content and plug-in types', () => {
       name: 'Contoso.Anything',
       'pluginassemblyid@odata.bind': `/pluginassemblies(${ASSEMBLY})`,
     });
+  });
+
+  it('documented type and assembly rules: unique typename per assembly, IPlugin implementation, sandbox and database source', async () => {
+    const { store, run } = await registry();
+    const content = assemblyBase64({
+      name: 'Contoso.Mixed',
+      version: '1.0.0.0',
+      publicKey: fakePublicKey,
+      typeRefs: ['Microsoft.Xrm.Sdk.IPlugin'],
+      typeDefs: [{ full: CONTOSO, interfaces: ['Microsoft.Xrm.Sdk.IPlugin'] }, { full: 'Contoso.Plugins.Model' }],
+    });
+    store.insertRow('pluginassembly', store.state.tables.pluginassembly, {
+      pluginassemblyid: ASSEMBLY,
+      name: 'Contoso.Mixed',
+      version: '1.0.0.0',
+      content,
+    });
+    const bind = { 'pluginassemblyid@odata.bind': `/pluginassemblies(${ASSEMBLY})` };
+    await assert.rejects(
+      run('plugintype', 'create', { typename: 'Contoso.Plugins.Model', ...bind }),
+      (error) =>
+        error.details?.innerCode === '0x8004418b' &&
+        error.message.startsWith('PluginType [Contoso.Plugins.Model] not found in PluginAssembly [Contoso.Mixed,'),
+    );
+    await run('plugintype', 'create', { typename: CONTOSO, ...bind });
+    store.insertRow('plugintype', (store.state.tables.plugintype ??= []), {
+      plugintypeid: TYPE,
+      typename: CONTOSO,
+      pluginassemblyid: ASSEMBLY,
+    });
+    await assert.rejects(
+      run('plugintype', 'create', { typename: CONTOSO, ...bind }),
+      (error) => error.details?.innerCode === '0x8004417C',
+    );
+    const assembly = { name: 'Contoso.Other', version: '1.0.0.0' };
+    await assert.rejects(
+      run('pluginassembly', 'create', { ...assembly, isolationmode: 1 }),
+      (error) => error.details?.innerCode === '0x80044170',
+    );
+    await assert.rejects(
+      run('pluginassembly', 'create', { ...assembly, sourcetype: 1 }),
+      (error) => error.details?.innerCode === '0x8004417D',
+    );
+    await run('pluginassembly', 'create', { ...assembly, isolationmode: 2, sourcetype: 0 });
+  });
+
+  // Microsoft Learn dependent assemblies: the package's IPlugin assemblies are registered and associated with it; signing is
+  // not required; name and version are fixed; an update cannot drop a type that steps use; a package with steps cannot be
+  // unregistered; a package-owned assembly is not deleted on its own (0x80081117).
+  it('a plug-in package registers its plug-in assemblies and types and follows the package rules', async () => {
+    const { store, run } = await registry();
+    const nuspec = (version) =>
+      Buffer.from(
+        `<?xml version="1.0"?><package><metadata><id>Contoso.Package</id><version>${version}</version></metadata></package>`,
+      );
+    const nupkg = (dlls, version = '1.0.0') =>
+      zipOf([
+        { name: 'Contoso.Package.nuspec', data: nuspec(version) },
+        ...dlls.map(([file, base64]) => ({ name: `lib/net462/${file}`, data: Buffer.from(base64, 'base64') })),
+      ]).toString('base64');
+    const pkg = {
+      content: nupkg([
+        ['Contoso.Unsigned.dll', UNSIGNED],
+        ['Contoso.Helpers.dll', HELPERS],
+      ]),
+    };
+    await run('pluginpackage', 'create', pkg);
+    assert.deepEqual([pkg.name, pkg.version], ['Contoso.Package', '1.0.0']);
+    const owned = store.tableRows('pluginassembly').filter((row) => row.packageid === pkg.pluginpackageid);
+    assert.deepEqual(
+      owned.map((row) => row.name),
+      ['Contoso.Unsigned'],
+      'only the assembly with an IPlugin type is registered',
+    );
+    const typesOf = () =>
+      store.tableRows('plugintype').filter((row) => row.pluginassemblyid === owned[0].pluginassemblyid);
+    assert.deepEqual(
+      typesOf().map((row) => row.typename),
+      [CONTOSO],
+      'workflow activities are not package types',
+    );
+    await assert.rejects(
+      run('pluginassembly', 'delete', {}, owned[0]),
+      (error) => error.details?.innerCode === '0x80081117',
+    );
+    const existing = { pluginpackageid: pkg.pluginpackageid, name: pkg.name, version: pkg.version };
+    await assert.rejects(
+      run('pluginpackage', 'update', { version: '2.0.0' }, existing),
+      (error) => error.status === 400,
+    );
+    await assert.rejects(
+      run('pluginpackage', 'create', {
+        name: 'x',
+        version: '1.0.0',
+        content: nupkg([['Contoso.Helpers.dll', HELPERS]]),
+      }),
+      (error) => error.details?.innerCode === '0x8004418b',
+    );
+    const typeId = typesOf()[0].plugintypeid;
+    store.insertRow('sdkmessageprocessingstep', (store.state.tables.sdkmessageprocessingstep ??= []), {
+      sdkmessageprocessingstepid: 'a1000000-0000-4000-8000-0000000000c1',
+      plugintypeid: typeId,
+      eventhandler: typeId,
+    });
+    const other = assemblyBase64({
+      name: 'Contoso.Unsigned',
+      version: '1.0.0.0',
+      typeRefs: ['Microsoft.Xrm.Sdk.IPlugin'],
+      typeDefs: [{ full: 'Contoso.Plugins.Other', interfaces: ['Microsoft.Xrm.Sdk.IPlugin'] }],
+    });
+    await assert.rejects(
+      run('pluginpackage', 'update', { content: nupkg([['Contoso.Unsigned.dll', other]]) }, existing),
+      (error) => error.details?.innerCode === '0x8004418b',
+    );
+    await assert.rejects(
+      run('pluginpackage', 'delete', {}, existing),
+      (error) => error.details?.innerCode === '0x8004f01f',
+    );
+    store.removeRow('sdkmessageprocessingstep', store.state.tables.sdkmessageprocessingstep, 0);
+    await run('pluginpackage', 'update', { content: nupkg([['Contoso.Unsigned.dll', other]]) }, existing);
+    assert.deepEqual(
+      typesOf().map((row) => row.typename),
+      ['Contoso.Plugins.Other'],
+      'an update replaces the types it no longer declares and keeps the assembly row',
+    );
+    await run('pluginpackage', 'delete', {}, existing);
+    assert.equal(
+      store.tableRows('pluginassembly').some((row) => row.packageid === pkg.pluginpackageid),
+      false,
+    );
+    assert.equal(typesOf().length, 0);
+  });
+
+  // @test-kind contract: SolutionPackager step image XML carries MessagePropertyName; the mirrored row keeps it
+  it('a Solution step image keeps its exported MessagePropertyName', () => {
+    const facts = parsePluginDocument(
+      `<ImportExportXml><SdkMessageProcessingStep SdkMessageProcessingStepId="${STEP}"><PluginTypeId>${TYPE}</PluginTypeId><MessageName>SetState</MessageName><PrimaryEntity>contoso_widget</PrimaryEntity><Stage>40</Stage><Mode>0</Mode><Rank>1</Rank><SdkMessageProcessingStepImages><SdkMessageProcessingStepImage Name="Post"><EntityAlias>post</EntityAlias><ImageType>1</ImageType><MessagePropertyName>EntityMoniker</MessagePropertyName></SdkMessageProcessingStepImage></SdkMessageProcessingStepImages></SdkMessageProcessingStep></ImportExportXml>`,
+    );
+    assert.equal(facts.steps[0].images[0].messagePropertyName, 'EntityMoniker');
+    const rows = solutionPluginRows(facts, { organizationId: 'bbbbbbbb-0000-4000-8000-000000000001' });
+    assert.equal(rows.sdkmessageprocessingstepimage[0].messagepropertyname, 'EntityMoniker');
   });
 });

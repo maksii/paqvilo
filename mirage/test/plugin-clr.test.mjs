@@ -102,27 +102,36 @@ test('CLR registration cannot infer trust, backend identity or unsafe paths', ()
     /confined/,
   );
   const store = data();
+  // @parity-evidence: user explicitly approved C16 on 2026-10-30 (native run-as roles replace the grant profile)
+  // CreateOrganizationService(null) and another user's id run as that user (Learn IOrganizationServiceFactory); with an
+  // organization the user's roles authorize the call (plugin-clr-run-as.test.mjs). This store has no Dataverse security
+  // model, so the descriptor grants still bound every run-as user: a granted read succeeds, an ungranted write is refused.
+  const retrieve = (userId, table) =>
+    dispatchSdkCall({
+      store,
+      profile,
+      message: {
+        method: 'Retrieve',
+        userId,
+        arguments: [table, { $type: 'Guid', value: rowId }, { allColumns: true }],
+      },
+    });
+  assert.equal(retrieve(null, 'secondary').id, rowId);
+  assert.equal(retrieve('40000000-0000-0000-0000-000000000001', 'secondary').id, rowId);
   assert.throws(
     () =>
       dispatchSdkCall({
         store,
         profile,
         message: {
-          method: 'Retrieve',
-          userId: null,
-          arguments: ['secondary', { $type: 'Guid', value: rowId }, { allColumns: true }],
+          method: 'Create',
+          userId: '40000000-0000-0000-0000-000000000001',
+          arguments: [
+            { $type: 'Entity', logicalName: 'widget', id: '00000000-0000-0000-0000-000000000000', attributes: {} },
+          ],
         },
       }),
-    /system-factory/,
-  );
-  assert.throws(
-    () =>
-      dispatchSdkCall({
-        store,
-        profile,
-        message: { method: 'Retrieve', userId: '40000000-0000-0000-0000-000000000001', arguments: [] },
-      }),
-    /impersonation/,
+    (error) => error.code === 'LocalBackendPermissionDenied' && error.status === 403,
   );
   assert.throws(
     () => dispatchSdkCall({ store, profile, message: { method: 'Execute', userId: user, arguments: [] } }),
@@ -147,7 +156,8 @@ test('Backend RPC grants do not inherit portal roles and preserve SDK value type
           arguments: ['widget', { $type: 'Guid', value: rowId }, { allColumns: true }],
         },
       }),
-    /Record not found/,
+    // @parity-evidence: native dev-environment recorder corpus sdkSurface: an SDK request on a missing row faults 0x80040217 'Entity '<table>' With Id = <id> Does Not Exist'
+    /Entity 'widget' With Id = 20000000-0000-0000-0000-000000000001 Does Not Exist/,
   );
   const result = dispatchSdkCall({
     store,

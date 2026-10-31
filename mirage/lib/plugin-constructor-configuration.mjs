@@ -19,8 +19,14 @@ export function copyStepConstructorSettings(source, target) {
 export const stepConstructorSettings = (step) => ({ ...settings.get(step) });
 
 /** Current registration rows take precedence over descriptor fallbacks. Secure
- * text absent from an export can still be supplied by the trusted descriptor. */
-export function runtimeConstructorSettings(store, stepId, supplied, descriptor) {
+ * text absent from an export can still be supplied by the trusted descriptor.
+ * A custom API main operation (mainOperation) has no step registration: native
+ * constructs it with null unsecure and secure configuration, whatever the
+ * descriptor supplies. A step row whose secure configuration row is absent (the
+ * state after a Solution import, which never exports secure text) or holds no
+ * text constructs with null secure configuration unless the descriptor supplies it. */
+export function runtimeConstructorSettings(store, stepId, supplied, descriptor, { mainOperation = false } = {}) {
+  if (mainOperation) return { unsecureConfiguration: null, secureConfiguration: null };
   const result = {
     unsecureConfiguration: descriptor.unsecureConfiguration ?? null,
     secureConfiguration: descriptor.secureConfiguration ?? null,
@@ -32,25 +38,20 @@ export function runtimeConstructorSettings(store, stepId, supplied, descriptor) 
   if (row && own(row, 'configuration')) result.unsecureConfiguration = row.configuration ?? null;
   if (row && own(row, 'sdkmessageprocessingstepsecureconfigid')) {
     const id = key(row.sdkmessageprocessingstepsecureconfigid);
-    if (!id) result.secureConfiguration = null;
-    else {
-      const secure = store
-        .tableRows('sdkmessageprocessingstepsecureconfig')
-        .find((value) => key(value.sdkmessageprocessingstepsecureconfigid) === id);
-      if (secure && own(secure, 'secureconfig')) result.secureConfiguration = secure.secureconfig ?? null;
-      else if (!own(descriptor, 'secureConfiguration'))
-        throw new DataError(
-          'Registered secure configuration is unavailable; supply it through an explicitly trusted runtime descriptor.',
-          501,
-          'LocalPluginConfigurationUnavailable',
-        );
-    }
+    const secure = id
+      ? store
+          .tableRows('sdkmessageprocessingstepsecureconfig')
+          .find((value) => key(value.sdkmessageprocessingstepsecureconfigid) === id)
+      : null;
+    if (secure && own(secure, 'secureconfig')) result.secureConfiguration = secure.secureconfig ?? null;
+    else if (!id || !own(descriptor, 'secureConfiguration')) result.secureConfiguration = null;
   }
+  // Configuration columns are text: anything else is a corrupt local row, not a value the platform could pass.
   if (Object.values(result).some((value) => value !== null && typeof value !== 'string'))
     throw new DataError(
-      'Plug-in constructor configuration requires string or null values.',
-      501,
-      'LocalPluginConfigurationUnsupported',
+      'Plug-in constructor configuration rows must hold text or null.',
+      500,
+      'LocalPluginConfigurationInvalid',
     );
   return result;
 }

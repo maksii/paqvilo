@@ -176,12 +176,13 @@ test('direct record-message installation also runs the Merge step before delegat
   assert.equal(f.calls(), 1);
 });
 
-// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30, upsert and bulk scenarios: registered Upsert and UpsertMultiple steps never execute
+// @test-kind parity: native recorder corpus 2026-10-30, upsert and bulk scenarios captured twice: globally registered Upsert and UpsertMultiple steps never execute
+// @parity-evidence: native recorder corpus 2026-10-30 (two captures each of upsert and bulk): zero Upsert/UpsertMultiple step events while the delegated Create/Update (CreateMultiple/UpdateMultiple) steps run; registration probes round 2: account has no Upsert or UpsertMultiple sdkmessagefilter, so these steps can only be registered without a table (global)
 // Recorded native corpus: registered Upsert and UpsertMultiple steps never execute. The platform runs the delegated
 // Create/Update (or CreateMultiple/UpdateMultiple) pipelines instead, so these requests neither refuse nor run the step.
 for (const message of ['Upsert', 'UpsertMultiple'])
   test(`HTTP ${message} runs its delegated writes without executing its own never-executed steps`, async (t) => {
-    const f = await fixture(t, message);
+    const f = await fixture(t, message, { entity: null, unfiltered: true });
     const response = await f.request(
       message === 'Upsert' ? 'PATCH' : 'POST',
       message === 'Upsert' ? `/accounts(${a})` : '/accounts/Microsoft.Dynamics.CRM.UpsertMultiple',

@@ -420,6 +420,7 @@ for (const [name, start] of [
   });
 }
 
+// @test-kind contract+security: the local search route keeps the site's CSP, framing and nosniff headers
 test('Power Pages: /search/ carries the same site HTTP/* headers, CSP and nosniff as every portal page', async () => {
   const sim = await sharedPowerPages();
   const page = await fetch(sim.url + '/'),

@@ -34,13 +34,19 @@ import {
   pluginInvocationSdkParent,
   pluginInvocationParent,
 } from './plugin-execution-lifetime.mjs';
-import { asyncMultiplePluginParent, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
+import { asyncMultiplePluginParent, recordRequestRootChange, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
 import { recordPluginTrace } from './plugin-trace.mjs';
 import { delegatedPluginParent, upsertSourceOperation } from './plugin-delegation.mjs';
 import { populatePluginSystemOutputs } from './plugin-response.mjs';
 import { notePluginFault, pluginFailure } from './plugin-fault.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
 import { pluginMessageHasPipeline, pluginStepInert } from './plugin-message-admission.mjs';
+import {
+  bridgeTargetInputs,
+  bulkTargetsCollection,
+  multipleMessage,
+  unbridgeTargetInputs,
+} from './plugin-single-multiple.mjs';
 import { ownershipOf } from './dataverse-security.mjs';
 import {
   recordStepConstructorSettings,
@@ -85,6 +91,7 @@ export const messageNameOf = (operation) =>
     retrievemultiple: 'RetrieveMultiple',
     createmultiple: 'CreateMultiple',
     updatemultiple: 'UpdateMultiple',
+    deletemultiple: 'DeleteMultiple',
     onexternalcreated: 'OnExternalCreated',
     onexternalupdated: 'OnExternalUpdated',
     onexternaldeleted: 'OnExternalDeleted',
@@ -242,6 +249,9 @@ export function parsePluginDocument(xml) {
             name: value(image, 'Name') || '',
             alias: value(image, 'EntityAlias') || '',
             type: numeric(value(image, 'ImageType')),
+            ...(value(image, 'MessagePropertyName')
+              ? { messagePropertyName: value(image, 'MessagePropertyName') }
+              : {}),
             attributes: String(value(image, 'Attributes') ?? '')
               .split(',')
               .map(canonical)
@@ -629,6 +639,7 @@ function typedContext({
   columns,
   holder,
   changedAttributes = [],
+  bridged = false,
 }) {
   const idColumn = entity && !(customApi && entity === 'none') ? store?.resolveMapping(entity)?.idColumn : null;
   const images = (types, source) => registeredImages(item, types, source);
@@ -642,18 +653,22 @@ function typedContext({
     (preValidationParent || store?.pluginParentContext || pluginInvocationSdkParent(store));
   initializePluginOperation(frame, store, parent);
   const executing = identity?.systemUserId ?? identity?.id ?? parent?.values?.UserId?.value ?? null;
-  const initiating = parent?.values?.InitiatingUserId?.value ?? executing;
+  // A plug-in's SDK call: the service's user initiates the nested operation (recorded native sdkSurface, readNested).
+  const initiating = store?.pluginExecutionUserId ?? parent?.values?.InitiatingUserId?.value ?? executing;
   const result = {
     MessageName: customApi?.name ?? messageNameOf(operation),
     PrimaryEntityName: ['associate', 'disassociate'].includes(operation) ? 'none' : entity,
     ...(operation === 'update' || (customApi && entity === 'none') ? { SecondaryEntityName: 'none' } : {}),
-    PrimaryEntityId: ['associate', 'disassociate'].includes(operation)
-      ? '00000000-0000-0000-0000-000000000000'
-      : idColumn
-        ? (record[idColumn] ?? (customApi ? '00000000-0000-0000-0000-000000000000' : null))
-        : customApi
-          ? '00000000-0000-0000-0000-000000000000'
-          : null,
+    // A queued DeleteMultiple job names no row (native crud, async, upsert).
+    PrimaryEntityId:
+      ['associate', 'disassociate'].includes(operation) ||
+      (bridged && operation === 'delete' && (item.contract?.mode ?? 0) === 1)
+        ? '00000000-0000-0000-0000-000000000000'
+        : idColumn
+          ? (record[idColumn] ?? (customApi ? '00000000-0000-0000-0000-000000000000' : null))
+          : customApi
+            ? '00000000-0000-0000-0000-000000000000'
+            : null,
     Stage: stage,
     Mode: item.contract?.mode ?? 0,
     Depth: depth,
@@ -703,8 +718,9 @@ function typedContext({
     trace,
   };
   if (['createmultiple', 'updatemultiple'].includes(operation)) {
+    // A queued bulk job has no pre-image sets unless its registration asks for pre images (native sdkSurface).
     result.PreEntityImagesCollection =
-      operation === 'createmultiple' && (item.contract?.mode ?? 0) === 1
+      (item.contract?.mode ?? 0) === 1 && !(item.images ?? []).some((spec) => [0, 2].includes(spec.type))
         ? []
         : (targets ?? []).map((_, index) => images([0, 2], previousRecords?.[index]));
     result.PostEntityImagesCollection = (targets ?? []).map((_, index) =>
@@ -747,9 +763,57 @@ function typedContext({
       store,
     );
   }
-  const asyncParent = asyncMultiplePluginParent(frame, operation, entity);
+  const asyncParent = asyncMultiplePluginParent(frame, bridged ? multipleMessage(operation) : operation, entity);
   if (asyncParent) result.ParentContext = pluginContextValues(asyncParent, store);
+  // A main operation reports the step's executing user: an impersonating step's own main operation and a named
+  // message's main operation (native crud "Probe: Update 40 impersonated", sdkMessages Assign/30 as SYSTEM).
+  if (
+    (frame?.delegatedParentContext ? frame.namedMainOperation : item.impersonatingUserId && preValidationParent) &&
+    !frame?.delegatedSourceOperation &&
+    result.ParentContext
+  )
+    result.ParentContext.UserId = result.UserId;
+  // Every ancestor reports the observing context's IsInTransaction (native: 855 synchronous ancestor samples).
+  for (let level = result.ParentContext; level; level = level.ParentContext)
+    level.IsInTransaction = result.IsInTransaction;
+  if (bridged && store) {
+    result.MessageName = messageNameOf(multipleMessage(operation));
+    result.InputParameters = bridgedPlainInputs(
+      { store, entity, operation, stage, record, frame },
+      result.InputParameters,
+    );
+  }
   return result;
+}
+
+// The single Target of a handler's plain InputParameters as the one SDK record of a bridged step's Targets (the
+// Target its typed execution context carries, see handlerExecutionContext).
+function bridgedPlainInputs({ store, entity, operation, stage, record, frame }, inputs) {
+  const { Target: plain = {}, ...rest } = inputs ?? {};
+  const primary = store.resolveMapping(entity).idColumn,
+    submitted = operation === 'create' && stage === 10;
+  return {
+    ...rest,
+    Targets: [
+      operation === 'delete'
+        ? { $type: 'EntityReference', logicalName: entity, id: record[primary] }
+        : {
+            ...recordToSdkEntity(
+              store,
+              entity,
+              { ...plain, ...(submitted && Object.hasOwn(plain, primary) ? {} : { [primary]: record[primary] }) },
+              submitted ? { allColumns: false, columns: Object.keys(plain) } : { allColumns: true },
+            ),
+            id: frame?.inputParameters?.values?.Target?.id ?? record[primary],
+          },
+    ],
+  };
+}
+// The handler's view back as the single message's plain Target.
+function unbridgedPlainInputs(inputs) {
+  if (!inputs || !Object.hasOwn(inputs, 'Targets')) return inputs;
+  const { Targets: [next] = [], ...rest } = inputs;
+  return { ...(next?.$type === 'Entity' ? { Target: sdkValueToRecord(next) } : {}), ...rest };
 }
 
 function handlerExecutionContext({
@@ -772,7 +836,13 @@ function handlerExecutionContext({
   customApi,
   messageParameters,
   parent,
+  bridged = false,
 }) {
+  // A bridged step's typed context is the single message's one with Target as one Targets record.
+  if (bridged) {
+    context = { ...context, InputParameters: unbridgedPlainInputs(context.InputParameters) };
+    before = { ...before, inputs: unbridgedPlainInputs(before.inputs) };
+  }
   const primary = entity && entity !== 'none' ? store?.resolveMapping(entity).idColumn : null;
   const rawInputs = customApi
     ? reconcilePluginMessageParameters(
@@ -794,13 +864,9 @@ function handlerExecutionContext({
               ? { Target: holder?.target, ColumnSet: { $type: 'ColumnSet', ...columns } }
               : ['createmultiple', 'updatemultiple'].includes(operation)
                 ? {
-                    Targets: {
-                      $type: 'EntityCollection',
-                      entities: targets,
-                      moreRecords: false,
-                      totalRecordCount: -1,
-                      pagingCookie: null,
-                    },
+                    Targets: bulkTargetsCollection(entity, targets, {
+                      submitted: context.Stage === 10 && context.Mode !== 1,
+                    }),
                   }
                 : {
                     Target:
@@ -916,7 +982,9 @@ function handlerExecutionContext({
         context.InitiatingUserId,
     );
   }
-  values.ParentContext = asyncMultiplePluginParent(frame, operation, entity) ?? values.ParentContext;
+  values.ParentContext =
+    asyncMultiplePluginParent(frame, bridged ? multipleMessage(operation) : operation, entity) ?? values.ParentContext;
+  if (bridged) values.InputParameters = { ...rawInputs, values: bridgeTargetInputs(rawInputs.values, entity) };
   return { $type: 'ExecutionContext', values };
 }
 
@@ -1005,6 +1073,7 @@ function matchingPluginSteps(
     bypassStepIds = [],
     bypassCustomPlugins = false,
     diagnostic,
+    bridgedMessage = null,
   },
 ) {
   return items.filter(
@@ -1013,7 +1082,8 @@ function matchingPluginSteps(
       item.contract?.supportedDeployment !== 1 &&
       (item.contract?.mode === 1) === asyncExecution &&
       pluginStepMatchesEntity(item, entity) &&
-      String(item.message).toLowerCase() === operation &&
+      (String(item.message).toLowerCase() === operation ||
+        (bridgedMessage != null && String(item.message).toLowerCase() === bridgedMessage)) &&
       item.stage === stage &&
       (ignoreFiltering || pluginStepMatchesAttributes(item, { store, entity, operation, changedAttributes })) &&
       !pluginStepBypassed(item, { bypassStepIds, bypassCustomPlugins }, diagnostic),
@@ -1022,12 +1092,15 @@ function matchingPluginSteps(
 
 /** The entries the platform puts in every pipeline's SharedVariables (native recordings of Web API and plug-in
  * SDK requests): IsAutoTransact (false for reads), the caller's Accept-Language ('' for a plug-in's SDK request)
- * and, on Create, DefaultsAddedFlag. */
-function platformSharedVariables(operation, acceptLanguage = '') {
+ * and, on Create, DefaultsAddedFlag; CreateMultiple carries it when its steps run for a Create or a plug-in requested
+ * it, not for a Web API CreateMultiple or UpsertMultiple request (native bulk). */
+function platformSharedVariables(operation, acceptLanguage = '', { nested = false, bulkOrigin = false } = {}) {
   return {
     IsAutoTransact: !['retrieve', 'retrievemultiple'].includes(operation),
     AcceptLang: String(acceptLanguage ?? ''),
-    ...(['create', 'createmultiple'].includes(operation) ? { DefaultsAddedFlag: true } : {}),
+    ...(operation === 'create' || (operation === 'createmultiple' && (nested || !bulkOrigin))
+      ? { DefaultsAddedFlag: true }
+      : {}),
   };
 }
 
@@ -1035,7 +1108,7 @@ function platformSharedVariables(operation, acceptLanguage = '') {
  * Natively it lists user-owned tables and association intersects; an organization-owned table is absent. */
 function changedEntityType(store, operation, entity, intersectEntity) {
   if (['associate', 'disassociate'].includes(operation)) return intersectEntity ?? null;
-  if (!['create', 'update', 'delete'].includes(operation) || !store) return null;
+  if (!['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation) || !store) return null;
   const mapping = store.resolveMapping(entity);
   return ownershipOf(entity, null, mapping) === 'user' ? entity : null;
 }
@@ -1089,6 +1162,10 @@ export function runPluginPhase({
   bulkConcurrencyBehavior,
   inheritsRequestTag = true,
   bulkOrigin = false,
+  // A single Create/Update/Delete also runs its paired multiple message's steps (plugin-single-multiple.mjs).
+  bridgedMessage = null,
+  // A record a bulk message delegates: that message's context of this stage (plugin-bulk.mjs).
+  bulkParent = null,
   acceptLanguage = '',
   asyncExecution = false,
   initialFrame,
@@ -1124,12 +1201,23 @@ export function runPluginPhase({
     phaseFrame.delegatedDepth ??= mainOperation.depth;
     if (mainOperation.exactDepth) phaseFrame.exactDepth = true;
     if (mainOperation.internalRead && operation === 'retrievemultiple') phaseFrame.internalRead = true;
+    if (mainOperation.namedMessage) phaseFrame.namedMainOperation = true;
+    // A refused message's per-record PreValidation (DeleteMultiple) has no platform SharedVariables (native bulk).
+    if (mainOperation.preValidationOnly) phaseFrame.platformSharedSeeded = true;
     // The request tag is an input of the message, not of the operations it delegates (SDK Upsert keeps it).
     if (!mainOperation.keepsRequestTag) phaseFrame.inputTagConsumed = true;
     delete phaseFrame.delegatedSourceOperation;
   }
   // Records a bulk message delegates, and a bulk message UpsertMultiple delegates, have no tag input (recorded corpus).
   if (!inheritsRequestTag && !continued) phaseFrame.inputTagConsumed = true;
+  // Such a record runs under the bulk message's context of the current stage and shares its request identity
+  // (native bulk: Create/10 <- CreateMultiple/10, Create/20 <- CreateMultiple/20 <- CreateMultiple/30).
+  if (bulkParent && !asyncExecution) {
+    phaseFrame.delegatedSourceOperation = bulkParent;
+    for (const key of ['requestId', 'operationId', 'correlationId', 'createdOn', 'createdOnWire', 'requestTag'])
+      if (bulkParent.frame?.[key] !== undefined && !Object.hasOwn(phaseFrame, key))
+        phaseFrame[key] = cloneStateData(bulkParent.frame[key]);
+  }
   // Durable jobs must retain the originating operation depth even when no
   // synchronous registration executes. Internal message delegation shares it.
   phaseFrame.operationDepth ??=
@@ -1140,6 +1228,9 @@ export function runPluginPhase({
       pluginInvocationDepth(store),
       Number((store?.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.Depth ?? 0),
     ) + 1;
+  // A request a plug-in issued through its IOrganizationService (plugin-clr.mjs InitiatingUserAgent); its asynchronous
+  // jobs keep the fact.
+  if (!asyncExecution) phaseFrame.sdkIssued ??= Boolean(store?.pluginParentContext || pluginInvocationSdkParent(store));
   executionFrames.set(record, phaseFrame);
   // UpsertMultiple's UpdateMultiple carries ConcurrencyBehavior on the message (dataverse-records.mjs bulkWrite).
   if (operation === 'updatemultiple' && bulkConcurrencyBehavior !== undefined) {
@@ -1197,8 +1288,14 @@ export function runPluginPhase({
       });
     } else if (phaseFrame.delegatedSourceOperation?.operation === 'upsert') delete phaseFrame.delegatedSourceOperation;
   }
+  // The operations an Upsert main operation runs share its request identity (plugin-delegation.mjs).
+  if (phaseFrame.delegatedSourceOperation?.operation === 'upsert')
+    for (const key of ['requestId', 'operationId', 'correlationId'])
+      if (phaseFrame.delegatedSourceOperation.frame?.[key] != null)
+        phaseFrame[key] ??= phaseFrame.delegatedSourceOperation.frame[key];
   phaseFrame.suppliedRequestId ??= store?.pluginRequestId;
   phaseFrame.requestId ??=
+    phaseFrame.delegatedParentContext?.values?.RequestId?.value ??
     (store?.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.RequestId?.value ??
     (store?.ids ?? systemIds).uuid();
   if (
@@ -1226,7 +1323,15 @@ export function runPluginPhase({
         };
     }
   }
-  if (stage === 10 && !asyncExecution && ['create', 'update', 'delete'].includes(operation)) {
+  if (stage === 10 && !asyncExecution && ['createmultiple', 'updatemultiple'].includes(operation))
+    phaseFrame.mainOperationTargets ??= bulkTargetsCollection(entity, cloneStateData(targets ?? []), {
+      submitted: true,
+    });
+  if (
+    stage === 10 &&
+    !asyncExecution &&
+    ['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation)
+  ) {
     // A sandboxed plug-in's SDK request is marked FromSandbox in its PreValidation (and main operation) inputs.
     if (sdkFromSandbox) {
       phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
@@ -1254,10 +1359,19 @@ export function runPluginPhase({
     // Native pipelines start every SharedVariables collection with the platform's entries (see
     // platformSharedVariables). A plug-in-issued SDK request carries no Accept-Language.
     const nested = Boolean(store?.pluginParentContext || pluginInvocationSdkParent(store)),
-      platform = platformSharedVariables(
-        operation,
-        nested ? '' : acceptLanguage || identity?.dataverse?.acceptLanguage,
-      );
+      // A record a bulk message delegates keeps only its own message's entries; the platform's belong to the bulk
+      // message's collections (native bulk).
+      platform =
+        bulkOrigin && !['createmultiple', 'updatemultiple'].includes(operation)
+          ? operation === 'create'
+            ? { DefaultsAddedFlag: true }
+            : {}
+          : platformSharedVariables(operation, nested ? '' : acceptLanguage || identity?.dataverse?.acceptLanguage, {
+              nested,
+              bulkOrigin,
+            });
+    // The PreValidation collection exists before any step ran; remember how many plug-in requests preceded it.
+    if (stage === 10) phaseFrame.sdkRequestsBefore ??= store?.pluginSdkRequests ?? 0;
     if (!phaseFrame.platformSharedSeeded) {
       phaseFrame.sharedVariables = {
         $type: 'ParameterCollection',
@@ -1267,27 +1381,43 @@ export function runPluginPhase({
     }
     // PreValidation shares the main operation's collection (the ParentContext of stages 20 and 40); PreOperation
     // and PostOperation start their own one.
-    if (stage !== 10 && ['create', 'update', 'delete'].includes(operation) && !phaseFrame.mainSharedVariables) {
+    if (
+      stage !== 10 &&
+      ['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation) &&
+      !phaseFrame.mainSharedVariables
+    ) {
       const prior = phaseFrame.sharedVariables.values;
       phaseFrame.mainSharedVariables = phaseFrame.sharedVariables;
+      // After a PreValidation step's own SDK request, the PreOperation/PostOperation collection reports no
+      // Accept-Language (native faults: Create/20 and Create/40 at Depth 1 read '').
+      const afterSdkRequest = (store?.pluginSdkRequests ?? 0) > (phaseFrame.sdkRequestsBefore ?? Infinity);
       phaseFrame.sharedVariables = {
         $type: 'ParameterCollection',
-        values: { ...platform, ...(Object.hasOwn(prior, 'tag') ? { tag: prior.tag } : {}) },
+        values: {
+          ...platform,
+          ...(afterSdkRequest ? { AcceptLang: '' } : {}),
+          ...(Object.hasOwn(prior, 'tag') ? { tag: prior.tag } : {}),
+        },
       };
       phaseFrame.preValidationSharedDetached = true;
     }
-    // After the main operation wrote, the request's root collection lists the security-relevant tables it changed.
-    if (stage === 40 && !nested && !phaseFrame.delegatedParentContext) {
-      const table = changedEntityType(store, operation, entity, intersectEntity);
-      // An HTTP Upsert's framework operation (plugin-sdk-parent selectSdkEntryParent) is the root when present.
+    // After the main operation wrote, the request's root collection lists the security-relevant tables it changed,
+    // also those of nested plug-in requests (plugin-sdk-parent recordRequestRootChange).
+    const table = stage === 40 ? changedEntityType(store, operation, entity, intersectEntity) : null;
+    if (table) recordRequestRootChange(store, phaseFrame.requestId, { table });
+    if (stage === 40 && !nested && !phaseFrame.delegatedParentContext && !bulkParent) {
+      // An HTTP Upsert's framework operation (plugin-sdk-parent selectSdkEntryParent) is the root when present; an
+      // upsert-created row's Create main operation is not the root (native upsert: Create/30 has no entry).
       const root = phaseFrame.sdkFrameworkSource
         ? (phaseFrame.sdkFrameworkSource.sharedVariables ??= {
             $type: 'ParameterCollection',
             values: { AcceptLang: phaseFrame.sdkFrameworkSource.acceptLanguage ?? '', IsAutoTransact: false },
           })
-        : ['create', 'update', 'delete'].includes(operation)
-          ? phaseFrame.mainSharedVariables
-          : phaseFrame.sharedVariables;
+        : preValidationSourceOperation === 'upsert'
+          ? null
+          : ['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation)
+            ? phaseFrame.mainSharedVariables
+            : phaseFrame.sharedVariables;
       if (table && root)
         root.values.ChangedEntityTypes = { ...(root.values.ChangedEntityTypes ?? {}), [table]: 'Update' };
     }
@@ -1304,6 +1434,7 @@ export function runPluginPhase({
     multiple = operation === 'retrievemultiple',
     bulk = ['createmultiple', 'updatemultiple'].includes(operation),
     association = ['associate', 'disassociate'].includes(operation);
+  const bridgedStep = (item) => Number(bridgedMessage != null && String(item.message).toLowerCase() === bridgedMessage);
   const matched = matchingPluginSteps(items, {
     store,
     entity,
@@ -1315,7 +1446,12 @@ export function runPluginPhase({
     bypassStepIds: bypassStepIds ?? initialFrame?.bypassStepIds ?? [],
     bypassCustomPlugins,
     diagnostic,
-  }).sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
+    bridgedMessage,
+  }).sort(
+    // At equal rank the requested message's steps run before its paired multiple message's (native corpus: crud,
+    // faults, depth single-origin Create/Update/Delete always ran Create > CreateMultiple, whatever the step ids).
+    (a, b) => a.rank - b.rank || bridgedStep(a) - bridgedStep(b) || a.id.localeCompare(b.id),
+  );
   // Context4 image collections are shared by a stage: they hold the images of every registration of that stage
   // (at PostOperation including queued asynchronous ones). Asynchronous jobs reuse the committed record.
   if (!asyncExecution && !bulk && !customApi) {
@@ -1339,6 +1475,7 @@ export function runPluginPhase({
               bypassStepIds: bypassStepIds ?? [],
               bypassCustomPlugins,
               diagnostic: () => {},
+              bridgedMessage,
             }),
           )
         : [];
@@ -1427,9 +1564,12 @@ export function runPluginPhase({
   // Tracing (docs/design/tracing.md): a plugin-stage span only when steps matched, and one plugin-step span per step that
   // runs (handler, CLR, mock, web hook). The step body runs inside its span, so its SDK calls and writes nest under it.
   const tracing = matched.length && store?.traces?.enabled ? store.traces : null;
-  // The record the stage and its steps act on (D-R3-1): the target row's id; a bulk or multi-row message has none.
+  // The record the stage and its steps act on (D-R3-1): the target row's id; a bulk or multi-row message, or an unbound
+  // custom API (table 'none'), has none.
   const recordId =
-    tracing && !bulk && !multiple && record ? (record[store.resolveMapping(entity)?.idColumn] ?? null) : null;
+    tracing && !bulk && !multiple && record && entity !== 'none'
+      ? (record[store.resolveMapping(entity)?.idColumn] ?? null)
+      : null;
   // A step's input at level full (D-R3-20): the target, the input parameters, the registered images by alias and attribute
   // filter, the shared variables and the execution context. A CLR step's comes from the host bridge context (clrStepInput)
   // and a handler's from the context it receives (contextStepInput); this one is for steps that receive none (mock, web hook).
@@ -1466,7 +1606,8 @@ export function runPluginPhase({
       kind: 'plugin-step',
       name: item.name ?? item.typeName ?? item.id,
       module: item.mode === 'clr' ? 'clr' : 'plugins',
-      operation,
+      // A bridged step runs under its own multiple message (plugin-single-multiple.mjs).
+      operation: bridgedStep(item) === 1 ? bridgedMessage : operation,
       entity,
       recordId,
       actor: { kind: 'plugin', id: item.id ?? null, name: item.typeName ?? item.name ?? null },
@@ -1487,7 +1628,8 @@ export function runPluginPhase({
   // The steps from index `from` on; an awaited post returns the promise of the rest (see awaitIo above).
   const run = (from) => {
     for (let index = from; index < matched.length; index++) {
-      const item = matched[index];
+      const item = matched[index],
+        bridged = bridgedStep(item) === 1;
       if (operation === 'update') changedAttributes = Object.keys(target ?? {});
       else if (operation === 'updatemultiple')
         changedAttributes = [...new Set((targets ?? []).flatMap((entry) => Object.keys(entry.attributes ?? {})))];
@@ -1567,6 +1709,7 @@ export function runPluginPhase({
           previous,
           identity,
           changedAttributes,
+          bridged,
           depth: phaseFrame.operationDepth,
           correlationId: store?.flowChain?.id ?? currentRequest()?.correlationId ?? (store?.ids ?? systemIds).uuid(),
           diagnostic,
@@ -1605,6 +1748,7 @@ export function runPluginPhase({
         continue;
       }
       let output,
+        bridgedSent = null,
         completedContext,
         typed = false,
         nested = false,
@@ -1689,6 +1833,7 @@ export function runPluginPhase({
               previous,
               frame,
               depth,
+              bridged,
             });
           span?.setInput(() => clrStepInput(context));
           const answer = inSpan(span, () =>
@@ -1706,14 +1851,30 @@ export function runPluginPhase({
             outputParameters: answer.outputParameters?.values ?? {},
             sharedVariables: answer.sharedVariables?.values ?? {},
           }));
+          // A bridged multiple step's one Targets record is the single message's Target again.
+          if (bridged) {
+            const sent = context.inputParameters.values.Targets;
+            answer.inputParameters = {
+              ...answer.inputParameters,
+              values: unbridgeTargetInputs(answer.inputParameters?.values, {
+                entity,
+                id: (sent.entities ?? sent.values)[0]?.id,
+              }),
+            };
+            answer.target = answer.inputParameters.values.Target;
+          }
           frame.sharedVariables = canonicalTagVariables(answer.sharedVariables, frame.requestTag);
           frame.outputParameters = answer.outputParameters;
           frame.inputParameters = answer.inputParameters;
           frame.inputParametersStage = stage;
           // CRUD PreValidation variables belong to the parent context of later
           // stages, while PreOperation and PostOperation share their own collection.
-          if (stage === 10 && ['create', 'update', 'delete'].includes(operation))
-            frame.preValidationContext = preValidationSnapshot(frame, context.context, context);
+          if (stage === 10 && ['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation))
+            frame.preValidationContext = preValidationSnapshot(
+              frame,
+              bridged ? { ...context.context, MessageName: messageNameOf(operation) } : context.context,
+              context,
+            );
           if (read) {
             if (multiple) {
               const nextQuery = answer.inputParameters?.values?.Query;
@@ -1832,8 +1993,9 @@ export function runPluginPhase({
             query,
             columns,
             holder,
+            bridged,
           };
-          const handlerContext = typed ? typedContext(contextArguments) : undefined;
+          let handlerContext = typed ? typedContext(contextArguments) : undefined;
           const invocationContext = handlerContext ?? (store ? typedContext(contextArguments) : undefined);
           const contextBefore = invocationContext
             ? cloneStateData({
@@ -1876,6 +2038,7 @@ export function runPluginPhase({
                     customApi,
                     messageParameters,
                     parent,
+                    bridged,
                   })
               : undefined,
             {
@@ -1903,6 +2066,7 @@ export function runPluginPhase({
                 customApi,
                 messageParameters,
                 parent,
+                bridged,
               });
           // The step span's input at level full is the context the handler receives (stepInput without one).
           if (invocationContext) span?.setInput(() => contextStepInput(invocationContext, store));
@@ -1915,9 +2079,22 @@ export function runPluginPhase({
                   sharedVariables: invocationContext?.SharedVariables ?? {},
                   step: cloneStateData(item),
                   entity,
-                  operation,
+                  operation: bridged ? bridgedMessage : operation,
                   stage,
                   target: cloneStateData(target),
+                  // A bridged multiple step's grouped view of the one record (plugin-single-multiple.mjs).
+                  ...(bridged
+                    ? {
+                        targets: cloneStateData(
+                          (bridgedSent = bridgedPlainInputs(
+                            { store, entity, operation, stage, record, frame: handlerFrame },
+                            { Target: target },
+                          ).Targets),
+                        ),
+                        previousRecords: [previous ? cloneStateData(previous) : null],
+                        records: stage === 40 ? [cloneStateData(record)] : [],
+                      }
+                    : {}),
                   record: cloneStateData(record),
                   previous: previous ? cloneStateData(previous) : null,
                   preImage: image([0, 2], previous),
@@ -1954,6 +2131,18 @@ export function runPluginPhase({
           if (output?.then) {
             Promise.resolve(output).catch(() => {});
             throw error('Plugin handlers must return synchronously.', 'LocalPluginAsyncHandler');
+          }
+          if (handlerContext && bridged) {
+            const sent = contextBefore.inputs?.Targets?.[0];
+            unbridgeTargetInputs(
+              { Targets: { $type: 'EntityCollection', entities: handlerContext.InputParameters?.Targets ?? [] } },
+              { entity, id: sent?.id },
+            );
+            handlerContext = {
+              ...handlerContext,
+              InputParameters: unbridgedPlainInputs(handlerContext.InputParameters),
+            };
+            contextBefore.inputs = unbridgedPlainInputs(contextBefore.inputs);
           }
           // A step-id handler's sharedVariables edits join the collection as a plug-in type handler's do.
           if (
@@ -2104,7 +2293,7 @@ export function runPluginPhase({
                     ? ['inputs', 'outputs', 'error']
                     : association
                       ? ['error']
-                      : bulk
+                      : bulk || bridged
                         ? ['targets', 'error']
                         : read
                           ? ['query', 'collection', 'entityResult', 'error']
@@ -2138,6 +2327,17 @@ export function runPluginPhase({
           const frame = executionFrames.get(record);
           if (frame?.inputParameters?.values?.Targets)
             frame.inputParameters.values.Targets.entities = cloneStateData(targets);
+        }
+        if (bridged && output?.targets !== undefined && operation !== 'delete') {
+          if (!Array.isArray(output.targets)) throw error('Bulk Targets changes require an array.');
+          const { Target: next } = unbridgeTargetInputs(
+            { Targets: { $type: 'EntityCollection', entities: output.targets } },
+            { entity, id: bridgedSent?.[0]?.id },
+          );
+          applyTargetEntity(next);
+          const frame = executionFrames.get(record);
+          if (frame?.inputParameters?.values?.Target?.$type === 'Entity')
+            frame.inputParameters.values.Target.attributes = recordToSdkEntity(store, entity, target).attributes;
         }
         if (!multiple && output?.entityResult !== undefined) {
           if (stage !== 40) throw error('Retrieve Entity changes require PostOperation.');
@@ -2174,7 +2374,10 @@ export function runPluginPhase({
         if (completedContext && stage === 10 && ['create', 'update', 'delete'].includes(operation)) {
           const frame = executionFrames.get(record),
             snapshot = completedContext();
-          frame.preValidationContext = preValidationSnapshot(frame, snapshot.values);
+          frame.preValidationContext = preValidationSnapshot(
+            frame,
+            bridged ? { ...snapshot.values, MessageName: messageNameOf(operation) } : snapshot.values,
+          );
         }
         if (executed) journal(null);
         if (executed || item.mode === 'mock') onStepExecuted?.(item);

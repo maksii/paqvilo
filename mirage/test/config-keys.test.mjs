@@ -305,6 +305,7 @@ test('configuredSettingKeys lists the authored setting names, including those th
   assert.deepEqual(configuredSettingKeys(), []);
 });
 
+// @test-kind contract+security: runtimeIdentity redacts secrets
 test('runtimeIdentity is stable, limited to identity rows and redacts secrets', () => {
   const a = runtimeIdentity({
     runtime: { kind: 'power-pages' },

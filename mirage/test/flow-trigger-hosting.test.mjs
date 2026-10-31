@@ -1,4 +1,4 @@
-// @test-kind unproven: local model of Dataverse-triggered cloud flow hosting; no native capture cited
+// @test-kind unproven: local model of cloud flow trigger hosting; no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -158,6 +158,7 @@ async function flowRouteClient(t, api, runs) {
   return call;
 }
 
+// @test-kind contract: an exported flow runs only after explicit local activation
 test('a Recurrence flow fires on the manual scheduler only after local activation, and deactivation cancels its timer', async (t) => {
   const { scheduler, runs, runner, overrides } = await host(t);
   await runner.syncTriggers();
@@ -215,6 +216,7 @@ test('a Windows time-zone id and a schedule outside Day/Week/Month stay explicit
   assert.equal(nextOccurrence({ frequency: 'Month', interval: 1, start }, start), Date.parse('2026-02-01T00:00:00Z'));
 });
 
+// @test-kind contract: Paqvilo's unsupported-trigger message
 test('the unsupported-trigger message names mock/disable, not an adapter', () => {
   const answer = inspectFlowTrigger({
     triggers: {
@@ -394,6 +396,7 @@ test('a Dataverse action trigger runs a tracked flow with the action inputs and 
   assert.equal(second.store.state.tables.asyncoperation.length, 0, 'the job row is removed with its run');
 });
 
+// @test-kind contract: Paqvilo's pack flowTriggers export
 test('a pack flowTriggers entry is subscribed on activation, fires tracked runs and is unsubscribed at close', async (t) => {
   assert.throws(() => PACK_EXPORTS.flowTriggers.check({ shared_fx: { OnNewItem: {} } }, 'fx-pack'), /subscribe/);
   const { runs, runner, overrides, subscriptions, unsubscribed } = await host(t);
@@ -412,6 +415,7 @@ test('a pack flowTriggers entry is subscribed on activation, fires tracked runs 
   assert.deepEqual(unsubscribed, ['invented-subscription']);
 });
 
+// @test-kind contract+security: the _sim flow-run route requires the CSRF token and forwards only safe headers
 test('POST /_sim/api/flow-runs starts a tracked run of a Button, Http or Recurrence flow (403 without csrf); an HTTP Request trigger answers its Response', async (t) => {
   const { runs, overrides, api } = await host(t);
   for (const id of [BUTTON, HTTP_FLOW, RECURRING]) overrides['cloud-flow:' + id] = { mode: 'exported' };

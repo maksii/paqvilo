@@ -60,7 +60,7 @@ readline.createInterface({ input: child.stdout, crlfDelay: Infinity }).on('line'
   if (message.kind === 'rpc') {
     pending = true;
     send(message);
-  } else if (message.kind === 'trace') send(message);
+  } else if (['trace', 'telemetry'].includes(message.kind)) send(message);
   else if (['result', 'failure'].includes(message.kind)) {
     finish(message);
   }

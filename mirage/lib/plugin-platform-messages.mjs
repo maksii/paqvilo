@@ -7,8 +7,8 @@ import { DataError } from './data-error.mjs';
 import { cloneStateData } from './state-clone.mjs';
 import { initializePluginOperation } from './plugin-operation-context.mjs';
 import { pluginInvocationDepth, pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
-import { PLUGIN_DEPTH_MESSAGE, PLUGIN_MAX_DEPTH, recordToSdkEntity } from './plugin-clr.mjs';
-import { mainOperationParent } from './plugin-sdk-parent.mjs';
+import { PLUGIN_DEPTH_MESSAGE, PLUGIN_MAX_DEPTH, pluginExecutionDepth, recordToSdkEntity } from './plugin-clr.mjs';
+import { mainOperationParent, recordRequestRootChange, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
 import { internalStepReference, setInternalStageSource } from './plugin-internal-stage.mjs';
 import { pluginEntryStep } from './plugin-message-admission.mjs';
 import { authorizeGrant } from './local-organization-service.mjs';
@@ -83,10 +83,12 @@ export const accessNamesOf = (mask) =>
     .map((right) => `${right}Access`)
     .join(', ') || 'None';
 
-// The depth of a message issued now: one below the calling plug-in or operation.
+// The depth of a message issued now: one below the calling plug-in or operation. A nested caller's SDK parent is the
+// depth-1 step (plugin-clr.mjs dispatchSdkCall), so the executing CLR steps count too.
 function messageDepth(store) {
   const depth =
     Math.max(
+      pluginExecutionDepth(),
       pluginInvocationDepth(store),
       Number((store.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.Depth ?? 0),
     ) + 1;
@@ -124,6 +126,11 @@ function runMessagePipeline(
     outputs: initialOutputs = {},
     frame: frameFacts = {},
     record: suppliedRecord,
+    // The platform frame the message runs under when no plug-in issued it (a PATCH statecode's Upsert main operation).
+    parentContext: platformParent,
+    // Reads run outside the automatic transaction (native sdkMessages: RetrievePrincipalAccess and
+    // RetrieveSharedPrincipalsAndAccess report IsAutoTransact false).
+    autoTransact = true,
   },
 ) {
   // An unbound message (PrimaryEntityName none) has no table and an empty PrimaryEntityId.
@@ -146,18 +153,19 @@ function runMessagePipeline(
   const active =
     Boolean(store.pluginPipeline) &&
     store.pluginPipelineActive({ entity: mapping.logicalName, operation, bypassCustomPlugins, bypassStepIds });
-  const parentContext = store.pluginParentContext ?? pluginInvocationSdkParent(store);
+  const parentContext = platformParent ?? store.pluginParentContext ?? pluginInvocationSdkParent(store);
   let frame = {
     ...frameFacts,
     ...(inputTag ? {} : { inputTagConsumed: true }),
     requestTag,
     operationDepth: depth,
+    ...(platformParent ? { delegatedParentContext: platformParent, delegatedDepth: depth, exactDepth: true } : {}),
     suppliedRequestId: store.pluginRequestId,
     sharedVariables: {
       $type: 'ParameterCollection',
       values: {
         AcceptLang: acceptLanguage,
-        IsAutoTransact: true,
+        IsAutoTransact: autoTransact,
         ...(requestTag === undefined ? {} : { tag: requestTag }),
       },
     },
@@ -228,7 +236,12 @@ function runMessagePipeline(
     };
     // Record pipelines the main operation starts belong to this message (exported-plugins.mjs runPluginPhase).
     const previousMain = store.pluginMainOperation;
-    store.pluginMainOperation = { context: mainContext, depth };
+    store.pluginMainOperation = {
+      context: mainContext,
+      depth,
+      namedMessage: true,
+      ...(preValidationOnly ? { preValidationOnly: true } : {}),
+    };
     const finish = (outputs = {}) => {
       store.pluginMainOperation = previousMain;
       if (preValidationOnly) return outputs;
@@ -332,6 +345,7 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
       id: target.id,
       inputs: { ...inputs, ...fromSandbox },
       main,
+      autoTransact: !['RetrievePrincipalAccess', 'RetrieveSharedPrincipalsAndAccess'].includes(name),
       ...pipelineOptions,
     });
   switch (name) {
@@ -386,6 +400,8 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
           ? { Target: parameters.Target, Revokee: parameters.Revokee }
           : { Target: parameters.Target, PrincipalAccess: parameters.PrincipalAccess };
       named(inputs, target, () => {
+        // The request's root collection records the sharing change (native sdkMessages root after each message).
+        recordRequestRootChange(store, store.pluginMainOperation?.context?.values?.RequestId?.value, { sharing: true });
         const share = {
           target: { logical: target.logicalName, id: target.id },
           principal: { id: principal.id, logical_name: principal.logicalName },
@@ -455,7 +471,7 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
         previousMain = store.pluginMainOperation;
       const delegated = caller && {
         context: caller,
-        depth: Number(caller.values?.Depth ?? 1),
+        depth: Math.max(Number(caller.values?.Depth ?? 1), pluginExecutionDepth()),
         exactDepth: true,
         keepsRequestTag: true,
       };
@@ -574,6 +590,8 @@ export async function runEntryMessage(store, { message, entity, id, inputs, cont
     bypassStepIds: context.bypassStepIds,
     bypassCustomPlugins: context.bypassCustomPlugins === true,
     bypassCustomAsync: context.bypassCustomAsync === true,
+    // The access reads run outside the automatic transaction, as on the SDK path (native sdkMessages).
+    autoTransact: !['RetrievePrincipalAccess', 'RetrieveSharedPrincipalsAndAccess'].includes(message),
     main,
   });
 }
@@ -649,7 +667,7 @@ export function runRetrieveExchangeRate(
     frame: issuing,
     context: { ...createValues, ParentContext: outer },
     parent: outer,
-    callerUserId: executing,
+    userId: executing,
     objectId: () => EMPTY,
     inputs: () => ({
       ...cloneStateData(issuing.mainOperationInputs ?? {}),
@@ -672,11 +690,12 @@ export function runRetrieveExchangeRate(
     frame: issuing,
     stage: 25,
     owner: 'MultiCurrencyPlugin',
+    userId: executing,
   });
   const exchangeRate = (value) => ({ $type: 'Decimal', value: Number(value).toFixed(12) });
-  const previousUser = store.pluginExecutionUserId;
-  store.pluginExecutionUserId = executing;
-  try {
+  // SYSTEM executes through the pipeline identity; the caller stays the initiating user (an SDK run-as user, which
+  // store.pluginExecutionUserId models, would initiate too).
+  {
     const outputs = runMessagePipeline(store, {
       message: 'RetrieveExchangeRate',
       entity,
@@ -705,15 +724,41 @@ export function runRetrieveExchangeRate(
     });
     const answered = Number(outputs?.ExchangeRate?.value ?? outputs?.ExchangeRate);
     return Number.isFinite(answered) && answered > 0 ? answered : rate;
-  } finally {
-    store.pluginExecutionUserId = previousUser;
   }
 }
 
-/** The SetStateDynamicEntity pipeline of an Update that sets statecode (data.mjs commitUpdateSteps), one level below it. */
+/** The SetStateDynamicEntity pipeline of an Update that sets statecode (data.mjs commitUpdateSteps), one level below it.
+ * Under a bare Web API PATCH it joins the Update's request beneath that request's Upsert main operation, at its own
+ * depth (native ownerAndState: SetStateDynamicEntity/10/d2 < Upsert/30/d2, one RequestId and OperationId). */
 export function runStateMessage(store, mapping, row, identity, options = {}) {
   const scalar = (value) => Number(value?.value ?? value);
-  const id = row[mapping.idColumn];
+  const id = row[mapping.idColumn],
+    update = store.pluginFrames?.get(row),
+    depth = (update?.operationDepth ?? messageDepth(store)) + 1;
+  const request = Object.fromEntries(
+    [
+      ['RequestId', update?.requestId],
+      ['OperationId', update?.operationId ?? update?.requestId],
+      ['CorrelationId', update?.correlationId],
+    ]
+      .filter(([, value]) => value != null)
+      .map(([name, value]) => [name, { $type: 'Guid', value }]),
+  );
+  const parentContext = update?.sdkFrameworkSource
+    ? selectSdkEntryParent(
+        {
+          $type: 'ExecutionContext',
+          values: {
+            Stage: 20,
+            Mode: 0,
+            Depth: depth,
+            ...request,
+            ...(update.createdOnWire ? { OperationCreatedOn: cloneStateData(update.createdOnWire) } : {}),
+          },
+        },
+        update.sdkFrameworkSource,
+      )
+    : undefined;
   runMessagePipeline(store, {
     message: 'SetStateDynamicEntity',
     entity: mapping.logicalName,
@@ -725,7 +770,8 @@ export function runStateMessage(store, mapping, row, identity, options = {}) {
       ...(options.sdkFromSandbox === true ? { FromSandbox: true } : {}),
     },
     identity,
-    depth: (store.pluginFrames?.get(row)?.operationDepth ?? messageDepth(store)) + 1,
+    depth,
+    parentContext,
     acceptLanguage: options.pluginAcceptLanguage ?? '',
     bypassStepIds: options.bypassStepIds,
     bypassCustomPlugins: options.bypassCustomPlugins === true,
@@ -773,7 +819,8 @@ export function refuseDeleteMultiple(store, { mapping, rows, identity, options =
               cloneStateData(row),
               identity,
               Object.keys(target),
-              options,
+              // Native: the per-record Delete has only its Target as input (no ConcurrencyBehavior).
+              { ...options, bulkOrigin: true, omitConcurrencyBehavior: true },
             ];
           })(),
         );
