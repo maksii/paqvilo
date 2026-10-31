@@ -8,7 +8,7 @@ import { DataError } from './data-error.mjs';
 import { parseEntityReference } from './data.mjs';
 import { contextUrl, preferenceApplied } from './dataverse-odata.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
-import { entryMessageActive, runEntryMessage } from './plugin-platform-messages.mjs';
+import { entryMessageActive, runEntryMessage, runMergeDeactivationReads } from './plugin-platform-messages.mjs';
 import { recordToSdkEntity } from './plugin-clr.mjs';
 
 // Only account and contact are documented for Merge; lead and incident are assumed to merge too.
@@ -265,6 +265,21 @@ async function mergeRows(api, ctx, body, target, subordinate, transact = (fn) =>
     // The target is written only when it gains values (native mergeAccount: no target Update for an empty UpdateContent).
     if (Object.keys(targetChanges).length) await updated(mapping.logicalName, targetRow[idColumn], targetChanges);
     await updated(mapping.logicalName, subRow[idColumn], deactivation);
+    // The platform's internal stage 50 of that Update reads the subordinate's action cards and the subordinate (native
+    // mergeAccount), before the merged mark.
+    if (api.store.pluginPipeline) {
+      const after = rowOf(api, mapping, subordinate.id);
+      runMergeDeactivationReads(api.store, {
+        mapping,
+        row: after,
+        target: Object.fromEntries(
+          [...Object.keys(deactivation), 'modifiedon', 'modifiedby', 'modifiedonbehalfby']
+            .filter((name) => Object.hasOwn(after, name))
+            .map((name) => [name, after[name]]),
+        ),
+        identity: ctx.identity,
+      });
+    }
     if (Object.keys(mergedMark).length) await updated(mapping.logicalName, subRow[idColumn], mergedMark);
     for (const { childMapping, row, nav } of children) {
       await updated(childMapping.logicalName, row[childMapping.idColumn], {

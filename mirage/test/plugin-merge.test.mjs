@@ -1,5 +1,6 @@
 // @test-kind parity: native recorder captures 2026-10-30 mergeAccount (native and native-r2): Web API Merge of two accounts as an original CLR observer sees it
 // @parity-evidence: native mergeAccount (native and native-r2) Merge InputParameters tag; the fixture's merge helper can send the request tag as ?tag= (no existing assertion changed)
+// @parity-evidence: native mergeAccount (native and native-r2) events 25-30 UserId SYSTEM; the merge helper also parses the observer's UserId field (no existing assertion changed)
 // An original CLR observer registered on Merge and the Updates it runs logs what each execution sees: images by
 // message property, the Updates' Targets and the parent chain. Invented loopback accounts and identities only.
 import test, { after } from 'node:test';
@@ -135,8 +136,22 @@ async function mergeFixture(t, steps, { fields = {} } = {}) {
       .split(/\r?\n/)
       .filter(Boolean)
       .map((line) => {
-        const [message, stage, mode, depth, chain, inputs, targetValue, updateContent, pre, post, preC, postC, entity] =
-          line.split('|');
+        const [
+          message,
+          stage,
+          mode,
+          depth,
+          chain,
+          inputs,
+          targetValue,
+          updateContent,
+          pre,
+          post,
+          preC,
+          postC,
+          entity,
+          userId,
+        ] = line.split('|');
         return {
           message,
           stage: Number(stage),
@@ -151,6 +166,7 @@ async function mergeFixture(t, steps, { fields = {} } = {}) {
           preC,
           postC,
           entity,
+          userId,
         };
       });
   };
@@ -249,5 +265,56 @@ test(
       assert.equal(entry.inputs, 'Target,SubordinateId,PerformParentingChecks,tag,UpdateContent');
       assert.equal(entry.updateContent, 'null');
     }
+  },
+);
+
+// @test-kind parity: native recorder captures 2026-10-30 mergeAccount (native and native-r2) events 25-30 and the asynchronous reads: between the subordinate's two Updates the platform's internal Update/50 step reads the subordinate's action cards (RetrieveMultiple 10/20/40) and the subordinate (Retrieve 10/20/40) at Depth 2 under Update/50 < Merge/30 as SYSTEM; their asynchronous jobs report X/50 < X/30
+test(
+  'Merge reads the action cards and the subordinate at internal stage 50 between the subordinate Updates',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const f = await mergeFixture(t, [
+      step(1, 'Merge', 20),
+      step(2, 'Update', 20),
+      step(3, 'Update', 40),
+      step(4, 'RetrieveMultiple', 10, { entity: 'actioncard' }),
+      step(5, 'RetrieveMultiple', 20, { entity: 'actioncard' }),
+      step(6, 'RetrieveMultiple', 40, { entity: 'actioncard' }),
+      step(7, 'Retrieve', 10),
+      step(8, 'Retrieve', 20),
+      step(9, 'Retrieve', 40),
+      step(10, 'RetrieveMultiple', 40, { entity: 'actioncard', mode: 1 }),
+      step(11, 'Retrieve', 40, { mode: 1 }),
+    ]);
+    const seen = await f.merge();
+    const system = f.store.tableRows('systemuser').find((user) => user.fullname === 'SYSTEM').systemuserid;
+    const reads = ['RetrieveMultiple', 'Retrieve'];
+    assert.deepEqual(
+      seen
+        .filter((entry) => entry.message !== 'Merge')
+        .map((entry) => `${entry.message}/${entry.stage}/${entry.mode}/d${entry.depth}/${entry.entity}<${entry.chain}`),
+      [
+        'Update/20/0/d1/account<Merge/30/d1',
+        'Update/40/0/d1/account<Merge/30/d1',
+        'RetrieveMultiple/10/0/d2/actioncard<Update/50/d2<Merge/30/d2',
+        'RetrieveMultiple/20/0/d2/actioncard<Update/50/d2<Merge/30/d2',
+        'RetrieveMultiple/40/0/d2/actioncard<Update/50/d2<Merge/30/d2',
+        'Retrieve/10/0/d2/account<Update/50/d2<Merge/30/d2',
+        'Retrieve/20/0/d2/account<Update/50/d2<Merge/30/d2',
+        'Retrieve/40/0/d2/account<Update/50/d2<Merge/30/d2',
+        'Update/20/0/d1/account<Merge/30/d1',
+        'Update/40/0/d1/account<Merge/30/d1',
+        'RetrieveMultiple/40/1/d2/actioncard<RetrieveMultiple/50/d2<RetrieveMultiple/30/d2',
+        'Retrieve/40/1/d2/account<Retrieve/50/d2<Retrieve/30/d2',
+      ],
+    );
+    for (const entry of seen.filter((item) => reads.includes(item.message)))
+      assert.equal(
+        String(entry.userId).toLowerCase(),
+        String(system).toLowerCase(),
+        'the platform step reads as SYSTEM',
+      );
+    // The Retrieve reads the subordinate with all columns.
+    assert.equal(seen.find((entry) => entry.message === 'Retrieve').inputs.startsWith('Target,ColumnSet'), true);
   },
 );

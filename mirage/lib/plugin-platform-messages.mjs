@@ -787,6 +787,100 @@ export function runRetrieveExchangeRate(
   }
 }
 
+/**
+ * The platform's internal stage-50 step of the Merge's subordinate deactivation ("Update of acton card for account",
+ * recorded native mergeAccount events 25-30 in both captures): after the deactivating Update's PostOperation, as SYSTEM
+ * for the caller and inside the Merge's transaction, it runs a RetrieveMultiple of the subordinate's open action cards
+ * and a Retrieve of the subordinate (all columns), each through its read pipeline (10/20/40 and its asynchronous
+ * steps). Their ParentContext is Update/50 < Merge/30, every level at one below the Merge's depth, sharing its request.
+ * `row` is the subordinate after the Update (`target`: the Update's Target columns). A Merge without its own pipeline
+ * (no Merge step) has no main-operation frame to report, so its reads run without that parent chain.
+ * ponytail: the Update/50 frame carries no Context4 image collections; native lists the Update's PreBusinessEntity and
+ * AsynchronousStepPrimaryName there.
+ */
+export function runMergeDeactivationReads(store, { mapping, row, target, identity }) {
+  const id = row[mapping.idColumn],
+    guid = (value) => ({ $type: 'Guid', value });
+  const system = store.tableRows('systemuser').find((user) => user.fullname === 'SYSTEM')?.systemuserid;
+  const callerId = identity?.systemUserId ?? identity?.id ?? null,
+    executing = system ?? callerId;
+  const merge = store.pluginMainOperation?.namedMessage ? store.pluginMainOperation : null;
+  const depth = (merge?.depth ?? messageDepth(store) - 1) + 1;
+  // Local organizations hold no action cards; the platform table the query reads exists empty.
+  store.state.tables.actioncard ??= [];
+  let delegated = null;
+  if (merge) {
+    const mergeValues = merge.context.values,
+      initiating = guid(executing);
+    const parent = {
+      $type: 'ExecutionContext',
+      values: { ...cloneStateData(mergeValues), Depth: depth, InitiatingUserId: initiating },
+    };
+    delegated = {
+      $type: 'ExecutionContext',
+      values: {
+        ...cloneStateData(mergeValues),
+        MessageName: 'Update',
+        PrimaryEntityName: mapping.logicalName,
+        PrimaryEntityId: guid(id),
+        Stage: 50,
+        Depth: depth,
+        IsInTransaction: true,
+        UserId: guid(callerId ?? executing),
+        InitiatingUserId: initiating,
+        InputParameters: {
+          $type: 'ParameterCollection',
+          values: {
+            Target: recordToSdkEntity(
+              store,
+              mapping.logicalName,
+              { ...target, [mapping.idColumn]: id },
+              { allColumns: false, columns: [mapping.idColumn, ...Object.keys(target)] },
+            ),
+          },
+        },
+        OutputParameters: { $type: 'ParameterCollection', values: {} },
+        OwningExtension: internalStepReference('Update of acton card for account', 'Update'),
+        PreEntityImages: { $type: 'EntityImageCollection', values: {} },
+        PostEntityImages: { $type: 'EntityImageCollection', values: {} },
+        ParentContext: parent,
+      },
+    };
+  }
+  const previousMain = store.pluginMainOperation,
+    reader = { ...identity, id: executing, systemUserId: executing, admin: true };
+  store.pluginMainOperation = delegated
+    ? { context: delegated, depth, exactDepth: true, internalRead: true, keepsRequestTag: true }
+    : previousMain;
+  try {
+    store.query('actioncard', {}, reader, undefined, {
+      sdkQuery: {
+        $type: 'QueryExpression',
+        entityName: 'actioncard',
+        columnSet: {
+          allColumns: false,
+          columns: ['startdate', 'expirydate', 'state', 'cardtypeid', 'data', 'referencetokens', 'cardtype'],
+        },
+        criteria: {
+          operatorName: 'And',
+          conditions: [
+            { attributeName: 'regardingobjectid', operatorName: 'Equal', values: [id] },
+            { attributeName: 'state', operatorName: 'NotEqual', values: [2] },
+          ],
+          filters: [],
+        },
+        orders: [],
+        linkEntities: [],
+        distinct: false,
+        noLock: false,
+      },
+    });
+    store.get(mapping.logicalName, id, reader, { sdkColumns: { allColumns: true, columns: [] } });
+  } finally {
+    store.pluginMainOperation = previousMain;
+  }
+}
+
 /** The SetStateDynamicEntity pipeline of an Update that sets statecode (data.mjs commitUpdateSteps), one level below it.
  * Under a bare Web API PATCH it joins the Update's request beneath that request's Upsert main operation, at its own
  * depth (native ownerAndState: SetStateDynamicEntity/10/d2 < Upsert/30/d2, one RequestId and OperationId). */
