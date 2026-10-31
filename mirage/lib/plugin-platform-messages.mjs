@@ -216,6 +216,7 @@ function runMessagePipeline(
         changedAttributes: [],
         bypassStepIds,
         bypassCustomPlugins,
+        bypassCustomAsync,
         customApi,
         messageParameters,
         ...(imageRows ? { imageRows } : {}),

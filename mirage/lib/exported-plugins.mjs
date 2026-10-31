@@ -1228,6 +1228,7 @@ export function runPluginPhase({
   initialFrame,
   bypassStepIds,
   bypassCustomPlugins = false,
+  bypassCustomAsync = false,
   continuePhase = false,
   awaitIo = false,
   diagnostic = () => {},
@@ -1467,9 +1468,11 @@ export function runPluginPhase({
     // A single-record operation that queues asynchronous work adds the platform's job attachment, fileattachment
     // 'Create', after its table (native crud/faults/depth/upsert with async steps; none in crudNoAsync, reproduced in
     // native-r2). Native Associate and Web API CreateMultiple/UpdateMultiple roots show none during their stages.
+    // A CustomAsync bypass queues nothing (native bypassHeaders: no fileattachment under the header).
     const queuesAsync =
       stage === 40 &&
       !bulkOrigin &&
+      !bypassCustomAsync &&
       ['create', 'update', 'delete'].includes(operation) &&
       matchingPluginSteps(items, {
         store,
@@ -1546,8 +1549,10 @@ export function runPluginPhase({
     Number(lanes.length > 1 && String(a.message).toLowerCase() === lanes[1]) -
       Number(lanes.length > 1 && String(b.message).toLowerCase() === lanes[1]) ||
     a.id.localeCompare(b.id);
+  // A CustomAsync bypass queues no asynchronous step, so neither their images nor AsynchronousStepPrimaryName join the
+  // sets (native bypassHeaders).
   const stageSteps = (forStage) =>
-    (stageItems ? [false, ...(forStage === 40 ? [true] : [])] : [])
+    (stageItems ? [false, ...(forStage === 40 && !bypassCustomAsync ? [true] : [])] : [])
       .flatMap((asynchronous) =>
         lanes.flatMap((lane) =>
           matchingPluginSteps(stageItems, {

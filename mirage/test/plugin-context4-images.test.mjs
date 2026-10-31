@@ -495,3 +495,21 @@ test('the primary-name image side follows the message', () => {
   for (const message of ['retrievemultiple', 'associate', 'disassociate', 'new_inventedapi'])
     assert.equal(primaryNameSide(message), null, message);
 });
+
+// @test-kind parity: native bypassHeaders (native and native-r2) 'bypass async' ev 4/5: with the CustomAsync bypass a synchronous Create PostOperation step's PostEntityImagesCollection holds only its own post image; without it AsynchronousStepPrimaryName joins
+test(
+  'a CustomAsync bypass keeps asynchronous steps and their primary-name image out of a synchronous Create post set',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const steps = () => [
+      step(1, 'Create', 40, 2, { images: [{ alias: 'post', type: 1 }] }),
+      step(2, 'Create', 40, 1, { mode: 1 }),
+    ];
+    const create = (options) => (store) =>
+      store.create('gadget', { gadgetid: second, title: 'Created' }, identity, options);
+    const plain = await observe(t, steps(), create());
+    const bypassed = await observe(t, steps(), create({ bypassCustomAsync: true }));
+    assert.deepEqual(plain[1][0].post.split(',').sort(), [ASPN, 'post']);
+    assert.deepEqual(bypassed[1][0].post.split(',').sort(), ['post']);
+  },
+);
