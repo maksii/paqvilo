@@ -5,6 +5,7 @@ import {
   BUSINESS_ENTITY_IMAGE,
   PRIMARY_NAME_IMAGE,
   imageAttributes,
+  primaryNameAttributes,
   primaryNameSide,
   stageImageSet,
 } from './plugin-images.mjs';
@@ -743,7 +744,7 @@ function typedContext({
           .map(([alias, source]) => [
             alias,
             source.platform === PRIMARY_NAME_IMAGE
-              ? nameColumn && detachedRecord(imageAttributes(row, [nameColumn, idColumn]))
+              ? nameColumn && detachedRecord(primaryNameAttributes(row, nameColumn, idColumn))
               : source.platform
                 ? null
                 : detachedRecord(imageAttributes(row, source.attributes)),

@@ -34,6 +34,7 @@ import {
   BUSINESS_ENTITY_IMAGE,
   PRIMARY_NAME_IMAGE,
   imageAttributes,
+  primaryNameAttributes,
   primaryNameSide,
   stageImageSet,
 } from './plugin-images.mjs';
@@ -2071,7 +2072,10 @@ export function clrContext({
   const asyncPrimaryName = (row) => {
     if (!row || !nameColumn) return null;
     const columns = [nameColumn, primary];
-    return recordToSdkEntity(store, entity, imageAttributes(row, columns), { allColumns: false, columns });
+    return recordToSdkEntity(store, entity, primaryNameAttributes(row, nameColumn, primary), {
+      allColumns: false,
+      columns,
+    });
   };
   const collectImages = (registrations, post, target) => {
     for (const registration of registrations)

@@ -11,6 +11,14 @@ export function imageAttributes(row, columns = []) {
   );
 }
 
+// The AsynchronousStepPrimaryName image's attributes: the primary name, then the key (native imageAliasOrder, crud).
+export const primaryNameAttributes = (row, nameColumn, idColumn) =>
+  imageAttributes(
+    Object.fromEntries(
+      [nameColumn, idColumn].filter((name) => Object.hasOwn(row ?? {}, name)).map((name) => [name, row[name]]),
+    ),
+  );
+
 // The platform's own entries of the IPluginExecutionContext4 image collections (native parity corpus).
 export const PRIMARY_NAME_IMAGE = 'AsynchronousStepPrimaryName',
   BUSINESS_ENTITY_IMAGE = 'PreBusinessEntity';

@@ -32,6 +32,7 @@ let prepared;
 const root = path.join(os.tmpdir(), `paq-context4-${process.pid}`),
   log = path.join(root, 'seen.txt');
 after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+// @parity-evidence: native imageAliasOrder (native and native-r2): AsynchronousStepPrimaryName attributes enumerate name then key; the observer also logs those attribute names (no existing assertion changed)
 // @parity-evidence: native crud.json ev 1648/1653 (repeated at 1658, imagesOrder 7680/7686): an asynchronous single-origin *Multiple step's own AsynchronousStepPrimaryName names the target row; the observer now also logs that image's id (no existing assertion changed)
 // One original assembly whose Observer logs, per execution: step id, message, stage, mode, the Context4 collections
 // (sets joined by '/', aliases in collection order), its own image aliases, the main-operation parent's pre set, the
@@ -47,7 +48,7 @@ static string Keys(EntityImageCollection[] sets){return string.Join("/",sets.Sel
 static string Owners(EntityImageCollection images){return string.Join(",",images.Select(i=>i.Key+":"+(i.Value.Contains("ownerid")?((EntityReference)i.Value["ownerid"]).Id.ToString():"-")));}
 public void Execute(IServiceProvider p){var c=(IPluginExecutionContext4)p.GetService(typeof(IPluginExecutionContext));string parent;try{var pc=c.ParentContext as IPluginExecutionContext4;parent=pc==null?"none":pc.MessageName+"/"+pc.Stage+":"+Keys(pc.PreEntityImagesCollection);}catch(Exception){parent="unavailable";}
 var business=c.PreEntityImagesCollection.FirstOrDefault(s=>s.Contains("${PBE}"));
-File.AppendAllText(@"${log.replaceAll('"', '""')}",string.Join("|",c.OwningExtension.Id,c.MessageName,c.Stage,c.Mode,Keys(c.PreEntityImagesCollection),Keys(c.PostEntityImagesCollection),string.Join(",",c.PreEntityImages.Keys)+";"+string.Join(",",c.PostEntityImages.Keys),parent,business==null?"-":string.Join(",",business["${PBE}"].Attributes.Keys),Owners(c.PreEntityImages)+";"+Owners(c.PostEntityImages),c.PostEntityImages.Contains("${ASPN}")?c.PostEntityImages["${ASPN}"].Id.ToString():"-")+Environment.NewLine);}}}`,
+File.AppendAllText(@"${log.replaceAll('"', '""')}",string.Join("|",c.OwningExtension.Id,c.MessageName,c.Stage,c.Mode,Keys(c.PreEntityImagesCollection),Keys(c.PostEntityImagesCollection),string.Join(",",c.PreEntityImages.Keys)+";"+string.Join(",",c.PostEntityImages.Keys),parent,business==null?"-":string.Join(",",business["${PBE}"].Attributes.Keys),Owners(c.PreEntityImages)+";"+Owners(c.PostEntityImages),c.PostEntityImages.Contains("${ASPN}")?c.PostEntityImages["${ASPN}"].Id.ToString():"-",c.PostEntityImages.Contains("${ASPN}")?string.Join(",",c.PostEntityImages["${ASPN}"].Attributes.Keys):"-")+Environment.NewLine);}}}`,
     );
     const sdk = clrSdk();
     compileClr(source, path.join(root, 'Observer.dll'), { references: [sdk] });
@@ -126,7 +127,8 @@ async function observe(t, steps, act, store = storeOf()) {
   await backend.asyncPluginRunner.drain();
   const seen = {};
   for (const line of (await fs.readFile(log, 'utf8')).trim().split(/\r?\n/).filter(Boolean)) {
-    const [stepId, message, stage, mode, pre, post, own, parent, business, owners, named] = line.split('|');
+    const [stepId, message, stage, mode, pre, post, own, parent, business, owners, named, nameAttributes] =
+      line.split('|');
     const n = Number(stepId.slice(-12));
     (seen[n] ??= []).push({
       message,
@@ -139,6 +141,7 @@ async function observe(t, steps, act, store = storeOf()) {
       business,
       owners,
       named,
+      nameAttributes,
     });
   }
   return seen;
@@ -421,3 +424,27 @@ test('an owner change adds the owner columns to the Update Target and saves the 
   store.updateRecord('gadget', id, { ownerid: { id: other, logical_name: 'systemuser' } }, identity);
   assert.ok(targets.every(([, target]) => !Object.hasOwn(target, 'owningbusinessunit')));
 });
+
+// @test-kind parity: native imageAliasOrder captures 2026-10-30/31 (native and native-r2, reproduced): a step's images enumerate in registration order (z, m), the stage set appends them after earlier entries, and AsynchronousStepPrimaryName lists the primary name before the key
+test(
+  'images keep their registration order and the primary-name image names before its key',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const seen = await observe(
+      t,
+      [
+        step(1, 'Update', 40, 1, {
+          images: [
+            { alias: 'z', type: 0 },
+            { alias: 'a', type: 1 },
+            { alias: 'm', type: 0, attributes: ['title'] },
+          ],
+        }),
+        step(2, 'Update', 40, 2, { mode: 1 }),
+      ],
+      (store) => store.update('gadget', id, { title: 'Ordered' }, identity),
+    );
+    assert.deepEqual([seen[1][0].own, seen[1][0].pre], ['z,m;a', `${PBE},z,m`]);
+    assert.equal(seen[2][0].nameAttributes, 'title,gadgetid');
+  },
+);
