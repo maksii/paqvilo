@@ -10,6 +10,7 @@ import { systemClock, systemIds } from './runtime-clock.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DataError } from './data-error.mjs';
+import { uploadedClrRuntime } from './plugin-uploaded.mjs';
 import { parseSolutionXml } from './solution-xml.mjs';
 import {
   clrContext,
@@ -1016,10 +1017,14 @@ export function pluginCatalogue({
     const key = `plugin-step:${step.id}`,
       configuration = overrides[key] ?? null,
       registered = handlerOf(handlers, step) !== undefined;
+    // A step whose type lives in registered uploaded assembly bytes runs them in the CLR host, as native runs registered
+    // plug-ins (plugin-uploaded.mjs); pack handlers and web hooks keep precedence, a /_sim/ choice overrides.
+    const uploaded = Boolean(step.uploadedAssemblyId && step.typeName && !step.serviceEndpointId);
     const runtime = runtimes.get(step.id),
       descriptor = descriptors.get(step.id),
-      unsupported = pluginUnsupported(step, { images: Boolean(runtime || descriptor || registered) });
-    const clrAvailable = Boolean((runtime?.descriptor ?? descriptor)?.typeName === step.typeName);
+      unsupported = pluginUnsupported(step, { images: Boolean(runtime || descriptor || registered || uploaded) });
+    const clrAvailable = uploaded || Boolean((runtime?.descriptor ?? descriptor)?.typeName === step.typeName);
+    const defaultMode = step.serviceEndpointId ? 'webhook' : registered ? 'handler' : uploaded ? 'clr' : 'placeholder';
     return copyStepConstructorSettings(step, {
       ...step,
       unsupported,
@@ -1029,7 +1034,8 @@ export function pluginCatalogue({
       clrAvailable,
       clrPrepared: Boolean(runtime),
       clrProvenance: runtime?.provenance ?? null,
-      mode: configuration?.mode ?? (step.serviceEndpointId ? 'webhook' : registered ? 'handler' : 'placeholder'),
+      mode: configuration?.mode ?? defaultMode,
+      defaultMode,
       configuration,
       configurable: step.enabled,
       definitionAvailable: clrAvailable,
@@ -1047,7 +1053,7 @@ export function pluginCatalogue({
         typeName: step.typeName,
         unsupported,
         boundary:
-          'Top-level PreValidation SDK requests commit independently; PreOperation/PostOperation and nested PreValidation join the caller transaction. Read observer writes require a serialized readOperation boundary and explicit backend grants; top-level read SDK writes commit independently. CLR requires an explicitly trusted original assembly and a separate project backend security profile.',
+          'Top-level PreValidation SDK requests commit independently; PreOperation/PostOperation and nested PreValidation join the caller transaction. Read observer writes require a serialized readOperation boundary and explicit backend grants; top-level read SDK writes commit independently. CLR runs registered uploaded assembly bytes by default, or an explicitly trusted original assembly with a separate project backend security profile.',
       },
     });
   });
@@ -1133,6 +1139,8 @@ export function runPluginPhase({
   items,
   handlers,
   runtimes = new Map(),
+  // Where uploaded assemblies are prepared and which SDK they bind (plugin-uploaded.mjs uploadedClrRuntime).
+  clrUploads,
   webhooks = null,
   store,
   entity,
@@ -1784,7 +1792,9 @@ export function runPluginPhase({
         });
       try {
         if (item.mode === 'clr') {
-          const runtime = runtimes.get(item.id);
+          let runtime = runtimes.get(item.id);
+          if (store && item.uploadedAssemblyId && (!runtime || runtime.uploaded))
+            runtime = uploadedClrRuntime({ store, item, runtimes, uploads: clrUploads, diagnostic });
           if (!runtime || !item.clrAvailable || !store)
             throw error(
               'No trusted original CLR runtime is registered for this exact exported type/step.',

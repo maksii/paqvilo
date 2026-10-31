@@ -346,15 +346,11 @@ function removeClrSnapshot(directory, files) {
     }
   }
 }
-/** No assembly is discovered or executed automatically. Cache contains only explicitly trusted bytes. */
+/** A trusted project descriptor names its original assembly on disk; its bytes are read and checked here. Registered
+ * uploaded assembly bytes take the synchronous route instead (plugin-uploaded.mjs, buildClrRuntime). */
 export async function prepareClrRuntime(descriptor, { compiler } = {}) {
   validateClrDescriptor(descriptor);
-  if (process.platform !== 'win32')
-    fail(
-      'The built-in CLR host requires Windows .NET Framework; configure mocks on other platforms.',
-      'LocalPluginClrUnavailable',
-      501,
-    );
+  requireClrPlatform();
   const assembly = await readClrDependency(descriptor.root, descriptor.assembly),
     sdk = await readClrDependency(descriptor.sdkRoot, descriptor.sdkAssembly),
     dependencies = await Promise.all(
@@ -370,23 +366,52 @@ export async function prepareClrRuntime(descriptor, { compiler } = {}) {
       .catch(() => null);
     if (proxy) dependencies.push(proxy);
   }
-  const names = [assembly, sdk, ...dependencies].map((f) => path.basename(f.path).toLowerCase());
-  if (new Set(names).size !== names.length) fail('CLR dependency filenames must be unique.');
-  const source = (await readClrDependency(path.dirname(hostSource), path.basename(hostSource))).bytes,
-    signature = sha(Buffer.concat([source, assembly.bytes, sdk.bytes, ...dependencies.map((f) => f.bytes)]));
   await fs.mkdir(path.resolve(descriptor.cacheRoot), { recursive: true });
-  const cacheParent = await canonicalClrDirectory(descriptor.cacheRoot),
-    directory = await fs.mkdtemp(path.join(cacheParent, 'clr-' + signature + '-'));
+  await canonicalClrDirectory(descriptor.cacheRoot);
+  return buildClrRuntime(descriptor, { assembly, sdk, dependencies }, { compiler });
+}
+function requireClrPlatform() {
+  if (process.platform !== 'win32')
+    fail(
+      'The built-in CLR host requires Windows .NET Framework; configure mocks on other platforms.',
+      'LocalPluginClrUnavailable',
+      501,
+    );
+}
+/**
+ * Snapshots already-read bytes into a new owned directory under descriptor.cacheRoot and compiles the host there. Each file is
+ * { bytes, path } (read from disk: path is re-verified on every execution) or { bytes, name } (registered content the
+ * caller holds). Synchronous, so the plug-in pipeline can prepare a registered uploaded assembly when its step first runs.
+ */
+export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [] }, options = {}) {
+  validateClrDescriptor(descriptor);
+  requireClrPlatform();
+  syncFs.mkdirSync(path.resolve(descriptor.cacheRoot), { recursive: true });
+  // No link components; the native spelling is the canonical one (as prepareClrRuntime's fs.realpath gives it).
+  canonicalClrDirectorySync(descriptor.cacheRoot);
+  const cacheParent = syncFs.realpathSync.native(descriptor.cacheRoot);
+  const { compiler, kind = 'original-clr-assembly', securityModel } = options;
+  const originals = [assembly, sdk, ...dependencies],
+    nameOf = (file) => file.name ?? path.basename(file.path);
+  const names = originals.map((f) => nameOf(f).toLowerCase());
+  if (new Set(names).size !== names.length) fail('CLR dependency filenames must be unique.');
+  const source = readClrFileSync(hostSource),
+    signature = sha(Buffer.concat([source, ...originals.map((f) => f.bytes)]));
+  const directory = syncFs.mkdtempSync(path.join(cacheParent, 'clr-' + signature + '-'));
   try {
     const files = [];
-    for (const original of [assembly, sdk, ...dependencies]) {
-      const destination = path.join(directory, path.basename(original.path));
-      await fs.writeFile(destination, original.bytes, { flag: 'wx' });
-      files.push({ path: destination, sourcePath: original.path, sha256: sha(original.bytes) });
+    for (const original of originals) {
+      const destination = path.join(directory, nameOf(original));
+      syncFs.writeFileSync(destination, original.bytes, { flag: 'wx' });
+      files.push({
+        path: destination,
+        ...(original.path ? { sourcePath: original.path } : {}),
+        sha256: sha(original.bytes),
+      });
     }
     const executable = path.join(directory, 'paqvilo-plugin-host.exe'),
       sourceFile = path.join(directory, 'paqvilo-plugin-host.cs');
-    await fs.writeFile(sourceFile, source, { flag: 'wx' });
+    syncFs.writeFileSync(sourceFile, source, { flag: 'wx' });
     const compilerFile =
       compiler ?? path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
     // The host context implements IPluginExecutionContext7 when the installed SDK declares it (current
@@ -419,12 +444,9 @@ export async function prepareClrRuntime(descriptor, { compiler } = {}) {
         'LocalPluginClrBuild',
         501,
       );
-    files.push({
-      path: executable,
-      sha256: sha((await readClrDependency(directory, path.basename(executable))).bytes),
-    });
+    files.push({ path: executable, sha256: sha(readClrFileSync(executable)) });
     const allowed = new Set([...files.map((f) => path.basename(f.path)), path.basename(sourceFile)]);
-    if ((await fs.readdir(directory)).some((name) => !allowed.has(name)))
+    if (syncFs.readdirSync(directory).some((name) => !allowed.has(name)))
       fail('CLR cache has unregistered sidecar dependencies.');
     return {
       descriptor,
@@ -434,14 +456,15 @@ export async function prepareClrRuntime(descriptor, { compiler } = {}) {
       directory,
       allowedFiles: [...allowed],
       provenance: {
-        kind: 'original-clr-assembly',
+        kind,
         typeName: descriptor.typeName,
         assemblySha256: files[0].sha256,
         sdkSha256: files[1].sha256,
         hostSourceSha256: sha(source),
         contextInterfaceVersion,
         trusted: true,
-        securityModel: 'Explicit project backend profile; native process is trusted code, not a security sandbox',
+        securityModel:
+          securityModel ?? 'Explicit project backend profile; native process is trusted code, not a security sandbox',
       },
     };
   } catch (cause) {
@@ -449,7 +472,11 @@ export async function prepareClrRuntime(descriptor, { compiler } = {}) {
     // Preserve the original preparation failure if Windows delays handle release.
     const relative = path.relative(cacheParent, directory);
     if (relative && !relative.startsWith('..') && !path.isAbsolute(relative))
-      await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 }).catch(() => {});
+      try {
+        syncFs.rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
+      } catch {
+        /* The preparation failure stays the reported error. */
+      }
     throw cause;
   }
 }
@@ -1913,6 +1940,17 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
             message.pluginException !== true
           )
             details.innerCode = '0x80040224';
+          // An uploaded assembly whose type cannot be loaded or constructed fails as a plug-in that cannot load
+          // (plugin-uploaded.mjs): the unhandled 0x80040224 fault naming the type and assembly.
+          else if (
+            runtime.uploaded &&
+            message.duringPluginExecute !== true &&
+            message.code === 'PluginValidation' &&
+            message.pluginException !== true
+          ) {
+            details.innerCode = '0x80040224';
+            message.message = `Unable to load plug-in type '${runtime.descriptor.typeName}' from assembly '${path.basename(runtime.descriptor.assembly, '.dll')}': ${message.message}`;
+          }
           throw new DataError(
             message.message,
             message.code === 'LocalPluginTimeout' ? 504 : 400,

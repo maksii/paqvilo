@@ -6,6 +6,7 @@ import path from 'node:path';
 import { immutableStatus } from './immutable-status.mjs';
 import { pluginHandlers, pluginCatalogue } from './exported-plugins.mjs';
 import { pluginRuntimeDescriptors, prepareClrRuntime, closeClrHostPool } from './plugin-clr.mjs';
+import { releaseStaleUploadedRuntimes, releaseUploadedRuntime } from './plugin-uploaded.mjs';
 import { overlayRegisteredSteps } from './dataverse-plugin-registration.mjs';
 import { bulkMessageAvailabilityRecord } from './bulk-message-availability.mjs';
 import { pluginBypassOwnership } from './plugin-bypass.mjs';
@@ -1081,15 +1082,18 @@ function hostCatalogues(c) {
       return value;
     };
   };
-  c.pluginSteps = c.memo(() =>
-    pluginCatalogue({
+  c.pluginSteps = c.memo(() => {
+    const steps = pluginCatalogue({
       plugins: c.organization ? overlayRegisteredSteps(sources.plugins(), store) : sources.plugins(),
       handlers: handlers.plugins,
       runtimes: c.runtimes,
       descriptors: c.descriptors,
       overrides: overrides() ?? {},
-    }),
-  );
+    });
+    // A deleted step or assembly, or changed uploaded content, closes the uploaded runtime it prepared.
+    if (!store.isolatedCount) releaseStaleUploadedRuntimes(store, c.runtimes, steps, c.diagnostic);
+    return steps;
+  });
   c.workflows = () => workflowsWithActivation(sources.workflows(), c.organization ? store : null);
   c.operations = c.memo(() => [
     ...operationCatalogue({
@@ -1265,6 +1269,8 @@ function hostLifecycle(c) {
         handlers: handlers.plugins,
         runtimes,
         descriptors: c.descriptors,
+        // Registered uploaded assemblies are prepared under the project's ignored .paqvilo cache (plugin-uploaded.mjs).
+        clrUploads: { cacheRoot: path.join(c.projectRoot ?? process.cwd(), '.paqvilo', 'plugin-assemblies') },
         operations: c.operations,
         workflows: c.workflows,
         identities: () => handlers.operations.flowIdentities,
@@ -1426,10 +1432,13 @@ function hostLifecycle(c) {
 async function applyOperationOverrides(c, next, commit) {
   const { runtimes, diagnostic } = c;
   const steps = c.pluginSteps().filter((item) => item.kind === 'plugin-step'),
-    prepared = new Map();
+    prepared = new Map(),
+    selected = (item) => next?.[item.key]?.mode ?? item.defaultMode;
   try {
     for (const item of steps) {
-      if (next?.[item.key]?.mode !== 'clr' || runtimes.has(item.id)) continue;
+      // An uploaded assembly without a trusted descriptor is prepared when its step first runs (plugin-uploaded.mjs).
+      if (selected(item) !== 'clr' || runtimes.has(item.id) || (item.uploadedAssemblyId && !c.descriptors.has(item.id)))
+        continue;
       if (!item.clrAvailable)
         throw new DataError(
           'No explicitly trusted CLR descriptor is registered for this exact exported plugin step/type.',
@@ -1452,9 +1461,12 @@ async function applyOperationOverrides(c, next, commit) {
   }
   for (const item of steps) {
     const runtime = runtimes.get(item.id);
-    if (runtime && next?.[item.key]?.mode !== 'clr') {
-      runtimes.delete(item.id);
-      closeClrHostPool({ runtime, diagnostic });
+    if (runtime && selected(item) !== 'clr') {
+      if (runtime.uploaded) releaseUploadedRuntime(runtimes, item.id, diagnostic);
+      else {
+        runtimes.delete(item.id);
+        closeClrHostPool({ runtime, diagnostic });
+      }
     }
   }
   c.epoch++;

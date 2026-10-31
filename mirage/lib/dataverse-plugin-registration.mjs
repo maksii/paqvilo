@@ -730,6 +730,18 @@ export function overlayRegisteredSteps(plugins, store) {
         };
     return copyStepConstructorSettings(step, { ...next, unsupported: pluginUnsupported(next) });
   };
+  // A step whose plug-in type lives in an assembly with uploaded content carries that assembly's id: the pipeline runs the
+  // stored bytes (plugin-uploaded.mjs). A Solution step without uploaded content is unchanged.
+  const uploaded = (step) => {
+    const type = rowById(store, 'plugintype', 'plugintypeid', step.typeId);
+    const assembly = rowById(store, 'pluginassembly', 'pluginassemblyid', type?.pluginassemblyid ?? step.assemblyId);
+    return typeof assembly?.content === 'string' && assembly.content !== '' && step.typeName && !step.serviceEndpointId
+      ? copyStepConstructorSettings(step, {
+          ...step,
+          uploadedAssemblyId: String(idOfValue(assembly.pluginassemblyid)).toLowerCase(),
+        })
+      : step;
+  };
   const steps = [],
     solutionIds = new Set();
   for (const source of plugins?.steps ?? []) {
@@ -765,7 +777,7 @@ export function overlayRegisteredSteps(plugins, store) {
     const id = String(row.sdkmessageprocessingstepid).toLowerCase();
     if (!solutionIds.has(id)) steps.push(stepFromRow(store, row, imagesOf(id)));
   }
-  return { ...plugins, steps };
+  return { ...plugins, steps: steps.map(uploaded) };
 }
 
 // Insert-or-replace by id: a row with the same id is removed first, so the seeded rows match the Solution on every reseed.
