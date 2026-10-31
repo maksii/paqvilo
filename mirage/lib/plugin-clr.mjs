@@ -2651,11 +2651,14 @@ export function clrContext({
         UserAzureActiveDirectoryObjectId: typed('Guid', objectId(executionUserId)),
       },
     };
+  // A new root operation of an earlier request (asyncOriginParent, sdkRootOperationParent) does not show that request's
+  // root changes (native asyncLoop and bulkRequests: their Create/30 roots have no ChangedEntityTypes).
+  if (parent?.rootOrigin) frame.ownRoot = true;
   answer.context.ParentContext = observedParentChain(
     answer.context.ParentContext,
     answer.context,
     objectId,
-    store.pluginRequestRoots,
+    frame.ownRoot ? undefined : store.pluginRequestRoots,
   );
   formatPipelineTargets(store, {
     entity,

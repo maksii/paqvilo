@@ -21,6 +21,7 @@ import {
   selectSdkEntryParent,
 } from './plugin-sdk-parent.mjs';
 import { BUSINESS_ENTITY_IMAGE } from './plugin-images.mjs';
+import { changedEntityType, pluginPhaseMatches } from './exported-plugins.mjs';
 import { internalStepReference, setInternalStageSource } from './plugin-internal-stage.mjs';
 import { pluginEntryStep } from './plugin-message-admission.mjs';
 import { authorizeGrant, sdkRecordKey } from './local-organization-service.mjs';
@@ -838,7 +839,27 @@ export function runStateMessage(store, mapping, row, identity, options = {}, { t
     bypassStepIds: options.bypassStepIds,
     bypassCustomPlugins: options.bypassCustomPlugins === true,
     bypassCustomAsync: options.bypassCustomAsync === true,
-    main: () => ({ IsValid: true }),
+    main: () => {
+      // The state change is the write of this main operation: from its PostOperation on, the Update's root lists the
+      // table and, when the Update queues asynchronous work, the job attachment (native imagesOrder:
+      // SetStateDynamicEntity/40 sees Update/30 with ChangedEntityTypes, its PreValidation and PreOperation do not).
+      if (update?.requestId && !update.sdkFrameworkSource)
+        recordRequestRootChange(store, update.requestId, {
+          table: changedEntityType(store, 'update', mapping.logicalName),
+          asyncQueued: pluginPhaseMatches(store.pluginPipeline?.steps?.() ?? [], {
+            store,
+            entity: mapping.logicalName,
+            operation: 'update',
+            stage: 40,
+            changedAttributes: Object.keys(target),
+            asyncExecution: true,
+            bypassStepIds: options.bypassStepIds ?? [],
+            bypassCustomPlugins: options.bypassCustomPlugins === true,
+            diagnostic: () => {},
+          }),
+        });
+      return { IsValid: true };
+    },
   });
 }
 
@@ -911,7 +932,16 @@ function updateOperationFrames(store, mapping, row, identity, { update, request,
       InputParameters: {
         $type: 'ParameterCollection',
         values: {
-          Target: recordToSdkEntity(store, entity, { ...target, [mapping.idColumn]: id, ...stamps }),
+          // A message Target: references without names and no formatted values (native imagesOrder).
+          Target: {
+            ...recordToSdkEntity(
+              store,
+              entity,
+              { ...target, [mapping.idColumn]: id, ...stamps },
+              { allColumns: true, target: true },
+            ),
+            formattedValues: {},
+          },
           ...(concurrency ? { ConcurrencyBehavior: cloneStateData(concurrency) } : {}),
         },
       },

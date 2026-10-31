@@ -1154,7 +1154,7 @@ function platformSharedVariables(operation, acceptLanguage = '', { nested = fals
 
 /** The ChangedEntityTypes key a main operation adds (always with the value 'Update', also for Create and Delete).
  * Natively it lists user-owned tables and association intersects; an organization-owned table is absent. */
-function changedEntityType(store, operation, entity, intersectEntity) {
+export function changedEntityType(store, operation, entity, intersectEntity) {
   if (['associate', 'disassociate'].includes(operation)) return intersectEntity ?? null;
   if (!['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation) || !store) return null;
   const mapping = store.resolveMapping(entity);

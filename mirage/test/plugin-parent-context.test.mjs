@@ -775,6 +775,7 @@ test('a PATCH statecode SetStateDynamicEntity parent carries the request tag', (
 // (Target with the modification stamps, the PreOperation inputs and shared variables, the final PreOperation images
 // plus PreBusinessEntity, its own ObjectModel step) over the main operation the Update's PreOperation steps see.
 // @test-kind parity: native imagesOrder (native and native-r2) SetStateDynamicEntity under a PATCH statecode with If-Match
+// @parity-evidence: native and native-r2 imagesOrder SetStateDynamicEntity/40 (Update/30 root with ChangedEntityTypes): the probe also selects that stage; no earlier assertion changed
 test('a plain Update statecode SetStateDynamicEntity runs in the Update request under its two main-operation frames', () => {
   const store = storeOf();
   const imaged = (n, stage, images) => ({
@@ -790,7 +791,8 @@ test('a plain Update statecode SetStateDynamicEntity runs in the Update request 
   });
   const seen = probe(
     store,
-    (at) => ['update/20', 'SetStateDynamicEntity/10', 'SetStateDynamicEntity/20'].includes(at),
+    (at) =>
+      ['update/20', 'SetStateDynamicEntity/10', 'SetStateDynamicEntity/20', 'SetStateDynamicEntity/40'].includes(at),
     {
       items: [
         imaged(1, 10, [{ alias: 'pre', type: 0 }]),
@@ -832,7 +834,14 @@ test('a plain Update statecode SetStateDynamicEntity runs in the Update request 
     assert.deepEqual(Object.keys(currentImages.values.pre.attributes), ['title']);
     assert.ok(Object.keys(mainImages.values.pre.attributes).length > 2);
     assert.equal(main.ParentContext, null);
+    // The current main operation's Target is a message Target: no reference names, no formatted values.
+    assert.deepEqual(current.InputParameters.values.Target.formattedValues, {});
+    assert.equal(current.InputParameters.values.Target.attributes.modifiedby?.name ?? null, null);
+    // The state change is the write: the root lists the table from PostOperation on only.
+    assert.equal(Object.hasOwn(main.SharedVariables.values, 'ChangedEntityTypes'), false);
   }
+  const [, , written] = chain(seen.find((entry) => entry.label === 'SetStateDynamicEntity/40').context);
+  assert.deepEqual(written.SharedVariables.values.ChangedEntityTypes, { widget: 'Update' });
 });
 
 // @test-kind parity: native and native-r2 asyncLoop d2..d12 and native-r2 async (SDK Retrieve from an asynchronous step)
@@ -880,6 +889,9 @@ test('an asynchronous step request starts a new root operation in the originatin
   }
   assert.equal(nested('create/10').IsInTransaction, false);
   assert.equal(nested('create/20').IsInTransaction, true);
+  // Its root does not show the originating request's root changes (native asyncLoop: Create/30/d2 without
+  // ChangedEntityTypes).
+  assert.equal(Object.hasOwn(chain(nested('create/20'))[1].SharedVariables.values, 'ChangedEntityTypes'), false);
 });
 
 // @test-kind parity: native and native-r2 bulkRequests (an Update/40 step's ExecuteTransaction and ExecuteMultiple of two Creates each)
