@@ -8,8 +8,10 @@
 //      The payload carries it, so plug-ins see it in the PreValidation Target.
 //   Steps 2 and 3 run at the main operation, on the row PreOperation left (the PostOperation Target shows them):
 //   2. exchangerate: the currency's exchangerate. The base currency is 1, whatever its stored value.
-//   3. <column>_base = <column> / exchangerate, rounded to the currency's currencyprecision (fallback: the column's precision, then
-//      2), for each money column that holds a value.
+//   3. <column>_base = <column> / exchangerate, for each money column that holds a value, rounded to the digits of the column's
+//      PrecisionSource (MoneyAttributeMetadata): 2 the currency's currencyprecision, 1 the organization's pricingdecimalprecision,
+//      0 or absent the column's precision; each falls back to the column's precision, then 2. The <column>_base definition is
+//      used when the table defines one.
 // A payload naming a currency that does not exist fails the write with 400 and innerCode 0x80040217.
 // Tables without a money column are not touched. The transactioncurrency table is the one dataverse-security.mjs seeds (with the
 // organization base currency); RetrieveExchangeRate is registered by dataverse-predefined.mjs and reused here, not registered again.
@@ -18,11 +20,13 @@
 // ponytail: money values are converted as JavaScript numbers; a decimal with more digits than a double keeps loses them. Upgrade:
 // the exact-numeric helpers in dataverse-values.mjs.
 // Assumptions, not confirmed against the platform: the rate direction (base = value / exchangerate), the rounding mode
-// (half away from zero), the 400 status for an unknown transactioncurrency on write (other lookup misses answer 404), and
-// the messages for a non-positive exchange rate and a currency binding that names no id.
+// (half away from zero), the PrecisionSource 1 digits (pricingdecimalprecision; Learn's enum, not captured), the 400 status for
+// an unknown transactioncurrency on write (other lookup misses answer 404), and the messages for a non-positive exchange rate
+// and a currency binding that names no id.
 import { DataError } from './data-error.mjs';
 import { fieldKind } from './dataverse-values.mjs';
 import { isExactNumeric } from './exact-numeric.mjs';
+import { organizationRecord } from './organization-context.mjs';
 import { runRetrieveExchangeRate } from './plugin-platform-messages.mjs';
 
 const CURRENCY_TABLE = 'transactioncurrency';
@@ -152,6 +156,20 @@ function stamp(api, state, mapping, { operation: _operation, data, existing }) {
   data.transactioncurrencyid = row.transactioncurrencyid;
 }
 
+// Digits of a <money>_base amount, by the column's PrecisionSource (see the header, item 3).
+function baseDigits(api, definitions, name, definition, currency) {
+  const column = definitions[`${name}_base`] ?? definition;
+  const source = Number(column.precisionSource);
+  const sourced =
+    source === 2
+      ? currency.currencyprecision
+      : source === 1
+        ? organizationRecord(api.store)?.pricingdecimalprecision
+        : null;
+  if (isCount(sourced)) return Number(sourced);
+  return isCount(column.precision) ? Number(column.precision) : 2;
+}
+
 // The main operation derives the exchange rate and base amounts from the row as PreOperation left it (native Create:
 // they first appear in the PostOperation Target). An update re-derives them only when it writes a money column or the
 // currency; clearing a money value clears its base amount.
@@ -166,10 +184,15 @@ function settle(api, mapping, { operation, row, previous, target, identity, opti
   const currency = currencyById(api, id);
   if (!currency) throw notFound(id);
   let rate = rateOf(currency, baseCurrencyOf(api));
-  // A Create that writes a money value, or an Update that writes one, runs the platform's RetrieveExchangeRate
-  // sub-operation (internal stage 25) with its own plug-in pipeline; its ExchangeRate output prices the base amounts
-  // (recorded native crud and currency).
-  if (money.some(([name]) => (!touched || touched.has(name)) && !empty(row[name])))
+  // A CreateMultiple record's rate: the request's one RetrieveExchangeRate already ran (bulkRates).
+  const preset = options?.currencyRates && Object.hasOwn(options.currencyRates, id) ? options.currencyRates[id] : null;
+  // The platform's RetrieveExchangeRate sub-operation (internal stage 25) runs with its own plug-in pipeline; its
+  // ExchangeRate output prices the base amounts (recorded native crud and currency). An Update that writes a money column
+  // runs it also when the value is null (native nullSemantics: an all-null PATCH on a row holding a currency runs it under
+  // Update/25 < Update/30). A Create runs it only for a non-empty money value (a POST with money null runs none).
+  const rerDue = touched ? money.some(([name]) => touched.has(name)) : money.some(([name]) => !empty(row[name]));
+  if (preset != null) rate = preset;
+  else if (rerDue)
     rate = runRetrieveExchangeRate(api.store, {
       mapping,
       operation,
@@ -182,26 +205,60 @@ function settle(api, mapping, { operation, row, previous, target, identity, opti
       options,
     });
   row.exchangerate = rate;
+  const definitions = api.store.fieldDefinitions(mapping.logicalName, api.metadataFields);
   for (const [name, definition] of money) {
     if (empty(row[name])) continue;
     const amount = Number(isExactNumeric(row[name]) ? row[name].value : row[name]);
     // The shared payload validator owns invalid decimal values and their OData
     // error envelope. A derived amount must not replace that validation error.
     if (!Number.isFinite(amount)) continue;
-    const digits = isCount(currency.currencyprecision)
-      ? Number(currency.currencyprecision)
-      : isCount(definition.precision)
-        ? Number(definition.precision)
-        : 2;
-    row[`${name}_base`] = roundTo(amount / rate, digits);
+    row[`${name}_base`] = roundTo(amount / rate, baseDigits(api, definitions, name, definition, currency));
   }
 }
 
-/** install(api, { diagnostic }): diagnostic receives each diagnostic once. Exposes api.currency = { diagnostics() }. */
+// A CreateMultiple (Web API or SDK) runs RetrieveExchangeRate once per request before its first record's main operation,
+// once per distinct currency of the records that write a money value, in record order (native currency: one
+// RetrieveExchangeRate 20/40/async for two records). values: each record's columns; ctx.issuer() names the issuing
+// contexts. Answers { currencyId: rate } for the records' main operations, or null.
+function bulkRates(api, mapping, values, { identity, options, issuer }) {
+  const money = moneyColumnsOf(api, mapping.logicalName);
+  if (!money.length) return null;
+  const base = baseCurrencyOf(api),
+    rates = {};
+  for (const record of values) {
+    if (!money.some(([name]) => !empty(record[name]))) continue;
+    const held = bare(refId(record.transactioncurrencyid));
+    const currency = held ? currencyById(api, held) : base;
+    if (!currency) {
+      if (held) throw notFound(held);
+      continue;
+    }
+    const id = bare(currency.transactioncurrencyid);
+    if (Object.hasOwn(rates, id)) continue;
+    const issuing = issuer();
+    rates[id] = runRetrieveExchangeRate(api.store, {
+      mapping,
+      operation: 'create',
+      row: issuing.record,
+      target: issuing.target,
+      currencyId: id,
+      rate: rateOf(currency, base),
+      identity,
+      options,
+      bulk: issuing,
+    });
+  }
+  return Object.keys(rates).length ? rates : null;
+}
+
+/** install(api, { diagnostic }): diagnostic receives each diagnostic once. Exposes api.currency = { diagnostics(), bulkRates }. */
 function install(api, { diagnostic } = {}) {
   const state = stateOf(api);
   state.diagnostic = diagnostic ?? api.diagnostic ?? null;
-  api.currency = { diagnostics: () => [...state.diagnostics] };
+  api.currency = {
+    diagnostics: () => [...state.diagnostics],
+    bulkRates: (mapping, values, ctx) => bulkRates(api, mapping, values, ctx),
+  };
   api.recordHooks.add('beforeWrite', (c, mapping, info) => {
     if (info.operation === 'delete' || !info.data) return;
     stamp(api, state, mapping, info);

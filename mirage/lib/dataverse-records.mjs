@@ -15,13 +15,15 @@ import { isConnectorDataverseSpan } from './connector-definition.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
 import { executeBulkRecordsAsync } from './plugin-bulk.mjs';
 import { associationRequestBinding, navigationRole } from './plugin-association.mjs';
-import { recordToSdkEntity } from './plugin-clr.mjs';
+import { recordToSdkEntity, recordToSdkReadEntity } from './plugin-clr.mjs';
+import { objectTypeCode, relationshipSchemaName } from './dataverse-metadata.mjs';
 import { odataToSdkQuery } from './plugin-query.mjs';
 import { upsertSourceOperation } from './plugin-delegation.mjs';
 import { initializePluginOperation } from './plugin-operation-context.mjs';
 import { bulkTargetsCollection } from './plugin-single-multiple.mjs';
 import { isElastic, recordKey, samePartition } from './dataverse-elastic.mjs';
-import { parseEntityReference, parseFetchXml, uncheckedLookup } from './data.mjs';
+import { notInTarget, parseEntityReference, parseFetchXml, uncheckedLookup } from './data.mjs';
+import { sdkValueToRecord } from './local-organization-service.mjs';
 import { DATAVERSE_SYSTEM_COLUMNS, parseXmlDocument, webApiPagingCookie } from './fetchxml-engine.mjs';
 import {
   expressionPaths,
@@ -35,11 +37,11 @@ import {
 import { assertExpand, assertExpandText, childLinks } from './dataverse-expand.mjs';
 import { FORMATTED, NAVIGATION, createWebApiFormatter } from './webapi-format.mjs';
 import { baseCurrencyRow, ownershipOf, privilegeDeniedError, privilegeName, uuidV5 } from './dataverse-security.mjs';
-import { dateTimeBehavior, fieldKind, formattedValue, guidKey, isDateOnlyField } from './dataverse-values.mjs';
+import { dateTimeBehavior, fieldKind, formattedValue, guidKey, isDateOnlyField, isoUtc } from './dataverse-values.mjs';
 import { fixedScaleNumeric } from './exact-numeric.mjs';
 import { isSecuredField, maskedOperand } from './dataverse-fls.mjs';
 import { createChangeLog, encodeDeltaToken, nextRowVersion } from './dataverse-changes.mjs';
-import { standardNavigation } from './dataverse-standard.mjs';
+import { standardNavigation, standardTableDef } from './dataverse-standard.mjs';
 import {
   annotationMatcher,
   skipTokenQueryValue,
@@ -826,6 +828,61 @@ export function createRecordHandlers({
       ? { many: rel.many !== false, intersect: rel.intersect, target: store.resolveMapping(rel.entity) }
       : null;
   };
+  // A Web API Retrieve's $expand of one-to-many navigations as its plug-in RetrieveRequest.RelatedEntitiesQuery and the
+  // PostOperation BusinessEntity.RelatedEntities (native relationsReads): one FetchExpression per navigation keyed by the
+  // relationship as Referenced, naming the nested $select columns; the collection holds the related rows with those
+  // columns and their key. ponytail: N:N and many-to-one expansions are uncaptured and pass no query.
+  function expandRelatedEntities(mapping, params) {
+    const entries = [];
+    for (const item of parseExpand(params.get('$expand'))) {
+      const rel = navigationOf(mapping, item.navigation);
+      if (!rel || rel.many === false || rel.intersect || !rel.to) continue;
+      const child = store.resolveMapping(rel.entity),
+        columns = (parseSelect(item.select) ?? []).filter((name) => name !== '*'),
+        relationship = {
+          $type: 'Relationship',
+          schemaName: relationshipSchemaName(mapping.logicalName, item.navigation, rel),
+          primaryEntityRole: 'Referenced',
+        },
+        attributes = columns.map((name) => `<attribute name="${name}" />`).join('');
+      entries.push({
+        relationship,
+        query: {
+          $type: 'FetchExpression',
+          query:
+            '<fetch distinct="false" useraworderby="false" no-lock="false" mapping="logical" page="1" count="5000">' +
+            `<entity name="${child.logicalName}">${attributes}</entity></fetch>`,
+        },
+        collection: (row) => {
+          const parentId = row[rel.from],
+            related = store
+              .tableRows(child.logicalName)
+              .filter((candidate) => sameId(candidate[rel.to]?.id ?? candidate[rel.to], parentId));
+          const ids = related.map((candidate) => `{${String(candidate[child.idColumn]).toUpperCase()}}`),
+            code = mapping.dataverseMetadata?.ObjectTypeCode ?? objectTypeCode(mapping.logicalName);
+          return {
+            $type: 'EntityCollection',
+            entityName: child.logicalName,
+            entities: related.map((candidate) =>
+              recordToSdkReadEntity(store, child.logicalName, candidate, {
+                allColumns: !columns.length,
+                columns: [...columns, child.idColumn],
+              }),
+            ),
+            moreRecords: false,
+            pagingCookie: ids.length
+              ? `<cookie page="1" parentEntityId="${String(parentId).toLowerCase()}" parentAttributeName="${rel.to}" ` +
+                `parentEntityObjectTypeCode="${code}"><${child.idColumn} last="${ids.at(-1)}" first="${ids[0]}" /></cookie>`
+              : null,
+            totalRecordCount: -1,
+            totalRecordCountLimitExceeded: false,
+            minActiveRowVersion: '-1',
+          };
+        },
+      });
+    }
+    return entries;
+  }
   const isMember = (mapping, name) =>
     name === mapping.idColumn ||
     Boolean(navigationOf(mapping, name)) ||
@@ -932,12 +989,12 @@ export function createRecordHandlers({
     // The user-owner lookup carries its logical name only, no FormattedValue or navigation.
     delete formatted[`_owninguser_value${FORMATTED}`];
     delete formatted[`_owninguser_value${NAVIGATION}`];
-    // Organization-owned rows always answer the organization lookup, selected or not.
+    // Organization-owned rows answer the organization lookup when no $select is given or the $select names it.
     const organizationId = organizationRecord(store)?.organizationid;
     const selected = parseSelect(c.url.searchParams.get('$select'));
     if (
       organizationId &&
-      (!c.navigation || selected == null || selected.includes('_organizationid_value')) &&
+      (selected == null || selected.includes('_organizationid_value')) &&
       formatted._organizationid_value === undefined &&
       ownershipOf(mapping.logicalName, undefined, mapping) === 'org'
     ) {
@@ -1148,9 +1205,9 @@ export function createRecordHandlers({
 
   // One expanded child of a collection: its referencing lookup, and every column when the expansion selects none.
   function shapeChild(c, mapping, row, rel, child, item) {
+    if (item.select) return;
     if (rel.to && rel.from && child[`_${rel.to}_value`] === undefined)
       child[`_${rel.to}_value`] = row[rel.from] ?? null;
-    if (item.select) return;
     const target = store.resolveMapping(rel.entity);
     for (const name of columnNamesOf(target).names) if (!(name in child)) child[name] = null;
     const organizationId = organizationRecord(store)?.organizationid;
@@ -1339,6 +1396,7 @@ export function createRecordHandlers({
               }
             : {}),
           preserveProperties: parseExpand(params.get('$expand')).map((item) => item.navigation),
+          sdkRelatedEntities: expandRelatedEntities(mapping, params),
           project: (_row, key, columns) => {
             const selected = new URLSearchParams(params);
             if (columns?.allColumns) selected.delete('$select');
@@ -2022,7 +2080,13 @@ export function createRecordHandlers({
       : null;
   const systemColumns = (c, create) => (mapping, input) => ({
     ...(c.user
-      ? principals.systemColumns({ user: c.user, caller: c.caller, mapping, owner: ownerOf(input), create })
+      ? principals.systemColumns({
+          user: c.user,
+          caller: c.onBehalfOf ?? c.caller,
+          mapping,
+          owner: ownerOf(input),
+          create,
+        })
       : {}),
     ...(portalUser(c) ? { ...(create ? { createdby: portalUser(c) } : {}), modifiedby: portalUser(c) } : {}),
     versionnumber: nextRowVersion(store),
@@ -2914,13 +2978,50 @@ export function createRecordHandlers({
     };
   }
 
+  // One bulk record's PreOperation stamps: the audit and ownership columns, organizationid, the derived state and
+  // whole-second dates, without the columns a write's Target never shows (versionnumber, empty on-behalf/team lookups).
+  function bulkStamp(c, mapping, data, update, now, created) {
+    return Object.fromEntries(
+      Object.entries({
+        ...store.systemColumnsFor(systemColumns(c, !update), mapping, data),
+        ...(update ? { modifiedon: now } : { createdon: now, modifiedon: now }),
+        ...created,
+      }).filter(([name, value]) => !notInTarget(name, value)),
+    );
+  }
+  // The PreOperation stamps of an SDK CreateMultiple/UpdateMultiple's records (native sdkSurface: as a Web API bulk
+  // request's; an update's are its modification stamps only). targets: the request's SDK entities.
+  function bulkStampsInternal(c, logical, targets, update) {
+    const context = internalContext(c),
+      mapping = store.resolveMapping(logical),
+      now = isoUtc(store.clock.now());
+    return targets.map((target) => {
+      const data = store.normalizeRecord(mapping, sdkValueToRecord(target), context.identity),
+        created = {};
+      if (!update && !('statecode' in data) && hasStateColumns(mapping)) created.statecode = 0;
+      if (!update && !('statuscode' in data) && hasStateColumns(mapping)) {
+        const status = defaultStatus(mapping);
+        if (status !== undefined) created.statuscode = status;
+      }
+      const stamp = bulkStamp(context, mapping, { ...data, ...created }, update, now, created);
+      return update
+        ? Object.fromEntries(
+            ['modifiedon', 'modifiedby', 'modifiedonbehalfby']
+              .filter((name) => Object.hasOwn(stamp, name))
+              .map((name) => [name, stamp[name]]),
+          )
+        : stamp;
+    });
+  }
+
   // The grouped CreateMultiple/UpdateMultiple pipeline over Web API targets, inside the caller's write.
   async function bulkWrite(c, update, raw, { concurrencyBehavior, delegated = false } = {}) {
     const { mapping } = c;
     const targets = [],
       stamps = [],
       derived = [];
-    const now = new Date(store.clock.now()).toISOString();
+    // Whole seconds, as a single write stamps them (touchRow, createdon ??= in data.mjs).
+    const now = isoUtc(store.clock.now());
     for (const target of raw) {
       const text = target[mapping.idColumn];
       if (update && text == null) throw invalid(`The ${mapping.idColumn} property is required.`);
@@ -2929,28 +3030,29 @@ export function createRecordHandlers({
       const data = update ? await updateData(c, mapping, target, existing) : await createData(c, mapping, target);
       const id = update ? existing[mapping.idColumn] : data[mapping.idColumn];
       // As a single Create's Target (data.mjs createStepsCore): the submitted columns, the primary key a request names
-      // and two-option defaults at PreValidation; the derived state and the audit/ownership stamps from PreOperation on
+      // and the column defaults at PreValidation; the derived state and the audit/ownership stamps from PreOperation on
       // (native bulk: CreateMultiple/10 Targets carry the key and the boolean default, /20 the stamps).
       const created = update ? {} : (derivedCreateColumns.get(data) ?? {});
       const input = store.normalizeRecord(mapping, data, c.identity);
       for (const name of Object.keys(created)) delete input[name];
       if (!update)
         for (const [name, value] of Object.entries(mapping.recordDefaults ?? {}))
+          // Two-option defaults, a standard table's choice defaults too, never the state (data.mjs createStepsCore).
           if (
             !Object.hasOwn(input, name) &&
-            fieldKind(store.fieldDefinition(mapping.logicalName, name, fieldsOf)) === 'boolean'
+            name !== 'statecode' &&
+            name !== 'statuscode' &&
+            (standardTableDef(mapping.logicalName) ||
+              fieldKind(store.fieldDefinition(mapping.logicalName, name, fieldsOf)) === 'boolean')
           )
             input[name] = structuredClone(value);
+      // UpdateMultiple's Targets name the key (native bulk: the UpdateMultiple and bridged Update Targets at 10/20/40).
       targets.push({
-        ...recordToSdkEntity(store, mapping.logicalName, input),
+        ...recordToSdkEntity(store, mapping.logicalName, update ? { ...input, [mapping.idColumn]: id } : input),
         id: id ?? '00000000-0000-0000-0000-000000000000',
       });
       derived.push(created);
-      stamps.push({
-        ...store.systemColumnsFor(systemColumns(c, !update), mapping, data),
-        ...(update ? { modifiedon: now } : { createdon: now, modifiedon: now }),
-        ...created,
-      });
+      stamps.push(bulkStamp(c, mapping, data, update, now, created));
     }
     return executeBulkRecordsAsync({
       store,
@@ -3787,6 +3889,7 @@ export function createRecordHandlers({
   const handlers = {
     projectRow: readProjection,
     createInternal,
+    bulkStampsInternal,
     updateInternal,
     removeInternal,
     associateInternal,

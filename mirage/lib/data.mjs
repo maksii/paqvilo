@@ -33,7 +33,7 @@ import {
   duplicateAlternateKey,
 } from './alternate-key-values.mjs';
 import { assertElasticRecord, isElastic, samePartition, recordKey } from './dataverse-elastic.mjs';
-import { relationshipsOf } from './dataverse-standard.mjs';
+import { customerAddressColumns, relationshipsOf, standardTableDef } from './dataverse-standard.mjs';
 import { ownershipOf, traceDecision } from './dataverse-security.mjs';
 import { StateStorage } from './state-storage.mjs';
 import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
@@ -69,6 +69,7 @@ import { preparePortalFetchXml } from './portal-fetchxml.mjs';
 import { compileODataPermissionQuery, authoredScalarODataFetch } from './odata-permission-query.mjs';
 import { assertPortalFetchXmlTransport } from './portal-fetch-transport.mjs';
 import { recordToSdkEntity, recordToSdkReadEntity, sdkQueryParameters, executeSdkFetch } from './plugin-clr.mjs';
+import { isSecuredField } from './dataverse-fls.mjs';
 import { queryExpressionToFetch, fetchResultToSdkCollection } from './plugin-sdk-query.mjs';
 import { sdkValueToRecord } from './local-organization-service.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
@@ -203,16 +204,16 @@ const rowCountOf = (value) =>
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 // Row columns a write's Target never shows: the row version, and empty on-behalf/team ownership lookups
 // (native Create Targets carry an empty modifiedonbehalfby, never an empty createdonbehalfby or owningteam).
-const notInTarget = (name, value) =>
+export const notInTarget = (name, value) =>
   name === 'versionnumber' || (value == null && (name === 'createdonbehalfby' || name === 'owningteam'));
 // Update stamps the platform adds to the Target after PreValidation (native PreOperation/PostOperation Update).
 const UPDATE_TARGET_STAMPS = ['modifiedon', 'modifiedby', 'modifiedonbehalfby'];
-// A Web API string column written as null or empty reaches the Target as an empty string; the row stores null.
-function blankTextColumns(store, mapping, input, options) {
+// Web API Update: a string column written null or '' reaches the Target as ''; Create keeps null (nullSemantics).
+function blankTextColumns(store, mapping, input, options, operation) {
   if (!options.dataverseWebApi) return [];
   return Object.keys(input).filter(
     (name) =>
-      (input[name] === null || input[name] === '') &&
+      (input[name] === '' || (operation === 'update' && input[name] === null)) &&
       fieldKind(store.fieldDefinition(mapping.logicalName, name, options.metadata)) === 'string',
   );
 }
@@ -240,10 +241,11 @@ function committedPluginParent(store, mapping, operation, target, row, options) 
     childSharedVariables: {
       $type: 'ParameterCollection',
       values: {
-        AcceptLang: options.pluginAcceptLanguage ?? '',
+        // The native SharedVariables order: IsAutoTransact, AcceptLang, tag, DefaultsAddedFlag.
         IsAutoTransact: true,
-        ...(operation === 'create' ? { DefaultsAddedFlag: true } : {}),
+        AcceptLang: options.pluginAcceptLanguage ?? '',
         ...(tag === undefined ? {} : { tag }),
+        ...(operation === 'create' ? { DefaultsAddedFlag: true } : {}),
       },
     },
   };
@@ -3455,8 +3457,14 @@ export class DataStore {
             })();
       const record = { [m.idColumn]: originalId },
         columns = clone(options.sdkColumns ?? { allColumns: true, columns: [] }),
+        related = options.sdkRelatedEntities ?? [],
         holder = {
           target: clone(options.sdkTarget ?? { $type: 'EntityReference', logicalName: m.logicalName, id: originalId }),
+          // A Web API $expand's RelatedEntitiesQuery (dataverse-records.mjs expandRelatedEntities).
+          relatedEntitiesQuery: {
+            $type: 'RelationshipQueryCollection',
+            values: related.map(({ relationship, query }) => clone({ relationship, query })),
+          },
         },
         previousReadOnly = this.pluginReadOnly,
         previousLane = this.pluginReadLane;
@@ -3510,6 +3518,11 @@ export class DataStore {
         if (!row) return null;
         Object.assign(record, row, { [m.idColumn]: originalId });
         holder.entity = recordToSdkReadEntity(this, m.logicalName, row, columns);
+        if (related.length)
+          holder.entity.relatedEntities = related.map(({ relationship, collection }) => ({
+            relationship: clone(relationship),
+            entities: collection(row),
+          }));
         let responseFrame;
         try {
           responseFrame = this.pluginPipeline({
@@ -4328,6 +4341,14 @@ export class DataStore {
                     query,
                     mapping.idColumn,
                     (answer[key] ?? []).map((row, index) => row[mapping.idColumn] ?? answer.sdkRootIds?.[index]),
+                    // The page's $orderby values precede the key, as in the HTTP skiptoken (native-r2 faults); a secured
+                    // column's values never travel in a cookie.
+                    (answer.paging?.order ?? []).filter(
+                      (column) =>
+                        !isSecuredField(
+                          this.fieldDefinition(entity, column.name.replace(/^_(.+)_value$/, '$1'), options.metadata),
+                        ),
+                    ),
                   ),
                 totalRecordCount: answer['@odata.count'] ?? answer.total_record_count ?? -1,
               };
@@ -5362,7 +5383,7 @@ export class DataStore {
     const rows = (this.state.tables[m.logicalName] ??= []);
     const { input, nested, collectionBinds } = this.splitDeepInsert(m, data, identity);
     const row = { ...this.normalizeRecord(m, input, identity) };
-    const blanks = blankTextColumns(this, m, row, options);
+    const blanks = blankTextColumns(this, m, row, options, 'create');
     if (options.coerce) this.coerceRecord(m, row, options);
     const pluginTarget = clone(row);
     for (const name of blanks) pluginTarget[name] = '';
@@ -5386,7 +5407,13 @@ export class DataStore {
     for (const [key, value] of Object.entries(m.recordDefaults ?? {}))
       if (key !== 'statuscode' && !own(row, key)) {
         row[safeName(key)] = clone(value);
-        if (fieldKind(this.fieldDefinition(m.logicalName, key, options.metadata)) === 'boolean')
+        // Two-option defaults reach the PreValidation Target, and so do a standard table's choice defaults; the state
+        // follows from PreOperation (native mergeAccount account Create/10; probe Create/10: the two-option default).
+        if (
+          key !== 'statecode' &&
+          (standardTableDef(m.logicalName) ||
+            fieldKind(this.fieldDefinition(m.logicalName, key, options.metadata)) === 'boolean')
+        )
           pluginTarget[key] = clone(value);
       }
     const changedAttributes = Object.keys(pluginTarget);
@@ -5509,12 +5536,29 @@ export class DataStore {
     }
     yield [m, 'create', 20, pluginTarget, row, null, identity, changedAttributes, options];
     options.mainOperation?.(m, 'create', row, null, pluginTarget, { identity, options });
+    // The platform's customer address rows of an account or contact: their ids are on the row, never in a Create
+    // Target (native mergeAccount). ponytail: the address rows are stored directly, without a pipeline of their own.
+    const addresses = isElastic(m)
+      ? []
+      : customerAddressColumns(m.logicalName).filter(({ column }) => row[column] == null && !own(pluginTarget, column));
+    for (const { column } of addresses) row[column] = this.ids.uuid();
     const effects = this.applyPlugins(m.logicalName, 'create', row, null, identity);
     assertAttachmentPolicy(this.state, m.logicalName, row);
     assertUniqueIdentity();
     this.assertAlternateKeys(m, row, rows, -1);
     options.authorizeEffectiveWrite?.(m.logicalName, 'create', row, null);
     this.insertRow(m.logicalName, rows, row);
+    if (addresses.length && this.state.mappings?.customeraddress) {
+      const table = (this.state.tables.customeraddress ??= []);
+      for (const { column, n } of addresses)
+        this.insertRow('customeraddress', table, {
+          customeraddressid: row[column],
+          parentid: { id: row[m.idColumn], logical_name: m.logicalName },
+          parentidtypecode: m.logicalName,
+          objecttypecode: m.logicalName,
+          addressnumber: n,
+        });
+    }
     this.applySecondary(effects);
     try {
       this.assertAllowed(m.logicalName, 'create', row, identity);
@@ -5587,7 +5631,11 @@ export class DataStore {
     // main-operation fields, as they stood before PostOperation ran (never the row version or empty on-behalf/team
     // lookups).
     for (const [name, value] of Object.entries(row))
-      if (!notInTarget(name, value) && !(pluginTarget[name] === '' && value === null))
+      if (
+        !notInTarget(name, value) &&
+        !(pluginTarget[name] === '' && value === null) &&
+        !addresses.some(({ column }) => column === name)
+      )
         pluginTarget[name] = clone(value);
     const asyncSourceParent = committedPluginParent(this, m, 'create', pluginTarget, row, options),
       asyncTarget = clone(pluginTarget),
@@ -5660,7 +5708,7 @@ export class DataStore {
     const changes = this.normalizeRecord(m, data, identity);
     if (isElastic(m) && own(changes, 'partitionid') && !samePartition(changes.partitionid, rows[index].partitionid))
       throw new DataError('The partitionid value of an elastic table row cannot be changed.', 400, 'InvalidRequest');
-    const blanks = blankTextColumns(this, m, changes, options);
+    const blanks = blankTextColumns(this, m, changes, options, 'update');
     if (options.coerce) this.coerceRecord(m, changes, options);
     if (isElastic(m)) assertElasticRecord(changes);
     const input = {
@@ -5739,9 +5787,38 @@ export class DataStore {
         ? ['owninguser', 'owningteam', 'owningbusinessunit']
         : ['owningbusinessunit'])
         if (row[name] != null && !own(target, name)) target[name] = clone(row[name]);
+    // Native Assign's Target names the new owner: ownerid and owneridyominame carry the assignee's primary name.
+    // A store that maps no table for the owner (a test store) leaves the reference unnamed.
+    let assigneeName = null;
+    if (ownerChanged && options.assignOwner) {
+      let owner = null;
+      try {
+        owner = this.resolveMapping(row.ownerid.logical_name);
+      } catch (error) {
+        if (error.code !== 'UnknownEntity') throw error;
+      }
+      if (owner) {
+        assigneeName = primaryNameValue(owner, this.findByKey(owner, row.ownerid.id)) ?? '';
+        target.ownerid = { ...clone(row.ownerid), name: assigneeName };
+      }
+    }
     if (onBehalf && options.assignOwner) row.modifiedonbehalfby = clone(row.modifiedby);
     for (const name of UPDATE_TARGET_STAMPS)
       if (authorizedWrite && !own(target, name) && own(row, name)) target[name] = clone(row[name]);
+    if (assigneeName !== null) target.owneridyominame = assigneeName;
+    // A write of a date-time value also stamps the row's time zone rule version (native Update 20/40 and async).
+    if (
+      authorizedWrite &&
+      !own(target, 'timezoneruleversionnumber') &&
+      own(row, 'timezoneruleversionnumber') &&
+      Object.keys(target).some(
+        (name) =>
+          !['createdon', 'modifiedon', 'overriddencreatedon'].includes(name) &&
+          target[name] != null &&
+          fieldKind(this.fieldDefinition(mapping.logicalName, name, options.metadata)) === 'datetime',
+      )
+    )
+      target.timezoneruleversionnumber = clone(row.timezoneruleversionnumber);
     yield [mapping, 'update', 20, target, row, previous, identity, changedAttributes, options];
     // A nested SDK request may patch or delete this row, or shift its position.
     // The outer update owns its current Target and staged system/default values;
@@ -5774,6 +5851,27 @@ export class DataStore {
       );
     }
     options.mainOperation?.(mapping, 'update', row, latest, target, { identity, options });
+    // The derived currency columns the main operation wrote reach the stage-40 and asynchronous Targets of a written money
+    // column (native currency and nullSemantics: Update/40 and async end with them; stages 10 and 20 do not).
+    const moneyKeys = authorizedWrite
+      ? Object.keys(target).filter(
+          (name) =>
+            !name.endsWith('_base') &&
+            fieldKind(this.fieldDefinition(mapping.logicalName, name, options.metadata)) === 'money',
+        )
+      : [];
+    const derivedTarget = {};
+    for (const name of moneyKeys)
+      if (!own(target, `${name}_base`) && (own(row, `${name}_base`) || own(previous, `${name}_base`)))
+        derivedTarget[`${name}_base`] = clone(row[`${name}_base`] ?? null);
+    if (
+      moneyKeys.length &&
+      own(row, 'exchangerate') &&
+      !own(target, 'exchangerate') &&
+      !isDeepStrictEqual(row.exchangerate, previous.exchangerate)
+    )
+      derivedTarget.exchangerate = clone(row.exchangerate);
+    Object.assign(target, derivedTarget);
     const effects = this.applyPlugins(mapping.logicalName, 'update', row, rows[index], identity);
     // Declarative plugins mutate the row directly, independently of Target. Only changed columns reach the
     // attachment policy, so files already stored are not revalidated.
@@ -5802,6 +5900,18 @@ export class DataStore {
       submitted = Object.keys(target),
       beforePost = prePostOperationFrame(this.pluginFrames?.get(row)),
       operationMark = this.operationMark();
+    // The asynchronous steps read the Target the queued frame holds, so the derived values join it as Create's do.
+    const queuedTarget = beforePost.inputParameters?.values?.Target;
+    if (queuedTarget?.$type === 'Entity' && Object.keys(derivedTarget).length) {
+      const missing = Object.fromEntries(
+        Object.entries(derivedTarget).filter(([name]) => !own(queuedTarget.attributes ?? {}, name)),
+      );
+      if (Object.keys(missing).length)
+        Object.assign(
+          (queuedTarget.attributes ??= {}),
+          recordToSdkEntity(this, mapping.logicalName, missing, { allColumns: true, target: true }).attributes,
+        );
+    }
     if (isElastic(mapping)) {
       this.recordCommittedEvent(mapping.logicalName, 'update', row, Object.keys(target), {
         target: committedTarget(),
@@ -6276,7 +6386,12 @@ export class DataStore {
         // This Update belongs to the association's execution policy. Parent
         // response tokens and one-use authorization capabilities belong to the
         // outer operation, so forward only its plug-in bypass controls.
-        yield* this.commitUpdateSteps(targetMapping, rows, rows.indexOf(target), next, identity, undefined, {
+        // The native Update Target carries the lookup and the primary key only; the stamps follow from stage 20.
+        const relinkTarget = {
+          [relationship.to]: clone(value),
+          [targetMapping.idColumn]: target[targetMapping.idColumn],
+        };
+        yield* this.commitUpdateSteps(targetMapping, rows, rows.indexOf(target), next, identity, relinkTarget, {
           bypassCustomPlugins: options.bypassCustomPlugins === true,
           bypassCustomAsync: options.bypassCustomAsync === true,
           bypassStepIds: options.bypassStepIds,

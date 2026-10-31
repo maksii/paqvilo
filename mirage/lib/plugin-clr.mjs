@@ -22,6 +22,7 @@ import {
 } from './plugin-sdk-parent.mjs';
 import { delegatedPluginParent } from './plugin-delegation.mjs';
 import { internalStageContext, internalStageSource, internalStepReference } from './plugin-internal-stage.mjs';
+import { standardFieldDefinition } from './dataverse-standard.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { inspectAssembly } from './clr-assembly-reader.mjs';
 import { localOrganizationService, validateServiceProfile, sdkValueToRecord } from './local-organization-service.mjs';
@@ -566,7 +567,7 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
     attributes = {},
     formattedValues = {};
   let platform;
-  const reference = (logicalName, id, suppliedName, partitionId) => {
+  const reference = (logicalName, id, suppliedName, partitionId, key) => {
     let target;
     try {
       target = store.resolveMapping(logicalName);
@@ -590,12 +591,23 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
             )
         : null,
       name = suppliedName ?? record?.[primaryName] ?? null;
-    // A message Target's references carry no resolved names (native Create/Update Targets: Name null);
-    // retrieved rows and images name them.
-    return { $type: 'EntityReference', logicalName, id, name: columns.target ? null : name };
+    // A message Target's references carry no resolved names (native Create/Update Targets: Name null), unless the
+    // Target also carries the lookup's yominame (Assign's ownerid and owneridyominame); retrieved rows and images name them.
+    const namedTarget = key != null && Object.hasOwn(row ?? {}, key + 'yominame') && row[key + 'yominame'] != null;
+    return { $type: 'EntityReference', logicalName, id, name: columns.target && !namedTarget ? null : name };
   };
   for (const [key, value] of Object.entries(row ?? {})) {
     if (!columns.allColumns && !(columns.columns ?? []).includes(key)) continue;
+    // Native plug-in entities carry the row version only as Entity.RowVersion: all-column and Target/image projections
+    // omit the versionnumber attribute; an explicit ColumnSet that names it keeps it.
+    if (key === 'versionnumber' && (columns.allColumns || columns.target || columns.image)) continue;
+    // An image omits a column the table marks unreadable (native mergeAccount images: no isprivate; Targets keep it).
+    if (
+      columns.image &&
+      (standardFieldDefinition(store, mapping.logicalName, key) ?? store.fieldDefinition(mapping.logicalName, key))
+        ?.validForRead === false
+    )
+      continue;
     if (value == null) {
       attributes[key] = null;
       continue;
@@ -608,7 +620,7 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
         {},
       type = String(field.dataverseType ?? field.type ?? '').toLowerCase();
     if (value && typeof value === 'object' && value.id && value.logical_name)
-      attributes[key] = reference(value.logical_name, value.id, value.name, value.partitionid ?? row[`${key}pid`]);
+      attributes[key] = reference(value.logical_name, value.id, value.name, value.partitionid ?? row[`${key}pid`], key);
     else if (['lookup', 'customer', 'owner'].includes(type) && typeof value === 'string') {
       // A thin mapping field ({ dataverseType } only, a standard table's stand-in) takes its targets from the
       // organization's attribute metadata (account masterid: account, native mergeAccount read-back).
@@ -653,7 +665,7 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
         !/^[a-z][\w]*$/i.test(targets[0])
       )
         fail('SDK lookup GUID requires one exact source-declared target table.', 'LocalPluginSdkUnsupported', 501);
-      attributes[key] = reference(targets[0], canon(value), undefined, row[`${key}pid`]);
+      attributes[key] = reference(targets[0], canon(value), undefined, row[`${key}pid`], key);
     } else if (['money', 'decimal'].includes(type)) {
       let text = String(value?.value ?? value);
       // A stored decimal (an image row, or a value only the platform writes) carries its storage scale: ten
@@ -715,8 +727,8 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
         }),
       };
     } else if (['datetime', 'date'].includes(type))
-      // DateOnly and TimeZoneIndependent values carry no time zone: their SDK DateTime kind is Unspecified. The
-      // PreValidation Target (columns.submitted) still shows a TimeZoneIndependent value as the caller sent it.
+      // DateOnly and TimeZoneIndependent values carry no time zone: their SDK DateTime kind is Unspecified. Only the
+      // Create/CreateMultiple PreValidation Target (columns.submitted) keeps a TimeZoneIndependent value as sent.
       attributes[key] = typed(
         'DateTime',
         typeof value === 'string' &&
@@ -1038,6 +1050,7 @@ function dispatchSdkCallCore({
   diagnostic,
   sdkFromSandbox = false,
   invokingUserId,
+  initiatingUserId,
 }) {
   // IOrganizationServiceFactory.CreateOrganizationService (Learn): null is the organization's SYSTEM user, Guid.Empty the
   // step's executing user (context.UserId), any other id that system user. With an organization the calls are authorized by
@@ -1072,6 +1085,10 @@ function dispatchSdkCallCore({
       ...([profile, ...callerProfiles].find((candidate) => canon(candidate.userId) === canon(runAs)) ?? profile),
       userId: runAs,
     };
+  // A service that runs as another user than the step's user stamps the step's initiating user as on-behalf-of
+  // (recorded native sdkSurface: SYSTEM and another user's writes; the context user and Guid.Empty stamp none).
+  if (initiatingUserId && canon(runAs) !== canon(invokingUserId ?? profile.userId))
+    selected.onBehalfOfUserId = initiatingUserId;
   validateServiceProfile(selected);
   const previousExecutionUser = store.pluginExecutionUserId;
   store.pluginExecutionUserId = selected.userId;
@@ -2039,6 +2056,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
               callerProfiles: runtime.descriptor.sdkCallerProfiles,
               sdkFromSandbox: true,
               invokingUserId: input.context?.UserId?.value,
+              initiatingUserId: input.context?.InitiatingUserId?.value,
               message,
               diagnostic,
             });
@@ -2205,7 +2223,7 @@ export function clrContext({
     const issuing = clrContext({
       runtime,
       store,
-      step: { ...internalStepReference(internal.owner, internal.message), contract: { mode: 0 } },
+      step: internal.step ?? { ...internalStepReference(internal.owner, internal.message), contract: { mode: 0 } },
       entity: internal.entity,
       operation: internal.operation,
       stage: 20,
@@ -2215,7 +2233,32 @@ export function clrContext({
       frame: internal.frame,
       depth,
     });
-    frame.delegatedParentContext = internalStageContext(clrSdkEntryContext(issuing), internal.stage, internal.userId);
+    let parentContext = internalStageContext(clrSdkEntryContext(issuing), internal.stage, internal.userId);
+    // A CreateMultiple's issuing record context sits under the bulk message's PreOperation context reported as stage
+    // 25 (native currency): the last CreateMultiple/20 step's view, with the request's Targets, as the caller's user.
+    if (internal.bulk) {
+      const bulkIssuing = clrContext({
+        runtime,
+        store,
+        step: internal.bulk.step ?? {
+          ...internalStepReference(internal.owner, 'CreateMultiple'),
+          contract: { mode: 0 },
+        },
+        entity: internal.entity,
+        operation: 'createmultiple',
+        stage: 20,
+        target: {},
+        record: internal.bulk.record,
+        previous: null,
+        frame: internal.bulk.frame,
+        depth,
+      });
+      parentContext = {
+        ...parentContext,
+        values: { ...parentContext.values, ParentContext: internalStageContext(clrSdkEntryContext(bulkIssuing), 25) },
+      };
+    }
+    frame.delegatedParentContext = parentContext;
     frame.internalParentBuilt = true;
   }
   const descriptor = runtime.descriptor,
@@ -2595,13 +2638,16 @@ export function clrContext({
                         id: record[primary],
                       },
                       ColumnSet: { $type: 'ColumnSet', ...frame.columns },
-                      // Every Retrieve request carries its RelatedEntitiesQuery (recorded native reads): empty from a Web API
-                      // GET, null from an SDK or platform read; a supplied value is kept.
+                      // Every Retrieve request carries its RelatedEntitiesQuery (recorded native reads): a supplied value
+                      // is kept; null from an SDK or platform read; from a Web API GET empty, or its $expand's queries
+                      // (relationsReads).
                       RelatedEntitiesQuery: Object.hasOwn(frame.inputParameters?.values ?? {}, 'RelatedEntitiesQuery')
                         ? frame.inputParameters.values.RelatedEntitiesQuery
                         : sdkShapedRead
                           ? null
-                          : { $type: 'RelationshipQueryCollection', values: [] },
+                          : cloneStateData(
+                              frame.relatedEntitiesQuery ?? { $type: 'RelationshipQueryCollection', values: [] },
+                            ),
                       ...(sdkShapedRead
                         ? { ReturnNotifications: false }
                         : readRequestParameters.IncludeAnnotations === undefined
@@ -2643,7 +2689,7 @@ export function clrContext({
                                       }
                                     : {
                                         allColumns: true,
-                                        submitted: stage === 10,
+                                        submitted: stage === 10 && operation === 'create',
                                         target: true,
                                         postOperation: stage === 40,
                                       },
@@ -2815,6 +2861,56 @@ export function clrContext({
     values: answer.inputParameters.values,
     currencyId: bulk ? undefined : record?.transactioncurrencyid,
   });
-  if (bridged) answer.inputParameters.values = bridgeTargetInputs(answer.inputParameters.values, entity);
+  answer.inputParameters.values = nativeInputOrder(answer.inputParameters.values);
+  if (bridged) {
+    answer.inputParameters.values = bridgeTargetInputs(answer.inputParameters.values, entity);
+    // A bridged DeleteMultiple names its Targets before ConcurrencyBehavior (native crud, depth, async).
+    if (operation === 'delete' && Object.hasOwn(answer.inputParameters.values, 'ConcurrencyBehavior')) {
+      const { ConcurrencyBehavior: behavior, ...rest } = answer.inputParameters.values;
+      answer.inputParameters.values = { ...rest, ConcurrencyBehavior: behavior };
+    }
+  }
+  if (answer.sharedVariables?.values)
+    answer.sharedVariables = { ...answer.sharedVariables, values: nativeSharedOrder(answer.sharedVariables.values) };
+  for (let level = answer.context.ParentContext; level?.values; level = level.values.ParentContext) {
+    const { InputParameters: inputs, SharedVariables: shared } = level.values;
+    if (inputs?.values) inputs.values = nativeInputOrder(inputs.values);
+    if (shared?.values) shared.values = nativeSharedOrder(shared.values);
+  }
   return answer;
+}
+
+// Native ParameterCollections enumerate as the platform fills them (native and native-r2: no order difference between
+// the captures): the request's own parameters, the request tag and FromSandbox, then the parameters the platform adds
+// (a bridged multiple message's Targets replaces its Target last); SharedVariables start with IsAutoTransact,
+// AcceptLang, tag and DefaultsAddedFlag, then the entries steps and the main operation add.
+const LATE_INPUTS = [
+  'ConcurrencyBehavior',
+  'IncludeAnnotations',
+  'ReturnNotifications',
+  'AppModuleId',
+  'IsAppModuleContext',
+  'UpdateContent',
+  'BypassCustomPluginExecution',
+  'BypassBusinessLogicExecution',
+  'BypassBusinessLogicExecutionStepIds',
+];
+function nativeInputOrder(values) {
+  // An SDK Retrieve's RelatedEntitiesQuery is the platform's (after the tag); a Web API Retrieve names it.
+  const late = Object.hasOwn(values, 'IncludeAnnotations') ? LATE_INPUTS : ['RelatedEntitiesQuery', ...LATE_INPUTS];
+  const keys = Object.keys(values),
+    order = [
+      ...keys.filter((key) => key !== 'tag' && key !== 'FromSandbox' && !late.includes(key)),
+      ...['tag', 'FromSandbox'].filter((key) => Object.hasOwn(values, key)),
+      ...keys.filter((key) => late.includes(key)),
+    ];
+  return Object.fromEntries(order.map((key) => [key, values[key]]));
+}
+function nativeSharedOrder(values) {
+  const first = ['IsAutoTransact', 'AcceptLang', 'tag', 'DefaultsAddedFlag'].filter((key) =>
+    Object.hasOwn(values, key),
+  );
+  return Object.fromEntries(
+    [...first, ...Object.keys(values).filter((key) => !first.includes(key))].map((key) => [key, values[key]]),
+  );
 }

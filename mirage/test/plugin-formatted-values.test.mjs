@@ -310,3 +310,114 @@ else{var after=c.PostEntityImages["after"];Expect(after,"amount","\\u20ac3.5000"
     assert.equal(created.title, 'Київ');
   },
 );
+
+// @test-kind parity: native and native-r2 nullSemantics Create 20/40/async and CreateMultiple Targets FormattedValues pqwp_money/pqwp_choice/pqwp_dateonly null, no entry for null text/integer/boolean (3753, 6899)
+test('a Create Target lists null money, choice and date values with a null formatted value only', () => {
+  const store = fixture(),
+    target = {
+      gadgetid: '20000000-0000-0000-0000-000000000003',
+      amount: null,
+      hue: null,
+      day: null,
+      title: null,
+      count: null,
+      flag: null,
+    },
+    record = { ...target };
+  store.state.tables.gadget = [];
+  const frame = phases(store, 'create', [10, 20, 40], { target, record, previous: null });
+  const nulls = { amount: null, hue: null, day: null };
+  assert.deepEqual(
+    context(store, 'create', 20, frame, { target, record, previous: null }).inputParameters.values.Target
+      .formattedValues,
+    nulls,
+  );
+  assert.deepEqual(
+    context(store, 'create', 40, frame, { target, record, previous: null }).inputParameters.values.Target
+      .formattedValues,
+    nulls,
+  );
+  // Native PreValidation (stage 10) Targets carry no FormattedValues.
+  assert.equal(
+    context(store, 'create', 10, frame, { target, record, previous: null }).inputParameters.values.Target
+      .formattedValues,
+    undefined,
+  );
+});
+
+// @test-kind parity: native and native-r2 nullSemantics Create 20/40/async and CreateMultiple Targets FormattedValues pqwp_money/pqwp_choice/pqwp_dateonly null, no entry for null text/integer/boolean (3753, 6899)
+test('an Update Target lists no null formatted values, as native single Updates', () => {
+  const store = fixture(),
+    previous = { ...store.tableRows('gadget')[0] },
+    target = { amount: null, hue: null, day: null, title: null, count: null, flag: null },
+    record = { ...previous, ...target };
+  const frame = phases(store, 'update', [10, 20], { target, record, previous });
+  assert.equal(
+    context(store, 'update', 20, frame, { target, record, previous }).inputParameters.values.Target.formattedValues,
+    undefined,
+  );
+});
+
+// @test-kind parity: native and native-r2 nullSemantics Create 20/40/async and CreateMultiple Targets FormattedValues pqwp_money/pqwp_choice/pqwp_dateonly null, no entry for null text/integer/boolean (3753, 6899)
+test(
+  'an original DLL reads a null money or choice formatted value as null, and a null text as unlisted',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-null-formatted-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    const sdk = clrSdk(),
+      source = path.join(root, 'NullFormatted.cs'),
+      assembly = path.join(root, 'NullFormatted.dll');
+    await fs.writeFile(
+      source,
+      `using System;using Microsoft.Xrm.Sdk;
+namespace Invented {public sealed class NullFormatted:IPlugin {
+static void ExpectNull(Entity e,string key){string actual;if(!e.FormattedValues.TryGetValue(key,out actual)||actual!=null)throw new InvalidPluginExecutionException(key+" formatted as "+(actual??"<none>"));}
+public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var target=(Entity)c.InputParameters["Target"];
+ExpectNull(target,"amount");ExpectNull(target,"hue");
+if(target.FormattedValues.ContainsKey("title"))throw new InvalidPluginExecutionException("text formatted");}}}`,
+    );
+    compileClr(source, assembly, { references: [sdk] });
+    const runtime = await prepareClrRuntime({
+        trust: 'execute-local-assembly',
+        root,
+        assembly: path.basename(assembly),
+        typeName: 'Invented.NullFormatted',
+        sdkRoot: path.dirname(sdk),
+        sdkAssembly: path.basename(sdk),
+        cacheRoot: path.join(root, 'cache'),
+        context: { initiatingUserId: caller, organizationId: caller, businessUnitId: caller },
+        serviceProfile: { userId: caller, evidence: 'Invented formatted values', grants: [] },
+        timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
+      }),
+      step = {
+        id: '30000000-0000-0000-0000-000000000009',
+        name: 'Null formatted 20',
+        enabled: true,
+        typeName: runtime.descriptor.typeName,
+        assemblyId: 'invented-null-formatted',
+        entity: 'gadget',
+        message: 'Create',
+        stage: 20,
+        rank: 1,
+        mode: 0,
+        supportedDeployment: 0,
+        filteringAttributes: [],
+        images: [],
+      },
+      items = pluginCatalogue({
+        plugins: { steps: [step] },
+        runtimes: new Map([[step.id, runtime]]),
+        overrides: { ['plugin-step:' + step.id]: { mode: 'clr' } },
+      }),
+      store = fixture();
+    store.state.tables.gadget = [];
+    store.setPluginPipeline((ctx) => runPluginPhase({ ...ctx, store, items, runtimes: new Map([[step.id, runtime]]) }));
+    const created = await store.create(
+      'gadget',
+      { gadgetid: id, title: null, flag: false, amount: null, hue: null, transactioncurrencyid: currency },
+      { admin: true },
+    );
+    assert.equal(created.gadgetid, id);
+  },
+);

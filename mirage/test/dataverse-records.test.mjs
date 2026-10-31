@@ -1997,7 +1997,7 @@ test('a single-valued $ref answers the $ref context', async () => {
   assert.equal(ref.body['@odata.id'], `${ORIGIN}/api/data/${VERSION}/widgets(${widget})`);
 });
 
-test('an expanded collection links its children, each child carries its parent lookup, and an unselected expansion answers every column', async () => {
+test('an expanded collection links its children, a selected child carries only its columns and key, and an unselected expansion answers every column', async () => {
   const t = await setup();
   const id = await create(t, 'widgets', { name: 'Parent' });
   await create(t, 'gadgets', { name: 'Child', 'widgetid@odata.bind': `/widgets(${id})` });
@@ -2009,7 +2009,9 @@ test('an expanded collection links its children, each child carries its parent l
     row['widget_gadgets@odata.nextLink'],
     `${ORIGIN}/api/data/${VERSION}/widgets(${id})/widget_gadgets?$select=name`,
   );
-  assert.equal(row.widget_gadgets[0]._widgetid_value, id);
+  // Native $expand=pqwp_probe_children($select=pqwp_name) children are {pqwp_name, pqwp_childid} (native relationsReads):
+  // the referencing lookup is not added to a child with a nested $select.
+  assert.equal(Object.hasOwn(row.widget_gadgets[0], '_widgetid_value'), false);
   assert.ok(
     !('OData.Community.Display.V1.FormattedValue' in row.widget_gadgets[0]) &&
       !Object.keys(row.widget_gadgets[0]).some((key) => key.includes('@OData')),
@@ -2017,6 +2019,11 @@ test('an expanded collection links its children, each child carries its parent l
   );
   const all = await t.send('GET', `/api/data/${VERSION}/widgets?$expand=widget_gadgets`);
   assert.ok('createdon' in all.body.value[0].widget_gadgets[0], 'a child with no $select answers every column');
+  assert.equal(
+    all.body.value[0].widget_gadgets[0]._widgetid_value,
+    id,
+    'a child with no $select carries its parent lookup',
+  );
   const single = await t.send('GET', `/api/data/${VERSION}/gadgets?$expand=widgetid($select=name)`);
   assert.match(single.body.value[0].widgetid['@odata.etag'], /^W\/"\d+"$/);
 });
@@ -2183,13 +2190,17 @@ test('owner lookups carry the annotations native gives each owner column', async
   assert.equal(res.body[`_ownerid_value${nav}`], 'ownerid');
 });
 
-test('an organization-owned row always answers the organization lookup, selected or not', async () => {
+test('an organization-owned row answers the organization lookup unless a $select omits it', async () => {
   const t = await setup();
   const id = await create(t, 'tags', { name: 'Shared' });
+  // Native $select on an organization-owned table answers only the selected columns and the key (native faults:
+  // pqwp_children?$select=pqwp_name), so the unselected organization lookup is absent.
   const single = await t.send('GET', `/api/data/${VERSION}/tags(${id})?$select=name`);
-  assert.equal(single.body._organizationid_value, ORG);
+  assert.equal(Object.hasOwn(single.body, '_organizationid_value'), false);
   const list = await t.send('GET', `/api/data/${VERSION}/tags?$select=name`);
-  assert.equal(list.body.value[0]._organizationid_value, ORG);
+  assert.equal(Object.hasOwn(list.body.value[0], '_organizationid_value'), false);
+  const unselected = await t.send('GET', `/api/data/${VERSION}/tags`);
+  assert.equal(unselected.body.value[0]._organizationid_value, ORG);
 });
 
 test('an explicit navigation collection projection omits the unselected organization lookup', async () => {

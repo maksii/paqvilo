@@ -1136,3 +1136,44 @@ test('a Web API UpsertMultiple runs its bulk messages under the UpsertMultiple m
   assert.equal(label(bulkMain), 'CreateMultiple/30/d1');
   assert.deepEqual(Object.keys(bulkMain.InputParameters.values), ['tag']);
 });
+
+// @test-kind parity: native and native-r2 ownerAndState SetStateDynamicEntity 10/20/40 ParentContext Target formattedValues empty (4618-4620)
+test('a PATCH statecode SetStateDynamicEntity sees its Upsert parent Target without FormattedValues', () => {
+  const store = storeOf();
+  // The state and status columns are typed, so the framework Target would list their labels.
+  store.state.mappings.widget.fields = {
+    statecode: {
+      dataverseType: 'state',
+      options: [
+        { value: 0, label: 'Active' },
+        { value: 1, label: 'Inactive' },
+      ],
+    },
+    statuscode: {
+      dataverseType: 'status',
+      options: [
+        { value: 1, label: 'Active' },
+        { value: 2, label: 'Inactive' },
+      ],
+    },
+  };
+  const seen = probe(store, (at) => at.startsWith('SetStateDynamicEntity/'));
+  store.updateRecord(
+    'widget',
+    id,
+    { statecode: 1, statuscode: 2 },
+    { admin: true },
+    { preValidationSourceOperation: 'upsert' },
+  );
+  assert.deepEqual(
+    seen.map((entry) => entry.label),
+    ['SetStateDynamicEntity/10', 'SetStateDynamicEntity/20', 'SetStateDynamicEntity/40'],
+  );
+  for (const entry of seen) {
+    const parent = entry.context.ParentContext.values;
+    assert.equal(label(parent), 'Upsert/30/d2');
+    const target = parent.InputParameters.values.Target;
+    assert.deepEqual(target.attributes.statecode, { $type: 'OptionSetValue', value: 1 });
+    assert.equal(target.formattedValues, undefined);
+  }
+});

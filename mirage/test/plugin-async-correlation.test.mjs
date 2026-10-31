@@ -1,3 +1,4 @@
+// @test-kind unproven: local async child-request correlation model (runner request context); no native capture cited
 // Runner request contexts (plugin-async.mjs): an asynchronous step runs in a child of the request that wrote the row (the
 // HTTP x-ms-correlation-request-id); its System Job row and plug-in trace log carry the CorrelationId of its execution context.
 import test from 'node:test';

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo admin mock collection override validation (optional SDK result metadata) for the original RetrieveMultiple caller
 import test from 'node:test';
 import { CLR_SKIP } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';

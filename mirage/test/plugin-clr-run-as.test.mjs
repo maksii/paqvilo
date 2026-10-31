@@ -12,7 +12,7 @@ import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 
 const EMPTY = '00000000-0000-0000-0000-000000000000';
 
-async function organization(t) {
+async function organization(t, extraUsers = []) {
   const state = emptyState();
   state.mappings.x_item = { entitySet: 'x_items', idColumn: 'x_itemid' };
   state.tables.x_item = [];
@@ -34,6 +34,7 @@ async function organization(t) {
           fullname: 'Invented plain',
           roles: [],
         },
+        ...extraUsers,
       ],
     }),
   });
@@ -47,6 +48,7 @@ async function organization(t) {
         store,
         profile,
         invokingUserId: id('Invented admin'),
+        initiatingUserId: id('Invented admin'),
         sdkParentContext,
         message: {
           method: 'Execute',
@@ -306,4 +308,52 @@ test('initiating identity flags follow the initiating user and re-stamp nested a
   const asStepUser = identityContext({ executionUser: appCaller, parent: structuredClone(appParent) });
   assert.equal(asStepUser.IsApplicationUser, true);
   assert.equal(asStepUser.InitiatingUserApplicationId.value, appId);
+});
+
+// @test-kind parity: native-r2 sdkSurface Create/20 as SYSTEM (62) and as another user (68), readNested nested Create as SYSTEM: createdonbehalfby and modifiedonbehalfby are the initiating user; as the context user neither
+test('an SDK create as SYSTEM or another user stamps the initiating user on behalf of, the context user stamps none', async (t) => {
+  const { store, id, create } = await organization(t, [
+    {
+      objectId: '77000000-0000-0000-0000-000000000003',
+      domainname: 'second@invented.test',
+      fullname: 'Invented second admin',
+      roles: ['System Administrator'],
+    },
+  ]);
+  const admin = id('Invented admin');
+  const step = {
+    id: '77000000-0000-0000-0000-0000000000a2',
+    name: 'Invented create observer',
+    entity: 'x_item',
+    message: 'Create',
+    enabled: true,
+    stage: 20,
+    rank: 1,
+    mode: 0,
+    assemblyId: 'invented-run-as',
+    supportedDeployment: 0,
+    filteringAttributes: [],
+    images: [],
+    typeName: 'Invented.CreateObserver',
+  };
+  // The PreOperation Target of each create: its on-behalf-of references as the plug-in sees them.
+  const targets = new Map();
+  const handlers = new Map([
+    ['Invented.CreateObserver', ({ target }) => targets.set(target.x_name, target.createdonbehalfby?.id ?? null)],
+  ]);
+  const items = pluginCatalogue({ plugins: { steps: [step] }, handlers });
+  store.setPluginPipeline((context) => runPluginPhase({ ...context, store, items, handlers }));
+  const onBehalf = (name) => {
+    const row = store.tableRows('x_item').find((item) => item.x_name === name);
+    return [row.createdonbehalfby, row.modifiedonbehalfby].map((ref) => ref?.id ?? ref ?? null);
+  };
+  create(null, 'as system');
+  create(id('Invented second admin'), 'as another user');
+  create(EMPTY, 'as context user');
+  assert.deepEqual(onBehalf('as system'), [admin, admin]);
+  assert.deepEqual(onBehalf('as another user'), [admin, admin]);
+  assert.deepEqual(onBehalf('as context user'), [null, null]);
+  assert.equal(targets.get('as system'), admin);
+  assert.equal(targets.get('as another user'), admin);
+  assert.equal(targets.get('as context user'), null);
 });

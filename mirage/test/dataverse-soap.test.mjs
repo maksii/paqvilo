@@ -14,6 +14,7 @@ import { createOperationRegistry } from '../lib/dataverse-operations.mjs';
 import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { DataError } from '../lib/data-error.mjs';
+import { recordToSdkEntity } from '../lib/plugin-clr.mjs';
 
 const ORIGIN = 'http://127.0.0.1:5555';
 const ORG = '6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f';
@@ -2065,3 +2066,22 @@ for (const message of ['Assign', 'SetState']) {
     assert.deepEqual(ran.toSorted(), [`${named}/1`, 'Update/1', 'UpdateMultiple/1'].toSorted());
   });
 }
+
+// @test-kind parity: native and native-r2 soapMessages 5962 (and sdkMessages 5179, imagesOrder 7843): the Update/20 Target under a SOAP Assign carries owninguser, owningbusinessunit, a named ownerid and owneridyominame equal to the assignee's fullname
+test('SOAP Assign hands its Update PreOperation Target the named new owner and owneridyominame', async () => {
+  const t = await specializedFixture('Assign');
+  let target;
+  t.store.setPluginPipeline((context) => {
+    if (context.operation === 'update' && context.stage === 20) target = structuredClone(context.target);
+  });
+  const result = await t.send(specializedRequest('Assign', t.logical, t.id, t.basic.systemuserid));
+  assert.equal(result.status, 200, result.body);
+  const fullname = t.store.tableRows('systemuser').find((row) => row.systemuserid === t.basic.systemuserid).fullname;
+  for (const name of ['owninguser', 'owningbusinessunit', 'ownerid', 'owneridyominame'])
+    assert(Object.hasOwn(target, name), name);
+  assert.equal(target.ownerid.name, fullname);
+  assert.equal(target.owneridyominame, fullname);
+  const encoded = recordToSdkEntity(t.store, t.logical, target, { allColumns: true, target: true });
+  assert.equal(encoded.attributes.ownerid.name, fullname);
+  assert.equal(encoded.attributes.owninguser.name, null);
+});

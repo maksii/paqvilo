@@ -379,7 +379,7 @@ const sdkRef = (logicalName, id) => ({ $type: 'EntityReference', logicalName, id
 // A named message's main-operation Update (Assign, SetState): no PreValidation, no ConcurrencyBehavior and no nested
 // SetStateDynamicEntity, under the message's stage-30 context; Assign's runs as SYSTEM (recorded native soapMessages,
 // sdkMessages). The caller's privileges still decide whether it may write.
-async function namedUpdate(s, logical, id, data, system = false) {
+async function namedUpdate(s, logical, id, data, system = false, extra = {}) {
   const store = s.api.store,
     previous = store.pluginPlatformUserId;
   if (system)
@@ -387,7 +387,7 @@ async function namedUpdate(s, logical, id, data, system = false) {
       store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM')?.systemuserid ?? previous;
   try {
     await s.api.records.updateInternal(s, logical, id, data, {
-      writeOptions: { skipPreValidation: true, omitConcurrencyBehavior: true, stateMessage: false },
+      writeOptions: { skipPreValidation: true, omitConcurrencyBehavior: true, stateMessage: false, ...extra },
     });
     return {};
   } finally {
@@ -965,6 +965,7 @@ async function runRequestCore(base, { name, params }) {
               id,
               { 'ownerid@odata.bind': `/${setOf(s.api, assigneeTable)}(${assigneeId})` },
               true,
+              { assignOwner: true },
             ),
         }),
       );

@@ -2078,6 +2078,7 @@ export function runPluginPhase({
             frame.entity = holder?.entity;
             frame.columns = columns;
             frame.retrieveTarget = holder?.target;
+            frame.relatedEntitiesQuery = holder?.relatedEntitiesQuery;
           }
           if (bulk) {
             frame.targets = targets;
@@ -2495,6 +2496,16 @@ export function runPluginPhase({
                   },
                 };
               }
+              // A bulk step reconciles onto the Targets as they stand now (stamps and derived columns added after an
+              // earlier stage), not the collection an earlier stage's step left.
+              if (bulk && handlerFrame.inputParameters?.values?.Targets?.$type === 'EntityCollection')
+                priorInputs = {
+                  ...priorInputs,
+                  values: {
+                    ...priorInputs.values,
+                    Targets: { ...priorInputs.values.Targets, entities: cloneStateData(targets) },
+                  },
+                };
               handlerFrame.inputParameters = reconcilePluginMessageParameters(
                 store,
                 specs,
