@@ -71,7 +71,8 @@ File.AppendAllText(@"${log.replaceAll('"', '""')}",string.Join("|",c.OwningExten
 const profile = {
   userId: caller,
   evidence: 'Invented Context4 requests',
-  grants: [{ entity: 'gadget', operations: ['read', 'create', 'update', 'delete'] }],
+  // @parity-evidence: fixture grant only; Microsoft Learn "Privileges by message" (AssignRequest prvAssign, GrantAccess/ModifyAccess/RevokeAccess prvShare), audit C2-04
+  grants: [{ entity: 'gadget', operations: ['read', 'create', 'update', 'delete', 'assign'] }],
   bulkTables: [
     { entity: 'gadget', tableType: 'standard', evidence: 'Invented bulk table', messages: ['CreateMultiple'] },
   ],
