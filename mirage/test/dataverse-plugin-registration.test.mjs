@@ -339,6 +339,16 @@ describe('plug-in registration over HTTP', () => {
     assert.match(idFromLocation(response), /^[0-9a-f-]{36}$/);
   });
 
+  // @test-kind parity: native recorder corpus n6-registration (trial environment, captures native-trial and native-trial-r2): an administrator's step whose impersonatinguserid binds a systemuser that does not exist is accepted with 204
+  it('accepts a step impersonating a systemuser that does not exist', async () => {
+    const response = await createStep({
+      name: 'Impersonating a missing user',
+      'impersonatinguserid@odata.bind': '/systemusers(dddddddd-0000-4000-8000-0000000000ff)',
+    });
+    assert.equal(response.status, 204, await response.clone().text());
+  });
+
+  // @test-kind compatibility: Microsoft Learn plug-in registration tables and documented errors
   it('refuses a stage outside the custom-step stages with 0x80044184', async () => {
     const error = await errorOf(await createStep({ stage: 30 }));
     assert.equal(error.code, '0x80044184');

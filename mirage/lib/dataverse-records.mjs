@@ -19,7 +19,7 @@ import { recordToSdkEntity } from './plugin-clr.mjs';
 import { odataToSdkQuery } from './plugin-query.mjs';
 import { upsertSourceOperation } from './plugin-delegation.mjs';
 import { isElastic, recordKey, samePartition } from './dataverse-elastic.mjs';
-import { parseEntityReference, parseFetchXml } from './data.mjs';
+import { parseEntityReference, parseFetchXml, uncheckedLookup } from './data.mjs';
 import { DATAVERSE_SYSTEM_COLUMNS, parseXmlDocument, webApiPagingCookie } from './fetchxml-engine.mjs';
 import {
   expressionPaths,
@@ -1926,6 +1926,7 @@ export function createRecordHandlers({
         data[key] = `/${ref.set}(${ref.id})`;
         continue;
       }
+      if (!row && uncheckedLookup(mapping.logicalName, rel?.from ?? nav, target.logicalName)) continue;
       if (!row) throw notFoundRecord(target.logicalName, ref.id);
       authorize(c, target.logicalName, 'appendto', target, row);
       data[key] = `/${ref.set}(${ref.id})`;

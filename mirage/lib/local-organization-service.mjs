@@ -34,7 +34,7 @@ const own = (o, k) => o != null && Object.hasOwn(o, k);
 const RESERVED_NAMES = ['constructor', 'prototype', '__proto__'];
 
 /** Preserve typed SDK alternate keys; an elastic primary key is scoped by its opaque partition. */
-function sdkRecordKey(store, entity, target, partitionId) {
+export function sdkRecordKey(store, entity, target, partitionId) {
   const mapping = store.resolveMapping(entity);
   const keys = target && typeof target === 'object' ? target.keyAttributes : null;
   if (keys && Object.keys(keys).length) {
@@ -88,6 +88,19 @@ const invalidBulkTable = (table) =>
   !Array.isArray(table.messages) ||
   !table.messages.length ||
   table.messages.some((message) => !BULK_MESSAGES.includes(message));
+
+// The lower-case message names the organization's sdkmessagefilter rows cover for a table; null without a catalogue.
+const lowerId = (value) => String(value && typeof value === 'object' ? value.id : (value ?? '')).toLowerCase();
+function messageFilters(store, entity) {
+  const filters = store.tableRows('sdkmessagefilter');
+  if (!filters.length) return null;
+  const names = new Map(store.tableRows('sdkmessage').map((row) => [lowerId(row.sdkmessageid), row.name]));
+  return new Set(
+    filters
+      .filter((row) => row.primaryobjecttypecode === entity)
+      .map((row) => String(names.get(lowerId(row.sdkmessageid)) ?? '').toLowerCase()),
+  );
+}
 
 /** Explicit local backend grants are independent of portal roles. No default system user. */
 export function validateServiceProfile(profile) {
@@ -697,12 +710,31 @@ export function localOrganizationService(store, profile, records, { diagnostic =
 
     bulk(operation, targets, { responseToken } = {}) {
       const entity = targets?.[0]?.logicalName;
-      const source = (profile.bulkTables ?? []).find((table) => table.entity === entity);
-      if (!source || !source.messages.includes(operation === 'createmultiple' ? 'CreateMultiple' : 'UpdateMultiple'))
+      const message = operation === 'createmultiple' ? 'CreateMultiple' : 'UpdateMultiple';
+      // Natively the table's sdkmessagefilter for the message makes it available (recorded native sdkSurface: a
+      // plug-in's UpdateMultiple/CreateMultiple on custom tables); a profile's bulkTables entry is an optional extra.
+      const granted = (profile.bulkTables ?? []).some(
+        (table) => table.entity === entity && table.messages.includes(message),
+      );
+      const filters = granted ? null : messageFilters(store, entity);
+      if (!granted && !filters?.has(message.toLowerCase())) {
+        // A table whose filter catalogue lacks the message: the platform's MessageProcessor.Empty refusal (the recorded
+        // native fault of Merge on a table without its filter; assumed the same for the bulk messages).
+        if (filters?.size)
+          throw new DataError(
+            `The '${message}' method does not support entities of type '${entity}'. MessageProcessorCache returned MessageProcessor.Empty. `,
+            400,
+            'InvalidRequest',
+            { innerCode: '0x80040800' },
+          );
         fail(
           'Bulk requires explicit source-evidenced standard table and available SDK message capability.',
           'LocalPluginBulkUnsupported',
         );
+      }
+      // The elastic bulk semantics (per-target commits) are not implemented for SDK callers.
+      if (tableName(entity) && isElastic(store.resolveMapping(entity)))
+        fail('SDK bulk on an elastic table is not supported locally.', 'LocalPluginBulkUnsupported');
       const write = records
         ? (update, id, values, { postWriteEffects, ...writeOptions } = {}) =>
             internal(update ? 'update' : 'create', entity, (options) =>

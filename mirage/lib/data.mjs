@@ -111,6 +111,12 @@ import {
 } from './dataverse-values.mjs';
 // The store's query error type lives in data-error.mjs; this re-export keeps imports working.
 export { DataError };
+
+// Lookups whose target the platform does not check on write (data.mjs bind coercion and validateBindings, the Web API bind
+// check): an administrator registers a step impersonating a systemuser that does not exist (recorded native n6-registration,
+// two captures: 204). The column keeps the unresolved id.
+const UNCHECKED_LOOKUPS = { sdkmessageprocessingstep: { impersonatinguserid: 'systemuser' } };
+export const uncheckedLookup = (table, column, target) => UNCHECKED_LOOKUPS[table]?.[column] === target;
 const clone = cloneStateData;
 const cloneInternal = (value) => cloneStateData(value, { forkTables: true });
 // Per async context, the transaction frame of each DataStore (see DataStore#transact).
@@ -2244,6 +2250,10 @@ export class DataStore {
     // an Update or Delete privilege refusal, which natively comes before any step (runAsSecond); a refused Create does not.
     if (cause?.code === 'NotFound' || cause?.details?.innerCode === '0x80040217' || cause?.details?.refusedBeforeWrite)
       return;
+    // A local limitation (501: the plug-in receives a NotSupportedException, never a native fault) is not a native abort:
+    // its savepoint rolled the call back and the caller's transaction stays usable, so later calls are not reported as
+    // the native 0x8009000c.
+    if (cause instanceof DataError && cause.status === 501) return;
     if (
       !this.pluginInTransaction ||
       !this.pluginRollbackBoundary ||
@@ -4388,6 +4398,11 @@ export class DataStore {
           delete row[key];
           continue;
         }
+        if (!hit && !reference.id.includes('=') && uncheckedLookup(mapping.logicalName, field, target.logicalName)) {
+          row[field] = { id: reference.id.toLowerCase(), logical_name: target.logicalName, name: '' };
+          delete row[key];
+          continue;
+        }
         if (!hit) throw new DataError(`Lookup target ${value} does not exist`, 400, 'InvalidLookup');
         row[field] = {
           id: hit[target.idColumn],
@@ -4831,6 +4846,7 @@ export class DataStore {
         ];
       if (!target && isElastic(targetMapping) && row[`${relationship.from}pid`] == null && bound?.partitionid == null)
         continue;
+      if (!target && uncheckedLookup(mapping.logicalName, relationship.from, targetMapping.logicalName)) continue;
       if (!target) throw new DataError('Lookup target does not exist', 400, 'InvalidLookup');
       // A configured form's server-owned current-contact stamp is not an
       // explicit visitor lookup. Target existence, other fields and plugin
