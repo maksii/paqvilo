@@ -5,7 +5,7 @@
 import path from 'node:path';
 import { immutableStatus } from './immutable-status.mjs';
 import { pluginHandlers, pluginCatalogue } from './exported-plugins.mjs';
-import { pluginRuntimeDescriptors, prepareClrRuntime, closeClrHostPool } from './plugin-clr.mjs';
+import { pluginRuntimeDescriptors, sharedClrRuntimePreparer, closeClrHostPool } from './plugin-clr.mjs';
 import { releaseStaleUploadedRuntimes, releaseUploadedRuntime } from './plugin-uploaded.mjs';
 import { overlayRegisteredSteps } from './dataverse-plugin-registration.mjs';
 import { bulkMessageAvailabilityRecord } from './bulk-message-availability.mjs';
@@ -863,7 +863,7 @@ export function codeAppConnectors(connectors, connections = {}) {
  *   sources: { plugins(), workflows(), layers() } closures over the current Solution sources; sourcesKey(): a value whose
  *   identity changes when sources reload (an array is compared item by item); overrides(): the operations overrides (a
  *   stable object between commits); portalOperations(): portal or null;
- *   workflowOverrides(), timeoutMs(), diagnostic, clock, ids, scheduler, prepareRuntime (default prepareClrRuntime);
+ *   workflowOverrides(), timeoutMs(), diagnostic, clock, ids, scheduler, prepareRuntime (default sharedClrRuntimePreparer());
  *   runtime (runtimeSettings output), surfaces(): the host surfaces as { legacyKey: enabled } (capability summary keys),
  *   inventory(): the Solution inventory records, localOrigin(): the host's own origin once it listens, codeApps(): the loaded
  *   code app records (code-apps-config.mjs loadCodeApps) that topology() counts; projectRoot: the base of the relative pack paths it reports.
@@ -950,7 +950,7 @@ async function hostContext({
   clock = null,
   ids = null,
   scheduler = null,
-  prepareRuntime = prepareClrRuntime,
+  prepareRuntime = sharedClrRuntimePreparer(),
   runtime,
   surfaces = () => ({}),
   inventory = () => [],
@@ -1269,6 +1269,7 @@ function hostLifecycle(c) {
         handlers: handlers.plugins,
         runtimes,
         descriptors: c.descriptors,
+        prepareRuntime: c.prepareRuntime,
         // Registered uploaded assemblies are prepared under the project's ignored .paqvilo cache (plugin-uploaded.mjs).
         clrUploads: { cacheRoot: path.join(c.projectRoot ?? process.cwd(), '.paqvilo', 'plugin-assemblies') },
         operations: c.operations,

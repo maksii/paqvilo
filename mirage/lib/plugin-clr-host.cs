@@ -15,7 +15,9 @@ using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
 
 public static class PaqviloPluginHost {
- static readonly JavaScriptSerializer Json=new JavaScriptSerializer {MaxJsonLength=4*1024*1024,RecursionLimit=64};
+ // One serializer per thread: plug-in threads, the protocol reader and each Execute thread encode concurrently.
+ [ThreadStatic] static JavaScriptSerializer json;
+ static JavaScriptSerializer Json{get{return json??(json=new JavaScriptSerializer {MaxJsonLength=Int32.MaxValue,RecursionLimit=64});}}
  static TextWriter Output;
  // The protocol is UTF-8 JSON lines in both directions (the console code page would corrupt non-ASCII text).
  static TextReader Input;
@@ -24,13 +26,22 @@ public static class PaqviloPluginHost {
  static NotSupportedException Unsupported(string message){var error=new NotSupportedException(message);AdapterUnsupported.Add(error,AdapterMarker);return error;}
  static bool IsAdapterUnsupported(Exception error){object marker;return AdapterUnsupported.TryGetValue(error,out marker);}
 
- sealed class InvocationLease {public readonly Dictionary<string,object> Context;public readonly Dictionary<Exception,int> CallbackErrors=new Dictionary<Exception,int>();readonly int ThreadId=Thread.CurrentThread.ManagedThreadId;volatile bool Closed;public InvocationLease(Dictionary<string,object> context){Context=context;}public void Check(){if(Closed)throw Unsupported("The CLR invocation has completed; its retained service or context handle has expired.");if(Thread.CurrentThread.ManagedThreadId!=ThreadId)throw Unsupported("CLR invocation callbacks are not supported on background threads.");}public void Close(){Closed=true;}}
+ // Callbacks are accepted from any thread the plug-in starts (native sandbox pq.p.5 Thread.Join and pq.p.6 Task.Run complete
+ // nested SDK calls); a handle used after its invocation returned has expired.
+ sealed class InvocationLease {public readonly Dictionary<string,object> Context;public readonly string Id;readonly Dictionary<Exception,int> CallbackErrors=new Dictionary<Exception,int>();volatile bool Closed;public InvocationLease(Dictionary<string,object> context,string id){Context=context;Id=id;}public void Check(){if(Closed)throw Unsupported("The CLR invocation has completed; its retained service or context handle has expired.");}public bool IsClosed{get{return Closed;}}public void NoteError(Exception error,int code){lock(CallbackErrors)CallbackErrors[error]=code;}public bool TryError(Exception error,out int code){lock(CallbackErrors)return CallbackErrors.TryGetValue(error,out code);}public void Close(){Closed=true;ReleaseCalls(this);}}
+ // An SDK callback waits for the answer the protocol reader routes to it by call number, so concurrent callers queue.
+ sealed class PendingCall {public readonly InvocationLease Lease;public readonly ManualResetEventSlim Done=new ManualResetEventSlim(false);public Dictionary<string,object> Answer;public PendingCall(InvocationLease lease){Lease=lease;}}
+ static readonly Dictionary<long,PendingCall> Calls=new Dictionary<long,PendingCall>();static long NextCall;
+ static long Register(InvocationLease lease,PendingCall call){lock(Calls){if(lease.IsClosed)return 0;Calls[++NextCall]=call;return NextCall;}}
+ static void Answer(Dictionary<string,object> answer){PendingCall call;var id=Convert.ToInt64(Get(answer,"call",0),CultureInfo.InvariantCulture);lock(Calls){if(!Calls.TryGetValue(id,out call))return;Calls.Remove(id);}call.Answer=answer;call.Done.Set();}
+ static void ReleaseCalls(InvocationLease lease){List<PendingCall> open;lock(Calls){var ids=Calls.Where(p=>p.Value.Lease==lease).Select(p=>p.Key).ToList();open=ids.Select(id=>Calls[id]).ToList();foreach(var id in ids)Calls.Remove(id);}foreach(var call in open)call.Done.Set();}
  static Timer ParentWatcher;
  static Dictionary<string,object> Map(object value){return value as Dictionary<string,object> ?? new Dictionary<string,object>();}
  static object Get(Dictionary<string,object> map,string key,object fallback=null){object value;return map.TryGetValue(key,out value)?value:fallback;}
  static string Str(Dictionary<string,object> map,string key,string fallback=""){return Convert.ToString(Get(map,key,fallback),CultureInfo.InvariantCulture);}
  static IEnumerable<object> Array(object value){return value as object[] ?? (value is ArrayList?((ArrayList)value).Cast<object>():new object[0]);}
- static void Send(object value){Output.WriteLine(Json.Serialize(value));Output.Flush();}
+ static readonly object OutputLock=new object();
+ static void Send(object value){var line=Json.Serialize(value);lock(OutputLock){Output.WriteLine(line);Output.Flush();}}
  // The platform's ChangedEntityTypes shared variable is a Dictionary<String,String> (native recorder corpus: crud, depth).
  static object Platform(string key,object value){var map=value as Dictionary<string,object>;return key=="ChangedEntityTypes"&&map!=null&&map.Values.All(v=>v is string)?map.ToDictionary(p=>p.Key,p=>(string)p.Value):value;}
  static object Decode(object value){
@@ -175,7 +186,7 @@ public static class PaqviloPluginHost {
  static object Orders(IEnumerable<OrderExpression> orders){return orders.Select(o=>{var result=new Dictionary<string,object>{{"attributeName",o.AttributeName},{"descending",o.OrderType==OrderType.Descending}};var alias=Optional(o,"Alias");if(alias!=null)result["alias"]=alias;var property=typeof(OrderExpression).GetProperty("EntityName");var entity=property==null?null:property.GetValue(o,null);if(entity!=null)result["entityName"]=entity;return result;}).ToArray();}
  static object Filter(FilterExpression filter){var result=new Dictionary<string,object>{{"operatorName",filter.FilterOperator.ToString()},{"conditions",filter.Conditions.Select(c=>{var comparison=new Dictionary<string,object>{{"attributeName",c.AttributeName},{"entityName",c.EntityName},{"operatorName",c.Operator.ToString()},{"values",c.Values.Select(v=>Wire(v)).ToArray()}};var compare=typeof(ConditionExpression).GetProperty("CompareColumns");if(compare!=null&&Convert.ToBoolean(compare.GetValue(c,null)))comparison["compareColumns"]=true;return comparison;}).ToArray()},{"filters",filter.Filters.Select(Filter).ToArray()}};var hint=typeof(FilterExpression).GetProperty("FilterHint");var hintValue=hint==null?null:hint.GetValue(filter,null);if(hintValue!=null)result["filterHint"]=hintValue;if(filter.IsQuickFindFilter)result["isQuickFindFilter"]=true;var property=typeof(FilterExpression).GetProperty("AnyAllFilterLinkEntity");var link=property==null?null:property.GetValue(filter,null);if(link!=null)result["anyAllFilterLinkEntity"]=Encode(link);return result;}
  static object EncodeContext(Dictionary<string,object> context,int depth=0){return new Dictionary<string,object>{{"$type","ExecutionContext"},{"values",context.ToDictionary(p=>p.Key,p=>Wire(p.Value,depth+1))}};}
- static object Rpc(InvocationLease lease,string method,object[] args,Guid? user){lease.Check();Send(new {kind="rpc",method=method,arguments=args.Select(a=>Wire(a)).ToArray(),userId=user.HasValue?(object)user.Value.ToString():null});var answer=Map(Json.DeserializeObject(Input.ReadLine()??"{}"));lease.Check();if(Str(answer,"kind")!="rpc-answer")throw new InvalidOperationException("Invalid SDK RPC answer.");var error=Map(Get(answer,"error"));if(error.Count>0){if(Str(error,"clrExceptionType")=="System.ArgumentException"&&Str(error,"code")=="LocalPluginTagDuplicate"){var argument=new ArgumentException(Str(error,"message"));lease.CallbackErrors[argument]=unchecked((int)0x80040224);throw argument;}var fault=Map(Get(error,"organizationServiceFault"));if(fault.Count>0){var detail=Fault(fault);throw new FaultException<OrganizationServiceFault>(detail,new FaultReason(detail.Message));}throw Unsupported("Local SDK callback cannot supply a native OrganizationServiceFault for "+Str(error,"code")+": "+Str(error,"message"));}return Decode(Get(answer,"value"));}
+ static object Rpc(InvocationLease lease,string method,object[] args,Guid? user){lease.Check();var arguments=args.Select(a=>Wire(a)).ToArray();var call=new PendingCall(lease);var id=Register(lease,call);lease.Check();Send(new {kind="rpc",invocationId=lease.Id,call=id,method=method,arguments=arguments,userId=user.HasValue?(object)user.Value.ToString():null});call.Done.Wait();lease.Check();var answer=call.Answer??new Dictionary<string,object>();if(Str(answer,"kind")!="rpc-answer")throw new InvalidOperationException("Invalid SDK RPC answer.");var error=Map(Get(answer,"error"));if(error.Count>0){if(Str(error,"clrExceptionType")=="System.ArgumentException"&&Str(error,"code")=="LocalPluginTagDuplicate"){var argument=new ArgumentException(Str(error,"message"));lease.NoteError(argument,unchecked((int)0x80040224));throw argument;}var fault=Map(Get(error,"organizationServiceFault"));if(fault.Count>0){var detail=Fault(fault);throw new FaultException<OrganizationServiceFault>(detail,new FaultReason(detail.Message));}throw Unsupported("Local SDK callback cannot supply a native OrganizationServiceFault for "+Str(error,"code")+": "+Str(error,"message"));}return Decode(Get(answer,"value"));}
  // Native hands plug-ins a concrete context object implementing every context interface of the
  // installed SDK, so interface checks behave as they do online; the concrete type is local (native
  // CDSRunTime.Sandbox.Contract.GrpcSandboxPluginExecutionContext), so GetType names differ.
@@ -239,63 +250,99 @@ public static class PaqviloPluginHost {
    if(type.IsInterface&&typeof(IExecutionContext).IsAssignableFrom(type)&&type.IsAssignableFrom(typeof(LocalContext)))return ContextProxy(Context,Lease);
    if(type==typeof(ITracingService))return new LocalTracing(Lease);
    if(type==typeof(IOrganizationServiceFactory)||type==typeof(IServiceEndpointNotificationService))return new LocalServiceFactory(Lease);
-   // ILogger (Application Insights telemetry), IFeatureControlService and IManagedIdentityService are resolved by name: older
-   // SDKs lack them, so the host binds them through a transparent proxy, not a compiled class. Every other type, including
-   // IEnvironmentVariableService and IOrganizationService, is null (recorded native sandbox: GetService per type).
-   if(type.IsInterface&&type.FullName=="Microsoft.Xrm.Sdk.PluginTelemetry.ILogger")return new TelemetryLogger(type,Lease).GetTransparentProxy();
-   if(type.IsInterface&&new[]{"Microsoft.Xrm.Sdk.IFeatureControlService","Microsoft.Xrm.Sdk.IManagedIdentityService"}.Contains(type.FullName))return new ServiceCalls(type,Lease).GetTransparentProxy();
+   // ILogger, IFeatureControlService and IManagedIdentityService are concrete classes compiled only when the loaded SDK
+   // declares them (older SDKs lack them). Every other type, including IEnvironmentVariableService and IOrganizationService,
+   // is null (recorded native sandbox: GetService per type).
+#if PAQVILO_LOGGER
+   if(type==typeof(Microsoft.Xrm.Sdk.PluginTelemetry.ILogger))return new TelemetryLogger(Lease);
+#endif
+#if PAQVILO_FEATURE
+   if(type==typeof(IFeatureControlService))return new FeatureControl(Lease);
+#endif
+#if PAQVILO_IDENTITY
+   if(type==typeof(IManagedIdentityService))return new ManagedIdentity(Lease);
+#endif
    return null;
   }
  }
+ // The service objects the online sandbox hands out, with the native interface sets (sandbox 'services' block, both captures).
+ // Calls a service makes to the organization are RPCs named after the interface method.
+#if PAQVILO_FEATURE
+ // Native PluginFeatureControlService: IFeatureControlService and IFeatureControlService2.
+ sealed class FeatureControl:IFeatureControlService
+#if PAQVILO_FEATURE2
+  ,IFeatureControlService2
+#endif
+ {
+  readonly InvocationLease Lease;public FeatureControl(InvocationLease lease){Lease=lease;}
+  public object GetFeatureControl(string namespaceValue,string featureControlName,out Type featureControlType){featureControlType=null;return Rpc(Lease,"IFeatureControlService.GetFeatureControl",new object[]{namespaceValue,featureControlName},null);}
+#if PAQVILO_FEATURE2
+  public IDictionary<string,FeatureControlSetting> GetFeatureControlSettingsWithUserContext(string namespaceValue,IList<string> featureControlNames,IDictionary<string,string> userContext){return Rpc(Lease,"IFeatureControlService2.GetFeatureControlSettingsWithUserContext",new object[]{namespaceValue,featureControlNames==null?null:featureControlNames.ToArray(),userContext==null?null:userContext.ToDictionary(p=>p.Key,p=>(object)p.Value)},null) as IDictionary<string,FeatureControlSetting>;}
+#endif
+ }
+#endif
+#if PAQVILO_IDENTITY
+ // Native ManagedIdentityServiceProvider: IManagedIdentityService and the platform's internal IInternalManagedIdentityService.
+ sealed class ManagedIdentity:IManagedIdentityService,Microsoft.Xrm.Sdk.IInternalManagedIdentityService {
+  readonly InvocationLease Lease;public ManagedIdentity(InvocationLease lease){Lease=lease;}
+  public string AcquireToken(IEnumerable<string> scopes){return (string)Rpc(Lease,"IManagedIdentityService.AcquireToken",new object[]{scopes==null?null:scopes.ToArray()},null);}
+  public string AcquireToken(Guid managedIdentityId,IEnumerable<string> scopes){return (string)Rpc(Lease,"IManagedIdentityService.AcquireToken",new object[]{managedIdentityId,scopes==null?null:scopes.ToArray()},null);}
+ }
+#endif
+#if PAQVILO_LOGGER
+ // Native SandboxPluginEmptyLogger: ILogger. Each entry goes to the local telemetry log, never to the plug-in trace log.
+ sealed class TelemetryLogger:Microsoft.Xrm.Sdk.PluginTelemetry.ILogger {
+  readonly InvocationLease Lease;public TelemetryLogger(InvocationLease lease){Lease=lease;}
+  sealed class Scope:IDisposable {public void Dispose(){}}
+  static string Template(string format,object[] args){if(format==null)return null;var index=0;return System.Text.RegularExpressions.Regex.Replace(format,"\\{[^{}]+\\}",hole=>args!=null&&index<args.Length?Convert.ToString(args[index++],CultureInfo.InvariantCulture):hole.Value);}
+  void Send(string level,string message){Lease.Check();PaqviloPluginHost.Send(new {kind="telemetry",invocationId=Lease.Id,level=level,message=message});}
+  void Write(string level,Exception exception,string text){Send(level,exception==null?text:text+" "+exception.GetType().FullName+": "+exception.Message);}
+  void Write(string level,Exception exception,string format,object[] args){Write(level,exception,Template(format,args));}
+  public IDisposable BeginScope<TState>(TState state){Lease.Check();return new Scope();}
+  public IDisposable BeginScope(string messageFormat,params object[] args){Lease.Check();return new Scope();}
+  public bool IsEnabled(Microsoft.Xrm.Sdk.PluginTelemetry.LogLevel logLevel){Lease.Check();return true;}
+  public void Log<TState>(Microsoft.Xrm.Sdk.PluginTelemetry.LogLevel logLevel,Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,TState state,Exception exception,Func<TState,Exception,string> formatter){Write(logLevel.ToString(),exception,formatter==null?null:formatter(state,exception));}
+  public void Log(Microsoft.Xrm.Sdk.PluginTelemetry.LogLevel logLevel,Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,Exception exception,string message,params object[] args){Write(logLevel.ToString(),exception,message,args);}
+  public void Log(Microsoft.Xrm.Sdk.PluginTelemetry.LogLevel logLevel,Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,string message,params object[] args){Write(logLevel.ToString(),null,message,args);}
+  public void Log(Microsoft.Xrm.Sdk.PluginTelemetry.LogLevel logLevel,Exception exception,string message,params object[] args){Write(logLevel.ToString(),exception,message,args);}
+  public void Log(Microsoft.Xrm.Sdk.PluginTelemetry.LogLevel logLevel,string message,params object[] args){Write(logLevel.ToString(),null,message,args);}
+  public void LogTrace(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,Exception exception,string message,params object[] args){Write("Trace",exception,message,args);}
+  public void LogTrace(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,string message,params object[] args){Write("Trace",null,message,args);}
+  public void LogTrace(Exception exception,string message,params object[] args){Write("Trace",exception,message,args);}
+  public void LogTrace(string message,params object[] args){Write("Trace",null,message,args);}
+  public void LogDebug(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,Exception exception,string message,params object[] args){Write("Debug",exception,message,args);}
+  public void LogDebug(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,string message,params object[] args){Write("Debug",null,message,args);}
+  public void LogDebug(Exception exception,string message,params object[] args){Write("Debug",exception,message,args);}
+  public void LogDebug(string message,params object[] args){Write("Debug",null,message,args);}
+  public void LogInformation(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,Exception exception,string message,params object[] args){Write("Information",exception,message,args);}
+  public void LogInformation(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,string message,params object[] args){Write("Information",null,message,args);}
+  public void LogInformation(Exception exception,string message,params object[] args){Write("Information",exception,message,args);}
+  public void LogInformation(string message,params object[] args){Write("Information",null,message,args);}
+  public void LogWarning(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,Exception exception,string message,params object[] args){Write("Warning",exception,message,args);}
+  public void LogWarning(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,string message,params object[] args){Write("Warning",null,message,args);}
+  public void LogWarning(Exception exception,string message,params object[] args){Write("Warning",exception,message,args);}
+  public void LogWarning(string message,params object[] args){Write("Warning",null,message,args);}
+  public void LogError(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,Exception exception,string message,params object[] args){Write("Error",exception,message,args);}
+  public void LogError(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,string message,params object[] args){Write("Error",null,message,args);}
+  public void LogError(Exception exception,string message,params object[] args){Write("Error",exception,message,args);}
+  public void LogError(string message,params object[] args){Write("Error",null,message,args);}
+  public void LogCritical(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,Exception exception,string message,params object[] args){Write("Critical",exception,message,args);}
+  public void LogCritical(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,string message,params object[] args){Write("Critical",null,message,args);}
+  public void LogCritical(Exception exception,string message,params object[] args){Write("Critical",exception,message,args);}
+  public void LogCritical(string message,params object[] args){Write("Critical",null,message,args);}
+  public void LogMetric(string metricName,long value){Send("Metric",metricName+"="+Convert.ToString(value,CultureInfo.InvariantCulture));}
+  public void LogMetric(string metricName,IDictionary<string,string> metricDimensions,long value){Send("Metric",metricName+"="+Convert.ToString(value,CultureInfo.InvariantCulture));}
+  public void AddCustomProperty(string propertyName,string propertyValue){Send("Property",propertyName+"="+propertyValue);}
+  public void Execute(string activityName,Action action,IEnumerable<KeyValuePair<string,string>> additionalCustomProperties){Lease.Check();action();}
+  public System.Threading.Tasks.Task ExecuteAsync(string activityName,Func<System.Threading.Tasks.Task> action,IEnumerable<KeyValuePair<string,string>> additionalCustomProperties){Lease.Check();return action();}
+ }
+#endif
  // Concrete service objects with the public SDK interfaces the online sandbox objects implement (native corpus
  // 'services': ITracingService; the factory adds IClusterServiceFactory, IProxyTypesAssemblyProvider,
  // IServiceEndpointNotificationService and IDisposable; the service adds IClusterService).
- // An SDK service interface whose calls go to the organization as RPCs named after the interface method.
- sealed class ServiceCalls:System.Runtime.Remoting.Proxies.RealProxy {
-  readonly InvocationLease Lease;readonly Type Contract;
-  public ServiceCalls(Type type,InvocationLease lease):base(type){Lease=lease;Contract=type;}
-  public override System.Runtime.Remoting.Messaging.IMessage Invoke(System.Runtime.Remoting.Messaging.IMessage message){
-   var call=(System.Runtime.Remoting.Messaging.IMethodCallMessage)message;var method=(MethodInfo)call.MethodBase;
-   try{
-    if(method.DeclaringType==typeof(object))return new System.Runtime.Remoting.Messaging.ReturnMessage(method.Name=="ToString"?Contract.FullName:method.Name=="GetHashCode"?(object)GetHashCode():method.Name=="Equals"?(object)ReferenceEquals(call.Args[0],GetTransparentProxy()):null,null,0,call.LogicalCallContext,call);
-    var parameters=method.GetParameters();var args=new List<object>();
-    for(var i=0;i<parameters.Length;i++){if(parameters[i].IsOut)continue;var arg=call.Args[i];args.Add(arg is IEnumerable<string>&&!(arg is string)&&!(arg is string[])?((IEnumerable<string>)arg).ToArray():arg);}
-    var value=Rpc(Lease,Contract.Name+"."+method.Name,args.ToArray(),null);
-    var outs=call.Args.ToArray();for(var i=0;i<parameters.Length;i++)if(parameters[i].IsOut)outs[i]=null;
-    return new System.Runtime.Remoting.Messaging.ReturnMessage(value,outs,outs.Length,call.LogicalCallContext,call);
-   }catch(Exception error){return new System.Runtime.Remoting.Messaging.ReturnMessage(error,call);}
-  }
- }
- // ILogger: each log entry goes to the local telemetry log (natively Application Insights), never to the plug-in trace log.
- sealed class TelemetryLogger:System.Runtime.Remoting.Proxies.RealProxy {
-  readonly InvocationLease Lease;readonly Type Contract;
-  public TelemetryLogger(Type type,InvocationLease lease):base(type){Lease=lease;Contract=type;}
-  sealed class Scope:IDisposable {public void Dispose(){}}
-  static string Template(string format,object[] args){if(format==null)return null;var index=0;return System.Text.RegularExpressions.Regex.Replace(format,"\\{[^{}]+\\}",hole=>args!=null&&index<args.Length?Convert.ToString(args[index++],CultureInfo.InvariantCulture):hole.Value);}
-  public override System.Runtime.Remoting.Messaging.IMessage Invoke(System.Runtime.Remoting.Messaging.IMessage message){
-   var call=(System.Runtime.Remoting.Messaging.IMethodCallMessage)message;var method=(MethodInfo)call.MethodBase;
-   try{
-    Lease.Check();object result=null;var name=method.Name;var parameters=method.GetParameters();
-    Func<Func<ParameterInfo,bool>,object> pick=match=>{for(var i=0;i<parameters.Length;i++)if(match(parameters[i]))return call.Args[i];return null;};
-    if(method.DeclaringType==typeof(object))result=name=="ToString"?Contract.FullName:name=="GetHashCode"?(object)GetHashCode():name=="Equals"?(object)ReferenceEquals(call.Args[0],GetTransparentProxy()):null;
-    else if(name=="IsEnabled")result=true;
-    else if(name=="BeginScope")result=new Scope();
-    else if(name=="Execute")((Action)pick(p=>typeof(Delegate).IsAssignableFrom(p.ParameterType)))();
-    else if(name=="ExecuteAsync")result=((Delegate)pick(p=>typeof(Delegate).IsAssignableFrom(p.ParameterType))).DynamicInvoke();
-    else if(name=="AddCustomProperty")Send(new {kind="telemetry",level="Property",message=call.Args[0]+"="+call.Args[1]});
-    else if(name=="LogMetric")Send(new {kind="telemetry",level="Metric",message=call.Args[0]+"="+Convert.ToString(call.Args[call.Args.Length-1],CultureInfo.InvariantCulture)});
-    else if(name.StartsWith("Log",StringComparison.Ordinal)){
-     var level=name=="Log"?Convert.ToString(pick(p=>p.ParameterType.Name=="LogLevel")):name.Substring(3);var exception=pick(p=>p.ParameterType==typeof(Exception)) as Exception;var formatter=pick(p=>typeof(Delegate).IsAssignableFrom(p.ParameterType)) as Delegate;
-     var text=formatter!=null?Convert.ToString(formatter.DynamicInvoke(pick(p=>p.ParameterType.IsGenericParameter),exception)):Template(pick(p=>p.ParameterType==typeof(string)) as string,pick(p=>p.ParameterType==typeof(object[])) as object[]);
-     Send(new {kind="telemetry",level=level,message=exception==null?text:text+" "+exception.GetType().FullName+": "+exception.Message});
-    }else throw Unsupported("Unsupported ILogger member: "+name);
-    return new System.Runtime.Remoting.Messaging.ReturnMessage(result,null,0,call.LogicalCallContext,call);
-   }catch(Exception error){return new System.Runtime.Remoting.Messaging.ReturnMessage(error,call);}
-  }
- }
  sealed class LocalTracing:ITracingService {
   readonly InvocationLease Lease;public LocalTracing(InvocationLease lease){Lease=lease;}
-  public void Trace(string format,params object[] args){Lease.Check();Send(new {kind="trace",message=String.Format(CultureInfo.InvariantCulture,format,args)});}
+  public void Trace(string format,params object[] args){Lease.Check();Send(new {kind="trace",invocationId=Lease.Id,message=format!=null&&(args==null||args.Length==0)?format:String.Format(CultureInfo.InvariantCulture,format,args)});}
  }
  sealed class LocalServiceFactory:IOrganizationServiceFactory,IProxyTypesAssemblyProvider,IServiceEndpointNotificationService,IDisposable
 #if PAQVILO_CONTEXT7
@@ -355,15 +402,30 @@ public static class PaqviloPluginHost {
   int parentId;long parentStart;if(!Int32.TryParse(args[offset+1],out parentId)||parentId<=0||!Int64.TryParse(args[offset+3],out parentStart)||parentStart<=0)return 73;
   Process owner;try{owner=Process.GetProcessById(parentId);if(owner.StartTime.ToUniversalTime().Ticks!=parentStart||owner.HasExited)return 74;}catch{return 74;}
   ParentWatcher=new Timer(_=>{try{if(owner.HasExited||owner.StartTime.ToUniversalTime().Ticks!=parentStart)Environment.Exit(74);}catch{Environment.Exit(74);}},null,100,100);
-  Input=new StreamReader(Console.OpenStandardInput(),new System.Text.UTF8Encoding(false));Output=new StreamWriter(Console.OpenStandardOutput(),new System.Text.UTF8Encoding(false));Console.SetOut(TextWriter.Null);
-  try{do{var line=Input.ReadLine();if(line==null)return 0;var result=ExecuteLine(line);if(!persistent)return result;}while(true);}finally{ParentWatcher.Dispose();owner.Dispose();}
+  Input=new StreamReader(Console.OpenStandardInput(),new System.Text.UTF8Encoding(false));Output=new StreamWriter(Console.OpenStandardOutput(),new System.Text.UTF8Encoding(false));Console.SetOut(TextWriter.Null);Console.SetError(TextWriter.Null);
+  SandboxCulture();
+  // The reader routes SDK answers to their waiting callers and runs every invocation on its own thread, so a nested Execute
+  // enters this process while its caller waits in an SDK call (native depth: nested steps run on the same worker process).
+  try{while(true){var line=Input.ReadLine();if(line==null)return 0;var message=Map(Json.DeserializeObject(line));if(Str(message,"kind")=="rpc-answer"){Answer(message);continue;}new Thread(()=>ExecuteLine(message)){IsBackground=true}.Start();}}finally{ParentWatcher.Dispose();owner.Dispose();}
  }
- static int ExecuteLine(string line){
-  InvocationLease lease=null;bool pluginExecuting=false;try{
-   var input=Map(Json.DeserializeObject(line));var context=Map(Get(input,"context")).ToDictionary(p=>p.Key,p=>Decode(p.Value));context["InputParameters"]=Decode(Get(input,"inputParameters"));context["OutputParameters"]=Decode(Get(input,"outputParameters"));context["SharedVariables"]=Decode(Get(input,"sharedVariables"));context["PreEntityImages"]=Images(Get(input,"preImages"));context["PostEntityImages"]=Images(Get(input,"postImages"));
-   lease=new InvocationLease(context);var assembly=Assembly.LoadFrom(Str(input,"assembly"));var expected=Str(input,"expectedAssemblyName");if(expected.Length>0&&assembly.GetName().Name!=expected)throw Unsupported("CLR assembly identity differs from the exported registration.");var type=assembly.GetType(Str(input,"typeName"),true);if(!typeof(IPlugin).IsAssignableFrom(type))throw Unsupported("The configured original type does not implement IPlugin.");
+ // The online sandbox runs plug-ins in en-US and UTC (native sandbox body.sandbox, both captures: culture and uiCulture en-US,
+ // timeZone UTC, utcOffsetMinutes 0). Threads the plug-in starts inherit the default cultures.
+ static void SandboxCulture(){var culture=CultureInfo.GetCultureInfo("en-US");CultureInfo.DefaultThreadCurrentCulture=culture;CultureInfo.DefaultThreadCurrentUICulture=culture;Thread.CurrentThread.CurrentCulture=culture;Thread.CurrentThread.CurrentUICulture=culture;PinUtc();}
+ // .NET Framework has no public setter for the local zone: TimeZoneInfo.Local, the DateTime.Now offset cache and
+ // TimeZone.CurrentTimeZone are replaced by UTC, again before each invocation (a plug-in may call ClearCachedData).
+ static void PinUtc(){const BindingFlags S=BindingFlags.NonPublic|BindingFlags.Static,I=BindingFlags.NonPublic|BindingFlags.Instance;var cached=typeof(TimeZoneInfo).GetField("s_cachedData",S);var data=cached==null?null:cached.GetValue(null);var type=data==null?null:data.GetType();var local=type==null?null:type.GetField("m_localTimeZone",I);var year=type==null?null:type.GetField("m_oneYearLocalFromUtc",I);var rule=typeof(TimeZoneInfo).GetNestedType("OffsetAndRule",BindingFlags.NonPublic);var zone=typeof(TimeZone).GetField("currentTimeZone",S);if(local==null||year==null||rule==null||zone==null)throw new InvalidOperationException("The CLR host cannot pin the sandbox time zone to UTC on this .NET Framework.");lock(data){local.SetValue(data,TimeZoneInfo.Utc);year.SetValue(data,Activator.CreateInstance(rule,I|BindingFlags.Public,null,new object[]{DateTime.UtcNow.Year,TimeSpan.Zero,null},null));}zone.SetValue(null,new UtcZone());if(TimeZoneInfo.Local.Id!="UTC"||TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow)!=TimeSpan.Zero||(DateTime.Now-DateTime.UtcNow).Duration()>TimeSpan.FromMinutes(1)||TimeZone.CurrentTimeZone.GetUtcOffset(DateTime.Now)!=TimeSpan.Zero)throw new InvalidOperationException("The CLR host time zone is not UTC.");}
+ sealed class UtcZone:TimeZone {public override string StandardName{get{return TimeZoneInfo.Utc.StandardName;}}public override string DaylightName{get{return TimeZoneInfo.Utc.DaylightName;}}public override DaylightTime GetDaylightChanges(int year){return new DaylightTime(DateTime.MinValue,DateTime.MinValue,TimeSpan.Zero);}public override TimeSpan GetUtcOffset(DateTime time){return TimeSpan.Zero;}}
+ static int ExecuteLine(Dictionary<string,object> input){
+  InvocationLease lease=null;bool pluginExecuting=false;var invocationId=Get(input,"invocationId") as string;try{
+   PinUtc();var context=Map(Get(input,"context")).ToDictionary(p=>p.Key,p=>Decode(p.Value));context["InputParameters"]=Decode(Get(input,"inputParameters"));context["OutputParameters"]=Decode(Get(input,"outputParameters"));context["SharedVariables"]=Decode(Get(input,"sharedVariables"));context["PreEntityImages"]=Images(Get(input,"preImages"));context["PostEntityImages"]=Images(Get(input,"postImages"));
+   lease=new InvocationLease(context,invocationId);var assembly=Assembly.LoadFrom(Str(input,"assembly"));var expected=Str(input,"expectedAssemblyName");if(expected.Length>0&&assembly.GetName().Name!=expected)throw Unsupported("CLR assembly identity differs from the exported registration.");var type=assembly.GetType(Str(input,"typeName"),true);if(!typeof(IPlugin).IsAssignableFrom(type))throw Unsupported("The configured original type does not implement IPlugin.");
    object plugin;var ctor=type.GetConstructor(new[]{typeof(string),typeof(string)});if(ctor!=null)plugin=ctor.Invoke(new object[]{Get(input,"unsecureConfiguration"),Get(input,"secureConfiguration")});else{ctor=type.GetConstructor(new[]{typeof(string)});plugin=ctor!=null?ctor.Invoke(new object[]{Get(input,"unsecureConfiguration")}):Activator.CreateInstance(type);}
-   pluginExecuting=true;((IPlugin)plugin).Execute(new Services(context,lease));pluginExecuting=false;var parameters=(ParameterCollection)context["InputParameters"];Send(new {kind="result",target=parameters.Contains("Target")?Wire(parameters["Target"]):null,inputParameters=Wire(parameters),outputParameters=Wire(context["OutputParameters"]),sharedVariables=Wire(context["SharedVariables"]),assemblyFullName=type.Assembly.FullName,sdkFullName=typeof(IPlugin).Assembly.FullName});return 0;
-  }catch(Exception cause){while(cause is TargetInvocationException&&cause.InnerException!=null)cause=cause.InnerException;var plugin=cause as InvalidPluginExecutionException;var fault=cause as FaultException<OrganizationServiceFault>;var detail=fault==null?null:fault.Detail;int callbackCode=0;bool callback=lease!=null&&lease.CallbackErrors.TryGetValue(cause,out callbackCode);Send(new {kind="failure",duringPluginExecute=pluginExecuting,pluginException=plugin!=null,code=cause is NotSupportedException&&(!pluginExecuting||IsAdapterUnsupported(cause))?"LocalPluginSdkUnsupported":"PluginValidation",message=cause.Message,exceptionType=cause.GetType().FullName,errorCode=plugin!=null?(object)plugin.ErrorCode:detail!=null?(object)detail.ErrorCode:callback?(object)callbackCode:null,operationStatus=plugin==null?null:plugin.Status.ToString(),exceptionDetails=plugin!=null?(object)plugin.ExceptionDetails:detail!=null?(object)detail.ErrorDetails:null});return 1;}finally{if(lease!=null)lease.Close();}
+   pluginExecuting=true;((IPlugin)plugin).Execute(new Services(context,lease));pluginExecuting=false;var parameters=(ParameterCollection)context["InputParameters"];Send(new {kind="result",invocationId=invocationId,target=parameters.Contains("Target")?Wire(parameters["Target"]):null,inputParameters=Wire(parameters),outputParameters=Wire(context["OutputParameters"]),sharedVariables=Wire(context["SharedVariables"]),assemblyFullName=type.Assembly.FullName,sdkFullName=typeof(IPlugin).Assembly.FullName});return 0;
+  }catch(Exception cause){while(cause is TargetInvocationException&&cause.InnerException!=null)cause=cause.InnerException;var plugin=cause as InvalidPluginExecutionException;var fault=cause as FaultException<OrganizationServiceFault>;var detail=fault==null?null:fault.Detail;int callbackCode=0;bool callback=lease!=null&&lease.TryError(cause,out callbackCode);Send(new {kind="failure",invocationId=invocationId,duringPluginExecute=pluginExecuting,pluginException=plugin!=null,code=cause is NotSupportedException&&(!pluginExecuting||IsAdapterUnsupported(cause))?"LocalPluginSdkUnsupported":"PluginValidation",message=cause.Message,exceptionType=cause.GetType().FullName,errorCode=plugin!=null?(object)plugin.ErrorCode:detail!=null?(object)detail.ErrorCode:callback?(object)callbackCode:null,operationStatus=plugin==null?null:plugin.Status.ToString(),exceptionDetails=plugin!=null?(object)plugin.ExceptionDetails:detail!=null?(object)detail.ErrorDetails:null});return 1;}finally{if(lease!=null)lease.Close();}
  }
 }
+#if PAQVILO_IDENTITY
+// The platform's internal managed-identity contract its ManagedIdentityServiceProvider implements (sandbox 'services' block);
+// it declares nothing a plug-in can call.
+namespace Microsoft.Xrm.Sdk {interface IInternalManagedIdentityService {}}
+#endif

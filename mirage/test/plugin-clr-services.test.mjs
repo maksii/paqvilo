@@ -1,4 +1,5 @@
-// @test-kind parity: native dataverse-recorder 'services' corpus: public SDK interface sets of the tracing, factory and organization service objects
+// @test-kind parity: native dataverse-recorder 'services' corpus (both captures): interface sets of the tracing, factory, organization, ILogger, feature-control and managed-identity service objects
+// @parity-evidence: native and native-r2 sandbox services block: get:ILogger, get:IFeatureControlService and get:IManagedIdentityService interface sets
 // Native corpus (dataverse-recorder 'services'): the online sandbox hands a plug-in concrete service objects whose
 // public SDK interfaces are ITracingService; IOrganizationServiceFactory with IClusterServiceFactory,
 // IProxyTypesAssemblyProvider, IServiceEndpointNotificationService and IDisposable; and IOrganizationService with
@@ -26,7 +27,7 @@ test(
       source = path.join(root, 'Services.cs');
     await fs.writeFile(
       source,
-      `using System;using System.Linq;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Shape:IPlugin{static string Of(object o){return string.Join(",",o.GetType().GetInterfaces().Select(i=>i.Name).OrderBy(n=>n,StringComparer.Ordinal));}public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var t=(Entity)c.InputParameters["Target"];var trace=(ITracingService)p.GetService(typeof(ITracingService));trace.Trace("shape {0}",c.Stage);var factory=(IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory));var service=factory.CreateOrganizationService(c.UserId);var note=new Entity("x_note");note["x_name"]="from plug-in";service.Create(note);t["x_trace"]=Of(trace);t["x_factory"]=Of(factory);t["x_service"]=Of(service);}}}`,
+      `using System;using System.Linq;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Shape:IPlugin{static string Of(object o){return string.Join(",",o.GetType().GetInterfaces().Select(i=>i.Name).OrderBy(n=>n,StringComparer.Ordinal));}public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var t=(Entity)c.InputParameters["Target"];var trace=(ITracingService)p.GetService(typeof(ITracingService));trace.Trace("shape {0}",c.Stage);var factory=(IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory));var service=factory.CreateOrganizationService(c.UserId);var note=new Entity("x_note");note["x_name"]="from plug-in";service.Create(note);t["x_trace"]=Of(trace);t["x_factory"]=Of(factory);t["x_service"]=Of(service);var logger=p.GetService(typeof(Microsoft.Xrm.Sdk.PluginTelemetry.ILogger));var feature=p.GetService(typeof(IFeatureControlService));var identity=p.GetService(typeof(IManagedIdentityService));t["x_logger"]=Of(logger);t["x_feature"]=Of(feature);t["x_identity"]=Of(identity);t["x_shape"]=(logger.GetType()!=null&&feature.GetType()!=null&&identity.GetType()!=null&&feature is IFeatureControlService2).ToString();}}}`,
     );
     compileClr(source, path.join(root, 'Services.dll'), { references: [sdk] });
     const runtime = await prepareClrRuntime({
@@ -50,7 +51,15 @@ test(
     state.mappings.x_item = {
       entitySet: 'x_items',
       idColumn: 'x_itemid',
-      fields: { x_trace: text, x_factory: text, x_service: text },
+      fields: {
+        x_trace: text,
+        x_factory: text,
+        x_service: text,
+        x_logger: text,
+        x_feature: text,
+        x_identity: text,
+        x_shape: text,
+      },
     };
     state.mappings.x_note = { entitySet: 'x_notes', idColumn: 'x_noteid', fields: { x_name: text } };
     state.tables.x_item = [];
@@ -83,6 +92,12 @@ test(
       'IClusterServiceFactory,IDisposable,IOrganizationServiceFactory,IProxyTypesAssemblyProvider,IServiceEndpointNotificationService',
     );
     assert.equal(row.x_service, 'IClusterService,IOrganizationService');
+    // Native services block: SandboxPluginEmptyLogger [ILogger], PluginFeatureControlService [IFeatureControlService,
+    // IFeatureControlService2], ManagedIdentityServiceProvider [IInternalManagedIdentityService, IManagedIdentityService].
+    assert.equal(row.x_logger, 'ILogger');
+    assert.equal(row.x_feature, 'IFeatureControlService,IFeatureControlService2');
+    assert.equal(row.x_identity, 'IInternalManagedIdentityService,IManagedIdentityService');
+    assert.equal(row.x_shape, 'True');
     assert.deepEqual(
       store.tableRows('x_note').map((note) => note.x_name),
       ['from plug-in'],

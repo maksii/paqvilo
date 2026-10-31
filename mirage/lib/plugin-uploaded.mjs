@@ -189,6 +189,8 @@ function prepareUploaded({ store, item, assembly, packageContent, uploads }) {
     sdkAssembly: path.basename(sdk),
     typeName: item.typeName,
     timeoutMs: TIMEOUT_MS,
+    // One long-lived host per uploaded content, as one native sandbox worker serves the assembly's steps.
+    persistentHost: true,
     context,
     // The SDK service's identities are the organization's users (plugin-clr.mjs dispatchSdkCallCore): SYSTEM for
     // CreateOrganizationService(null), the caller's security roles otherwise.
@@ -226,8 +228,8 @@ export function releaseUploadedRuntime(runtimes, stepId, diagnostic = () => {}) 
   const runtime = runtimes.get(stepId);
   if (!runtime?.uploaded) return;
   runtimes.delete(stepId);
-  closeClrHostPool({ runtime, diagnostic });
   if ([...runtimes.values()].some((other) => other.directory === runtime.directory)) return;
+  closeClrHostPool({ runtime, diagnostic });
   try {
     fs.rmSync(runtime.directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 });
   } catch (cause) {

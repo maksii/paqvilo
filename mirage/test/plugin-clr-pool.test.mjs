@@ -209,16 +209,19 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
                   // One millisecond past the native 2-minute sandbox limit.
                   port1.postMessage({ kind: 'invoke', invocationId: 'invented-invocation', input, timeout: 120_001 });
               }
-              if (message.kind === 'failure') resolve(message);
+              // A completion after an SDK callback line is legal: the callback came from a plug-in thread.
+              if (message.kind === 'failure' || (mode === 'pending' && message.kind === 'result')) resolve(message);
             });
             if (pooled && mode !== 'invalid-timeout')
               port1.postMessage({ kind: 'invoke', invocationId: 'invented-invocation', input, timeout: 10000 });
           });
-          assert.equal(
-            failure.code,
-            mode === 'startup-gate' ? 'LocalPluginTimeout' : 'LocalPluginProtocol',
-            failure.message,
-          );
+          if (mode === 'pending') assert.equal(failure.kind, 'result');
+          else
+            assert.equal(
+              failure.code,
+              mode === 'startup-gate' ? 'LocalPluginTimeout' : 'LocalPluginProtocol',
+              failure.message,
+            );
           if (mode === 'startup-gate') {
             assert.equal(waitingBeforeDispatch, true, 'the protocol gate precedes plugin dispatch');
             assert.equal(completed, false, 'the gate cannot produce a result without a second input line');
@@ -227,7 +230,8 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
           assert.ok(pid > 0);
           // Malformed hosts stay alive and the startup gate waits for input the
           // driver never sends, so only the worker's kill makes either absent.
-          assert.equal(await processAbsent(pid, HOST_EXIT_LIMIT_MS), true, 'worker must stop its malformed host');
+          if (!(pooled && mode === 'pending'))
+            assert.equal(await processAbsent(pid, HOST_EXIT_LIMIT_MS), true, 'worker must stop its malformed host');
         });
   },
 );
@@ -414,7 +418,7 @@ test(
 );
 
 test(
-  'pooled original DLL gets fresh instance, configuration, context, frame and SDK callbacks; failures close owned hosts',
+  'pooled original DLL gets fresh instance, configuration, context, frame and SDK callbacks; a plug-in failure keeps its host, a timeout closes it',
   { skip: CLR_SKIP },
   async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-pool-')),
@@ -508,15 +512,16 @@ target["instanceCalls"]=++calls;target["configuration"]=config;target["request"]
     assert.equal(clrHostPoolStatus()[0].pid, pid);
     assert.equal(notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STARTED').length, 1);
     runtime.descriptor.unsecureConfiguration = 'reject';
+    // A plug-in exception leaves the worker running (native-r2 traceFaults: one domainStamp across faulting requests).
     assert.throws(invoke, /Configured rejection/);
-    assert.deepEqual(clrHostPoolStatus(), []);
-    assert.equal(notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED').at(-1).absenceVerified, true);
+    assert.equal(clrHostPoolStatus()[0].pid, pid);
     runtime.descriptor.unsecureConfiguration = 'after-rejection';
     assert.equal(invoke().target.attributes.configuration, 'after-rejection');
     runtime.descriptor.unsecureConfiguration = 'sleep';
     runtime.descriptor.timeoutMs = 1500;
     assert.throws(invoke, (error) => error.code === 'LocalPluginTimeout');
     assert.deepEqual(clrHostPoolStatus(), []);
+    assert.equal(notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED').at(-1).absenceVerified, true);
     runtime.descriptor.timeoutMs = 10000;
     runtime.descriptor.unsecureConfiguration = 'recovered';
     assert.equal(invoke().target.attributes.observed, 'Second');
