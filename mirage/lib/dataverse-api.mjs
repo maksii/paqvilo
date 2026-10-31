@@ -1,4 +1,11 @@
 import { readRawBody } from './http-body.mjs';
+import {
+  accessNamesOf,
+  entryMessageActive,
+  maskOfNames,
+  runEntryMessage,
+  sharedMaskOf,
+} from './plugin-platform-messages.mjs';
 import { dataverseHttpReaderContext } from './dataverse-scalar-reader.mjs';
 // Dataverse HTTP listeners: STS, discovery, SOAP and the Web API router.
 // Table rows are delegated to dataverse-records.mjs; metadata to dataverse-metadata.mjs.
@@ -600,14 +607,40 @@ function metadataChanges(d, c, route) {
   };
 }
 
-function principalAccess(d, c, route, subjectId, common) {
+async function principalAccess(d, c, route, subjectId, common) {
   const reference = referenceOf(parseFunctionParameters(route.params, c.url.searchParams).Target);
   const target = referenceRoute(reference, c.origin, route.version);
   if (target?.kind !== 'entity') throw new DataError('Invalid argument.', 400, 'InvalidKey');
   const logical = d.store.resolveMapping(target.set).logicalName;
   const rowId = parseKey(target.key)?.id ?? target.key;
-  const row = d.store.get(logical, rowId, common.identity);
+  // No Retrieve pipeline runs before RetrievePrincipalAccess (recorded native webApiNamed).
+  const row = d.store.get(logical, rowId, common.identity, { skipPluginRead: true });
   if (!row) throw new DataError(`${logical} With Id = ${rowId} Does Not Exist`, 404, 'NotFound', { id: rowId });
+  // RetrievePrincipalAccess runs its own pipeline (Target the row, Principal the bound subject; recorded native
+  // webApiNamed), as the SDK path does (plugin-platform-messages.mjs).
+  const subjectTable = route.set === 'teams' ? 'team' : route.set === 'organizations' ? 'organization' : 'systemuser';
+  if (subjectTable !== 'organization' && entryMessageActive(d.store, 'RetrievePrincipalAccess', logical, common)) {
+    let answer;
+    await runEntryMessage(d.store, {
+      message: 'RetrievePrincipalAccess',
+      entity: logical,
+      id: rowId,
+      inputs: {
+        Target: { $type: 'EntityReference', logicalName: logical, id: rowId, name: null },
+        Principal: { $type: 'EntityReference', logicalName: subjectTable, id: subjectId, name: null },
+      },
+      context: common,
+      main: () => {
+        answer = principalAccessAnswer(d, c, route, subjectId, common, logical, row);
+        return { AccessRights: { $type: 'AccessRights', value: maskOfNames(answer.body.AccessRights) } };
+      },
+    });
+    return answer;
+  }
+  return principalAccessAnswer(d, c, route, subjectId, common, logical, row);
+}
+
+function principalAccessAnswer(d, c, route, subjectId, common, logical, row) {
   let AccessRights;
   if (route.set === 'systemusers') {
     const subject = d.principals.byId(subjectId);
@@ -615,12 +648,19 @@ function principalAccess(d, c, route, subjectId, common) {
       throw new DataError(`systemuser With Id = ${subjectId} Does Not Exist`, 404, 'NotFound', { id: subjectId });
     AccessRights = d.principals.principalAccess({ user: subject, entity: logical, row });
   } else if (route.set === 'teams') {
-    const team = d.store.get('team', subjectId, common.identity);
+    const team = d.store.get('team', subjectId, common.identity, { skipPluginRead: true });
     if (!team) throw new DataError(`team With Id = ${subjectId} Does Not Exist`, 404, 'NotFound', { id: subjectId });
     AccessRights = d.principals.teamAccess({ team, entity: logical, row });
   } else {
     AccessRights = d.principals.organizationAccess({ entity: logical });
   }
+  // A team's direct share gives it the shared rights on the row (recorded native webApiNamed: a team holding only a
+  // share answers them), as on the SDK path. A user's share without the table privilege stays None (local model).
+  if (route.set === 'teams')
+    AccessRights = accessNamesOf(
+      maskOfNames(AccessRights) |
+        sharedMaskOf(d.store, logical, row[d.store.resolveMapping(logical).idColumn], subjectId),
+    );
   return {
     status: 200,
     body: {
@@ -688,7 +728,8 @@ function entityParameter(d, value) {
 async function shareAction(d, c, route, common) {
   const body = common.body ?? {};
   const target = entityParameter(d, body.Target);
-  const row = d.store.get(target.logical, target.id, common.identity);
+  // No Retrieve pipeline runs before a sharing message (recorded native webApiNamed).
+  const row = d.store.get(target.logical, target.id, common.identity, { skipPluginRead: true });
   if (!row)
     throw new DataError(`${target.logical} With Id = ${target.id} Does Not Exist`, 404, 'NotFound', { id: target.id });
   // Sharing needs Read on the row as well as Share.
@@ -709,7 +750,7 @@ async function shareAction(d, c, route, common) {
   const principal = entityParameter(d, route.name === 'RevokeAccess' ? body.Revokee : body.PrincipalAccess?.Principal);
   if (
     !['systemuser', 'team'].includes(principal.logical) ||
-    !d.store.get(principal.logical, principal.id, common.identity)
+    !d.store.get(principal.logical, principal.id, common.identity, { skipPluginRead: true })
   )
     throw invalidArgument();
   const share = {
@@ -727,8 +768,32 @@ async function shareAction(d, c, route, common) {
       identity: common.identity,
     });
   };
+  // The message's own plug-in pipeline runs around the share inside its write (the change slot's transaction), with
+  // the SDK's inputs (Target and PrincipalAccess, or Revokee), as the SDK path does (plugin-platform-messages.mjs).
+  const ref = ({ logical, id }) => ({ $type: 'EntityReference', logicalName: logical, id, name: null });
+  const pipelined = () =>
+    runEntryMessage(d.store, {
+      message: route.name,
+      entity: target.logical,
+      id: target.id,
+      inputs: {
+        Target: ref(target),
+        ...(route.name === 'RevokeAccess'
+          ? { Revokee: ref(principal) }
+          : {
+              PrincipalAccess: {
+                $type: 'PrincipalAccess',
+                principal: ref(principal),
+                accessMask: share.mask,
+              },
+            }),
+      },
+      context: common,
+      main: () => run().then(() => ({})),
+    });
+  const shared = entryMessageActive(d.store, route.name, target.logical, common) ? pipelined : run;
   // Inside a $batch the batch already holds the change slot (see ownsChange); a nested change call would wait on itself.
-  await (ownsChange() ? run() : d.change(run));
+  await (ownsChange() ? shared() : d.change(shared));
   return { status: 204 };
 }
 
@@ -1298,6 +1363,7 @@ export async function operationCall(d, route, common) {
   let entity;
   let mapping;
   let id;
+  let keyAttributes;
   // The name is registered, so a bound route the operation cannot serve (unknown set, alternate key) is a 404, not a built-in.
   const unroutable = () => notFound({ url: common.url, requestId: common.requestId });
   if (route.kind !== 'function') {
@@ -1309,8 +1375,20 @@ export async function operationCall(d, route, common) {
     entity = mapping.logicalName;
     if (route.key == null) binding = 'collection';
     else {
-      // ponytail: alternate-key addressing is not resolved for operations; a GUID key is the supported form.
-      id = parseKey(route.key)?.id;
+      // A row addressed by an alternate key binds by its id and keeps the key for the Target (recorded native
+      // webApiNamed: a bound custom API by alternate key answers 200 with Target.KeyAttributes).
+      const key = parseKey(route.key);
+      id = key?.id;
+      if (!id && key?.alternate) {
+        let keyed;
+        try {
+          keyed = d.store.findByKey(mapping, route.key);
+        } catch {
+          keyed = null; // an undeclared key names no row
+        }
+        id = keyed?.[mapping.idColumn];
+        keyAttributes = id ? key.alternate : undefined;
+      }
       if (!id) return unroutable();
       binding = 'entity';
     }
@@ -1319,9 +1397,10 @@ export async function operationCall(d, route, common) {
   if (!op) return notFound({ url: common.url, requestId: common.requestId });
   let target;
   if (binding === 'entity') {
-    const row = d.store.get(entity, id, common.identity);
+    // The platform loads a bound operation's target without a Retrieve pipeline (recorded native customApi).
+    const row = d.store.get(entity, id, common.identity, { skipPluginRead: true });
     if (!row) throw new DataError(`${entity} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id });
-    target = { mapping, id, row };
+    target = { mapping, id, row, ...(keyAttributes ? { keyAttributes } : {}) };
   } else if (binding === 'collection') target = { mapping };
   return runOperation(d, op, route, route.params, common, target);
 }

@@ -55,7 +55,13 @@ import {
   multiplyNumeric,
   parseNumericLiteral,
 } from './exact-numeric.mjs';
-import { odataToSdkQuery, sameSdkQuery } from './plugin-query.mjs';
+import {
+  odataToSdkQuery,
+  readPagingCookie,
+  sameSdkQuery,
+  webApiFetchExpression,
+  webApiFetchToQuery,
+} from './plugin-query.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
 import { compilePermissionFetchXml, serializePermissionFetchXml } from './permission-query.mjs';
 import { rebindPermissionQuery } from './permission-query-mutation.mjs';
@@ -2603,6 +2609,7 @@ export class DataStore {
       ...(options.preValidationSourceOperation
         ? { preValidationSourceOperation: options.preValidationSourceOperation }
         : {}),
+      ...(options.targetKeyAttributes ? { targetKeyAttributes: options.targetKeyAttributes } : {}),
       // A record a bulk message delegates runs only its own message's steps (plugin-single-multiple.mjs).
       ...(options.bulkOrigin ? { bulkOrigin: true } : {}),
       ...(options.omitConcurrencyBehavior
@@ -3275,6 +3282,28 @@ export class DataStore {
           !equal(holder.entity.id, row[m.idColumn])
         )
           throw new DataError('Retrieve output must preserve record identity.', 501, 'LocalPluginQueryUnsupported');
+        // Native runs asynchronous Retrieve steps after the read, with its Target, ColumnSet and result (recorded
+        // readAsync), as RetrieveMultiple's (a message event; a read outside a transaction stages it on its own).
+        const readEvent = clone({
+          target: {},
+          columns,
+          holder,
+          identity,
+          frame: responseFrame ?? {},
+          messageEvent: true,
+          bypassCustomAsync: options.bypassCustomAsync === true,
+          bypassStepIds: options.bypassStepIds,
+        });
+        if (this.committedEventCandidates) this.recordCommittedEvent(m.logicalName, 'retrieve', record, [], readEvent);
+        else if (this.commitStagers?.size)
+          this.transact(() => this.recordCommittedEvent(m.logicalName, 'retrieve', clone(record), [], readEvent), {
+            skipSaveIfUnchanged: true,
+          }).catch((error) => {
+            (this.committedEventErrors ??= []).push({
+              code: error.code ?? 'CommitStagerError',
+              message: error.message,
+            });
+          });
         return {
           ...Object.fromEntries(Object.entries(row).filter(([, value]) => value === null)),
           ...Object.fromEntries(
@@ -3901,11 +3930,22 @@ export class DataStore {
       return this.queryCore(entity, params, identity, paging, options);
     if (options.skipPluginRead) return this.queryCore(entity, params, identity, paging, options);
     const original = options.sdkQuery ?? odataToSdkQuery(mapping.logicalName, params, this);
+    // A Web API collection GET shows its steps the query as FetchXML (recorded native reads); an edited one is read back.
+    const shown =
+      (!options.sdkQuery &&
+        options.webApiFetchQuery &&
+        webApiFetchExpression(original, this, options.webApiFetchQuery)) ||
+      original;
+    // The result's entities keep the columns the effective query selects (the FetchExpression names none itself).
+    const columnsOf = (answer, query) =>
+      shown === original ? answer : Object.defineProperty(answer, 'sdkColumnSet', { value: query.columnSet });
     return this.retrieveMultipleOperation(
       mapping.logicalName,
-      original,
+      shown,
       identity,
       (query) => {
+        if (shown.$type === 'FetchExpression' && query.$type === 'FetchExpression')
+          query = query.query === shown.query ? original : webApiFetchToQuery(query.query, this);
         if (!['QueryExpression', 'QueryByAttribute'].includes(query.$type) || query.entityName !== mapping.logicalName)
           throw new DataError(
             'A RetrieveMultiple plugin cannot change the bound query table or query language.',
@@ -3913,7 +3953,10 @@ export class DataStore {
             'LocalPluginQueryUnsupported',
           );
         if (sameSdkQuery(query, original))
-          return this.queryCore(entity, params, identity, paging, { ...options, captureRootIds: true });
+          return columnsOf(
+            this.queryCore(entity, params, identity, paging, { ...options, captureRootIds: true }),
+            query,
+          );
         const projectedQuery = clone(query);
         const preserveFilter = sameSdkQuery(query.criteria, original.criteria);
         if (preserveFilter) projectedQuery.criteria = { operatorName: 'And', conditions: [], filters: [] };
@@ -3927,7 +3970,7 @@ export class DataStore {
         if (!query.columnSet?.allColumns && !query.columnSet?.columns?.length) converted.$select = mapping.idColumn;
         if (converted.$select && !converted.$select.split(',').includes(mapping.idColumn))
           converted.$select += ',' + mapping.idColumn;
-        return this.queryCore(entity, converted, identity, paging, options);
+        return columnsOf(this.queryCore(entity, converted, identity, paging, options), query);
       },
       'value',
       options.sdkResponseToken,
@@ -4000,13 +4043,19 @@ export class DataStore {
                     answer.sdkRootIds?.[index] === undefined
                       ? row
                       : { ...row, [mapping.idColumn]: row[mapping.idColumn] ?? answer.sdkRootIds[index] },
-                    query.columnSet ?? { allColumns: false, columns: [] },
+                    answer.sdkColumnSet ?? query.columnSet ?? { allColumns: false, columns: [] },
                   ),
                 ),
                 entityName: entity,
                 minActiveRowVersion: '-1',
                 moreRecords: Boolean(answer['@odata.nextLink'] ?? answer.more_records),
-                pagingCookie: answer.paging_cookie ?? null,
+                pagingCookie:
+                  answer.paging_cookie ??
+                  readPagingCookie(
+                    query,
+                    mapping.idColumn,
+                    (answer[key] ?? []).map((row, index) => row[mapping.idColumn] ?? answer.sdkRootIds?.[index]),
+                  ),
                 totalRecordCount: answer['@odata.count'] ?? answer.total_record_count ?? -1,
               };
       const responseFrame = this.pluginPipeline({
@@ -5064,7 +5113,8 @@ export class DataStore {
           innerCode: '0x80040237',
         });
     };
-    assertUniqueIdentity();
+    // A duplicate primary key is refused after PreValidation and PreOperation, at the main operation (recorded native
+    // privilege: Create 10 and 20 run, then 412 0x80040237); assertUniqueIdentity runs again before the row is stored.
     if (
       !identity.admin &&
       this.state.settings.permissionMode !== 'permissive' &&
@@ -5154,7 +5204,7 @@ export class DataStore {
       };
     }
     yield [m, 'create', 20, pluginTarget, row, null, identity, changedAttributes, options];
-    options.mainOperation?.(m, 'create', row, null, pluginTarget);
+    options.mainOperation?.(m, 'create', row, null, pluginTarget, { identity, options });
     const effects = this.applyPlugins(m.logicalName, 'create', row, null, identity);
     assertAttachmentPolicy(this.state, m.logicalName, row);
     assertUniqueIdentity();
@@ -5398,7 +5448,7 @@ export class DataStore {
         latest,
       );
     }
-    options.mainOperation?.(mapping, 'update', row, latest, target);
+    options.mainOperation?.(mapping, 'update', row, latest, target, { identity, options });
     const effects = this.applyPlugins(mapping.logicalName, 'update', row, rows[index], identity);
     // Declarative plugins mutate the row directly, independently of Target. Only changed columns reach the
     // attachment policy, so files already stored are not revalidated.

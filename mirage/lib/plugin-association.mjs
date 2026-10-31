@@ -9,6 +9,20 @@ const validId = (value, allowLocalIds) =>
 const scalar = (value) => (value && typeof value === 'object' && value.id ? value.id : value);
 /** SDK schema names are not navigation properties. Select one source-defined
  * direction, retaining explicit EntityRole for self-referential relationships. */
+/**
+ * The SDK EntityRole a many-to-many navigation stands for. A self-referencing relationship's Entity1 navigation (named
+ * as the relationship) is Referencing (recorded native associate: POST <set>(id)/<schema>/$ref), its partner Referenced;
+ * any other navigation has no role. An explicit sdkEntityRole on the relationship wins.
+ */
+export function navigationRole(mapping, navigation, rel) {
+  if (!rel?.intersect || rel.entity !== mapping.logicalName) return null;
+  if (rel.sdkEntityRole) return rel.sdkEntityRole;
+  const schema = String(rel.schemaName ?? '').toLowerCase();
+  if (String(navigation).toLowerCase() === schema) return 'Referencing';
+  if (String(rel.partner ?? '').toLowerCase() === schema) return 'Referenced';
+  return null;
+}
+
 export function associationBinding(
   store,
   entity,
@@ -51,7 +65,7 @@ export function associationBinding(
       rel.entity === related.values[0].logicalName &&
       (!role ||
         (!rel.intersect && role === (rel.many === false ? 'Referencing' : 'Referenced')) ||
-        (rel.intersect && rel.sdkEntityRole === role)),
+        (rel.intersect && navigationRole(mapping, navigation, rel) === role)),
   );
   // A Web API navigation already resolves a source-defined direction. Retain
   // that binding when a step changes only its record identities.

@@ -1183,6 +1183,7 @@ export function runPluginPhase({
   awaitIo = false,
   diagnostic = () => {},
   onStepExecuted,
+  targetKeyAttributes,
 }) {
   // A saved row can be reused by a later Delete; its previous request frame
   // must not supply shared variables, correlation or parent context to this one.
@@ -1192,6 +1193,8 @@ export function runPluginPhase({
   const continued = executionFrames.has(record) && !initialFrame && !(stage === 10 && !continuePhase);
   if (initialFrame) executionFrames.set(record, cloneStateData(initialFrame));
   const phaseFrame = executionFrames.get(record) ?? {};
+  // The alternate key a Delete was addressed by (dataverse-records.mjs deleteEntity) belongs to its PreValidation Target.
+  if (targetKeyAttributes && stage === 10 && !asyncExecution) phaseFrame.targetKeyAttributes ??= targetKeyAttributes;
   // A request that entered as a multiple message (plugin-bulk.mjs) formats its Update Targets (plugin-formatted-values.mjs).
   if (bulkOrigin) phaseFrame.bulkOrigin = true;
   // The main operation's InputParameters are the PreValidation view; keep it for a main-operation ParentContext
@@ -1205,6 +1208,7 @@ export function runPluginPhase({
     phaseFrame.delegatedParentContext ??= cloneStateData(mainOperation.context);
     phaseFrame.delegatedDepth ??= mainOperation.depth;
     if (mainOperation.exactDepth) phaseFrame.exactDepth = true;
+    if (mainOperation.internalRead && operation === 'retrievemultiple') phaseFrame.internalRead = true;
     if (mainOperation.namedMessage) phaseFrame.namedMainOperation = true;
     // A refused message's per-record PreValidation (DeleteMultiple) has no platform SharedVariables (native bulk).
     if (mainOperation.preValidationOnly) phaseFrame.platformSharedSeeded = true;
