@@ -1093,8 +1093,11 @@ function validateType({ store, data, existing }) {
       publickeytoken: assembly.publickeytoken,
     });
   // With content, the type must be one of the assembly's plug-in or workflow activity types (native registration round 2:
-  // a type that does not implement IPlugin is "not found" among them), and isworkflowactivity comes from it.
-  if (assembly && typeof assembly.content === 'string' && assembly.content !== '') {
+  // a type that does not implement IPlugin is "not found" among them), and isworkflowactivity comes from it. A package-owned
+  // assembly takes any typename (native trial n3-package: 204); the next package content update drops a type its content
+  // does not declare (validatePackage).
+  if (assembly?.packageid != null) data.isworkflowactivity = false;
+  else if (assembly && typeof assembly.content === 'string' && assembly.content !== '') {
     const types = assemblyContent(assembly.content).types.filter((type) => type.isPlugin || type.isWorkflowActivity);
     const type = types.find((candidate) => candidate.fullName === typename);
     if (!type)

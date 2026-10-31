@@ -46,6 +46,7 @@ const REDIRECT = 'http://localhost:1/cb';
 const SECRET_VAR = 'PAQVILO_PLUGIN_REGISTRATION_SECRET';
 const PASSWORD = 'Pass!23';
 const BASIC_OID = '66666666-6666-6666-6666-666666666666';
+const NO_ROLE_OID = '67676767-6767-4767-8767-676767676767';
 const WIDGET = 'aaaaaaaa-0000-0000-0000-000000000011';
 const ASSEMBLY = 'a1000000-0000-4000-8000-000000000001';
 const TYPE = 'a1000000-0000-4000-8000-000000000002';
@@ -157,7 +158,10 @@ describe('plug-in registration over HTTP', () => {
         },
         { appId: PUBLIC_APP_ID, displayName: 'Public app', publicClient: true, redirectUris: [REDIRECT] },
       ],
-      users: [{ domainname: 'basic@example.test', fullname: 'Basic', objectId: BASIC_OID, roles: ['Basic User'] }],
+      users: [
+        { domainname: 'basic@example.test', fullname: 'Basic', objectId: BASIC_OID, roles: ['Basic User'] },
+        { domainname: 'none@example.test', fullname: 'No roles', objectId: NO_ROLE_OID, roles: [] },
+      ],
     });
     api = await startDataverseApi({ store, settings, log: () => {}, extensions: [...EXTENSIONS, solution] });
     origin = api.origin;
@@ -629,6 +633,25 @@ describe('plug-in registration over HTTP', () => {
       token: basicToken,
     });
     assert.equal(assembly.status, 403);
+  });
+
+  // @test-kind parity: native trial captures native-trial and native-trial-r2 (dataverse-recorder round 2, n6-registration): a caller without registration privileges (impersonated through MSCRMCallerID) registering a step, with or without impersonatinguserid, is refused 403 0x80040220 naming prvReadSolution
+  it('a step registered by a principal without privileges is refused naming prvReadSolution', async () => {
+    const caller = uuidV5(organizationId, `systemuser:oid:${NO_ROLE_OID}`);
+    for (const body of [stepBody(), stepBody({ 'impersonatinguserid@odata.bind': `/systemusers(${caller})` })]) {
+      const refused = await fetch(`${origin}/api/data/v9.2/sdkmessageprocessingsteps`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${appToken}`, 'content-type': 'application/json', MSCRMCallerID: caller },
+        body: JSON.stringify(body),
+      });
+      assert.equal(refused.status, 403);
+      const { error } = await refused.json();
+      assert.equal(error.code, '0x80040220');
+      assert.match(
+        error.message,
+        new RegExp(`^Principal user \\(Id=${caller}, .*\\), is missing prvReadSolution privileg`),
+      );
+    }
   });
 });
 
@@ -1588,6 +1611,41 @@ describe('plug-in registration: assembly content and plug-in types', () => {
     const name = { name: 'Contoso.Package.Renamed' };
     await run('pluginpackage', 'update', name, { ...existing, version: '1.0.1' });
     assert.equal(name.name, 'Contoso.Package.Renamed');
+  });
+
+  // @test-kind parity: native trial captures native-trial and native-trial-r2 (dataverse-recorder round 2, n3-package): on a package-owned assembly PATCH isolationmode answers 403 0x80040256, POST of a plugintype its content does not declare answers 204, and the type is gone after the next package content update
+  it('a package-owned assembly refuses another isolation mode, takes a posted plug-in type, and the next package content update drops it', async () => {
+    const { store, run } = await registry();
+    const entries = Object.entries({
+      'Contoso.Owned.nuspec': '<package><metadata><id>Contoso.Owned</id><version>2.0.0</version></metadata></package>',
+      'lib/net462/Contoso.Unsigned.dll': Buffer.from(UNSIGNED, 'base64'),
+    });
+    const content = zipOf(entries.map(([name, data]) => ({ name, data: Buffer.from(data) }))).toString('base64');
+    const existing = { content };
+    await run('pluginpackage', 'create', existing);
+    const owned = store.tableRows('pluginassembly').find((row) => row.packageid === existing.pluginpackageid);
+    await assert.rejects(
+      run('pluginassembly', 'update', { isolationmode: 1 }, owned),
+      (error) =>
+        error.status === 403 &&
+        error.details?.innerCode === '0x80040256' &&
+        error.message.startsWith("Action failed for assembly 'Contoso.Unsigned, Version=1.0.0.0, Culture=neutral"),
+    );
+    const posted = { typename: 'Contoso.Plugins.Missing', pluginassemblyid: owned.pluginassemblyid };
+    await run('plugintype', 'create', posted);
+    store.insertRow('plugintype', store.state.tables.plugintype, {
+      plugintypeid: 'a1000000-0000-4000-8000-0000000000d1',
+      ...posted,
+    });
+    const typenames = () =>
+      store
+        .tableRows('plugintype')
+        .filter((row) => row.pluginassemblyid === owned.pluginassemblyid)
+        .map((row) => row.typename)
+        .sort();
+    assert.deepEqual(typenames(), ['Contoso.Plugins.Missing', CONTOSO]);
+    await run('pluginpackage', 'update', { content }, existing);
+    assert.deepEqual(typenames(), [CONTOSO], 'the same content again drops the type it does not declare');
   });
 
   // @test-kind contract: SolutionPackager step image XML carries MessagePropertyName; the mirrored row keeps it
