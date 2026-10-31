@@ -13,6 +13,7 @@ import { internalStepReference, setInternalStageSource } from './plugin-internal
 import { pluginEntryStep } from './plugin-message-admission.mjs';
 import { authorizeGrant, messageFilters, sdkRecordKey, sdkValueToRecord } from './local-organization-service.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
+import { PLATFORM_TYPES } from './dataverse-operation-contracts.mjs';
 import { ACCESS_RIGHTS, createPrincipals, grantAccessNow, revokeAccessNow } from './dataverse-security.mjs';
 
 const EMPTY = '00000000-0000-0000-0000-000000000000';
@@ -636,6 +637,156 @@ function entryValue(store, value) {
   if (Object.keys(columns).length === 1 && id != null)
     return { $type: 'EntityReference', logicalName: mapping.logicalName, id, name: null };
   return recordToSdkEntity(store, mapping.logicalName, columns);
+}
+
+// An SDK request value as the Web API body or function parameter value of the same operation.
+function sdkToWebValue(store, value) {
+  if (Array.isArray(value)) return value.map((item) => sdkToWebValue(store, item));
+  if (!value || typeof value !== 'object') return value;
+  switch (value.$type) {
+    case 'Guid':
+    case 'DateTime':
+      return value.value;
+    case 'OptionSetValue':
+      return value.value;
+    case 'Money':
+    case 'Decimal':
+    case 'Int64':
+    case 'Double':
+      return Number(value.value);
+    case 'EntityReference':
+      return { '@odata.id': `${store.resolveMapping(value.logicalName).entitySet}(${value.id})` };
+    case 'Entity':
+      return {
+        '@odata.type': `#Microsoft.Dynamics.CRM.${value.logicalName}`,
+        ...Object.fromEntries(Object.entries(value.attributes ?? {}).map(([k, v]) => [k, sdkToWebValue(store, v)])),
+      };
+    case 'EntityReferenceCollection':
+    case 'GuidArray':
+    case 'SdkArray':
+      return (value.values ?? []).map((item) => sdkToWebValue(store, item));
+    default:
+      return cloneStateData(value);
+  }
+}
+// The SDK value of a response property from the platform contract's Edm type (dataverse-operation-contracts.mjs).
+const RESPONSE_TYPES = new Map(
+  PLATFORM_TYPES.filter(([tag, attributes]) => tag === 'ComplexType' && attributes.Name.endsWith('Response')).map(
+    ([, attributes, ...members]) => [
+      attributes.Name,
+      new Map(members.filter(([tag]) => tag === 'Property').map(([, member]) => [member.Name, member.Type])),
+    ],
+  ),
+);
+function webToSdkValue(store, type, value) {
+  if (value == null) return null;
+  switch (type) {
+    case 'Edm.DateTimeOffset':
+    case 'Edm.Date':
+      return { $type: 'DateTime', value: new Date(value).toISOString() };
+    case 'Edm.Guid':
+      return { $type: 'Guid', value: String(value) };
+    case 'Edm.Decimal':
+      return { $type: 'Decimal', value: String(value) };
+    case 'Edm.Int64':
+      return { $type: 'Int64', value: String(value) };
+    case 'Edm.Double':
+      return { $type: 'Double', value: Number(value) };
+    case 'Edm.Int32':
+    case 'Edm.Boolean':
+    case 'Edm.String':
+      return value;
+    default:
+      return entryParameters(store, { value }).value ?? null;
+  }
+}
+
+/**
+ * IOrganizationService.Execute of a message that is a registered Web API action or function of the same name (its
+ * Microsoft.Crm.Sdk.Messages request): the message's pipeline runs at the caller's depth + 1 (PreValidation,
+ * PreOperation, main, PostOperation, committed asynchronous event) around the operation's own handler, which receives
+ * the request parameters as its body (action) or function parameters, Target as the bound row, and the run-as user.
+ * Answers the response typed from the platform contract's <Name>Response, or undefined when no operation has the name.
+ * A handler that answers a promise (one awaiting a store transaction) cannot finish inside the synchronous SDK call.
+ */
+export function executeOperationSdkMessage({ store, profile, request, parameters, options = {} }) {
+  const api = store.recordPipeline?.organizationApi,
+    name = request.requestName;
+  if (!api?.registry) return undefined;
+  const target = parameters.Target?.$type === 'EntityReference' ? parameters.Target : null;
+  const find = (kind, binding) => api.registry.find({ name, kind, binding, entity: target?.logicalName ?? undefined });
+  const op =
+    (target && (find('action', 'entity') ?? find('function', 'entity'))) ??
+    find('action', 'unbound') ??
+    find('function', 'unbound');
+  if (!op?.main) return undefined;
+  const user =
+    profile.dataverseSecurity && profile.dataverseSecurity !== 'system'
+      ? profile.dataverseSecurity
+      : (store.tableRows('systemuser').find((row) => same(row.systemuserid, profile.userId)) ?? {
+          systemuserid: profile.userId,
+        });
+  const identity = { id: user.systemuserid, systemUserId: user.systemuserid, admin: true };
+  const values = Object.fromEntries(
+    Object.entries(parameters)
+      .filter(([key]) => !SYSTEM_PARAMETERS.has(key) && !(op.binding === 'entity' && key === 'Target'))
+      .map(([key, value]) => [key, sdkToWebValue(store, value)]),
+  );
+  let bound;
+  if (op.binding === 'entity') {
+    const mapping = store.resolveMapping(target.logicalName),
+      row = store.get(target.logicalName, target.id, { admin: true }, { skipPluginRead: true });
+    if (!row)
+      fail(`${target.logicalName} With Id = ${target.id} Does Not Exist`, 'NotFound', 404, { innerCode: '0x80040217' });
+    bound = { mapping, id: target.id, row };
+  }
+  const origin = api.origin ?? 'http://localhost',
+    version = 'v9.2',
+    url = new URL(`${origin}/api/data/${version}/${name}`);
+  const context = {
+    method: op.kind === 'function' ? 'GET' : 'POST',
+    url,
+    origin,
+    version,
+    headers: {},
+    user,
+    caller: user,
+    identity,
+    ...(op.kind === 'function' ? { params: values, functionParameters: values } : { body: values }),
+    ...(bound ? { target: bound } : {}),
+    bypassStepIds: options.bypassStepIds,
+    bypassCustomPlugins: options.bypassCustomPlugins === true,
+    bypassCustomAsync: options.bypassCustomAsync === true,
+  };
+  const responseTypes = RESPONSE_TYPES.get(`${name}Response`) ?? new Map();
+  // The response carries the outputs as PostOperation leaves them.
+  const results = runMessagePipeline(store, {
+    message: name,
+    entity: target?.logicalName ?? 'none',
+    id: target?.id,
+    inputs: {
+      ...Object.fromEntries(Object.entries(parameters).filter(([key]) => !SYSTEM_PARAMETERS.has(key))),
+      ...(options.sdkFromSandbox === true ? { FromSandbox: true } : {}),
+    },
+    identity,
+    bypassStepIds: options.bypassStepIds,
+    bypassCustomPlugins: options.bypassCustomPlugins === true,
+    bypassCustomAsync: options.bypassCustomAsync === true,
+    main: () => {
+      const answer = op.main(context);
+      if (typeof answer?.then === 'function') {
+        answer.catch(() => {});
+        fail(`The ${name} operation is asynchronous; a plug-in's synchronous SDK Execute cannot wait for it.`);
+      }
+      const body = answer?.body && typeof answer.body === 'object' && !Buffer.isBuffer(answer.body) ? answer.body : {};
+      return Object.fromEntries(
+        Object.entries(body)
+          .filter(([key]) => !key.startsWith('@'))
+          .map(([key, value]) => [key, webToSdkValue(store, responseTypes.get(key), value)]),
+      );
+    },
+  });
+  return { $type: 'OrganizationResponse', responseName: name, results: results ?? {} };
 }
 
 /** The typed InputParameters of an entry point's request values (system parameters and annotations left out). */

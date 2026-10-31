@@ -45,7 +45,11 @@ import { convertSdkQuery } from './plugin-query-conversion.mjs';
 import { CRM_FUNCTIONS } from './dataverse-conditions.mjs';
 import { runtimeConstructorSettings } from './plugin-constructor-configuration.mjs';
 import { validateSdkTag, canonicalTagParent } from './plugin-request-tag.mjs';
-import { executePlatformSdkMessage, isPlatformSdkMessage } from './plugin-platform-messages.mjs';
+import {
+  executeOperationSdkMessage,
+  executePlatformSdkMessage,
+  isPlatformSdkMessage,
+} from './plugin-platform-messages.mjs';
 import {
   executePluginServiceCall,
   executeSdkOrganizationMessage,
@@ -1208,6 +1212,17 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFro
             }),
         });
         if (answer !== undefined) return answer;
+        // A registered Web API action or function of the same name (its Microsoft.Crm.Sdk.Messages request).
+        const options = { ...bypass, sdkFromSandbox },
+          previousTag = store.pluginSdkTag;
+        validateSdkTag(parameters, store.pluginSdkTag);
+        store.pluginSdkTag = Object.hasOwn(parameters, 'tag') ? parameters.tag : previousTag;
+        try {
+          const operation = executeOperationSdkMessage({ store, profile, request, parameters, options });
+          if (operation !== undefined) return operation;
+        } finally {
+          store.pluginSdkTag = previousTag;
+        }
       }
       // UnMaskedData (Learn optional-parameters#return-unmasked-data): Retrieve and RetrieveMultiple only, exact case, a boolean.
       // ConcurrencyBehavior (Update, Delete), SuppressDuplicateDetection and SolutionUniqueName (Create, Update): the

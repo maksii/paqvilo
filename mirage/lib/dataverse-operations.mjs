@@ -105,6 +105,9 @@ export function createOperationRegistry({ store } = {}) {
               ? runOperationMessage(store, op, context)
               : op.handle(context)
         : op.handle,
+      // The operation's own handler (or its synchronous sdk variant), without the entry pipeline: a plug-in's SDK Execute
+      // runs that pipeline itself (plugin-platform-messages.mjs executeOperationSdkMessage).
+      main: op.sdk ?? op.handle,
       csdl,
       ...(op.soapResult ? { soapResult: op.soapResult } : {}),
       ...(op.ownPipeline ? { ownPipeline: true } : {}),
