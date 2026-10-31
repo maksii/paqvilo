@@ -2401,8 +2401,11 @@ export function clrContext({
       PrimaryEntityName: ['associate', 'disassociate'].includes(operation) ? 'none' : entity,
       PrimaryEntityId: typed(
         'Guid',
-        // A queued DeleteMultiple job names no row (native crud, async, upsert: its context and parents carry Guid.Empty).
-        ['associate', 'disassociate'].includes(operation) || (bridged && asynchronous && operation === 'delete')
+        // A queued custom API job names no row (native customApi); a platform named message keeps it.
+        (asynchronous && frame.customApi && !frame.customApi.platformMessage) ||
+          // A queued DeleteMultiple job names no row (native crud, async, upsert: its context and parents carry Guid.Empty).
+          ['associate', 'disassociate'].includes(operation) ||
+          (bridged && asynchronous && operation === 'delete')
           ? '00000000-0000-0000-0000-000000000000'
           : primary
             ? (record[primary] ?? '00000000-0000-0000-0000-000000000000')

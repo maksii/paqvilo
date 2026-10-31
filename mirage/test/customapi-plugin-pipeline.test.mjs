@@ -1133,3 +1133,24 @@ test(
     }
   },
 );
+
+// @test-kind parity: native recorder corpus customApi and webApiNamed (two captures each): new_RecorderBound/40/Mode 1 PrimaryEntityId Guid.Empty while the synchronous stages carry the row id
+test('a bound custom API asynchronous context reports Guid.Empty as its primary entity id, its Target keeps the row', async (t) => {
+  const seen = [];
+  const f = await fixture(t, {
+    binding: 1,
+    stages: [10, 20, 40, { stage: 40, mode: 1 }],
+    extension: ({ context }) => {
+      seen.push([context.Stage, context.Mode, context.PrimaryEntityId, context.InputParameters.Target?.id]);
+    },
+  });
+  await f.call();
+  await f.store.flushCommittedEvents();
+  await f.scheduler.runDue();
+  assert.deepEqual(seen, [
+    [10, 0, user, user],
+    [20, 0, user, user],
+    [40, 0, user, user],
+    [40, 1, '00000000-0000-0000-0000-000000000000', user],
+  ]);
+});

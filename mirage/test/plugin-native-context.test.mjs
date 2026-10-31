@@ -344,3 +344,37 @@ test('Create PreOperation collections carry the telemetry root and reads outside
   const nested = read({ $type: 'ExecutionContext', values: { Depth: 1, RequestId: { $type: 'Guid', value: id } } });
   assert.deepEqual(Object.keys(nested), ['Query']);
 });
+
+// @test-kind parity: native recorder corpus customApi and webApiNamed (two captures each): new_RecorderBound/40/Mode 1 PrimaryEntityId Guid.Empty while the synchronous stages carry the row id
+test('an asynchronous custom API context reports Guid.Empty as its primary entity id, a platform named message keeps the row', () => {
+  const store = fixture(),
+    target = { gadgetid: id, title: 'Requested' },
+    record = { gadgetid: id, title: 'Requested', size: 3 },
+    previous = { gadgetid: id, title: 'Before', size: 3 };
+  const frameOf = (customApi) => ({
+    ...phases(store, 'update', 'gadget', [10, 20, 40], { target, record, previous, customApi }),
+    customApi,
+    operationId: '40000000-0000-0000-0000-000000000001',
+    createdOn: '2026-10-30T10:00:00.000Z',
+    createdOnWire: { $type: 'DateTime', value: '2026-10-30T10:00:00.000' },
+    asyncOperation: { id: '40000000-0000-0000-0000-000000000001', createdOn: '2026-10-30T10:00:00.000Z', depth: 1 },
+  });
+  const primary = (customApi, mode) =>
+    clrContext({
+      runtime,
+      store,
+      step: step(mode),
+      entity: 'gadget',
+      operation: 'update',
+      stage: 40,
+      target,
+      record,
+      previous,
+      frame: frameOf(customApi),
+      depth: 1,
+    }).context.PrimaryEntityId.value;
+  const custom = { name: 'invented_RecorderBound', platformMessage: false, bindingType: 1 };
+  assert.equal(primary(custom, 0), id);
+  assert.equal(primary(custom, 1), empty);
+  assert.equal(primary({ ...custom, platformMessage: true }, 1), id);
+});

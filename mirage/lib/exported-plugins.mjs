@@ -689,7 +689,9 @@ function typedContext({
     PrimaryEntityName: ['associate', 'disassociate'].includes(operation) ? 'none' : entity,
     ...(operation === 'update' || (customApi && entity === 'none') ? { SecondaryEntityName: 'none' } : {}),
     // A queued DeleteMultiple job names no row (native crud, async, upsert).
+    // A queued custom API job names no row (native customApi); its Target still names the row.
     PrimaryEntityId:
+      (customApi && !customApi.platformMessage && (item.contract?.mode ?? 0) === 1) ||
       ['associate', 'disassociate'].includes(operation) ||
       (bridged && operation === 'delete' && (item.contract?.mode ?? 0) === 1)
         ? '00000000-0000-0000-0000-000000000000'
