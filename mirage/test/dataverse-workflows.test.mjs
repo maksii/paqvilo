@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of classic workflows and ExecuteWorkflow runs; no native capture cited
 // Workflows in the Dataverse API: seeded workflow rows from Solution sources, activation on PATCH, ExecuteWorkflow (background
 // and real-time, classic and cloud), the documented refusals, and the trusted classic handler contract.
 import { describe, it, before, after } from 'node:test';
@@ -344,6 +345,7 @@ describe('dataverse workflows: rows, activation and ExecuteWorkflow over HTTP', 
     }
   });
 
+  // @test-kind unproven+security: local model of the workflow privilege check
   it('refuses a call from a user with no roles on the workflow privilege', async () => {
     const none = await errorOf(await call(executeOf(WF(1)), { method: 'POST', body: widgetRef, token: noneToken }));
     assert.equal(none.code, '0x80040220');
@@ -448,6 +450,7 @@ describe('dataverse workflows: rows, activation and ExecuteWorkflow over HTTP', 
 });
 
 describe('dataverse workflows: Solution sources and handler packs', () => {
+  // @test-kind contract: Paqvilo reads Solution workflow sources
   it('reads classic and cloud workflow data files with their XAML and JSON text', async (t) => {
     const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-workflows-'));
     t.after(() => fs.rm(dir, { recursive: true, force: true }));
@@ -477,6 +480,7 @@ describe('dataverse workflows: Solution sources and handler packs', () => {
     assert.equal(byId[cloud].clientdata, '{"properties":{}}');
   });
 
+  // @test-kind contract: Paqvilo's trusted classic handler pack contract
   it('gives each handler one key, and refuses a duplicate across packs or a non-function', () => {
     const handler = () => ({});
     assert.equal(workflowHandlers([{ id: 'a', workflows: { [WF(40)]: handler } }]).get(WF(40)), handler);
@@ -720,6 +724,7 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
 });
 
 describe('dataverse workflows: a portal write is unchanged by a background trigger on its table', () => {
+  // @test-kind contract: a background trigger leaves Paqvilo's portal output unchanged
   it('answers the same status, headers and bytes with and without an activated background trigger', async (t) => {
     const source = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-workflows-portal-'));
     t.after(() => fs.rm(source, { recursive: true, force: true }));

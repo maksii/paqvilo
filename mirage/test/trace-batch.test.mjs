@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Tracing of Web API $batch (docs/design/tracing.md): one `batch` span under the listener root, one `part` span per request
 // and one `changeset` span per changeset with its parts under it; a rolled-back changeset ends `error` with `rolledBack: true`
 // (on it and on the parts that ran before the failure), the failing part carries its own error, and the batch and the root

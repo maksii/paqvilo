@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
 // The shell (navigation, old-address redirects, Home, Health links, links into Activity) and the four view modules
 // (services, flows, packs, capabilities) inside the real /_sim/ app (index.html + app.mjs) against
 // a stateful fake JSON host: data renders on first entry without a manual refresh, actions show their effect,

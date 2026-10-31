@@ -1,3 +1,4 @@
+// @test-kind contract+security: Paqvilo's tracing and activity design (docs/design/tracing.md); redaction keeps secrets, tokens and keys out of traces
 // tracedFetch (lib/trace-hosts.mjs, D-R3-5): the http-out span of an outbound request against a loopback server: name,
 // attributes, forwarded trace headers, redacted payloads at full only, the provider's own error on 4xx/5xx, denied on
 // 401/403, the network failure code, capture 'none' and a plain fetch at level off.

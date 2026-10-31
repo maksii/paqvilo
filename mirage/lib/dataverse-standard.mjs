@@ -267,6 +267,24 @@ export function fieldsWithStandard(store, logical, own) {
   return byKey.get(key);
 }
 
+/** A standard table's column definition as the catalogue states it under the store's own fields (fieldsWithStandard):
+ * option labels and validForRead that a seeded stand-in's thin column types lack. Undefined for other tables. */
+export function standardFieldDefinition(store, logical, key) {
+  const name = String(logical ?? '').toLowerCase();
+  if (!store?.state || !standardTableDef(name)) return undefined;
+  return fieldsWithStandard(store, name, store.state.mappings?.[name]?.fields)?.[key];
+}
+
+/** The customer address columns a Create of a standard table stamps (native mergeAccount: an account row holds the
+ * address1_addressid and address2_addressid of the customeraddress rows the platform creates with it): one per address
+ * number 1 and 2 when the catalogue's customeraddress.parentid names the table and the table has the column. */
+export function customerAddressColumns(logical) {
+  const name = String(logical ?? '').toLowerCase();
+  if (!standardTableDef(name) || !standardFields('customeraddress').parentid?.targets?.includes(name)) return [];
+  const fields = standardFields(name);
+  return [1, 2].filter((n) => fields[`address${n}_addressid`]).map((n) => ({ column: `address${n}_addressid`, n }));
+}
+
 /** The navigation a standard table has under segment, when its other table exists in the store (read time; nothing is stored). */
 export function standardNavigation(store, logical, segment) {
   const exists = (name) => Boolean(store.state.mappings?.[name]);

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // SSE back-pressure (D-R3-18) and trace flush (D-R3-26): a burst of large frames to a client that reads normally loses
 // nothing (the write that returns false waits for drain instead of counting towards a drop), the trace channel delivers
 // every frame of a burst to connectRuntime().trace.subscribe, and traces.flush() settles only once the frames reached the

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo local CLR assembly snapshots: confined verified reads, owned host teardown and the step timeout fault
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
@@ -212,8 +213,10 @@ test(
     try {
       await assert.rejects(store.create('widget', { title: 'timeout' }, { admin: true }), (error) => {
         assert.equal(error.code, 'LocalPluginTimeout');
-        assert.equal(error.status, 504);
-        return /timeout|deadline/i.test(error.message);
+        // The platform's unhandled timeout fault, as for a custom API (Learn: 2-minute plug-in limit, 0x80040224).
+        assert.equal(error.status, 400);
+        assert.equal(error.details?.innerCode, '0x80040224');
+        return /System\.TimeoutException: .* within the [\d.]+-second limit/.test(error.message);
       });
       assert.equal(store.snapshot().tables.widget.length, 1);
     } finally {

@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of synchronous web hook steps inside the write transaction; no native capture cited
 // Webhook RemoteExecutionContext transaction flags (dataverse-webhooks.mjs remoteExecutionContext): IsInTransaction comes from
 // the pipeline's transaction state, Mode from the delivery. A PreValidation step outside an existing transaction does not
 // participate, PreOperation and PostOperation steps participate, asynchronous steps never do. An asynchronous PostOperation

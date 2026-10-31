@@ -1,3 +1,4 @@
+// @test-kind contract: the store's row key index stays consistent with its rows (Paqvilo's own data structure)
 // The row-key index (data.mjs RowKeyIndex) under removals: a removal marks its slot dead instead of shifting every later
 // position (a cascade delete of n rows stays O(n log n)), and every lookup still answers the current ascending positions.
 // Invented rows only; a deterministic pseudo-random walk of inserts, removals and key changes is checked against a scan.

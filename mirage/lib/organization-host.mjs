@@ -5,8 +5,11 @@
 import path from 'node:path';
 import { immutableStatus } from './immutable-status.mjs';
 import { pluginHandlers, pluginCatalogue } from './exported-plugins.mjs';
-import { pluginRuntimeDescriptors, prepareClrRuntime, closeClrHostPool } from './plugin-clr.mjs';
+import { pluginRuntimeDescriptors, sharedClrRuntimePreparer, closeClrHostPool } from './plugin-clr.mjs';
+import { releaseStaleUploadedRuntimes, releaseUploadedRuntime } from './plugin-uploaded.mjs';
 import { overlayRegisteredSteps } from './dataverse-plugin-registration.mjs';
+import { bulkMessageAvailabilityRecord } from './bulk-message-availability.mjs';
+import { pluginBypassOwnership } from './plugin-bypass.mjs';
 import { operationHandlers, describe as serverLogicDescribe } from './exported-operations.mjs';
 import { operationCatalogue } from './operation-catalogue.mjs';
 import { workflowHandlers, workflowsWithActivation } from './dataverse-workflows.mjs';
@@ -48,7 +51,7 @@ import { organizationRecord } from './organization-context.mjs';
 import { clockFunction, systemClock, systemIds } from './runtime-clock.mjs';
 import { packDirectory } from './preset-registry.mjs';
 import { DataError } from './data-error.mjs';
-import { dataverseSettings } from './dataverse-settings.mjs';
+import { ASYNC_START_DELAY_MS, dataverseSettings } from './dataverse-settings.mjs';
 import { runtimeSettings } from './runtime-config.mjs';
 import { resolveDeploymentProfiles, loadDeploymentProfiles } from './deployment-profiles.mjs';
 import { readCanvasSources, canvasSourceCoverageGaps } from './canvas-source.mjs';
@@ -860,7 +863,7 @@ export function codeAppConnectors(connectors, connections = {}) {
  *   sources: { plugins(), workflows(), layers() } closures over the current Solution sources; sourcesKey(): a value whose
  *   identity changes when sources reload (an array is compared item by item); overrides(): the operations overrides (a
  *   stable object between commits); portalOperations(): portal or null;
- *   workflowOverrides(), timeoutMs(), diagnostic, clock, ids, scheduler, prepareRuntime (default prepareClrRuntime);
+ *   workflowOverrides(), timeoutMs(), diagnostic, clock, ids, scheduler, prepareRuntime (default sharedClrRuntimePreparer());
  *   runtime (runtimeSettings output), surfaces(): the host surfaces as { legacyKey: enabled } (capability summary keys),
  *   inventory(): the Solution inventory records, localOrigin(): the host's own origin once it listens, codeApps(): the loaded
  *   code app records (code-apps-config.mjs loadCodeApps) that topology() counts; projectRoot: the base of the relative pack paths it reports.
@@ -947,7 +950,7 @@ async function hostContext({
   clock = null,
   ids = null,
   scheduler = null,
-  prepareRuntime = prepareClrRuntime,
+  prepareRuntime = sharedClrRuntimePreparer(),
   runtime,
   surfaces = () => ({}),
   inventory = () => [],
@@ -1079,15 +1082,18 @@ function hostCatalogues(c) {
       return value;
     };
   };
-  c.pluginSteps = c.memo(() =>
-    pluginCatalogue({
+  c.pluginSteps = c.memo(() => {
+    const steps = pluginCatalogue({
       plugins: c.organization ? overlayRegisteredSteps(sources.plugins(), store) : sources.plugins(),
       handlers: handlers.plugins,
       runtimes: c.runtimes,
       descriptors: c.descriptors,
       overrides: overrides() ?? {},
-    }),
-  );
+    });
+    // A deleted step or assembly, or changed uploaded content, closes the uploaded runtime it prepared.
+    if (!store.isolatedCount) releaseStaleUploadedRuntimes(store, c.runtimes, steps, c.diagnostic);
+    return steps;
+  });
   c.workflows = () => workflowsWithActivation(sources.workflows(), c.organization ? store : null);
   c.operations = c.memo(() => [
     ...operationCatalogue({
@@ -1156,6 +1162,42 @@ function hostRegistry(c) {
     // Register the actual shared seams before modules and packs can claim their names.
     // The offline description installs the same organization over an in-memory store.
     if (c.store) add({ name: 'store', kind: 'provider', level: 'behaviour', stateOwner: 'DataStore', operations: [] });
+    if (c.store)
+      add(
+        bulkMessageAvailabilityRecord({
+          store: c.store,
+          plugins: c.sources.plugins?.(),
+          profiles: [...c.descriptors.values()].map((descriptor) => descriptor.serviceProfile),
+        }),
+      );
+    const ownership = c.pluginSteps().map((item) => {
+      const classified = pluginBypassOwnership(item);
+      return {
+        id: item.id,
+        kind: classified.kind,
+        qualification: classified.qualification,
+        customizationLevel: item.customizationLevel ?? null,
+        evidencePresent: Boolean(classified.evidence),
+      };
+    });
+    const unknownOwnership = ownership.filter((item) => item.kind === 'unknown').length;
+    add({
+      name: 'source-plugin-bypass-ownership',
+      kind: 'inventory',
+      level: 'contract',
+      operations: [],
+      reason: `${unknownOwnership}/${ownership.length} source plug-in ownership classifications are unqualified. Unknown source extensions retain the explicit local custom-adapter bypass contract; system/Microsoft ownership requires evidence.`,
+      seams: {
+        diagnostic: unknownOwnership ? 'PLUGIN_BYPASS_OWNERSHIP_UNKNOWN' : null,
+        steps: ownership,
+        managedBaseEditGuard: {
+          level: 'contract',
+          condition: 'ismanaged=true and customizationlevel=0',
+          nativeQualified: false,
+          ownershipProof: false,
+        },
+      },
+    });
     if (api?.scheduler)
       add({ name: 'scheduler', kind: 'provider', level: 'behaviour', operations: [], stateOwner: 'organization' });
     if (connectors.some((record) => record.name === 'http'))
@@ -1227,12 +1269,16 @@ function hostLifecycle(c) {
         handlers: handlers.plugins,
         runtimes,
         descriptors: c.descriptors,
+        prepareRuntime: c.prepareRuntime,
+        // Registered uploaded assemblies are prepared under the project's ignored .paqvilo cache (plugin-uploaded.mjs).
+        clrUploads: { cacheRoot: path.join(c.projectRoot ?? process.cwd(), '.paqvilo', 'plugin-assemblies') },
         operations: c.operations,
         workflows: c.workflows,
         identities: () => handlers.operations.flowIdentities,
         diagnostic,
         scheduler: c.scheduler,
         systemJobs: () => Boolean(c.organization),
+        asyncStartDelayMs: () => c.organization?.settings?.asyncStartDelayMs ?? ASYNC_START_DELAY_MS,
         connectors: c.connectors,
         secrets: providers.secrets,
         // Queue and topic service endpoints (contracts 2, 5, 6) deliver through providers.messaging (= api.providers.messaging).
@@ -1250,6 +1296,9 @@ function hostLifecycle(c) {
         plugins: () => c.sources.plugins?.(),
         customApis: handlers.customApis,
         pluginHandlers: handlers.plugins,
+        pluginRuntimes: c.descriptors,
+        pluginRuntimeCache: c.runtimes,
+        prepareRuntime: c.prepareRuntime,
         workflowHandlers: handlers.workflows,
         workflowOverrides: c.workflowOverrides,
         cloudFlow: c.cloudFlow,
@@ -1385,10 +1434,13 @@ function hostLifecycle(c) {
 async function applyOperationOverrides(c, next, commit) {
   const { runtimes, diagnostic } = c;
   const steps = c.pluginSteps().filter((item) => item.kind === 'plugin-step'),
-    prepared = new Map();
+    prepared = new Map(),
+    selected = (item) => next?.[item.key]?.mode ?? item.defaultMode;
   try {
     for (const item of steps) {
-      if (next?.[item.key]?.mode !== 'clr' || runtimes.has(item.id)) continue;
+      // An uploaded assembly without a trusted descriptor is prepared when its step first runs (plugin-uploaded.mjs).
+      if (selected(item) !== 'clr' || runtimes.has(item.id) || (item.uploadedAssemblyId && !c.descriptors.has(item.id)))
+        continue;
       if (!item.clrAvailable)
         throw new DataError(
           'No explicitly trusted CLR descriptor is registered for this exact exported plugin step/type.',
@@ -1411,9 +1463,23 @@ async function applyOperationOverrides(c, next, commit) {
   }
   for (const item of steps) {
     const runtime = runtimes.get(item.id);
-    if (runtime && next?.[item.key]?.mode !== 'clr') {
-      runtimes.delete(item.id);
-      closeClrHostPool({ runtime, diagnostic });
+    if (runtime && selected(item) !== 'clr') {
+      if (runtime.uploaded) releaseUploadedRuntime(runtimes, item.id, diagnostic);
+      else {
+        runtimes.delete(item.id);
+        // Steps of one assembly share a runtime and its hosts: stop them only when no remaining step uses it. The mode
+        // change is already committed; a host still running a queued job stops when the runtime closes.
+        if ([...runtimes.values()].some((other) => other.directory === runtime.directory)) continue;
+        try {
+          closeClrHostPool({ runtime, diagnostic });
+        } catch (error) {
+          if (error.code !== 'LocalPluginHostBusy') throw error;
+          diagnostic({
+            code: 'PLUGIN_CLR_HOST_BUSY',
+            message: 'A CLR host still runs a job; it stops when the runtime closes.',
+          });
+        }
+      }
     }
   }
   c.epoch++;

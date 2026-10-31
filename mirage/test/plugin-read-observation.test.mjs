@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of read observer ordering, serialization, snapshots and rollback; no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -180,23 +181,130 @@ test('lazy read snapshots precede direct observer mutations and direct SDK write
   assert.equal(store.revision, 1);
 });
 
-test('Unserialized original SDK observer writes still fail before modifying data', () => {
+const gate = () => {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+
+// @test-kind parity: native readNested: a Retrieve/RetrieveMultiple step's SDK write commits in its own transaction and its row persists after the read's own fault
+// @parity-evidence: native and native-r2 readNested: the RetrieveMultiple and Retrieve steps' SDK Create children persist although the read answered 400
+test('a read step SDK write outside any transaction commits on its own, also when the read then faults', async () => {
   const store = fixture();
-  store.pluginReadOnly = true;
-  assert.throws(
-    () =>
+  let fault = false;
+  store.setPluginPipeline(
+    (context) => {
+      if (context.operation !== 'retrievemultiple' || context.stage !== 40) return {};
+      assert.equal(store.inTransaction(), false);
+      const before = store.tableRows('audit').length;
       dispatchSdkCall({
         store,
         profile,
         message: {
           method: 'Create',
           userId: user,
-          arguments: [{ $type: 'Entity', logicalName: 'audit', attributes: { title: 'Unsafe' } }],
+          arguments: [{ $type: 'Entity', logicalName: 'audit', attributes: { title: 'Read step write' } }],
         },
-      }),
-    (error) => error.code === 'LocalPluginReadWriteUnsupported',
+      });
+      // The step sees its own write.
+      assert.equal(store.tableRows('audit').length, before + 1);
+      if (fault) throw new Error('Invented read fault');
+      return {};
+    },
+    ({ operation }) => operation === 'retrievemultiple',
   );
+  assert.equal(store.query('widget', {}, { admin: true }).value.length, 1);
+  await store.settleReadLanes();
+  assert.deepEqual(
+    store.snapshot().tables.audit.map((row) => row.title),
+    ['Read step write'],
+  );
+  fault = true;
+  assert.throws(() => store.query('widget', {}, { admin: true }), /Invented read fault/);
+  await store.settleReadLanes();
+  assert.deepEqual(
+    store.snapshot().tables.audit.map((row) => row.title),
+    ['Read step write', 'Read step write'],
+  );
+});
+
+// @test-kind unproven: a read step's SDK write that itself fails leaves nothing; no native capture of a failing read-step write
+test('a read step SDK write that fails rolls back only itself', async () => {
+  const store = fixture();
+  store.setPluginPipeline(
+    (context) => {
+      if (context.operation === 'create' && context.entity === 'audit' && context.stage === 20)
+        throw new Error('Invented audit refusal');
+      if (context.operation !== 'retrievemultiple' || context.stage !== 40) return {};
+      assert.throws(
+        () =>
+          dispatchSdkCall({
+            store,
+            profile,
+            message: {
+              method: 'Create',
+              userId: user,
+              arguments: [{ $type: 'Entity', logicalName: 'audit', attributes: { title: 'Refused write' } }],
+            },
+          }),
+        /Invented audit refusal/,
+      );
+      return {};
+    },
+    ({ operation }) => ['retrievemultiple', 'create'].includes(operation),
+  );
+  assert.equal(store.query('widget', {}, { admin: true }).value.length, 1);
+  await store.settleReadLanes();
   assert.equal(store.snapshot().tables.audit.length, 0);
+});
+
+// @test-kind unproven: the commit order of an independent read's step write behind another request's open transaction is a local model (native commits it on its own; the ordering was not captured)
+test('a read step SDK write commits on its own while another request holds an open transaction, and survives its rollback', async () => {
+  const store = fixture(),
+    entered = gate(),
+    release = gate();
+  store.setPluginPipeline(
+    (context) => {
+      if (context.operation !== 'retrievemultiple' || context.stage !== 40) return {};
+      dispatchSdkCall({
+        store,
+        profile,
+        message: {
+          method: 'Create',
+          userId: user,
+          arguments: [{ $type: 'Entity', logicalName: 'audit', attributes: { title: 'Independent read write' } }],
+        },
+      });
+      return {};
+    },
+    ({ operation }) => operation === 'retrievemultiple',
+  );
+  // Request A: an open write transaction held by a controlled gate, then rolled back.
+  const pending = store.transact(
+    async () => {
+      localOrganizationService(store, profile).create('audit', { title: 'Provisional A' });
+      entered.resolve();
+      await release.promise;
+      throw new Error('Controlled rollback of A');
+    },
+    { isolated: true },
+  );
+  await entered.promise;
+  // Read B runs at once (no 501, no wait) and does not see A's provisional row.
+  assert.equal(store.query('widget', {}, { admin: true }).value.length, 1);
+  assert.deepEqual(
+    store.tableRows('audit').map((row) => row.title),
+    [],
+  );
+  release.resolve();
+  await assert.rejects(pending, /Controlled rollback of A/);
+  await store.settleReadLanes();
+  assert.deepEqual(
+    store.snapshot().tables.audit.map((row) => row.title),
+    ['Independent read write'],
+  );
 });
 
 test('Observers receive permission-expanded XML before the main join limit is enforced and backend captures survive failure', async () => {
@@ -320,6 +428,7 @@ test('The scalar portal OData adapter exposes modeled expansion while independen
   assert.ok(seen.every((query) => query.$type === 'QueryExpression'));
 });
 
+// @test-kind parity+contract: native dev-environment recorded contexts (SecondaryEntityName none, nested calls not portal calls); transport flag is local design
 test('Context2 portal identity requires an explicit transport flag and clears on nested SDK context', () => {
   const store = fixture(),
     frame = { portalRequest: true, portalContactId: contact },
@@ -342,7 +451,8 @@ test('Context2 portal identity requires an explicit transport flag and clears on
   const first = clrContext(args).context;
   assert.equal(first.IsPortalsClientCall, true);
   assert.equal(first.PortalsContactId.value, contact);
-  assert.equal(first.SecondaryEntityName, '');
+  // Native reports 'none' for every message, reads included (recorded dev-environment contexts).
+  assert.equal(first.SecondaryEntityName, 'none');
   assert.equal(clrContext(args).context.RequestId.value, first.RequestId.value);
   store.pluginParentContext = { $type: 'ExecutionContext', values: first };
   const nested = clrContext({ ...args, frame: { ...frame } }).context;
@@ -390,6 +500,7 @@ test('SDK frames retain independently computed cookies and RowVersion metadata w
   assert.deepEqual(projected.attributes, { title: 'Existing' });
 });
 
+// @test-kind parity: native dev-environment recorder corpus (pipelineEffects): nested Create parent is its stage-30 main operation, caller one level up
 test(
   'Original CLR read recorder sees portal context in all three stages and records through SDK with nested identity cleared',
   { skip: CLR_SKIP },
@@ -399,11 +510,17 @@ test(
     const sdk = clrSdk(),
       assembly = path.join(root, 'Recorder.dll'),
       source = path.join(root, 'Recorder.cs');
+    // An observed but withheld user agent stays null: Mirage does not invent its value.
+    // @parity-evidence: every native context reports the request's User-Agent or '' as InitiatingUserAgent, never a placeholder string (audit C35); the withheld value has no native capture, so it is not invented
+    // @parity-evidence: native dev-environment recorder corpus readNested (two captures): a nested Create from a read step has InitiatingUserId = the SDK service user, not the read caller
+    // Native (parity corpus pipelineEffects): a nested Create PreOperation's parent is its own Create main operation (in the transaction, not a portal call); the caller is one level up.
+    // The caller one level up reports the nested context's IsInTransaction (true), not its own read state.
+    // @parity-evidence: native pipelineEffects Create/20/d2 < Create/30/d2 < Create/40/d1 report IsInTransaction true on every level, and sdkMessages RetrieveMultiple/10/d1 reports its Update/40 caller as false: every native synchronous ancestor reports the observing context's IsInTransaction (audit C31, 855 samples)
     await fs.writeFile(
       source,
       `using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;namespace Invented {
- public sealed class Recorder:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext7)services.GetService(typeof(IPluginExecutionContext7));if(c.EnvironmentId!="observed-local-environment"||c.TenantId!=new Guid("${user}")||!c.IsApplicationUser||c.InitiatingUserAgent==null||c.PreEntityImagesCollection.Length!=0||c.PostEntityImagesCollection.Length!=0)throw new InvalidPluginExecutionException("Context7 observations mismatch");if(!(c.InputParameters["AppModuleId"] is Guid)||(bool)c.InputParameters["IsAppModuleContext"])throw new InvalidPluginExecutionException("Observed input flags mismatch");if(c.Stage==40&&((EntityCollection)c.OutputParameters["BusinessEntityCollection"]).Entities[0].RowVersion!="12345")throw new InvalidPluginExecutionException("Source RowVersion lost");if(!c.IsPortalsClientCall||c.PortalsContactId!=new Guid("${contact}")||c.IsInTransaction||c.Depth!=1)throw new InvalidPluginExecutionException("Root read context mismatch");var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(new Guid("${writer}"));if(c.Stage==10)c.SharedVariables["observed"]="all stages";if((string)c.SharedVariables["observed"]!="all stages")throw new InvalidPluginExecutionException("Read shared values lost");var audit=new Entity("audit");audit["title"]=c.Stage.ToString();service.Create(audit);if(c.Stage==40&&((FetchExpression)c.InputParameters["Query"]).Query.Contains("fail"))throw new InvalidPluginExecutionException("Later observer rejected");}}
- public sealed class Audit:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext2)services.GetService(typeof(IPluginExecutionContext2));var parent=(IPluginExecutionContext2)c.ParentContext;if(c.UserId!=new Guid("${writer}")||c.InitiatingUserId!=new Guid("${user}")||c.IsPortalsClientCall||c.PortalsContactId!=Guid.Empty||c.Depth!=2||!c.IsInTransaction||parent.IsInTransaction||!parent.IsPortalsClientCall||parent.PortalsContactId!=new Guid("${contact}")||c.CorrelationId!=parent.CorrelationId)throw new InvalidPluginExecutionException("Nested recording context mismatch");((Entity)c.InputParameters["Target"])["note"]="nested SDK identity cleared";}}
+ public sealed class Recorder:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext7)services.GetService(typeof(IPluginExecutionContext7));if(c.EnvironmentId!="observed-local-environment"||c.TenantId!=new Guid("${user}")||!c.IsApplicationUser||c.InitiatingUserAgent!=null||c.PreEntityImagesCollection.Length!=0||c.PostEntityImagesCollection.Length!=0)throw new InvalidPluginExecutionException("Context7 observations mismatch");if(!(c.InputParameters["AppModuleId"] is Guid)||(bool)c.InputParameters["IsAppModuleContext"])throw new InvalidPluginExecutionException("Observed input flags mismatch");if(c.Stage==40&&((EntityCollection)c.OutputParameters["BusinessEntityCollection"]).Entities[0].RowVersion!="12345")throw new InvalidPluginExecutionException("Source RowVersion lost");if(!c.IsPortalsClientCall||c.PortalsContactId!=new Guid("${contact}")||c.IsInTransaction||c.Depth!=1)throw new InvalidPluginExecutionException("Root read context mismatch");var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(new Guid("${writer}"));if(c.Stage==10)c.SharedVariables["observed"]="all stages";if((string)c.SharedVariables["observed"]!="all stages")throw new InvalidPluginExecutionException("Read shared values lost");var audit=new Entity("audit");audit["title"]=c.Stage.ToString();service.Create(audit);if(c.Stage==40&&((FetchExpression)c.InputParameters["Query"]).Query.Contains("fail"))throw new InvalidPluginExecutionException("Later observer rejected");}}
+ public sealed class Audit:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext2)services.GetService(typeof(IPluginExecutionContext2));var main=(IPluginExecutionContext2)c.ParentContext;if(main.MessageName!="Create"||main.Stage!=30||!main.IsInTransaction||main.IsPortalsClientCall)throw new InvalidPluginExecutionException("Nested main operation mismatch");var parent=(IPluginExecutionContext2)main.ParentContext;if(c.UserId!=new Guid("${writer}")||c.InitiatingUserId!=new Guid("${writer}")||c.IsPortalsClientCall||c.PortalsContactId!=Guid.Empty||c.Depth!=2||!c.IsInTransaction||!parent.IsInTransaction||!parent.IsPortalsClientCall||parent.PortalsContactId!=new Guid("${contact}")||c.CorrelationId!=parent.CorrelationId)throw new InvalidPluginExecutionException("Nested recording context mismatch");((Entity)c.InputParameters["Target"])["note"]="nested SDK identity cleared";}}
  }`,
     );
     compileClr(source, assembly, { references: [sdk, 'System.Runtime.Serialization.dll'] });

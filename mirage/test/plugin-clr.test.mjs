@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo local CLR host and backend SDK dispatch: typed values, paging and grant predicates for compiled original DLLs
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
@@ -42,6 +43,7 @@ function data() {
     },
   });
 }
+// @test-kind security: CLR registration requires explicit trust, confined assembly paths and explicit backend identity; no impersonation by default
 test('CLR registration cannot infer trust, backend identity or unsafe paths', () => {
   const clockDescriptor = {
     trust: 'execute-local-assembly',
@@ -100,33 +102,43 @@ test('CLR registration cannot infer trust, backend identity or unsafe paths', ()
     /confined/,
   );
   const store = data();
+  // @parity-evidence: user explicitly approved C16 on 2026-10-30 (native run-as roles replace the grant profile)
+  // CreateOrganizationService(null) and another user's id run as that user (Learn IOrganizationServiceFactory); with an
+  // organization the user's roles authorize the call (plugin-clr-run-as.test.mjs). This store has no Dataverse security
+  // model, so the descriptor grants still bound every run-as user: a granted read succeeds, an ungranted write is refused.
+  const retrieve = (userId, table) =>
+    dispatchSdkCall({
+      store,
+      profile,
+      message: {
+        method: 'Retrieve',
+        userId,
+        arguments: [table, { $type: 'Guid', value: rowId }, { allColumns: true }],
+      },
+    });
+  assert.equal(retrieve(null, 'secondary').id, rowId);
+  assert.equal(retrieve('40000000-0000-0000-0000-000000000001', 'secondary').id, rowId);
   assert.throws(
     () =>
       dispatchSdkCall({
         store,
         profile,
         message: {
-          method: 'Retrieve',
-          userId: null,
-          arguments: ['secondary', { $type: 'Guid', value: rowId }, { allColumns: true }],
+          method: 'Create',
+          userId: '40000000-0000-0000-0000-000000000001',
+          arguments: [
+            { $type: 'Entity', logicalName: 'widget', id: '00000000-0000-0000-0000-000000000000', attributes: {} },
+          ],
         },
       }),
-    /system-factory/,
-  );
-  assert.throws(
-    () =>
-      dispatchSdkCall({
-        store,
-        profile,
-        message: { method: 'Retrieve', userId: '40000000-0000-0000-0000-000000000001', arguments: [] },
-      }),
-    /impersonation/,
+    (error) => error.code === 'LocalBackendPermissionDenied' && error.status === 403,
   );
   assert.throws(
     () => dispatchSdkCall({ store, profile, message: { method: 'Execute', userId: user, arguments: [] } }),
     /SDK Execute requires/,
   );
 });
+// @test-kind security: backend RPC grants never inherit portal roles; reads outside the explicit grant fail
 test('Backend RPC grants do not inherit portal roles and preserve SDK value types', () => {
   const store = data(),
     row = recordToSdkEntity(store, 'widget', { widgetid: rowId, amount: 12.5, category: 2 });
@@ -144,7 +156,8 @@ test('Backend RPC grants do not inherit portal roles and preserve SDK value type
           arguments: ['widget', { $type: 'Guid', value: rowId }, { allColumns: true }],
         },
       }),
-    /Record not found/,
+    // @parity-evidence: native dev-environment recorder corpus sdkSurface: an SDK request on a missing row faults 0x80040217 'Entity '<table>' With Id = <id> Does Not Exist'
+    /Entity 'widget' With Id = 20000000-0000-0000-0000-000000000001 Does Not Exist/,
   );
   const result = dispatchSdkCall({
     store,
@@ -155,7 +168,7 @@ test('Backend RPC grants do not inherit portal roles and preserve SDK value type
       arguments: ['secondary', { $type: 'Guid', value: rowId }, { columns: ['title'], allColumns: false }],
     },
   });
-  assert.deepEqual(result.attributes, { title: 'Before' });
+  assert.deepEqual(result.attributes, { title: 'Before', secondaryid: { $type: 'Guid', value: rowId } });
 });
 
 test('SDK precision and projected identity never silently lose digits or the primary ID', () => {
@@ -181,13 +194,15 @@ test('SDK precision and projected identity never silently lose digits or the pri
     message: { method: 'RetrieveMultiple', userId: user, arguments: [query] },
   });
   assert.equal(result.entities[0].id, rowId);
-  assert.deepEqual(result.entities[0].attributes, { title: 'Before' });
+  assert.deepEqual(result.entities[0].attributes, { title: 'Before', secondaryid: { $type: 'Guid', value: rowId } });
   query.pageInfo.pageNumber = 2;
-  assert.throws(
-    () =>
-      dispatchSdkCall({ store, profile, message: { method: 'RetrieveMultiple', userId: user, arguments: [query] } }),
-    /continuation/,
-  );
+  const continuation = dispatchSdkCall({
+    store,
+    profile,
+    message: { method: 'RetrieveMultiple', userId: user, arguments: [query] },
+  });
+  assert.deepEqual(continuation.entities, []);
+  assert.equal(continuation.moreRecords, false);
   const restricted = {
     ...profile,
     grants: [{ entity: 'secondary', operations: ['read'], predicate: (row) => row.title === 'Before' }],
@@ -200,6 +215,7 @@ test('SDK precision and projected identity never silently lose digits or the pri
   const empty = { ...restricted, grants: [{ ...restricted.grants[0], predicate: () => false }] };
   assert.deepEqual(localOrganizationService(store, empty).query('secondary').value, []);
 });
+// @test-kind unproven: assumes Delete dispatches no Retrieve message; no native capture of the Delete message sequence
 test('Internal backend Delete authorization does not dispatch a phantom Retrieve message or require a read grant', () => {
   const store = data(),
     messages = [];
@@ -213,6 +229,7 @@ test('Internal backend Delete authorization does not dispatch a phantom Retrieve
   assert.ok(!messages.includes('retrieve'));
   assert.ok(messages.includes('delete'));
 });
+// @test-kind compatibility: Learn event pipeline (transactions, images, PreValidation outside transaction, async after commit); nativeQualified false
 test(
   'Original compiled DLL executes context, service calls, images and rollback; timeout closes its host',
   { skip: CLR_SKIP },
@@ -224,7 +241,7 @@ test(
     await fs.writeFile(
       source,
       `using System;using System.Threading;using System.ServiceModel;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;
-namespace Invented {public sealed class Original:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var trace=(ITracingService)services.GetService(typeof(ITracingService));var target=(Entity)c.InputParameters["Target"];var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);trace.Trace("Original DLL stage {0}",c.Stage);try{service.Retrieve("secondary",new Guid("20000000-0000-0000-0000-000000000099"),new ColumnSet("title"));throw new InvalidPluginExecutionException("Missing SDK fault");}catch(FaultException<OrganizationServiceFault> fault){if(fault.Detail.ErrorCode!=unchecked((int)0x80040217))throw new InvalidPluginExecutionException("Wrong SDK fault code");}if(target.GetAttributeValue<string>("title")=="timeout")Thread.Sleep(10000);if(c.MessageName=="Update"&&c.PreEntityImages["before"].GetAttributeValue<string>("title")!="Good")throw new InvalidPluginExecutionException("Image mismatch");if(target.GetAttributeValue<string>("title")=="prevalidation-reject"){if(c.IsInTransaction)throw new InvalidPluginExecutionException("Wrong top-level transaction flag");var independent=new Entity("secondary",new Guid("${rowId}"));independent["title"]="Independent";service.Update(independent);throw new InvalidPluginExecutionException("Top-level PreValidation rejection");}c.SharedVariables["beforeRpc"]=new Money(19.25m);var row=service.Retrieve("secondary",new Guid("${rowId}"),new ColumnSet("title"));row["title"]="Changed";service.Update(row);var query=new QueryExpression("secondary"){ColumnSet=new ColumnSet("title")};query.Criteria.AddCondition("title",ConditionOperator.Equal,"Changed");var selected=service.RetrieveMultiple(query);if(selected.Entities.Count!=1||selected.Entities[0].Id!=new Guid("${rowId}")||selected.Entities[0].Attributes.Contains("secondaryid"))throw new InvalidPluginExecutionException("Query mismatch");c.SharedVariables["seen"]=new Money(7.5m);c.SharedVariables["long"]=9007199254740993L;c.SharedVariables["multi"]=new OptionSetValueCollection{new OptionSetValue(2),new OptionSetValue(4)};c.OutputParameters["probe"]=new OptionSetValue(3);if(target.GetAttributeValue<string>("title")=="reject")throw new InvalidPluginExecutionException("Original DLL rejected after service write");target["title"]=target.GetAttributeValue<string>("title").Trim();}}public sealed class Reader:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));if((long)c.SharedVariables["long"]!=9007199254740993L||((OptionSetValueCollection)c.SharedVariables["multi"])[1].Value!=4||((Money)c.SharedVariables["seen"]).Value!=7.5m||((OptionSetValue)c.OutputParameters["probe"]).Value!=3)throw new InvalidPluginExecutionException("Typed frame did not survive rank/stage");((ITracingService)services.GetService(typeof(ITracingService))).Trace("Reader stage {0}",c.Stage);}}public sealed class RetrieveObserver:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));if(c.MessageName!="Retrieve"||((EntityReference)c.InputParameters["Target"]).Id!=new Guid("${rowId}")||!(c.InputParameters["ColumnSet"] is ColumnSet))throw new InvalidPluginExecutionException("Retrieve input context mismatch");((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original Retrieve stage {0}",c.Stage);if(c.Stage==40){var row=(Entity)c.OutputParameters["BusinessEntity"];if(row.Id==Guid.Empty)throw new InvalidPluginExecutionException("Retrieve identity lost");row["title"]="Retrieve observed";}}}public sealed class QueryObserver:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var trace=(ITracingService)services.GetService(typeof(ITracingService));if(c.MessageName!="RetrieveMultiple")throw new InvalidPluginExecutionException("Wrong read message");var query=c.InputParameters["Query"];if(!(query is QueryExpression)&&!(query is FetchExpression)&&!(query is QueryByAttribute))throw new InvalidPluginExecutionException("Untyped query");if(query is QueryExpression&&((QueryExpression)query).LinkEntities.Count>0){var l=((QueryExpression)query).LinkEntities[0];if(l.EntityAlias!="joined"||l.LinkCriteria.Conditions.Count!=1||l.LinkEntities[0].EntityAlias!="nested"||l.LinkEntities[0].JoinOperator!=JoinOperator.LeftOuter)throw new InvalidPluginExecutionException("Linked context shape lost");}trace.Trace("Original query {0} stage {1}",query.GetType().Name,c.Stage);if(c.Stage==20){var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var observed=service.Retrieve("secondary",new Guid("${rowId}"),new ColumnSet("title"));if(observed.Id==Guid.Empty)throw new InvalidPluginExecutionException("Read-only RPC lost identity");c.SharedVariables["queryType"]=query.GetType().Name;}else{if((string)c.SharedVariables["queryType"]!=query.GetType().Name)throw new InvalidPluginExecutionException("Read frame lost shared value");var rows=(EntityCollection)c.OutputParameters["BusinessEntityCollection"];if(rows.Entities.Count!=1||rows.Entities[0].Id!=new Guid("${rowId}"))throw new InvalidPluginExecutionException("Read output lost identity");rows.Entities[0]["title"]="Observed by original DLL";if(query is FetchExpression){rows.MoreRecords=true;rows.PagingCookie="<cookie page='2' />";rows.TotalRecordCount=7;}}}}public sealed class LinkedOriginal:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var q=new QueryExpression("secondary"){ColumnSet=new ColumnSet("title")};var link=q.AddLink("tertiary","secondaryid","secondaryid",JoinOperator.Inner);link.EntityAlias="joined";link.Columns=new ColumnSet("amount");link.LinkCriteria.AddCondition("amount",ConditionOperator.GreaterThan,10m);var nested=link.AddLink("fourth","tertiaryid","tertiaryid",JoinOperator.LeftOuter);nested.LinkFromEntityName="tertiary";nested.EntityAlias="nested";nested.Columns=new ColumnSet("flag");var rows=service.RetrieveMultiple(q);if(rows.Entities.Count!=1||rows.Entities[0].Id!=new Guid("20000000-0000-0000-0000-000000000001")||((Money)((AliasedValue)rows.Entities[0]["joined.amount"]).Value).Value!=12.5m||((OptionSetValue)((AliasedValue)rows.Entities[0]["nested.flag"]).Value).Value!=2)throw new InvalidPluginExecutionException("Linked typed query result mismatch");var fetch=service.RetrieveMultiple(new FetchExpression("<fetch><entity name='secondary'><attribute name='title' alias='base_label'/><link-entity name='tertiary' from='secondaryid' to='secondaryid' alias='f'><attribute name='amount'/></link-entity></entity></fetch>"));if(fetch.Entities[0].Id==Guid.Empty||!(fetch.Entities[0]["base_label"] is AliasedValue)||((Money)((AliasedValue)fetch.Entities[0]["f.amount"]).Value).Value!=12.5m)throw new InvalidPluginExecutionException("Fetch alias type mismatch");((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original linked query completed");}}public sealed class AsyncOriginal:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));if(c.Mode!=1||c.Stage!=40||c.IsInTransaction)throw new InvalidPluginExecutionException("Wrong async context");var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var row=new Entity("secondary",new Guid("20000000-0000-0000-0000-000000000001"));row["title"]="Async committed";service.Update(row);((ITracingService)services.GetService(typeof(ITracingService))).Trace("Async original wrote independently");throw new InvalidPluginExecutionException("Async original later failed");}}public sealed class Nested:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));if(!c.IsInTransaction)throw new InvalidPluginExecutionException("Nested PreValidation must join transaction");if(c.ParentContext==null||c.ParentContext.MessageName!="Create"||c.ParentContext.PrimaryEntityName!="widget"||((Money)c.ParentContext.SharedVariables["beforeRpc"]).Value!=19.25m||c.CorrelationId!=c.ParentContext.CorrelationId||c.Depth!=c.ParentContext.Depth+1)throw new InvalidPluginExecutionException("Live ParentContext was not preserved at SDK call");((ITracingService)services.GetService(typeof(ITracingService))).Trace("Nested PreValidation joined");var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var row=new Entity("tertiary",new Guid("70000000-0000-0000-0000-000000000001"));row["title"]="Nested write";service.Update(row);if(((Entity)c.InputParameters["Target"]).GetAttributeValue<string>("title")=="Changed")throw new InvalidPluginExecutionException("Nested PreValidation rejected after write");}}}`,
+namespace Invented {public sealed class Original:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var trace=(ITracingService)services.GetService(typeof(ITracingService));var target=(Entity)c.InputParameters["Target"];var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);trace.Trace("Original DLL stage {0}",c.Stage);try{service.Retrieve("secondary",new Guid("20000000-0000-0000-0000-000000000099"),new ColumnSet("title"));throw new InvalidPluginExecutionException("Missing SDK fault");}catch(FaultException<OrganizationServiceFault> fault){if(fault.Detail.ErrorCode!=unchecked((int)0x80040217))throw new InvalidPluginExecutionException("Wrong SDK fault code");}if(target.GetAttributeValue<string>("title")=="timeout")Thread.Sleep(10000);if(c.MessageName=="Update"&&c.PreEntityImages["before"].GetAttributeValue<string>("title")!="Good")throw new InvalidPluginExecutionException("Image mismatch");if(target.GetAttributeValue<string>("title")=="prevalidation-reject"){if(c.IsInTransaction)throw new InvalidPluginExecutionException("Wrong top-level transaction flag");var independent=new Entity("secondary",new Guid("${rowId}"));independent["title"]="Independent";service.Update(independent);throw new InvalidPluginExecutionException("Top-level PreValidation rejection");}c.SharedVariables["beforeRpc"]=new Money(19.25m);var row=service.Retrieve("secondary",new Guid("${rowId}"),new ColumnSet("title"));row["title"]="Changed";service.Update(row);if(((Money)c.SharedVariables["beforeRpc"]).Value!=19.25m)throw new InvalidPluginExecutionException("SDK entry snapshot changed live caller state");var query=new QueryExpression("secondary"){ColumnSet=new ColumnSet("title")};query.Criteria.AddCondition("title",ConditionOperator.Equal,"Changed");var selected=service.RetrieveMultiple(query);if(selected.Entities.Count!=1||selected.Entities[0].Id!=new Guid("${rowId}")||!selected.Entities[0].Attributes.Contains("secondaryid")||selected.Entities[0].GetAttributeValue<Guid>("secondaryid")!=new Guid("${rowId}"))throw new InvalidPluginExecutionException("Query mismatch");c.SharedVariables["seen"]=new Money(7.5m);c.SharedVariables["long"]=9007199254740993L;c.SharedVariables["multi"]=new OptionSetValueCollection{new OptionSetValue(2),new OptionSetValue(4)};c.OutputParameters["probe"]=new OptionSetValue(3);if(target.GetAttributeValue<string>("title")=="reject")throw new InvalidPluginExecutionException("Original DLL rejected after service write");target["title"]=target.GetAttributeValue<string>("title").Trim();}}public sealed class Reader:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));if((long)c.SharedVariables["long"]!=9007199254740993L||((OptionSetValueCollection)c.SharedVariables["multi"])[1].Value!=4||((Money)c.SharedVariables["seen"]).Value!=7.5m||((OptionSetValue)c.OutputParameters["probe"]).Value!=3)throw new InvalidPluginExecutionException("Typed frame did not survive rank/stage");((ITracingService)services.GetService(typeof(ITracingService))).Trace("Reader stage {0}",c.Stage);}}public sealed class RetrieveObserver:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));if(c.MessageName!="Retrieve"||((EntityReference)c.InputParameters["Target"]).Id!=new Guid("${rowId}")||!(c.InputParameters["ColumnSet"] is ColumnSet))throw new InvalidPluginExecutionException("Retrieve input context mismatch");((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original Retrieve stage {0}",c.Stage);if(c.Stage==40){var row=(Entity)c.OutputParameters["BusinessEntity"];if(row.Id==Guid.Empty)throw new InvalidPluginExecutionException("Retrieve identity lost");row["title"]="Retrieve observed";}}}public sealed class QueryObserver:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var trace=(ITracingService)services.GetService(typeof(ITracingService));if(c.MessageName!="RetrieveMultiple")throw new InvalidPluginExecutionException("Wrong read message");var query=c.InputParameters["Query"];if(!(query is QueryExpression)&&!(query is FetchExpression)&&!(query is QueryByAttribute))throw new InvalidPluginExecutionException("Untyped query");if(query is QueryExpression&&((QueryExpression)query).LinkEntities.Count>0){var l=((QueryExpression)query).LinkEntities[0];if(l.EntityAlias!="joined"||l.LinkCriteria.Conditions.Count!=1||l.LinkEntities[0].EntityAlias!="nested"||l.LinkEntities[0].JoinOperator!=JoinOperator.LeftOuter)throw new InvalidPluginExecutionException("Linked context shape lost");}trace.Trace("Original query {0} stage {1}",query.GetType().Name,c.Stage);if(c.Stage==20){var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var observed=service.Retrieve("secondary",new Guid("${rowId}"),new ColumnSet("title"));if(observed.Id==Guid.Empty)throw new InvalidPluginExecutionException("Read-only RPC lost identity");c.SharedVariables["queryType"]=query.GetType().Name;}else{if((string)c.SharedVariables["queryType"]!=query.GetType().Name)throw new InvalidPluginExecutionException("Read frame lost shared value");var rows=(EntityCollection)c.OutputParameters["BusinessEntityCollection"];if(rows.Entities.Count!=1||rows.Entities[0].Id!=new Guid("${rowId}"))throw new InvalidPluginExecutionException("Read output lost identity");rows.Entities[0]["title"]="Observed by original DLL";if(query is FetchExpression){rows.MoreRecords=true;rows.PagingCookie="<cookie page='2' />";rows.TotalRecordCount=7;}}}}public sealed class LinkedOriginal:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var q=new QueryExpression("secondary"){ColumnSet=new ColumnSet("title")};var link=q.AddLink("tertiary","secondaryid","secondaryid",JoinOperator.Inner);link.EntityAlias="joined";link.Columns=new ColumnSet("amount");link.LinkCriteria.AddCondition("amount",ConditionOperator.GreaterThan,10m);var nested=link.AddLink("fourth","tertiaryid","tertiaryid",JoinOperator.LeftOuter);nested.LinkFromEntityName="tertiary";nested.EntityAlias="nested";nested.Columns=new ColumnSet("flag");var rows=service.RetrieveMultiple(q);if(rows.Entities.Count!=1||rows.Entities[0].Id!=new Guid("20000000-0000-0000-0000-000000000001")||((Money)((AliasedValue)rows.Entities[0]["joined.amount"]).Value).Value!=12.5m||((OptionSetValue)((AliasedValue)rows.Entities[0]["nested.flag"]).Value).Value!=2)throw new InvalidPluginExecutionException("Linked typed query result mismatch");var fetch=service.RetrieveMultiple(new FetchExpression("<fetch><entity name='secondary'><attribute name='title' alias='base_label'/><link-entity name='tertiary' from='secondaryid' to='secondaryid' alias='f'><attribute name='amount'/></link-entity></entity></fetch>"));if(fetch.Entities[0].Id==Guid.Empty||!(fetch.Entities[0]["base_label"] is AliasedValue)||((Money)((AliasedValue)fetch.Entities[0]["f.amount"]).Value).Value!=12.5m)throw new InvalidPluginExecutionException("Fetch alias type mismatch");((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original linked query completed");}}public sealed class AsyncOriginal:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));if(c.Mode!=1||c.Stage!=40||c.IsInTransaction)throw new InvalidPluginExecutionException("Wrong async context");var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var row=new Entity("secondary",new Guid("20000000-0000-0000-0000-000000000001"));row["title"]="Async committed";service.Update(row);((ITracingService)services.GetService(typeof(ITracingService))).Trace("Async original wrote independently");throw new InvalidPluginExecutionException("Async original later failed");}}public sealed class PrecedingFrame:IPlugin{public void Execute(IServiceProvider services){((IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext))).SharedVariables["beforeRpc"]=new Money(11.5m);}}public sealed class Nested:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));if(!c.IsInTransaction)throw new InvalidPluginExecutionException("Nested PreValidation must join transaction");if(c.ParentContext==null||c.ParentContext.MessageName!="Create"||c.ParentContext.PrimaryEntityName!="widget"||((Money)c.ParentContext.SharedVariables["beforeRpc"]).Value!=11.5m||c.CorrelationId!=c.ParentContext.CorrelationId||c.Depth!=c.ParentContext.Depth+1)throw new InvalidPluginExecutionException("SDK entry ParentContext lost completed step values");((ITracingService)services.GetService(typeof(ITracingService))).Trace("Nested PreValidation joined");var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var row=new Entity("tertiary",new Guid("70000000-0000-0000-0000-000000000001"));row["title"]="Nested write";service.Update(row);if(((Entity)c.InputParameters["Target"]).GetAttributeValue<string>("title")=="Changed")throw new InvalidPluginExecutionException("Nested PreValidation rejected after write");}}}`,
     );
     const assembly = compileClr(source, path.join(root, 'Original.dll'), {
       references: [sdk, 'System.Runtime.Serialization.dll', 'System.ServiceModel.dll'],
@@ -353,7 +370,14 @@ namespace Invented {public sealed class Original:IPlugin {public void Execute(IS
       stage: 10,
     };
     runtimes.set(nested.id, nestedRuntime);
-    plugins = { steps: [step, nested] };
+    const preceding = {
+      ...step,
+      id: '30000000-0000-0000-0000-000000000009',
+      typeName: 'Invented.PrecedingFrame',
+      rank: 0,
+    };
+    runtimes.set(preceding.id, retypeClrRuntime(runtime, { typeName: 'Invented.PrecedingFrame' }));
+    plugins = { steps: [preceding, step, nested] };
     const nestedBefore = store.snapshot();
     await assert.rejects(
       store.create('widgets', { title: 'Nested trigger' }, editor),
@@ -370,8 +394,11 @@ namespace Invented {public sealed class Original:IPlugin {public void Execute(IS
     try {
       await assert.rejects(store.create('widgets', { title: 'timeout' }, editor), (error) => {
         assert.equal(error.code, 'LocalPluginTimeout');
-        assert.equal(error.status, 504);
-        return /timeout|deadline/i.test(error.message);
+        // The platform's unhandled timeout fault, as for a custom API (Learn: 2-minute plug-in limit, 0x80040224; native
+        // timeout.json and native-r2 timeout.json results[1]: 400 0x80040224 with a System.TimeoutException message).
+        assert.equal(error.status, 400);
+        assert.equal(error.details?.innerCode, '0x80040224');
+        return /System\.TimeoutException: .* within the [\d.]+-second limit/.test(error.message);
       });
       assert.deepEqual(store.snapshot(), timeoutBefore);
     } finally {

@@ -80,6 +80,7 @@
     "test:company": "npm ci --prefix examples/company-operations --offline --ignore-scripts --no-audit --no-fund && npm --prefix examples/company-operations test",
     "test:company:browser": "node test/browser-bootstrap.mjs --npm --prefix examples/company-operations run test:browser",
     "check": "node scripts/check.mjs && npm run check:boundary",
+    "check:test-tags": "node scripts/check-test-tags.mjs",
     "validate": "node scripts/ci.mjs verify --full",
     "release:check": "node scripts/release-check.mjs",
     "preview:cleanup": "node scripts/preview-retention.mjs",
@@ -168,6 +169,17 @@
       "name": "npm",
       "version": "11.19.1",
       "onFail": "error"
+    }
+  },
+  "overrides": {
+    "eslint": {
+      "minimatch": "^11.0.3"
+    },
+    "@eslint/config-array": {
+      "minimatch": "^11.0.3"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.3"
     }
   }
 }

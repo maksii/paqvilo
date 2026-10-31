@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo durable committed-job recovery (restart, Locked recovery, poison budget); the missing-step job outcome is the native asyncStepDeleted capture
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -231,13 +232,14 @@ test('settle waits for durable jobs on the real scheduler', async (t) => {
   assert.equal(backend.asyncPluginRunner.status().pending, 0);
 });
 
-// The default per-chain run limit and backlog report size of the async plug-in and flow trigger runners (maxChainRuns and
-// maxPending, plugin-async.mjs and flow-triggers.mjs). One row more than it would exceed a shared chain's budget and is the
-// first to cross the backlog report; more rows only add runs (each transaction clones the state, so the cost grows fast).
+// The default per-chain run limit of the flow trigger runner (maxChainRuns, flow-triggers.mjs) and the backlog report size of
+// both runners (maxPending). The plug-in runner has no per-chain run budget. One row more than the flow limit is the first to
+// cross the backlog report; more rows only add runs (each transaction clones the state, so the cost grows fast).
 const DEFAULT_CHAIN_RUNS = 100;
 const BULK_ROWS = DEFAULT_CHAIN_RUNS + 1;
 
-test('one commit of more rows than a chain may run still yields one durable run per row, each on its own chain', async (t) => {
+// These events are recorded with no frame and no request, so each keeps its own chain id as its correlation id.
+test('one commit of more rows than a chain may run still yields one durable run per row; frameless events each keep their own correlation id', async (t) => {
   const { store, backend, log, notes } = await runtime(t, { file: null, fresh: true });
   const events = Array.from({ length: BULK_ROWS }, (_, n) => ({
     entity: 'x_widget',
@@ -330,7 +332,9 @@ test('a web hook job left Locked by an unfinished run is recovered once after a 
   const row = second.store.tableRows('asyncoperation').find((entry) => entry.asyncoperationid === id);
   // The registration is gone in this run, so the recovered job ends Failed with that reason instead of staying Locked.
   assert.deepEqual([row.statecode, row.statuscode], [3, 31]);
-  assert.match(row.message, /no longer available/);
+  // Native asyncStepDeleted (two captures): a job whose step is gone fails 0x8004418b "Could not find plugin step description.".
+  assert.equal(row.message, 'Could not find plugin step description.');
+  assert.equal(row.errorcode, 0x8004418b | 0);
   assert.deepEqual(
     second.notes.filter((note) => note.code === 'COMMITTED_JOB_RECOVERED').map((note) => note.count),
     [1],

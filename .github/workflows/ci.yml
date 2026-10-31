@@ -80,6 +80,8 @@ jobs:
         env:
           VALIDATE_ALL: ${{ inputs.full == true || inputs.ref != '' }}
         run: node .github/scripts/change-scope.mjs
+      - name: Check test kinds of changed tests
+        run: node scripts/check-test-tags.mjs --event
   checks:
     needs: changes
     if: needs.changes.outputs.quality == 'true' || needs.changes.outputs.package == 'true'

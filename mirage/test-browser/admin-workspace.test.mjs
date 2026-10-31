@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
 // A synthetic live bridge stands in for a reference browser.
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';

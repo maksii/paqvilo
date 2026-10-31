@@ -1,3 +1,4 @@
+// @test-kind compatibility: Learn bulk operation messages: standard tables, one table per request, no 1000-record cap, atomic failure; nativeQualified false
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
@@ -59,6 +60,19 @@ const invoke = (store, name, entities) =>
     },
   });
 
+test('standard bulk does not mistake the recommended batch size for a 1000-record limit', async () => {
+  const store = storeOf();
+  await store.transact(() =>
+    invoke(
+      store,
+      'CreateMultiple',
+      Array.from({ length: 1001 }, (_, index) => entity({ title: `Invented ${index}` })),
+    ),
+  );
+  assert.equal(store.tableRows('secondary').length, 1002);
+});
+
+// @test-kind compatibility+contract: Learn bulk atomicity and single-table rule; source-evidenced bulkTables profile is a Paqvilo design
 test('Standard bulk validates all identities/security before writing and preserves atomic failure', async () => {
   const store = storeOf(),
     before = store.snapshot();
@@ -70,7 +84,9 @@ test('Standard bulk validates all identities/security before writing and preserv
       ]),
     /not found/,
   );
-  assert.throws(() => invoke(store, 'UpdateMultiple', [entity({}, id), entity({}, id)]), /Duplicate/);
+  const repeated = storeOf();
+  invoke(repeated, 'UpdateMultiple', [entity({ title: 'First' }, id), entity({ title: 'Second' }, id)]);
+  assert.equal(repeated.tableRows('secondary')[0].title, 'First');
   assert.throws(
     () => invoke(store, 'CreateMultiple', [entity({}), { ...entity({}), logicalName: 'widget' }]),
     /one exact logical table/,
@@ -101,14 +117,24 @@ test('Standard bulk validates all identities/security before writing and preserv
   );
   assert.equal(calls, 1);
   assert.deepEqual(store.snapshot(), before);
+  // @parity-evidence: native recorder corpus bulk: a CreateMultiple request with both CreateMultiple and Create steps runs
+  // them all (CreateMultiple first, then each record's Create, at every stage); a host pipeline without a step catalogue
+  // no longer refuses that mix.
+  const seen = [];
   store.setPluginPipeline(
-    () => {},
+    (context) => {
+      seen.push(`${context.operation}/${context.stage}`);
+    },
     () => true,
   );
-  assert.throws(() => invoke(store, 'CreateMultiple', [entity({ title: 'mixed' })]), /merged-pipeline ordering/);
-  assert.deepEqual(store.snapshot(), before);
+  await store.transact(() => invoke(store, 'CreateMultiple', [entity({ title: 'mixed' })]));
+  assert.deepEqual(
+    seen,
+    [10, 20, 40].flatMap((stage) => [`createmultiple/${stage}`, `create/${stage}`]),
+  );
 });
 
+// @test-kind security: backend grant predicates are re-checked per bulk target after PreOperation SDK changes; no stale grant survives
 test(
   'Original bulk PreOperation SDK changes cannot retain a stale backend grant on any target',
   { skip: CLR_SKIP },
@@ -236,6 +262,8 @@ public sealed class GuardChange:IPlugin {public void Execute(IServiceProvider se
   },
 );
 
+// Context4 at PreOperation: no post-image sets and no CreateMultiple pre-image sets (native bulk.json ev 1373/1376: [] before
+// PostOperation; plugin-context4-images.test.mjs holds the parity assertions).
 test(
   'Original DLL executes Targets, Context4 aligned images, filtering, rank and typed bulk responses',
   { skip: CLR_SKIP },
@@ -253,7 +281,7 @@ var a=new Entity("secondary");a["title"]=" one ";var b=new Entity("secondary");b
 var u=new Entity("secondary",new Guid("${id}"));u["title"]=target.GetAttributeValue<string>("title")=="fault"?"fault":" updated ";u["keep"]="must remove";try{var updated=(UpdateMultipleResponse)s.Execute(new UpdateMultipleRequest{Targets=new EntityCollection(new[]{u})});}catch(FaultException<OrganizationServiceFault> fault){if((string)fault.Detail.ErrorDetails["failedRecordId"]!="${id}")throw new Exception("Per-record SDK fault details lost");throw new InvalidPluginExecutionException("Observed bulk per-record fault");}
 if(target.GetAttributeValue<string>("title")=="reject")throw new InvalidPluginExecutionException("Caller rejected bulk writes");((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original bulk driver completed");}}
 public sealed class Bulk:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext4)services.GetService(typeof(IPluginExecutionContext));var targets=(EntityCollection)c.InputParameters["Targets"];if(c.PrimaryEntityId!=Guid.Empty||!c.IsInTransaction||c.Mode!=0)throw new Exception("Bulk context lost");
-if(c.Stage==20){if(c.PreEntityImagesCollection.Length!=targets.Entities.Count||c.PostEntityImagesCollection.Length!=targets.Entities.Count)throw new Exception("Image alignment lost");for(int i=0;i<targets.Entities.Count;i++){if(targets.Entities[i].GetAttributeValue<string>("title")=="fault")throw new InvalidPluginExecutionException("Bulk target rejected",new Dictionary<string,string>{{"failedRecordId",targets.Entities[i].Id.ToString()}});if(c.MessageName=="UpdateMultiple"&&c.PreEntityImagesCollection[i]["before"].GetAttributeValue<string>("title")!="Before")throw new Exception("Preimage lost");targets.Entities[i]["title"]=targets.Entities[i].GetAttributeValue<string>("title").Trim();targets.Entities[i].Attributes.Remove("keep");}c.SharedVariables["rank"]=new Money(23.5m);}
+if(c.Stage==20){if(c.PreEntityImagesCollection.Length!=(c.MessageName=="UpdateMultiple"?targets.Entities.Count:0)||c.PostEntityImagesCollection.Length!=0)throw new Exception("Image alignment lost");for(int i=0;i<targets.Entities.Count;i++){if(targets.Entities[i].GetAttributeValue<string>("title")=="fault")throw new InvalidPluginExecutionException("Bulk target rejected",new Dictionary<string,string>{{"failedRecordId",targets.Entities[i].Id.ToString()}});if(c.MessageName=="UpdateMultiple"&&c.PreEntityImagesCollection[i]["before"].GetAttributeValue<string>("title")!="Before")throw new Exception("Preimage lost");targets.Entities[i]["title"]=targets.Entities[i].GetAttributeValue<string>("title").Trim();targets.Entities[i].Attributes.Remove("keep");}c.SharedVariables["rank"]=new Money(23.5m);}
 else{if(((Money)c.SharedVariables["rank"]).Value!=23.5m||c.PostEntityImagesCollection.Length!=targets.Entities.Count)throw new Exception("Shared or post image lost");for(int i=0;i<targets.Entities.Count;i++)if(c.PostEntityImagesCollection[i]["after"].GetAttributeValue<string>("title")!=targets.Entities[i].GetAttributeValue<string>("title"))throw new Exception("Postimage value lost");if(c.MessageName=="CreateMultiple"&&((Guid[])c.OutputParameters["Ids"]).Length!=targets.Entities.Count)throw new Exception("Output IDs lost");}
 ((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original {0} stage {1}",c.MessageName,c.Stage);}}
 public sealed class RejectUnexpected:IPlugin {public void Execute(IServiceProvider services){throw new Exception("Unsubmitted filtering attribute triggered");}}}`,

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Connector tracing (docs/design/tracing.md): one connector span per invoke with retry and page events, failures and
 // denials as span statuses, payloads only at level full and never for a secure call, and loopback HTTP that carries the
 // span's trace headers so the local service's root joins the trace.
@@ -66,6 +67,7 @@ test('a retried call is one connector span with retry events, its attempts and i
   );
 });
 
+// @test-kind contract+security: a secure connector call captures no payloads
 test('a failed call fails its span; a secure call and the summary level capture no payloads', async () => {
   const { traces, connectors } = await traced('full', [
     invented({

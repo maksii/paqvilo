@@ -2,6 +2,7 @@ import { DataError } from './data-error.mjs';
 import { parseXmlDocument } from './fetchxml-engine.mjs';
 import { sdkValueToRecord as sdkRecordValue } from './local-organization-service.mjs';
 import { isExactNumeric } from './exact-numeric.mjs';
+import { CRM_FUNCTIONS, nullMessage } from './dataverse-conditions.mjs';
 const sdkValueToRecord = (value) => {
   const decoded = sdkRecordValue(value);
   return isExactNumeric(decoded) ? decoded.value : decoded;
@@ -9,6 +10,7 @@ const sdkValueToRecord = (value) => {
 const fail = (message) => {
   throw new DataError(message, 501, 'LocalPluginQueryUnsupported');
 };
+const boolean = (value) => /^(?:true|1)$/i.test(String(value ?? '').trim());
 const name = (value) => {
   if (typeof value !== 'string' || !/^[a-z][\w]*$/i.test(value))
     fail('SDK query requires a logical field/table/alias name.');
@@ -41,16 +43,54 @@ const serialize = (node) =>
 export function queryExpressionToFetch(query, store) {
   if (query.$type !== 'QueryExpression') fail('Linked SDK execution requires QueryExpression.');
   let count = 0;
+  // ColumnSet.AttributeExpressions (XrmAttributeExpression: XrmAggregateType None 0, Count 1, CountColumn 2, Sum 3, Avg 4,
+  // Min 5, Max 6; XrmDateTimeGrouping None 0, Day 1, Week 2, Month 3, Quarter 4, Year 5, FiscalPeriod 6, FiscalYear 7) are the
+  // FetchXML aggregate attributes; the query is then an aggregate fetch.
+  const AGGREGATES = [null, 'count', 'countcolumn', 'sum', 'avg', 'min', 'max'];
+  const GROUPINGS = [null, 'day', 'week', 'month', 'quarter', 'year', 'fiscal-period', 'fiscal-year'];
+  const member = (expression, key) => {
+    const value = expression?.members?.[key];
+    return value?.$type === 'Enum' ? Number(value.value) : value;
+  };
+  let aggregate = false;
+  const expressionColumn = (expression) => {
+    if (expression?.$type !== 'Object' || expression.type !== 'Microsoft.Xrm.Sdk.Query.XrmAttributeExpression')
+      fail('SDK ColumnSet.AttributeExpressions requires XrmAttributeExpression values.');
+    const kind = AGGREGATES[member(expression, 'AggregateType') ?? 0],
+      grouping = GROUPINGS[member(expression, 'DateTimeGrouping') ?? 0],
+      groupBy = member(expression, 'HasGroupBy') === true;
+    if (kind === undefined || grouping === undefined) fail('Unsupported SDK aggregate or date grouping value.');
+    if (kind || groupBy) aggregate = true;
+    return (
+      '<attribute' +
+      attrs({
+        name: name(member(expression, 'AttributeName')),
+        alias: member(expression, 'Alias') ?? null,
+        aggregate: kind,
+        groupby: groupBy ? 'true' : null,
+        dategrouping: grouping,
+      }) +
+      ' />'
+    );
+  };
   const columns = (c) =>
-    c?.allColumns
+    (c?.allColumns
       ? '<all-attributes />'
-      : (c?.columns ?? []).map((column) => '<attribute name="' + name(column) + '" />').join('');
+      : (c?.columns ?? []).map((column) => '<attribute name="' + name(column) + '" />').join('')) +
+    (c?.attributeExpressions ?? []).map(expressionColumn).join('');
   const condition = (c) => {
-    if (['Contains', 'DoesNotContain'].includes(c.operatorName))
-      fail(
-        'SDK full-text conditions require a source-qualified full-text execution adapter; wildcard LIKE is not equivalent.',
-      );
+    // Full-text conditions answer the platform fault of a column without a full-text index (dataverse-conditions.mjs
+    // CRM_FUNCTIONS.Contains), as a FetchXML or Web API query does.
+    if (['Contains', 'DoesNotContain'].includes(c.operatorName)) {
+      const { status, code, innerCode, message } = CRM_FUNCTIONS.Contains.rejection;
+      throw new DataError(message.replace('Contains', c.operatorName), status, code, { innerCode });
+    }
     const ops = {
+      ...Object.fromEntries(
+        Object.entries(CRM_FUNCTIONS)
+          .filter(([, spec]) => spec.operator)
+          .map(([key, spec]) => [key, spec.operator]),
+      ),
       Equal: 'eq',
       NotEqual: 'ne',
       GreaterThan: 'gt',
@@ -65,6 +105,14 @@ export function queryExpressionToFetch(query, store) {
       NotLike: 'not-like',
       BeginsWith: 'begins-with',
       EndsWith: 'ends-with',
+      DoesNotBeginWith: 'not-begin-with',
+      DoesNotEndWith: 'not-end-with',
+      // A FetchXML operator with no Web API query function.
+      NotOn: 'not-on',
+      // FetchXML schema operators with no Web API query function.
+      Mask: 'mask',
+      NotMask: 'not-mask',
+      MasksSelect: 'masks-select',
     };
     const op = ops[c.operatorName];
     if (!op) fail('Unsupported SDK condition ' + c.operatorName);
@@ -72,16 +120,29 @@ export function queryExpressionToFetch(query, store) {
     const start =
       '<condition' +
       attrs({ attribute: name(c.attributeName), operator: op, entityname: c.entityName ? name(c.entityName) : null });
-    if (['null', 'not-null'].includes(op)) {
+    const spec = CRM_FUNCTIONS[c.operatorName];
+    if (['null', 'not-null'].includes(op) || spec?.values === 'none') {
       if (values.length) fail('Null condition must not have values.');
       return start + ' />';
     }
-    if (!['in', 'not-in'].includes(op)) {
+    const multiple =
+      ['in', 'not-in', 'between', 'not-between', 'contain-values', 'not-contain-values'].includes(op) ||
+      spec?.values === 'list' ||
+      spec?.values === 'pair';
+    if (!multiple) {
+      if (values.length === 1 && values[0] == null)
+        throw new DataError(nullMessage(c.attributeName), 400, 'InvalidQuery');
       if (values.length !== 1 || (values[0] !== null && typeof values[0] === 'object'))
         fail('Unsupported SDK condition values.');
-      return start + attrs({ value: values[0] }) + ' />';
+      return start + attrs({ [c.compareColumns ? 'valueof' : 'value']: values[0] }) + ' />';
     }
-    if (!values.length || values.some((v) => v === null || typeof v === 'object'))
+    if (values.some((v) => v == null)) throw new DataError(nullMessage(c.attributeName), 400, 'InvalidQuery');
+    if (
+      c.compareColumns ||
+      !values.length ||
+      values.some((v) => typeof v === 'object') ||
+      ((['between', 'not-between'].includes(op) || spec?.values === 'pair') && values.length !== 2)
+    )
       fail('Unsupported SDK set condition values.');
     return start + '>' + values.map((v) => '<value>' + escape(v) + '</value>').join('') + '</condition>';
   };
@@ -90,11 +151,18 @@ export function queryExpressionToFetch(query, store) {
     const operator = f.operatorName ?? 'And';
     if (!['And', 'Or'].includes(operator)) fail('Unsupported SDK filter operator.');
     return (
-      '<filter type="' +
-      operator.toLowerCase() +
-      '">' +
+      '<filter' +
+      attrs({
+        type: operator.toLowerCase(),
+        hint: f.filterHint,
+        isquickfindfields: f.isQuickFindFilter ? 'true' : null,
+      }) +
+      '>' +
       (f.conditions ?? []).map(condition).join('') +
       (f.filters ?? []).map((child) => filter(child, depth + 1)).join('') +
+      (f.anyAllFilterLinkEntity
+        ? link(f.anyAllFilterLinkEntity, f.anyAllFilterLinkEntity.linkFromEntityName, depth + 1)
+        : '') +
       '</filter>'
     );
   };
@@ -103,7 +171,11 @@ export function queryExpressionToFetch(query, store) {
       .map(
         (order) =>
           '<order' +
-          attrs({ attribute: name(order.attributeName), descending: order.descending ? 'true' : 'false' }) +
+          attrs({
+            ...(order.alias ? { alias: order.alias } : { attribute: name(order.attributeName) }),
+            entityname: order.entityName ? name(order.entityName) : null,
+            descending: order.descending ? 'true' : 'false',
+          }) +
           ' />',
       )
       .join('');
@@ -162,6 +234,9 @@ export function queryExpressionToFetch(query, store) {
     '<fetch' +
     attrs({
       distinct: query.distinct ? 'true' : null,
+      'no-lock': query.noLock ? 'true' : null,
+      options: query.queryHints,
+      datasource: query.dataSource,
       top: query.topCount,
       count: page.count > 0 ? page.count : null,
       page: page.pageNumber > 0 ? page.pageNumber : null,
@@ -178,10 +253,18 @@ export function queryExpressionToFetch(query, store) {
     orders(query.orders) +
     (query.linkEntities ?? []).map((child) => link(child, table)).join('') +
     '</entity></fetch>'
-  );
+  ).replace(/^<fetch/, aggregate ? '<fetch aggregate="true"' : '<fetch');
 }
-/** Identity is carried independently of projected Attributes. Internal primary-key
- * projection is removed from SDK Attributes and from the portal-shaped result. */
+/** Ordinary SDK reads return their primary Attribute even when not selected.
+ * Keep this projection separate from Targets, images and plugin-authored output. */
+export function sdkReadColumns(store, entity, columns = { allColumns: true }) {
+  columns ??= { allColumns: false, columns: [] };
+  if (columns.allColumns) return columns;
+  const primary = store.resolveMapping(entity).idColumn;
+  return { ...columns, columns: [...new Set([...(columns.columns ?? []), primary])] };
+}
+/** Fetch needs its ordinary primary key available before constructing the SDK
+ * result. Distinct and aggregate projections retain their authored shape. */
 export function prepareFetchForSdk(xml, store) {
   const root = parseXmlDocument(xml),
     entity = root.children?.find((n) => n.name === 'entity');
@@ -190,23 +273,35 @@ export function prepareFetchForSdk(xml, store) {
     selected = entity.children.filter((n) => n.name === 'attribute'),
     all = entity.children.some((n) => n.name === 'all-attributes') || !selected.length;
   const hiddenId =
-    root.attrs.aggregate !== 'true' &&
-    root.attrs.distinct !== 'true' &&
+    !boolean(root.attrs.aggregate) &&
+    !boolean(root.attrs.distinct) &&
     !all &&
     !selected.some((n) => n.attrs.name === mapping.idColumn && !n.attrs.alias);
   if (hiddenId) entity.children.push({ name: 'attribute', attrs: { name: mapping.idColumn }, children: [] });
   return { xml: hiddenId ? serialize(root) : xml, hiddenId, idColumn: mapping.idColumn };
 }
-export function fetchResultToSdkCollection(store, entity, answer, convert, { hiddenId = false, rootColumns } = {}) {
+export function fetchResultToSdkCollection(store, entity, answer, convert, { rootColumns } = {}) {
   const mapping = store.resolveMapping(entity),
     descriptions = answer.columns?.columns ?? [],
     byKey = new Map(descriptions.map((column) => [column.key, column]));
   const source = answer.executedXml ?? answer.xml,
-    minActiveRequested = source && ['true', '1'].includes(parseXmlDocument(source).attrs['min-active-row-version']);
+    minActiveRequested = source && boolean(parseXmlDocument(source).attrs['min-active-row-version']);
   if (minActiveRequested && answer.min_active_row_version == null)
     fail('Requested SDK minimum active row version requires a source-qualified Dataverse provider.');
   const entities = (answer.entities ?? []).map((row) => {
-    const result = convert(store, entity, row, rootColumns ?? { allColumns: true });
+    const primaryProjection = byKey.get(mapping.idColumn),
+      aliasedPrimary = primaryProjection?.aliased || primaryProjection?.alias != null,
+      identityRow = Object.fromEntries(
+        Object.entries(row).filter(([key, value]) => value != null && (!aliasedPrimary || key !== mapping.idColumn)),
+      );
+    const result = convert(
+      store,
+      entity,
+      identityRow,
+      Object.hasOwn(identityRow, mapping.idColumn)
+        ? sdkReadColumns(store, entity, rootColumns)
+        : (rootColumns ?? { allColumns: true }),
+    );
     for (const [key, value] of Object.entries(row)) {
       const spec = byKey.get(key),
         alias = key.includes('.') ? key.slice(0, key.indexOf('.')) : null,
@@ -244,7 +339,6 @@ export function fetchResultToSdkCollection(store, entity, answer, convert, { hid
           };
       }
     }
-    if (hiddenId) delete result.attributes[mapping.idColumn];
     return result;
   });
   return {

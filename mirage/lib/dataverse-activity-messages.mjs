@@ -166,7 +166,7 @@ async function formatted(api, ctx, logical, id) {
 }
 
 // Creates one email row owned by the caller and returns its id. Outgoing mail starts as a Draft; the caller sets the state
-// that follows. The id is left to the store: an explicit activityid trips the activitypointer lookup in validateBindings.
+// that follows. The organization allocates the activity's primary identity.
 async function newEmail(api, ctx, fields) {
   const owner = ownerColumns(api.store, { id: ctx.user.systemuserid, logical_name: 'systemuser' });
   return (

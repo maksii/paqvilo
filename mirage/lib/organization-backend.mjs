@@ -1,10 +1,13 @@
 import { runPluginPhase, pluginStepMatchesEntity, pluginPhaseRequiresCheckpoint } from './exported-plugins.mjs';
 import { prepareClrRuntime, closeClrHostPool } from './plugin-clr.mjs';
+import { releaseUploadedRuntime } from './plugin-uploaded.mjs';
 import { createAsyncPluginRunner } from './plugin-async.mjs';
 import { createFlowTriggerRunner } from './flow-triggers.mjs';
 import { settleCommittedWork, committedJobs } from './committed-work.mjs';
 import { storeScheduler } from './runtime-clock.mjs';
 import { serviceEndpointDelivery } from './dataverse-webhooks.mjs';
+import { singleMultiplePipeline, multipleMessage } from './plugin-single-multiple.mjs';
+import { pluginStepBypassed } from './plugin-bypass.mjs';
 
 /** The same source/trusted-handler backend runs for portal and standalone hosts.
  * Callers own the source catalogue and execution choices; no portal or HTTP
@@ -15,6 +18,10 @@ export async function createOrganizationBackend({
   handlers = new Map(),
   runtimes = new Map(),
   descriptors = new Map(),
+  // The organization host passes its sharedClrRuntimePreparer() (long-lived shared hosts).
+  prepareRuntime = prepareClrRuntime,
+  // { cacheRoot, sdkAssembly }: where registered uploaded assemblies are prepared and the SDK they bind (plugin-uploaded.mjs).
+  clrUploads,
   operations = () => [],
   workflows = () => new Map(),
   identities = () => ({}),
@@ -24,6 +31,8 @@ export async function createOrganizationBackend({
   connectors = null,
   secrets = null,
   messaging = null,
+  // Milliseconds an asynchronous plug-in or web hook job waits before it may start (dataverse asyncStartDelayMs).
+  asyncStartDelayMs = () => 0,
 }) {
   // The store's one scheduler (runtime-clock.mjs) runs the durable committed-event jobs and the dataverse-async jobs. The
   // backend owns its lifecycle (close() closes it), so a backend over a store whose previous backend closed opens a live
@@ -33,22 +42,52 @@ export async function createOrganizationBackend({
   // messaging: a getter of providers.messaging; queue and topic endpoints (contracts 2, 5, 6) deliver through its bus.
   const webhooks = serviceEndpointDelivery(store, { messaging: messaging ?? null }),
     acceptedChains = new Set();
+  const executePhase = (context) =>
+    runPluginPhase({
+      ...context,
+      store,
+      runtimes,
+      clrUploads,
+      items: context.pluginStepIds ? items().filter((step) => context.pluginStepIds.includes(step.id)) : items(),
+      stageItems: items(),
+      handlers,
+      webhooks,
+      diagnostic,
+    });
+  const pipeline = singleMultiplePipeline(executePhase);
+  // Bulk operations order the multiple-message and single-message registrations
+  // in their respective ranked groups for each stage.
+  // A getter keeps API registration edits visible without caching source facts.
+  pipeline.steps = items;
+  pipeline.diagnostic = diagnostic;
+  // A custom API main operation on uploaded bytes prepares them where the steps do (dataverse-customapi.mjs).
+  pipeline.clrUploads = clrUploads;
   store.setPluginPipeline(
-    (context) => runPluginPhase({ ...context, store, runtimes, items: items(), handlers, webhooks, diagnostic }),
-    ({ entity, operation }) =>
+    pipeline,
+    ({ entity, operation, bypassCustomPlugins = false, bypassStepIds = [] }) =>
       items().some(
         (step) =>
           step.enabled &&
+          step.contract?.supportedDeployment !== 1 &&
           pluginStepMatchesEntity(step, entity) &&
-          String(step.message).toLowerCase() === operation &&
+          [operation, multipleMessage(operation)].includes(String(step.message).toLowerCase()) &&
+          !pluginStepBypassed(step, { bypassCustomPlugins, bypassStepIds }, diagnostic) &&
           (!['retrieve', 'retrievemultiple'].includes(operation) || !['placeholder', 'disabled'].includes(step.mode)),
       ),
-    (context) => pluginPhaseRequiresCheckpoint(items(), context),
+    (context) =>
+      pluginPhaseRequiresCheckpoint(items(), { ...context, store }) ||
+      Boolean(
+        multipleMessage(context.operation) &&
+        pluginPhaseRequiresCheckpoint(items(), { ...context, store, operation: multipleMessage(context.operation) }),
+      ),
   );
-  for (const item of items().filter((item) => item.mode === 'clr'))
+  // Uploaded assemblies without a trusted descriptor are prepared when their step first runs (plugin-uploaded.mjs).
+  for (const item of items().filter(
+    (item) => item.mode === 'clr' && !(item.uploadedAssemblyId && !descriptors.has(item.id)),
+  ))
     try {
       if (!item.clrAvailable) throw new Error('No exact trusted descriptor');
-      runtimes.set(item.id, await prepareClrRuntime(descriptors.get(item.id)));
+      runtimes.set(item.id, await prepareRuntime(descriptors.get(item.id)));
     } catch (error) {
       diagnostic({ code: 'PLUGIN_CLR_PREPARATION_FAILED', stepId: item.id, message: error.message });
     }
@@ -68,10 +107,12 @@ export async function createOrganizationBackend({
     items,
     handlers,
     runtimes,
+    clrUploads,
     webhooks,
     diagnostic,
     acceptedChains,
     systemJobs,
+    startDelayMs: asyncStartDelayMs,
   });
   // Ready jobs saved before a restart run once the organization exists (createOrganizationRuntime resumes them too).
   const resume = () => committedJobs(store).resume();
@@ -89,7 +130,9 @@ export async function createOrganizationBackend({
     close: () =>
       (closed ??= (async () => {
         await settleCommittedWork(store, [triggerRunner, asyncPluginRunner], { close: true });
-        for (const runtime of runtimes.values()) await closeClrHostPool({ runtime, diagnostic });
+        for (const [id, runtime] of [...runtimes])
+          if (runtime.uploaded) releaseUploadedRuntime(runtimes, id, diagnostic);
+          else await closeClrHostPool({ runtime, diagnostic });
       })()),
   };
 }

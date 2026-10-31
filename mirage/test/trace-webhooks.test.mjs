@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Tracing of service endpoint deliveries (D-R3-5, DV-A-5, DV-A-15, DV-C-7): a web hook POST is an http-out span that, at
 // level full, carries the RemoteExecutionContext it sent and the receiver's answer on every drive (the asynchronous
 // pipeline, after commit, and the synchronous I/O bridge); a Service Bus queue or topic send is a `webhook` span with
@@ -142,6 +143,7 @@ describe('web hook and Service Bus delivery spans', () => {
   });
   const spansOf = (request, kind) => session.traces.tree(request.traceId).spans.filter((span) => span.kind === kind);
 
+  // @test-kind contract+security: the web hook span never records the endpoint authentication
   it('a synchronous web hook step records the context it sent and the answer, without the endpoint authentication', async () => {
     const at = route();
     session = await world({ url: `${receiver.origin}${at}/status/200` });
@@ -318,6 +320,7 @@ describe('endpoint check and secret spans', () => {
     assert.equal((await receiver.log(at))[0].headers['x-sim-parent-trace'], probe.spanId);
   });
 
+  // @test-kind contract+security: a secret span keeps the status, never the value
   it('a secret span names the vault, secret and version and keeps the status only', async () => {
     const VARIABLE = 'PAQVILO_TRACE_WEBHOOKS_SECRET';
     const APP_ONE = 'eeeeeeee-0000-4000-8000-0000000000b1',

@@ -1,3 +1,4 @@
+// @test-kind contract: registration comparison tool (Paqvilo) over invented exports: change reporting, identity normalization and inspection budgets
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { comparePluginRegistrations } from '../fixtures.mjs';
@@ -17,6 +18,7 @@ const step = () => ({
   images: [{ name: 'Before', alias: 'pre', type: 0, attributes: ['x_b', 'x_a'] }],
   sourceFile: '/invented/step.xml',
 });
+// @test-kind contract+security: configuration and secure configuration values never appear in the comparison report
 test('parsed execution modes, registration changes and image changes compare without configuration leakage', () => {
   const original = {
     steps: [{ ...step(), configuration: 'private configuration', secureConfiguration: 'private secret' }],
@@ -78,6 +80,7 @@ test('comparison rejects malformed or unbounded registration inventories', () =>
   assert.throws(() => comparePluginRegistrations({ steps: [{ ...step(), images: [null] }] }, {}), /images/);
 });
 
+// @test-kind contract+security: binary file path and configuration content never appear in the comparison report
 test('actual parsed assembly full identity changes remain visible without including binary or configuration content', () => {
   const source = (culture, token) =>
     parsePluginDocument(
@@ -144,6 +147,7 @@ test('aliased primitive registration facts share the inspection budget across re
   );
 });
 
+// @test-kind contract+security: source coercion hooks are never executed while names are normalized
 test('registration normalized names refuse boxed or executable coercions before invoking them', () => {
   for (const field of ['entity', 'message']) {
     assert.throws(
@@ -177,6 +181,7 @@ test('registration normalized names refuse boxed or executable coercions before 
   );
 });
 
+// @test-kind security: trust boundary: source identity objects toString and toPrimitive hooks are never executed
 test('registration identities and references never invoke function or Symbol.toPrimitive coercions', () => {
   const padded = ' '.repeat(2000001) + id(1);
   for (const kind of ['function-toString', 'function-toPrimitive', 'object-toPrimitive']) {
@@ -209,6 +214,7 @@ test('registration identities and references never invoke function or Symbol.toP
   }
 });
 
+// @test-kind security: trust boundary: ignored source text objects length and toPrimitive hooks are never executed
 test('ignored nonprimitive text facts do not execute length or primitive conversion hooks', () => {
   let calls = 0;
   const value = {

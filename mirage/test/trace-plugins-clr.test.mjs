@@ -1,3 +1,5 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
+// @parity-evidence: native crud, imagesOrder, relationsReads and mergeAccount (native and native-r2): PreBusinessEntity holds the published duplicate rules' base attributes plus statecode when a rule excludes inactive records; the fixture now seeds a published rule that excludes inactive records, so the asserted statecode image is unchanged (no assertion changed)
 // Tracing of a compiled CLR plug-in (docs/design/tracing.md): the plugin-step span has module clr, each SDK RPC is an
 // sdk-call span under it with the Dataverse operation it drives nested under that, and ITracingService lines are
 // trace events on the step. Invented C# and schemas; skips like the other CLR tests without the Windows .NET Framework
@@ -173,6 +175,19 @@ test(
       fields: { x_name: { dataverseType: 'nvarchar' }, x_code: { dataverseType: 'nvarchar' } },
     };
     state.tables.x_item = [];
+    // A published duplicate rule that excludes inactive records (the PreBusinessEntity of the step holds statecode).
+    state.tables.duplicaterule = [
+      {
+        duplicateruleid: '40000000-0000-4000-8000-0000000000c2',
+        baseentityname: 'x_item',
+        matchingentityname: 'x_item',
+        statuscode: 2,
+        statecode: 1,
+        excludeinactiverecords: true,
+        name: 'Invented statecode rule',
+      },
+    ];
+    state.tables.duplicaterulecondition = [];
     const store = await new DataStore({ state }).init();
     const organization = await createOrganizationRuntime({
       store,
@@ -232,7 +247,9 @@ test(
     assert.deepEqual(pre.input.postImages, {});
     assert.equal(pre.input.target.x_name, 'New');
     assert.equal(pre.input.inputParameters.Target.$type, 'Entity');
-    assert.deepEqual(pre.input.sharedVariables, {});
+    // The platform's own Update entries (exported-plugins.mjs platformSharedVariables) precede the step's variable.
+    const platform = { IsAutoTransact: true, AcceptLang: '' };
+    assert.deepEqual(pre.input.sharedVariables, platform);
     assert.deepEqual(
       {
         messageName: pre.input.context.messageName,
@@ -254,12 +271,17 @@ test(
       },
     );
     assert.match(pre.input.context.correlationId, /^[0-9a-f-]{36}$/);
-    assert.deepEqual(pre.output.sharedVariables, { marker: 'clr-shared' });
+    assert.deepEqual(pre.output.sharedVariables, { ...platform, marker: 'clr-shared' });
     assert.equal(post.input.postImages.after.x_code, 'B-2');
     assert.equal('x_name' in post.input.postImages.after, false);
+    // The Context4 sets the steps saw: the PreOperation image, then (PostOperation) that image, the platform's
+    // PreBusinessEntity and the step's own post image.
+    assert.deepEqual(pre.input.preImagesCollection.map(Object.keys), [['before']]);
+    assert.deepEqual(post.input.preImagesCollection.map(Object.keys), [['before', 'PreBusinessEntity']]);
+    assert.deepEqual(post.input.postImagesCollection, [post.input.postImages]);
     assert.deepEqual(
       post.input.sharedVariables,
-      { marker: 'clr-shared' },
+      { ...platform, marker: 'clr-shared' },
       'the PreOperation variable reached PostOperation',
     );
     assert.equal(post.input.context.correlationId, pre.input.context.correlationId);

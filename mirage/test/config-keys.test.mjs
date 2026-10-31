@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -304,6 +305,7 @@ test('configuredSettingKeys lists the authored setting names, including those th
   assert.deepEqual(configuredSettingKeys(), []);
 });
 
+// @test-kind contract+security: runtimeIdentity redacts secrets
 test('runtimeIdentity is stable, limited to identity rows and redacts secrets', () => {
   const a = runtimeIdentity({
     runtime: { kind: 'power-pages' },
@@ -352,6 +354,22 @@ test('project files: v1 reports unknown keys, v2 rejects them, pending parsers r
     );
   });
   assert.equal(pendingSettingParsers().includes('localServices'), false, 'the registered parser is restored');
+});
+
+test('config-keys loads as the first module of a process', async () => {
+  // A parser module reached through config-keys' own imports (secret-resolver via data.mjs) used to register before the
+  // parser table existed and failed every `mirage start` with "Cannot access 'parsers' before initialization".
+  const url = new URL('../lib/config-keys.mjs', import.meta.url).href;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(url)})`], {
+    stdio: ['ignore', 'ignore', 'pipe'],
+    windowsHide: true,
+  });
+  let stderr = '';
+  child.stderr.on('data', (data) => {
+    stderr += data;
+  });
+  const code = await new Promise((resolve) => child.on('close', resolve));
+  assert.equal(code, 0, stderr);
 });
 
 test('registerSettingParser replaces the pending default', () => {

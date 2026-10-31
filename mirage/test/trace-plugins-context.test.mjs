@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Tracing of what a plug-in step receives and how it fails (docs/design/tracing.md, D-R3-1, D-R3-19, D-R3-20, D-R3-23): the
 // step span names the record, carries its registered images by alias and attribute filter, its input parameters, shared
 // variables and execution context at level full, and its output parameters and shared variables after it ran; a plug-in fault
@@ -10,6 +11,7 @@ import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { customApiHandlers, install as installCustomApis } from '../lib/dataverse-customapi.mjs';
 import { createTraceStore } from '../lib/trace-store.mjs';
+import { assignRoles } from '../lib/dataverse-security.mjs';
 import { itemNoteOrganization, pingApiStore } from './support/trace-plugins.mjs';
 
 const USER = '77777777-7777-4777-8777-0000000000e1';
@@ -121,25 +123,29 @@ test('a step span names its record and carries its images by alias and filter, p
   assert.deepEqual(pre.input.preImages, { before: { x_name: 'Old' } }, 'only the registered attribute');
   assert.deepEqual(pre.input.postImages, {});
   assert.equal(pre.input.inputParameters.Target.x_name, 'New');
-  assert.deepEqual(pre.input.sharedVariables, {});
+  // The step's real context (exported-plugins.mjs typedContext): the platform's shared variables (IsAutoTransact,
+  // AcceptLang) and the operation's correlation id.
+  const platform = { IsAutoTransact: true, AcceptLang: '' };
+  assert.deepEqual(pre.input.sharedVariables, platform);
+  assert.match(pre.input.context.correlationId, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i);
   assert.deepEqual(pre.input.context, {
     messageName: 'Update',
     stage: 20,
     mode: 0,
     depth: 1,
-    correlationId: null,
+    correlationId: pre.input.context.correlationId,
     initiatingUserId: USER,
     userId: USER,
     businessUnitId: UNIT,
     isolationMode: 2,
   });
-  assert.deepEqual(pre.output.sharedVariables, { marker: 'from-pre-operation' });
+  assert.deepEqual(pre.output.sharedVariables, { ...platform, marker: 'from-pre-operation' });
 
   assert.deepEqual(post.input.preImages, {});
   assert.deepEqual(post.input.postImages, { after: { x_code: 'B-2' } }, 'the saved row, limited to x_code');
-  assert.deepEqual(post.input.sharedVariables, { marker: 'from-pre-operation' });
+  assert.deepEqual(post.input.sharedVariables, { ...platform, marker: 'from-pre-operation' });
   assert.equal(post.input.context.stage, 40);
-  assert.deepEqual(post.output.sharedVariables, { marker: 'from-pre-operation', answer: 42 });
+  assert.deepEqual(post.output.sharedVariables, { ...platform, marker: 'from-pre-operation', answer: 42 });
   assert.equal('postImage' in post.output, false, 'the whole saved row is never the output');
   assert.deepEqual(
     post.events.filter((event) => event.type === 'trace').map((event) => event.message),
@@ -274,6 +280,9 @@ test('a custom API plug-in fault has the same identity; the internal message ent
 
 test('a CLR SDK create names its new record: never the empty GUID, and the created id as output', async (t) => {
   const { store, traces } = await organization(t);
+  // A plug-in SDK call is authorized by its run-as user's security roles (audit C16, approved 2026-10-30).
+  const admin = store.tableRows('role').find((row) => row.name === 'System Administrator');
+  await assignRoles(store, { systemuserid: USER, roleIds: [admin.roleid] });
   const root = traces.start({ kind: 'plugin-step', name: 'Invented CLR step', module: 'clr' });
   const created = traces.run(root, () =>
     dispatchSdkCall({

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Tracing of Power Pages server logic (D-R3-9, DV-A-4, DV-A-15, DV-A-17): one `server-logic` span per run (never the classic
 // `workflow` kind) with the call as input and the result as output at level full, each Logger line a `trace` event, and each
 // HttpClient request an http-out span (tracedFetch) whose request carries the span's trace headers to the loopback receiver.

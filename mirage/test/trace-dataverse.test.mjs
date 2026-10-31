@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Tracing of the Dataverse pipeline (docs/design/tracing.md): dataverse spans per internal entry, store spans for reads no
 // Dataverse span covers, commit facts, permission decisions as events (a denial without a span gets its own permission
 // span), the staging span on committed events, and secret spans that never hold the value. Invented schemas only.
@@ -251,6 +252,7 @@ test('a committed event names its staging span and its commit is an event; a com
   assert.equal(traces.status().spans, 0, 'a commit outside any span records nothing');
 });
 
+// @test-kind contract+security: a secret span never holds the secret value
 test('RetrieveEnvironmentVariableSecretValue nests a secret span holding the key and status, never the value', async () => {
   const { api, traces, admin } = await organization();
   await api.registry.find({ name: 'UpsertEnvironmentVariable', kind: 'action', binding: 'unbound' }).handle({

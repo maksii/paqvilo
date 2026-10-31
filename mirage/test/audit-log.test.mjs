@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AuditLog, auditQuery, auditText } from '../lib/audit-log.mjs';
@@ -82,6 +83,7 @@ test('audit isolates concurrent actors and freezes sequence windows without hidi
   assert.equal(audit.list().latestSequence, 4);
 });
 
+// @test-kind contract+security: the audit never retains headers, payloads or credential values
 test('audit does not retain headers, payloads or credential query/error values', () => {
   const audit = new AuditLog();
   audit
@@ -124,6 +126,7 @@ test('audit does not retain headers, payloads or credential query/error values',
   assert.doesNotMatch(auditText('password="' + 'PRIVATE'.repeat(3000) + '"', 30), /PRIVATE/);
 });
 
+// @test-kind contract+security: auditText redacts credential query parameters and authentication schemes
 test('auditText redacts credential query parameters and the Basic, Digest and SharedAccessSignature schemes', () => {
   assert.equal(
     auditText('https://fn.example.test/api/x?code=KEY123&sig=SIG456&name=keep'),

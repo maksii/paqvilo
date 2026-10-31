@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -219,6 +220,7 @@ test('recent save notifications do not replay when Online/Local recreates the pa
   assert.equal(await page.locator('#paqvilo-panel .float').innerText(), '');
 });
 
+// @test-kind contract+security: hostile error details render escaped in the panel
 test('chunked and sized JSON failures retain escaped details; oversized bodies keep only HTTP metadata', async (t) => {
   const { page, panel } = await fixture(t);
   for (const route of ['/error-small', '/error-large', '/error-sized']) {
@@ -260,6 +262,7 @@ test('chunked and sized JSON failures retain escaped details; oversized bodies k
 // Hosted CI (a loaded Windows runner): the DevTools response observer could not attach in time, so the panel fell back
 // to Playwright's response event and lost the error message of a failed request. The fallback now reads a small JSON
 // body of declared size; a chunked or oversized body keeps only the HTTP metadata.
+// @test-kind contract+security: hostile error details render escaped without the DevTools observer
 test('without the DevTools observer, a sized JSON failure keeps its escaped details and a chunked one its HTTP row', async (t) => {
   const { page, panel } = await fixture(t, undefined, undefined, {
     beforePanel: (context, t) =>

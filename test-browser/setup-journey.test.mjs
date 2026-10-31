@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 import test, { before, after } from 'node:test';
@@ -478,6 +479,7 @@ test(
   },
 );
 
+// @test-kind contract+security: setup shows secret references only, never values
 test(
   'setting rows show current values, references only for secrets, and Settings reflect the file',
   { timeout: 60000 },

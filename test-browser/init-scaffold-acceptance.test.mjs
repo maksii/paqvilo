@@ -1,3 +1,4 @@
+// @test-kind contract: init scaffold acceptance recipe runs and fails its intended assertions on regressions
 import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -70,7 +71,7 @@ test(
     const assertion = "'rendered content and browser requests must pass'";
     const recipe = example.replace(
       assertion,
-      `${assertion} + ': ' + JSON.stringify(result.flows.map(({ name, passed, error, steps, failedRequests, failedResponses, blockedRequests, pageErrors, consoleErrors }) => ({ name, passed, error, steps: steps.map(({ action, passed }) => ({ action, passed })), failedRequests: failedRequests.length, failedResponses: failedResponses.length, blockedRequests: blockedRequests.length, pageErrors: pageErrors.length, consoleErrors: consoleErrors.length })))`,
+      `${assertion} + ': ' + JSON.stringify({ sourceChanged: result.sourceChanged, implementationChanged: result.implementationChanged, flows: result.flows.map(({ name, passed, error, steps, failedRequests, failedResponses, blockedRequests, pageErrors, consoleErrors }) => ({ name, passed, error, steps: steps.map(({ action, passed }) => ({ action, passed })), failedRequests: failedRequests.length, failedResponses: failedResponses.length, blockedRequests: blockedRequests.length, pageErrors: pageErrors.length, consoleErrors: consoleErrors.length })) })`,
     );
     assert.notEqual(recipe, example, 'the acceptance assertion receives diagnostic context');
     const file = path.join(root, 'test-browser/local.acceptance.test.mjs');

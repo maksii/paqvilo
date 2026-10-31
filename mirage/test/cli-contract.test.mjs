@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -256,6 +257,7 @@ test('data counts fail before resolving a missing catalogue', () => {
   }
 });
 
+// @test-kind contract+security: conformance output cannot replace its inputs through direct or hard-linked paths
 test('conformance output cannot replace suite or rules through direct or hard-linked paths', async () => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-conformance-'));
   try {
@@ -324,6 +326,7 @@ test('bootstrap and Liquid report outputs preserve portal sources and catalogue 
   }
 });
 
+// @test-kind contract+security: render never overwrites portal sources or linked workspace state
 test('render refuses to overwrite a portal source or linked workspace state before startup', async () => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-render-boundary-'));
   try {
@@ -364,6 +367,7 @@ test('missing optional source roots do not prevent external report output', asyn
   }
 });
 
+// @test-kind contract+security: report output never writes through a dangling symbolic link
 test('report output rejects dangling symbolic links instead of writing through them', async (t) => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-dangling-output-'));
   try {

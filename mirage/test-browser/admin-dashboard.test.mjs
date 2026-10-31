@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
 // The /_sim/ Health dashboard against a fake JSON host: topology, node drawer,
 // on-demand preflight, polling, the 503 "starting" state, 390 px layout, and the 404 fallback of an older host.
 import test, { before, after } from 'node:test';

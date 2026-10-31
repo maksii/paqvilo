@@ -2,6 +2,13 @@
 // core plug-in code (exported-plugins.mjs) can load it without pulling in the Dataverse modules.
 import { DataError } from './data-error.mjs';
 
+// Microsoft Learn, Web service error codes: 0x8004418d SandboxWorkerNotAvailable, a sandbox worker process that crashed.
+export const SANDBOX_WORKER_CRASH = {
+  code: '0x8004418d',
+  message:
+    'The plug-in execution failed because the Sandbox Worker process crashed. This is typically due to an error in the plug-in code. Please refer to this document: https://go.microsoft.com/fwlink/?linkid=2189390',
+};
+
 // Same URL as dataverse-odata.mjs cdsHelpLink (kept here so this module has no Dataverse import).
 const cdsHelpLink = (code) =>
   `http://go.microsoft.com/fwlink/?LinkID=398563&error=Microsoft.Crm.CrmException%3a${code.slice(2)}&client=platform`;
@@ -56,9 +63,10 @@ export function notePluginFault(error, { pluginType = null, step = null, stage =
 // own InvalidPluginExecutionException is 0x80040265 with its message; an errorCode it names is not the top-level code but
 // the signed SubErrorCode. Any other throw is unhandled (0x80040224), and so is a timeout, whose message names the type.
 // Assumed: the assembly is the type's namespace, and the trace block is the one-line
-// layout native sends; the timeout annotations are the unhandled ones.
+// layout native sends; the timeout annotations are the unhandled ones. `plugin.label` names a step's own handler in the
+// trace block (a custom API names its implementation).
 export function pluginFailure(error, plugin, timeoutMs) {
-  const { name, id, type, traces } = plugin;
+  const { name, id, type, traces, label = `CustomApi '${name}' implementation` } = plugin;
   const fault = error?.pluginFault === 'InvalidPluginExecutionException';
   const code = fault ? '0x80040265' : '0x80040224';
   const limit = timeoutMs % 60000 === 0 ? `${timeoutMs / 60000}-minute` : `${timeoutMs / 1000}-second`;
@@ -84,7 +92,7 @@ export function pluginFailure(error, plugin, timeoutMs) {
         }
       : {}),
     'Microsoft.PowerApps.CDS.HelpLink': cdsHelpLink(code),
-    'Microsoft.PowerApps.CDS.TraceText': `\r\n[${assembly}: ${type}]\r\n[${id}: CustomApi '${name}' implementation]\r\n\r\n\t\r\n\t${trace}\r\n\t\r\n`,
+    'Microsoft.PowerApps.CDS.TraceText': `\r\n[${assembly}: ${type}]\r\n[${id}: ${label}]\r\n\r\n\t\r\n\t${trace}\r\n\t\r\n`,
     'Microsoft.PowerApps.CDS.InnerError.Message': message,
   };
   const failure = new DataError(message, 400, 'InvalidRequest', { innerCode: code, cdsAnnotations: cds });

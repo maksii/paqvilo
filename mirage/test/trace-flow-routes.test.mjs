@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // An on-demand flow run started through /_sim/api/flow-runs (sim-flow-routes.mjs) opens a flow-run span named after the
 // flow's display name, and the run view at /_sim/api/flow-runs/<id> names its trace (docs/design/tracing.md). Every
 // run-starting request (on-demand run, HTTP Request trigger route, signed callback URL) is an http root of module flows

@@ -1,5 +1,6 @@
-// Cascade actions (lib/dataverse-cascade.mjs): Assign executes per relationship; Share, Unshare, Reparent and Merge are
-// diagnostics only.
+// @test-kind unproven: local model of cascade delete and assign behaviour; no native capture cited
+// Cascade actions (lib/dataverse-cascade.mjs, dataverse-security.mjs): Assign, Share, Unshare and Reparent execute per
+// relationship.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EXTENSION } from '../lib/dataverse-cascade.mjs';
@@ -180,42 +181,103 @@ test('a relationship without Assign metadata reports CASCADE_ASSIGN_DEFAULTED on
   assert.equal(ownerOf(store, 'x_child', 'x_childid', ACTIVE), USER_ONE);
 });
 
-test('Share, Reparent, Merge and Unshare declared by metadata report NOT_SIMULATED once per table and change nothing', async (t) => {
-  const cascade = { assign: 'NoCascade', share: 'Cascade', unshare: 'Active', reparent: 'Cascade', merge: 'Cascade' };
-  const { request, json, store, diagnostics } = await setup(t, cascade);
-  const sharesBefore = store.state.tables.principalobjectaccess?.length ?? 0;
-  await reassign(request, json, USER_TWO);
-  await reassign(request, json, USER_THREE);
-  // The default extensions seed standard metadata that declares Share cascades too, so only this test table is counted.
-  const codes = diagnostics.filter((entry) => entry.table === 'x_parent').map((entry) => entry.code);
-  for (const code of [
-    'CASCADE_SHARE_NOT_SIMULATED',
-    'CASCADE_UNSHARE_NOT_SIMULATED',
-    'CASCADE_REPARENT_NOT_SIMULATED',
-    'CASCADE_MERGE_NOT_SIMULATED',
-  ]) {
-    assert.equal(codes.filter((item) => item === code).length, 1, `${code} once`);
+// Sharing the parent through the Web API (GrantAccess, ModifyAccess, RevokeAccess with the documented bodies).
+const share = (request, json, action, userId, mask = 'ReadAccess') =>
+  request('POST', `/${action}`, {
+    Target: { '@odata.type': 'Microsoft.Dynamics.CRM.x_parent', x_parentid: PARENT },
+    ...(action === 'RevokeAccess'
+      ? { Revokee: { '@odata.type': 'Microsoft.Dynamics.CRM.systemuser', systemuserid: userId } }
+      : {
+          PrincipalAccess: {
+            Principal: { '@odata.type': 'Microsoft.Dynamics.CRM.systemuser', systemuserid: userId },
+            AccessMask: mask,
+          },
+        }),
+  }).then((response) => json(response, 204));
+// The inherited and direct masks a principal holds on a row (0 / 0 without a share row).
+const accessOf = (store, id, userId) => {
+  const row = (store.state.tables.principalobjectaccess ?? []).find(
+    (entry) =>
+      String(entry.objectid).toLowerCase() === id && String(entry.principalid?.id ?? entry.principalid) === userId,
+  );
+  return row ? [Number(row.accessrightsmask), Number(row.inheritedaccessrightsmask)] : [0, 0];
+};
+const READ = 1,
+  WRITE = 2,
+  // Every AccessRights value but Create (Learn: the reparent action leaves CreateAccess alone).
+  INHERITABLE = 1 | 2 | 4 | 16 | 65536 | 262144 | 524288;
+
+// @test-kind compatibility: Microsoft Learn "Configure table relationship cascading behavior" (Share and Unshare: Cascade all, Active, UserOwned; the related rows are shared and unshared with the parent)
+test('Share and Unshare cascade the parent share to its children as inherited access, as each cascade allows', async (t) => {
+  const { request, json, store } = await setup(
+    t,
+    { assign: 'NoCascade', share: 'Cascade', unshare: 'Cascade' },
+    { withGrandchild: true },
+  );
+  await share(request, json, 'GrantAccess', USER_TWO);
+  assert.deepEqual(accessOf(store, PARENT, USER_TWO), [READ, 0], 'the parent holds the direct share');
+  for (const child of [ACTIVE, INACTIVE, OTHER, GRANDCHILD])
+    assert.deepEqual(accessOf(store, child, USER_TWO), [0, READ], `row ${child} inherits the share`);
+  await share(request, json, 'ModifyAccess', USER_TWO, 'ReadAccess,WriteAccess');
+  assert.deepEqual(accessOf(store, GRANDCHILD, USER_TWO), [0, READ | WRITE], 'ModifyAccess reaches the grandchild');
+  await share(request, json, 'RevokeAccess', USER_TWO);
+  for (const row of [PARENT, ACTIVE, INACTIVE, OTHER, GRANDCHILD])
+    assert.deepEqual(accessOf(store, row, USER_TWO), [0, 0], `row ${row} is unshared`);
+
+  const active = await setup(t, { assign: 'NoCascade', share: 'Active' });
+  await share(active.request, active.json, 'GrantAccess', USER_TWO);
+  assert.deepEqual(
+    [ACTIVE, INACTIVE, OTHER].map((child) => accessOf(active.store, child, USER_TWO)[1]),
+    [READ, 0, READ],
+  );
+  const owned = await setup(t, { assign: 'NoCascade', share: 'UserOwned' });
+  await share(owned.request, owned.json, 'GrantAccess', USER_TWO);
+  assert.deepEqual(
+    [ACTIVE, INACTIVE, OTHER].map((child) => accessOf(owned.store, child, USER_TWO)[1]),
+    [READ, READ, 0],
+  );
+  const none = await setup(t, { assign: 'NoCascade', share: 'NoCascade' });
+  await share(none.request, none.json, 'GrantAccess', USER_TWO);
+  assert.deepEqual(accessOf(none.store, ACTIVE, USER_TWO), [0, 0]);
+});
+
+// @test-kind compatibility: Microsoft Learn "Configure table relationship cascading behavior" (About the reparent action: a changed parental lookup moves the inherited access rights of the row and its related rows)
+test('Reparent gives a re-parented child the new parent owner and shares as inherited access, and drops the old', async (t) => {
+  const SECOND = '55555555-5555-4555-8555-555555555506';
+  const { request, json, store } = await setup(
+    t,
+    { assign: 'NoCascade', share: 'Cascade', unshare: 'Cascade', reparent: 'Cascade' },
+    { withGrandchild: true },
+  );
+  await store.transact(() =>
+    store.state.tables.x_parent.push({
+      x_parentid: SECOND,
+      x_name: 'Second parent',
+      ownerid: owner(USER_THREE),
+      statecode: 0,
+      statuscode: 1,
+    }),
+  );
+  await share(request, json, 'GrantAccess', USER_TWO);
+  assert.deepEqual(accessOf(store, ACTIVE, USER_TWO), [0, READ]);
+  await json(await request('PATCH', `/x_children(${ACTIVE})`, { 'parent@odata.bind': `/x_parents(${SECOND})` }), 200);
+  // The first parent's share no longer reaches the moved child or its grandchild; the second parent's owner does.
+  for (const row of [ACTIVE, GRANDCHILD]) {
+    assert.deepEqual(accessOf(store, row, USER_TWO), [0, 0], `row ${row} loses the old parent's share`);
+    assert.deepEqual(accessOf(store, row, USER_THREE), [0, INHERITABLE], `row ${row} inherits the new parent owner`);
   }
-  assert.equal(store.state.tables.principalobjectaccess?.length ?? 0, sharesBefore, 'no share row is granted');
+  assert.deepEqual(accessOf(store, INACTIVE, USER_TWO), [0, READ], 'a child that stays keeps its inherited share');
 });
 
-test('a relationship without declared Share, Reparent, Merge or Unshare reports nothing for them', async (t) => {
-  const { diagnostics } = await setup(t, { assign: 'NoCascade', share: 'NoCascade', merge: 'NoCascade' });
-  assert.equal(diagnostics.filter((entry) => entry.table === 'x_parent' && /NOT_SIMULATED/.test(entry.code)).length, 0);
-});
-
-test('describe lists Assign at behaviour and the other cascades at contract, with the seams', () => {
+// @test-kind contract: Paqvilo's describe levels for the cascade extension
+test('describe lists every cascade action at behaviour', () => {
   const record = EXTENSION.describe();
   assert.equal(record.name, 'dataverse-cascade');
   assert.equal(record.level, 'behaviour');
   assert.deepEqual(record.requires, ['metadata:relationship cascade']);
-  assert.equal(record.operationLevels.CascadeAssign, 'behaviour');
-  for (const operation of ['CascadeShare', 'CascadeUnshare', 'CascadeReparent', 'CascadeMerge']) {
-    assert.equal(record.operationLevels[operation], 'contract', operation);
-    assert.ok(record.seams[operation], `${operation} names its seam`);
-  }
-  assert.ok(record.seams.CascadeShare.includes('grantAccess'));
-  assert.ok(record.seams.CascadeMerge.includes('dataverse-record-messages.mjs'));
+  for (const operation of ['CascadeAssign', 'CascadeShare', 'CascadeUnshare', 'CascadeReparent', 'CascadeMerge'])
+    assert.equal(record.operationLevels[operation], 'behaviour', operation);
+  assert.equal(record.seams, undefined);
 });
 
 test('a PATCH that fails with 412 leaves no pre-image: a later write without beforeWrite reassigns no children', async (t) => {
@@ -235,6 +297,7 @@ test('a PATCH that fails with 412 leaves no pre-image: a later write without bef
   assert.equal(ownerOf(store, 'x_child', 'x_childid', INACTIVE), USER_ONE);
 });
 
+// @test-kind unproven+security: local model of the Assign privilege check on cascaded children
 test('a caller without Assign on the child table: the cascade refuses and the parent write rolls back', async (t) => {
   const refusing = {
     ...EXTENSION,

@@ -5,6 +5,7 @@ import { organizationRecord } from './organization-context.mjs';
 // Registered as extension operations (dataverse-operations.mjs).
 // The built-in RetrieveUserPrivileges and RetrievePrincipalAccess stay in dataverse-api.mjs and are not registered here.
 import { DataError } from './data-error.mjs';
+import { principalAccessesOf } from './plugin-platform-messages.mjs';
 import { objectTypeCode } from './dataverse-metadata.mjs';
 import {
   ACCESS_RIGHTS,
@@ -323,6 +324,36 @@ function operations(api) {
   // `user` is the principal the read runs as: the caller by default, the SYSTEM user for an operation that needs no privilege.
   const collectionOf = (c, logical, ids, user = c.user) => messageCollection(api, c, logical, ids, user);
   // Privileges a user holds directly or through team roles (team grants report Basic), filtered by a predicate.
+  // Team membership changes, for the Web API (write answers a promise) and a plug-in's SDK Execute (a synchronous write).
+  const afterWrite = (written, answer) => (typeof written?.then === 'function' ? written.then(() => answer) : answer);
+  const addMembersTeam = (c, writeMembers) => {
+    need(c, 'prvWriteTeam', 'team');
+    const teamId = c.target.id,
+      members = membersOf(c);
+    assertTeamAcceptsMembers(store, c.target);
+    members.forEach((id) => assertCanJoinTeam(store, id));
+    return afterWrite(
+      writeMembers(() => {
+        for (const id of members) addMember(store, teamId, id);
+      }),
+      { status: 204 },
+    );
+  };
+  const removeMembersTeam = (c, writeMembers) => {
+    need(c, 'prvWriteTeam', 'team');
+    const teamId = c.target.id,
+      members = membersOf(c);
+    assertTeamAcceptsMembers(store, c.target);
+    return afterWrite(
+      writeMembers(() => {
+        removeWhere(
+          tableOf(store, 'teammembership'),
+          (m) => sameId(refId(m.teamid), teamId) && members.some((id) => sameId(refId(m.systemuserid), id)),
+        );
+      }),
+      { status: 204 },
+    );
+  };
   const userPrivileges = (c, name, keep) => {
     need(c, 'prvReadUser', 'systemuser');
     if (!api.principals.byId(c.target.id)) throw notFound('systemuser', c.target.id);
@@ -419,7 +450,7 @@ function operations(api) {
       name: 'RetrieveRolePrivilegesRole',
       kind: 'function',
       binding: 'unbound',
-      handle: async (c) => {
+      handle: (c) => {
         need(c, 'prvReadRole', 'role');
         const id = c.params?.RoleId;
         if (!id) throw invalid('RoleId is required.');
@@ -436,7 +467,7 @@ function operations(api) {
       kind: 'function',
       binding: 'entity',
       entity: 'systemuser',
-      handle: async (c) =>
+      handle: (c) =>
         userPrivileges(c, 'RetrieveUserPrivilegeByPrivilegeName', (p) => p.PrivilegeName === c.params?.PrivilegeName),
       csdl: csdlOf('function', 'RetrieveUserPrivilegeByPrivilegeName', {
         bound: 'systemuser',
@@ -449,7 +480,7 @@ function operations(api) {
       kind: 'function',
       binding: 'entity',
       entity: 'systemuser',
-      handle: async (c) =>
+      handle: (c) =>
         userPrivileges(c, 'RetrieveUserPrivilegeByPrivilegeId', (p) => sameId(p.PrivilegeId, c.params?.PrivilegeId)),
       csdl: csdlOf('function', 'RetrieveUserPrivilegeByPrivilegeId', {
         bound: 'systemuser',
@@ -462,7 +493,7 @@ function operations(api) {
       kind: 'function',
       binding: 'entity',
       entity: 'systemuser',
-      handle: async (c) => {
+      handle: (c) => {
         const names = listOf(c.params?.PrivilegeNames);
         return userPrivileges(c, 'RetrieveUserSetOfPrivilegesByNames', (p) => names.includes(p.PrivilegeName));
       },
@@ -477,7 +508,7 @@ function operations(api) {
       kind: 'function',
       binding: 'entity',
       entity: 'systemuser',
-      handle: async (c) => {
+      handle: (c) => {
         const ids = listOf(c.params?.PrivilegeIds).map(key);
         return userPrivileges(c, 'RetrieveUserSetOfPrivilegesByIds', (p) => ids.includes(key(p.PrivilegeId)));
       },
@@ -492,7 +523,7 @@ function operations(api) {
       kind: 'function',
       binding: 'entity',
       entity: 'team',
-      handle: async (c) => {
+      handle: (c) => {
         need(c, 'prvReadTeam', 'team');
         const roleIds = new Set(
           tableOf(store, 'teamroles')
@@ -511,17 +542,9 @@ function operations(api) {
       kind: 'action',
       binding: 'entity',
       entity: 'team',
-      handle: async (c) => {
-        need(c, 'prvWriteTeam', 'team');
-        const teamId = c.target.id,
-          members = membersOf(c);
-        assertTeamAcceptsMembers(store, c.target);
-        members.forEach((id) => assertCanJoinTeam(store, id));
-        await write(() => {
-          for (const id of members) addMember(store, teamId, id);
-        });
-        return { status: 204 };
-      },
+      handle: async (c) => addMembersTeam(c, write),
+      // A plug-in's SDK Execute (AddMembersTeamRequest) writes inside its caller's transaction.
+      sdk: (c) => addMembersTeam(c, c.sdkWrite),
       csdl: csdlOf('action', 'AddMembersTeam', {
         bound: 'team',
         params: [['Members', 'Collection(mscrm.systemuser)']],
@@ -532,19 +555,8 @@ function operations(api) {
       kind: 'action',
       binding: 'entity',
       entity: 'team',
-      handle: async (c) => {
-        need(c, 'prvWriteTeam', 'team');
-        const teamId = c.target.id,
-          members = membersOf(c);
-        assertTeamAcceptsMembers(store, c.target);
-        await write(() => {
-          removeWhere(
-            tableOf(store, 'teammembership'),
-            (m) => sameId(refId(m.teamid), teamId) && members.some((id) => sameId(refId(m.systemuserid), id)),
-          );
-        });
-        return { status: 204 };
-      },
+      handle: async (c) => removeMembersTeam(c, write),
+      sdk: (c) => removeMembersTeam(c, c.sdkWrite),
       csdl: csdlOf('action', 'RemoveMembersTeam', {
         bound: 'team',
         params: [['Members', 'Collection(mscrm.systemuser)']],
@@ -743,7 +755,8 @@ function operations(api) {
       binding: 'unbound',
       handle: async (c) => {
         const { mapping, id } = targetRef(api, c.params?.Target);
-        const row = store.get(mapping.logicalName, id, c.identity);
+        // No Retrieve pipeline runs before it (recorded native webApiNamed).
+        const row = store.get(mapping.logicalName, id, c.identity, { skipPluginRead: true });
         if (!row) throw notFound(mapping.logicalName, id);
         api.principals.authorize({ user: c.user, entity: mapping.logicalName, operation: 'read', row, mapping });
         const shares = tableOf(store, 'principalobjectaccess').filter(
@@ -758,6 +771,11 @@ function operations(api) {
             };
           }),
         });
+      },
+      // Steps read PrincipalAccess[] (native webApiNamed RetrieveSharedPrincipalsAndAccess/40 OutputParameters).
+      pluginOutputs: (body, c) => {
+        const { mapping, id } = targetRef(api, c.params?.Target);
+        return { PrincipalAccesses: principalAccessesOf(store, { logicalName: mapping.logicalName, id }) };
       },
       csdl: csdlOf('function', 'RetrieveSharedPrincipalsAndAccess', {
         params: [['Target', 'mscrm.crmbaseentity']],

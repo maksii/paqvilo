@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Tracing of the Web API record dispatch (docs/design/tracing.md, D-R3-1, D-R3-2, D-R3-13, D-R3-22): the dispatch span names
 // its record as soon as it is known (a keyed route at start, a create once the store assigned its id), records the request
 // (body, query options, answer-changing headers) and its answer (id, row count, total count, more records, status) at level

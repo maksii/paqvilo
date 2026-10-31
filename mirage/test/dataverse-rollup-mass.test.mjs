@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of rollup recalculation over many rows; no native capture cited
 // The Mass Calculate Rollup Fields job (lib/dataverse-rollup.mjs): a recurring scheduler task recalculates every stale rollup
 // column; with a manual scheduler it runs only when the clock passes the interval.
 import test from 'node:test';

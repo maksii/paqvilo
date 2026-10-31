@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // The Activity backend (D-M-4, docs/design/tracing.md "Monitor"): the audit <-> trace link both ways, X-Sim-Trace-Id as
 // an audit id only, findings and request rings that name their trace, render sources, the trace channel's server-side
 // event filter, and the activity export bundle.

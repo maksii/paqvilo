@@ -1,3 +1,4 @@
+// @test-kind compatibility: Learn SDK message responses (Create/Retrieve/RetrieveMultiple/Update/Delete/CreateMultiple) returned to callers
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
@@ -91,7 +92,12 @@ test('Handler-only pre-operation mutations retain SDK main results with no match
     },
   });
   assert.equal(selected.entities.length, 2);
-  assert.ok(selected.entities.every((row) => row.id && !Object.hasOwn(row.attributes, 'secondaryid')));
+  for (const row of selected.entities) {
+    assert.ok(row.id);
+    assert.deepEqual(row.attributes.secondaryid, { $type: 'Guid', value: row.id });
+    assert.deepEqual(Object.keys(row.attributes).sort(), ['secondaryid', 'title']);
+  }
+  assert.deepEqual(selected.entities.map((row) => row.attributes.title).sort(), ['Handler persisted', 'Stored']);
 });
 
 test(

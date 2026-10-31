@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft Learn duplicate detection: rule tables, MSCRM.SuppressDuplicateDetection, match operators, publish limits and messages
 // Duplicate detection: seeded duplicate rule tables, the MSCRM.SuppressDuplicateDetection gate on create
 // and update, the match operators, and the publish, unpublish and RetrieveDuplicates operations.
 // The registry and hooks are exercised through a fake api.
@@ -53,6 +54,8 @@ async function setup({ principals = ALLOW_ALL } = {}) {
     recordHooks: { add: (name, fn) => (hooks[name] = fn) },
   };
   await install(api);
+  assert.equal(typeof hooks.afterPreValidation, 'function');
+  assert.equal(hooks.beforeWrite, undefined, 'Duplicate validation must not mask a PreValidation rejection');
   return {
     api,
     store,
@@ -93,7 +96,7 @@ function addRule(t, rule) {
 }
 
 const write = (t, operation, data, headers = GATE, existing) =>
-  t.hooks.beforeWrite({ headers }, t.mapping, { operation, data, existing });
+  t.hooks.afterPreValidation({ headers }, t.mapping, { operation, data, existing });
 const errorOf = (fn) => {
   try {
     fn();
@@ -107,6 +110,7 @@ const isDuplicate = (error) =>
   error instanceof DataError && error.status === 412 && error.details?.innerCode === '0x80040333';
 const target = (t, id) => ({ id, row: t.rules().find((r) => r.duplicateruleid === id) });
 
+// @test-kind contract: Paqvilo install seeds duplicate rule tables as dataverseOnly and leaves mappings it does not own
 test('install seeds the duplicate rule tables as dataverseOnly and leaves a mapping it does not own', async () => {
   const store = new DataStore({ state: emptyState() });
   store.state.mappings.duplicaterulecondition = {
@@ -575,6 +579,7 @@ test('every duplicate operation carries CSDL with its documented binding and typ
   );
 });
 
+// @test-kind contract: Paqvilo reset(api) re-seeds the duplicate rule tables
 test('reset(api) re-seeds the duplicate rule tables after a wipe', async () => {
   const t = await setup();
   for (const logical of ['duplicaterule', 'duplicaterulecondition']) {

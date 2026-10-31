@@ -1,3 +1,4 @@
+// @test-kind contract+security: Paqvilo's tracing and activity design (docs/design/tracing.md); redaction keeps secrets, tokens and keys out of traces
 // HTTP root spans (docs/design/tracing.md): a Power Pages request opens an `http` root with the render, template and read
 // spans under it; a portal Web API write nests a `webapi` span; browser follow-ups join the page's trace through the
 // audit parent header; the audit entry links to its root span; the standalone host and the Dataverse API listener open

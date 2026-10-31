@@ -383,6 +383,7 @@ export function createFlowTriggerRunner({
       counts = new Map(),
       note = (code, entry) => notes.push([code, entry, code === 'FLOW_TRIGGER_BACKLOG' ? null : stagingOf(source)]);
     for (const event of events) {
+      if (event.messageEvent) continue;
       source = event;
       // A committed custom API action (dataverse-customapi.mjs): one durable job per enabled "When an action is performed" host.
       if (event.operation === 'action') {
@@ -482,7 +483,7 @@ export function createFlowTriggerRunner({
             name: item.key,
             regardingobjecttypecode: event.entity,
             primaryentitytype: event.entity,
-            correlationid: chain.id,
+            correlationid: event.correlationId ?? chain.id,
             depth: chain.depth + 1,
           },
           key: item.key,

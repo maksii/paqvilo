@@ -30,6 +30,7 @@ import {
   toText,
 } from './power-fx.mjs';
 import { isExactNumeric } from './exact-numeric.mjs';
+import { cloneStateData } from './state-clone.mjs';
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { portalLanguage } from './portal-languages.mjs';
 
@@ -53,7 +54,10 @@ const behaviourOf = (definition) =>
   ).toLowerCase();
 const labelOf = (value) => (typeof value === 'string' ? value : null);
 
-export function dataverseHost(api, { c = null, diagnostic = null, timeZone = 'UTC', fieldAliases = [] } = {}) {
+export function dataverseHost(
+  api,
+  { c = null, diagnostic = null, timeZone = 'UTC', fieldAliases = [], assertActive = () => {} } = {},
+) {
   const { store } = api;
   const definitions = (logical) => store.fieldDefinitions(logical, api.metadataFields) ?? {};
   // The store mapping of a table name; a mapping keyed by its logical name may omit logicalName, so the key names it.
@@ -134,6 +138,7 @@ export function dataverseHost(api, { c = null, diagnostic = null, timeZone = 'UT
   }
   // A stored row as a typed Power Fx record: date/time by column behaviour, GUIDs, related records, exact numbers.
   function toRecord(logical, row) {
+    assertActive();
     const mapping = mappingOf(logical);
     const record = {};
     for (const [key, value] of Object.entries(row)) {
@@ -165,12 +170,13 @@ export function dataverseHost(api, { c = null, diagnostic = null, timeZone = 'UT
     // Decimal, money and whole numbers stay exact (store exact-numeric values); float and double columns are Float.
     if (info?.type === 'number' && FLOAT.has(typeName(info.definition)))
       return new FxFloat(Number(isExactNumeric(value) ? value.value : value));
-    if (Array.isArray(value)) return value.map((item) => ({ Value: item }));
-    if (isRecord(value)) return value;
+    if (Array.isArray(value)) return value.map((item) => ({ Value: cloneStateData(item) }));
+    if (isRecord(value)) return cloneStateData(value);
     return value;
   }
   // A Power Fx record (or change record) as store values: logical names, ISO dates, GUID text, lookups as { id, logical_name }.
   function toRow(logical, record) {
+    assertActive();
     const mapping = mappingOf(logical);
     const row = {};
     for (const [key, value] of Object.entries(record ?? {})) {
@@ -198,6 +204,7 @@ export function dataverseHost(api, { c = null, diagnostic = null, timeZone = 'UT
 
   // One row by id: the caller's secured read, or (formula columns) the platform's read of the stored row.
   function readOne(logical, id) {
+    assertActive();
     const mapping = mappingOf(logical);
     if (!caller) {
       const row = store
@@ -209,6 +216,7 @@ export function dataverseHost(api, { c = null, diagnostic = null, timeZone = 'UT
     return rows[0] ?? null;
   }
   function query(logical, params, extended = false) {
+    assertActive();
     const mapping = mappingOf(logical);
     api.principals.authorize({ user: caller.user, entity: mapping.logicalName, operation: 'read', mapping });
     const filters = new Map();
@@ -237,6 +245,7 @@ export function dataverseHost(api, { c = null, diagnostic = null, timeZone = 'UT
   }
   // A write as the caller inside a store savepoint; a refusal names the Power Fx error kind of its operation.
   function write(kind, run) {
+    assertActive();
     const deferred = [];
     try {
       const result = store.sdkMutation ? store.sdkMutation(() => run(deferred)) : run(deferred);
@@ -269,11 +278,14 @@ export function dataverseHost(api, { c = null, diagnostic = null, timeZone = 'UT
       if (top !== null) params.$top = String(top);
       return query(logical, params, extended);
     };
-    return {
+    const adapter = {
       [Symbol.for('paqvilo.power-fx.dataverse-choices')]: true,
       read,
       count: (q) => read(q).length,
-      column: (name) => columnInfo(logical, name),
+      column: (name) => {
+        assertActive();
+        return cloneStateData(columnInfo(logical, name));
+      },
       choices(name) {
         api.principals.authorize({ user: caller.user, entity: logical, operation: 'read', mapping });
         const column = columnInfo(logical, name);
@@ -389,10 +401,22 @@ export function dataverseHost(api, { c = null, diagnostic = null, timeZone = 'UT
       defaults: () => Object.defineProperty({}, ALIASES, { value: aliasesOf(logical) }),
       key: keyOf,
     };
+    return new Proxy(adapter, {
+      get(target, name) {
+        const value = Reflect.get(target, name, target);
+        return typeof value === 'function'
+          ? (...args) => {
+              assertActive();
+              return Reflect.apply(value, target, args);
+            }
+          : value;
+      },
+    });
   }
 
   // Tables by entity set, logical name or collection label; only for a caller (a formula column has no table sources).
   function dataSource(name) {
+    assertActive();
     if (!caller) return undefined;
     const mappings = store.state.mappings ?? {};
     // A mapping keyed by its logical name may omit logicalName: the key names the table then.

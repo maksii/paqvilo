@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Model-driven app tracing (docs/design/tracing.md, DV-A-2/-3/-13, DV-B1-1/-2/-14): roots of the shell and /_apps/api
 // name the model-driven host and the staff user; the shell page carries its root so the app's calls (records, the
 // Xrm.WebApi bridge) join the page trace with every descendant as that user; error answers name their code on the root;

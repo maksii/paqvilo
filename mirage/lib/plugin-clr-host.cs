@@ -6,9 +6,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Runtime.Remoting.Messaging;
-using System.Runtime.Remoting.Proxies;
-using System.Runtime.Remoting;
+using System.Runtime.CompilerServices;
 using System.ServiceModel;
 using System.Diagnostics;
 using System.Threading;
@@ -17,15 +15,35 @@ using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
 
 public static class PaqviloPluginHost {
- static readonly JavaScriptSerializer Json=new JavaScriptSerializer {MaxJsonLength=4*1024*1024,RecursionLimit=64};
+ // One serializer per thread: plug-in threads, the protocol reader and each Execute thread encode concurrently.
+ [ThreadStatic] static JavaScriptSerializer json;
+ static JavaScriptSerializer Json{get{return json??(json=new JavaScriptSerializer {MaxJsonLength=Int32.MaxValue,RecursionLimit=64});}}
  static TextWriter Output;
- static Dictionary<string,object> CurrentContext;
+ // The protocol is UTF-8 JSON lines in both directions (the console code page would corrupt non-ASCII text).
+ static TextReader Input;
+ static readonly ConditionalWeakTable<Exception,object> AdapterUnsupported=new ConditionalWeakTable<Exception,object>();
+ static readonly object AdapterMarker=new object();
+ static NotSupportedException Unsupported(string message){var error=new NotSupportedException(message);AdapterUnsupported.Add(error,AdapterMarker);return error;}
+ static bool IsAdapterUnsupported(Exception error){object marker;return AdapterUnsupported.TryGetValue(error,out marker);}
+
+ // Callbacks are accepted from any thread the plug-in starts (native sandbox pq.p.5 Thread.Join and pq.p.6 Task.Run complete
+ // nested SDK calls); a handle used after its invocation returned has expired.
+ sealed class InvocationLease {public readonly Dictionary<string,object> Context;public readonly string Id;readonly Dictionary<Exception,int> CallbackErrors=new Dictionary<Exception,int>();volatile bool Closed;public InvocationLease(Dictionary<string,object> context,string id){Context=context;Id=id;}public void Check(){if(Closed)throw Unsupported("The CLR invocation has completed; its retained service or context handle has expired.");}public bool IsClosed{get{return Closed;}}public void NoteError(Exception error,int code){lock(CallbackErrors)CallbackErrors[error]=code;}public bool TryError(Exception error,out int code){lock(CallbackErrors)return CallbackErrors.TryGetValue(error,out code);}public void Close(){Closed=true;ReleaseCalls(this);}}
+ // An SDK callback waits for the answer the protocol reader routes to it by call number, so concurrent callers queue.
+ sealed class PendingCall {public readonly InvocationLease Lease;public readonly ManualResetEventSlim Done=new ManualResetEventSlim(false);public Dictionary<string,object> Answer;public PendingCall(InvocationLease lease){Lease=lease;}}
+ static readonly Dictionary<long,PendingCall> Calls=new Dictionary<long,PendingCall>();static long NextCall;
+ static long Register(InvocationLease lease,PendingCall call){lock(Calls){if(lease.IsClosed)return 0;Calls[++NextCall]=call;return NextCall;}}
+ static void Answer(Dictionary<string,object> answer){PendingCall call;var id=Convert.ToInt64(Get(answer,"call",0),CultureInfo.InvariantCulture);lock(Calls){if(!Calls.TryGetValue(id,out call))return;Calls.Remove(id);}call.Answer=answer;call.Done.Set();}
+ static void ReleaseCalls(InvocationLease lease){List<PendingCall> open;lock(Calls){var ids=Calls.Where(p=>p.Value.Lease==lease).Select(p=>p.Key).ToList();open=ids.Select(id=>Calls[id]).ToList();foreach(var id in ids)Calls.Remove(id);}foreach(var call in open)call.Done.Set();}
  static Timer ParentWatcher;
  static Dictionary<string,object> Map(object value){return value as Dictionary<string,object> ?? new Dictionary<string,object>();}
  static object Get(Dictionary<string,object> map,string key,object fallback=null){object value;return map.TryGetValue(key,out value)?value:fallback;}
  static string Str(Dictionary<string,object> map,string key,string fallback=""){return Convert.ToString(Get(map,key,fallback),CultureInfo.InvariantCulture);}
  static IEnumerable<object> Array(object value){return value as object[] ?? (value is ArrayList?((ArrayList)value).Cast<object>():new object[0]);}
- static void Send(object value){Output.WriteLine(Json.Serialize(value));Output.Flush();}
+ static readonly object OutputLock=new object();
+ static void Send(object value){var line=Json.Serialize(value);lock(OutputLock){Output.WriteLine(line);Output.Flush();}}
+ // The platform's ChangedEntityTypes shared variable is a Dictionary<String,String> (native recorder corpus: crud, depth).
+ static object Platform(string key,object value){var map=value as Dictionary<string,object>;return key=="ChangedEntityTypes"&&map!=null&&map.Values.All(v=>v is string)?map.ToDictionary(p=>p.Key,p=>(string)p.Value):value;}
  static object Decode(object value){
   var m=value as Dictionary<string,object>;if(m==null)return value is object[]?((object[])value).Select(Decode).ToArray():value;
   string kind=Str(m,"$type");switch(kind){
@@ -34,9 +52,9 @@ public static class PaqviloPluginHost {
    case "Decimal":return Decimal.Parse(Str(m,"value"),CultureInfo.InvariantCulture);
    case "Int64":return Int64.Parse(Str(m,"value"),CultureInfo.InvariantCulture);
    case "Bytes":return Convert.FromBase64String(Str(m,"value"));
-   case "SdkArray":{var values=Array(Get(m,"values")).Select(Decode);switch(Str(m,"elementType")){case "Entity":return values.Select(v=>(Entity)v).ToArray();case "EntityReference":return values.Select(v=>(EntityReference)v).ToArray();case "OptionSetValue":return values.Select(v=>(OptionSetValue)v).ToArray();case "Money":return values.Select(v=>(Money)v).ToArray();case "EntityCollection":return values.Select(v=>(EntityCollection)v).ToArray();case "QueryExpression":return values.Select(v=>(QueryExpression)v).ToArray();case "String[]":return values.Select(v=>(string[])v).ToArray();default:throw new NotSupportedException("Unsupported SDK array element type: "+Str(m,"elementType"));}}
-   case "PrimitiveArray":{var values=Array(Get(m,"values")).Select(Decode);switch(Str(m,"elementType")){case "String":return values.Select(v=>(string)v).ToArray();case "Int32":return values.Select(v=>(int)v).ToArray();case "Boolean":return values.Select(v=>(bool)v).ToArray();case "Int64":return values.Select(v=>(long)v).ToArray();case "Decimal":return values.Select(v=>(decimal)v).ToArray();case "Double":return values.Select(v=>(double)v).ToArray();case "DateTime":return values.Select(v=>(DateTime)v).ToArray();default:throw new NotSupportedException("Unsupported SDK primitive array element type: "+Str(m,"elementType"));}}
-   case "Double":{var number=Double.Parse(Str(m,"value"),NumberStyles.Float,CultureInfo.InvariantCulture);if(Double.IsNaN(number)||Double.IsInfinity(number))throw new NotSupportedException("SDK Double requires a finite numeric value.");return number;}
+   case "SdkArray":{var values=Array(Get(m,"values")).Select(Decode);switch(Str(m,"elementType")){case "Entity":return values.Select(v=>(Entity)v).ToArray();case "EntityReference":return values.Select(v=>(EntityReference)v).ToArray();case "OptionSetValue":return values.Select(v=>(OptionSetValue)v).ToArray();case "Money":return values.Select(v=>(Money)v).ToArray();case "EntityCollection":return values.Select(v=>(EntityCollection)v).ToArray();case "QueryExpression":return values.Select(v=>(QueryExpression)v).ToArray();case "String[]":return values.Select(v=>(string[])v).ToArray();case "PrincipalAccess":{var items=values.ToArray();var array=System.Array.CreateInstance(CrmMessageType("PrincipalAccess"),items.Length);for(var i=0;i<items.Length;i++)array.SetValue(items[i],i);return array;}case "UpsertResponse":{var items=values.ToArray();var array=System.Array.CreateInstance(ResponseType("Upsert"),items.Length);for(var i=0;i<items.Length;i++)array.SetValue(items[i],i);return array;}default:throw Unsupported("Unsupported SDK array element type: "+Str(m,"elementType"));}}
+   case "PrimitiveArray":{var values=Array(Get(m,"values")).Select(Decode);switch(Str(m,"elementType")){case "String":return values.Select(v=>(string)v).ToArray();case "Int32":return values.Select(v=>(int)v).ToArray();case "Boolean":return values.Select(v=>(bool)v).ToArray();case "Int64":return values.Select(v=>(long)v).ToArray();case "Decimal":return values.Select(v=>(decimal)v).ToArray();case "Double":return values.Select(v=>(double)v).ToArray();case "DateTime":return values.Select(v=>(DateTime)v).ToArray();default:throw Unsupported("Unsupported SDK primitive array element type: "+Str(m,"elementType"));}}
+   case "Double":{var number=Double.Parse(Str(m,"value"),NumberStyles.Float,CultureInfo.InvariantCulture);if(Double.IsNaN(number)||Double.IsInfinity(number))throw Unsupported("SDK Double requires a finite numeric value.");return number;}
    case "Money":return new Money(Convert.ToDecimal(Get(m,"value"),CultureInfo.InvariantCulture));
    case "OptionSetValue":return new OptionSetValue(Convert.ToInt32(Get(m,"value")));
    case "OptionSetValueCollection":return new OptionSetValueCollection(Array(Get(m,"values")).Select(v=>(OptionSetValue)Decode(v)).ToList());
@@ -44,29 +62,85 @@ public static class PaqviloPluginHost {
    case "EntityReferenceCollection":return new EntityReferenceCollection(Array(Get(m,"values")).Select(v=>(EntityReference)Decode(v)).ToList());
    case "Relationship":{var relationship=new Relationship(Str(m,"schemaName"));if(Get(m,"primaryEntityRole")!=null)relationship.PrimaryEntityRole=(EntityRole)Enum.Parse(typeof(EntityRole),Str(m,"primaryEntityRole"));return relationship;}
    case "AliasedValue":return new AliasedValue(Str(m,"entityLogicalName"),Str(m,"attributeLogicalName"),Decode(Get(m,"value")));
-   case "Entity":{var e=new Entity(Str(m,"logicalName"),Guid.Parse(Str(m,"id",Guid.Empty.ToString()))){RowVersion=Get(m,"rowVersion") as string};foreach(var p in Map(Get(m,"attributes")))e[p.Key]=Decode(p.Value);foreach(var p in Map(Get(m,"keyAttributes")))e.KeyAttributes[p.Key]=Decode(p.Value);foreach(var p in Map(Get(m,"formattedValues")))e.FormattedValues[p.Key]=Convert.ToString(p.Value);return e;}
+   case "Entity":{var e=new Entity(Str(m,"logicalName"),Guid.Parse(Str(m,"id",Guid.Empty.ToString()))){RowVersion=Get(m,"rowVersion") as string};foreach(var p in Map(Get(m,"attributes")))e[p.Key]=Decode(p.Value);foreach(var p in Map(Get(m,"keyAttributes")))e.KeyAttributes[p.Key]=Decode(p.Value);foreach(var p in Map(Get(m,"formattedValues")))e.FormattedValues[p.Key]=p.Value==null?null:Convert.ToString(p.Value);foreach(var item in Array(Get(m,"relatedEntities"))){var related=Map(item);e.RelatedEntities[(Relationship)Decode(Get(related,"relationship"))]=(EntityCollection)Decode(Get(related,"entities"));}return e;}
    case "EntityCollection":{var entities=Array(Get(m,"entities")).Select(v=>(Entity)Decode(v)).ToList();return new EntityCollection(entities) {MoreRecords=Convert.ToBoolean(Get(m,"moreRecords",false)),PagingCookie=Get(m,"pagingCookie") as string,TotalRecordCount=Convert.ToInt32(Get(m,"totalRecordCount",-1)),EntityName=Get(m,"entityName") as string,MinActiveRowVersion=Get(m,"minActiveRowVersion") as string,TotalRecordCountLimitExceeded=Convert.ToBoolean(Get(m,"totalRecordCountLimitExceeded",false))};}
-   case "ParameterCollection":{var p=new ParameterCollection();foreach(var entry in Map(Get(m,"values")))p[entry.Key]=Decode(entry.Value);return p;}
-   case "OrganizationResponse":{var name=Str(m,"responseName");if(!new[]{"Create","Update","Delete","Retrieve","RetrieveMultiple","CreateMultiple","UpdateMultiple","Associate","Disassociate"}.Contains(name))throw new NotSupportedException("Unsupported SDK response contract: "+name);var type=typeof(OrganizationResponse).Assembly.GetType("Microsoft.Xrm.Sdk.Messages."+name+"Response",true);var response=(OrganizationResponse)Activator.CreateInstance(type);foreach(var entry in Map(Get(m,"results")))response.Results[entry.Key]=Decode(entry.Value);return response;}
+   case "ParameterCollection":{var p=new ParameterCollection();foreach(var entry in Map(Get(m,"values")))p[entry.Key]=Platform(entry.Key,Decode(entry.Value));return p;}
+   case "AccessRights":return Enum.ToObject(CrmMessageType("AccessRights"),Convert.ToInt32(Get(m,"value")));
+   case "PrincipalAccess":{var type=CrmMessageType("PrincipalAccess");var access=Activator.CreateInstance(type);type.GetProperty("Principal").SetValue(access,Decode(Get(m,"principal")),null);type.GetProperty("AccessMask").SetValue(access,Enum.ToObject(CrmMessageType("AccessRights"),Convert.ToInt32(Get(m,"accessMask"))),null);return access;}
+   case "ConcurrencyBehavior":{var raw=Get(m,"value");if(!(raw is int)||!Enum.IsDefined(typeof(ConcurrencyBehavior),raw))throw Unsupported("Unsupported SDK ConcurrencyBehavior value.");return (ConcurrencyBehavior)(int)raw;}
+   case "Dictionary":return Map(Get(m,"values")).ToDictionary(p=>p.Key,p=>Decode(p.Value));
+   case "BooleanManagedProperty":{var json=Json.Serialize(new {Value=Convert.ToBoolean(Get(m,"value",false)),CanBeChanged=Convert.ToBoolean(Get(m,"canBeChanged",true)),ManagedPropertyLogicalName=Get(m,"managedPropertyLogicalName") as string});using(var stream=new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json)))return (BooleanManagedProperty)new System.Runtime.Serialization.Json.DataContractJsonSerializer(typeof(BooleanManagedProperty)).ReadObject(stream);}
+   case "OrganizationRequest":{var requestType=Convert.ToBoolean(Get(m,"typed",false))?RequestType(Str(m,"requestName")):null;var request=requestType!=null?(OrganizationRequest)Activator.CreateInstance(requestType):new OrganizationRequest(Str(m,"requestName"));var parameters=Decode(Get(m,"parameters")) as ParameterCollection;if(parameters==null)throw Unsupported("OrganizationRequest requires a ParameterCollection.");request.Parameters=parameters;if(Get(m,"requestId")!=null)request.RequestId=Guid.Parse(Str(m,"requestId"));return request;}
+   case "OrganizationResponse":{var name=Str(m,"responseName");var type=ResponseType(Str(m,"contract",name));var response=type==null?new OrganizationResponse():(OrganizationResponse)Activator.CreateInstance(type);response.ResponseName=Get(m,"responseName") as string;foreach(var entry in Map(Get(m,"results")))response.Results[entry.Key]=Decode(entry.Value);return response;}
+   case "OrganizationResponseXml":return ResponseFromXml(Str(m,"xml"));
+   case "OrganizationServiceFault":return Fault(m);
+   case "RelationshipQueryCollection":{var queries=new RelationshipQueryCollection();foreach(var item in Array(Get(m,"values"))){var entry=Map(item);queries[(Relationship)Decode(Get(entry,"relationship"))]=(QueryBase)Decode(Get(entry,"query"));}return queries;}
+   case "Single":return Single.Parse(Str(m,"value"),NumberStyles.Float,CultureInfo.InvariantCulture);
+   case "Int16":return Int16.Parse(Str(m,"value"),CultureInfo.InvariantCulture);
+   case "UInt16":return UInt16.Parse(Str(m,"value"),CultureInfo.InvariantCulture);
+   case "UInt32":return UInt32.Parse(Str(m,"value"),CultureInfo.InvariantCulture);
+   case "UInt64":return UInt64.Parse(Str(m,"value"),CultureInfo.InvariantCulture);
+   case "Byte":return Byte.Parse(Str(m,"value"),CultureInfo.InvariantCulture);
+   case "SByte":return SByte.Parse(Str(m,"value"),CultureInfo.InvariantCulture);
+   case "Char":return Str(m,"value")[0];
+   case "TimeSpan":return TimeSpan.Parse(Str(m,"value"),CultureInfo.InvariantCulture);
+   case "DateTimeOffset":return DateTimeOffset.Parse(Str(m,"value"),CultureInfo.InvariantCulture,DateTimeStyles.RoundtripKind);
+   case "Enum":return Enum.ToObject(WireType(Str(m,"type")),Convert.ToInt64(Get(m,"value"),CultureInfo.InvariantCulture));
+   case "List":{var list=(IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(WireType(Str(m,"elementType"))));foreach(var item in Array(Get(m,"values")))list.Add(Decode(item));return list;}
+   case "Array":{var items=Array(Get(m,"values")).Select(Decode).ToArray();var array=System.Array.CreateInstance(WireType(Str(m,"elementType")),items.Length);for(var i=0;i<items.Length;i++)array.SetValue(items[i],i);return array;}
+   case "Collection":{var collection=(IList)Activator.CreateInstance(SdkType(Str(m,"type")),true);foreach(var item in Array(Get(m,"values")))collection.Add(Decode(item));return collection;}
+   case "Object":{var objectType=SdkType(Str(m,"type"));var instance=Activator.CreateInstance(objectType,true);foreach(var member in Map(Get(m,"members"))){var property=objectType.GetProperty(member.Key,BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic);if(property==null||property.GetSetMethod(true)==null)throw Unsupported("Unsupported SDK member: "+objectType.Name+"."+member.Key);property.SetValue(instance,Decode(member.Value),null);}return instance;}
    case "FetchExpression":return new FetchExpression(Str(m,"query"));
    case "ColumnSet":return Columns(m);
    case "ExecutionContext":return ContextProxy(Map(Get(m,"values")).ToDictionary(p=>p.Key,p=>Decode(p.Value)));
    case "EntityImageCollection":return Images(Get(m,"values"));
    case "EntityImageCollectionArray":return Array(Get(m,"values")).Select(v=>(EntityImageCollection)Decode(v)).ToArray();
    case "GuidArray":return Array(Get(m,"values")).Select(v=>v is string?Guid.Parse((string)v):(Guid)Decode(v)).ToArray();
-   case "QueryExpression":{var q=new QueryExpression(Str(m,"entityName")){ColumnSet=Columns(Get(m,"columnSet")),Criteria=DecodeFilter(Get(m,"criteria")),Distinct=Convert.ToBoolean(Get(m,"distinct",false))};if(Get(m,"topCount")!=null)q.TopCount=Convert.ToInt32(Get(m,"topCount"));if(m.ContainsKey("pageInfo"))q.PageInfo=DecodePaging(q.PageInfo,Get(m,"pageInfo"));foreach(var link in Array(Get(m,"linkEntities")))q.LinkEntities.Add((LinkEntity)Decode(link));foreach(var item in Array(Get(m,"orders"))){var o=Map(item);q.Orders.Add(new OrderExpression(Str(o,"attributeName"),Convert.ToBoolean(Get(o,"descending",false))?OrderType.Descending:OrderType.Ascending));}return q;}
-   case "LinkEntity":{var link=new LinkEntity(Str(m,"linkFromEntityName"),Str(m,"linkToEntityName"),Str(m,"linkFromAttributeName"),Str(m,"linkToAttributeName"),(JoinOperator)Enum.Parse(typeof(JoinOperator),Str(m,"joinOperator","Inner"))){Columns=Columns(Get(m,"columns")),LinkCriteria=DecodeFilter(Get(m,"linkCriteria")),EntityAlias=Get(m,"entityAlias") as string};foreach(var child in Array(Get(m,"linkEntities")))link.LinkEntities.Add((LinkEntity)Decode(child));foreach(var item in Array(Get(m,"orders"))){var o=Map(item);link.Orders.Add(new OrderExpression(Str(o,"attributeName"),Convert.ToBoolean(Get(o,"descending",false))?OrderType.Descending:OrderType.Ascending));}return link;}
-   case "QueryByAttribute":{var q=new QueryByAttribute(Str(m,"entityName")){ColumnSet=Columns(Get(m,"columnSet"))};q.Attributes.AddRange(Array(Get(m,"attributes")).Select(v=>Convert.ToString(v)));q.Values.AddRange(Array(Get(m,"values")).Select(Decode));if(Get(m,"topCount")!=null)q.TopCount=Convert.ToInt32(Get(m,"topCount"));if(m.ContainsKey("pageInfo"))q.PageInfo=DecodePaging(q.PageInfo,Get(m,"pageInfo"));foreach(var item in Array(Get(m,"orders"))){var o=Map(item);q.Orders.Add(new OrderExpression(Str(o,"attributeName"),Convert.ToBoolean(Get(o,"descending",false))?OrderType.Descending:OrderType.Ascending));}return q;}
+   case "QueryExpression":{var q=new QueryExpression(Str(m,"entityName")){ColumnSet=m.ContainsKey("columnSet")?Columns(Get(m,"columnSet")):new ColumnSet(false),Criteria=DecodeFilter(Get(m,"criteria")),Distinct=Convert.ToBoolean(Get(m,"distinct",false)),NoLock=Convert.ToBoolean(Get(m,"noLock",false))};SetOptional(q,"QueryHints",Get(m,"queryHints"));SetOptional(q,"DataSource",Get(m,"dataSource"));SetOptional(q,"ForceSeek",Get(m,"forceSeek"));if(Get(m,"topCount")!=null)q.TopCount=Convert.ToInt32(Get(m,"topCount"));if(m.ContainsKey("pageInfo"))q.PageInfo=DecodePaging(q.PageInfo,Get(m,"pageInfo"));foreach(var link in Array(Get(m,"linkEntities")))q.LinkEntities.Add((LinkEntity)Decode(link));foreach(var item in Array(Get(m,"orders"))){var o=Map(item);q.Orders.Add(DecodeOrder(o));}return q;}
+   case "LinkEntity":{var link=new LinkEntity(Str(m,"linkFromEntityName"),Str(m,"linkToEntityName"),Str(m,"linkFromAttributeName"),Str(m,"linkToAttributeName"),(JoinOperator)Enum.Parse(typeof(JoinOperator),Str(m,"joinOperator","Inner"))){Columns=m.ContainsKey("columns")?Columns(Get(m,"columns")):new ColumnSet(false),LinkCriteria=DecodeFilter(Get(m,"linkCriteria")),EntityAlias=Get(m,"entityAlias") as string};SetOptional(link,"ForceSeek",Get(m,"forceSeek"));foreach(var child in Array(Get(m,"linkEntities")))link.LinkEntities.Add((LinkEntity)Decode(child));foreach(var item in Array(Get(m,"orders"))){var o=Map(item);link.Orders.Add(DecodeOrder(o));}return link;}
+   case "QueryByAttribute":{var q=new QueryByAttribute(Str(m,"entityName")){ColumnSet=m.ContainsKey("columnSet")?Columns(Get(m,"columnSet")):new ColumnSet(false)};q.Attributes.AddRange(Array(Get(m,"attributes")).Select(v=>Convert.ToString(v)));q.Values.AddRange(Array(Get(m,"values")).Select(Decode));if(Get(m,"topCount")!=null)q.TopCount=Convert.ToInt32(Get(m,"topCount"));if(m.ContainsKey("pageInfo"))q.PageInfo=DecodePaging(q.PageInfo,Get(m,"pageInfo"));foreach(var item in Array(Get(m,"orders"))){var o=Map(item);q.Orders.Add(DecodeOrder(o));}return q;}
    case "":return m.ToDictionary(p=>p.Key,p=>Decode(p.Value));
-   default:throw new NotSupportedException("Unsupported SDK wire type: "+kind);
+   default:throw Unsupported("Unsupported SDK wire type: "+kind);
   }
  }
- static ColumnSet Columns(object value){var m=Map(value);return Convert.ToBoolean(Get(m,"allColumns",false))?new ColumnSet(true):new ColumnSet(Array(Get(m,"columns")).Select(v=>Convert.ToString(v)).ToArray());}
+ // Microsoft.Crm.Sdk.Messages value types (the plug-in's Microsoft.Crm.Sdk.Proxy), resolved by name.
+ static Type CrmMessageType(string name){return Type.GetType("Microsoft.Crm.Sdk.Messages."+name+", Microsoft.Crm.Sdk.Proxy",true);}
+ // The message classes of a request name: Microsoft.Xrm.Sdk.Messages, then Microsoft.Crm.Sdk.Messages of the Proxy the
+ // runtime supplies; null for a message without a class (a custom API, which keeps the base OrganizationRequest/Response).
+ static Type ProxyType(string fullName){try{return Type.GetType(fullName+", Microsoft.Crm.Sdk.Proxy",false);}catch(FileLoadException){return null;}catch(BadImageFormatException){return null;}}
+ static Type MessageType(string name,Type root){var type=typeof(OrganizationResponse).Assembly.GetType("Microsoft.Xrm.Sdk.Messages."+name,false)??ProxyType("Microsoft.Crm.Sdk.Messages."+name);return type!=null&&root.IsAssignableFrom(type)?type:null;}
+ static Type RequestType(string name){return MessageType(name+"Request",typeof(OrganizationRequest));}
+ static Type ResponseType(string name){return MessageType(name+"Response",typeof(OrganizationResponse));}
+ static bool IsSdkAssembly(Assembly assembly){return assembly==typeof(Entity).Assembly||assembly.GetName().Name=="Microsoft.Crm.Sdk.Proxy";}
+ static Type SdkType(string fullName){var type=typeof(Entity).Assembly.GetType(fullName,false)??ProxyType(fullName);if(type==null)throw Unsupported("Unknown SDK type: "+fullName);return type;}
+ // Element and enum types on the wire: System types by full name, else SDK types.
+ static Type WireType(string fullName){return fullName.StartsWith("System.",StringComparison.Ordinal)&&!fullName.Contains(",")?Type.GetType(fullName,true):SdkType(fullName);}
+ static bool WireTypeName(Type type){return type.Assembly==typeof(object).Assembly&&type.Namespace=="System"||IsSdkAssembly(type.Assembly);}
+ static OrganizationServiceFault Fault(Dictionary<string,object> fault){var transaction=Get(fault,"faultedRequestIndex")==null?null:typeof(OrganizationServiceFault).Assembly.GetType("Microsoft.Xrm.Sdk.ExecuteTransactionFault",false);var detail=transaction==null?new OrganizationServiceFault():(OrganizationServiceFault)Activator.CreateInstance(transaction);if(transaction!=null)transaction.GetProperty("FaultedRequestIndex").SetValue(detail,Convert.ToInt32(Get(fault,"faultedRequestIndex")),null);detail.ErrorCode=Convert.ToInt32(Get(fault,"errorCode"));detail.Message=Str(fault,"message");detail.Timestamp=DateTime.Parse(Str(fault,"timestamp"),CultureInfo.InvariantCulture,DateTimeStyles.RoundtripKind);foreach(var entry in Map(Get(fault,"errorDetails")))detail.ErrorDetails[entry.Key]=Decode(entry.Value);return detail;}
+ // A response the organization answers as SOAP Execute XML (metadata messages): the official DataContractSerializer reads
+ // its ExecuteResult, resolving xsi:type names against the SDK and Proxy contracts as an SDK client does.
+ static OrganizationResponse ResponseFromXml(string xml){using(var reader=System.Xml.XmlReader.Create(new StringReader(xml))){while(reader.Read())if(reader.NodeType==System.Xml.XmlNodeType.Element&&reader.LocalName=="ExecuteResult")return (OrganizationResponse)new System.Runtime.Serialization.DataContractSerializer(typeof(OrganizationResponse),new System.Runtime.Serialization.DataContractSerializerSettings{DataContractResolver=new SdkContractResolver()}).ReadObject(reader,false);}throw Unsupported("The organization's SOAP answer has no ExecuteResult.");}
+ sealed class SdkContractResolver:System.Runtime.Serialization.DataContractResolver {
+  static Dictionary<string,Type> Contracts;
+  static Dictionary<string,Type> Build(){var result=new Dictionary<string,Type>();foreach(var assembly in new[]{typeof(Entity).Assembly,ProxyType("Microsoft.Crm.Sdk.Messages.WhoAmIRequest")==null?null:ProxyType("Microsoft.Crm.Sdk.Messages.WhoAmIRequest").Assembly}){if(assembly==null)continue;var defaults=assembly.GetCustomAttributes(typeof(System.Runtime.Serialization.ContractNamespaceAttribute),false).Cast<System.Runtime.Serialization.ContractNamespaceAttribute>().ToDictionary(a=>a.ClrNamespace??"",a=>a.ContractNamespace);Type[] types;try{types=assembly.GetTypes();}catch(ReflectionTypeLoadException error){types=error.Types.Where(t=>t!=null).ToArray();}foreach(var type in types){if(type.IsGenericTypeDefinition)continue;var contract=type.GetCustomAttributes(typeof(System.Runtime.Serialization.DataContractAttribute),false).Cast<System.Runtime.Serialization.DataContractAttribute>().FirstOrDefault();var collection=type.GetCustomAttributes(typeof(System.Runtime.Serialization.CollectionDataContractAttribute),false).Cast<System.Runtime.Serialization.CollectionDataContractAttribute>().FirstOrDefault();if(contract==null&&collection==null)continue;string fallback;var ns=contract!=null&&contract.IsNamespaceSetExplicitly?contract.Namespace:collection!=null&&collection.IsNamespaceSetExplicitly?collection.Namespace:defaults.TryGetValue(type.Namespace??"",out fallback)?fallback:"http://schemas.datacontract.org/2004/07/"+type.Namespace;var name=contract!=null&&contract.IsNameSetExplicitly?contract.Name:collection!=null&&collection.IsNameSetExplicitly?collection.Name:type.Name;result[ns+"|"+name]=type;}}return result;}
+  public override Type ResolveName(string typeName,string typeNamespace,Type declaredType,System.Runtime.Serialization.DataContractResolver knownTypeResolver){var known=knownTypeResolver.ResolveName(typeName,typeNamespace,declaredType,null);if(known!=null)return known;var contracts=Contracts??(Contracts=Build());Type type;if(contracts.TryGetValue(typeNamespace+"|"+typeName,out type))return type;if(typeName.StartsWith("ArrayOf",StringComparison.Ordinal)){if(typeNamespace=="http://schemas.microsoft.com/2003/10/Serialization/Arrays"){switch(typeName){case "ArrayOfstring":return typeof(string[]);case "ArrayOfint":return typeof(int[]);case "ArrayOfguid":return typeof(Guid[]);case "ArrayOflong":return typeof(long[]);case "ArrayOfboolean":return typeof(bool[]);}}var element=ResolveName(typeName.Substring(7),typeNamespace,null,knownTypeResolver);if(element!=null)return element.MakeArrayType();}return null;}
+  public override bool TryResolveType(Type type,Type declaredType,System.Runtime.Serialization.DataContractResolver knownTypeResolver,out System.Xml.XmlDictionaryString typeName,out System.Xml.XmlDictionaryString typeNamespace){return knownTypeResolver.TryResolveType(type,declaredType,null,out typeName,out typeNamespace);}
+ }
+ static object Optional(object value,string property){var p=value.GetType().GetProperty(property);return p==null?null:p.GetValue(value,null);}
+ static void SetOptional(object value,string property,object setting){if(setting==null)return;var p=value.GetType().GetProperty(property);if(p==null)throw Unsupported("Installed SDK lacks "+property+".");p.SetValue(value,setting,null);}
+ static ColumnSet Columns(object value){if(value==null)return null;var m=Map(value);var columns=Convert.ToBoolean(Get(m,"allColumns",false))?new ColumnSet(true):new ColumnSet(Array(Get(m,"columns")).Select(v=>Convert.ToString(v)).ToArray());var expressions=Array(Get(m,"attributeExpressions")).ToArray();if(expressions.Length>0){var list=Optional(columns,"AttributeExpressions") as IList;if(list==null)throw Unsupported("Installed SDK lacks ColumnSet.AttributeExpressions.");foreach(var item in expressions)list.Add(Decode(item));}return columns;}
  static PagingInfo DecodePaging(PagingInfo page,object value){if(value==null)return null;page=page??new PagingInfo();var m=Map(value);page.Count=Convert.ToInt32(Get(m,"count",0));page.PageNumber=Convert.ToInt32(Get(m,"pageNumber",0));page.PagingCookie=Get(m,"pagingCookie") as string;page.ReturnTotalRecordCount=Convert.ToBoolean(Get(m,"returnTotalRecordCount",false));return page;}
- static FilterExpression DecodeFilter(object value){var m=Map(value);var f=new FilterExpression(Str(m,"operatorName","And")=="Or"?LogicalOperator.Or:LogicalOperator.And);foreach(var item in Array(Get(m,"conditions"))){var c=Map(item);var condition=new ConditionExpression(Str(c,"attributeName"),(ConditionOperator)Enum.Parse(typeof(ConditionOperator),Str(c,"operatorName")),Array(Get(c,"values")).Select(Decode).ToArray());condition.EntityName=Get(c,"entityName") as string;f.Conditions.Add(condition);}foreach(var child in Array(Get(m,"filters")))f.Filters.Add(DecodeFilter(child));return f;}
+ static FilterExpression DecodeFilter(object value){var m=Map(value);var f=new FilterExpression(Str(m,"operatorName","And")=="Or"?LogicalOperator.Or:LogicalOperator.And);foreach(var item in Array(Get(m,"conditions"))){var c=Map(item);var condition=new ConditionExpression(Str(c,"attributeName"),(ConditionOperator)Enum.Parse(typeof(ConditionOperator),Str(c,"operatorName")),Array(Get(c,"values")).Select(Decode).ToArray());condition.EntityName=Get(c,"entityName") as string;if(Convert.ToBoolean(Get(c,"compareColumns",false))){var compare=typeof(ConditionExpression).GetProperty("CompareColumns");if(compare==null)throw Unsupported("Installed SDK lacks CompareColumns.");compare.SetValue(condition,true,null);}f.Conditions.Add(condition);}foreach(var child in Array(Get(m,"filters")))f.Filters.Add(DecodeFilter(child));if(Get(m,"filterHint")!=null){var hint=typeof(FilterExpression).GetProperty("FilterHint");if(hint==null)throw Unsupported("Installed SDK lacks FilterHint.");hint.SetValue(f,Str(m,"filterHint"),null);}if(Convert.ToBoolean(Get(m,"isQuickFindFilter",false)))f.IsQuickFindFilter=true;if(Get(m,"anyAllFilterLinkEntity")!=null){var property=typeof(FilterExpression).GetProperty("AnyAllFilterLinkEntity");if(property==null)throw Unsupported("Installed SDK lacks AnyAllFilterLinkEntity.");property.SetValue(f,(LinkEntity)Decode(Get(m,"anyAllFilterLinkEntity")),null);}return f;}
  static object Encode(object value,int depth=0){
-  if(depth>64)throw new NotSupportedException("SDK value nesting exceeds 64.");if(value is long)return new Dictionary<string,object>{{"$type","Int64"},{"value",((long)value).ToString(CultureInfo.InvariantCulture)}};if(value is decimal)return new Dictionary<string,object>{{"$type","Decimal"},{"value",((decimal)value).ToString(CultureInfo.InvariantCulture)}};if(value is double){var number=(double)value;if(Double.IsNaN(number)||Double.IsInfinity(number))throw new NotSupportedException("SDK Double requires a finite numeric value.");return new Dictionary<string,object>{{"$type","Double"},{"value",number.ToString("R",CultureInfo.InvariantCulture)}};}if(value==null||value is string||value is bool||value is int)return value;
+  if(depth>64)throw Unsupported("SDK value nesting exceeds 64.");if(value is long)return new Dictionary<string,object>{{"$type","Int64"},{"value",((long)value).ToString(CultureInfo.InvariantCulture)}};if(value is decimal)return new Dictionary<string,object>{{"$type","Decimal"},{"value",((decimal)value).ToString(CultureInfo.InvariantCulture)}};if(value is double){var number=(double)value;if(Double.IsNaN(number)||Double.IsInfinity(number))throw Unsupported("SDK Double requires a finite numeric value.");return new Dictionary<string,object>{{"$type","Double"},{"value",number.ToString("R",CultureInfo.InvariantCulture)}};}if(value==null||value is string||value is bool||value is int)return value;
+  if(value is ConcurrencyBehavior){if(!Enum.IsDefined(typeof(ConcurrencyBehavior),value))throw Unsupported("Unsupported SDK ConcurrencyBehavior value.");return new Dictionary<string,object>{{"$type","ConcurrencyBehavior"},{"value",(int)(ConcurrencyBehavior)value}};}
   if(value is Guid)return new Dictionary<string,object>{{"$type","Guid"},{"value",value.ToString()}};
+  if(value is float)return Scalar("Single",((float)value).ToString("R",CultureInfo.InvariantCulture));if(value is short)return Scalar("Int16",((short)value).ToString(CultureInfo.InvariantCulture));if(value is ushort)return Scalar("UInt16",((ushort)value).ToString(CultureInfo.InvariantCulture));if(value is uint)return Scalar("UInt32",((uint)value).ToString(CultureInfo.InvariantCulture));if(value is ulong)return Scalar("UInt64",((ulong)value).ToString(CultureInfo.InvariantCulture));if(value is byte)return Scalar("Byte",((byte)value).ToString(CultureInfo.InvariantCulture));if(value is sbyte)return Scalar("SByte",((sbyte)value).ToString(CultureInfo.InvariantCulture));if(value is char)return Scalar("Char",value.ToString());if(value is TimeSpan)return Scalar("TimeSpan",((TimeSpan)value).ToString("c",CultureInfo.InvariantCulture));if(value is DateTimeOffset)return Scalar("DateTimeOffset",((DateTimeOffset)value).ToString("o",CultureInfo.InvariantCulture));
+  if(value is RelationshipQueryCollection)return new Dictionary<string,object>{{"$type","RelationshipQueryCollection"},{"values",((RelationshipQueryCollection)value).Select(p=>(object)new Dictionary<string,object>{{"relationship",Encode(p.Key,depth+1)},{"query",Encode(p.Value,depth+1)}}).ToArray()}};
+  if(value is OrganizationServiceFault){var fault=(OrganizationServiceFault)value;var wire=new Dictionary<string,object>{{"$type","OrganizationServiceFault"},{"errorCode",fault.ErrorCode},{"message",fault.Message},{"timestamp",fault.Timestamp.ToString("o",CultureInfo.InvariantCulture)},{"errorDetails",fault.ErrorDetails.ToDictionary(p=>p.Key,p=>Wire(p.Value,depth+1))}};var index=fault.GetType().GetProperty("FaultedRequestIndex");if(index!=null)wire["faultedRequestIndex"]=index.GetValue(fault,null);return wire;}
+  if(value.GetType().FullName=="Microsoft.Crm.Sdk.Messages.AccessRights")return new Dictionary<string,object>{{"$type","AccessRights"},{"value",Convert.ToInt32(value)}};
+  if(value.GetType().FullName=="Microsoft.Crm.Sdk.Messages.PrincipalAccess"){var type=value.GetType();return new Dictionary<string,object>{{"$type","PrincipalAccess"},{"principal",Encode(type.GetProperty("Principal").GetValue(value,null),depth+1)},{"accessMask",Convert.ToInt32(type.GetProperty("AccessMask").GetValue(value,null))}};}
+  if(value is System.Array&&value.GetType().GetElementType().FullName=="Microsoft.Crm.Sdk.Messages.PrincipalAccess")return new Dictionary<string,object>{{"$type","SdkArray"},{"elementType","PrincipalAccess"},{"values",((System.Array)value).Cast<object>().Select(v=>Encode(v,depth+1)).ToArray()}};
   if(value is DateTime)return new Dictionary<string,object>{{"$type","DateTime"},{"value",((DateTime)value).ToString("o",CultureInfo.InvariantCulture)}};
   if(value is Money)return new Dictionary<string,object>{{"$type","Money"},{"value",((Money)value).Value.ToString(CultureInfo.InvariantCulture)}};
   if(value is OptionSetValue)return new Dictionary<string,object>{{"$type","OptionSetValue"},{"value",((OptionSetValue)value).Value}};
@@ -75,49 +149,248 @@ public static class PaqviloPluginHost {
   if(value is EntityReferenceCollection)return new Dictionary<string,object>{{"$type","EntityReferenceCollection"},{"values",((EntityReferenceCollection)value).Select(v=>Wire(v,depth+1)).ToArray()}};
   if(value is Relationship){var r=(Relationship)value;return new Dictionary<string,object>{{"$type","Relationship"},{"schemaName",r.SchemaName},{"primaryEntityRole",r.PrimaryEntityRole.HasValue?(object)r.PrimaryEntityRole.Value.ToString():null}};}
   if(value is AliasedValue){var a=(AliasedValue)value;return new Dictionary<string,object>{{"$type","AliasedValue"},{"entityLogicalName",a.EntityLogicalName},{"attributeLogicalName",a.AttributeLogicalName},{"value",Encode(a.Value,depth+1)}};}
-  if(value is Entity){var e=(Entity)value;RejectConfigured(e,"RelatedEntities");var wire=new Dictionary<string,object>{{"$type","Entity"},{"logicalName",e.LogicalName},{"id",e.Id.ToString()},{"attributes",e.Attributes.ToDictionary(p=>p.Key,p=>Wire(p.Value,depth+1))},{"formattedValues",e.FormattedValues.ToDictionary(p=>p.Key,p=>(object)p.Value)}};if(e.KeyAttributes.Count>0)wire["keyAttributes"]=e.KeyAttributes.ToDictionary(p=>p.Key,p=>Wire(p.Value,depth+1));if(e.RowVersion!=null)wire["rowVersion"]=e.RowVersion;return wire;}
+  if(value is Entity){var e=(Entity)value;var wire=new Dictionary<string,object>{{"$type","Entity"},{"logicalName",e.LogicalName},{"id",e.Id.ToString()},{"attributes",e.Attributes.ToDictionary(p=>p.Key,p=>Wire(p.Value,depth+1))},{"formattedValues",e.FormattedValues.ToDictionary(p=>p.Key,p=>(object)p.Value)}};if(e.KeyAttributes.Count>0)wire["keyAttributes"]=e.KeyAttributes.ToDictionary(p=>p.Key,p=>Wire(p.Value,depth+1));if(e.RowVersion!=null)wire["rowVersion"]=e.RowVersion;if(e.RelatedEntities.Count>0)wire["relatedEntities"]=e.RelatedEntities.Select(p=>(object)new Dictionary<string,object>{{"relationship",Encode(p.Key,depth+1)},{"entities",Encode(p.Value,depth+1)}}).ToArray();return wire;}
   if(value is EntityCollection){var e=(EntityCollection)value;var wire=new Dictionary<string,object>{{"$type","EntityCollection"},{"entities",e.Entities.Select(v=>Encode(v,depth+1)).ToArray()},{"moreRecords",e.MoreRecords},{"pagingCookie",e.PagingCookie},{"totalRecordCount",e.TotalRecordCount}};if(e.EntityName!=null)wire["entityName"]=e.EntityName;if(e.MinActiveRowVersion!=null)wire["minActiveRowVersion"]=e.MinActiveRowVersion;if(e.TotalRecordCountLimitExceeded)wire["totalRecordCountLimitExceeded"]=true;return wire;}
   if(value is EntityImageCollection[])return new Dictionary<string,object>{{"$type","EntityImageCollectionArray"},{"values",((EntityImageCollection[])value).Select(v=>Wire(v,depth+1)).ToArray()}};
   if(value is Guid[])return new Dictionary<string,object>{{"$type","GuidArray"},{"values",((Guid[])value).Select(v=>v.ToString()).ToArray()}};
   if(value is EntityImageCollection)return new Dictionary<string,object>{{"$type","EntityImageCollection"},{"values",((EntityImageCollection)value).ToDictionary(p=>p.Key,p=>Wire(p.Value,depth+1))}};
-  if(value is IPluginExecutionContext){var proxy=RemotingServices.GetRealProxy(value) as InterfaceProxy;if(proxy==null||proxy.Data==null)throw new NotSupportedException("Unbound ParentContext implementation.");return EncodeContext(proxy.Data,depth+1);}
+  if(value is IPluginExecutionContext){var local=value as LocalContext;if(local==null)throw Unsupported("Unbound ParentContext implementation.");if(local.Lease!=null)local.Lease.Check();return EncodeContext(local.Data,depth+1);}
   if(value is ParameterCollection)return new Dictionary<string,object>{{"$type","ParameterCollection"},{"values",((ParameterCollection)value).ToDictionary(p=>p.Key,p=>Wire(p.Value,depth+1))}};
-  if(value is ColumnSet){var c=(ColumnSet)value;RejectConfigured(c,"AttributeExpressions");return new {allColumns=c.AllColumns,columns=c.Columns.ToArray()};}
+  if(value is ColumnSet){var c=(ColumnSet)value;var wire=new Dictionary<string,object>{{"$type","ColumnSet"},{"allColumns",c.AllColumns},{"columns",c.Columns.ToArray()}};var expressions=Optional(c,"AttributeExpressions") as IEnumerable;if(expressions!=null&&expressions.Cast<object>().Any())wire["attributeExpressions"]=expressions.Cast<object>().Select(v=>Encode(v,depth+1)).ToArray();return wire;}
   if(value is FetchExpression)return new Dictionary<string,object>{{"$type","FetchExpression"},{"query",((FetchExpression)value).Query}};
   if(value is QueryByAttribute){var q=(QueryByAttribute)value;return new Dictionary<string,object>{{"$type","QueryByAttribute"},{"entityName",q.EntityName},{"columnSet",Encode(q.ColumnSet)},{"attributes",q.Attributes.ToArray()},{"values",q.Values.Select(v=>Wire(v)).ToArray()},{"topCount",q.TopCount},{"orders",Orders(q.Orders)},{"pageInfo",Paging(q.PageInfo)}};}
-  if(value is QueryExpression){var q=(QueryExpression)value;RejectConfigured(q,"NoLock","QueryHints","ForceSeek","DataSource","SubQueryExpression");return new Dictionary<string,object>{{"$type","QueryExpression"},{"linkEntities",q.LinkEntities.Select(v=>Encode(v,depth+1)).ToArray()},{"entityName",q.EntityName},{"columnSet",Encode(q.ColumnSet)},{"criteria",Filter(q.Criteria)},{"orders",Orders(q.Orders)},{"topCount",q.TopCount},{"distinct",q.Distinct},{"pageInfo",Paging(q.PageInfo)}};}
-  if(value is LinkEntity){var link=(LinkEntity)value;RejectConfigured(link,"ForceSeek");return new Dictionary<string,object>{{"$type","LinkEntity"},{"linkFromEntityName",link.LinkFromEntityName},{"linkToEntityName",link.LinkToEntityName},{"linkFromAttributeName",link.LinkFromAttributeName},{"linkToAttributeName",link.LinkToAttributeName},{"joinOperator",link.JoinOperator.ToString()},{"entityAlias",link.EntityAlias},{"columns",Encode(link.Columns,depth+1)},{"linkCriteria",Filter(link.LinkCriteria)},{"orders",Orders(link.Orders)},{"linkEntities",link.LinkEntities.Select(v=>Encode(v,depth+1)).ToArray()}};}
-  if(value is OrganizationRequest){var r=(OrganizationRequest)value;RejectConfigured(r,"RequestId");return new Dictionary<string,object>{{"$type","OrganizationRequest"},{"requestName",r.RequestName},{"parameters",Encode(r.Parameters)}};}
+  if(value is QueryExpression){var q=(QueryExpression)value;RejectConfigured(q,"SubQueryExpression");return With(new Dictionary<string,object>{{"$type","QueryExpression"},{"linkEntities",q.LinkEntities.Select(v=>Encode(v,depth+1)).ToArray()},{"entityName",q.EntityName},{"columnSet",Encode(q.ColumnSet)},{"criteria",Filter(q.Criteria)},{"orders",Orders(q.Orders)},{"topCount",q.TopCount},{"distinct",q.Distinct},{"noLock",q.NoLock},{"queryHints",Optional(q,"QueryHints")},{"dataSource",Optional(q,"DataSource")},{"pageInfo",Paging(q.PageInfo)}},"forceSeek",Optional(q,"ForceSeek"));}
+  if(value is LinkEntity){var link=(LinkEntity)value;return With(new Dictionary<string,object>{{"$type","LinkEntity"},{"linkFromEntityName",link.LinkFromEntityName},{"linkToEntityName",link.LinkToEntityName},{"linkFromAttributeName",link.LinkFromAttributeName},{"linkToAttributeName",link.LinkToAttributeName},{"joinOperator",link.JoinOperator.ToString()},{"entityAlias",link.EntityAlias},{"columns",Encode(link.Columns,depth+1)},{"linkCriteria",Filter(link.LinkCriteria)},{"orders",Orders(link.Orders)},{"linkEntities",link.LinkEntities.Select(v=>Encode(v,depth+1)).ToArray()}},"forceSeek",Optional(link,"ForceSeek"));}
+  if(value is OrganizationRequest){var r=(OrganizationRequest)value;var typed=value.GetType()==RequestType(r.RequestName);return new Dictionary<string,object>{{"$type","OrganizationRequest"},{"requestName",r.RequestName},{"requestId",r.RequestId.HasValue?(object)r.RequestId.Value.ToString():null},{"typed",typed},{"parameters",Encode(r.Parameters)}};}
+  if(value is BooleanManagedProperty){var managed=(BooleanManagedProperty)value;return new Dictionary<string,object>{{"$type","BooleanManagedProperty"},{"value",managed.Value},{"canBeChanged",managed.CanBeChanged},{"managedPropertyLogicalName",managed.ManagedPropertyLogicalName}};}
+  if(value is OrganizationResponse){var response=(OrganizationResponse)value;var contract=value.GetType().Name.EndsWith("Response",StringComparison.Ordinal)?value.GetType().Name.Substring(0,value.GetType().Name.Length-8):null;var custom=value.GetType()==typeof(OrganizationResponse)||contract==null||value.GetType()!=ResponseType(contract);if(custom)contract=null;return new Dictionary<string,object>{{"$type","OrganizationResponse"},{"responseName",response.ResponseName},{"contract",contract},{"custom",custom},{"results",response.Results.ToDictionary(p=>p.Key,p=>Wire(p.Value,depth+1))}};}
+  if(value is Dictionary<string,string>)return ((Dictionary<string,string>)value).ToDictionary(p=>p.Key,p=>(object)p.Value);
+  if(value is IDictionary<string,object>){if(value.GetType()!=typeof(Dictionary<string,object>))throw Unsupported("Unsupported SDK dictionary implementation: "+value.GetType().FullName);var dictionary=(IDictionary<string,object>)value;var entries=dictionary.ToDictionary(p=>p.Key,p=>Wire(p.Value,depth+1));return dictionary.ContainsKey("$type")?new Dictionary<string,object>{{"$type","Dictionary"},{"values",entries}}:entries;}
   if(value is byte[])return new Dictionary<string,object>{{"$type","Bytes"},{"value",Convert.ToBase64String((byte[])value)}};
-  if(value is System.Array&&value.GetType()!=typeof(object[])){var array=(System.Array)value;var element=array.GetType().GetElementType();var primitive=new[]{typeof(string),typeof(int),typeof(bool),typeof(long),typeof(decimal),typeof(double),typeof(DateTime)}.Contains(element);var sdk=new[]{typeof(Entity),typeof(EntityReference),typeof(OptionSetValue),typeof(Money),typeof(EntityCollection),typeof(QueryExpression),typeof(string[])}.Contains(element);if(array.Rank!=1||!primitive&&!sdk)throw new NotSupportedException("Unsupported SDK array type: "+array.GetType().FullName);return new Dictionary<string,object>{{"$type",primitive?"PrimitiveArray":"SdkArray"},{"elementType",element.Name},{"values",array.Cast<object>().Select(v=>Wire(v,depth+1)).ToArray()}};}
-  if(value is IEnumerable)return ((IEnumerable)value).Cast<object>().Select(v=>Wire(v,depth+1)).ToArray();
-  throw new NotSupportedException("Unsupported SDK value type: "+value.GetType().FullName);
+  if(value is System.Array&&value.GetType()!=typeof(object[])){var array=(System.Array)value;var element=array.GetType().GetElementType();var primitive=new[]{typeof(string),typeof(int),typeof(bool),typeof(long),typeof(decimal),typeof(double),typeof(DateTime)}.Contains(element);var sdk=new[]{typeof(Entity),typeof(EntityReference),typeof(OptionSetValue),typeof(Money),typeof(EntityCollection),typeof(QueryExpression),typeof(string[])}.Contains(element);if(array.Rank!=1)throw Unsupported("Unsupported SDK array type: "+array.GetType().FullName);if(!primitive&&!sdk){if(!WireTypeName(element))throw Unsupported("Unsupported SDK array type: "+array.GetType().FullName);return new Dictionary<string,object>{{"$type","Array"},{"elementType",element.FullName},{"values",array.Cast<object>().Select(v=>Wire(v,depth+1)).ToArray()}};}return new Dictionary<string,object>{{"$type",primitive?"PrimitiveArray":"SdkArray"},{"elementType",element.Name},{"values",array.Cast<object>().Select(v=>Wire(v,depth+1)).ToArray()}};}
+  if(value is object[])return ((object[])value).Select(v=>Wire(v,depth+1)).ToArray();
+  var valueType=value.GetType();
+  if(valueType.IsEnum&&WireTypeName(valueType))return new Dictionary<string,object>{{"$type","Enum"},{"type",valueType.FullName},{"value",Convert.ToInt64(value,CultureInfo.InvariantCulture)}};
+  if(valueType.IsGenericType&&valueType.GetGenericTypeDefinition()==typeof(List<>)&&WireTypeName(valueType.GetGenericArguments()[0]))return new Dictionary<string,object>{{"$type","List"},{"elementType",valueType.GetGenericArguments()[0].FullName},{"values",((IList)value).Cast<object>().Select(v=>Wire(v,depth+1)).ToArray()}};
+  if(IsSdkAssembly(valueType.Assembly)&&value is IList)return new Dictionary<string,object>{{"$type","Collection"},{"type",valueType.FullName},{"values",((IList)value).Cast<object>().Select(v=>Wire(v,depth+1)).ToArray()}};
+  if(IsSdkAssembly(valueType.Assembly)&&valueType.GetCustomAttributes(typeof(System.Runtime.Serialization.DataContractAttribute),true).Any())return new Dictionary<string,object>{{"$type","Object"},{"type",valueType.FullName},{"members",valueType.GetProperties(BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic).Where(p=>p.GetIndexParameters().Length==0&&p.GetCustomAttributes(typeof(System.Runtime.Serialization.DataMemberAttribute),true).Any()&&p.GetGetMethod(true)!=null).ToDictionary(p=>p.Name,p=>Wire(p.GetValue(value,null),depth+1))}};
+  throw Unsupported("Unsupported SDK value type: "+valueType.FullName);
  }
+ // An optional member is on the wire only when it is set.
+ static Dictionary<string,object> With(Dictionary<string,object> wire,string key,object value){if(value!=null)wire[key]=value;return wire;}
+ static Dictionary<string,object> Scalar(string type,string text){return new Dictionary<string,object>{{"$type",type},{"value",text}};}
  static object Wire(object value,int depth=0){return value is Guid?new Dictionary<string,object>{{"$type","Guid"},{"value",value.ToString()}}:Encode(value,depth);}
- static void RejectConfigured(object value,params string[] names){foreach(var name in names){var property=value.GetType().GetProperty(name);if(property==null)continue;var item=property.GetValue(value,null);if(item==null||item is bool&&!(bool)item||item is string&&((string)item).Length==0||item is IEnumerable&&!((IEnumerable)item).Cast<object>().Any())continue;throw new NotSupportedException("Unsupported configured SDK property: "+value.GetType().Name+"."+name);}}
+ static void RejectConfigured(object value,params string[] names){foreach(var name in names){var property=value.GetType().GetProperty(name);if(property==null)continue;var item=property.GetValue(value,null);if(item==null||item is bool&&!(bool)item||item is string&&((string)item).Length==0||item is IEnumerable&&!((IEnumerable)item).Cast<object>().Any())continue;throw Unsupported("Unsupported configured SDK property: "+value.GetType().Name+"."+name);}}
  static object Paging(PagingInfo page){if(page==null)return null;return new {count=page.Count,pageNumber=page.PageNumber,pagingCookie=page.PagingCookie,returnTotalRecordCount=page.ReturnTotalRecordCount};}
- static object Orders(IEnumerable<OrderExpression> orders){return orders.Select(o=>{RejectConfigured(o,"EntityName","Alias");return new {attributeName=o.AttributeName,descending=o.OrderType==OrderType.Descending};}).ToArray();}
- static object Filter(FilterExpression filter){RejectConfigured(filter,"AnyAllFilterLinkEntity","FilterHint","IsQuickFindFilter");return new {operatorName=filter.FilterOperator.ToString(),conditions=filter.Conditions.Select(c=>{RejectConfigured(c,"CompareColumns");return new {attributeName=c.AttributeName,entityName=c.EntityName,operatorName=c.Operator.ToString(),values=c.Values.Select(v=>Wire(v)).ToArray()};}).ToArray(),filters=filter.Filters.Select(Filter).ToArray()};}
+ static OrderExpression DecodeOrder(Dictionary<string,object> value){var order=new OrderExpression(Str(value,"attributeName"),Convert.ToBoolean(Get(value,"descending",false))?OrderType.Descending:OrderType.Ascending);if(Get(value,"entityName")!=null){var property=typeof(OrderExpression).GetProperty("EntityName");if(property==null)throw Unsupported("Installed SDK lacks order EntityName.");property.SetValue(order,Str(value,"entityName"),null);}SetOptional(order,"Alias",Get(value,"alias"));return order;}
+ static object Orders(IEnumerable<OrderExpression> orders){return orders.Select(o=>{var result=new Dictionary<string,object>{{"attributeName",o.AttributeName},{"descending",o.OrderType==OrderType.Descending}};var alias=Optional(o,"Alias");if(alias!=null)result["alias"]=alias;var property=typeof(OrderExpression).GetProperty("EntityName");var entity=property==null?null:property.GetValue(o,null);if(entity!=null)result["entityName"]=entity;return result;}).ToArray();}
+ static object Filter(FilterExpression filter){var result=new Dictionary<string,object>{{"operatorName",filter.FilterOperator.ToString()},{"conditions",filter.Conditions.Select(c=>{var comparison=new Dictionary<string,object>{{"attributeName",c.AttributeName},{"entityName",c.EntityName},{"operatorName",c.Operator.ToString()},{"values",c.Values.Select(v=>Wire(v)).ToArray()}};var compare=typeof(ConditionExpression).GetProperty("CompareColumns");if(compare!=null&&Convert.ToBoolean(compare.GetValue(c,null)))comparison["compareColumns"]=true;return comparison;}).ToArray()},{"filters",filter.Filters.Select(Filter).ToArray()}};var hint=typeof(FilterExpression).GetProperty("FilterHint");var hintValue=hint==null?null:hint.GetValue(filter,null);if(hintValue!=null)result["filterHint"]=hintValue;if(filter.IsQuickFindFilter)result["isQuickFindFilter"]=true;var property=typeof(FilterExpression).GetProperty("AnyAllFilterLinkEntity");var link=property==null?null:property.GetValue(filter,null);if(link!=null)result["anyAllFilterLinkEntity"]=Encode(link);return result;}
  static object EncodeContext(Dictionary<string,object> context,int depth=0){return new Dictionary<string,object>{{"$type","ExecutionContext"},{"values",context.ToDictionary(p=>p.Key,p=>Wire(p.Value,depth+1))}};}
- static object Rpc(string method,object[] args,Guid? user){Send(new {kind="rpc",method=method,arguments=args.Select(a=>Wire(a)).ToArray(),userId=user.HasValue?(object)user.Value.ToString():null,parentContext=EncodeContext(CurrentContext)});var answer=Map(Json.DeserializeObject(Console.ReadLine()??"{}"));if(Str(answer,"kind")!="rpc-answer")throw new InvalidOperationException("Invalid SDK RPC answer.");var error=Map(Get(answer,"error"));if(error.Count>0){var fault=Map(Get(error,"organizationServiceFault"));if(fault.Count>0){var detail=new OrganizationServiceFault {ErrorCode=Convert.ToInt32(Get(fault,"errorCode")),Message=Str(fault,"message"),Timestamp=DateTime.Parse(Str(fault,"timestamp"),CultureInfo.InvariantCulture,DateTimeStyles.RoundtripKind)};foreach(var entry in Map(Get(fault,"errorDetails")))detail.ErrorDetails[entry.Key]=Decode(entry.Value);throw new FaultException<OrganizationServiceFault>(detail,new FaultReason(detail.Message));}throw new NotSupportedException("Local SDK callback cannot supply a native OrganizationServiceFault for "+Str(error,"code")+": "+Str(error,"message"));}return Decode(Get(answer,"value"));}
- sealed class InterfaceProxy:RealProxy {
-  readonly Func<IMethodCallMessage,object> Handler;
-  public Dictionary<string,object> Data;
-  public InterfaceProxy(Type type,Func<IMethodCallMessage,object> handler):base(type){Handler=handler;}
-  public override IMessage Invoke(IMessage message){var call=(IMethodCallMessage)message;try{return new ReturnMessage(Handler(call),null,0,call.LogicalCallContext,call);}catch(Exception e){return new ReturnMessage(e,call);}}
+ static object Rpc(InvocationLease lease,string method,object[] args,Guid? user){lease.Check();var arguments=args.Select(a=>Wire(a)).ToArray();var call=new PendingCall(lease);var id=Register(lease,call);lease.Check();Send(new {kind="rpc",invocationId=lease.Id,call=id,method=method,arguments=arguments,userId=user.HasValue?(object)user.Value.ToString():null});call.Done.Wait();lease.Check();var answer=call.Answer??new Dictionary<string,object>();if(Str(answer,"kind")!="rpc-answer")throw new InvalidOperationException("Invalid SDK RPC answer.");var error=Map(Get(answer,"error"));if(error.Count>0){if(Str(error,"clrExceptionType")=="System.ArgumentException"&&Str(error,"code")=="LocalPluginTagDuplicate"){var argument=new ArgumentException(Str(error,"message"));lease.NoteError(argument,unchecked((int)0x80040224));throw argument;}var fault=Map(Get(error,"organizationServiceFault"));if(fault.Count>0){var detail=Fault(fault);throw new FaultException<OrganizationServiceFault>(detail,new FaultReason(detail.Message));}throw Unsupported("Local SDK callback cannot supply a native OrganizationServiceFault for "+Str(error,"code")+": "+Str(error,"message"));}return Decode(Get(answer,"value"));}
+ // Native hands plug-ins a concrete context object implementing every context interface of the
+ // installed SDK, so interface checks behave as they do online; the concrete type is local (native
+ // CDSRunTime.Sandbox.Contract.GrpcSandboxPluginExecutionContext), so GetType names differ.
+ static object ContextProxy(Dictionary<string,object> context,InvocationLease lease=null){return new LocalContext(context,lease);}
+ sealed class LocalContext:
+#if PAQVILO_CONTEXT7
+  IPluginExecutionContext7
+#else
+  IPluginExecutionContext4
+#endif
+ {
+  internal readonly Dictionary<string,object> Data;internal readonly InvocationLease Lease;
+  internal LocalContext(Dictionary<string,object> data,InvocationLease lease){Data=data;Lease=lease;}
+  T V<T>(string name){if(Lease!=null)Lease.Check();object value;if(!Data.TryGetValue(name,out value))throw Unsupported("Unconfigured execution context property: "+name);return value==null?default(T):(T)value;}
+  public int Mode{get{return V<int>("Mode");}}
+  public int IsolationMode{get{return V<int>("IsolationMode");}}
+  public int Depth{get{return V<int>("Depth");}}
+  public string MessageName{get{return V<string>("MessageName");}}
+  public string PrimaryEntityName{get{return V<string>("PrimaryEntityName");}}
+  public Guid? RequestId{get{return V<Guid?>("RequestId");}}
+  public string SecondaryEntityName{get{return V<string>("SecondaryEntityName");}}
+  public ParameterCollection InputParameters{get{return V<ParameterCollection>("InputParameters");}}
+  public ParameterCollection OutputParameters{get{return V<ParameterCollection>("OutputParameters");}}
+  public ParameterCollection SharedVariables{get{return V<ParameterCollection>("SharedVariables");}}
+  public Guid UserId{get{return V<Guid>("UserId");}}
+  public Guid InitiatingUserId{get{return V<Guid>("InitiatingUserId");}}
+  public Guid BusinessUnitId{get{return V<Guid>("BusinessUnitId");}}
+  public Guid OrganizationId{get{return V<Guid>("OrganizationId");}}
+  public string OrganizationName{get{return V<string>("OrganizationName");}}
+  public Guid PrimaryEntityId{get{return V<Guid>("PrimaryEntityId");}}
+  public EntityImageCollection PreEntityImages{get{return V<EntityImageCollection>("PreEntityImages");}}
+  public EntityImageCollection PostEntityImages{get{return V<EntityImageCollection>("PostEntityImages");}}
+  public EntityReference OwningExtension{get{return V<EntityReference>("OwningExtension");}}
+  public Guid CorrelationId{get{return V<Guid>("CorrelationId");}}
+  public bool IsExecutingOffline{get{return V<bool>("IsExecutingOffline");}}
+  public bool IsOfflinePlayback{get{return V<bool>("IsOfflinePlayback");}}
+  public bool IsInTransaction{get{return V<bool>("IsInTransaction");}}
+  public Guid OperationId{get{return V<Guid>("OperationId");}}
+  public DateTime OperationCreatedOn{get{return V<DateTime>("OperationCreatedOn");}}
+  public int Stage{get{return V<int>("Stage");}}
+  public IPluginExecutionContext ParentContext{get{return V<IPluginExecutionContext>("ParentContext");}}
+  public Guid UserAzureActiveDirectoryObjectId{get{return V<Guid>("UserAzureActiveDirectoryObjectId");}}
+  public Guid InitiatingUserAzureActiveDirectoryObjectId{get{return V<Guid>("InitiatingUserAzureActiveDirectoryObjectId");}}
+  public Guid InitiatingUserApplicationId{get{return V<Guid>("InitiatingUserApplicationId");}}
+  public Guid PortalsContactId{get{return V<Guid>("PortalsContactId");}}
+  public bool IsPortalsClientCall{get{return V<bool>("IsPortalsClientCall");}}
+  public Guid AuthenticatedUserId{get{return V<Guid>("AuthenticatedUserId");}}
+  public EntityImageCollection[] PreEntityImagesCollection{get{return V<EntityImageCollection[]>("PreEntityImagesCollection");}}
+  public EntityImageCollection[] PostEntityImagesCollection{get{return V<EntityImageCollection[]>("PostEntityImagesCollection");}}
+#if PAQVILO_CONTEXT7
+  public string InitiatingUserAgent{get{return V<string>("InitiatingUserAgent");}}
+  public string EnvironmentId{get{return V<string>("EnvironmentId");}}
+  public Guid TenantId{get{return V<Guid>("TenantId");}}
+  public bool IsApplicationUser{get{return V<bool>("IsApplicationUser");}}
+#endif
  }
- static object Proxy(Type type,Func<IMethodCallMessage,object> handler){return new InterfaceProxy(type,handler).GetTransparentProxy();}
- static Type ContextContract(Dictionary<string,object> context){return context.ContainsKey("InterfaceVersion")&&Convert.ToInt32(context["InterfaceVersion"])==7?typeof(IPluginExecutionContext7):typeof(IPluginExecutionContext4);}
- static object ContextProxy(Dictionary<string,object> context){var proxy=new InterfaceProxy(ContextContract(context),call=>{if(call.MethodName.StartsWith("get_")){object value;if(!context.TryGetValue(call.MethodName.Substring(4),out value))throw new NotSupportedException("Unconfigured execution context property: "+call.MethodName.Substring(4));return value;}if(call.MethodName.StartsWith("set_")){context[call.MethodName.Substring(4)]=call.Args[0];return null;}throw new NotSupportedException("Unsupported context method: "+call.MethodName);});proxy.Data=context;return proxy.GetTransparentProxy();}
  sealed class Services:IServiceProvider {
-  readonly Dictionary<string,object> Context;
-  public Services(Dictionary<string,object> context){Context=context;}
-  public object GetService(Type type){
-   if(type.IsInterface&&typeof(IExecutionContext).IsAssignableFrom(type)&&type.IsAssignableFrom(ContextContract(Context)))return ContextProxy(Context);
-   if(type==typeof(ITracingService))return Proxy(type,call=>{if(call.MethodName!="Trace")throw new NotSupportedException("Unsupported tracing method.");var args=(object[])call.Args[1];Send(new {kind="trace",message=String.Format(CultureInfo.InvariantCulture,(string)call.Args[0],args)});return null;});
-   if(type==typeof(IOrganizationServiceFactory))return Proxy(type,call=>{if(call.MethodName!="CreateOrganizationService")throw new NotSupportedException("Unsupported factory method.");Guid? user=(Guid?)call.Args[0];return Proxy(typeof(IOrganizationService),c=>Rpc(c.MethodName,c.Args,user));});
-   throw new NotSupportedException("Unconfigured service: "+type.FullName);
+  readonly Dictionary<string,object> Context;readonly InvocationLease Lease;
+  public Services(Dictionary<string,object> context,InvocationLease lease){Context=context;Lease=lease;}
+  public object GetService(Type type){Lease.Check();
+   if(type.IsInterface&&typeof(IExecutionContext).IsAssignableFrom(type)&&type.IsAssignableFrom(typeof(LocalContext)))return ContextProxy(Context,Lease);
+   if(type==typeof(ITracingService))return new LocalTracing(Lease);
+   if(type==typeof(IOrganizationServiceFactory)||type==typeof(IServiceEndpointNotificationService))return new LocalServiceFactory(Lease);
+   // ILogger, IFeatureControlService and IManagedIdentityService are concrete classes compiled only when the loaded SDK
+   // declares them (older SDKs lack them). Every other type, including IEnvironmentVariableService and IOrganizationService,
+   // is null (recorded native sandbox: GetService per type).
+#if PAQVILO_LOGGER
+   if(type==typeof(Microsoft.Xrm.Sdk.PluginTelemetry.ILogger))return new TelemetryLogger(Lease);
+#endif
+#if PAQVILO_FEATURE
+   if(type==typeof(IFeatureControlService))return new FeatureControl(Lease);
+#endif
+#if PAQVILO_IDENTITY
+   if(type==typeof(IManagedIdentityService))return new ManagedIdentity(Lease);
+#endif
+   return null;
   }
+ }
+ // The service objects the online sandbox hands out, with the native interface sets (sandbox 'services' block, both captures).
+ // Calls a service makes to the organization are RPCs named after the interface method.
+#if PAQVILO_FEATURE
+ // Native PluginFeatureControlService: IFeatureControlService and IFeatureControlService2.
+ sealed class FeatureControl:IFeatureControlService
+#if PAQVILO_FEATURE2
+  ,IFeatureControlService2
+#endif
+ {
+  readonly InvocationLease Lease;public FeatureControl(InvocationLease lease){Lease=lease;}
+  public object GetFeatureControl(string namespaceValue,string featureControlName,out Type featureControlType){featureControlType=null;return Rpc(Lease,"IFeatureControlService.GetFeatureControl",new object[]{namespaceValue,featureControlName},null);}
+#if PAQVILO_FEATURE2
+  public IDictionary<string,FeatureControlSetting> GetFeatureControlSettingsWithUserContext(string namespaceValue,IList<string> featureControlNames,IDictionary<string,string> userContext){return Rpc(Lease,"IFeatureControlService2.GetFeatureControlSettingsWithUserContext",new object[]{namespaceValue,featureControlNames==null?null:featureControlNames.ToArray(),userContext==null?null:userContext.ToDictionary(p=>p.Key,p=>(object)p.Value)},null) as IDictionary<string,FeatureControlSetting>;}
+#endif
+ }
+#endif
+#if PAQVILO_IDENTITY
+ // Native ManagedIdentityServiceProvider: IManagedIdentityService and the platform's internal IInternalManagedIdentityService.
+ sealed class ManagedIdentity:IManagedIdentityService,Microsoft.Xrm.Sdk.IInternalManagedIdentityService {
+  readonly InvocationLease Lease;public ManagedIdentity(InvocationLease lease){Lease=lease;}
+  public string AcquireToken(IEnumerable<string> scopes){return (string)Rpc(Lease,"IManagedIdentityService.AcquireToken",new object[]{scopes==null?null:scopes.ToArray()},null);}
+  public string AcquireToken(Guid managedIdentityId,IEnumerable<string> scopes){return (string)Rpc(Lease,"IManagedIdentityService.AcquireToken",new object[]{managedIdentityId,scopes==null?null:scopes.ToArray()},null);}
+ }
+#endif
+#if PAQVILO_LOGGER
+ // Native SandboxPluginEmptyLogger: ILogger. Each entry goes to the local telemetry log, never to the plug-in trace log.
+ sealed class TelemetryLogger:Microsoft.Xrm.Sdk.PluginTelemetry.ILogger {
+  readonly InvocationLease Lease;public TelemetryLogger(InvocationLease lease){Lease=lease;}
+  sealed class Scope:IDisposable {public void Dispose(){}}
+  static string Template(string format,object[] args){if(format==null)return null;var index=0;return System.Text.RegularExpressions.Regex.Replace(format,"\\{[^{}]+\\}",hole=>args!=null&&index<args.Length?Convert.ToString(args[index++],CultureInfo.InvariantCulture):hole.Value);}
+  void Send(string level,string message){Lease.Check();PaqviloPluginHost.Send(new {kind="telemetry",invocationId=Lease.Id,level=level,message=message});}
+  void Write(string level,Exception exception,string text){Send(level,exception==null?text:text+" "+exception.GetType().FullName+": "+exception.Message);}
+  void Write(string level,Exception exception,string format,object[] args){Write(level,exception,Template(format,args));}
+  public IDisposable BeginScope<TState>(TState state){Lease.Check();return new Scope();}
+  public IDisposable BeginScope(string messageFormat,params object[] args){Lease.Check();return new Scope();}
+  public bool IsEnabled(Microsoft.Xrm.Sdk.PluginTelemetry.LogLevel logLevel){Lease.Check();return true;}
+  public void Log<TState>(Microsoft.Xrm.Sdk.PluginTelemetry.LogLevel logLevel,Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,TState state,Exception exception,Func<TState,Exception,string> formatter){Write(logLevel.ToString(),exception,formatter==null?null:formatter(state,exception));}
+  public void Log(Microsoft.Xrm.Sdk.PluginTelemetry.LogLevel logLevel,Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,Exception exception,string message,params object[] args){Write(logLevel.ToString(),exception,message,args);}
+  public void Log(Microsoft.Xrm.Sdk.PluginTelemetry.LogLevel logLevel,Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,string message,params object[] args){Write(logLevel.ToString(),null,message,args);}
+  public void Log(Microsoft.Xrm.Sdk.PluginTelemetry.LogLevel logLevel,Exception exception,string message,params object[] args){Write(logLevel.ToString(),exception,message,args);}
+  public void Log(Microsoft.Xrm.Sdk.PluginTelemetry.LogLevel logLevel,string message,params object[] args){Write(logLevel.ToString(),null,message,args);}
+  public void LogTrace(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,Exception exception,string message,params object[] args){Write("Trace",exception,message,args);}
+  public void LogTrace(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,string message,params object[] args){Write("Trace",null,message,args);}
+  public void LogTrace(Exception exception,string message,params object[] args){Write("Trace",exception,message,args);}
+  public void LogTrace(string message,params object[] args){Write("Trace",null,message,args);}
+  public void LogDebug(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,Exception exception,string message,params object[] args){Write("Debug",exception,message,args);}
+  public void LogDebug(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,string message,params object[] args){Write("Debug",null,message,args);}
+  public void LogDebug(Exception exception,string message,params object[] args){Write("Debug",exception,message,args);}
+  public void LogDebug(string message,params object[] args){Write("Debug",null,message,args);}
+  public void LogInformation(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,Exception exception,string message,params object[] args){Write("Information",exception,message,args);}
+  public void LogInformation(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,string message,params object[] args){Write("Information",null,message,args);}
+  public void LogInformation(Exception exception,string message,params object[] args){Write("Information",exception,message,args);}
+  public void LogInformation(string message,params object[] args){Write("Information",null,message,args);}
+  public void LogWarning(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,Exception exception,string message,params object[] args){Write("Warning",exception,message,args);}
+  public void LogWarning(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,string message,params object[] args){Write("Warning",null,message,args);}
+  public void LogWarning(Exception exception,string message,params object[] args){Write("Warning",exception,message,args);}
+  public void LogWarning(string message,params object[] args){Write("Warning",null,message,args);}
+  public void LogError(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,Exception exception,string message,params object[] args){Write("Error",exception,message,args);}
+  public void LogError(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,string message,params object[] args){Write("Error",null,message,args);}
+  public void LogError(Exception exception,string message,params object[] args){Write("Error",exception,message,args);}
+  public void LogError(string message,params object[] args){Write("Error",null,message,args);}
+  public void LogCritical(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,Exception exception,string message,params object[] args){Write("Critical",exception,message,args);}
+  public void LogCritical(Microsoft.Xrm.Sdk.PluginTelemetry.EventId eventId,string message,params object[] args){Write("Critical",null,message,args);}
+  public void LogCritical(Exception exception,string message,params object[] args){Write("Critical",exception,message,args);}
+  public void LogCritical(string message,params object[] args){Write("Critical",null,message,args);}
+  public void LogMetric(string metricName,long value){Send("Metric",metricName+"="+Convert.ToString(value,CultureInfo.InvariantCulture));}
+  public void LogMetric(string metricName,IDictionary<string,string> metricDimensions,long value){Send("Metric",metricName+"="+Convert.ToString(value,CultureInfo.InvariantCulture));}
+  public void AddCustomProperty(string propertyName,string propertyValue){Send("Property",propertyName+"="+propertyValue);}
+  public void Execute(string activityName,Action action,IEnumerable<KeyValuePair<string,string>> additionalCustomProperties){Lease.Check();action();}
+  public System.Threading.Tasks.Task ExecuteAsync(string activityName,Func<System.Threading.Tasks.Task> action,IEnumerable<KeyValuePair<string,string>> additionalCustomProperties){Lease.Check();return action();}
+ }
+#endif
+ // Concrete service objects with the public SDK interfaces the online sandbox objects implement (native corpus
+ // 'services': ITracingService; the factory adds IClusterServiceFactory, IProxyTypesAssemblyProvider,
+ // IServiceEndpointNotificationService and IDisposable; the service adds IClusterService).
+ sealed class LocalTracing:ITracingService {
+  readonly InvocationLease Lease;public LocalTracing(InvocationLease lease){Lease=lease;}
+  public void Trace(string format,params object[] args){Lease.Check();Send(new {kind="trace",invocationId=Lease.Id,message=format!=null&&(args==null||args.Length==0)?format:String.Format(CultureInfo.InvariantCulture,format,args)});}
+ }
+ sealed class LocalServiceFactory:IOrganizationServiceFactory,IProxyTypesAssemblyProvider,IServiceEndpointNotificationService,IDisposable
+#if PAQVILO_CONTEXT7
+  ,IClusterServiceFactory
+#endif
+ {
+  readonly InvocationLease Lease;public LocalServiceFactory(InvocationLease lease){Lease=lease;}
+  public Assembly ProxyTypesAssembly{get;set;}
+  public IOrganizationService CreateOrganizationService(Guid? userId){Lease.Check();return new LocalOrganizationService(Lease,userId);}
+#if PAQVILO_CONTEXT7
+  public IClusterService CreateClusterService(Guid? userId){Lease.Check();return new LocalOrganizationService(Lease,userId);}
+#endif
+  // Posts the execution context to the registered service endpoint (Azure-aware plug-in) and returns its answer.
+  public string Execute(EntityReference serviceEndpoint,IExecutionContext context){Lease.Check();if(serviceEndpoint==null||context==null)throw new ArgumentNullException(serviceEndpoint==null?"serviceEndpoint":"context");return (string)Rpc(Lease,"IServiceEndpointNotificationService.Execute",new object[]{serviceEndpoint,RemoteContextJson(context)},null);}
+  // The RemoteExecutionContext a service endpoint receives, serialized as the platform posts it (DataContractJsonSerializer).
+  static string RemoteContextJson(IExecutionContext context){var serializer=new System.Runtime.Serialization.Json.DataContractJsonSerializer(typeof(RemoteExecutionContext),new[]{typeof(Entity),typeof(EntityReference),typeof(EntityCollection),typeof(EntityReferenceCollection),typeof(OptionSetValue),typeof(OptionSetValueCollection),typeof(Money),typeof(AliasedValue),typeof(Relationship),typeof(ColumnSet),typeof(QueryExpression),typeof(QueryByAttribute),typeof(FetchExpression),typeof(BooleanManagedProperty),typeof(Guid[]),typeof(string[]),typeof(int[]),typeof(EntityImageCollection)});using(var stream=new MemoryStream()){serializer.WriteObject(stream,Remote(context,0));return System.Text.Encoding.UTF8.GetString(stream.ToArray());}}
+  static T Try<T>(Func<T> read){try{return read();}catch(NotSupportedException){return default(T);}}
+  static RemoteExecutionContext Remote(IExecutionContext c,int depth){
+   var r=new RemoteExecutionContext{Mode=c.Mode,IsolationMode=c.IsolationMode,Depth=c.Depth,MessageName=c.MessageName,PrimaryEntityName=c.PrimaryEntityName,RequestId=Try(()=>c.RequestId),SecondaryEntityName=Try(()=>c.SecondaryEntityName),UserId=c.UserId,InitiatingUserId=c.InitiatingUserId,BusinessUnitId=c.BusinessUnitId,OrganizationId=c.OrganizationId,OrganizationName=Try(()=>c.OrganizationName),PrimaryEntityId=c.PrimaryEntityId,OwningExtension=Try(()=>c.OwningExtension),CorrelationId=c.CorrelationId,IsExecutingOffline=Try(()=>c.IsExecutingOffline),IsOfflinePlayback=Try(()=>c.IsOfflinePlayback),IsInTransaction=c.IsInTransaction,OperationId=c.OperationId,OperationCreatedOn=c.OperationCreatedOn};
+   foreach(var p in c.InputParameters)r.InputParameters[p.Key]=p.Value;foreach(var p in c.OutputParameters)r.OutputParameters[p.Key]=p.Value;foreach(var p in c.SharedVariables)r.SharedVariables[p.Key]=p.Value;foreach(var p in c.PreEntityImages)r.PreEntityImages[p.Key]=p.Value;foreach(var p in c.PostEntityImages)r.PostEntityImages[p.Key]=p.Value;
+   var plugin=c as IPluginExecutionContext;if(plugin!=null){r.Stage=plugin.Stage;var parent=Try(()=>plugin.ParentContext);if(parent!=null&&depth<8)r.ParentContext=Remote(parent,depth+1);}
+   var identity=c as IPluginExecutionContext2;if(identity!=null){r.UserAzureActiveDirectoryObjectId=Try(()=>identity.UserAzureActiveDirectoryObjectId);r.InitiatingUserAzureActiveDirectoryObjectId=Try(()=>identity.InitiatingUserAzureActiveDirectoryObjectId);}
+   return r;
+  }
+  public void Dispose(){}
+ }
+ sealed class LocalOrganizationService:IOrganizationService
+#if PAQVILO_CONTEXT7
+  ,IClusterService
+#endif
+ {
+  readonly InvocationLease Lease;readonly Guid? User;
+  public LocalOrganizationService(InvocationLease lease,Guid? user){Lease=lease;User=user;}
+  object Call(string method,object[] args){return Rpc(Lease,method,args,User);}
+  public Guid Create(Entity entity){return (Guid)Call("Create",new object[]{entity});}
+  public Entity Retrieve(string entityName,Guid id,ColumnSet columnSet){return (Entity)Call("Retrieve",new object[]{entityName,id,columnSet});}
+  public void Update(Entity entity){Call("Update",new object[]{entity});}
+  public void Delete(string entityName,Guid id){Call("Delete",new object[]{entityName,id});}
+  // Execute sends a request as its name and parameters: an early-bound class the plug-in declares itself (a generated custom
+  // API request) travels as the OrganizationRequest it derives from, as the SDK serializes it.
+  // The response class follows the request class (recorded native sdkSurface): a typed request (WhoAmIRequest) answers its
+  // typed response (WhoAmIResponse), a generic OrganizationRequest the base OrganizationResponse; ExecuteMultiple and
+  // ExecuteTransaction items follow their own requests.
+  public OrganizationResponse Execute(OrganizationRequest request){var sent=request;if(request!=null&&request.GetType()!=typeof(OrganizationRequest)&&request.GetType()!=RequestType(request.RequestName))sent=new OrganizationRequest(request.RequestName){Parameters=request.Parameters,RequestId=request.RequestId};var response=Shaped(sent,(OrganizationResponse)Call("Execute",new object[]{sent}));var requests=sent==null?null:sent.Parameters.Contains("Requests")?sent.Parameters["Requests"] as OrganizationRequestCollection:null;if(requests!=null&&response!=null&&response.Results.Contains("Responses")){var items=response.Results["Responses"] as ExecuteMultipleResponseItemCollection;if(items!=null){foreach(var item in items)if(item.Response!=null&&item.RequestIndex>=0&&item.RequestIndex<requests.Count)item.Response=Shaped(requests[item.RequestIndex],item.Response);}var answers=response.Results["Responses"] as OrganizationResponseCollection;if(answers!=null)for(var i=0;i<answers.Count&&i<requests.Count;i++)answers[i]=Shaped(requests[i],answers[i]);}return response;}
+  static OrganizationResponse Shaped(OrganizationRequest request,OrganizationResponse response){if(request==null||response==null||request.GetType()!=typeof(OrganizationRequest)||response.GetType()==typeof(OrganizationResponse))return response;var plain=new OrganizationResponse{ResponseName=response.ResponseName};foreach(var entry in response.Results)plain.Results[entry.Key]=entry.Value;return plain;}
+  public void Associate(string entityName,Guid entityId,Relationship relationship,EntityReferenceCollection relatedEntities){Call("Associate",new object[]{entityName,entityId,relationship,relatedEntities});}
+  public void Disassociate(string entityName,Guid entityId,Relationship relationship,EntityReferenceCollection relatedEntities){Call("Disassociate",new object[]{entityName,entityId,relationship,relatedEntities});}
+  public EntityCollection RetrieveMultiple(QueryBase query){return (EntityCollection)Call("RetrieveMultiple",new object[]{query});}
  }
  static EntityImageCollection Images(object value){var result=new EntityImageCollection();foreach(var pair in Map(value))result[pair.Key]=(Entity)Decode(pair.Value);return result;}
  public static int Main(string[] args){
@@ -129,15 +402,30 @@ public static class PaqviloPluginHost {
   int parentId;long parentStart;if(!Int32.TryParse(args[offset+1],out parentId)||parentId<=0||!Int64.TryParse(args[offset+3],out parentStart)||parentStart<=0)return 73;
   Process owner;try{owner=Process.GetProcessById(parentId);if(owner.StartTime.ToUniversalTime().Ticks!=parentStart||owner.HasExited)return 74;}catch{return 74;}
   ParentWatcher=new Timer(_=>{try{if(owner.HasExited||owner.StartTime.ToUniversalTime().Ticks!=parentStart)Environment.Exit(74);}catch{Environment.Exit(74);}},null,100,100);
-  Output=Console.Out;Console.SetOut(TextWriter.Null);
-  try{do{var line=Console.ReadLine();if(line==null)return 0;var result=ExecuteLine(line);if(!persistent)return result;}while(true);}finally{ParentWatcher.Dispose();owner.Dispose();}
+  Input=new StreamReader(Console.OpenStandardInput(),new System.Text.UTF8Encoding(false));Output=new StreamWriter(Console.OpenStandardOutput(),new System.Text.UTF8Encoding(false));Console.SetOut(TextWriter.Null);Console.SetError(TextWriter.Null);
+  SandboxCulture();
+  // The reader routes SDK answers to their waiting callers and runs every invocation on its own thread, so a nested Execute
+  // enters this process while its caller waits in an SDK call (native depth: nested steps run on the same worker process).
+  try{while(true){var line=Input.ReadLine();if(line==null)return 0;var message=Map(Json.DeserializeObject(line));if(Str(message,"kind")=="rpc-answer"){Answer(message);continue;}new Thread(()=>ExecuteLine(message)){IsBackground=true}.Start();}}finally{ParentWatcher.Dispose();owner.Dispose();}
  }
- static int ExecuteLine(string line){
-  try{
-   var input=Map(Json.DeserializeObject(line));var context=Map(Get(input,"context")).ToDictionary(p=>p.Key,p=>Decode(p.Value));context["InputParameters"]=Decode(Get(input,"inputParameters"));context["OutputParameters"]=Decode(Get(input,"outputParameters"));context["SharedVariables"]=Decode(Get(input,"sharedVariables"));context["PreEntityImages"]=Images(Get(input,"preImages"));context["PostEntityImages"]=Images(Get(input,"postImages"));
-   CurrentContext=context;var assembly=Assembly.LoadFrom(Str(input,"assembly"));var expected=Str(input,"expectedAssemblyName");if(expected.Length>0&&assembly.GetName().Name!=expected)throw new NotSupportedException("CLR assembly identity differs from the exported registration.");var type=assembly.GetType(Str(input,"typeName"),true);if(!typeof(IPlugin).IsAssignableFrom(type))throw new NotSupportedException("The configured original type does not implement IPlugin.");
+ // The online sandbox runs plug-ins in en-US and UTC (native sandbox body.sandbox, both captures: culture and uiCulture en-US,
+ // timeZone UTC, utcOffsetMinutes 0). Threads the plug-in starts inherit the default cultures.
+ static void SandboxCulture(){var culture=CultureInfo.GetCultureInfo("en-US");CultureInfo.DefaultThreadCurrentCulture=culture;CultureInfo.DefaultThreadCurrentUICulture=culture;Thread.CurrentThread.CurrentCulture=culture;Thread.CurrentThread.CurrentUICulture=culture;PinUtc();}
+ // .NET Framework has no public setter for the local zone: TimeZoneInfo.Local, the DateTime.Now offset cache and
+ // TimeZone.CurrentTimeZone are replaced by UTC, again before each invocation (a plug-in may call ClearCachedData).
+ static void PinUtc(){const BindingFlags S=BindingFlags.NonPublic|BindingFlags.Static,I=BindingFlags.NonPublic|BindingFlags.Instance;var cached=typeof(TimeZoneInfo).GetField("s_cachedData",S);var data=cached==null?null:cached.GetValue(null);var type=data==null?null:data.GetType();var local=type==null?null:type.GetField("m_localTimeZone",I);var year=type==null?null:type.GetField("m_oneYearLocalFromUtc",I);var rule=typeof(TimeZoneInfo).GetNestedType("OffsetAndRule",BindingFlags.NonPublic);var zone=typeof(TimeZone).GetField("currentTimeZone",S);if(local==null||year==null||rule==null||zone==null)throw new InvalidOperationException("The CLR host cannot pin the sandbox time zone to UTC on this .NET Framework.");lock(data){local.SetValue(data,TimeZoneInfo.Utc);year.SetValue(data,Activator.CreateInstance(rule,I|BindingFlags.Public,null,new object[]{DateTime.UtcNow.Year,TimeSpan.Zero,null},null));}zone.SetValue(null,new UtcZone());if(TimeZoneInfo.Local.Id!="UTC"||TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow)!=TimeSpan.Zero||(DateTime.Now-DateTime.UtcNow).Duration()>TimeSpan.FromMinutes(1)||TimeZone.CurrentTimeZone.GetUtcOffset(DateTime.Now)!=TimeSpan.Zero)throw new InvalidOperationException("The CLR host time zone is not UTC.");}
+ sealed class UtcZone:TimeZone {public override string StandardName{get{return TimeZoneInfo.Utc.StandardName;}}public override string DaylightName{get{return TimeZoneInfo.Utc.DaylightName;}}public override DaylightTime GetDaylightChanges(int year){return new DaylightTime(DateTime.MinValue,DateTime.MinValue,TimeSpan.Zero);}public override TimeSpan GetUtcOffset(DateTime time){return TimeSpan.Zero;}}
+ static int ExecuteLine(Dictionary<string,object> input){
+  InvocationLease lease=null;bool pluginExecuting=false;var invocationId=Get(input,"invocationId") as string;try{
+   PinUtc();var context=Map(Get(input,"context")).ToDictionary(p=>p.Key,p=>Decode(p.Value));context["InputParameters"]=Decode(Get(input,"inputParameters"));context["OutputParameters"]=Decode(Get(input,"outputParameters"));context["SharedVariables"]=Decode(Get(input,"sharedVariables"));context["PreEntityImages"]=Images(Get(input,"preImages"));context["PostEntityImages"]=Images(Get(input,"postImages"));
+   lease=new InvocationLease(context,invocationId);var assembly=Assembly.LoadFrom(Str(input,"assembly"));var expected=Str(input,"expectedAssemblyName");if(expected.Length>0&&assembly.GetName().Name!=expected)throw Unsupported("CLR assembly identity differs from the exported registration.");var type=assembly.GetType(Str(input,"typeName"),true);if(!typeof(IPlugin).IsAssignableFrom(type))throw Unsupported("The configured original type does not implement IPlugin.");
    object plugin;var ctor=type.GetConstructor(new[]{typeof(string),typeof(string)});if(ctor!=null)plugin=ctor.Invoke(new object[]{Get(input,"unsecureConfiguration"),Get(input,"secureConfiguration")});else{ctor=type.GetConstructor(new[]{typeof(string)});plugin=ctor!=null?ctor.Invoke(new object[]{Get(input,"unsecureConfiguration")}):Activator.CreateInstance(type);}
-   ((IPlugin)plugin).Execute(new Services(context));var parameters=(ParameterCollection)context["InputParameters"];Send(new {kind="result",target=parameters.Contains("Target")?Wire(parameters["Target"]):null,inputParameters=Wire(parameters),outputParameters=Wire(context["OutputParameters"]),sharedVariables=Wire(context["SharedVariables"]),assemblyFullName=type.Assembly.FullName,sdkFullName=typeof(IPlugin).Assembly.FullName});return 0;
-  }catch(Exception cause){while(cause is TargetInvocationException&&cause.InnerException!=null)cause=cause.InnerException;var plugin=cause as InvalidPluginExecutionException;Send(new {kind="failure",code=cause is NotSupportedException?"LocalPluginSdkUnsupported":"PluginValidation",message=cause.Message,exceptionType=cause.GetType().FullName,errorCode=plugin==null?(object)null:plugin.ErrorCode,operationStatus=plugin==null?null:plugin.Status.ToString(),exceptionDetails=plugin==null?null:plugin.ExceptionDetails});return 1;}finally{CurrentContext=null;}
+   pluginExecuting=true;((IPlugin)plugin).Execute(new Services(context,lease));pluginExecuting=false;var parameters=(ParameterCollection)context["InputParameters"];Send(new {kind="result",invocationId=invocationId,target=parameters.Contains("Target")?Wire(parameters["Target"]):null,inputParameters=Wire(parameters),outputParameters=Wire(context["OutputParameters"]),sharedVariables=Wire(context["SharedVariables"]),assemblyFullName=type.Assembly.FullName,sdkFullName=typeof(IPlugin).Assembly.FullName});return 0;
+  }catch(Exception cause){while(cause is TargetInvocationException&&cause.InnerException!=null)cause=cause.InnerException;var plugin=cause as InvalidPluginExecutionException;var fault=cause as FaultException<OrganizationServiceFault>;var detail=fault==null?null:fault.Detail;int callbackCode=0;bool callback=lease!=null&&lease.TryError(cause,out callbackCode);Send(new {kind="failure",invocationId=invocationId,duringPluginExecute=pluginExecuting,pluginException=plugin!=null,code=cause is NotSupportedException&&(!pluginExecuting||IsAdapterUnsupported(cause))?"LocalPluginSdkUnsupported":"PluginValidation",message=cause.Message,exceptionType=cause.GetType().FullName,errorCode=plugin!=null?(object)plugin.ErrorCode:detail!=null?(object)detail.ErrorCode:callback?(object)callbackCode:null,operationStatus=plugin==null?null:plugin.Status.ToString(),exceptionDetails=plugin!=null?(object)plugin.ExceptionDetails:detail!=null?(object)detail.ErrorDetails:null});return 1;}finally{if(lease!=null)lease.Close();}
  }
 }
+#if PAQVILO_IDENTITY
+// The platform's internal managed-identity contract its ManagedIdentityServiceProvider implements (sandbox 'services' block);
+// it declares nothing a plug-in can call.
+namespace Microsoft.Xrm.Sdk {interface IInternalManagedIdentityService {}}
+#endif

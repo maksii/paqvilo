@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Tracing of plug-ins (docs/design/tracing.md): a plugin-stage span only for a stage with matched steps, a plugin-step span
 // per step whose trace lines are events and whose SDK writes nest under it, sdk-call spans for CLR RPCs, one bulk span per
 // message and a custom-api span per invocation. Invented schemas and handlers only.

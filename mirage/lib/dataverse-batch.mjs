@@ -357,7 +357,7 @@ async function changesetRun(changeset, context, batchRefs) {
   };
   try {
     // ponytail: without a dispatch.transaction hook, writes made before a failing changeset item persist.
-    if (context.dispatch.transaction) await context.dispatch.transaction(run);
+    if (context.dispatch.transaction) await context.dispatch.transaction(run, { requests: changeset.requests.length });
     else await run();
   } catch (error) {
     if (error !== ROLLBACK) throw error;

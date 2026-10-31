@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of cascading ownership changes; no native capture cited
 // Cascade Assign writes the child's ownership columns through the direct Assign pipeline (dataverse-cascade.mjs
 // ownershipOptions -> principals.systemColumns): Assign gives the related rows the referenced row's new owner.
 import test from 'node:test';

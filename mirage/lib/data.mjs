@@ -33,8 +33,8 @@ import {
   duplicateAlternateKey,
 } from './alternate-key-values.mjs';
 import { assertElasticRecord, isElastic, samePartition, recordKey } from './dataverse-elastic.mjs';
-import { relationshipsOf } from './dataverse-standard.mjs';
-import { traceDecision } from './dataverse-security.mjs';
+import { customerAddressColumns, relationshipsOf, standardTableDef } from './dataverse-standard.mjs';
+import { ownershipOf, traceDecision } from './dataverse-security.mjs';
 import { StateStorage } from './state-storage.mjs';
 import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
 import { jsonChunks, stateDigest } from './state-stream.mjs';
@@ -55,15 +55,38 @@ import {
   multiplyNumeric,
   parseNumericLiteral,
 } from './exact-numeric.mjs';
-import { odataToSdkQuery } from './plugin-query.mjs';
+import {
+  odataToSdkQuery,
+  readPagingCookie,
+  sameSdkQuery,
+  webApiFetchExpression,
+  webApiFetchToQuery,
+} from './plugin-query.mjs';
+import { pluginStepBypassed } from './plugin-bypass.mjs';
 import { compilePermissionFetchXml, serializePermissionFetchXml } from './permission-query.mjs';
+import { rebindPermissionQuery } from './permission-query-mutation.mjs';
 import { preparePortalFetchXml } from './portal-fetchxml.mjs';
 import { compileODataPermissionQuery, authoredScalarODataFetch } from './odata-permission-query.mjs';
 import { assertPortalFetchXmlTransport } from './portal-fetch-transport.mjs';
-import { recordToSdkEntity, sdkQueryParameters, executeSdkFetch } from './plugin-clr.mjs';
+import { recordToSdkEntity, recordToSdkReadEntity, sdkQueryParameters, executeSdkFetch } from './plugin-clr.mjs';
+import { isSecuredField } from './dataverse-fls.mjs';
 import { queryExpressionToFetch, fetchResultToSdkCollection } from './plugin-sdk-query.mjs';
 import { sdkValueToRecord } from './local-organization-service.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
+import {
+  assertPluginExecutionActive,
+  pluginInvocationDepth,
+  pluginInvocationSdkParent,
+} from './plugin-execution-lifetime.mjs';
+import { asyncCallerParent, recordRequestRootChange } from './plugin-sdk-parent.mjs';
+import { runStateMessage } from './plugin-platform-messages.mjs';
+import {
+  storeOperationFields,
+  hasStoreOperationContext,
+  storeOperationValue,
+  setStoreOperationValue,
+  withStoreOperationContext,
+} from './store-operation-context.mjs';
 import { executeFetch, parseXmlDocument, planFetch, structuralIntersects } from './fetchxml-engine.mjs';
 import {
   columnValue,
@@ -94,10 +117,78 @@ import {
 } from './dataverse-values.mjs';
 // The store's query error type lives in data-error.mjs; this re-export keeps imports working.
 export { DataError };
+
+// Lookups whose target the platform does not check on write (data.mjs bind coercion and validateBindings, the Web API bind
+// check): an administrator registers a step impersonating a systemuser that does not exist (recorded native n6-registration,
+// two captures: 204). The column keeps the unresolved id.
+const UNCHECKED_LOOKUPS = { sdkmessageprocessingstep: { impersonatinguserid: 'systemuser' } };
+export const uncheckedLookup = (table, column, target) => UNCHECKED_LOOKUPS[table]?.[column] === target;
 const clone = cloneStateData;
 const cloneInternal = (value) => cloneStateData(value, { forkTables: true });
 // Per async context, the transaction frame of each DataStore (see DataStore#transact).
 const transactionFrames = new AsyncLocalStorage();
+const transactionFrameOf = (store, { closed = false } = {}) => {
+  for (let frame = transactionFrames.getStore(); frame; frame = frame.parent)
+    if (frame.store === store && (closed || !frame.closed)) return frame;
+  return null;
+};
+// The row changes a read lane's SDK writes left (DataStore#openReadLane): per table, rows created, columns changed or
+// removed, and rows deleted, keyed by the table's primary key.
+function laneChanges(base, next) {
+  const changes = [];
+  for (const table of new Set([...Object.keys(base.tables ?? {}), ...Object.keys(next.tables ?? {})])) {
+    const before = base.tables?.[table] ?? [],
+      after = next.tables?.[table] ?? [];
+    if (before === after) continue;
+    const idColumn = next.mappings?.[table]?.idColumn ?? base.mappings?.[table]?.idColumn ?? `${table}id`,
+      key = (row) => String(row?.[idColumn] ?? '').toLowerCase(),
+      old = new Map([...before].map((row) => [key(row), row])),
+      seen = new Set();
+    for (const row of after) {
+      const id = key(row),
+        previous = old.get(id);
+      seen.add(id);
+      if (!previous) changes.push({ table, idColumn, create: cloneStateData(row) });
+      else if (!isDeepStrictEqual({ ...previous }, { ...row })) {
+        const set = {};
+        for (const [column, value] of Object.entries(row))
+          if (!isDeepStrictEqual(previous[column], value)) set[column] = cloneStateData(value);
+        const unset = Object.keys(previous).filter((column) => !Object.hasOwn(row, column));
+        changes.push({ table, idColumn, id: row[idColumn], set, unset });
+      }
+    }
+    for (const [id, row] of old) if (!seen.has(id)) changes.push({ table, idColumn, remove: row[idColumn] });
+  }
+  return changes;
+}
+// Applies a read lane's row changes onto the store's current state, inside the lane's own commit transaction.
+function applyLaneChanges(store, changes, committed) {
+  const state = store.state,
+    find = (rows, idColumn, id) =>
+      rows.findIndex((row) => String(row?.[idColumn] ?? '').toLowerCase() === String(id ?? '').toLowerCase());
+  for (const change of changes) {
+    const rows = (state.tables[change.table] ??= []);
+    if (change.create) {
+      const index = find(rows, change.idColumn, change.create[change.idColumn]);
+      if (index < 0) store.insertRow(change.table, rows, change.create);
+      else {
+        for (const column of Object.keys(rows[index])) delete rows[index][column];
+        Object.assign(rows[index], change.create);
+      }
+    } else if (change.remove !== undefined) {
+      const index = find(rows, change.idColumn, change.remove);
+      if (index >= 0) store.removeRow(change.table, rows, index);
+    } else {
+      const row = rows[find(rows, change.idColumn, change.id)];
+      if (!row) continue;
+      Object.assign(row, change.set);
+      for (const column of change.unset) delete row[column];
+    }
+  }
+  if (Number.isFinite(committed?.rowVersion))
+    state.rowVersion = Math.max(Number(state.rowVersion) || 0, committed.rowVersion);
+  store.rowIndexes = null;
+}
 // Tracing (trace-store.mjs): a read inside one of these spans is already covered and opens no store span of its own.
 const COVERED_READS = new Set(['dataverse', 'store', 'read', 'bulk']);
 const READ_LABEL = { retrieve: 'Retrieve', retrievemultiple: 'RetrieveMultiple', fetchxml: 'FetchXml' };
@@ -111,8 +202,71 @@ const rowCountOf = (value) =>
         ? 0
         : 1;
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+// Row columns a write's Target never shows: the row version, and empty on-behalf/team ownership lookups
+// (native Create Targets carry an empty modifiedonbehalfby, never an empty createdonbehalfby or owningteam).
+export const notInTarget = (name, value) =>
+  name === 'versionnumber' || (value == null && (name === 'createdonbehalfby' || name === 'owningteam'));
+// Update stamps the platform adds to the Target after PreValidation (native PreOperation/PostOperation Update).
+const UPDATE_TARGET_STAMPS = ['modifiedon', 'modifiedby', 'modifiedonbehalfby'];
+// Web API Update: a string column written null or '' reaches the Target as ''; Create keeps null (nullSemantics).
+function blankTextColumns(store, mapping, input, options, operation) {
+  if (!options.dataverseWebApi) return [];
+  return Object.keys(input).filter(
+    (name) =>
+      (input[name] === '' || (operation === 'update' && input[name] === null)) &&
+      fieldKind(store.fieldDefinition(mapping.logicalName, name, options.metadata)) === 'string',
+  );
+}
 const formattedAnnotation = '@OData.Community.Display.V1.FormattedValue';
 const lookupAnnotation = '@Microsoft.Dynamics.CRM.lookuplogicalname';
+
+function committedPluginParent(store, mapping, operation, target, row, options) {
+  const tag = store.pluginSdkTag,
+    values = {
+      ...(tag === undefined ? {} : { tag }),
+      // A main operation's own Update (Assign, SetState, Merge: omitConcurrencyBehavior) has none, also for its jobs
+      // (native sdkMessages, soapMessages, mergeAccount).
+      ...(operation === 'update' && !options.omitConcurrencyBehavior
+        ? { ConcurrencyBehavior: { $type: 'ConcurrencyBehavior', value: options.pluginConcurrencyBehavior ?? 0 } }
+        : {}),
+      ...(operation === 'create' && options.sdkFromSandbox === true ? { FromSandbox: true } : {}),
+    };
+  return {
+    primaryId: row[mapping.idColumn],
+    // Preserve the pre-PostOperation baseline without imposing the SDK codec
+    // on ordinary writes. Only an admitted asynchronous observer needs it.
+    target: { ...clone(target), [mapping.idColumn]: row[mapping.idColumn] },
+    inputParameters: { $type: 'ParameterCollection', values },
+    sharedVariables: { $type: 'ParameterCollection', values: tag === undefined ? {} : { tag } },
+    childSharedVariables: {
+      $type: 'ParameterCollection',
+      values: {
+        // The native SharedVariables order: IsAutoTransact, AcceptLang, tag, DefaultsAddedFlag.
+        IsAutoTransact: true,
+        AcceptLang: options.pluginAcceptLanguage ?? '',
+        ...(tag === undefined ? {} : { tag }),
+        ...(operation === 'create' ? { DefaultsAddedFlag: true } : {}),
+      },
+    },
+  };
+}
+
+// Native corpus (pipelineEffects): an asynchronous step sees the operation as it stood when PostOperation began.
+// Target edits, OutputParameters and SharedVariables written by synchronous PostOperation steps do not reach it, so
+// the queued event keeps the pre-PostOperation parameters and the async run populates the system outputs itself.
+function prePostOperationFrame(frame) {
+  return {
+    inputParameters: clone(frame?.inputParameters),
+    outputParameters: clone(frame?.outputParameters),
+    sharedVariables: clone(frame?.sharedVariables),
+  };
+}
+const queuedFrame = (frame, before, asyncSourceParent) => ({
+  ...(frame ?? {}),
+  ...before,
+  systemOutputsPopulated: false,
+  asyncSourceParent,
+});
 
 const metadataField = (mapping, key) => {
   const fields = mapping?.fields ?? mapping?.fieldMetadata ?? {};
@@ -938,6 +1092,27 @@ function traceRetentionError(original, persistence) {
 }
 
 export class DataStore {
+  static {
+    for (const name of storeOperationFields)
+      Object.defineProperty(this.prototype, name, {
+        configurable: true,
+        get() {
+          assertPluginExecutionActive(this);
+          return storeOperationValue(this, name);
+        },
+        set(value) {
+          assertPluginExecutionActive(this);
+          setStoreOperationValue(this, name, value);
+        },
+      });
+  }
+  hasOperationContext() {
+    return hasStoreOperationContext(this);
+  }
+  withOperationContext(fn, options) {
+    assertPluginExecutionActive(this);
+    return withStoreOperationContext(this, fn, options);
+  }
   constructor({
     file = null,
     state = emptyState(),
@@ -974,14 +1149,16 @@ export class DataStore {
   // a private working copy, and only inside their own async context. Everything else
   // reads and writes the committed copy, so the default path is unchanged.
   get state() {
+    assertPluginExecutionActive(this);
     if (this.isolatedCount) {
-      const frame = transactionFrames.getStore();
+      const frame = transactionFrameOf(this);
       if (frame?.store === this && frame.working) return frame.working;
     }
     return this._state;
   }
   set state(value) {
-    const frame = this.isolatedCount ? transactionFrames.getStore() : undefined;
+    assertPluginExecutionActive(this);
+    const frame = this.isolatedCount ? transactionFrameOf(this) : undefined;
     if (frame?.store === this && frame.working) frame.working = value;
     else this._state = value;
   }
@@ -1294,7 +1471,8 @@ export class DataStore {
     return selected;
   }
   async save() {
-    const frame = transactionFrames.getStore();
+    assertPluginExecutionActive(this);
+    const frame = transactionFrameOf(this);
     if (frame?.store === this && frame.initializing && !frame.closed && !frame.committing) return;
     try {
       return await this.#saveState();
@@ -1388,7 +1566,7 @@ export class DataStore {
         lockHandle = null;
 
         await this.storage.assertUnchanged();
-        const initialization = transactionFrames.getStore();
+        const initialization = transactionFrameOf(this);
         if (
           this.storage.journal &&
           this.storage.canAppend(selectedState) &&
@@ -1502,7 +1680,7 @@ export class DataStore {
     });
   }
   isInitializing() {
-    const frame = transactionFrames.getStore();
+    const frame = transactionFrameOf(this);
     return frame?.store === this && frame.initializing && !frame.closed;
   }
   completeInitialization() {
@@ -1512,7 +1690,7 @@ export class DataStore {
   // A read hook that may run arbitrary plug-in code first captures its rollback
   // snapshot. Metadata consumers may reuse read inputs only before that point.
   isUnmodifiedRead() {
-    const frame = transactionFrames.getStore(),
+    const frame = transactionFrameOf(this),
       boundary = this.pluginRollbackBoundary;
     return (
       frame?.store === this &&
@@ -1521,9 +1699,13 @@ export class DataStore {
       boundary.backup === null
     );
   }
+  /** True while any transaction of this store is queued or running, in any async context. */
+  transactionPending() {
+    return (this.transactionsQueued ?? 0) > 0;
+  }
   /** True inside an open transaction of this store in this async context: a new transact here would queue behind it. */
   inTransaction() {
-    const frame = transactionFrames.getStore();
+    const frame = transactionFrameOf(this);
     return frame?.store === this && !frame.closed;
   }
   ensureReadSnapshot() {
@@ -1544,6 +1726,9 @@ export class DataStore {
    * it is a normal transaction. A plain call inside an open isolated transaction joins
    * it the same way. `isolated: true` keeps the changes private to the
    * async context until the commit, so concurrent readers see the committed state.
+   * `pluginVisible: false` keeps an isolated boundary out of the plug-in pipeline's IsInTransaction: a single request
+   * that runs atomically for itself (a top-level custom API or SOAP message) still starts outside the transaction at
+   * PreValidation, as natively; a $batch changeset stays visible.
    */
   transact(
     fn,
@@ -1555,6 +1740,7 @@ export class DataStore {
       nested = false,
       isolated = false,
       privateInitialization = false,
+      pluginVisible = true,
     } = {},
   ) {
     // ponytail: a nested throw that the caller catches keeps that call's partial writes;
@@ -1562,7 +1748,8 @@ export class DataStore {
     // A frame that has finished (closed) no longer joins: its async continuations run later.
     // Inside an open isolated changeset a plain transact joins it too: every write made while
     // the changeset runs belongs to that changeset (Dataverse changesets are atomic).
-    const active = transactionFrames.getStore();
+    assertPluginExecutionActive(this);
+    const active = transactionFrameOf(this);
     if ((nested || active?.working) && active?.store === this && !active.closed)
       return (async () => {
         const result = await fn();
@@ -1572,214 +1759,228 @@ export class DataStore {
       throw new Error('Private initialization requires an unpublished, usable store.');
     this.contendReadLeases();
     const frame = { store: this, working: null, initializing: privateInitialization };
-    const run = this.queue.then(async () => {
-      let initializationDigest = null;
-      try {
-        if (privateInitialization && this.file)
-          initializationDigest = this.storage?.journal
-            ? this.initializationFingerprintCache?.file === this.file &&
-              this.initializationFingerprintCache.digest === this.persistedDigest
-              ? this.initializationFingerprintCache.value
-              : await initializationFingerprint(this._state)
-            : stateDigest(this._state, { sortKeys: true });
-      } catch (error) {
-        frame.closed = true;
-        this.initializationFailed = true;
-        this.unpublished = false;
-        this._state = emptyState();
-        this.initializationFingerprintCache = null;
-        throw error;
-      }
-      transactionFrames.enterWith(frame);
-      // ponytail: an isolated transaction works on a full clone of the committed state
-      // and publishes it at commit. It is O(state) per changeset, a write that bypasses
-      // transact is lost at commit, and an independent plugin commit inside it persists
-      // the working copy. Use a change overlay before batch relies on any of these.
-      if (isolated) frame.working = privateInitialization ? this._state : cloneInternal(this._state);
-      // Arbitrary extension callbacks retain the established full rollback
-      // boundary. Core CRUD/declarative handlers use the bounded undo journal.
-      const rowTransaction = incremental ? new RowTransaction(this, { reuse: !isolated }) : null;
-      const previousRows = this.rowTransaction;
-      this.rowTransaction = rowTransaction;
-      const boundary = {
-        // The committed graph is already the rollback copy of an isolated
-        // working graph. A second whole-state clone cannot improve isolation.
-        backup: privateInitialization
-          ? null
-          : isolated
-            ? this._state
-            : lazyReadSnapshot || rowTransaction
-              ? null
-              : cloneInternal(this.state),
-        independentCommit: false,
-        eventCount: 0,
-      };
-      boundary.persistenceBackup = boundary.backup;
-      if (lazyReadSnapshot)
-        boundary.ensureSnapshot = () => {
-          if (boundary.backup !== null) return;
-          boundary.backup = cloneInternal(this.state);
-          boundary.persistenceBackup = boundary.backup;
-        };
-      const previousBoundary = this.pluginRollbackBoundary,
-        previousTransaction = this.pluginInTransaction;
-      boundary.parent = previousBoundary;
-      const previousEvents = this.committedEventCandidates;
-      this.committedEventCandidates = [];
-      this.pluginRollbackBoundary = boundary;
-      this.pluginInTransaction = isolated;
-      try {
-        if (isolated) this.isolatedCount = (this.isolatedCount ?? 0) + 1;
-        const result = await fn();
-        this.restorePluginTraceLogs(boundary);
-        const staged = this.stageOnCommit(this.committedEventCandidates);
-        const journalInitialization = initializationDigest && typeof initializationDigest === 'object';
-        if (journalInitialization) {
-          const delta = await initializationDelta(initializationDigest, this.state);
-          frame.initializationDelta = delta.changes;
-          frame.initializationFingerprint = delta.fingerprint;
-        }
-        if (
-          staged.length ||
-          !skipSaveIfUnchanged ||
-          boundary.independentCommit ||
-          (privateInitialization &&
-            (initializationDigest === null ||
-              (journalInitialization
-                ? frame.initializationDelta.length > 0
-                : stateDigest(this.state, { sortKeys: true }) !== initializationDigest))) ||
-          (boundary.backup !== null && !privateRecordEqual(this.state, boundary.backup))
-        ) {
-          frame.committing = true;
-          const commit = this.traceCommit();
+    // Queued and running transactions (transactionPending): an independent read does not queue behind one.
+    this.transactionsQueued = (this.transactionsQueued ?? 0) + 1;
+    const run = this.queue.then(() =>
+      this.withOperationContext(
+        async () => {
+          assertPluginExecutionActive(this);
+          let initializationDigest = null;
           try {
-            await this.save();
+            if (privateInitialization && this.file)
+              initializationDigest = this.storage?.journal
+                ? this.initializationFingerprintCache?.file === this.file &&
+                  this.initializationFingerprintCache.digest === this.persistedDigest
+                  ? this.initializationFingerprintCache.value
+                  : await initializationFingerprint(this._state)
+                : stateDigest(this._state, { sortKeys: true });
           } catch (error) {
-            commit?.fail(error);
+            frame.closed = true;
+            this.initializationFailed = true;
+            this.unpublished = false;
+            this._state = emptyState();
+            this.initializationFingerprintCache = null;
             throw error;
           }
-          commit?.end({
-            attributes: {
-              eventsStaged: this.committedEventCandidates.length,
-              saveMs: this.lastSave?.durationMs ?? null,
-              saveMode: this.lastSave?.mode ?? null,
-            },
-          });
-          this.committed(
-            rowTransaction && !rowTransaction.promoted && !isolated ? rowTransaction.touchedTables() : null,
-          );
-          // Section copies the journal commit proved unchanged seed the next row transaction (RowTransaction reuse).
-          const reusable = rowTransaction && !isolated ? rowTransaction.reusableSections() : null;
-          if (reusable) this.sectionSnapshot = { ...reusable, revision: this.revision };
-        } else if (privateInitialization && this.file) await this.storage.assertUnchanged();
-        if (isolated) this._state = frame.working;
-        if (journalInitialization)
-          this.initializationFingerprintCache = {
-            file: this.file,
-            digest: this.persistedDigest,
-            value: frame.initializationFingerprint,
+          frame.parent = transactionFrames.getStore();
+          transactionFrames.enterWith(frame);
+          // ponytail: an isolated transaction works on a full clone of the committed state
+          // and publishes it at commit. It is O(state) per changeset, a write that bypasses
+          // transact is lost at commit, and an independent plugin commit inside it persists
+          // the working copy. Use a change overlay before batch relies on any of these.
+          if (isolated) frame.working = privateInitialization ? this._state : cloneInternal(this._state);
+          // Arbitrary extension callbacks retain the established full rollback
+          // boundary. Core CRUD/declarative handlers use the bounded undo journal.
+          const rowTransaction = incremental ? new RowTransaction(this, { reuse: !isolated }) : null;
+          const previousRows = this.rowTransaction;
+          this.rowTransaction = rowTransaction;
+          const boundary = {
+            // The committed graph is already the rollback copy of an isolated
+            // working graph. A second whole-state clone cannot improve isolation.
+            backup: privateInitialization
+              ? null
+              : isolated
+                ? this._state
+                : lazyReadSnapshot || rowTransaction
+                  ? null
+                  : cloneInternal(this.state),
+            independentCommit: false,
+            eventCount: 0,
           };
-        this.dispatchCommittedEvents(this.committedEventCandidates);
-        this.afterStagedCommit(staged);
-        for (const note of boundary.commitNotes ?? [])
+          boundary.persistenceBackup = boundary.backup;
+          if (lazyReadSnapshot)
+            boundary.ensureSnapshot = () => {
+              if (boundary.backup !== null) return;
+              boundary.backup = cloneInternal(this.state);
+              boundary.persistenceBackup = boundary.backup;
+            };
+          const previousBoundary = this.pluginRollbackBoundary,
+            previousTransaction = this.pluginInTransaction;
+          boundary.parent = previousBoundary;
+          const previousEvents = this.committedEventCandidates;
+          this.committedEventCandidates = [];
+          this.pluginRollbackBoundary = boundary;
+          this.pluginInTransaction = isolated && (pluginVisible || previousTransaction === true);
           try {
-            note();
-          } catch {
-            /* a note never changes the outcome */
-          }
-        // Read query results own their projection and may carry nonenumerable
-        // SDK/paging/column metadata required by the transport adapter.
-        return cloneResult ? clone(result) : result;
-      } catch (error) {
-        if (!rowTransaction?.promoted) rowTransaction?.rollback();
-        this.rowIndexes = null;
-        const rollback = error.persistenceFailure ? boundary.persistenceBackup : boundary.backup;
-        if (!privateInitialization && rollback !== null) this.state = cloneInternal(rollback);
-        for (const note of boundary.rollbackNotes ?? [])
-          try {
-            note(error);
-          } catch {
-            /* a note never changes the failure */
-          }
-        if (privateInitialization) {
-          this.initializationFailed = true;
-          this.unpublished = false;
-          this._state = emptyState();
-          this.initializationFingerprintCache = null;
-          throw error;
-        }
-        // Trace facts are platform diagnostics, not business writes. Their own
-        // failed transaction journal must never replay aborted target changes.
-        const traceRetentionBackup = boundary.pluginTraceRows?.size ? cloneInternal(this.state) : null;
-        if (traceRetentionBackup) this.rowTransaction = null;
-        const retainedTraces = !error.persistenceFailure && this.restorePluginTraceLogs(boundary);
-        // Elastic main operations commit independently, even inside a failed changeset or a failed PostOperation.
-        // Restore only those rows after rollback: earlier standard-table writes remain transactional.
-        if (!error.persistenceFailure && boundary.elasticWrites?.size) {
-          const retentionBackup = cloneInternal(this.state);
-          try {
-            for (const { mapping, row, removed } of boundary.elasticWrites.values()) {
-              const rows = (this.state.tables[mapping.logicalName] ??= []);
-              const index = this.rowIndex(mapping, rows, recordKey(mapping, row));
-              if (removed) {
-                if (index >= 0) rows.splice(index, 1);
-              } else if (index >= 0) rows[index] = clone(row);
-              else rows.push(clone(row));
+            if (isolated) this.isolatedCount = (this.isolatedCount ?? 0) + 1;
+            const result = await fn();
+            if (boundary.transactionFailure) throw boundary.transactionFailure;
+            this.restorePluginTraceLogs(boundary);
+            const staged = this.stageOnCommit(this.committedEventCandidates);
+            const journalInitialization = initializationDigest && typeof initializationDigest === 'object';
+            if (journalInitialization) {
+              const delta = await initializationDelta(initializationDigest, this.state);
+              frame.initializationDelta = delta.changes;
+              frame.initializationFingerprint = delta.fingerprint;
             }
-            this.state.rowVersion = Math.max(this.state.rowVersion ?? 0, boundary.elasticVersion ?? 0);
-            const retained =
-              boundary.independentCommit && !isolated
-                ? this.committedEventCandidates.slice(0, boundary.eventCount)
-                : [];
-            const events = [...new Set([...retained, ...(boundary.elasticEvents ?? [])])],
-              staged = this.stageOnCommit(events);
-            await this.save();
-            this.committed();
+            if (
+              staged.length ||
+              !skipSaveIfUnchanged ||
+              boundary.independentCommit ||
+              (privateInitialization &&
+                (initializationDigest === null ||
+                  (journalInitialization
+                    ? frame.initializationDelta.length > 0
+                    : stateDigest(this.state, { sortKeys: true }) !== initializationDigest))) ||
+              (boundary.backup !== null && !privateRecordEqual(this.state, boundary.backup))
+            ) {
+              frame.committing = true;
+              const commit = this.traceCommit();
+              try {
+                await this.save();
+              } catch (error) {
+                commit?.fail(error);
+                throw error;
+              }
+              commit?.end({
+                attributes: {
+                  eventsStaged: this.committedEventCandidates.length,
+                  saveMs: this.lastSave?.durationMs ?? null,
+                  saveMode: this.lastSave?.mode ?? null,
+                },
+              });
+              this.committed(
+                rowTransaction && !rowTransaction.promoted && !isolated ? rowTransaction.touchedTables() : null,
+              );
+              // Section copies the journal commit proved unchanged seed the next row transaction (RowTransaction reuse).
+              const reusable = rowTransaction && !isolated ? rowTransaction.reusableSections() : null;
+              if (reusable) this.sectionSnapshot = { ...reusable, revision: this.revision };
+            } else if (privateInitialization && this.file) await this.storage.assertUnchanged();
             if (isolated) this._state = frame.working;
-            this.dispatchCommittedEvents(events);
+            if (journalInitialization)
+              this.initializationFingerprintCache = {
+                file: this.file,
+                digest: this.persistedDigest,
+                value: frame.initializationFingerprint,
+              };
+            this.dispatchCommittedEvents(this.committedEventCandidates);
             this.afterStagedCommit(staged);
-          } catch (saveError) {
-            this.state = boundary.persistenceBackup ?? traceRetentionBackup ?? retentionBackup;
+            for (const note of boundary.commitNotes ?? [])
+              try {
+                note();
+              } catch {
+                /* a note never changes the outcome */
+              }
+            // Read query results own their projection and may carry nonenumerable
+            // SDK/paging/column metadata required by the transport adapter.
+            return cloneResult ? clone(result) : result;
+          } catch (error) {
+            if (!rowTransaction?.promoted) rowTransaction?.rollback();
             this.rowIndexes = null;
-            if (traceRetentionBackup) throw traceRetentionError(error, saveError);
-            throw saveError;
+            const rollback = error.persistenceFailure ? boundary.persistenceBackup : boundary.backup;
+            if (!privateInitialization && rollback !== null) this.state = cloneInternal(rollback);
+            for (const note of boundary.rollbackNotes ?? [])
+              try {
+                note(error);
+              } catch {
+                /* a note never changes the failure */
+              }
+            if (privateInitialization) {
+              this.initializationFailed = true;
+              this.unpublished = false;
+              this._state = emptyState();
+              this.initializationFingerprintCache = null;
+              throw error;
+            }
+            // Trace facts are platform diagnostics, not business writes. Their own
+            // failed transaction journal must never replay aborted target changes.
+            const traceRetentionBackup = boundary.pluginTraceRows?.size ? cloneInternal(this.state) : null;
+            if (traceRetentionBackup) this.rowTransaction = null;
+            const retainedTraces = !error.persistenceFailure && this.restorePluginTraceLogs(boundary);
+            // Elastic main operations commit independently, even inside a failed changeset or a failed PostOperation.
+            // Restore only those rows after rollback: earlier standard-table writes remain transactional.
+            if (!error.persistenceFailure && boundary.elasticWrites?.size) {
+              const retentionBackup = cloneInternal(this.state);
+              try {
+                for (const { mapping, row, removed } of boundary.elasticWrites.values()) {
+                  const rows = (this.state.tables[mapping.logicalName] ??= []);
+                  const index = this.rowIndex(mapping, rows, recordKey(mapping, row));
+                  if (removed) {
+                    if (index >= 0) rows.splice(index, 1);
+                  } else if (index >= 0) rows[index] = clone(row);
+                  else rows.push(clone(row));
+                }
+                this.state.rowVersion = Math.max(this.state.rowVersion ?? 0, boundary.elasticVersion ?? 0);
+                const retained =
+                  boundary.independentCommit && !isolated
+                    ? this.committedEventCandidates.slice(0, boundary.eventCount)
+                    : [];
+                const events = [...new Set([...retained, ...(boundary.elasticEvents ?? [])])],
+                  staged = this.stageOnCommit(events);
+                await this.save();
+                this.committed();
+                if (isolated) this._state = frame.working;
+                this.dispatchCommittedEvents(events);
+                this.afterStagedCommit(staged);
+              } catch (saveError) {
+                this.state = boundary.persistenceBackup ?? traceRetentionBackup ?? retentionBackup;
+                this.rowIndexes = null;
+                if (traceRetentionBackup) throw traceRetentionError(error, saveError);
+                throw saveError;
+              }
+            } else if (!error.persistenceFailure && ((boundary.independentCommit && !isolated) || retainedTraces)) {
+              try {
+                const events =
+                    boundary.independentCommit && !isolated
+                      ? this.committedEventCandidates.slice(0, boundary.eventCount)
+                      : [],
+                  staged = this.stageOnCommit(events);
+                await this.save();
+                this.committed();
+                if (isolated) this._state = frame.working;
+                this.dispatchCommittedEvents(events);
+                this.afterStagedCommit(staged);
+              } catch (saveError) {
+                if (boundary.persistenceBackup !== null) this.state = boundary.persistenceBackup;
+                else if (traceRetentionBackup) this.state = traceRetentionBackup;
+                this.rowIndexes = null;
+                if (traceRetentionBackup) throw traceRetentionError(error, saveError);
+                throw saveError;
+              }
+            }
+            throw error;
+          } finally {
+            if (rowTransaction?.promoted || (!rowTransaction && (!skipSaveIfUnchanged || boundary.backup !== null)))
+              this.rowIndexes = null;
+            this.rowTransaction = previousRows;
+            this.pluginRollbackBoundary = previousBoundary;
+            this.pluginInTransaction = previousTransaction;
+            this.committedEventCandidates = previousEvents;
+            if (isolated) this.isolatedCount -= 1;
+            frame.closed = true;
+            frame.working = null;
+            frame.initializationDelta = null;
+            frame.initializationFingerprint = null;
           }
-        } else if (!error.persistenceFailure && ((boundary.independentCommit && !isolated) || retainedTraces)) {
-          try {
-            const events =
-                boundary.independentCommit && !isolated
-                  ? this.committedEventCandidates.slice(0, boundary.eventCount)
-                  : [],
-              staged = this.stageOnCommit(events);
-            await this.save();
-            this.committed();
-            if (isolated) this._state = frame.working;
-            this.dispatchCommittedEvents(events);
-            this.afterStagedCommit(staged);
-          } catch (saveError) {
-            if (boundary.persistenceBackup !== null) this.state = boundary.persistenceBackup;
-            else if (traceRetentionBackup) this.state = traceRetentionBackup;
-            this.rowIndexes = null;
-            if (traceRetentionBackup) throw traceRetentionError(error, saveError);
-            throw saveError;
-          }
-        }
-        throw error;
-      } finally {
-        if (rowTransaction?.promoted || (!rowTransaction && (!skipSaveIfUnchanged || boundary.backup !== null)))
-          this.rowIndexes = null;
-        this.rowTransaction = previousRows;
-        this.pluginRollbackBoundary = previousBoundary;
-        this.pluginInTransaction = previousTransaction;
-        this.committedEventCandidates = previousEvents;
-        if (isolated) this.isolatedCount -= 1;
-        frame.closed = true;
-        frame.working = null;
-        frame.initializationDelta = null;
-        frame.initializationFingerprint = null;
-      }
-    });
+        },
+        { fresh: true },
+      ),
+    );
     this.queue = run.catch(() => {});
+    const settled = () => {
+      this.transactionsQueued--;
+    };
+    run.then(settled, settled);
     return run;
   }
   /** Rewrite a streamed checkpoint without copying the in-memory state. Queued
@@ -1894,6 +2095,7 @@ export class DataStore {
       for (const [name, entry] of indexes) if (!entry.moved(rows, index, previous, row)) indexes.delete(name);
   }
   mutateRow(table, rows, index, values) {
+    assertPluginExecutionActive(this);
     validateRowIndex(rows, index);
     const indexes = this.rowIndexes?.get(rows),
       keys = indexes?.size ? [...indexes].map(([name, entry]) => [name, entry, entry.keyOf(rows[index])]) : null;
@@ -1903,6 +2105,7 @@ export class DataStore {
       if (!entry.moved(rows, index, null, rows[index], previous)) indexes.delete(name);
   }
   insertRow(table, rows, row) {
+    assertPluginExecutionActive(this);
     if (this.rowTransaction) this.rowTransaction.insert(table, rows, rows.length, row);
     else rows.push(row);
     const indexes = this.rowIndexes?.get(rows);
@@ -1931,6 +2134,7 @@ export class DataStore {
     return restored;
   }
   removeRow(table, rows, index) {
+    assertPluginExecutionActive(this);
     validateRowIndex(rows, index);
     const indexes = this.rowIndexes?.get(rows),
       removed = rows[index];
@@ -1948,7 +2152,7 @@ export class DataStore {
   rowKeyIndex(rows, name, keyOf, { scoped = false, wild = false } = {}) {
     let frame;
     if (scoped) {
-      frame = transactionFrames.getStore();
+      frame = transactionFrameOf(this);
       if (!frame || frame.store !== this || frame.closed) return null;
     }
     this.rowIndexes ??= new WeakMap();
@@ -2021,6 +2225,8 @@ export class DataStore {
    * already participates in the plugin transaction. Independent PreValidation
    * requests commit before a later primary-operation rejection. */
   sdkMutation(fn) {
+    if (!this.hasOperationContext()) return this.withOperationContext(() => this.sdkMutation(fn));
+    this.openReadLane();
     const savepoint = this.sdkSavepoint();
     try {
       const result = fn();
@@ -2028,6 +2234,7 @@ export class DataStore {
       return result;
     } catch (error) {
       savepoint.rollback();
+      this.markPluginTransactionFailure(error);
       throw error;
     } finally {
       savepoint.close();
@@ -2037,6 +2244,7 @@ export class DataStore {
    * same savepoint, held until fn's promise settles. The caller runs inside the store's transaction queue (the flow run's
    * transaction), so no other write interleaves while the call awaits its I/O. */
   async sdkMutationAsync(fn) {
+    if (!this.hasOperationContext()) return this.withOperationContext(() => this.sdkMutationAsync(fn));
     const savepoint = this.sdkSavepoint();
     try {
       const result = await fn();
@@ -2044,17 +2252,118 @@ export class DataStore {
       return result;
     } catch (error) {
       savepoint.rollback();
+      this.markPluginTransactionFailure(error);
       throw error;
     } finally {
       savepoint.close();
     }
   }
+  /** A Retrieve or RetrieveMultiple step's SDK write commits in a transaction of its own (native readNested: the
+   * children persist after the read's own fault). A read outside any transaction (pluginReadOnly: none of its own, and
+   * never one borrowed from another request) opens a private lane at its first SDK write: from then on the read works on
+   * a copy of the committed state, so the step sees its own writes while other operations do not. When the read ends
+   * (closeReadLane) the rows its SDK writes left, its committed events and its trace rows commit in one transaction queued
+   * behind the open ones, rebased onto the state they leave: created rows are inserted, changed columns set, deleted rows
+   * removed. ponytail: the rebase diffs the lane's tables against the state it started from (O(state) per lane, only for
+   * a read whose step writes) and keeps last-writer-wins columns; a row another transaction deleted meanwhile is not
+   * recreated by a column change. */
+  openReadLane() {
+    if (this.pluginReadOnly !== true || this.pluginRollbackBoundary || this.pluginReadLane) return;
+    const base = this._state,
+      frame = { store: this, working: cloneInternal(base), initializing: false, parent: transactionFrames.getStore() },
+      boundary = { backup: null, independentCommit: false, eventCount: 0, parent: null };
+    const lane = {
+      base,
+      frame,
+      boundary,
+      previous: {
+        frame: frame.parent,
+        rowTransaction: this.rowTransaction,
+        committedEventCandidates: this.committedEventCandidates,
+      },
+    };
+    this.isolatedCount = (this.isolatedCount ?? 0) + 1;
+    transactionFrames.enterWith(frame);
+    this.pluginReadLane = lane;
+    this.pluginRollbackBoundary = boundary;
+    this.pluginReadOnly = false;
+    this.rowTransaction = null;
+    this.committedEventCandidates = [];
+  }
+  /** Ends the lane `closeReadLane` finds opened since `previous` (the lane before the read began): `failure` is the read's
+   * own error, after which only the SDK writes that completed (and its trace rows) commit, plus what a rollback note
+   * stages on its own (stageFaultedRead). */
+  closeReadLane(previous, failure = null) {
+    const lane = this.pluginReadLane;
+    if (!lane || lane === previous || lane.closed) return;
+    lane.closed = true;
+    const { boundary, frame } = lane,
+      committed = boundary.independentCommit ? boundary.backup : null,
+      events = failure
+        ? (this.committedEventCandidates ?? []).slice(0, boundary.eventCount)
+        : [...(this.committedEventCandidates ?? [])],
+      traces = [...(boundary.pluginTraceRows?.values() ?? [])].map((row) => clone(row));
+    frame.closed = true;
+    frame.working = null;
+    this.isolatedCount--;
+    transactionFrames.enterWith(lane.previous.frame);
+    this.pluginReadLane = previous ?? null;
+    this.pluginRollbackBoundary = null;
+    this.pluginReadOnly = true;
+    this.rowTransaction = lane.previous.rowTransaction;
+    this.committedEventCandidates = lane.previous.committedEventCandidates;
+    this.rowIndexes = null;
+    if (failure)
+      for (const note of boundary.rollbackNotes ?? [])
+        try {
+          note(failure);
+        } catch {
+          /* a note never changes the failure */
+        }
+    const changes = committed ? laneChanges(lane.base, committed) : [];
+    if (!changes.length && !events.length && !traces.length) return;
+    const commit = this.withOperationContext(
+      () =>
+        this.transact(
+          () => {
+            applyLaneChanges(this, changes, committed);
+            for (const row of traces) {
+              const rows = (this.state.tables.plugintracelog ??= []);
+              if (!rows.some((value) => value.plugintracelogid === row.plugintracelogid))
+                this.insertRow('plugintracelog', rows, row);
+            }
+            this.committedEventCandidates.push(...events);
+          },
+          { skipSaveIfUnchanged: true },
+        ),
+      { fresh: true },
+    );
+    const tracked = commit
+      .catch((error) => {
+        (this.committedEventErrors ??= []).push({ code: error.code ?? 'ReadLaneCommitError', message: error.message });
+        throw error;
+      })
+      .finally(() => this.readLaneCommits.delete(tracked));
+    tracked.catch(() => {});
+    (this.readLaneCommits ??= new Set()).add(tracked);
+  }
+  /** Resolves once the read lanes closed so far committed (rejects with a lane's commit failure). */
+  async settleReadLanes() {
+    await Promise.all([...(this.readLaneCommits ?? [])]);
+  }
   // One SDK call's savepoint (sdkMutation, sdkMutationAsync): commit, rollback, then close.
   sdkSavepoint() {
+    assertPluginExecutionActive(this);
+    this.assertPluginTransactionActive();
     this.ensureReadSnapshot();
     const joined = this.pluginInTransaction === true,
       previousBoundary = this.pluginRollbackBoundary,
       previousRows = this.rowTransaction;
+    const pluginCaller = Boolean(this.pluginParentContext || pluginInvocationDepth(this) > 0);
+    const previousFailures = [];
+    if (!pluginCaller)
+      for (let parent = previousBoundary; parent; parent = parent.parent)
+        previousFailures.push([parent, parent.transactionFailure]);
     // A nested RowTransaction is the call's savepoint: it journals the call's row writes instead of copying the
     // whole state first. Handler code that may write arbitrary state promotes it (promoteRowTransaction), which
     // fills boundary.backup with the complete pre-call copy.
@@ -2069,6 +2378,7 @@ export class DataStore {
     this.rowTransaction = savepoint;
     return {
       commit: () => {
+        this.assertPluginTransactionActive();
         this.rowTransaction = previousRows;
         if (!joined && previousBoundary) {
           previousBoundary.backup = cloneInternal(this.state);
@@ -2085,6 +2395,13 @@ export class DataStore {
         this.rowIndexes = null;
         this.restorePluginTraceLogs(boundary);
         if (this.committedEventCandidates) this.committedEventCandidates.length = boundary.eventCount;
+        // A service request initiated by a flow/connector can fail and be handled
+        // by that caller. Its plug-in transaction failure belongs to this primary
+        // request; a plug-in's own nested SDK call still poisons its active caller.
+        for (const [parent, failure] of previousFailures) {
+          if (failure === undefined) delete parent.transactionFailure;
+          else parent.transactionFailure = failure;
+        }
         if (!joined && boundary.independentCommit && previousBoundary) {
           previousBoundary.backup = cloneInternal(this.state);
           previousBoundary.independentCommit = true;
@@ -2096,6 +2413,39 @@ export class DataStore {
         this.rowTransaction = previousRows;
       },
     };
+  }
+  /** A failed OrganizationService operation terminates its synchronous caller's
+   * transaction. Savepoints retain rollback precision, but cannot make a caught
+   * service fault into a successful outer operation. */
+  markPluginTransactionFailure(cause) {
+    if (cause?.code === 'LocalPluginExecutionExpired' || transactionFrameOf(this, { closed: true })?.closed) return;
+    // A request refused before it wrote anything leaves the transaction usable for a plug-in that catches the fault: a
+    // missing row (recorded native sdkSurface: Update of a missing id faults 0x80040217), an unknown column (0x80041103) and
+    // an Update or Delete privilege refusal, which natively comes before any step (runAsSecond); a refused Create does not.
+    if (cause?.code === 'NotFound' || cause?.details?.innerCode === '0x80040217' || cause?.details?.refusedBeforeWrite)
+      return;
+    // A local limitation (501: the plug-in receives a NotSupportedException, never a native fault) is not a native abort:
+    // its savepoint rolled the call back and the caller's transaction stays usable, so later calls are not reported as
+    // the native 0x8009000c.
+    if (cause instanceof DataError && cause.status === 501) return;
+    if (
+      !this.pluginInTransaction ||
+      !this.pluginRollbackBoundary ||
+      !(this.pluginParentContext || pluginInvocationDepth(this) > 0)
+    )
+      return;
+    const failure = new DataError(
+      'ISV code reduced the open transaction count. Custom plug-ins should not catch exceptions from OrganizationService calls and continue processing.',
+      400,
+      'PluginTransactionAborted',
+      { innerCode: '0x8009000c', cause: cause?.message ?? String(cause) },
+    );
+    for (let boundary = this.pluginRollbackBoundary; boundary; boundary = boundary.parent)
+      boundary.transactionFailure ??= failure;
+  }
+  assertPluginTransactionActive() {
+    for (let boundary = this.pluginRollbackBoundary; boundary; boundary = boundary.parent)
+      if (boundary.transactionFailure) throw boundary.transactionFailure;
   }
   checkpointElastic(mapping, row, removed = false) {
     if (!isElastic(mapping)) return;
@@ -2172,6 +2522,12 @@ export class DataStore {
     this.deleteGuards.add(fn);
     return () => this.deleteGuards.delete(fn);
   }
+  /** When and in which order an operation's PostOperation began: native creates its asynchronous jobs then, so a nested
+   * operation's job is created after its caller's (corpus depth.json: job createdon and ids rise with Depth). */
+  operationMark() {
+    this.operationSequence = (this.operationSequence ?? 0) + 1;
+    return { at: this.clock.now(), sequence: this.operationSequence };
+  }
   /** The span (or request-context ids) current when `event` was recorded (tracing), or null. */
   stagingSpan(event) {
     return (event && typeof event === 'object' && this.stagingSpans?.get(event)) || null;
@@ -2190,15 +2546,23 @@ export class DataStore {
       row: clone(row),
       submittedAttributes: [...attributes],
       ...clone(details),
-      frame: clone(this.pluginFrames?.get(row) ?? {}),
+      frame: clone(details.frame ?? this.pluginFrames?.get(row) ?? {}),
       chain: this.flowChain ? clone(this.flowChain) : null,
       correlationId: currentRequest()?.correlationId ?? null,
+      operationMark: details.operationMark ?? this.operationMark(),
+      // The SDK run-as user and the platform main operation's user at the write: its asynchronous jobs run as them.
+      executionUserId: this.pluginExecutionUserId ?? null,
+      platformUserId: this.pluginPlatformUserId ?? null,
     };
+    // The operation's synchronous caller chain, for its asynchronous jobs' ParentContext (plugin-sdk-parent.mjs
+    // asynchronousParentChain): a named message's steps see it directly, a record operation under its main operation.
+    if (event.frame && typeof event.frame === 'object' && event.frame.asyncCallerParent === undefined)
+      event.frame.asyncCallerParent = asyncCallerParent(this.pluginParentContext ?? pluginInvocationSdkParent(this));
     // The staging span (tracing): kept beside the event, never in it (the event is persisted in asyncoperation.data), so a
     // job staged from it remembers it as its parent (committed-work.mjs stage, stagingSpan).
     const staging = this.traces?.enabled ? (this.traces.current() ?? currentRequest()) : null;
     if (staging?.traceId) (this.stagingSpans ??= new WeakMap()).set(event, staging);
-    for (const observer of this.mutationObservers ?? []) {
+    for (const observer of details.messageEvent ? [] : (this.mutationObservers ?? [])) {
       const matched = observer.matches ? observer.matches(clone(event)) : true;
       if (matched && typeof matched.then === 'function') {
         Promise.resolve(matched).catch(() => {});
@@ -2283,7 +2647,7 @@ export class DataStore {
         // instead of copying it on the successful path; failed saves still restore
         // a detached copy through the ordinary transaction rollback.
         const boundary = this.pluginRollbackBoundary;
-        const frame = transactionFrames.getStore();
+        const frame = transactionFrameOf(this);
         if (frame?.store === this && frame.initializing) {
           // No readers have been published. A failed initialization discards
           // the store, so its superseded graph need not survive the streamed
@@ -2322,7 +2686,8 @@ export class DataStore {
   setPluginPipeline(provider, active = () => true, requiresCheckpoint = () => true) {
     if (typeof provider !== 'function') throw new DataError('Plugin pipeline must be a function.');
     this.pluginPipeline = provider;
-    this.pluginPipelineActive = active;
+    this.pluginPipelineActive = (context = {}) =>
+      !provider.steps && pluginStepBypassed(provider, context, provider.diagnostic) ? false : active(context);
     this.pluginPipelineRequiresCheckpoint = requiresCheckpoint;
   }
   /**
@@ -2334,6 +2699,7 @@ export class DataStore {
    * so both drivers fail, roll back and restore pluginInTransaction exactly as one synchronous call does.
    */
   runRecordSteps(steps) {
+    if (!this.hasOperationContext()) return this.withOperationContext(() => this.runRecordSteps(steps));
     let next = steps.next();
     while (!next.done) {
       let answer,
@@ -2349,6 +2715,7 @@ export class DataStore {
     return next.value;
   }
   async awaitRecordSteps(steps) {
+    if (!this.hasOperationContext()) return this.withOperationContext(() => this.awaitRecordSteps(steps));
     let next = steps.next();
     while (!next.done) {
       let answer,
@@ -2366,6 +2733,26 @@ export class DataStore {
   }
   /** Runs fn(error) when the outermost open transaction rolls back: the note for a post that already left the process and
    * cannot be withdrawn (dataverse-webhooks.mjs SERVICE_ENDPOINT_SENT_BEFORE_ROLLBACK). Outside a transaction it does nothing. */
+  /** A read whose PostOperation synchronous step faulted still queues its asynchronous steps (native readNested): inside a
+   * transaction the event joins it and, when that transaction rolls back with the fault, is staged in a queued transaction
+   * of its own; outside one it is staged on its own at once. */
+  stageFaultedRead(entity, operation, record, details) {
+    if (!this.commitStagers?.size) return;
+    const readEvent = clone(details),
+      readRecord = clone(record),
+      stage = () =>
+        this.transact(() => this.recordCommittedEvent(entity, operation, readRecord, [], readEvent), {
+          skipSaveIfUnchanged: true,
+        }).catch((error) => {
+          (this.committedEventErrors ??= []).push({ code: error.code ?? 'CommitStagerError', message: error.message });
+        });
+    if (!this.committedEventCandidates) return void stage();
+    readEvent.frame.asyncCallerParent ??= asyncCallerParent(
+      this.pluginParentContext ?? pluginInvocationSdkParent(this),
+    );
+    this.recordCommittedEvent(entity, operation, record, [], clone(readEvent));
+    this.onRollback(stage);
+  }
   onRollback(fn) {
     let boundary = this.pluginRollbackBoundary;
     while (boundary?.parent) boundary = boundary.parent;
@@ -2391,19 +2778,62 @@ export class DataStore {
     awaitIo = false,
   ) {
     if (stage !== 10) this.pluginInTransaction = !isElastic(mapping);
-    // Dataverse writes with bypassCustomPlugins (MSCRM.BypassCustomPluginExecution) skip exported plug-ins.
-    if (options.bypassCustomPlugins) return;
-    if (!this.pluginPipeline || !this.pluginPipelineActive({ entity: mapping.logicalName, operation })) return;
+    if (operation === 'update') changedAttributes = Object.keys(target ?? {});
+    // The merged bulk driver already ran every selected source step. Public
+    // custom-logic bypass instead remains a per-step ownership decision.
+    if (options.skipPluginPipeline) return;
+    const stepsRun = (bypassCustomPlugins) =>
+      this.pluginPipelineActive({
+        entity: mapping.logicalName,
+        operation,
+        bypassCustomPlugins,
+        bypassStepIds: options.bypassStepIds,
+      });
+    // A request that bypasses its synchronous custom steps (MSCRM.BypassCustomPluginExecution, CustomSync) still
+    // queues its asynchronous ones (native bypassHeaders): with a step catalogue its phases run, without those steps, so
+    // the jobs keep the request's frame (tag, request identity, inputs).
+    if (
+      !this.pluginPipeline ||
+      !(
+        stepsRun(options.bypassCustomPlugins) ||
+        (options.bypassCustomPlugins === true &&
+          this.pluginPipeline.steps &&
+          stepsRun(options.bypassCustomAsync === true))
+      )
+    ) {
+      // A named message's main-operation write without steps of its own still changes the request root its
+      // PostOperation lists (native soapMessages Assign/40, mergeAccount Merge/40; exported-plugins runPluginPhase
+      // records it when the write runs a pipeline).
+      if (
+        stage === 40 &&
+        this.pluginMainOperation?.namedMessage &&
+        ownershipOf(mapping.logicalName, null, mapping) === 'user'
+      )
+        recordRequestRootChange(this, this.pluginMainOperation.context?.values?.RequestId?.value, {
+          table: mapping.logicalName,
+        });
+      return;
+    }
     if (
       this.rowTransaction &&
-      this.pluginPipelineRequiresCheckpoint({ entity: mapping.logicalName, operation, stage, changedAttributes })
+      this.pluginPipelineRequiresCheckpoint({
+        entity: mapping.logicalName,
+        operation,
+        stage,
+        changedAttributes,
+        bypassCustomPlugins: options.bypassCustomPlugins,
+        bypassStepIds: options.bypassStepIds,
+      })
     ) {
       // Trusted external handlers may mutate arbitrary state, including nested
       // SDK transactions. Promote only when one actually executes, preserving
       // their independent PreValidation commit/rollback semantics.
       this.promoteRowTransaction();
     }
-    const id = row[mapping.idColumn];
+    const id = row[mapping.idColumn],
+      targetPrimary = target?.[mapping.idColumn];
+    if (operation === 'update' && options.preValidationSourceOperation === 'upsert' && !options.frameworkInputTarget)
+      options.frameworkInputTarget = clone(target);
     const frame = this.pluginPipeline?.({
       entity: mapping.logicalName,
       operation,
@@ -2414,13 +2844,34 @@ export class DataStore {
       identity,
       changedAttributes,
       portalRequest: options.portalRequest === true,
+      sdkFromSandbox: options.sdkFromSandbox === true,
+      acceptLanguage: options.pluginAcceptLanguage ?? '',
+      ...(options.frameworkInputTarget ? { frameworkInputTarget: options.frameworkInputTarget } : {}),
+      ...(stage !== 10 && this.pluginMainTargets?.has(row) ? { mainTarget: this.pluginMainTargets.get(row) } : {}),
+      ...(options.preValidationSourceOperation
+        ? { preValidationSourceOperation: options.preValidationSourceOperation }
+        : {}),
+      ...(options.targetKeyAttributes ? { targetKeyAttributes: options.targetKeyAttributes } : {}),
+      // A record a bulk message delegates runs only its own message's steps (plugin-single-multiple.mjs).
+      ...(options.bulkOrigin ? { bulkOrigin: true } : {}),
+      ...(options.omitConcurrencyBehavior
+        ? { concurrencyBehavior: null }
+        : options.pluginConcurrencyBehavior === undefined
+          ? {}
+          : { concurrencyBehavior: options.pluginConcurrencyBehavior }),
+      bypassStepIds: options.bypassStepIds,
+      bypassCustomPlugins: options.bypassCustomPlugins,
+      bypassCustomAsync: options.bypassCustomAsync === true,
+      systemParameters: options.systemParameters,
       ...(awaitIo ? { awaitIo: true } : {}),
     });
     if (typeof frame?.then === 'function')
-      return frame.then((answer) => this.afterPluginPhase(mapping, operation, stage, target, row, options, id, answer));
-    this.afterPluginPhase(mapping, operation, stage, target, row, options, id, frame);
+      return frame.then((answer) =>
+        this.afterPluginPhase(mapping, operation, stage, target, row, options, id, answer, targetPrimary),
+      );
+    this.afterPluginPhase(mapping, operation, stage, target, row, options, id, frame, targetPrimary);
   }
-  afterPluginPhase(mapping, operation, stage, target, row, options, id, frame) {
+  afterPluginPhase(mapping, operation, stage, target, row, options, id, frame, targetPrimary) {
     if (frame) {
       this.pluginFrames ??= new WeakMap();
       this.pluginFrames.set(row, frame);
@@ -2430,10 +2881,37 @@ export class DataStore {
       throw new DataError('Plugin target cannot replace the primary key.', 400, 'LocalPluginInvalid');
     if (stage !== 40 && operation !== 'delete') {
       const normalized = this.normalizeRecord(mapping, target);
-      if (options.coerce) this.coerceRecord(mapping, normalized, options);
-      if (normalized[mapping.idColumn] !== undefined && !equal(normalized[mapping.idColumn], id))
+      // A plug-in Target carries SDK values, not Web API wire input: a DateOnly column holds a DateTime and a choices
+      // column an option array (OptionSetValueCollection), stored as the Web API's comma-separated values.
+      if (options.dataverseWebApi)
+        for (const [key, value] of Object.entries(normalized))
+          if (
+            Array.isArray(value) &&
+            fieldKind(this.fieldDefinition(mapping.logicalName, key, options.metadata)) === 'multichoice'
+          )
+            normalized[key] = value.join(',');
+      if (options.coerce)
+        this.coerceRecord(mapping, normalized, {
+          ...options,
+          dataverseWebApi: false,
+          dataverseHttpReader: undefined,
+          odataErrorDetails: false,
+        });
+      const retainsEmpty =
+        operation === 'create' &&
+        stage === 10 &&
+        targetPrimary === '00000000-0000-0000-0000-000000000000' &&
+        normalized[mapping.idColumn] === targetPrimary;
+      if (normalized[mapping.idColumn] !== undefined && !equal(normalized[mapping.idColumn], id) && !retainsEmpty)
         throw new DataError('Plugin target cannot replace the primary key.', 400, 'LocalPluginInvalid');
+      // An empty text value stays an empty string in the Target while the row stores null.
+      const blanks = Object.keys(normalized).filter((name) => target[name] === '' && normalized[name] === null);
       Object.assign(target, normalized);
+      for (const name of blanks) target[name] = '';
+      // The main operation's own Target (a later step's Create/Update stage-30 parent) is the Target as
+      // PreValidation left it, before platform stamps and PreOperation edits.
+      if (stage === 10) (this.pluginMainTargets ??= new WeakMap()).set(row, clone(target));
+      if (retainsEmpty) delete normalized[mapping.idColumn];
       Object.assign(row, normalized);
       if (options.coerce) this.assertStateStatus(mapping, row, options);
     }
@@ -2897,6 +3375,7 @@ export class DataStore {
     return out;
   }
   get(entity, id, identity = {}, options = {}) {
+    if (!this.hasOperationContext()) return this.withOperationContext(() => this.get(entity, id, identity, options));
     return this.tracedRead(
       'retrieve',
       entity,
@@ -2940,30 +3419,55 @@ export class DataStore {
   }
   readRecord(entity, id, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
-    const rows = this.tableRows(m.logicalName);
-    let row = rows[this.rowIndex(m, rows, id, options)];
-    if (!row) return null;
-    this.traceRecord(m.logicalName, row[m.idColumn]);
-    this.assertAllowed(m.logicalName, 'read', row, identity);
-    // A portal read (forms, Liquid entity reads) sees what a Dataverse read answers: computed columns hold their value and
-    // lookups are entity references carrying the target's primary name.
-    if (options.portalRequest) row = this.portalReadRow(m, row);
-    // Column security of the reading principal (portal-authorization.mjs maskRow): the mapped user (enhanced model) or, for a
-    // portal request, the site's application user; secured columns are null or answer their masking rule.
-    if (this.portalAuthorization)
-      row = this.portalAuthorization.maskRow(identity, m.logicalName, row, {
-        portalRequest: options.portalRequest === true,
-      });
+    const read = (key, columns = options.sdkColumns) => {
+      const rows = options.readRow ? null : this.tableRows(m.logicalName);
+      let row = options.readRow ? options.readRow(key) : rows[this.rowIndex(m, rows, key, options)];
+      if (!row) return null;
+      this.traceRecord(m.logicalName, row[m.idColumn]);
+      this.assertAllowed(m.logicalName, 'read', row, identity);
+      options.authorizeRead?.(row);
+      // A portal read (forms, Liquid entity reads) sees what a Dataverse read answers: computed columns hold their value and
+      // lookups are entity references carrying the target's primary name.
+      if (options.portalRequest) row = this.portalReadRow(m, row);
+      // Column security of the reading principal (portal-authorization.mjs maskRow): the mapped user (enhanced model) or, for a
+      // portal request, the site's application user; secured columns are null or answer their masking rule.
+      if (this.portalAuthorization)
+        row = this.portalAuthorization.maskRow(identity, m.logicalName, row, {
+          portalRequest: options.portalRequest === true,
+        });
+      return options.project ? options.project(clone(row), key, columns) : clone(row);
+    };
     if (
       !options.skipPluginRead &&
       this.pluginPipeline &&
-      this.pluginPipelineActive({ entity: m.logicalName, operation: 'retrieve' })
+      this.pluginPipelineActive({
+        entity: m.logicalName,
+        operation: 'retrieve',
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassStepIds: options.bypassStepIds,
+      })
     ) {
       this.ensureReadSnapshot();
-      const record = options.project ? options.project(clone(row)) : clone(row),
-        columns = options.sdkColumns ?? { allColumns: true },
-        holder = { entity: recordToSdkEntity(this, m.logicalName, record, columns) },
-        previousReadOnly = this.pluginReadOnly;
+      const originalId =
+        typeof id === 'string' && GUID_PATTERN.test(id)
+          ? id
+          : (() => {
+              const rows = this.tableRows(m.logicalName);
+              return rows[this.rowIndex(m, rows, id, options)]?.[m.idColumn] ?? '00000000-0000-0000-0000-000000000000';
+            })();
+      const record = { [m.idColumn]: originalId },
+        columns = clone(options.sdkColumns ?? { allColumns: true, columns: [] }),
+        related = options.sdkRelatedEntities ?? [],
+        holder = {
+          target: clone(options.sdkTarget ?? { $type: 'EntityReference', logicalName: m.logicalName, id: originalId }),
+          // A Web API $expand's RelatedEntitiesQuery (dataverse-records.mjs expandRelatedEntities).
+          relatedEntitiesQuery: {
+            $type: 'RelationshipQueryCollection',
+            values: related.map(({ relationship, query }) => clone({ relationship, query })),
+          },
+        },
+        previousReadOnly = this.pluginReadOnly,
+        previousLane = this.pluginReadLane;
       this.pluginReadOnly = !this.pluginRollbackBoundary;
       try {
         this.pluginPipeline({
@@ -2975,7 +3479,11 @@ export class DataStore {
           columns,
           holder,
           changedAttributes: [],
+          ...(options.readInitialFrame ? { initialFrame: options.readInitialFrame } : {}),
+          bypassCustomPlugins: options.bypassCustomPlugins === true,
+          bypassStepIds: options.bypassStepIds,
           portalRequest: options.portalRequest === true,
+          sdkFromSandbox: options.sdkFromSandbox === true,
         });
         this.pluginPipeline({
           entity: m.logicalName,
@@ -2986,19 +3494,67 @@ export class DataStore {
           columns,
           holder,
           changedAttributes: [],
+          bypassCustomPlugins: options.bypassCustomPlugins === true,
+          bypassStepIds: options.bypassStepIds,
           portalRequest: options.portalRequest === true,
+          sdkFromSandbox: options.sdkFromSandbox === true,
         });
-        const responseFrame = this.pluginPipeline({
-          entity: m.logicalName,
-          operation: 'retrieve',
-          stage: 40,
-          record,
-          identity,
-          columns,
-          holder,
-          changedAttributes: [],
-          portalRequest: options.portalRequest === true,
-        });
+        if (
+          holder.target?.$type !== 'EntityReference' ||
+          holder.target.logicalName !== m.logicalName ||
+          typeof holder.target.id !== 'string'
+        )
+          throw new DataError(
+            'Retrieve Target must retain its bound logical table and an ID.',
+            501,
+            'LocalPluginQueryUnsupported',
+          );
+        if (typeof columns.allColumns !== 'boolean' || !Array.isArray(columns.columns ?? []))
+          throw new DataError('Retrieve requires a valid ColumnSet.', 400, 'LocalPluginQueryUnsupported');
+        // A caller without the read privilege is refused here, after PreValidation and PreOperation (recorded native
+        // privilegeSecond; dataverse-records.mjs).
+        options.beforeMainRead?.();
+        const row = read(options.resolveTarget ? options.resolveTarget(holder.target) : holder.target.id, columns);
+        if (!row) return null;
+        Object.assign(record, row, { [m.idColumn]: originalId });
+        holder.entity = recordToSdkReadEntity(this, m.logicalName, row, columns);
+        if (related.length)
+          holder.entity.relatedEntities = related.map(({ relationship, collection }) => ({
+            relationship: clone(relationship),
+            entities: collection(row),
+          }));
+        let responseFrame;
+        try {
+          responseFrame = this.pluginPipeline({
+            entity: m.logicalName,
+            operation: 'retrieve',
+            stage: 40,
+            record,
+            identity,
+            columns,
+            holder,
+            changedAttributes: [],
+            bypassCustomPlugins: options.bypassCustomPlugins === true,
+            bypassStepIds: options.bypassStepIds,
+            portalRequest: options.portalRequest === true,
+            sdkFromSandbox: options.sdkFromSandbox === true,
+          });
+        } catch (error) {
+          // Native readNested (two captures): a Retrieve whose PostOperation synchronous step faults answers the fault,
+          // yet its asynchronous Retrieve steps still run with the read's result (OutputParameters.BusinessEntity). The
+          // read completed outside the failing request, so its event is staged on its own, with the frame at the throw.
+          this.stageFaultedRead(m.logicalName, 'retrieve', record, {
+            target: {},
+            columns,
+            holder,
+            identity,
+            frame: error?.pluginFrame ?? {},
+            messageEvent: true,
+            bypassCustomAsync: options.bypassCustomAsync === true,
+            bypassStepIds: options.bypassStepIds,
+          });
+          throw error;
+        }
         handoffPluginResponse(this, 'retrieve', m.logicalName, responseFrame, options.sdkResponseToken);
         if (
           holder.entity?.$type !== 'Entity' ||
@@ -3006,24 +3562,57 @@ export class DataStore {
           !equal(holder.entity.id, row[m.idColumn])
         )
           throw new DataError('Retrieve output must preserve record identity.', 501, 'LocalPluginQueryUnsupported');
+        // Native runs asynchronous Retrieve steps after the read, with its Target, ColumnSet and result (recorded
+        // readAsync), as RetrieveMultiple's (a message event; a read outside a transaction stages it on its own).
+        const readEvent = clone({
+          target: {},
+          columns,
+          holder,
+          identity,
+          frame: responseFrame ?? {},
+          messageEvent: true,
+          bypassCustomAsync: options.bypassCustomAsync === true,
+          bypassStepIds: options.bypassStepIds,
+        });
+        if (this.committedEventCandidates) this.recordCommittedEvent(m.logicalName, 'retrieve', record, [], readEvent);
+        else if (this.commitStagers?.size)
+          this.transact(() => this.recordCommittedEvent(m.logicalName, 'retrieve', clone(record), [], readEvent), {
+            skipSaveIfUnchanged: true,
+          }).catch((error) => {
+            (this.committedEventErrors ??= []).push({
+              code: error.code ?? 'CommitStagerError',
+              message: error.message,
+            });
+          });
         return {
+          ...Object.fromEntries(Object.entries(row).filter(([, value]) => value === null)),
+          ...Object.fromEntries(
+            (options.preserveProperties ?? [])
+              .filter((key) => Object.hasOwn(row, key))
+              .map((key) => [key, clone(row[key])]),
+          ),
           ...sdkValueToRecord(holder.entity),
           [m.idColumn]: row[m.idColumn],
           ...(isElastic(m) ? { partitionid: row.partitionid ?? null } : {}),
         };
+      } catch (error) {
+        this.closeReadLane(previousLane, error);
+        throw error;
       } finally {
+        this.closeReadLane(previousLane);
         this.pluginReadOnly = previousReadOnly;
       }
     }
     // options.project (records readInternal): the shared read projection over a copy of the stored row.
-    const read = options.project ? options.project(clone(row)) : row;
+    const row = read(id);
+    if (!row) return null;
     if (options.sdkColumns)
       return {
-        ...sdkValueToRecord(recordToSdkEntity(this, m.logicalName, read, options.sdkColumns)),
+        ...sdkValueToRecord(recordToSdkEntity(this, m.logicalName, row, options.sdkColumns)),
         [m.idColumn]: row[m.idColumn],
         ...(isElastic(m) ? { partitionid: row.partitionid ?? null } : {}),
       };
-    return options.project ? read : clone(row);
+    return row;
   }
   /** Field metadata from explicit mappings or a caller-supplied solution metadata resolver. */
   fieldDefinition(logical, attribute, metadata) {
@@ -3488,6 +4077,8 @@ export class DataStore {
    * Web API grammar; the default "extended" dialect serves internal reads.
    */
   query(entity, params = {}, identity = {}, paging, options = {}) {
+    if (!this.hasOperationContext())
+      return this.withOperationContext(() => this.query(entity, params, identity, paging, options));
     return this.tracedRead(
       'retrievemultiple',
       entity,
@@ -3582,8 +4173,14 @@ export class DataStore {
       !paging &&
       options.id == null &&
       !options.ids &&
+      !options.skipPluginRead &&
       this.pluginPipeline &&
-      this.pluginPipelineActive({ entity: mapping.logicalName, operation: 'retrievemultiple' }) &&
+      this.pluginPipelineActive({
+        entity: mapping.logicalName,
+        operation: 'retrievemultiple',
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassStepIds: options.bypassStepIds,
+      }) &&
       Object.keys(p).every((key) => ['$select', '$filter', '$orderby', '$top', '$count'].includes(key)) &&
       String(p.$top ?? '') !== '0' &&
       (p.$count === undefined || ['true', 'false'].includes(p.$count)) &&
@@ -3591,7 +4188,7 @@ export class DataStore {
     ) {
       const scalarParams = { ...p };
       delete scalarParams.$count;
-      const sdkQuery = odataToSdkQuery(mapping.logicalName, scalarParams);
+      const sdkQuery = odataToSdkQuery(mapping.logicalName, scalarParams, this);
       const answer = this.fetchXml(queryExpressionToFetch(sdkQuery, this), identity, {
         ...options,
         profile: 'webapi',
@@ -3607,37 +4204,73 @@ export class DataStore {
     }
     if (
       !this.pluginPipeline ||
-      !this.pluginPipelineActive({ entity: mapping.logicalName, operation: 'retrievemultiple' })
+      !this.pluginPipelineActive({
+        entity: mapping.logicalName,
+        operation: 'retrievemultiple',
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassStepIds: options.bypassStepIds,
+      })
     )
       return this.queryCore(entity, params, identity, paging, options);
-    const original = options.sdkQuery ?? odataToSdkQuery(mapping.logicalName, params);
+    if (options.skipPluginRead) return this.queryCore(entity, params, identity, paging, options);
+    const original = options.sdkQuery ?? odataToSdkQuery(mapping.logicalName, params, this);
+    // A Web API collection GET shows its steps the query as FetchXML (recorded native reads); an edited one is read back.
+    const shown =
+      (!options.sdkQuery &&
+        options.webApiFetchQuery &&
+        webApiFetchExpression(original, this, options.webApiFetchQuery)) ||
+      original;
+    // The result's entities keep the columns the effective query selects (the FetchExpression names none itself).
+    const columnsOf = (answer, query) =>
+      shown === original ? answer : Object.defineProperty(answer, 'sdkColumnSet', { value: query.columnSet });
     return this.retrieveMultipleOperation(
       mapping.logicalName,
-      original,
+      shown,
       identity,
       (query) => {
+        if (shown.$type === 'FetchExpression' && query.$type === 'FetchExpression')
+          query = query.query === shown.query ? original : webApiFetchToQuery(query.query, this);
         if (!['QueryExpression', 'QueryByAttribute'].includes(query.$type) || query.entityName !== mapping.logicalName)
           throw new DataError(
             'A RetrieveMultiple plugin cannot change the bound query table or query language.',
             501,
             'LocalPluginQueryUnsupported',
           );
-        const converted = sdkQueryParameters(query);
+        if (sameSdkQuery(query, original))
+          return columnsOf(
+            this.queryCore(entity, params, identity, paging, { ...options, captureRootIds: true }),
+            query,
+          );
+        const projectedQuery = clone(query);
+        const preserveFilter = sameSdkQuery(query.criteria, original.criteria);
+        if (preserveFilter) projectedQuery.criteria = { operatorName: 'And', conditions: [], filters: [] };
+        const converted = { ...p };
+        const rewritten = sdkQueryParameters(projectedQuery);
+        for (const key of ['$select', '$filter', '$orderby', '$top']) {
+          if (key === '$filter' && preserveFilter) continue;
+          delete converted[key];
+          if (rewritten[key] !== undefined) converted[key] = rewritten[key];
+        }
         if (!query.columnSet?.allColumns && !query.columnSet?.columns?.length) converted.$select = mapping.idColumn;
         if (converted.$select && !converted.$select.split(',').includes(mapping.idColumn))
           converted.$select += ',' + mapping.idColumn;
-        return this.queryCore(entity, converted, identity, paging, options);
+        return columnsOf(this.queryCore(entity, converted, identity, paging, options), query);
       },
       'value',
       options.sdkResponseToken,
-      options,
+      { ...options, preserveProperties: parseExpand(p.$expand).map((item) => item.navigation) },
     );
   }
   retrieveMultipleOperation(entity, original, identity, execute, key, responseToken, options = {}) {
+    if (!this.hasOperationContext())
+      return this.withOperationContext(() =>
+        this.retrieveMultipleOperation(entity, original, identity, execute, key, responseToken, options),
+      );
     const mapping = this.resolveMapping(entity),
       query = clone(original),
       record = { [mapping.idColumn]: '00000000-0000-0000-0000-000000000000' },
-      previousReadOnly = this.pluginReadOnly;
+      previousReadOnly = this.pluginReadOnly,
+      previousLane = this.pluginReadLane;
     if (
       !identity.admin &&
       this.state.settings.permissionMode !== 'permissive' &&
@@ -3655,6 +4288,9 @@ export class DataStore {
         record,
         identity,
         changedAttributes: [],
+        ...(options.readInitialFrame ? { initialFrame: options.readInitialFrame } : {}),
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassStepIds: options.bypassStepIds,
         portalRequest: options.portalRequest === true,
       });
       if (
@@ -3672,8 +4308,11 @@ export class DataStore {
         record,
         identity,
         changedAttributes: [],
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassStepIds: options.bypassStepIds,
         portalRequest: options.portalRequest === true,
       });
+      options.beforeMainRead?.();
       const answer = execute(query),
         collection =
           key === 'entities'
@@ -3683,13 +4322,34 @@ export class DataStore {
               })
             : {
                 $type: 'EntityCollection',
-                entities: (answer[key] ?? []).map((row) =>
-                  recordToSdkEntity(this, entity, row, query.columnSet ?? { allColumns: true }),
+                entities: (answer[key] ?? []).map((row, index) =>
+                  recordToSdkReadEntity(
+                    this,
+                    entity,
+                    answer.sdkRootIds?.[index] === undefined
+                      ? row
+                      : { ...row, [mapping.idColumn]: row[mapping.idColumn] ?? answer.sdkRootIds[index] },
+                    answer.sdkColumnSet ?? query.columnSet ?? { allColumns: false, columns: [] },
+                  ),
                 ),
                 entityName: entity,
                 minActiveRowVersion: '-1',
                 moreRecords: Boolean(answer['@odata.nextLink'] ?? answer.more_records),
-                pagingCookie: answer.paging_cookie ?? null,
+                pagingCookie:
+                  answer.paging_cookie ??
+                  readPagingCookie(
+                    query,
+                    mapping.idColumn,
+                    (answer[key] ?? []).map((row, index) => row[mapping.idColumn] ?? answer.sdkRootIds?.[index]),
+                    // The page's $orderby values precede the key, as in the HTTP skiptoken (native-r2 faults); a secured
+                    // column's values never travel in a cookie.
+                    (answer.paging?.order ?? []).filter(
+                      (column) =>
+                        !isSecuredField(
+                          this.fieldDefinition(entity, column.name.replace(/^_(.+)_value$/, '$1'), options.metadata),
+                        ),
+                    ),
+                  ),
                 totalRecordCount: answer['@odata.count'] ?? answer.total_record_count ?? -1,
               };
       const responseFrame = this.pluginPipeline({
@@ -3701,6 +4361,8 @@ export class DataStore {
         record,
         identity,
         changedAttributes: [],
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassStepIds: options.bypassStepIds,
         portalRequest: options.portalRequest === true,
       });
       handoffPluginResponse(this, 'retrievemultiple', mapping.logicalName, responseFrame, responseToken);
@@ -3714,7 +4376,68 @@ export class DataStore {
           501,
           'LocalPluginQueryUnsupported',
         );
-      answer[key] = collection.entities.map((e) => sdkValueToRecord(e));
+      // Native runs asynchronous RetrieveMultiple steps after the read, with its query and result (a message event:
+      // flows and mutation observers ignore it). A read outside a transaction stages it in its own queued transaction.
+      const readEvent = clone({
+        target: {},
+        query,
+        collection,
+        identity,
+        frame: responseFrame ?? {},
+        messageEvent: true,
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+      });
+      if (this.committedEventCandidates) {
+        this.recordCommittedEvent(entity, 'retrievemultiple', record, [], readEvent);
+        // The read itself completed outside the transaction (IsInTransaction false): a later rollback of the
+        // enclosing request does not withdraw its asynchronous job (native faults: a failed Upsert's existence read
+        // still ran its asynchronous RetrieveMultiple step).
+        if (this.commitStagers?.size) {
+          const deferred = clone(readEvent),
+            readRecord = clone(record);
+          deferred.frame.asyncCallerParent ??= asyncCallerParent(
+            this.pluginParentContext ?? pluginInvocationSdkParent(this),
+          );
+          this.onRollback(() =>
+            this.transact(() => this.recordCommittedEvent(entity, 'retrievemultiple', readRecord, [], deferred), {
+              skipSaveIfUnchanged: true,
+            }).catch((error) => {
+              (this.committedEventErrors ??= []).push({
+                code: error.code ?? 'CommitStagerError',
+                message: error.message,
+              });
+            }),
+          );
+        }
+      } else if (this.commitStagers?.size)
+        this.transact(() => this.recordCommittedEvent(entity, 'retrievemultiple', clone(record), [], readEvent), {
+          skipSaveIfUnchanged: true,
+        }).catch((error) => {
+          (this.committedEventErrors ??= []).push({ code: error.code ?? 'CommitStagerError', message: error.message });
+        });
+      const sourceRows = answer[key] ?? [];
+      const sourceById = new Map(
+        sourceRows.map((row, index) => [row[mapping.idColumn] ?? answer.sdkRootIds?.[index], row]),
+      );
+      answer[key] = collection.entities.map((e) => {
+        const source = sourceById.get(e.id),
+          row = {
+            ...Object.fromEntries(Object.entries(source ?? {}).filter(([, value]) => value === null)),
+            ...Object.fromEntries(
+              (options.preserveProperties ?? [])
+                .filter((name) => Object.hasOwn(source ?? {}, name))
+                .map((name) => [name, clone(source[name])]),
+            ),
+            ...sdkValueToRecord(e),
+          };
+        // The SDK main result includes its primary Attribute independently of
+        // the public transport's selected fields. Preserve that projection
+        // while retaining a deliberate changed primary output from a plugin.
+        if ((answer.sdkHiddenId || (source && !own(source, mapping.idColumn))) && equal(row[mapping.idColumn], e.id))
+          delete row[mapping.idColumn];
+        return row;
+      });
       Object.defineProperty(answer, 'sdkCollection', { value: clone(collection), configurable: true });
       if (key === 'value') {
         if (Object.hasOwn(answer, '@odata.count')) answer['@odata.count'] = collection.totalRecordCount;
@@ -3730,7 +4453,11 @@ export class DataStore {
         answer.total_record_count = collection.totalRecordCount;
       }
       return answer;
+    } catch (error) {
+      this.closeReadLane(previousLane, error);
+      throw error;
     } finally {
+      this.closeReadLane(previousLane);
       this.pluginReadOnly = previousReadOnly;
     }
   }
@@ -3868,7 +4595,7 @@ export class DataStore {
     const select = parseSelect(p.$select);
     const expand = this.prepareExpand(ctx, m, parseExpand(p.$expand), queryOptions);
     const values = rows.map((row) => this.projectRow(ctx, m, row, select, expand, options.includeKeys === true));
-    return {
+    const answer = {
       value: clone(values),
       ...(String(p.$count) === 'true' ? { '@odata.count': publicCount } : {}),
       ...(paging
@@ -3892,6 +4619,9 @@ export class DataStore {
           }
         : {}),
     };
+    if (options.captureRootIds)
+      Object.defineProperty(answer, 'sdkRootIds', { value: rows.map((row) => row[m.idColumn]) });
+    return answer;
   }
   normalizeRecord(mapping, data, identity = {}) {
     const SYSTEM_BIND_NAVIGATIONS = new Set([
@@ -3960,13 +4690,23 @@ export class DataStore {
           throw new DataError(`Lookup binding target does not match navigation ${navigation}`, 400, 'InvalidLookup');
         const hit =
           isElastic(target) && !reference.id.includes('=')
-            ? this.get(target.logicalName, reference.id, { admin: true }, { partitionId: row[`${field}pid`] })
+            ? this.get(
+                target.logicalName,
+                reference.id,
+                { admin: true },
+                { partitionId: row[`${field}pid`], skipPluginRead: true },
+              )
             : this.findByKey(target, reference.id);
         // Elastic lookups without the custom partition are allowed to persist, but remain unresolved.
         // Never substitute a record from another partition (or its display name).
         if (!hit && isElastic(target) && !reference.id.includes('=') && row[`${field}pid`] == null) {
           row[field] = { id: reference.id, logical_name: target.logicalName, partitionid: null, name: '' };
           row[`${field}pid`] = null;
+          delete row[key];
+          continue;
+        }
+        if (!hit && !reference.id.includes('=') && uncheckedLookup(mapping.logicalName, field, target.logicalName)) {
+          row[field] = { id: reference.id.toLowerCase(), logical_name: target.logicalName, name: '' };
           delete row[key];
           continue;
         }
@@ -4362,6 +5102,20 @@ export class DataStore {
       } else throw new DataError(`Unsupported secondary operation ${action.operation}`, 400, 'InvalidPlugin');
     }
   }
+  pluginBindingInput(mapping, input, target, identity) {
+    const relationships = this.relationshipsFor(mapping, identity);
+    return {
+      ...Object.fromEntries(
+        Object.entries(input).filter(([key]) => {
+          const attribute = key.endsWith('@odata.bind')
+            ? (relationships[key.slice(0, -11)]?.from ?? key.slice(0, -11))
+            : key;
+          return own(target, attribute);
+        }),
+      ),
+      ...target,
+    };
+  }
   validateBindings(mapping, input, row, identity, previous = null, nativeContactAssociation = null) {
     const relationships = this.relationshipsFor(mapping, identity);
     if (this.state.settings.associationPermissions === 'enforce')
@@ -4374,7 +5128,11 @@ export class DataStore {
       ),
     );
     for (const relationship of Object.values(relationships)) {
-      if (relationship.many === true || !changed.has(relationship.from)) continue;
+      // Primary-key joins describe table inheritance, not a visitor-authored
+      // lookup. The generated key is visible to plug-ins before those related
+      // platform rows exist and must not be admitted as an association.
+      if (relationship.many === true || relationship.from === mapping.idColumn || !changed.has(relationship.from))
+        continue;
       const id = scalar(field(row, relationship.from) ?? field(previous ?? {}, relationship.from));
       if (id == null) continue;
       const targetMapping = this.resolveMapping(relationship.entity);
@@ -4395,6 +5153,7 @@ export class DataStore {
         ];
       if (!target && isElastic(targetMapping) && row[`${relationship.from}pid`] == null && bound?.partitionid == null)
         continue;
+      if (!target && uncheckedLookup(mapping.logicalName, relationship.from, targetMapping.logicalName)) continue;
       if (!target) throw new DataError('Lookup target does not exist', 400, 'InvalidLookup');
       // A configured form's server-owned current-contact stamp is not an
       // explicit visitor lookup. Target existence, other fields and plugin
@@ -4611,19 +5370,53 @@ export class DataStore {
   }
   *createStepsCore(entity, data, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
+    // Entity.Id, response capture and derived source columns belong to this
+    // one message. Each deep-insert child has its own identity and Attributes.
+    const childOptions = { ...options };
+    delete childOptions.sdkCreateId;
+    delete childOptions.sdkResponseToken;
+    delete childOptions.derivedCreateColumns;
+    delete childOptions.authorizeEffectiveWrite;
+    delete childOptions.afterPreValidation;
     const nativeContactAssociation = takeNativeFormContactAssociation(m.logicalName, identity);
     this.assertWritable(m.logicalName);
     const rows = (this.state.tables[m.logicalName] ??= []);
     const { input, nested, collectionBinds } = this.splitDeepInsert(m, data, identity);
     const row = { ...this.normalizeRecord(m, input, identity) };
+    const blanks = blankTextColumns(this, m, row, options, 'create');
     if (options.coerce) this.coerceRecord(m, row, options);
+    const pluginTarget = clone(row);
+    for (const name of blanks) pluginTarget[name] = '';
+    for (const [name, value] of Object.entries(options.derivedCreateColumns ?? {}))
+      if (isDeepStrictEqual(pluginTarget[name], value)) delete pluginTarget[name];
     // Caller-owned audit and ownership columns (Dataverse layer); merged after coercion, only when passed.
     const systemColumns = this.systemColumnsFor(options.systemColumns, m, input);
     if (systemColumns) Object.assign(row, systemColumns);
-    const pluginTarget = clone(row),
-      changedAttributes = Object.keys(pluginTarget);
+    const suppliedPrimary = row[m.idColumn] != null,
+      suppliedEmptyPrimary = !isElastic(m) && row[m.idColumn] === '00000000-0000-0000-0000-000000000000';
+    if (
+      options.sdkCreateId != null &&
+      (typeof options.sdkCreateId !== 'string' || !GUID_PATTERN.test(options.sdkCreateId))
+    )
+      throw new DataError('Create requires a GUID Entity.Id.', 400, 'InvalidArgument', { innerCode: '0x80040203' });
+    const seededId = options.sdkCreateId && options.sdkCreateId !== '00000000-0000-0000-0000-000000000000';
+    if (seededId && suppliedPrimary && !suppliedEmptyPrimary && !equal(row[m.idColumn], options.sdkCreateId))
+      throw new DataError('Entity Id must be the same as the value set in property bag', 400, 'InvalidArgument', {
+        innerCode: '0x80040203',
+      });
     for (const [key, value] of Object.entries(m.recordDefaults ?? {}))
-      if (key !== 'statuscode' && !own(row, key)) row[safeName(key)] = clone(value);
+      if (key !== 'statuscode' && !own(row, key)) {
+        row[safeName(key)] = clone(value);
+        // Two-option defaults reach the PreValidation Target, and so do a standard table's choice defaults; the state
+        // follows from PreOperation (native mergeAccount account Create/10; probe Create/10: the two-option default).
+        if (
+          key !== 'statecode' &&
+          (standardTableDef(m.logicalName) ||
+            fieldKind(this.fieldDefinition(m.logicalName, key, options.metadata)) === 'boolean')
+        )
+          pluginTarget[key] = clone(value);
+      }
+    const changedAttributes = Object.keys(pluginTarget);
     if (!own(row, 'statuscode')) {
       const status = m.stateStatusDefaults?.[scalar(row.statecode)] ?? m.recordDefaults?.statuscode;
       if (status !== undefined) row.statuscode = clone(status);
@@ -4634,17 +5427,25 @@ export class DataStore {
     const appUser = this.observed?.portalApplicationUser;
     if (appUser && !own(row, 'createdby'))
       row.createdby = { id: this.observed?.portalApplicationUserId ?? null, logical_name: 'systemuser', name: appUser };
+    if (seededId) row[m.idColumn] = options.sdkCreateId;
     row[m.idColumn] ??= this.ids.uuid();
+    // A caller's empty primary Attribute remains visible to PreValidation,
+    // while the operation and Target Entity.Id already have an allocated GUID.
+    if (suppliedEmptyPrimary && !seededId) row[m.idColumn] = this.ids.uuid();
     this.traceRecord(m.logicalName, row[m.idColumn]);
     if (isElastic(m)) assertElasticRecord(row);
-    if (
-      isElastic(m)
-        ? rows.some((r) => equal(r[m.idColumn], row[m.idColumn]) && samePartition(r.partitionid, row.partitionid))
-        : this.rowPositions(m, rows, row[m.idColumn], { scoped: true }).length > 0
-    )
-      throw new DataError('A record with matching key values already exists.', 412, 'DuplicateRecord', {
-        innerCode: '0x80040237',
-      });
+    const assertUniqueIdentity = () => {
+      if (
+        isElastic(m)
+          ? rows.some((r) => equal(r[m.idColumn], row[m.idColumn]) && samePartition(r.partitionid, row.partitionid))
+          : this.rowPositions(m, rows, row[m.idColumn], { scoped: true }).length > 0
+      )
+        throw new DataError('A record with matching key values already exists.', 412, 'DuplicateRecord', {
+          innerCode: '0x80040237',
+        });
+    };
+    // A duplicate primary key is refused after PreValidation and PreOperation, at the main operation (recorded native
+    // privilege: Create 10 and 20 run, then 412 0x80040237); assertUniqueIdentity runs again before the row is stored.
     if (
       !identity.admin &&
       this.state.settings.permissionMode !== 'permissive' &&
@@ -4653,6 +5454,14 @@ export class DataStore {
       this.assertAllowed(m.logicalName, 'create', row, identity);
     row.createdon ??= isoUtc(this.clock.now());
     row.modifiedon ??= row.createdon;
+    const derivedTargetColumns = new Set(
+      [
+        ...Object.keys(systemColumns ?? {}),
+        ...Object.keys(options.derivedCreateColumns ?? {}),
+        'createdon',
+        'modifiedon',
+      ].filter((name) => !own(pluginTarget, name)),
+    );
     this.applyAutoNumbers(m, row, options);
     // The table-level Create gate above precedes all handlers. Row scope is
     // checked after trusted declarative effects establish any membership links.
@@ -4677,13 +5486,48 @@ export class DataStore {
       this.ensureReadSnapshot();
       if (this.pluginRollbackBoundary) deniedCreateBoundary = { ...this.pluginRollbackBoundary };
     }
+    const originalTarget = clone(pluginTarget);
     yield [m, 'create', 10, pluginTarget, row, null, identity, changedAttributes, options];
+    options.afterPreValidation?.(m.logicalName, 'create', pluginTarget, null);
+    // Showing authored inputs before platform stamps must not change their
+    // established stored values when no observer edits that input column.
+    for (const [name, value] of Object.entries(systemColumns ?? {}))
+      if (
+        own(originalTarget, name) &&
+        !isDeepStrictEqual(originalTarget[name], value) &&
+        isDeepStrictEqual(pluginTarget[name], originalTarget[name])
+      ) {
+        pluginTarget[name] = clone(value);
+        row[name] = clone(value);
+      }
+    if (suppliedEmptyPrimary && pluginTarget[m.idColumn] === '00000000-0000-0000-0000-000000000000')
+      throw new DataError('Expected non-empty Guid.', 400, 'InvalidArgument', { innerCode: '0x80040203' });
+    // Dataverse allocates Entity.Id before PreValidation, then materializes the
+    // generated primary-key Attribute for PreOperation and PostOperation.
+    // Repeated native qualification: a pre10 Entity.Id change supplies the key
+    // only when the caller did not supply a primary-key Attribute. Otherwise
+    // the supplied Attribute restores Entity.Id at the stage20 transition.
+    // An empty pre10 Id requests a fresh allocation, not the original GUID.
+    const phaseFrame = this.pluginFrames?.get(row),
+      phaseTarget = phaseFrame?.inputParameters?.values?.Target;
+    if (!isElastic(m) && phaseTarget?.$type === 'Entity') {
+      if (!suppliedPrimary) {
+        if (!GUID_PATTERN.test(phaseTarget.id ?? ''))
+          throw new DataError('Create requires a GUID target identity after PreValidation.', 400, 'LocalPluginInvalid');
+        row[m.idColumn] = phaseTarget.id === '00000000-0000-0000-0000-000000000000' ? this.ids.uuid() : phaseTarget.id;
+      }
+      phaseTarget.id = row[m.idColumn];
+    }
+    pluginTarget[m.idColumn] ??= row[m.idColumn];
+    for (const name of derivedTargetColumns)
+      if (!own(pluginTarget, name) && own(row, name) && !notInTarget(name, row[name]))
+        pluginTarget[name] = clone(row[name]);
     // Deep insert: single-valued navigation records are created first and bound.
     for (const item of nested.filter((entry) => entry.rel.many === false)) {
       const target = this.resolveMapping(item.rel.entity);
       if (Array.isArray(item.value))
         throw new DataError(`Single-valued navigation ${item.navigation} requires an object`, 400, 'InvalidLookup');
-      const child = yield* this.createSteps(target.logicalName, item.value, identity, options);
+      const child = yield* this.createSteps(target.logicalName, item.value, identity, childOptions);
       row[item.rel.from] = {
         id: child[target.idColumn],
         logical_name: target.logicalName,
@@ -4691,10 +5535,30 @@ export class DataStore {
       };
     }
     yield [m, 'create', 20, pluginTarget, row, null, identity, changedAttributes, options];
+    options.mainOperation?.(m, 'create', row, null, pluginTarget, { identity, options });
+    // The platform's customer address rows of an account or contact: their ids are on the row, never in a Create
+    // Target (native mergeAccount). ponytail: the address rows are stored directly, without a pipeline of their own.
+    const addresses = isElastic(m)
+      ? []
+      : customerAddressColumns(m.logicalName).filter(({ column }) => row[column] == null && !own(pluginTarget, column));
+    for (const { column } of addresses) row[column] = this.ids.uuid();
     const effects = this.applyPlugins(m.logicalName, 'create', row, null, identity);
     assertAttachmentPolicy(this.state, m.logicalName, row);
+    assertUniqueIdentity();
     this.assertAlternateKeys(m, row, rows, -1);
+    options.authorizeEffectiveWrite?.(m.logicalName, 'create', row, null);
     this.insertRow(m.logicalName, rows, row);
+    if (addresses.length && this.state.mappings?.customeraddress) {
+      const table = (this.state.tables.customeraddress ??= []);
+      for (const { column, n } of addresses)
+        this.insertRow('customeraddress', table, {
+          customeraddressid: row[column],
+          parentid: { id: row[m.idColumn], logical_name: m.logicalName },
+          parentidtypecode: m.logicalName,
+          objecttypecode: m.logicalName,
+          addressnumber: n,
+        });
+    }
     this.applySecondary(effects);
     try {
       this.assertAllowed(m.logicalName, 'create', row, identity);
@@ -4703,7 +5567,7 @@ export class DataStore {
       throw cause;
     }
     // Normalization drops raw navigation names; retain them for relationship validation.
-    const bindingInput = { ...input, ...pluginTarget };
+    const bindingInput = this.pluginBindingInput(m, input, pluginTarget, identity);
     // Runtime audit/ownership stamps are not visitor-authored associations.
     // Keep explicit input and any plugin change subject to the normal checks.
     for (const [name, value] of Object.entries(systemColumns ?? {}))
@@ -4715,7 +5579,7 @@ export class DataStore {
       const target = this.resolveMapping(item.rel.entity);
       for (const value of Array.isArray(item.value) ? item.value : [item.value]) {
         if (item.rel.intersect) {
-          const child = yield* this.createSteps(target.logicalName, value, identity, options);
+          const child = yield* this.createSteps(target.logicalName, value, identity, childOptions);
           this.changeAssociationRecord(
             m.logicalName,
             row[m.idColumn],
@@ -4723,7 +5587,7 @@ export class DataStore {
             child[target.idColumn],
             identity,
             true,
-            options,
+            childOptions,
           );
         } else
           yield* this.createSteps(
@@ -4737,7 +5601,7 @@ export class DataStore {
               },
             },
             identity,
-            options,
+            childOptions,
           );
       }
     }
@@ -4763,20 +5627,54 @@ export class DataStore {
           options,
         );
       }
+    // Native asynchronous Create snapshots include materialized defaults and
+    // main-operation fields, as they stood before PostOperation ran (never the row version or empty on-behalf/team
+    // lookups).
+    for (const [name, value] of Object.entries(row))
+      if (
+        !notInTarget(name, value) &&
+        !(pluginTarget[name] === '' && value === null) &&
+        !addresses.some(({ column }) => column === name)
+      )
+        pluginTarget[name] = clone(value);
+    const asyncSourceParent = committedPluginParent(this, m, 'create', pluginTarget, row, options),
+      asyncTarget = clone(pluginTarget),
+      beforePost = prePostOperationFrame(this.pluginFrames?.get(row)),
+      operationMark = this.operationMark();
+    // Values the main operation derived after PreOperation (exchangerate, <money>_base) belong to the Target the
+    // asynchronous steps see (native crud: asynchronous Create Target carries them).
+    const queuedTarget = beforePost.inputParameters?.values?.Target;
+    if (queuedTarget?.$type === 'Entity') {
+      const missing = Object.fromEntries(
+        Object.entries(asyncTarget).filter(([name]) => !own(queuedTarget.attributes ?? {}, name)),
+      );
+      if (Object.keys(missing).length)
+        Object.assign(
+          (queuedTarget.attributes ??= {}),
+          recordToSdkEntity(this, m.logicalName, missing, { allColumns: true, target: true }).attributes,
+        );
+    }
     if (isElastic(m)) {
-      this.recordCommittedEvent(m.logicalName, 'create', row, changedAttributes, {
+      this.recordCommittedEvent(m.logicalName, 'create', row, Object.keys(pluginTarget), {
         target: pluginTarget,
         previous: null,
         identity,
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+        frame: { ...(this.pluginFrames?.get(row) ?? {}), asyncSourceParent },
       });
       this.checkpointElastic(m, row);
     }
     yield [m, 'create', 40, pluginTarget, row, null, identity, changedAttributes, options];
-    if (!isElastic(m))
-      this.recordCommittedEvent(m.logicalName, 'create', row, changedAttributes, {
-        target: pluginTarget,
+    if (!isElastic(m) && !options.deferCommittedEvent)
+      this.recordCommittedEvent(m.logicalName, 'create', row, Object.keys(asyncTarget), {
+        target: asyncTarget,
         previous: null,
         identity,
+        operationMark,
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+        frame: queuedFrame(this.pluginFrames?.get(row), beforePost, asyncSourceParent),
       });
     return row;
   }
@@ -4810,6 +5708,7 @@ export class DataStore {
     const changes = this.normalizeRecord(m, data, identity);
     if (isElastic(m) && own(changes, 'partitionid') && !samePartition(changes.partitionid, rows[index].partitionid))
       throw new DataError('The partitionid value of an elastic table row cannot be changed.', 400, 'InvalidRequest');
+    const blanks = blankTextColumns(this, m, changes, options, 'update');
     if (options.coerce) this.coerceRecord(m, changes, options);
     if (isElastic(m)) assertElasticRecord(changes);
     const input = {
@@ -4825,6 +5724,7 @@ export class DataStore {
     if (options.coerce) this.assertStateStatus(m, row, options);
     this.assertAllowed(m.logicalName, 'update', row, identity);
     this.validateBindings(m, data, row, identity, rows[index]);
+    for (const name of blanks) changes[name] = '';
     return yield* this.commitUpdateSteps(m, rows, index, row, identity, changes, options, data);
   }
   /** The systemColumns option: a plain object, or a function (mapping, row) => columns evaluated per row. */
@@ -4857,18 +5757,121 @@ export class DataStore {
     return this.runRecordSteps(this.commitUpdateSteps(mapping, rows, index, row, identity, target, options, rawInput));
   }
   *commitUpdateSteps(mapping, rows, index, row, identity, target, options = {}, rawInput = {}) {
-    const previous = rows[index];
+    const previous = clone(rows[index]);
     const authorizedWrite = target !== undefined;
     target ??= Object.fromEntries(
       Object.entries(row).filter(([key, value]) => !isDeepStrictEqual(value, previous[key])),
     );
     const changedAttributes = Object.keys(target);
-    yield [mapping, 'update', 10, target, row, previous, identity, changedAttributes, options];
+    const stagedDefaults = Object.keys(row).filter(
+      (key) => !own(target, key) && !isDeepStrictEqual(row[key], previous[key]),
+    );
+    // A named message's main-operation Update (plugin-platform-messages.mjs) has no PreValidation stage natively.
+    if (!options.skipPreValidation)
+      yield [mapping, 'update', 10, target, row, previous, identity, changedAttributes, options];
+    options.afterPreValidation?.(mapping.logicalName, 'update', target, previous);
+    // An owner change (a Web API ownerid bind, the Assign main operation) adds the new owner's business unit to the
+    // Target after PreValidation; Assign's Target also names the owning user or team (native ownerAndState,
+    // sdkMessages). The platform changes the owner on behalf of the caller: the saved row's modifiedonbehalfby is the
+    // calling user, which Assign's Target shows and a Web API Update's stamped Target does not.
+    const idOf = (value) => String(value?.id ?? value ?? '').toLowerCase(),
+      // Only where the write maintains the owner columns (the Dataverse layer's system columns derive them from ownerid).
+      ownerChanged =
+        authorizedWrite &&
+        own(target, 'ownerid') &&
+        idOf(previous.ownerid) !== idOf(row.ownerid) &&
+        idOf(row.owninguser ?? row.owningteam) === idOf(row.ownerid),
+      onBehalf = ownerChanged && own(row, 'modifiedonbehalfby') && row.modifiedby != null;
+    if (ownerChanged)
+      for (const name of options.assignOwner
+        ? ['owninguser', 'owningteam', 'owningbusinessunit']
+        : ['owningbusinessunit'])
+        if (row[name] != null && !own(target, name)) target[name] = clone(row[name]);
+    // Native Assign's Target names the new owner: ownerid and owneridyominame carry the assignee's primary name.
+    // A store that maps no table for the owner (a test store) leaves the reference unnamed.
+    let assigneeName = null;
+    if (ownerChanged && options.assignOwner) {
+      let owner = null;
+      try {
+        owner = this.resolveMapping(row.ownerid.logical_name);
+      } catch (error) {
+        if (error.code !== 'UnknownEntity') throw error;
+      }
+      if (owner) {
+        assigneeName = primaryNameValue(owner, this.findByKey(owner, row.ownerid.id)) ?? '';
+        target.ownerid = { ...clone(row.ownerid), name: assigneeName };
+      }
+    }
+    if (onBehalf && options.assignOwner) row.modifiedonbehalfby = clone(row.modifiedby);
+    for (const name of UPDATE_TARGET_STAMPS)
+      if (authorizedWrite && !own(target, name) && own(row, name)) target[name] = clone(row[name]);
+    if (assigneeName !== null) target.owneridyominame = assigneeName;
+    // A write of a date-time value also stamps the row's time zone rule version (native Update 20/40 and async).
+    if (
+      authorizedWrite &&
+      !own(target, 'timezoneruleversionnumber') &&
+      own(row, 'timezoneruleversionnumber') &&
+      Object.keys(target).some(
+        (name) =>
+          !['createdon', 'modifiedon', 'overriddencreatedon'].includes(name) &&
+          target[name] != null &&
+          fieldKind(this.fieldDefinition(mapping.logicalName, name, options.metadata)) === 'datetime',
+      )
+    )
+      target.timezoneruleversionnumber = clone(row.timezoneruleversionnumber);
     yield [mapping, 'update', 20, target, row, previous, identity, changedAttributes, options];
+    // A nested SDK request may patch or delete this row, or shift its position.
+    // The outer update owns its current Target and staged system/default values;
+    // untouched saved fields belong to the latest row, not the pre-plugin copy.
+    index = this.rowIndex(mapping, rows, row[mapping.idColumn], {
+      ...options,
+      partitionId: row.partitionid ?? options.partitionId,
+    });
+    if (index < 0) throw new DataError('Record not found', 404, 'NotFound');
+    const latest = rows[index];
+    if (authorizedWrite) this.assertAllowed(mapping.logicalName, 'update', latest, identity);
+    const merged = clone(latest);
+    for (const key of new Set([...stagedDefaults, ...Object.keys(target)])) {
+      if (own(row, key)) merged[key] = clone(row[key]);
+      else delete merged[key];
+    }
+    for (const key of Object.keys(row)) delete row[key];
+    Object.assign(row, merged);
+    if (!isDeepStrictEqual(latest, previous))
+      this.touchRow(latest, row, this.systemColumnsFor(options.systemColumns, mapping, row));
+    if (onBehalf) row.modifiedonbehalfby = clone(row.modifiedby);
     if (authorizedWrite && this.pluginPipeline) {
       this.assertAllowed(mapping.logicalName, 'update', row, identity);
-      this.validateBindings(mapping, { ...rawInput, ...target }, row, identity, previous);
+      this.validateBindings(
+        mapping,
+        this.pluginBindingInput(mapping, rawInput, target, identity),
+        row,
+        identity,
+        latest,
+      );
     }
+    options.mainOperation?.(mapping, 'update', row, latest, target, { identity, options });
+    // The derived currency columns the main operation wrote reach the stage-40 and asynchronous Targets of a written money
+    // column (native currency and nullSemantics: Update/40 and async end with them; stages 10 and 20 do not).
+    const moneyKeys = authorizedWrite
+      ? Object.keys(target).filter(
+          (name) =>
+            !name.endsWith('_base') &&
+            fieldKind(this.fieldDefinition(mapping.logicalName, name, options.metadata)) === 'money',
+        )
+      : [];
+    const derivedTarget = {};
+    for (const name of moneyKeys)
+      if (!own(target, `${name}_base`) && (own(row, `${name}_base`) || own(previous, `${name}_base`)))
+        derivedTarget[`${name}_base`] = clone(row[`${name}_base`] ?? null);
+    if (
+      moneyKeys.length &&
+      own(row, 'exchangerate') &&
+      !own(target, 'exchangerate') &&
+      !isDeepStrictEqual(row.exchangerate, previous.exchangerate)
+    )
+      derivedTarget.exchangerate = clone(row.exchangerate);
+    Object.assign(target, derivedTarget);
     const effects = this.applyPlugins(mapping.logicalName, 'update', row, rows[index], identity);
     // Declarative plugins mutate the row directly, independently of Target. Only changed columns reach the
     // attachment policy, so files already stored are not revalidated.
@@ -4877,15 +5880,62 @@ export class DataStore {
     );
     assertAttachmentPolicy(this.state, mapping.logicalName, row, { ...target, ...effectiveChanges });
     this.assertAlternateKeys(mapping, row, rows, index);
+    options.authorizeEffectiveWrite?.(mapping.logicalName, 'update', row, latest);
     this.writeRow(mapping.logicalName, rows, index, row);
     this.applySecondary(effects);
+    // Natively an Update that sets statecode runs the SetStateDynamicEntity pipeline inside its main operation, one
+    // level deeper (recorded Web API PATCH statecode); the SetState message's own Update does not.
+    if (options.stateMessage !== false && own(rawInput, 'statecode') && this.pluginPipeline)
+      runStateMessage(this, mapping, row, identity, { ...options, previousRow: previous }, { target, previous });
+    // The asynchronous copy adds platform modification stamps without changing
+    // the synchronous partial Target or its qualified core-parent projection.
+    const asyncTargetBaseline = Object.fromEntries(
+      [mapping.idColumn, 'modifiedon', 'modifiedby', 'modifiedonbehalfby']
+        .filter((name) => own(row, name))
+        .map((name) => [name, clone(row[name])]),
+    );
+    const committedTarget = () => ({ ...asyncTargetBaseline, ...clone(target) });
+    const asyncSourceParent = committedPluginParent(this, mapping, 'update', target, row, options),
+      asyncTarget = committedTarget(),
+      submitted = Object.keys(target),
+      beforePost = prePostOperationFrame(this.pluginFrames?.get(row)),
+      operationMark = this.operationMark();
+    // The asynchronous steps read the Target the queued frame holds, so the derived values join it as Create's do.
+    const queuedTarget = beforePost.inputParameters?.values?.Target;
+    if (queuedTarget?.$type === 'Entity' && Object.keys(derivedTarget).length) {
+      const missing = Object.fromEntries(
+        Object.entries(derivedTarget).filter(([name]) => !own(queuedTarget.attributes ?? {}, name)),
+      );
+      if (Object.keys(missing).length)
+        Object.assign(
+          (queuedTarget.attributes ??= {}),
+          recordToSdkEntity(this, mapping.logicalName, missing, { allColumns: true, target: true }).attributes,
+        );
+    }
     if (isElastic(mapping)) {
-      this.recordCommittedEvent(mapping.logicalName, 'update', row, changedAttributes, { target, previous, identity });
+      this.recordCommittedEvent(mapping.logicalName, 'update', row, Object.keys(target), {
+        target: committedTarget(),
+        previous,
+        identity,
+        ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+        frame: { ...(this.pluginFrames?.get(row) ?? {}), asyncSourceParent },
+      });
       this.checkpointElastic(mapping, row);
     }
     yield [mapping, 'update', 40, target, row, previous, identity, changedAttributes, options];
-    if (!isElastic(mapping))
-      this.recordCommittedEvent(mapping.logicalName, 'update', row, changedAttributes, { target, previous, identity });
+    if (!isElastic(mapping) && !options.deferCommittedEvent)
+      this.recordCommittedEvent(mapping.logicalName, 'update', row, submitted, {
+        target: asyncTarget,
+        previous,
+        identity,
+        ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
+        operationMark,
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+        frame: queuedFrame(this.pluginFrames?.get(row), beforePost, asyncSourceParent),
+      });
     return row;
   }
   /**
@@ -4984,6 +6034,8 @@ export class DataStore {
       target,
       previous,
       identity,
+      bypassCustomAsync: options.bypassCustomAsync === true,
+      bypassStepIds: options.bypassStepIds,
     });
     this.checkpointElastic(mapping, row);
     yield [mapping, 'upsert', 40, target, row, previous, identity, attributes, options];
@@ -5056,6 +6108,15 @@ export class DataStore {
       attributes = Object.keys(target);
     yield [mapping, 'delete', 10, target, row, row, identity, attributes, options];
     yield [mapping, 'delete', 20, target, row, row, identity, attributes, options];
+    // A nested SDK write can replace the saved root during PreValidation or
+    // PreOperation. Authorize that current row before any cascade or main
+    // effect, without replacing the captured row used by this message's images.
+    if (options.authorizeEffectiveWrite?.preflight) {
+      const currentRows = this.state.tables[mapping.logicalName] ?? [];
+      const currentIndex = this.rowIndex(mapping, currentRows, recordKey(mapping, row));
+      if (currentIndex < 0) throw new DataError('Record not found', 404, 'NotFound');
+      options.authorizeEffectiveWrite.preflight(mapping.logicalName, 'delete', currentRows[currentIndex], null);
+    }
     const effects = this.applyPlugins(mapping.logicalName, 'delete', clone(row), row, identity);
     for (const reference of this.referencesTo(mapping.logicalName, identity, deleting)) {
       const target = scalar(field(row, reference.targetColumn ?? mapping.idColumn));
@@ -5118,18 +6179,34 @@ export class DataStore {
     }
     const rows = this.state.tables[mapping.logicalName] ?? [];
     const index = this.rowIndex(mapping, rows, recordKey(mapping, row));
+    if (options.authorizeEffectiveWrite && index < 0) throw new DataError('Record not found', 404, 'NotFound');
     if (index >= 0) {
+      options.authorizeEffectiveWrite?.(mapping.logicalName, 'delete', rows[index], null);
       this.removeRow(mapping.logicalName, rows, index);
       options.deleted?.push({ logicalName: mapping.logicalName, row: clone(row) });
     }
     this.applySecondary(effects);
     if (isElastic(mapping)) {
-      this.recordCommittedEvent(mapping.logicalName, 'delete', row, attributes, { target, previous: row, identity });
+      this.recordCommittedEvent(mapping.logicalName, 'delete', row, attributes, {
+        target,
+        previous: row,
+        identity,
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+      });
       this.checkpointElastic(mapping, row, true);
     }
+    const operationMark = this.operationMark();
     yield [mapping, 'delete', 40, target, row, row, identity, attributes, options];
     if (!isElastic(mapping))
-      this.recordCommittedEvent(mapping.logicalName, 'delete', row, attributes, { target, previous: row, identity });
+      this.recordCommittedEvent(mapping.logicalName, 'delete', row, attributes, {
+        target,
+        previous: row,
+        identity,
+        operationMark,
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+      });
     return row;
   }
   /**
@@ -5306,7 +6383,21 @@ export class DataStore {
         const input = { ...target, [relationship.to]: value };
         const next = this.touchRow(target, input, this.systemColumnsFor(options.systemColumns, targetMapping, input));
         this.assertAllowed(targetMapping.logicalName, 'update', next, identity);
-        yield* this.commitUpdateSteps(targetMapping, rows, rows.indexOf(target), next, identity);
+        // This Update belongs to the association's execution policy. Parent
+        // response tokens and one-use authorization capabilities belong to the
+        // outer operation, so forward only its plug-in bypass controls.
+        // The native Update Target carries the lookup and the primary key only; the stamps follow from stage 20.
+        const relinkTarget = {
+          [relationship.to]: clone(value),
+          [targetMapping.idColumn]: target[targetMapping.idColumn],
+        };
+        yield* this.commitUpdateSteps(targetMapping, rows, rows.indexOf(target), next, identity, relinkTarget, {
+          bypassCustomPlugins: options.bypassCustomPlugins === true,
+          bypassCustomAsync: options.bypassCustomAsync === true,
+          bypassStepIds: options.bypassStepIds,
+          // The association's main-operation Update has no ConcurrencyBehavior input (recorded native relationsReads).
+          ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
+        });
       }
     }
     return {
@@ -5372,6 +6463,7 @@ export class DataStore {
     return preview;
   }
   fetchXml(xml, identity = {}, options = {}) {
+    if (!this.hasOperationContext()) return this.withOperationContext(() => this.fetchXml(xml, identity, options));
     return this.tracedRead(
       'fetchxml',
       this.traces?.enabled && typeof xml === 'string' ? (FETCH_ENTITY.exec(xml)?.[1] ?? null) : null,
@@ -5419,7 +6511,12 @@ export class DataStore {
     if (
       options.fetchCache &&
       this.pluginPipeline &&
-      this.pluginPipelineActive({ entity, operation: 'retrievemultiple' })
+      this.pluginPipelineActive({
+        entity,
+        operation: 'retrievemultiple',
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassStepIds: options.bypassStepIds,
+      })
     ) {
       options.fetchCache.invalidate(this);
       options = { ...options, fetchCache: undefined };
@@ -5583,31 +6680,10 @@ export class DataStore {
     // Generated-link privileges belong to the compiler's exact structural tree.
     // Never reuse traversal ordinals after an observer inserts, replaces or
     // rearranges authored links. Query value filters at the root can still vary.
-    const linkStructure = (source) => {
-      const root = parseFetchXml(source);
-      const links = [];
-      const structural = (node) => ({
-        ...node,
-        text: node.name === 'value' ? node.text : node.text.trim(),
-        children: node.children.map(structural),
-      });
-      const visit = (node) => {
-        if (node.name === 'link-entity') links.push(structural(node));
-        else for (const child of node.children ?? []) visit(child);
-      };
-      visit(root);
-      return JSON.stringify(links);
-    };
-    const compiledLinkStructure = permissionQuery.permissionLinkCount ? linkStructure(permissionQuery.xml) : null;
     const execute = (source) => {
-      if (compiledLinkStructure !== null && linkStructure(source) !== compiledLinkStructure)
-        throw new DataError(
-          'Changing permission-expanded query link structure requires a source-qualified mutation adapter.',
-          501,
-          'LocalPluginQueryUnsupported',
-        );
+      const rebound = rebindPermissionQuery(permissionQuery, source);
       const result = executeSdkFetch(this, source, (prepared) =>
-        this.fetchXmlCore(prepared, identity, executionOptions),
+        this.fetchXmlCore(prepared, identity, { ...executionOptions, permissionQuery: rebound }),
       );
       return Object.assign(result, {
         xml: nativeAdmission && options.profile !== 'webapi' ? permissionQuery.xml : source,
@@ -5621,7 +6697,17 @@ export class DataStore {
         },
       });
     };
-    if (!entity || !this.pluginPipeline || !this.pluginPipelineActive({ entity, operation: 'retrievemultiple' }))
+    if (
+      options.skipPluginRead ||
+      !entity ||
+      !this.pluginPipeline ||
+      !this.pluginPipelineActive({
+        entity,
+        operation: 'retrievemultiple',
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassStepIds: options.bypassStepIds,
+      })
+    )
       return options.sdkResult
         ? execute(permissionQuery.xml)
         : Object.assign(this.fetchXmlCore(permissionQuery.xml, identity, executionOptions), {
@@ -5639,12 +6725,31 @@ export class DataStore {
       identity.admin && options.sdkQuery ? options.sdkQuery : { $type: 'FetchExpression', query: permissionQuery.xml },
       identity,
       (query) => {
-        const source =
-          query.$type === 'QueryExpression'
-            ? queryExpressionToFetch(query, this)
-            : query.$type === 'FetchExpression'
-              ? query.query
-              : null;
+        if (identity.admin && options.sdkQuery && sameSdkQuery(query, options.sdkQuery))
+          return execute(permissionQuery.xml);
+        const source = ['QueryExpression', 'QueryByAttribute'].includes(query.$type)
+          ? queryExpressionToFetch(
+              query.$type === 'QueryByAttribute'
+                ? {
+                    ...query,
+                    $type: 'QueryExpression',
+                    linkEntities: [],
+                    criteria: {
+                      operatorName: 'And',
+                      filters: [],
+                      conditions: (query.attributes ?? []).map((attributeName, index) => ({
+                        attributeName,
+                        operatorName: 'Equal',
+                        values: [query.values?.[index]],
+                      })),
+                    },
+                  }
+                : query,
+              this,
+            )
+          : query.$type === 'FetchExpression'
+            ? query.query
+            : null;
         if (!source || parseFetchXml(source).children.find((node) => node.name === 'entity')?.attrs.name !== entity)
           throw new DataError(
             'A RetrieveMultiple observer cannot change the bound query table or type.',
@@ -5726,8 +6831,15 @@ export class DataStore {
       nativePagingCookies:
         options.portalRequest === true && this.observed?.tablePermissionQueryPipeline === 'native-classic',
       tableRows: (logical) => this.tableRows(logical),
-      datasourceRows: (source, logical) =>
-        (identity?.dataverse ? this.datasourceRows?.(source, logical, identity, { plan, options }) : undefined) ?? [],
+      datasourceRows: (source, logical) => {
+        const rows =
+          (identity?.dataverse ? this.datasourceRows?.(source, logical, identity, { plan, options }) : undefined) ?? [];
+        const kept = options.backendRowsFilter
+          ? rows.filter((row) => options.backendRowsFilter(logical, row) === true)
+          : rows;
+        const mask = options.backendRowsMask?.(logical);
+        return mask ? kept.map(mask) : kept;
+      },
       definition: ctx.definition,
       column: ctx.column,
       sortable: (logical, attribute) => this.sortableColumn(logical, attribute),

@@ -9,6 +9,7 @@ import { parseArgs } from 'node:util';
 import { classifyChanges, suitesForScope } from '../.github/scripts/change-scope.mjs';
 import { dependencyReadiness, browserExecutable } from './ensure-dependencies.mjs';
 import { downloadVerifiedArchive } from './verified-download.mjs';
+import { acquireCiWorkspaceLease, assertOwnedCiState } from './ci-workspace-lease.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SDK_VERSION = '9.0.2.60';
@@ -67,7 +68,7 @@ function requireDotnet() {
 }
 
 async function clrFixture() {
-  const directory = path.join(root, '.paqvilo/ci/sdk-reference');
+  const directory = assertOwnedCiState(root, 'sdk-reference');
   const sdk = path.join(directory, 'reference/lib/net462/Microsoft.Xrm.Sdk.dll');
   // Re-verify the archive even on a warm local run; the fixture is never taken from a portal export.
   fs.mkdirSync(directory, { recursive: true });
@@ -89,6 +90,10 @@ async function clrFixture() {
     /* Re-extract a missing or changed DLL from the verified archive. */
   }
   if (!validSdk) {
+    const destination = assertOwnedCiState(root, 'sdk-reference', 'reference');
+    // Retire only the checked owned tree, including stale nested links, before extraction.
+    fs.rmSync(destination, { recursive: true, force: true });
+    fs.mkdirSync(destination);
     // Expand-Archive requires .zip; all arguments are fixed paths under this checkout.
     execute(
       'powershell.exe',
@@ -99,7 +104,7 @@ async function clrFixture() {
         'Expand-Archive -LiteralPath $env:PAQVILO_CI_ARCHIVE -DestinationPath $env:PAQVILO_CI_DESTINATION -Force',
       ],
       {
-        env: { ...process.env, PAQVILO_CI_ARCHIVE: archive, PAQVILO_CI_DESTINATION: path.join(directory, 'reference') },
+        env: { ...process.env, PAQVILO_CI_ARCHIVE: archive, PAQVILO_CI_DESTINATION: destination },
       },
     );
   }
@@ -149,7 +154,7 @@ const tar = () =>
   process.platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
 
 async function ecosystemFixtures() {
-  const directory = ecosystemRoot();
+  const directory = assertOwnedCiState(root, 'ecosystem');
   fs.mkdirSync(directory, { recursive: true });
   for (const [repository, commit, digest, members] of ECOSYSTEM) {
     const name = repository.replace('/', '__');
@@ -234,6 +239,28 @@ export function resetExampleModules(checkout = root) {
   else fs.rmSync(modules, { recursive: true, force: true });
 }
 
+/** npm ci can traverse a linked top-level node_modules directory on Windows.
+ * Unlink only the generated dependency entry before the owned installation. */
+export function resetLinkedDependencyDirectory(directory, checkout = root) {
+  const owner = fs.realpathSync(checkout);
+  let project;
+  try {
+    project = fs.realpathSync(directory);
+  } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  const relative = path.relative(owner, project);
+  if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative))
+    throw new Error('Dependency preparation escaped the owned checkout.');
+  const modules = path.join(project, 'node_modules');
+  try {
+    if (fs.lstatSync(modules).isSymbolicLink()) fs.unlinkSync(modules);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+}
+
 export function requireExampleBrowserDependency(project, checkout = root) {
   const lock = JSON.parse(fs.readFileSync(path.join(checkout, 'npm-shrinkwrap.json'), 'utf8'));
   // Probe in a fresh process, as the suite does: Node caches resolutions across fixture cleanup.
@@ -258,6 +285,15 @@ export async function prepareLane(
     throw new Error(`Unknown CI suite: ${suite}`);
   if (!['lense', 'quality'].includes(suite)) requireDotnet();
   quality ||= suite === 'quality';
+  for (const project of [
+    '',
+    'mirage',
+    'mirage/test-sdk/tds',
+    'mirage/test-sdk/dynamics-web-api',
+    'mirage/test-sdk/cert-auth',
+    'examples/company-operations',
+  ])
+    resetLinkedDependencyDirectory(path.join(root, project));
   npm(['ci', '--ignore-scripts', '--no-audit', '--no-fund']);
   npm(['ci', '--prefix', 'mirage', '--ignore-scripts', '--no-audit', '--no-fund']);
   if (suite === 'mirage' || suite === 'all' || quality || sdk) {
@@ -681,10 +717,15 @@ export function validationJobs(env = process.env, configured = gitConfig('paqvil
  * Runs every step, at most `jobs` at a time, so one pass reports every failure. With one job the output streams as
  * before; otherwise each step writes its own log, and a failed step's log tail is printed when it ends.
  */
-export async function runSteps(steps, jobs, { cwd = root, logs = path.join(root, '.paqvilo/ci/logs') } = {}) {
+export async function runSteps(steps, jobs, { cwd = root, logs } = {}) {
   const parallel = jobs > 1 && steps.length > 1;
+  if (!logs) {
+    if (parallel) {
+      const parent = assertOwnedCiState(cwd, 'runs');
+      logs = path.join(fs.mkdtempSync(path.join(parent, `run-${process.pid}-`)), 'logs');
+    } else logs = path.join(cwd, '.paqvilo/ci/runs/serial-logs');
+  }
   if (parallel) {
-    fs.rmSync(logs, { recursive: true, force: true });
     fs.mkdirSync(logs, { recursive: true });
     console.log(`[ci] ${steps.length} steps, ${jobs} at a time; logs in ${logs}`);
   }
@@ -695,8 +736,17 @@ export async function runSteps(steps, jobs, { cwd = root, logs = path.join(root,
     for (let step; (step = queue.shift());) {
       const start = performance.now();
       const log = path.join(logs, step.label.replace(/[^\w.-]+/g, '-') + '.log');
-      const output = parallel ? fs.openSync(log, 'w') : 'inherit';
-      let code = 0;
+      let output = 'inherit',
+        logError,
+        code = 0;
+      if (parallel) {
+        try {
+          output = fs.openSync(log, 'w');
+        } catch (error) {
+          logError = error;
+          console.log(`[ci] Step log cannot be opened (${error.code}): ${log}`);
+        }
+      }
       try {
         for (const command of step.commands) {
           // A command is node arguments, or { args, env, cwd } for one lane's browser channel or package directory.
@@ -713,14 +763,30 @@ export async function runSteps(steps, jobs, { cwd = root, logs = path.join(root,
           });
           if (code !== 0) break;
         }
+      } catch (error) {
+        code = error.code ?? 'execution error';
+        console.log(`[ci] Step execution failed: ${error.message}`);
       } finally {
-        if (parallel) fs.closeSync(output);
+        if (typeof output === 'number') {
+          try {
+            fs.closeSync(output);
+          } catch (error) {
+            logError ??= error;
+          }
+        }
       }
+      if (code === 0 && logError) code = logError.code ?? 'log error';
       timings.push([step.label, seconds(start)]);
       if (code === 0) console.log(`[ci] ✔ ${step.label} (${seconds(start)})`);
       else {
         failed.push(step.label);
-        if (parallel) console.log(fs.readFileSync(log, 'utf8').split('\n').slice(-200).join('\n'));
+        if (parallel) {
+          try {
+            console.log(fs.readFileSync(log, 'utf8').split('\n').slice(-200).join('\n'));
+          } catch (error) {
+            console.log(`[ci] Step log unavailable (${error.code}): ${log}`);
+          }
+        }
         console.log(
           `[ci] ✖ ${step.label} failed (${code}) after ${seconds(start)}${parallel ? `; full log: ${log}` : ''}`,
         );
@@ -872,9 +938,9 @@ function saveVerificationReceipt(file, receipt) {
   fs.writeFileSync(file, JSON.stringify(receipt, null, 2) + '\n');
 }
 
-async function main() {
+async function runMain() {
   const [command, ...args] = process.argv.slice(2);
-  const receiptFile = path.join(root, '.paqvilo/ci/verification.json');
+  const receiptFile = path.join(assertOwnedCiState(root, 'runs'), 'verification.json');
   const receipt = ['verify', 'sdk'].includes(command) ? consumeVerificationReceipt(receiptFile) : undefined;
   const { values } = parseArgs({
     args,
@@ -1000,6 +1066,7 @@ async function main() {
   });
   if (
     !suite &&
+    !full &&
     process.env.GITHUB_ACTIONS !== 'true' &&
     unit &&
     browser &&
@@ -1036,6 +1103,7 @@ async function main() {
       process.env.TEMP = process.env.TMP = temporary;
       console.log(`[ci] Temporary files use ${temporary}, as hosted Windows runners use an 8.3 TEMP alias.`);
     }
+    if (scope.smoke) assertOwnedCiState(root, 'npm-cache-smoke');
     await runSteps(
       validationSteps(scope, suites, { unit, browser, changed, repeat: validationRepeat() }),
       validationJobs(),
@@ -1053,6 +1121,28 @@ async function main() {
     });
   }
   console.log('Selected CI validation completed without errors.');
+}
+async function main() {
+  const [command, ...args] = process.argv.slice(2);
+  const inherit =
+    command === 'sdk' || (command === 'verify' && args.includes('--prepared') && !args.includes('--full'));
+  const release = await acquireCiWorkspaceLease(root, process.env, { inherit });
+  let failure;
+  try {
+    await runMain();
+  } catch (error) {
+    failure = error;
+  }
+  try {
+    await release();
+  } catch (error) {
+    if (failure)
+      throw new AggregateError([failure, error], `${failure.message}; workspace cleanup failed: ${error.message}`, {
+        cause: error,
+      });
+    throw error;
+  }
+  if (failure) throw failure;
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {

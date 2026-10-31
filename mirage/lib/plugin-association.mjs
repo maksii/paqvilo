@@ -4,24 +4,50 @@ const fail = (message, code = 'LocalSdkRelationshipUnsupported', status = 501) =
   throw new DataError(message, status, code);
 };
 const uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
+const validId = (value, allowLocalIds) =>
+  typeof value === 'string' && (uuid.test(value) || (allowLocalIds && value.trim().length > 0));
 const scalar = (value) => (value && typeof value === 'object' && value.id ? value.id : value);
 /** SDK schema names are not navigation properties. Select one source-defined
  * direction, retaining explicit EntityRole for self-referential relationships. */
-export function associationBinding(store, entity, relationship, related, identity) {
+/**
+ * The SDK EntityRole a navigation stands for. A self-referencing many-to-many relationship's Entity1 navigation (named
+ * as the relationship) is Referencing (recorded native associate: POST <set>(id)/<schema>/$ref), its partner Referenced;
+ * a non-reflexive many-to-many navigation has no role. An explicit sdkEntityRole on the relationship wins.
+ */
+export function navigationRole(mapping, navigation, rel) {
+  // A one-to-many collection navigation (the referenced side) is Referenced (recorded native relationsReads).
+  if (rel && !rel.intersect) return rel.many === false ? null : 'Referenced';
+  if (!rel?.intersect || rel.entity !== mapping.logicalName) return null;
+  if (rel.sdkEntityRole) return rel.sdkEntityRole;
+  const schema = String(rel.schemaName ?? '').toLowerCase();
+  if (String(navigation).toLowerCase() === schema) return 'Referencing';
+  if (String(rel.partner ?? '').toLowerCase() === schema) return 'Referenced';
+  return null;
+}
+
+export function associationBinding(
+  store,
+  entity,
+  relationship,
+  related,
+  identity,
+  { navigationFallback = false, allowLocalIds = false, preferredNavigation } = {},
+) {
   if (
     relationship?.$type !== 'Relationship' ||
     typeof relationship.schemaName !== 'string' ||
     !relationship.schemaName.trim() ||
     related?.$type !== 'EntityReferenceCollection' ||
     !Array.isArray(related.values) ||
-    !related.values.length ||
-    related.values.length > 1000
+    !related.values.length
   )
-    fail('SDK relationship and 1-1000 typed related references are required.');
+    fail('SDK relationship and one or more typed related references are required.');
   if (
     related.values.some(
       (ref) =>
-        ref?.$type !== 'EntityReference' || !uuid.test(ref.id) || ref.logicalName !== related.values[0].logicalName,
+        ref?.$type !== 'EntityReference' ||
+        !validId(ref.id, allowLocalIds) ||
+        ref.logicalName !== related.values[0].logicalName,
     ) ||
     new Set(related.values.map((ref) => ref.id.toLowerCase())).size !== related.values.length
   )
@@ -34,14 +60,19 @@ export function associationBinding(store, entity, relationship, related, identit
     role = relationship.primaryEntityRole;
   if (role !== null && role !== undefined && !['Referencing', 'Referenced'].includes(role))
     fail('SDK EntityRole is not supported.');
-  const candidates = Object.entries(store.relationshipsFor(mapping, identity)).filter(
-    ([, rel]) =>
-      rel.schemaName?.toLowerCase() === relationship.schemaName.toLowerCase() &&
+  let candidates = Object.entries(store.relationshipsFor(mapping, identity)).filter(
+    ([navigation, rel]) =>
+      (rel.schemaName ?? (navigationFallback ? navigation : null))?.toLowerCase() ===
+        relationship.schemaName.toLowerCase() &&
       rel.entity === related.values[0].logicalName &&
       (!role ||
         (!rel.intersect && role === (rel.many === false ? 'Referencing' : 'Referenced')) ||
-        (rel.intersect && rel.sdkEntityRole === role)),
+        (rel.intersect && navigationRole(mapping, navigation, rel) === role)),
   );
+  // A Web API navigation already resolves a source-defined direction. Retain
+  // that binding when a step changes only its record identities.
+  if (preferredNavigation && candidates.some(([navigation]) => navigation === preferredNavigation))
+    candidates = candidates.filter(([navigation]) => navigation === preferredNavigation);
   if (candidates.length !== 1)
     fail(
       'SDK relationship schema/direction must resolve to one exact source mapping; self-reference needs source EntityRole metadata.',
@@ -51,17 +82,47 @@ export function associationBinding(store, entity, relationship, related, identit
     fail('A referencing lookup accepts one related SDK reference.', 'LocalSdkRelationshipInput', 400);
   return { mapping, navigation, rel };
 }
+export function associationRequestBinding(store, parameters, identity, options) {
+  const target = parameters?.Target;
+  if (
+    target?.$type !== 'EntityReference' ||
+    !validId(target.id, options?.allowLocalIds) ||
+    typeof target.logicalName !== 'string'
+  )
+    fail(
+      'Association Target must remain a typed entity reference with a valid identity.',
+      'LocalSdkRelationshipInput',
+      400,
+    );
+  return {
+    ...associationBinding(
+      store,
+      target.logicalName,
+      parameters.Relationship,
+      parameters.RelatedEntities,
+      identity,
+      options,
+    ),
+    entity: target.logicalName,
+    id: target.id,
+    related: parameters.RelatedEntities,
+  };
+}
 /** The SDK Associate/Disassociate: explicit grants, plug-in stages 10/20/40 and the store association write. executeAssociation
  * runs them synchronously (a synchronous service endpoint step posts through the synchronous I/O bridge: the SDK inside a
  * plug-in); executeAssociationAsync awaits each stage's post and the related row's update steps (a flow Relate/Unrelate rows
  * action, which is not nested inside a plug-in), so Mirage keeps serving while a receiver answers. */
 export function executeAssociation(options) {
+  if (!options.store.hasOperationContext())
+    return options.store.withOperationContext(() => executeAssociation(options));
   const steps = associationSteps(options, false);
   let next = steps.next();
   while (!next.done) next = steps.next(next.value);
   return next.value;
 }
 export async function executeAssociationAsync(options) {
+  if (!options.store.hasOperationContext())
+    return options.store.withOperationContext(() => executeAssociationAsync(options));
   const steps = associationSteps(options, true);
   let next = steps.next();
   while (!next.done) {
@@ -78,12 +139,27 @@ export async function executeAssociationAsync(options) {
   return next.value;
 }
 function* associationSteps(
-  { store, entity, id, relationship, related, identity, authorize, associate, responseToken },
+  {
+    store,
+    entity,
+    id,
+    relationship,
+    related,
+    identity,
+    authorize,
+    associate,
+    responseToken,
+    bypassCustomPlugins = false,
+    bypassCustomAsync = false,
+    bypassStepIds = [],
+    onRebind,
+  },
   awaitIo,
 ) {
   if (!uuid.test(id)) fail('SDK association requires a valid source ID.', 'LocalSdkRelationshipInput', 400);
-  const { mapping, navigation, rel } = associationBinding(store, entity, relationship, related, identity),
-    operation = associate ? 'associate' : 'disassociate';
+  let { mapping, rel } = associationBinding(store, entity, relationship, related, identity);
+  let navigation;
+  const operation = associate ? 'associate' : 'disassociate';
   const get = (table, key) => {
     const row = store.get(table, key, identity, { skipPluginRead: true });
     if (!row) fail('SDK association row not found.', 'NotFound', 404);
@@ -96,10 +172,10 @@ function* associationSteps(
     authorize(entity, operation, source);
     for (const row of records) authorize(rel.entity, operation, row);
     if (rel.intersect) {
+      const edges = store.snapshot().tables[rel.intersect.entity] ?? [];
       for (const row of records) {
         const values = { [rel.intersect.from]: scalar(source[rel.from]), [rel.intersect.to]: scalar(row[rel.to]) };
-        const edges = store.snapshot().tables[rel.intersect.entity] ?? [],
-          existing = edges.filter((edge) => Object.keys(values).every((key) => scalar(edge[key]) === values[key]));
+        const existing = edges.filter((edge) => Object.keys(values).every((key) => scalar(edge[key]) === values[key]));
         for (const edge of existing.length ? existing : [values])
           authorize(rel.intersect.entity, associate ? 'create' : 'delete', edge);
       }
@@ -133,33 +209,45 @@ function* associationSteps(
         })),
       },
     },
-    original = JSON.stringify(parameters),
     holder = structuredClone(source),
     inherited = store.pluginInTransaction;
+  let finalFrame;
   const phase = function* (stage) {
     if (stage !== 10) store.pluginInTransaction = true;
-    if (store.pluginPipeline && store.pluginPipelineActive({ entity: mapping.logicalName, operation })) {
-      const frame = yield store.pluginPipeline({
+    if (
+      store.pluginPipeline &&
+      store.pluginPipelineActive({ entity: mapping.logicalName, operation, bypassCustomPlugins, bypassStepIds })
+    ) {
+      const context = {
         entity: mapping.logicalName,
         operation,
         stage,
         associationParameters: parameters,
+        ...(rel.intersect ? { intersectEntity: rel.intersect.entity } : {}),
         record: holder,
         identity,
         changedAttributes: [],
+        bypassStepIds,
+        bypassCustomPlugins,
         ...(awaitIo ? { awaitIo: true } : {}),
-      });
+      };
+      const frame = yield store.pluginPipeline(context);
+      finalFrame = frame;
       if (stage === 40) handoffPluginResponse(store, operation, mapping.logicalName, frame, responseToken);
     }
-    if (JSON.stringify(parameters) !== original)
-      fail('Association parameter replacement requires a source-qualified validation adapter.');
   };
   const change = (...args) =>
-    awaitIo ? store.changeAssociationRecordAsync(...args) : store.changeAssociationRecord(...args);
+    awaitIo
+      ? store.changeAssociationRecordAsync(...args, { bypassCustomPlugins, bypassCustomAsync, bypassStepIds })
+      : store.changeAssociationRecord(...args, { bypassCustomPlugins, bypassCustomAsync, bypassStepIds });
   try {
     yield* phase(10);
     yield* phase(20);
+    ({ mapping, navigation, rel, entity, id, related } = associationRequestBinding(store, parameters, identity));
     checkPermissions();
+    onRebind?.({ mapping, entity, id, navigation, relatedIds: related.values.map((reference) => reference.id) });
+    for (const key of Object.keys(holder)) delete holder[key];
+    Object.assign(holder, structuredClone(source));
     if (rel.many !== false) {
       for (const ref of related.values) yield change(entity, id, navigation, ref.id, identity, associate);
     } else {
@@ -177,9 +265,10 @@ function* associationSteps(
       yield change(rel.entity, related.values[0].id, reverse[0][0], id, identity, associate);
     }
     if (rel.intersect && associate) {
+      const edges = store.snapshot().tables[rel.intersect.entity] ?? [];
       for (const row of records) {
         const values = { [rel.intersect.from]: scalar(source[rel.from]), [rel.intersect.to]: scalar(row[rel.to]) };
-        for (const edge of store.snapshot().tables[rel.intersect.entity] ?? [])
+        for (const edge of edges)
           if (Object.keys(values).every((key) => scalar(edge[key]) === values[key]))
             authorize(rel.intersect.entity, 'create', edge);
       }
@@ -190,6 +279,15 @@ function* associationSteps(
       for (const key of keys) authorize(table, 'update', get(table, key));
     }
     yield* phase(40);
+    store.recordCommittedEvent(mapping.logicalName, operation, holder, [], {
+      target: {},
+      associationParameters: parameters,
+      identity,
+      frame: finalFrame ?? {},
+      messageEvent: true,
+      bypassCustomAsync,
+      bypassStepIds,
+    });
     return null;
   } finally {
     store.pluginInTransaction = inherited;
