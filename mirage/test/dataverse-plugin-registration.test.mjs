@@ -374,6 +374,36 @@ describe('plug-in registration over HTTP', () => {
     assert.equal(step.rank, 1);
   });
 
+  // @test-kind observation: native registration probes round 2 'Reg2: rank 1.5' 0x80048d19 text (one capture)
+  it('refuses a fractional rank with the native payload reader text and its stack', async () => {
+    const error = await errorOf(await createStep({ rank: 1.5 }));
+    assert.equal(error.code, '0x80048d19');
+    assert.equal(
+      error.message,
+      "Error identified in Payload provided by the user for Entity :'sdkmessageprocessingsteps', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal '1.5' to the expected type 'Edm.Int32'. ---> Microsoft.OData.ODataException: Cannot convert a value of type 'Edm.Decimal' to the expected target type 'Edm.Int32'.\r\n" +
+        '   at Microsoft.OData.ODataPayloadValueConverter.ConvertFromPayloadValue(Object value, IEdmTypeReference edmTypeReference)\r\n' +
+        '   --- End of inner exception stack trace ---\r\n' +
+        '   at Microsoft.OData.ODataPayloadValueConverter.ConvertFromPayloadValue(Object value, IEdmTypeReference edmTypeReference)\r\n' +
+        '   at Microsoft.Crm.Extensibility.ODataV4.CrmPrimitivePayloadValueConverter.ConvertFromPayloadValue(Object value, IEdmTypeReference edmTypeReference)\r\n' +
+        '   at Microsoft.OData.JsonLight.ODataJsonLightReaderUtils.ConvertValue(Object value, IEdmPrimitiveTypeReference primitiveTypeReference, ODataMessageReaderSettings messageReaderSettings, Boolean validateNullValue, String propertyName, ODataPayloadValueConverter converter)\r\n' +
+        '   at Microsoft.OData.JsonLight.ODataJsonLightPropertyAndValueDeserializer.ReadPrimitiveValue(Boolean insideJsonObjectValue, IEdmPrimitiveTypeReference expectedValueTypeReference, Boolean validateNullValue, String propertyName)\r\n' +
+        '   at Microsoft.OData.JsonLight.ODataJsonLightPropertyAndValueDeserializer.ReadNonEntityValueImplementation(String payloadTypeName, IEdmTypeReference expectedTypeReference, PropertyAndAnnotationCollector propertyAndAnnotationCollector, CollectionWithoutExpectedTypeValidator collectionValidator, Boolean validateNullValue, Boolean isTopLevelPropertyValue, Boolean insideResourceValue, String propertyName, Nullable`1 isDynamicProperty)\r\n' +
+        '   at Microsoft.OData.JsonLight.ODataJsonLightResourceDeserializer.ReadEntryDataProperty(IODataJsonLightReaderResourceState resourceState, IEdmProperty edmProperty, String propertyTypeName)\r\n' +
+        '   at Microsoft.OData.JsonLight.ODataJsonLightResourceDeserializer.ReadPropertyWithValue(IODataJsonLightReaderResourceState resourceState, String propertyName, Boolean isDeltaResourceSet)\r\n' +
+        '   at Microsoft.OData.JsonLight.ODataJsonLightResourceDeserializer.<>c__DisplayClass9_0.<ReadResourceContent>b__0(PropertyParsingResult propertyParsingResult, String propertyName)\r\n' +
+        '   at Microsoft.OData.JsonLight.ODataJsonLightDeserializer.ProcessProperty(PropertyAndAnnotationCollector propertyAndAnnotationCollector, Func`2 readPropertyAnnotationValue, Action`2 handleProperty)\r\n' +
+        '   at Microsoft.OData.JsonLight.ODataJsonLightResourceDeserializer.ReadResourceContent(IODataJsonLightReaderResourceState resourceState)\r\n' +
+        '   at Microsoft.OData.JsonLight.ODataJsonLightReader.StartReadingResource()\r\n' +
+        '   at Microsoft.OData.JsonLight.ODataJsonLightReader.ReadResourceSetItemStart(PropertyAndAnnotationCollector propertyAndAnnotationCollector, SelectedPropertiesNode selectedProperties)\r\n' +
+        '   at Microsoft.OData.JsonLight.ODataJsonLightReader.ReadAtStartImplementationSynchronously(PropertyAndAnnotationCollector propertyAndAnnotationCollector)\r\n' +
+        '   at Microsoft.OData.ODataReaderCore.ReadImplementation()\r\n' +
+        '   at Microsoft.OData.ODataReaderCore.InterceptException[T](Func`1 action)\r\n' +
+        '   at Microsoft.AspNet.OData.Formatter.Deserialization.ODataReaderExtensions.ReadResourceOrResourceSet(ODataReader reader)\r\n' +
+        '   at Microsoft.Crm.Extensibility.CrmODataEntityDeserializer.Read(ODataMessageReader messageReader, Type type, ODataDeserializerContext readContext)\r\n' +
+        '   at Microsoft.AspNet.OData.Formatter.ODataInputFormatterHelper.ReadFromStream(Type type, Object defaultValue, IEdmModel model, ODataVersion version, Uri baseAddress, IWebApiRequestMessage internalRequest, Func`1 getODataRequestMessage, Func`2 getEdmTypeDeserializer, Func`2 getODataPayloadDeserializer, Func`1 getODataDeserializerContext, Action`1 registerForDisposeAction, Action`1 logErrorAction).',
+    );
+  });
+
   // @parity-evidence: native registration round 2 (_registration-probes-2.json): "Merge with the probe Update filter" is accepted, "Merge with an unknown filter" answers
   // 404 0x80040217; the earlier refusal of another message's filter had no native basis
   it('accepts a filter of another message, and answers 404 for an unknown filter', async () => {
@@ -1597,30 +1627,118 @@ describe('plug-in registration: assembly content and plug-in types', () => {
     assert.equal(typesOf().length, 0);
   });
 
-  // @test-kind parity: native trial captures native-trial and native-trial-r2 (dataverse-recorder round 2, n3-package): a package-owned assembly has sourcetype 4, and PATCH of the package version and name answer 204 (contrary to Microsoft Learn)
-  it('a plug-in package registers its assembly with sourcetype 4, and its name and version can be changed', async () => {
-    const { store, run } = await registry();
-    const content = zipOf([
+  // The record pipeline stores the hook's validated data after the hook returns: a new row on create, the patch over the
+  // stored row on update. The registry helper only runs the hook, so the tests write the row the same way.
+  const packageRow = (store, id) => store.tableRows('pluginpackage').find((row) => row.pluginpackageid === id);
+  const storePackage = (store, id, data) => {
+    const rows = (store.state.tables.pluginpackage ??= []);
+    const index = rows.findIndex((row) => row.pluginpackageid === id);
+    if (index < 0) store.insertRow('pluginpackage', rows, { pluginpackageid: id, ...data });
+    else store.mutateRow('pluginpackage', rows, index, data);
+  };
+  const packageNupkg = (version = '1.0.0') =>
+    zipOf([
       {
         name: 'Contoso.Package.nuspec',
         data: Buffer.from(
-          '<?xml version="1.0"?><package><metadata><id>Contoso.Package</id><version>1.0.0</version></metadata></package>',
+          `<?xml version="1.0"?><package><metadata><id>Contoso.Package</id><version>${version}</version></metadata></package>`,
         ),
       },
       { name: 'lib/net462/Contoso.Unsigned.dll', data: Buffer.from(UNSIGNED, 'base64') },
     ]).toString('base64');
-    const pkg = { content };
+
+  // @parity-evidence: native-trial/n3-package.json and native-trial-r2/n3-package.json package (package_name) vs afterProbes.package (name, uniquename, version)
+  // @test-kind parity: native trial captures native-trial and native-trial-r2 (dataverse-recorder round 2, n3-package): a package-owned assembly has sourcetype 4, and PATCH of the package version and name answer 204 (contrary to Microsoft Learn)
+  it('a plug-in package registers its assembly with sourcetype 4, and its name and version can be changed', async () => {
+    const { store, run } = await registry();
+    const pkg = { name: 'contoso_PackageProbe', uniquename: 'contoso_PackageProbe', content: packageNupkg() };
     await run('pluginpackage', 'create', pkg);
-    const owned = store.tableRows('pluginassembly').find((row) => row.packageid === pkg.pluginpackageid);
+    storePackage(store, pkg.pluginpackageid, pkg);
+    const id = pkg.pluginpackageid;
+    const owned = store.tableRows('pluginassembly').find((row) => row.packageid === id);
     assert.equal(owned.sourcetype, 4);
     assert.equal(owned.isolationmode, 2);
-    const existing = { pluginpackageid: pkg.pluginpackageid, name: pkg.name, version: pkg.version };
+    assert.equal(packageRow(store, id).package_name, 'contoso_PackageProbe.nupkg');
     const version = { version: '1.0.1' };
-    await run('pluginpackage', 'update', version, existing);
-    assert.equal(version.version, '1.0.1');
-    const name = { name: 'Contoso.Package.Renamed' };
-    await run('pluginpackage', 'update', name, { ...existing, version: '1.0.1' });
-    assert.equal(name.name, 'Contoso.Package.Renamed');
+    await run('pluginpackage', 'update', version, { ...packageRow(store, id) });
+    storePackage(store, id, version);
+    assert.equal(packageRow(store, id).version, '1.0.1');
+    const name = { name: 'contoso_PackageProbeRenamed' };
+    await run('pluginpackage', 'update', name, { ...packageRow(store, id) });
+    storePackage(store, id, name);
+    const renamed = packageRow(store, id);
+    assert.deepEqual(
+      [renamed.name, renamed.uniquename, renamed.version],
+      ['contoso_PackageProbeRenamed', 'contoso_PackageProbeRenamed', '1.0.1'],
+    );
+  });
+
+  // @test-kind unproven: the uniquename default from name is not captured (NATIVE package-edge-cases)
+  it('a plug-in package created with a name only takes that name as its uniquename, and package_name is the name with .nupkg', async () => {
+    const { store, run } = await registry();
+    const pkg = { name: 'contoso_PackageDefault', content: packageNupkg() };
+    await run('pluginpackage', 'create', pkg);
+    storePackage(store, pkg.pluginpackageid, pkg);
+    const created = packageRow(store, pkg.pluginpackageid);
+    assert.deepEqual(
+      [created.uniquename, created.package_name],
+      ['contoso_PackageDefault', 'contoso_PackageDefault.nupkg'],
+    );
+  });
+
+  // @test-kind parity: native-trial and native-trial-r2 n3-package 'delete package-owned assembly' 0x80081117 text
+  it('a package-owned assembly is refused on its own with the native text, without a trailing period', async () => {
+    const { store, run } = await registry();
+    const pkg = { content: packageNupkg() };
+    await run('pluginpackage', 'create', pkg);
+    const owned = store.tableRows('pluginassembly').find((row) => row.packageid === pkg.pluginpackageid);
+    await assert.rejects(
+      run('pluginassembly', 'delete', {}, owned),
+      (error) =>
+        error.message === 'Unable to delete plug-in assembly as it is part of plugin package' &&
+        error.details?.innerCode === '0x80081117',
+    );
+  });
+
+  // The native SQL error after the duplicate key sentence (native-trial and native-trial-r2 n3-package, byte-identical): the
+  // frames up to the registration action. The connection ids and the routing destination are per request and environment.
+  const SQL_FRAMES =
+    '\r\n' +
+    'The statement has been terminated.\r\n' +
+    '   at Microsoft.Crm.CrmDbConnection.HandleExecutionException(Exception exception, String commandText, IDbConnection connection, IDbCommand command, IDbTransaction transaction, Boolean isOpen, Int32 commandTimeout, IConnectionRetryPolicy localRetryPolicy, Int32& retryCount)\r\n' +
+    '   at Microsoft.Crm.CrmDbConnection.InternalExecuteWithRetry[TResult,TArg](Func`2 executeMethod, IDbCommand command, TArg arg, IConnectionRetryPolicy retryPolicy)\r\n' +
+    '   at Microsoft.Crm.CrmDbConnection.InternalExecuteWithRetry[TResult](Func`1 executeMethod, IDbCommand command, IConnectionRetryPolicy retryPolicy)\r\n' +
+    '   at Microsoft.Crm.CrmDbConnection.<>c__238`1.<InternalExecuteNonQuery>b__238_0(ValueTuple`8 args)\r\n' +
+    '   at Microsoft.Xrm.Telemetry.XrmTelemetryExtensions.Execute[T,TArg](ILogger logger, XrmTelemetryActivityType activityType, Func`2 func, TArg arg)\r\n' +
+    '   at Microsoft.Crm.CrmDbConnection.InternalExecuteNonQuery[TArg](IDbCommand command, Action`1 actionForLoggingAdditionalCustomDimensions, TArg arg, ICrmTransaction crmTransaction, IConnectionRetryPolicy retryPolicy, Int32 sourceLineNumber, String memberName, String sourceFilePath)\r\n' +
+    '   at Microsoft.Crm.CrmDbConnection.ExecuteNonQueryInTransactionAbstract(IDbCommand command, ICrmTransaction crmTransaction, Int32 sourceLineNumber, String memberName, String sourceFilePath)\r\n' +
+    '   at Microsoft.Crm.Platform.Server.DataEngine.SqlDataAccessManager.ExecuteNonQuery(IDbCommand command, ISqlExecutionContext context, Int32 sourceLineNumber, String memberName, String sourceFilePath)\r\n' +
+    '   at Microsoft.Crm.BusinessEntities.BusinessProcessObject.ExecuteNonQueryAbstract(IDbCommand command, ISqlExecutionContext context)\r\n' +
+    '   at Microsoft.Crm.BusinessEntities.BusinessProcessObject.ExecuteNonQueryAbstract(IDbCommand command, ExecutionContext context)\r\n' +
+    '   at Microsoft.Crm.Platform.SolutionAwareComponents.CreateInstanceActionBase.ExecuteCreate(IDbCommand command, ExecutionContext context)\r\n' +
+    '';
+  // @parity-evidence: native-trial/n3-package.json and native-trial-r2/n3-package.json probe 'create a second package with the same unique name' message
+  // @test-kind parity: native-trial and native-trial-r2 n3-package 'create a second package with the same unique name' 0x80040265 text (byte-identical in both captures); connection ids and routing host are per request/environment
+  it('a second package with the same assembly is refused with the native duplicate key text', async () => {
+    const { run } = await registry();
+    const content = packageNupkg();
+    await run('pluginpackage', 'create', { content });
+    let error = null;
+    await run('pluginpackage', 'create', { name: 'Contoso.Second', version: '1.0.0', content }).catch((refused) => {
+      error = refused;
+    });
+    assert.equal(error?.details?.innerCode, '0x80040265');
+    const sentence = 'Jan  1 1900 12:00AM).';
+    const at = error.message.indexOf(sentence) + sentence.length;
+    assert.equal(
+      error.message.slice(0, at),
+      "Cannot insert duplicate key exception when executing non-query: System.Data.SqlClient.SqlCommand Exception: System.Data.SqlClient.SqlException (0x80131904): Violation of UNIQUE KEY constraint 'UQ_PluginAssemblyBase_AssemblyMetadata'. Cannot insert duplicate key in object 'dbo.PluginAssemblyBase'. The duplicate key value is (Contoso.Unsigned, 1, 0, neutral, null, fd140aae-4df4-11dd-bd17-0019b9312238, 0, Jan  1 1900 12:00AM).",
+    );
+    assert.equal(error.message.slice(at, at + SQL_FRAMES.length), SQL_FRAMES);
+    assert.match(
+      error.message.slice(at + SQL_FRAMES.length),
+      /^ClientConnectionId:[0-9a-f-]{36}\r\nError Number:2627,State:1,Class:14\r\nClientConnectionId before routing:[0-9a-f-]{36}\r\nRouting Destination:/,
+    );
   });
 
   // @test-kind parity: native trial captures native-trial and native-trial-r2 (dataverse-recorder round 2, n3-package): on a package-owned assembly PATCH isolationmode answers 403 0x80040256, POST of a plugintype its content does not declare answers 204, and the type is gone after the next package content update

@@ -831,7 +831,7 @@ const dependentSteps = (logical, id, count) =>
 // their types itself (they are platform rows of the package).
 function guardDelete(store, logical, existing) {
   if (logical === 'pluginassembly' && ref({}, existing, 'packageid') != null)
-    throw fail('Unable to delete plug-in assembly as it is part of plugin package.', '0x80081117');
+    throw fail('Unable to delete plug-in assembly as it is part of plugin package', '0x80081117');
   const types =
     logical === 'pluginpackage'
       ? assembliesOfPackage(store, existing.pluginpackageid).flatMap((assembly) =>
@@ -943,6 +943,53 @@ function validateAssembly({ store, data, existing }) {
     );
 }
 
+// Native's OData payload reader refuses a fractional rank with the inner conversion error and this stack (native registration
+// probes round 2, 'Reg2: rank 1.5'; one capture). A non-numeric rank keeps the short text, which is not captured.
+const RANK_PAYLOAD_FRAMES =
+  '\r\n' +
+  '   at Microsoft.OData.ODataPayloadValueConverter.ConvertFromPayloadValue(Object value, IEdmTypeReference edmTypeReference)\r\n' +
+  '   --- End of inner exception stack trace ---\r\n' +
+  '   at Microsoft.OData.ODataPayloadValueConverter.ConvertFromPayloadValue(Object value, IEdmTypeReference edmTypeReference)\r\n' +
+  '   at Microsoft.Crm.Extensibility.ODataV4.CrmPrimitivePayloadValueConverter.ConvertFromPayloadValue(Object value, IEdmTypeReference edmTypeReference)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightReaderUtils.ConvertValue(Object value, IEdmPrimitiveTypeReference primitiveTypeReference, ODataMessageReaderSettings messageReaderSettings, Boolean validateNullValue, String propertyName, ODataPayloadValueConverter converter)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightPropertyAndValueDeserializer.ReadPrimitiveValue(Boolean insideJsonObjectValue, IEdmPrimitiveTypeReference expectedValueTypeReference, Boolean validateNullValue, String propertyName)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightPropertyAndValueDeserializer.ReadNonEntityValueImplementation(String payloadTypeName, IEdmTypeReference expectedTypeReference, PropertyAndAnnotationCollector propertyAndAnnotationCollector, CollectionWithoutExpectedTypeValidator collectionValidator, Boolean validateNullValue, Boolean isTopLevelPropertyValue, Boolean insideResourceValue, String propertyName, Nullable`1 isDynamicProperty)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightResourceDeserializer.ReadEntryDataProperty(IODataJsonLightReaderResourceState resourceState, IEdmProperty edmProperty, String propertyTypeName)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightResourceDeserializer.ReadPropertyWithValue(IODataJsonLightReaderResourceState resourceState, String propertyName, Boolean isDeltaResourceSet)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightResourceDeserializer.<>c__DisplayClass9_0.<ReadResourceContent>b__0(PropertyParsingResult propertyParsingResult, String propertyName)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightDeserializer.ProcessProperty(PropertyAndAnnotationCollector propertyAndAnnotationCollector, Func`2 readPropertyAnnotationValue, Action`2 handleProperty)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightResourceDeserializer.ReadResourceContent(IODataJsonLightReaderResourceState resourceState)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightReader.StartReadingResource()\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightReader.ReadResourceSetItemStart(PropertyAndAnnotationCollector propertyAndAnnotationCollector, SelectedPropertiesNode selectedProperties)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightReader.ReadAtStartImplementationSynchronously(PropertyAndAnnotationCollector propertyAndAnnotationCollector)\r\n' +
+  '   at Microsoft.OData.ODataReaderCore.ReadImplementation()\r\n' +
+  '   at Microsoft.OData.ODataReaderCore.InterceptException[T](Func`1 action)\r\n' +
+  '   at Microsoft.AspNet.OData.Formatter.Deserialization.ODataReaderExtensions.ReadResourceOrResourceSet(ODataReader reader)\r\n' +
+  '   at Microsoft.Crm.Extensibility.CrmODataEntityDeserializer.Read(ODataMessageReader messageReader, Type type, ODataDeserializerContext readContext)\r\n' +
+  '   at Microsoft.AspNet.OData.Formatter.ODataInputFormatterHelper.ReadFromStream(Type type, Object defaultValue, IEdmModel model, ODataVersion version, Uri baseAddress, IWebApiRequestMessage internalRequest, Func`1 getODataRequestMessage, Func`2 getEdmTypeDeserializer, Func`2 getODataPayloadDeserializer, Func`1 getODataDeserializerContext, Action`1 registerForDisposeAction, Action`1 logErrorAction).';
+const rankPayloadTail = (value) =>
+  Number.isNaN(Number(value))
+    ? ''
+    : ` ---> Microsoft.OData.ODataException: Cannot convert a value of type '${typeof value === 'number' ? 'Edm.Decimal' : 'Edm.String'}' to the expected target type 'Edm.Int32'.${RANK_PAYLOAD_FRAMES}`;
+// The SQL error native appends to the duplicate key sentence (native-trial and native-trial-r2 n3-package, byte-identical).
+// The per-request connection ids and the routing destination (an environment value) are composed by duplicateKeyTail.
+const SQL_INSERT_FRAMES =
+  '\r\n' +
+  'The statement has been terminated.\r\n' +
+  '   at Microsoft.Crm.CrmDbConnection.HandleExecutionException(Exception exception, String commandText, IDbConnection connection, IDbCommand command, IDbTransaction transaction, Boolean isOpen, Int32 commandTimeout, IConnectionRetryPolicy localRetryPolicy, Int32& retryCount)\r\n' +
+  '   at Microsoft.Crm.CrmDbConnection.InternalExecuteWithRetry[TResult,TArg](Func`2 executeMethod, IDbCommand command, TArg arg, IConnectionRetryPolicy retryPolicy)\r\n' +
+  '   at Microsoft.Crm.CrmDbConnection.InternalExecuteWithRetry[TResult](Func`1 executeMethod, IDbCommand command, IConnectionRetryPolicy retryPolicy)\r\n' +
+  '   at Microsoft.Crm.CrmDbConnection.<>c__238`1.<InternalExecuteNonQuery>b__238_0(ValueTuple`8 args)\r\n' +
+  '   at Microsoft.Xrm.Telemetry.XrmTelemetryExtensions.Execute[T,TArg](ILogger logger, XrmTelemetryActivityType activityType, Func`2 func, TArg arg)\r\n' +
+  '   at Microsoft.Crm.CrmDbConnection.InternalExecuteNonQuery[TArg](IDbCommand command, Action`1 actionForLoggingAdditionalCustomDimensions, TArg arg, ICrmTransaction crmTransaction, IConnectionRetryPolicy retryPolicy, Int32 sourceLineNumber, String memberName, String sourceFilePath)\r\n' +
+  '   at Microsoft.Crm.CrmDbConnection.ExecuteNonQueryInTransactionAbstract(IDbCommand command, ICrmTransaction crmTransaction, Int32 sourceLineNumber, String memberName, String sourceFilePath)\r\n' +
+  '   at Microsoft.Crm.Platform.Server.DataEngine.SqlDataAccessManager.ExecuteNonQuery(IDbCommand command, ISqlExecutionContext context, Int32 sourceLineNumber, String memberName, String sourceFilePath)\r\n' +
+  '   at Microsoft.Crm.BusinessEntities.BusinessProcessObject.ExecuteNonQueryAbstract(IDbCommand command, ISqlExecutionContext context)\r\n' +
+  '   at Microsoft.Crm.BusinessEntities.BusinessProcessObject.ExecuteNonQueryAbstract(IDbCommand command, ExecutionContext context)\r\n' +
+  '   at Microsoft.Crm.Platform.SolutionAwareComponents.CreateInstanceActionBase.ExecuteCreate(IDbCommand command, ExecutionContext context)\r\n';
+const duplicateKeyTail = (store) =>
+  `${SQL_INSERT_FRAMES}ClientConnectionId:${store.ids.uuid()}\r\nError Number:2627,State:1,Class:14\r\nClientConnectionId before routing:${store.ids.uuid()}\r\nRouting Destination:localhost,1433`;
+
 // A plug-in package (dependent assemblies, Microsoft Learn): the content is a NuGet package; each lib/ assembly that declares
 // an IPlugin type is registered as a pluginassembly row of the package (packageid, no strong name needed) with a plugintype row
 // per plug-in type (workflow activities are not supported in packages). Registration inspects the bytes; a registered step
@@ -971,6 +1018,20 @@ function validatePackage({ store, data, existing, operation }) {
     if (val('version') == null || val('version') === '') data.version = facts.version;
   }
   for (const column of ['name', 'version']) if (val(column) == null || val(column) === '') throw required(column);
+  // Native (N3 package trial) reads package_name as the uniquename plus '.nupkg' on create, and a renaming PATCH sets both
+  // name and uniquename. The default copying name into a missing uniquename is unproven (NATIVE package-edge-cases); no
+  // update derives package_name, native was not observed changing it.
+  if (operation === 'create') {
+    if (data.uniquename == null || data.uniquename === '') data.uniquename = val('name');
+    data.package_name = `${data.uniquename}.nupkg`;
+  } else if (
+    operation === 'update' &&
+    data.name !== undefined &&
+    data.name !== existing?.name &&
+    data.uniquename === undefined
+  ) {
+    data.uniquename = data.name;
+  }
   if (!facts) return;
   const packageId = String(existing?.pluginpackageid ?? (data.pluginpackageid ??= store.ids.uuid())).toLowerCase();
   const org = organizationOf(store);
@@ -1007,7 +1068,7 @@ function validatePackage({ store, data, existing, operation }) {
       );
     if (duplicate)
       throw fail(
-        `Cannot insert duplicate key exception when executing non-query: System.Data.SqlClient.SqlCommand Exception: System.Data.SqlClient.SqlException (0x80131904): Violation of UNIQUE KEY constraint 'UQ_PluginAssemblyBase_AssemblyMetadata'. Cannot insert duplicate key in object 'dbo.PluginAssemblyBase'. The duplicate key value is (${assembly.name}, ${assembly.major}, ${assembly.minor}, ${assembly.culture}, ${identity.publickeytoken}, fd140aae-4df4-11dd-bd17-0019b9312238, 0, Jan  1 1900 12:00AM).`,
+        `Cannot insert duplicate key exception when executing non-query: System.Data.SqlClient.SqlCommand Exception: System.Data.SqlClient.SqlException (0x80131904): Violation of UNIQUE KEY constraint 'UQ_PluginAssemblyBase_AssemblyMetadata'. Cannot insert duplicate key in object 'dbo.PluginAssemblyBase'. The duplicate key value is (${assembly.name}, ${assembly.major}, ${assembly.minor}, ${assembly.culture}, ${identity.publickeytoken}, fd140aae-4df4-11dd-bd17-0019b9312238, 0, Jan  1 1900 12:00AM).${duplicateKeyTail(store)}`,
         '0x80040265',
       );
     upsert(store, 'pluginassembly', 'pluginassemblyid', [
@@ -1184,7 +1245,7 @@ function validateStep({ store, principals, c, data, existing, operation }) {
   // A whole-number column: native's OData payload reader refuses a fractional rank before any rule runs.
   if (!Number.isInteger(rank))
     throw fail(
-      `Error identified in Payload provided by the user for Entity :'sdkmessageprocessingsteps', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal '${val('rank')}' to the expected type 'Edm.Int32'.`,
+      `Error identified in Payload provided by the user for Entity :'sdkmessageprocessingsteps', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal '${val('rank')}' to the expected type 'Edm.Int32'.${rankPayloadTail(val('rank'))}`,
       '0x80048d19',
     );
   for (const [column, value, accepted] of [
