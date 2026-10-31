@@ -13,7 +13,7 @@ import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
-import { asyncMultipleJobParent } from '../lib/plugin-sdk-parent.mjs';
+import { asyncMultipleJobParent, asynchronousParentChain } from '../lib/plugin-sdk-parent.mjs';
 import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
@@ -404,4 +404,43 @@ test('a bridged multiple job parent reports the job identities', () => {
   // A caller frame keeps its own identities.
   assert.deepEqual(parent.values.ParentContext.values.UserId, guid(SYSTEM));
   assert.equal(parent.values.ParentContext.values.MessageName, 'CreateMultiple');
+});
+
+// @parity-evidence: native depth.json Depth 3 Create job: ParentContext.ParentContext (Create/40) PostEntityImagesCollection holds AsynchronousStepPrimaryName (all 18 deeper jobs); frames share the job correlation
+// Native depth.json: in a Depth 3 job's parent chain the calling Create/40 frame keeps its Context4 post collection
+// (AsynchronousStepPrimaryName) and every frame reports the job's correlation; only step images are empty.
+test('an asynchronous parent frame keeps its image collections and takes the job correlation', () => {
+  const guid = (value) => ({ $type: 'Guid', value });
+  const collection = {
+    $type: 'EntityImageCollectionArray',
+    values: [
+      {
+        $type: 'EntityImageCollection',
+        values: { AsynchronousStepPrimaryName: { $type: 'Entity', logicalName: 'x_node', id: id(20), attributes: {} } },
+      },
+    ],
+  };
+  const caller = {
+    $type: 'ExecutionContext',
+    values: {
+      MessageName: 'Create',
+      Stage: 40,
+      CorrelationId: guid(id(21)),
+      PostEntityImages: { $type: 'EntityImageCollection', values: { post: {} } },
+      PostEntityImagesCollection: collection,
+      ParentContext: null,
+    },
+  };
+  const chain = asynchronousParentChain(caller, {
+    MessageName: 'Create',
+    Depth: 3,
+    PrimaryEntityId: guid(id(22)),
+    IsolationMode: 2,
+    OwningExtension: { $type: 'EntityReference', logicalName: 'sdkmessageprocessingstep', id: id(23), name: null },
+    OperationId: guid(id(24)),
+    CorrelationId: guid(id(25)),
+  });
+  assert.deepEqual(chain.values.PostEntityImagesCollection, collection);
+  assert.deepEqual(chain.values.PostEntityImages, { $type: 'EntityImageCollection', values: {} });
+  assert.deepEqual(chain.values.CorrelationId, guid(id(25)));
 });

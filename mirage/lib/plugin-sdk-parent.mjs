@@ -262,11 +262,11 @@ const SHARED_FACTS = [
 const ASYNC_PARENT_FRAMES = 3;
 
 /** An asynchronous job's ParentContext: the parent chain its message's synchronous PostOperation step sees, cut after
- * three frames. Each frame keeps its stage, inputs, outputs, shared variables, entity name and identities, but reports
- * the job's mode, depth, message, operation row (a bridged multiple's single row), isolation, step (unnamed),
- * operation id and creation time, outside a
- * transaction, with no images (native corpus: depth, bulk, faults, ownerAndState, customApi asynchronous contexts and
- * their web hook copies). */
+ * three frames. Each frame keeps its stage, inputs, outputs, shared variables, entity name, identities and Context4
+ * image collections (native depth: the calling Create/40 frame keeps its AsynchronousStepPrimaryName post collection),
+ * but reports the job's mode, depth, message, operation row (a bridged multiple's single row), isolation, step
+ * (unnamed), operation id, correlation and creation time, outside a transaction, without step images (native corpus:
+ * depth, bulk, faults, ownerAndState, customApi asynchronous contexts and their web hook copies). */
 export function asynchronousParentChain(
   node,
   context,
@@ -293,10 +293,9 @@ export function asynchronousParentChain(
       OwningExtension: cloneStateData(context.OwningExtension),
       OperationId: cloneStateData(context.OperationId),
       OperationCreatedOn: cloneStateData(context.OperationCreatedOn),
+      CorrelationId: cloneStateData(context.CorrelationId ?? node.values.CorrelationId),
       PreEntityImages: { $type: 'EntityImageCollection', values: {} },
       PostEntityImages: { $type: 'EntityImageCollection', values: {} },
-      PreEntityImagesCollection: { $type: 'EntityImageCollectionArray', values: [] },
-      PostEntityImagesCollection: { $type: 'EntityImageCollectionArray', values: [] },
       ParentContext: asynchronousParentChain(node.values.ParentContext, context, {
         remaining: remaining - 1,
         primaryEntityId,
