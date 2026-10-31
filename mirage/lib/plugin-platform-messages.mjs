@@ -80,7 +80,7 @@ const principalIdOf = (row) => row.principalid?.id ?? row.principalid;
 export const sharedMaskOf = (store, logicalName, id, principalId) =>
   sharesOf(store, { logicalName, id })
     .filter((share) => same(principalIdOf(share), principalId))
-    .reduce((mask, share) => mask | Number(share.accessrightsmask), 0);
+    .reduce((mask, share) => mask | Number(share.accessrightsmask) | Number(share.inheritedaccessrightsmask ?? 0), 0);
 /** AccessRights names (ReadAccess, WriteAccess, ...) of a mask; None when empty. */
 export const accessNamesOf = (mask) =>
   Object.keys(ACCESS_RIGHTS)
@@ -136,6 +136,12 @@ function runMessagePipeline(
     // Reads run outside the automatic transaction (native sdkMessages: RetrievePrincipalAccess and
     // RetrieveSharedPrincipalsAndAccess report IsAutoTransact false).
     autoTransact = true,
+    // Other records of the message an image can hold (registration messagePropertyName: Merge's SubordinateId), by
+    // property: the row id on the message's table. Target stays the message's own record.
+    imageRecords = {},
+    // The message's row before the operation when the caller already wrote it (a PATCH statecode's
+    // SetStateDynamicEntity).
+    previous: suppliedPrevious,
   },
 ) {
   // An unbound message (PrimaryEntityName none) has no table and an empty PrimaryEntityId.
@@ -149,13 +155,23 @@ function runMessagePipeline(
   // it: registered images of Assign, SetState and the sharing messages hold the record (Microsoft Learn image table).
   const storedRow = () =>
     cloneStateData(store.tableRows(mapping.logicalName).find((row) => same(row[mapping.idColumn], id)) ?? null);
-  const previous = id && id !== EMPTY ? storedRow() : null;
+  const previous =
+    suppliedPrevious !== undefined ? cloneStateData(suppliedPrevious) : id && id !== EMPTY ? storedRow() : null;
+  const rowOf = (rowId) =>
+    cloneStateData(store.tableRows(mapping.logicalName).find((row) => same(row[mapping.idColumn], rowId)) ?? null);
+  const imageRows = Object.keys(imageRecords).length
+    ? Object.fromEntries(
+        Object.entries(imageRecords).map(([property, rowId]) => [property, { previous: rowOf(rowId), record: null }]),
+      )
+    : null;
   const values = { ...inputs };
   if (requestTag !== undefined && inputTag) values.tag = requestTag;
-  if (Object.hasOwn(inputs, 'FromSandbox')) {
-    delete values.FromSandbox;
-    values.FromSandbox = inputs.FromSandbox;
-  }
+  // Native order after the tag: FromSandbox, and UpdateContent for Merge (native mergeAccount).
+  for (const name of ['FromSandbox', 'UpdateContent'])
+    if (Object.hasOwn(inputs, name)) {
+      delete values[name];
+      values[name] = inputs[name];
+    }
   const messageParameters = {
     inputParameters: { $type: 'ParameterCollection', values },
     outputParameters: { $type: 'ParameterCollection', values: { ...initialOutputs } },
@@ -166,7 +182,9 @@ function runMessagePipeline(
   const parentContext = platformParent ?? store.pluginParentContext ?? pluginInvocationSdkParent(store);
   let frame = {
     ...frameFacts,
-    ...(inputTag ? {} : { inputTagConsumed: true }),
+    // The tag stays where values placed it, after the message's own inputs (native named messages: Target, ..., tag),
+    // not prepended by the step layers.
+    inputTagConsumed: true,
     requestTag,
     operationDepth: depth,
     ...(platformParent ? { delegatedParentContext: platformParent, delegatedDepth: depth, exactDepth: true } : {}),
@@ -207,8 +225,10 @@ function runMessagePipeline(
         changedAttributes: [],
         bypassStepIds,
         bypassCustomPlugins,
+        bypassCustomAsync,
         customApi,
         messageParameters,
+        ...(imageRows ? { imageRows } : {}),
         ...(initial ? { initialFrame: frame } : {}),
       }) ?? frame;
   };
@@ -258,6 +278,7 @@ function runMessagePipeline(
       if (preValidationOnly) return outputs;
       messageParameters.outputParameters.values = { ...outputs };
       if (previous) Object.assign(record, storedRow() ?? {});
+      for (const [property, rows] of Object.entries(imageRows ?? {})) rows.record = rowOf(imageRecords[property]);
       phase(40);
       store.pluginFrames ??= new WeakMap();
       store.pluginFrames.set(record, frame);
@@ -374,13 +395,14 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
       sdkFromSandbox: false,
       ...writeOptions,
     });
-  const named = (inputs, target, main) =>
+  const named = (inputs, target, main, imageRecords) =>
     runMessagePipeline(store, {
       message: name === 'SetState' ? 'SetStateDynamicEntity' : name,
       entity: target.logicalName,
       id: target.id,
       inputs: { ...inputs, ...fromSandbox },
       main,
+      imageRecords,
       autoTransact: !['RetrievePrincipalAccess', 'RetrieveSharedPrincipalsAndAccess'].includes(name),
       ...pipelineOptions,
     });
@@ -472,7 +494,10 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
           // the shared mask).
           const shared = sharesOf(store, target)
             .filter((share) => same(principalIdOf(share), principal.id))
-            .reduce((mask, share) => mask | Number(share.accessrightsmask), 0);
+            .reduce(
+              (mask, share) => mask | Number(share.accessrightsmask) | Number(share.inheritedaccessrightsmask ?? 0),
+              0,
+            );
           return { AccessRights: { $type: 'AccessRights', value: maskOfNames(granted) | shared } };
         }),
       );
@@ -703,14 +728,21 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
             content: values,
             performParentingChecks: parameters.PerformParentingChecks,
           });
-          innerUpdate(target, changes.target);
-          innerUpdate(subordinate, changes.subordinate);
-          for (const { childMapping, row, rel } of changes.children)
-            innerUpdate(
-              { logicalName: childMapping.logicalName, id: row[childMapping.idColumn] },
-              { [rel.to]: { id: target.id, logical_name: mapping.logicalName } },
-            );
+          writeMerge(
+            store,
+            { mapping, changes, identity },
+            {
+              update: (id, data) => innerUpdate({ logicalName: target.logicalName, id }, data),
+              moveChild: ({ childMapping, row, rel }) =>
+                innerUpdate(
+                  { logicalName: childMapping.logicalName, id: row[childMapping.idColumn] },
+                  { [rel.to]: { id: target.id, logical_name: mapping.logicalName } },
+                ),
+            },
+          );
         },
+        // An image registered on SubordinateId holds the subordinate row (native mergeAccount).
+        { SubordinateId: subordinate.id },
       );
       return respond();
     }
@@ -924,7 +956,7 @@ export const entryMessageActive = (store, message, entity, context = {}) =>
  * path does (executePlatformSdkMessage). main may answer a promise; it answers the message's typed outputs. The entry
  * point's request identity, Accept-Language and bypass choices apply. Answers a promise of the outputs.
  */
-export async function runEntryMessage(store, { message, entity, id, inputs, context = {}, main }) {
+export async function runEntryMessage(store, { message, entity, id, inputs, context = {}, main, imageRecords }) {
   const header = (name) => context.headers?.get?.(name) ?? context.headers?.[name];
   return runMessagePipeline(store, {
     message,
@@ -938,6 +970,7 @@ export async function runEntryMessage(store, { message, entity, id, inputs, cont
     bypassCustomAsync: context.bypassCustomAsync === true,
     // The access reads run outside the automatic transaction, as on the SDK path (native sdkMessages).
     autoTransact: !['RetrievePrincipalAccess', 'RetrieveSharedPrincipalsAndAccess'].includes(message),
+    imageRecords,
     main,
   });
 }
@@ -962,13 +995,21 @@ const MERGE_SYSTEM_COLUMNS = new Set([
 const refOf = (value) => (value !== null && typeof value === 'object' ? value.id : value);
 
 /**
- * The writes of a Merge main operation, for the Web API and the SDK: target gets the subordinate's values it lacks and
- * content (the UpdateContent columns; an incident merge ignores them), subordinate is deactivated (and takes masterid
- * when declared), and its child rows ({ childMapping, row, rel }; rel.to is the child's lookup column) move to the target.
- * performParentingChecks refuses two different non-null parents on the table's self lookup.
+ * The writes of a Merge main operation, for the Web API and the SDK (recorded native mergeAccount): target gets the
+ * subordinate's values it lacks and content (the UpdateContent columns; an incident merge ignores them), the subordinate
+ * is deactivated (the inactive state with its default status) and then marked merged into the target (masterid and
+ * merged, when declared), and the child rows of every relationship whose Merge cascades ({ childMapping, row, rel };
+ * rel.to is the child's lookup column) move to the target. performParentingChecks refuses two different non-null parents
+ * on the table's self lookup. metadataFields: the runtime column definitions (Web API), when there are any.
  * ponytail: the missing-parent variant of PerformParentingChecks (async cascade docs) is not modelled.
  */
-export function mergeChanges(store, mapping, targetRow, subRow, { content = {}, performParentingChecks = false } = {}) {
+export function mergeChanges(
+  store,
+  mapping,
+  targetRow,
+  subRow,
+  { content = {}, performParentingChecks = false, metadataFields } = {},
+) {
   const { idColumn } = mapping,
     fields = mapping.fields ?? {},
     relationships = Object.entries(relationshipsOf(store, mapping.logicalName, mapping.relationships));
@@ -991,18 +1032,67 @@ export function mergeChanges(store, mapping, targetRow, subRow, { content = {}, 
       )
       .map((name) => [name, subRow[name]]),
   );
+  // Exported metadata nests column facts under columnMetadata; runtime definitions may hold them at the top level.
+  const definition = (column) => store.fieldDefinition(mapping.logicalName, column, metadataFields);
+  const declared = (column) => Object.hasOwn(fields, column) || Boolean(definition(column));
+  const inactive = 1,
+    state = { ...definition('statecode'), ...(definition('statecode')?.columnMetadata ?? {}) },
+    inactiveStatus =
+      (state.states ?? state.options ?? []).find((option) => Number(option.value) === inactive)?.defaultStatus ??
+      mapping.stateStatusDefaults?.[inactive];
   const children = [];
   for (const [, rel] of relationships) {
-    if (!rel.many || rel.intersect) continue;
+    // Only a relationship whose Merge cascades moves its rows (Learn: Cascade, the only option on a mergeable table).
+    if (!rel.many || rel.intersect || rel.cascade?.merge === 'NoCascade') continue;
     const childMapping = store.resolveMapping(rel.entity);
     for (const row of store.tableRows(childMapping.logicalName))
       if (sameRef(refOf(row[rel.to]), refOf(subRow[rel.from ?? idColumn]))) children.push({ childMapping, row, rel });
   }
   return {
+    targetId: targetRow[idColumn],
+    subordinateId: subRow[idColumn],
     target: { ...copied, ...(mapping.logicalName === 'incident' ? {} : content) },
-    subordinate: { statecode: 1, ...(Object.hasOwn(fields, 'masterid') ? { masterid: targetRow[idColumn] } : {}) },
+    deactivation: { statecode: inactive, ...(inactiveStatus == null ? {} : { statuscode: inactiveStatus }) },
+    mergedMark: {
+      ...(declared('masterid') ? { masterid: { id: targetRow[idColumn], logical_name: mapping.logicalName } } : {}),
+      ...(declared('merged') ? { merged: true } : {}),
+    },
     children,
   };
+}
+
+/**
+ * Runs the writes of mergeChanges in the native order (recorded native mergeAccount): the target only when it gains
+ * values, the subordinate's deactivating Update, the platform's internal stage-50 reads of it (runMergeDeactivationReads),
+ * the merged mark, then each child move. update(id, values) writes a row of the merged table and moveChild(child) a child
+ * row; both are synchronous (SDK) or answer promises (Web API), and so does this.
+ */
+export function writeMerge(store, { mapping, changes, identity }, { update, moveChild }) {
+  const targetId = changes.targetId,
+    subordinateId = changes.subordinateId;
+  const steps = [];
+  if (Object.keys(changes.target).length) steps.push(() => update(targetId, changes.target));
+  steps.push(() => update(subordinateId, changes.deactivation));
+  if (store.pluginPipeline)
+    steps.push(() => {
+      const after = store.tableRows(mapping.logicalName).find((row) => same(row[mapping.idColumn], subordinateId));
+      runMergeDeactivationReads(store, {
+        mapping,
+        row: after,
+        target: Object.fromEntries(
+          [...Object.keys(changes.deactivation), 'modifiedon', 'modifiedby', 'modifiedonbehalfby']
+            .filter((name) => Object.hasOwn(after, name))
+            .map((name) => [name, after[name]]),
+        ),
+        identity,
+      });
+    });
+  if (Object.keys(changes.mergedMark).length) steps.push(() => update(subordinateId, changes.mergedMark));
+  for (const child of changes.children) steps.push(() => moveChild(child));
+  return steps.reduce(
+    (previous, step) => (typeof previous?.then === 'function' ? previous.then(step) : step()),
+    undefined,
+  );
 }
 
 /**
@@ -1146,6 +1236,100 @@ export function runRetrieveExchangeRate(
   }
 }
 
+/**
+ * The platform's internal stage-50 step of the Merge's subordinate deactivation ("Update of acton card for account",
+ * recorded native mergeAccount events 25-30 in both captures): after the deactivating Update's PostOperation, as SYSTEM
+ * for the caller and inside the Merge's transaction, it runs a RetrieveMultiple of the subordinate's open action cards
+ * and a Retrieve of the subordinate (all columns), each through its read pipeline (10/20/40 and its asynchronous
+ * steps). Their ParentContext is Update/50 < Merge/30, every level at one below the Merge's depth, sharing its request.
+ * `row` is the subordinate after the Update (`target`: the Update's Target columns). A Merge without its own pipeline
+ * (no Merge step) has no main-operation frame to report, so its reads run without that parent chain.
+ * ponytail: the Update/50 frame carries no Context4 image collections; native lists the Update's PreBusinessEntity and
+ * AsynchronousStepPrimaryName there.
+ */
+function runMergeDeactivationReads(store, { mapping, row, target, identity }) {
+  const id = row[mapping.idColumn],
+    guid = (value) => ({ $type: 'Guid', value });
+  const system = store.tableRows('systemuser').find((user) => user.fullname === 'SYSTEM')?.systemuserid;
+  const callerId = identity?.systemUserId ?? identity?.id ?? null,
+    executing = system ?? callerId;
+  const merge = store.pluginMainOperation?.namedMessage ? store.pluginMainOperation : null;
+  const depth = (merge?.depth ?? messageDepth(store) - 1) + 1;
+  // Local organizations hold no action cards; the platform table the query reads exists empty.
+  store.state.tables.actioncard ??= [];
+  let delegated = null;
+  if (merge) {
+    const mergeValues = merge.context.values,
+      initiating = guid(executing);
+    const parent = {
+      $type: 'ExecutionContext',
+      values: { ...cloneStateData(mergeValues), Depth: depth, InitiatingUserId: initiating },
+    };
+    delegated = {
+      $type: 'ExecutionContext',
+      values: {
+        ...cloneStateData(mergeValues),
+        MessageName: 'Update',
+        PrimaryEntityName: mapping.logicalName,
+        PrimaryEntityId: guid(id),
+        Stage: 50,
+        Depth: depth,
+        IsInTransaction: true,
+        UserId: guid(callerId ?? executing),
+        InitiatingUserId: initiating,
+        InputParameters: {
+          $type: 'ParameterCollection',
+          values: {
+            Target: recordToSdkEntity(
+              store,
+              mapping.logicalName,
+              { ...target, [mapping.idColumn]: id },
+              { allColumns: false, columns: [mapping.idColumn, ...Object.keys(target)] },
+            ),
+          },
+        },
+        OutputParameters: { $type: 'ParameterCollection', values: {} },
+        OwningExtension: internalStepReference('Update of acton card for account', 'Update'),
+        PreEntityImages: { $type: 'EntityImageCollection', values: {} },
+        PostEntityImages: { $type: 'EntityImageCollection', values: {} },
+        ParentContext: parent,
+      },
+    };
+  }
+  const previousMain = store.pluginMainOperation,
+    reader = { ...identity, id: executing, systemUserId: executing, admin: true };
+  store.pluginMainOperation = delegated
+    ? { context: delegated, depth, exactDepth: true, internalRead: true, keepsRequestTag: true }
+    : previousMain;
+  try {
+    store.query('actioncard', {}, reader, undefined, {
+      sdkQuery: {
+        $type: 'QueryExpression',
+        entityName: 'actioncard',
+        columnSet: {
+          allColumns: false,
+          columns: ['startdate', 'expirydate', 'state', 'cardtypeid', 'data', 'referencetokens', 'cardtype'],
+        },
+        criteria: {
+          operatorName: 'And',
+          conditions: [
+            { attributeName: 'regardingobjectid', operatorName: 'Equal', values: [id] },
+            { attributeName: 'state', operatorName: 'NotEqual', values: [2] },
+          ],
+          filters: [],
+        },
+        orders: [],
+        linkEntities: [],
+        distinct: false,
+        noLock: false,
+      },
+    });
+    store.get(mapping.logicalName, id, reader, { sdkColumns: { allColumns: true, columns: [] } });
+  } finally {
+    store.pluginMainOperation = previousMain;
+  }
+}
+
 /** The SetStateDynamicEntity pipeline of an Update that sets statecode (data.mjs commitUpdateSteps), one level below it.
  * Under a bare Web API PATCH it joins the Update's request beneath that request's Upsert main operation, at its own
  * depth (native ownerAndState: SetStateDynamicEntity/10/d2 < Upsert/30/d2, one RequestId and OperationId). */
@@ -1196,6 +1380,7 @@ export function runStateMessage(store, mapping, row, identity, options = {}) {
     bypassCustomPlugins: options.bypassCustomPlugins === true,
     bypassCustomAsync: options.bypassCustomAsync === true,
     main: () => ({ IsValid: true }),
+    previous: options.previousRow,
   });
 }
 

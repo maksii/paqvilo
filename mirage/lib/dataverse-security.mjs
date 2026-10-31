@@ -1183,6 +1183,7 @@ export function grantAccessNow(store, { target, principal, mask }, { replace = f
     store.mutateRow('principalobjectaccess', rows, rows.indexOf(existing), {
       accessrightsmask: replace ? mask : Number(existing.accessrightsmask) | mask,
     });
+    cascadeShare(store, target, principal, 'share');
     return existing;
   }
   const logical = key(principal.logical_name) === 'team' ? 'team' : 'systemuser';
@@ -1195,6 +1196,7 @@ export function grantAccessNow(store, { target, principal, mask }, { replace = f
     inheritedaccessrightsmask: 0,
   };
   store.insertRow('principalobjectaccess', rowsOf(store, 'principalobjectaccess'), row);
+  cascadeShare(store, target, principal, 'share');
   return row;
 }
 
@@ -1204,12 +1206,141 @@ export function revokeAccess(store, share) {
   return store.transact(() => revokeAccessNow(store, share), { incremental: true });
 }
 
-/** revokeAccess inside the caller's own transaction. */
+/** revokeAccess inside the caller's own transaction. A share that also carries inherited access keeps that part. */
 export function revokeAccessNow(store, { target, principal }) {
   const rows = rowsOf(store, 'principalobjectaccess');
-  const index = rows.indexOf(shareOf(store, target, principal));
-  if (index >= 0) store.removeRow('principalobjectaccess', rows, index);
+  const existing = shareOf(store, target, principal),
+    index = rows.indexOf(existing);
+  if (index >= 0) {
+    if (Number(existing.inheritedaccessrightsmask ?? 0))
+      store.mutateRow('principalobjectaccess', rows, index, { accessrightsmask: 0 });
+    else store.removeRow('principalobjectaccess', rows, index);
+    cascadeShare(store, target, principal, 'unshare');
+  }
   return index >= 0;
+}
+
+// Cascaded access (Microsoft Learn "Configure table relationship cascading behavior"): the rows that reference a row
+// through a one-to-many relationship whose action cascades (Cascade: every child, Active: statecode 0, UserOwned: owned
+// by the parent's owner) inherit its access as principalobjectaccess.inheritedaccessrightsmask, beside any direct share.
+// Share and Unshare pass a principal's access on; Reparent gives a re-parented row the access of its new parent (its
+// owner and the principals it is shared with). The relationship rules allow one cascading parent per row.
+// ponytail: the children's own GrantAccess/RevokeAccess pipelines are not run (native cascade pipelines are uncaptured).
+const CASCADING = new Set(['Cascade', 'Active', 'UserOwned']);
+// The rights a reparent cascade carries (every AccessRights value but Create, Learn "About the reparent action").
+const INHERITABLE = Object.values(ACCESS_RIGHTS).reduce((mask, right) => mask | right, 0) & ~ACCESS_RIGHTS.Create;
+const effectiveShareMask = (row) =>
+  row ? Number(row.accessrightsmask ?? 0) | Number(row.inheritedaccessrightsmask ?? 0) : 0;
+
+/** The rows referencing `target` ({ logical, id }) through relationships whose `action` cascade applies. */
+function cascadedChildren(store, target, action) {
+  let mapping;
+  try {
+    mapping = store.resolveMapping(target.logical);
+  } catch {
+    return [];
+  }
+  const parent = store.tableRows(mapping.logicalName).find((row) => sameId(row[mapping.idColumn], target.id));
+  if (!parent) return [];
+  const children = [];
+  for (const reference of store.referencesTo(mapping.logicalName, { admin: true })) {
+    const behaviour = reference.cascade?.[action];
+    const linked = refId(parent[reference.targetColumn ?? mapping.idColumn]);
+    if (!CASCADING.has(behaviour) || linked == null) continue;
+    const childMapping = store.resolveMapping(reference.entity);
+    for (const child of store.tableRows(reference.entity)) {
+      const link = child[reference.column];
+      if (link && typeof link === 'object' && link.logical_name && link.logical_name !== mapping.logicalName) continue;
+      if (refId(link) == null || !sameId(refId(link), linked)) continue;
+      if (behaviour === 'Active' && Number(child.statecode?.value ?? child.statecode ?? 0) !== 0) continue;
+      if (behaviour === 'UserOwned' && !sameId(refId(child.ownerid), refId(parent.ownerid))) continue;
+      children.push({ logical: childMapping.logicalName, id: child[childMapping.idColumn] });
+    }
+  }
+  return children;
+}
+
+/** Sets the access `principal` inherits on `target`; 0 removes it (and the row when no direct share remains). */
+function setInheritedAccess(store, target, principal, mask) {
+  const rows = rowsOf(store, 'principalobjectaccess');
+  const existing = shareOf(store, target, principal);
+  if (existing) {
+    if (Number(existing.inheritedaccessrightsmask ?? 0) === mask) return;
+    if (!mask && !Number(existing.accessrightsmask ?? 0))
+      store.removeRow('principalobjectaccess', rows, rows.indexOf(existing));
+    else store.mutateRow('principalobjectaccess', rows, rows.indexOf(existing), { inheritedaccessrightsmask: mask });
+    return;
+  }
+  if (!mask) return;
+  const logical = key(principal.logical_name) === 'team' ? 'team' : 'systemuser';
+  store.insertRow('principalobjectaccess', rows, {
+    principalobjectaccessid: uuidV5(target.id, `share:${logical}:${principal.id}`),
+    principalid: lookupRow(store, logical, principal.id),
+    objectid: String(target.id).toLowerCase(),
+    objecttypecode: target.logical,
+    accessrightsmask: 0,
+    inheritedaccessrightsmask: mask,
+  });
+}
+
+/** Share/Unshare cascade: the children of `target` inherit what `principal` now holds on it, recursively. */
+function cascadeShare(store, target, principal, action, visited = new Set([key(target.id)])) {
+  const mask = effectiveShareMask(shareOf(store, target, principal));
+  for (const child of cascadedChildren(store, target, action)) {
+    if (visited.has(key(child.id))) continue;
+    visited.add(key(child.id));
+    setInheritedAccess(store, child, principal, mask);
+    cascadeShare(store, child, principal, action, visited);
+  }
+}
+
+/**
+ * Reparent cascade: `target` ({ logical, id }) now references `parent` ({ logical, id }, or null): its inherited access
+ * becomes the new parent's (the owner with the inheritable rights, each share at its effective mask), and its own
+ * reparent-cascading children follow it. Runs inside the caller's transaction.
+ */
+export function reparentAccess(store, target, parent, visited = new Set([key(target.id)])) {
+  const granted = new Map();
+  if (parent) {
+    const parentMapping = store.resolveMapping(parent.logical),
+      parentRow = store
+        .tableRows(parentMapping.logicalName)
+        .find((row) => sameId(row[parentMapping.idColumn], parent.id));
+    const owner = parentRow?.ownerid;
+    if (refId(owner) != null && ['systemuser', 'team'].includes(owner.logical_name ?? 'systemuser'))
+      granted.set(key(refId(owner)), {
+        principal: { id: refId(owner), logical_name: owner.logical_name ?? 'systemuser' },
+        mask: INHERITABLE,
+      });
+    for (const share of rowsOf(store, 'principalobjectaccess'))
+      if (sameId(share.objectid, parent.id) && key(share.objecttypecode) === key(parentMapping.logicalName)) {
+        const id = key(refId(share.principalid)),
+          mask = effectiveShareMask(share) | (granted.get(id)?.mask ?? 0);
+        granted.set(id, {
+          principal: { id: refId(share.principalid), logical_name: share.principalid?.logical_name ?? 'systemuser' },
+          mask,
+        });
+      }
+  }
+  for (const share of [...rowsOf(store, 'principalobjectaccess')])
+    if (
+      sameId(share.objectid, target.id) &&
+      key(share.objecttypecode) === key(target.logical) &&
+      Number(share.inheritedaccessrightsmask ?? 0) &&
+      !granted.has(key(refId(share.principalid)))
+    )
+      setInheritedAccess(
+        store,
+        target,
+        { id: refId(share.principalid), logical_name: share.principalid?.logical_name ?? 'systemuser' },
+        0,
+      );
+  for (const { principal, mask } of granted.values()) setInheritedAccess(store, target, principal, mask);
+  for (const child of cascadedChildren(store, target, 'reparent')) {
+    if (visited.has(key(child.id))) continue;
+    visited.add(key(child.id));
+    reparentAccess(store, child, target, visited);
+  }
 }
 
 // Derived indexes per store: the principal/role/privilege part is rebuilt only when one of its tables
@@ -1239,7 +1370,8 @@ function buildShares(store) {
   for (const s of store.tableRows('principalobjectaccess')) {
     const k = key(s.objectid);
     if (!shares.has(k)) shares.set(k, []);
-    shares.get(k).push({ principal: key(refId(s.principalid)), mask: Number(s.accessrightsmask) });
+    // Inherited (cascaded) access counts beside the direct share.
+    shares.get(k).push({ principal: key(refId(s.principalid)), mask: effectiveShareMask(s) });
   }
   return shares;
 }

@@ -18,6 +18,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DataError } from './data-error.mjs';
 import { uploadedClrRuntime } from './plugin-uploaded.mjs';
+import { conditionsOf, publishedRules } from './dataverse-duplicates.mjs';
 import { parseSolutionXml } from './solution-xml.mjs';
 import {
   clrContext,
@@ -245,10 +246,10 @@ export function parsePluginDocument(xml) {
             ? { customizationLevel: numeric(value(step, 'CustomizationLevel')) }
             : {}),
           enabled: numeric(value(step, 'StateCode') ?? '0') === 0,
+          // Verbatim tokens (native refuses a padded one, and the row keeps the Solution's case); the runtime matcher canonicalises.
           filteringAttributes: String(value(step, 'FilteringAttributes') ?? '')
             .split(',')
-            .map(canonical)
-            .filter(Boolean),
+            .filter((item) => item !== ''),
           impersonatingUserId: lookupId(step, 'ImpersonatingUserId') || null,
           ...(lookupId(step, 'SdkMessageProcessingStepSecureConfigId')
             ? { secureConfigurationId: lookupId(step, 'SdkMessageProcessingStepSecureConfigId') }
@@ -488,11 +489,15 @@ export function pluginUnsupported(step, { images = false } = {}) {
   if (step.images?.length && !images) return 'Registered pre/post images require an explicit image adapter.';
   if (images && (step.images ?? []).some((image) => ![0, 1, 2].includes(image.type) || (!image.alias && !image.name)))
     return 'Registered image type or alias is unresolved.';
-  if (
-    images &&
-    new Set((step.images ?? []).map((image) => image.alias || image.name)).size !== (step.images ?? []).length
-  )
-    return 'Registered image aliases must be unique.';
+  // A pre and a post image may share an alias (native accepts 'dup' type 0 with 'dup' type 1); the aliases of one
+  // collection (pre: types 0 and 2, post: types 1 and 2) must be unique.
+  const duplicateAlias = (types) => {
+    const aliases = (step.images ?? [])
+      .filter((image) => types.includes(image.type))
+      .map((image) => image.alias || image.name);
+    return new Set(aliases).size !== aliases.length;
+  };
+  if (images && (duplicateAlias([0, 2]) || duplicateAlias([1, 2]))) return 'Registered image aliases must be unique.';
   if (step.eventHandlerId && !step.serviceEndpointId && !step.assemblyId)
     return "The step's EventHandler names neither a plug-in type nor a service endpoint of the organization (handler unresolved).";
   // A web hook step (serviceEndpointId) has no plug-in type.
@@ -548,12 +553,17 @@ const pluginFault = (cause, item, stage, depth, fault = true) =>
     0,
   );
 // The registered images of one type set (0 pre, 1 post, 2 both) from source, keyed by alias, limited to their attributes
-// (imageAttributes: the handler context's images).
-const registeredImages = (item, types, source) =>
+// (imageAttributes: the handler context's images). An image on another message property (Merge SubordinateId) holds
+// that record's row (imageRows, plugin-platform-messages.mjs runMessagePipeline).
+const registeredImages = (item, types, source, imageRows) =>
   Object.fromEntries(
     (item.images ?? [])
-      .filter((spec) => types.includes(spec.type) && source)
-      .map((spec) => [spec.alias || spec.name, detachedRecord(imageAttributes(source, spec.attributes))]),
+      .map((spec) => {
+        const rows = spec.messagePropertyName && imageRows?.[spec.messagePropertyName];
+        return [spec, rows ? (types.includes(1) ? rows.record : rows.previous) : source];
+      })
+      .filter(([spec, row]) => types.includes(spec.type) && row)
+      .map(([spec, row]) => [spec.alias || spec.name, detachedRecord(imageAttributes(row, spec.attributes))]),
   );
 // InputParameters of a CRUD, external event or bulk message (IPluginExecutionContext.InputParameters).
 function typedInputParameters({ operation, target, targets, previous, changedAttributes = [] }) {
@@ -671,7 +681,7 @@ function typedContext({
   bridged = false,
 }) {
   const idColumn = entity && !(customApi && entity === 'none') ? store?.resolveMapping(entity)?.idColumn : null;
-  const images = (types, source) => registeredImages(item, types, source);
+  const images = (types, source) => registeredImages(item, types, source, frame?.imageRows);
   const preValidationParent =
     stage !== 10 &&
     (item.contract?.mode ?? 0) === 0 &&
@@ -941,12 +951,15 @@ function handlerExecutionContext({
         .values,
       ...rawInputs.values,
     };
-  const imageCollection = (current, source) => ({
+  // types: the image types of the collection (pre 0 and 2, post 1 and 2), so a shared alias picks its own registration.
+  const imageCollection = (current, source, types) => ({
     $type: 'EntityImageCollection',
     values: Object.fromEntries(
       Object.entries(current ?? {}).map(([alias, attributes]) => {
         if (attributes == null || attributes.$type === 'Entity') return [alias, cloneStateData(attributes)];
-        const spec = (item.images ?? []).find((entry) => (entry.alias || entry.name) === alias);
+        const spec = (item.images ?? []).find(
+          (entry) => types.includes(entry.type) && (entry.alias || entry.name) === alias,
+        );
         const original = recordToSdkEntity(store, entity, imageAttributes(source), {
           allColumns: !spec?.attributes?.length,
           columns: spec?.attributes ?? [],
@@ -983,20 +996,20 @@ function handlerExecutionContext({
       context.SharedVariables,
     ),
     ParentContext: parent ?? null,
-    PreEntityImages: imageCollection(context.PreEntityImages, previous),
-    PostEntityImages: imageCollection(context.PostEntityImages, context.Stage === 40 ? record : null),
+    PreEntityImages: imageCollection(context.PreEntityImages, previous, [0, 2]),
+    PostEntityImages: imageCollection(context.PostEntityImages, context.Stage === 40 ? record : null, [1, 2]),
   };
   if (['createmultiple', 'updatemultiple'].includes(operation)) {
     values.PreEntityImagesCollection = {
       $type: 'EntityImageCollectionArray',
       values: (context.PreEntityImagesCollection ?? []).map((images, index) =>
-        imageCollection(images, previousRecords?.[index]),
+        imageCollection(images, previousRecords?.[index], [0, 2]),
       ),
     };
     values.PostEntityImagesCollection = {
       $type: 'EntityImageCollectionArray',
       values: (context.PostEntityImagesCollection ?? []).map((images, index) =>
-        imageCollection(images, records?.[index]),
+        imageCollection(images, records?.[index], [1, 2]),
       ),
     };
   }
@@ -1064,7 +1077,10 @@ export function pluginCatalogue({
     const uploaded = Boolean(step.uploadedAssemblyId && step.typeName && !step.serviceEndpointId);
     const runtime = runtimes.get(step.id),
       descriptor = descriptors.get(step.id),
-      unsupported = pluginUnsupported(step, { images: Boolean(runtime || descriptor || registered || uploaded) });
+      // A web hook step's delivery renders its registered images itself (dataverse-webhooks.mjs).
+      unsupported = pluginUnsupported(step, {
+        images: Boolean(runtime || descriptor || registered || uploaded || step.serviceEndpointId),
+      });
     const clrAvailable = uploaded || Boolean((runtime?.descriptor ?? descriptor)?.typeName === step.typeName);
     const defaultMode = step.serviceEndpointId ? 'webhook' : registered ? 'handler' : uploaded ? 'clr' : 'placeholder';
     return copyStepConstructorSettings(step, {
@@ -1102,9 +1118,13 @@ export function pluginCatalogue({
 }
 
 export function pluginStepMatchesAttributes(item, { store, entity, operation, changedAttributes = [] }) {
-  if (!['update', 'updatemultiple'].includes(operation) || !item.filteringAttributes?.length) return true;
+  // Create filters on the attributes its Target carries (native: a POST without the filtered column does not run the
+  // step); only Update adds the table's id column, which the Update Target always carries.
+  const filtered = ['create', 'createmultiple', 'update', 'updatemultiple'].includes(operation);
+  if (!filtered || !item.filteringAttributes?.length) return true;
   const attributes = new Set(changedAttributes.map(canonical));
-  if (store && entity) attributes.add(canonical(store.resolveMapping(entity).idColumn));
+  if (store && entity && ['update', 'updatemultiple'].includes(operation))
+    attributes.add(canonical(store.resolveMapping(entity).idColumn));
   return item.filteringAttributes.some((name) => attributes.has(canonical(name)));
 }
 
@@ -1223,11 +1243,14 @@ export function runPluginPhase({
   initialFrame,
   bypassStepIds,
   bypassCustomPlugins = false,
+  bypassCustomAsync = false,
   continuePhase = false,
   awaitIo = false,
   diagnostic = () => {},
   onStepExecuted,
   targetKeyAttributes,
+  // A named message's other image records by message property ({ SubordinateId: { previous, record } }, Merge).
+  imageRows,
 }) {
   // A saved row can be reused by a later Delete; its previous request frame
   // must not supply shared variables, correlation or parent context to this one.
@@ -1241,6 +1264,7 @@ export function runPluginPhase({
   if (targetKeyAttributes && stage === 10 && !asyncExecution) phaseFrame.targetKeyAttributes ??= targetKeyAttributes;
   // A request that entered as a multiple message (plugin-bulk.mjs) formats its Update Targets (plugin-formatted-values.mjs).
   if (bulkOrigin) phaseFrame.bulkOrigin = true;
+  if (imageRows) phaseFrame.imageRows = cloneStateData(imageRows);
   // The main operation's InputParameters are the PreValidation view; keep it for a main-operation ParentContext
   // when no PreValidation step produced a snapshot.
   if (stage === 10 && !asyncExecution && ['create', 'update', 'delete'].includes(operation))
@@ -1459,9 +1483,11 @@ export function runPluginPhase({
     // A single-record operation that queues asynchronous work adds the platform's job attachment, fileattachment
     // 'Create', after its table (native crud/faults/depth/upsert with async steps; none in crudNoAsync, reproduced in
     // native-r2). Native Associate and Web API CreateMultiple/UpdateMultiple roots show none during their stages.
+    // A CustomAsync bypass queues nothing (native bypassHeaders: no fileattachment under the header).
     const queuesAsync =
       stage === 40 &&
       !bulkOrigin &&
+      !bypassCustomAsync &&
       ['create', 'update', 'delete'].includes(operation) &&
       matchingPluginSteps(items, {
         store,
@@ -1538,8 +1564,10 @@ export function runPluginPhase({
     Number(lanes.length > 1 && String(a.message).toLowerCase() === lanes[1]) -
       Number(lanes.length > 1 && String(b.message).toLowerCase() === lanes[1]) ||
     a.id.localeCompare(b.id);
+  // A CustomAsync bypass queues no asynchronous step, so neither their images nor AsynchronousStepPrimaryName join the
+  // sets (native bypassHeaders).
   const stageSteps = (forStage) =>
-    (stageItems ? [false, ...(forStage === 40 ? [true] : [])] : [])
+    (stageItems ? [false, ...(forStage === 40 && !bypassCustomAsync ? [true] : [])] : [])
       .flatMap((asynchronous) =>
         lanes.flatMap((lane) =>
           matchingPluginSteps(stageItems, {
@@ -1574,17 +1602,26 @@ export function runPluginPhase({
         asynchronous: item.contract?.mode === 1,
       }));
   // The platform's PreBusinessEntity image of an Update (single record, a delegated record, a single-origin UpdateMultiple
-  // lane): the row's statecode before the operation unless the request changes it (observed attribute set, native crud,
-  // bulk, ownerAndState; other columns it sometimes carries follow no rule the corpus establishes).
-  const businessEntity = () =>
-    stageItems && singleOperation === 'update' && (operation === 'update' || !bulkLane)
-      ? {
-          [BUSINESS_ENTITY_IMAGE]: {
-            platform: BUSINESS_ENTITY_IMAGE,
-            attributes: ['statecode'].filter((name) => !changedAttributes.map(canonical).includes(name)),
-          },
-        }
-      : {};
+  // lane). Native crud, imagesOrder, relationsReads and mergeAccount: it holds the base attributes of the table's published
+  // duplicate-detection rules (rule order, then condition order), plus statecode when a rule excludes inactive records,
+  // minus the Target's columns (nulls are omitted by the renderer). A table with no published rule has no image.
+  const businessEntity = () => {
+    if (!(stageItems && singleOperation === 'update' && (operation === 'update' || !bulkLane))) return {};
+    const rules = store ? publishedRules(store, (rule) => canonical(rule.baseentityname) === canonical(entity)) : [];
+    if (rules.length === 0) return {};
+    const named = rules.flatMap((rule) =>
+      conditionsOf(store, rule).map((condition) => canonical(condition.baseattributename)),
+    );
+    if (rules.some((rule) => rule.excludeinactiverecords === true || rule.excludeinactiverecords === 1))
+      named.push('statecode');
+    const changed = changedAttributes.map(canonical);
+    return {
+      [BUSINESS_ENTITY_IMAGE]: {
+        platform: BUSINESS_ENTITY_IMAGE,
+        attributes: [...new Set(named)].filter((name) => !changed.includes(name)),
+      },
+    };
+  };
   // The set a step sees: the stage's registrations up to its own slot. PostOperation starts from the final PreOperation
   // pre-image set plus PreBusinessEntity (native bulk: the first PostOperation step sees the PreOperation image).
   const stageView = (item) => {
@@ -1714,8 +1751,11 @@ export function runPluginPhase({
         ...(multiple ? { Query: query } : {}),
         ...(read && !multiple ? { Target: { logicalName: entity, id: recordId }, ColumnSet: columns } : {}),
       },
-      preImages: registeredImages(item, [0, 2], previous),
-      postImages: stage === 40 && operation !== 'delete' && !read ? registeredImages(item, [1, 2], record) : {},
+      preImages: registeredImages(item, [0, 2], previous, phaseFrame.imageRows),
+      postImages:
+        stage === 40 && operation !== 'delete' && !read
+          ? registeredImages(item, [1, 2], record, phaseFrame.imageRows)
+          : {},
       sharedVariables: sharedValues(executionFrames.get(record)),
       context: {
         messageName: customApi?.name ?? messageNameOf(operation),
@@ -1760,8 +1800,8 @@ export function runPluginPhase({
     for (let index = from; index < matched.length; index++) {
       const item = matched[index],
         bridged = bridgedStep(item) === 1;
-      if (operation === 'update') changedAttributes = Object.keys(target ?? {});
-      else if (operation === 'updatemultiple')
+      if (['create', 'update'].includes(operation)) changedAttributes = Object.keys(target ?? {});
+      else if (['createmultiple', 'updatemultiple'].includes(operation))
         changedAttributes = [...new Set((targets ?? []).flatMap((entry) => Object.keys(entry.attributes ?? {})))];
       if (!pluginStepMatchesAttributes(item, { store, entity, operation, changedAttributes })) continue;
       phaseFrame.stageImages = { ...phaseFrame.stageImages, [stage]: stageView(item) };

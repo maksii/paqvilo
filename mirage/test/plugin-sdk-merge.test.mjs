@@ -9,7 +9,7 @@ const caller = '10000000-0000-4000-8000-0000000000e1',
   duplicate = '20000000-0000-4000-8000-0000000000e2',
   part = '20000000-0000-4000-8000-0000000000e3',
   merge = '30000000-0000-4000-8000-0000000000e1';
-const storeOf = (filters) =>
+const storeOf = (filters, fields = {}) =>
   new DataStore({
     state: {
       version: 1,
@@ -17,7 +17,7 @@ const storeOf = (filters) =>
         gadget: {
           entitySet: 'gadgets',
           idColumn: 'gadgetid',
-          fields: { title: { type: 'string' }, color: { type: 'string' }, size: { type: 'string' } },
+          fields: { title: { type: 'string' }, color: { type: 'string' }, size: { type: 'string' }, ...fields },
           relationships: { gadget_parts: { entity: 'part', many: true, from: 'gadgetid', to: 'gadgetid' } },
         },
         part: { entitySet: 'parts', idColumn: 'partid', fields: { gadgetid: { dataverseType: 'lookup' } } },
@@ -115,4 +115,33 @@ test('SDK Merge availability follows the sdkmessagefilter rows, not a table list
     (error) => error.details?.innerCode === '0x80040800',
   );
   assert.equal(store.tableRows('gadget').find((entry) => entry.gadgetid === duplicate).statecode, 0);
+});
+
+// @test-kind compatibility: the SDK Merge shares the Web API Merge main operation recorded by native mergeAccount (native and native-r2): two subordinate Updates, {statecode 1} then {masterid, merged true}, with the internal Update/50 reads of the action cards and the subordinate between them; SDK Merge itself has no native capture yet (NATIVE sdk-soap-customapi-coverage)
+test('SDK Merge writes the subordinate in two Updates with the internal stage-50 reads between them', () => {
+  const store = storeOf(true, { masterid: { dataverseType: 'lookup' }, merged: { type: 'boolean' } });
+  const seen = [];
+  store.setPluginPipeline(
+    (context) => {
+      if (context.stage !== 40) return;
+      const main = store.pluginMainOperation?.context?.values;
+      const columns =
+        context.operation === 'update' ? Object.keys(context.target).filter((name) => name !== 'modifiedon') : [];
+      seen.push(`${context.operation} ${context.entity} [${columns.join(',')}] < ${main?.MessageName}/${main?.Stage}`);
+    },
+    () => true,
+  );
+  execute(store);
+  assert.deepEqual(seen, [
+    'update gadget [color,size] < Merge/30',
+    'update gadget [statecode] < Merge/30',
+    'retrievemultiple actioncard [] < Update/50',
+    'retrieve gadget [] < Update/50',
+    'update gadget [masterid,merged] < Merge/30',
+    'update part [gadgetid] < Merge/30',
+    'merge gadget [] < undefined/undefined',
+  ]);
+  const subordinate = store.tableRows('gadget').find((entry) => entry.gadgetid === duplicate);
+  assert.equal(subordinate.merged, true);
+  assert.equal(subordinate.masterid.id, master);
 });

@@ -34,6 +34,8 @@ let prepared, root, log;
 after(() => root && fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
 // @parity-evidence: native imageAliasOrder (native and native-r2): AsynchronousStepPrimaryName attributes enumerate name then key; the observer also logs those attribute names (no existing assertion changed)
 // @parity-evidence: native crud.json ev 1648/1653 (repeated at 1658, imagesOrder 7680/7686): an asynchronous single-origin *Multiple step's own AsynchronousStepPrimaryName names the target row; the observer now also logs that image's id (no existing assertion changed)
+// @parity-evidence: native imagesOrder (native and native-r2) ev 61 Probe: SetStateDynamicEntity 40 images; the observer also logs its own images' statecode (no existing assertion changed)
+// @parity-evidence: native crud, imagesOrder, relationsReads and mergeAccount (native and native-r2): PreBusinessEntity holds the published duplicate rules' base attributes plus statecode when a rule excludes inactive records; the fixture now seeds a published rule that excludes inactive records, so the asserted statecode image is unchanged (no assertion changed)
 // One original assembly whose Observer logs, per execution: step id, message, stage, mode, the Context4 collections
 // (sets joined by '/', aliases in collection order), its own image aliases, the main-operation parent's pre set, the
 // PreBusinessEntity attributes and the owner of each own image.
@@ -47,9 +49,10 @@ async function observer() {
       `using System;using System.IO;using System.Linq;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Observer:IPlugin{
 static string Keys(EntityImageCollection[] sets){return string.Join("/",sets.Select(s=>string.Join(",",s.Keys)));}
 static string Owners(EntityImageCollection images){return string.Join(",",images.Select(i=>i.Key+":"+(i.Value.Contains("ownerid")?((EntityReference)i.Value["ownerid"]).Id.ToString():"-")));}
+static string States(EntityImageCollection images){return string.Join(",",images.Select(i=>i.Key+":"+(i.Value.Contains("statecode")?((OptionSetValue)i.Value["statecode"]).Value.ToString():"-")));}
 public void Execute(IServiceProvider p){var c=(IPluginExecutionContext4)p.GetService(typeof(IPluginExecutionContext));string parent;try{var pc=c.ParentContext as IPluginExecutionContext4;parent=pc==null?"none":pc.MessageName+"/"+pc.Stage+":"+Keys(pc.PreEntityImagesCollection);}catch(Exception){parent="unavailable";}
 var business=c.PreEntityImagesCollection.FirstOrDefault(s=>s.Contains("${PBE}"));
-File.AppendAllText(@"${log.replaceAll('"', '""')}",string.Join("|",c.OwningExtension.Id,c.MessageName,c.Stage,c.Mode,Keys(c.PreEntityImagesCollection),Keys(c.PostEntityImagesCollection),string.Join(",",c.PreEntityImages.Keys)+";"+string.Join(",",c.PostEntityImages.Keys),parent,business==null?"-":string.Join(",",business["${PBE}"].Attributes.Keys),Owners(c.PreEntityImages)+";"+Owners(c.PostEntityImages),c.PostEntityImages.Contains("${ASPN}")?c.PostEntityImages["${ASPN}"].Id.ToString():"-",c.PostEntityImages.Contains("${ASPN}")?string.Join(",",c.PostEntityImages["${ASPN}"].Attributes.Keys):"-")+Environment.NewLine);}}}`,
+File.AppendAllText(@"${log.replaceAll('"', '""')}",string.Join("|",c.OwningExtension.Id,c.MessageName,c.Stage,c.Mode,Keys(c.PreEntityImagesCollection),Keys(c.PostEntityImagesCollection),string.Join(",",c.PreEntityImages.Keys)+";"+string.Join(",",c.PostEntityImages.Keys),parent,business==null?"-":string.Join(",",business["${PBE}"].Attributes.Keys),Owners(c.PreEntityImages)+";"+Owners(c.PostEntityImages),c.PostEntityImages.Contains("${ASPN}")?c.PostEntityImages["${ASPN}"].Id.ToString():"-",c.PostEntityImages.Contains("${ASPN}")?string.Join(",",c.PostEntityImages["${ASPN}"].Attributes.Keys):"-",States(c.PreEntityImages)+";"+States(c.PostEntityImages))+Environment.NewLine);}}}`,
     );
     const sdk = clrSdk();
     compileClr(source, path.join(root, 'Observer.dll'), { references: [sdk] });
@@ -77,7 +80,9 @@ const profile = {
     { entity: 'gadget', tableType: 'standard', evidence: 'Invented bulk table', messages: ['CreateMultiple'] },
   ],
 };
-function storeOf() {
+// A published duplicate rule on gadget that excludes inactive records (its PreBusinessEntity holds statecode), unless
+// `rule: false`; `conditions` are its duplicaterulecondition rows.
+function storeOf({ rule = true, conditions = [] } = {}) {
   const state = emptyState();
   state.mappings.gadget = {
     entitySet: 'gadgets',
@@ -92,6 +97,19 @@ function storeOf() {
     },
   };
   state.tables.gadget = [{ gadgetid: id, title: 'Before', size: 3, statecode: 0, statuscode: 1 }];
+  if (rule)
+    state.tables.duplicaterule = [
+      {
+        duplicateruleid: uuid(5, 1),
+        baseentityname: 'gadget',
+        matchingentityname: 'gadget',
+        statuscode: 2,
+        statecode: 1,
+        excludeinactiverecords: true,
+        name: 'Invented statecode rule',
+      },
+    ];
+  state.tables.duplicaterulecondition = conditions;
   return new DataStore({ state, clock: fixedClock() });
 }
 const step = (n, message, stage, rank, { mode = 0, images = [] } = {}) => ({
@@ -129,7 +147,7 @@ async function observe(t, steps, act, store = storeOf()) {
   await backend.asyncPluginRunner.drain();
   const seen = {};
   for (const line of (await fs.readFile(log, 'utf8')).trim().split(/\r?\n/).filter(Boolean)) {
-    const [stepId, message, stage, mode, pre, post, own, parent, business, owners, named, nameAttributes] =
+    const [stepId, message, stage, mode, pre, post, own, parent, business, owners, named, nameAttributes, states] =
       line.split('|');
     const n = Number(stepId.slice(-12));
     (seen[n] ??= []).push({
@@ -144,6 +162,7 @@ async function observe(t, steps, act, store = storeOf()) {
       owners,
       named,
       nameAttributes,
+      states,
     });
   }
   return seen;
@@ -288,6 +307,27 @@ test(
   },
 );
 
+// @test-kind parity: native imagesOrder (native-r2 ev 61, native ev 51) 'Probe: SetStateDynamicEntity 40 images': a state-changing Update's SetStateDynamicEntity pre image holds the row before the write (statecode 0, statuscode 1), the post image the row after (1, 2)
+test(
+  'a state-changing Update gives its SetStateDynamicEntity the row before the write as pre image and the row after as post image',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const seen = await observe(
+      t,
+      [
+        step(1, 'SetStateDynamicEntity', 40, 1, {
+          images: [
+            { alias: 'pre', type: 0 },
+            { alias: 'post', type: 1 },
+          ],
+        }),
+      ],
+      (store) => store.update('gadget', id, { statecode: 1, statuscode: 2 }, identity),
+    );
+    assert.equal(seen[1][0].states, 'pre:0;post:1');
+  },
+);
+
 // An SDK Assign of the gadget to the second user, committed (its asynchronous jobs queue).
 const assign = (store) => {
   store.state.tables.systemuser = [
@@ -328,24 +368,28 @@ test('an SDK Assign gets the primary-name image on its pre-image side', { skip: 
   assert.equal(seen[1][0].own, `${ASPN};`);
 });
 
-// @test-kind compatibility: Microsoft Learn "Messages that support entity images" (Assign Target: pre and post images); no native runtime capture of an image-bearing Assign step
+// @test-kind parity: native imagesOrder (native and native-r2) 'Probe: Assign 40 images': registered Assign pre/post images hold the row before/after the owner change; with an async Assign step the sync step's preC keys are [AsynchronousStepPrimaryName, pre] and postC [post]
+// @parity-evidence: native imagesOrder (native and native-r2) ev 92 Probe: Assign 40 images (PreEntityImages.pre ownerid old, PostEntityImages.post ownerid new, PreEntityImagesCollection [AsynchronousStepPrimaryName, pre], PostEntityImagesCollection [post])
 test('registered Assign images hold the row before and after the owner change', { skip: CLR_SKIP }, async (t) => {
   const store = storeOf();
   store.state.tables.gadget[0].ownerid = { id: caller, logical_name: 'systemuser' };
   const seen = await observe(
     t,
     [
-      step(1, 'Assign', 40, 1, {
+      step(1, 'Assign', 40, 1, { mode: 1 }),
+      step(2, 'Assign', 40, 2, {
         images: [
-          { alias: 'before', type: 0 },
-          { alias: 'after', type: 1 },
+          { alias: 'pre', type: 0 },
+          { alias: 'post', type: 1 },
         ],
       }),
     ],
     assign,
     store,
   );
-  assert.equal(seen[1][0].owners, `before:${caller};after:${other}`);
+  assert.equal(seen[2][0].owners, `pre:${caller};post:${other}`);
+  assert.equal(seen[2][0].own, 'pre;post');
+  assert.deepEqual([seen[2][0].pre, seen[2][0].post], [`${ASPN},pre`, 'post']);
 });
 
 // @test-kind observation: native crud, bulk, ownerAndState and sdkMessages captures 2026-10-30: PreBusinessEntity holds the pre-operation statecode unless the request changes it; the other columns it sometimes carries (crud: a text column) follow no rule the captures establish
@@ -355,6 +399,41 @@ test('PreBusinessEntity holds the statecode the request does not change', { skip
   );
   assert.equal(seen[1][0].business, 'statecode');
 });
+
+// @test-kind parity: native crud, imagesOrder, relationsReads and mergeAccount (native and native-r2): PreBusinessEntity holds the published duplicate rules' base attributes plus statecode when a rule excludes inactive records, minus the Target columns; a table without a published rule has none
+test(
+  'PreBusinessEntity holds the published duplicate rules base attributes, and none without a rule',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const conditions = [
+      {
+        duplicateruleconditionid: uuid(6, 1),
+        regardingobjectid: uuid(5, 1),
+        baseattributename: 'title',
+        matchingattributename: 'title',
+        operatorcode: 0,
+      },
+    ];
+    const updateSize = async (store) => store.update('gadget', id, { size: 4 }, identity);
+    const updateTitle = async (store) => store.update('gadget', id, { title: 'After' }, identity);
+    const steps = [step(1, 'Update', 40, 1)];
+    // (a) the rule's condition column and statecode (the rule excludes inactive records).
+    const withRule = await observe(t, steps, updateSize, storeOf({ conditions }));
+    assert.equal(withRule[1][0].business, 'title,statecode');
+    // (b) the Target's columns leave the image.
+    assert.equal((await observe(t, steps, updateTitle, storeOf({ conditions })))[1][0].business, 'statecode');
+    // (c) a null column is omitted.
+    const nullTitle = storeOf({ conditions });
+    nullTitle.state.tables.gadget[0].title = null;
+    assert.equal((await observe(t, steps, updateSize, nullTitle))[1][0].business, 'statecode');
+    // A table without a published rule has no PreBusinessEntity: neither the step's images nor the main operation's.
+    const withoutRule = await observe(t, steps, updateSize, storeOf({ rule: false }));
+    assert.equal(withoutRule[1][0].business, '-');
+    assert.equal(withoutRule[1][0].pre.includes(PBE), false);
+    assert.match(withoutRule[1][0].parent, /^Update\/30:/);
+    assert.equal(withoutRule[1][0].parent.includes(PBE), false);
+  },
+);
 
 // @test-kind parity: native ownerAndState capture 2026-10-30 (Web API ownerid bind: Update/20 and /40 Targets add the new owner's owningbusinessunit, the saved row's modifiedonbehalfby is the caller) and sdkMessages (Assign's Update Target: owninguser, owningbusinessunit, modifiedonbehalfby = caller), each reproduced over its Update stages
 test('an owner change adds the owner columns to the Update Target and saves the caller as modifiedonbehalfby', () => {
@@ -468,3 +547,21 @@ test('the primary-name image side follows the message', () => {
   for (const message of ['retrievemultiple', 'associate', 'disassociate', 'new_inventedapi'])
     assert.equal(primaryNameSide(message), null, message);
 });
+
+// @test-kind parity: native bypassHeaders (native and native-r2) 'bypass async' ev 4/5: with the CustomAsync bypass a synchronous Create PostOperation step's PostEntityImagesCollection holds only its own post image; without it AsynchronousStepPrimaryName joins
+test(
+  'a CustomAsync bypass keeps asynchronous steps and their primary-name image out of a synchronous Create post set',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const steps = () => [
+      step(1, 'Create', 40, 2, { images: [{ alias: 'post', type: 1 }] }),
+      step(2, 'Create', 40, 1, { mode: 1 }),
+    ];
+    const create = (options) => (store) =>
+      store.create('gadget', { gadgetid: second, title: 'Created' }, identity, options);
+    const plain = await observe(t, steps(), create());
+    const bypassed = await observe(t, steps(), create({ bypassCustomAsync: true }));
+    assert.deepEqual(plain[1][0].post.split(',').sort(), [ASPN, 'post']);
+    assert.deepEqual(bypassed[1][0].post.split(',').sort(), ['post']);
+  },
+);

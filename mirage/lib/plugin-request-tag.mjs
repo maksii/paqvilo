@@ -1,11 +1,8 @@
 import { DataError } from './data-error.mjs';
 
 export function validateSdkTag(parameters, canonicalTag) {
-  if (
-    Object.hasOwn(parameters, 'tag') &&
-    (typeof parameters.tag !== 'string' || Buffer.byteLength(parameters.tag) > 8192)
-  )
-    throw new DataError('SDK tag requires a bounded string.', 501, 'LocalPluginSdkUnsupported');
+  if (Object.hasOwn(parameters, 'tag') && typeof parameters.tag !== 'string')
+    throw new DataError('SDK tag requires a string.', 501, 'LocalPluginSdkUnsupported');
   if (Object.hasOwn(parameters, 'tag') && canonicalTag !== undefined)
     throw new DataError('An item with the same key has already been added.', 400, 'LocalPluginTagDuplicate', {
       innerCode: '0x80040224',

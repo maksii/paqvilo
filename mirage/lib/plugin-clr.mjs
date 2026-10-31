@@ -8,7 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { Worker, MessageChannel, receiveMessageOnPort } from 'node:worker_threads';
 import { DataError } from './data-error.mjs';
-import { pluginFailure } from './plugin-fault.mjs';
+import { pluginFailure, SANDBOX_WORKER_CRASH } from './plugin-fault.mjs';
 import { bypassStepIds as parseBypassStepIds } from './plugin-bypass.mjs';
 import { pluginInvocationDepth, pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
 import {
@@ -22,6 +22,7 @@ import {
 import { delegatedPluginParent } from './plugin-delegation.mjs';
 import { internalStageContext, internalStageSource, internalStepReference } from './plugin-internal-stage.mjs';
 import { collectPackExport } from './pack-exports.mjs';
+import { inspectAssembly } from './clr-assembly-reader.mjs';
 import { localOrganizationService, validateServiceProfile, sdkValueToRecord } from './local-organization-service.mjs';
 import {
   queryExpressionToFetch,
@@ -77,6 +78,9 @@ export const PLUGIN_MAX_DEPTH = 12;
 // An invocation's deadline includes its nested SDK calls (and their plug-ins). Native plug-in execution and the whole
 // message operation are limited to 2 minutes (Learn: Analyze plug-in performance), so a descriptor may ask up to that.
 const CLR_MAX_TIMEOUT_MS = 120_000;
+// Learn (Troubleshoot Dataverse plug-ins): a context above 116.85 MB fails "Message size exceeded when sending context to
+// Sandbox" (-2147220970). ponytail: measured on the local wire JSON, not the platform's serialization.
+const SANDBOX_MESSAGE_LIMIT = Math.floor(116.85 * 1024 * 1024);
 const PLUGIN_DEPTH_MESSAGE =
   'This workflow job was canceled because the workflow that started it included an infinite loop. Correct the workflow logic and try again. For information about workflow logic, see Help.';
 /** The platform's infinite-loop fault for an execution past PLUGIN_MAX_DEPTH (code LocalPluginDepth for local callers). */
@@ -388,6 +392,41 @@ export async function prepareClrRuntime(descriptor, { compiler } = {}) {
   await canonicalClrDirectory(descriptor.cacheRoot);
   return buildClrRuntime(descriptor, { assembly, sdk, dependencies }, { compiler });
 }
+/**
+ * The preparer of one simulator (organization host and backend, custom API main operations): steps whose descriptors
+ * name the same assembly files share one prepared runtime, so they run in one long-lived host as natively one sandbox
+ * worker runs every step of an assembly. A descriptor opts out with persistentHost: false (a fresh host per execution).
+ */
+export function sharedClrRuntimePreparer() {
+  const sharedRuntimes = new Map();
+  return (descriptor, options) => prepareSharedClrRuntime(sharedRuntimes, descriptor, options);
+}
+async function prepareSharedClrRuntime(sharedRuntimes, descriptor, options) {
+  const shared = { ...descriptor, persistentHost: descriptor.persistentHost ?? true };
+  if (!shared.persistentHost) return prepareClrRuntime(shared, options);
+  const key = JSON.stringify(
+    ['root', 'assembly', 'dependencies', 'sdkRoot', 'sdkAssembly', 'cacheRoot'].map((name) => shared[name] ?? null),
+  );
+  const base = sharedRuntimes.get(key);
+  let current = false;
+  try {
+    current =
+      Boolean(base) &&
+      syncFs.existsSync(base.directory) &&
+      base.files.every((file) => !file.sourcePath || sha(readClrFileSync(file.sourcePath)) === file.sha256);
+  } catch {
+    /* A changed or missing source prepares again. */
+  }
+  if (current)
+    return {
+      ...base,
+      descriptor: validateClrDescriptor(shared),
+      provenance: { ...base.provenance, typeName: shared.typeName },
+    };
+  const runtime = await prepareClrRuntime(shared, options);
+  sharedRuntimes.set(key, runtime);
+  return runtime;
+}
 function requireClrPlatform() {
   if (process.platform !== 'win32')
     fail(
@@ -450,11 +489,13 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [] }
         ],
         { shell: false, windowsHide: true, encoding: 'utf8', timeout: 20000, maxBuffer: 256 * 1024 },
       );
+    // The ILogger, IFeatureControlService(2) and IManagedIdentityService classes compile when the SDK declares them.
+    const services = clrServiceDefines(sdk.bytes);
     let contextInterfaceVersion = 7,
-      build = compile(['PAQVILO_CONTEXT7']);
+      build = compile(['PAQVILO_CONTEXT7', ...services]);
     if (!build.error && build.status !== 0 && /IPluginExecutionContext7/.test(String(build.stdout))) {
       contextInterfaceVersion = 4;
-      build = compile([]);
+      build = compile(services);
     }
     if (build.error || build.status !== 0)
       fail(
@@ -497,6 +538,21 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [] }
       }
     throw cause;
   }
+}
+const CLR_SERVICE_TYPES = [
+  ['PAQVILO_LOGGER', 'Microsoft.Xrm.Sdk.PluginTelemetry.ILogger'],
+  ['PAQVILO_FEATURE', 'Microsoft.Xrm.Sdk.IFeatureControlService'],
+  ['PAQVILO_FEATURE2', 'Microsoft.Xrm.Sdk.IFeatureControlService2'],
+  ['PAQVILO_IDENTITY', 'Microsoft.Xrm.Sdk.IManagedIdentityService'],
+];
+function clrServiceDefines(sdkBytes) {
+  let declared;
+  try {
+    declared = new Set(inspectAssembly(sdkBytes).types.map((type) => type.fullName));
+  } catch {
+    return []; // Not a readable SDK image: the host build reports it.
+  }
+  return CLR_SERVICE_TYPES.filter(([, name]) => declared.has(name)).map(([define]) => define);
 }
 export function pluginRuntimeDescriptors(packs = []) {
   let collected;
@@ -557,7 +613,9 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
     if (value && typeof value === 'object' && value.id && value.logical_name)
       attributes[key] = reference(value.logical_name, value.id, value.name, value.partitionid ?? row[`${key}pid`]);
     else if (['lookup', 'customer', 'owner'].includes(type) && typeof value === 'string') {
-      let targets = field.targets;
+      // A thin mapping field ({ dataverseType } only, a standard table's stand-in) takes its targets from the
+      // organization's attribute metadata (account masterid: account, native mergeAccount read-back).
+      let targets = field.targets ?? (platform ??= store.platformFields?.(mapping.logicalName) ?? {})[key]?.targets;
       if (targets === undefined && type === 'lookup') {
         const relationships = Object.values(mapping.relationships ?? {}).filter(
           (relationship) => relationship?.many === false && canon(relationship.from) === canon(key),
@@ -727,7 +785,14 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
   };
 }
 export function recordToSdkReadEntity(store, entity, row, columns) {
-  const present = Object.fromEntries(Object.entries(row ?? {}).filter(([, value]) => value != null));
+  // A Web API projection names a lookup _<column>_value; the SDK attribute is the column itself.
+  const physical = (name) => /^_(.+)_value$/.exec(name)?.[1] ?? name;
+  const present = Object.fromEntries(
+    Object.entries(row ?? {})
+      .filter(([, value]) => value != null)
+      .map(([name, value]) => [physical(name), value]),
+  );
+  if (Array.isArray(columns?.columns)) columns = { ...columns, columns: columns.columns.map(physical) };
   // Image-only facts (storage-scale decimals, phonetic companions) are not applied: the corpus proves them for
   // pre/post images, not for SDK Retrieve results.
   const result = recordToSdkEntity(store, entity, present, sdkReadColumns(store, entity, columns));
@@ -873,8 +938,7 @@ export function dispatchSdkCall(args) {
     ? null
     : (args.sdkParentContext ?? message.parentContext ?? pluginInvocationSdkParent(store));
   if (sdkParent) {
-    if (sdkParent.$type !== 'ExecutionContext' || Buffer.byteLength(JSON.stringify(sdkParent)) > 4 * 1024 * 1024)
-      fail('SDK ParentContext is invalid or excessive.', 'LocalPluginInputLimit', 413);
+    if (sdkParent.$type !== 'ExecutionContext') fail('SDK ParentContext is invalid.', 'LocalPluginInputLimit', 413);
     store.pluginParentContext = canonicalTagParent(cloneStateData(sdkParent), store.pluginSdkTag);
   }
   store.pluginRequestId = message.method === 'Execute' ? message.arguments?.[0]?.requestId : undefined;
@@ -1706,8 +1770,14 @@ export function executeClrPlugin(runtime, input, { store, diagnostic = () => {} 
   }
   if (sha(readClrFileSync(hostSource)) !== runtime.provenance.hostSourceSha256)
     fail('CLR host source changed; restart to prepare the new host.', 'LocalPluginSourceChanged', 409);
-  if (Buffer.byteLength(JSON.stringify(input)) > 4 * 1024 * 1024)
-    fail('CLR context exceeds 4 MiB.', 'LocalPluginInputLimit', 413);
+  const contextBytes = Buffer.byteLength(JSON.stringify(input));
+  if (contextBytes > SANDBOX_MESSAGE_LIMIT)
+    throw new DataError(
+      `Message size exceeded when sending context to Sandbox. Message size: ${(contextBytes / 1024 / 1024).toFixed(2)} Mb`,
+      400,
+      'LocalPluginInputLimit',
+      { innerCode: '0x80040216' },
+    );
   if (runtime.descriptor.persistentHost === true)
     return executePooledClr(runtime, input, { store, diagnostic }, verified);
   const directory = syncFs.mkdtempSync(path.join(path.dirname(runtime.directory), 'clr-run-'));
@@ -1739,8 +1809,12 @@ export function executeClrPlugin(runtime, input, { store, diagnostic = () => {} 
     }
   }
 }
-function stopClrHost(session, diagnostic = () => {}) {
-  if (session.active) fail('An active CLR host cannot be closed.', 'LocalPluginHostBusy', 409);
+function stopClrHost(session, diagnostic = () => {}, { failed = false } = {}) {
+  if (session.active && !failed) fail('An active CLR host cannot be closed.', 'LocalPluginHostBusy', 409);
+  // Callers still waiting in this host (outer invocations of a nested one) fail as a crashed worker.
+  session.dead = new DataError(SANDBOX_WORKER_CRASH.message, 400, 'LocalPluginHostExited', {
+    innerCode: SANDBOX_WORKER_CRASH.code,
+  });
   const report = (note) => {
     try {
       diagnostic(note);
@@ -1796,21 +1870,21 @@ export function closeClrHostPool({ runtime, diagnostic = () => {} } = {}) {
 export function clrHostPoolStatus() {
   return [...pooledHosts.values()].map((session) => ({
     pid: session.pid ?? null,
-    active: session.active,
-    depth: session.depth,
-    typeName: session.typeName,
+    active: session.active > 0,
   }));
 }
+/** One long-lived host per prepared runtime, shared by its types, steps, messages and depths: assembly static state
+ * survives between executions as in the native sandbox worker (native sandbox constructedInDomain under one
+ * domainStamp; depth: nested steps run in the caller's process). Each execution constructs a new plug-in instance. */
 function executePooledClr(runtime, input, options, verified) {
-  const depth = executionDepth + 1,
-    key = runtime.directory + '\0' + runtime.descriptor.typeName + '\0' + depth;
-  if (depth > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
+  const key = runtime.directory;
+  if (executionDepth + 1 > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
   let session = pooledHosts.get(key);
   if (!session) {
+    // ponytail: past 32 hosts an idle one is replaced; active hosts are bounded by the depth cap, so none waits.
     if (pooledHosts.size >= 32) {
       const idle = [...pooledHosts.values()].find((host) => !host.active);
-      if (!idle) fail('CLR host pool exceeds 32 active hosts.', 'LocalPluginHostLimit', 413);
-      stopClrHost(idle, options.diagnostic);
+      if (idle) stopClrHost(idle, options.diagnostic);
     }
     const directory = syncFs.mkdtempSync(path.join(path.dirname(runtime.directory), 'clr-pool-'));
     try {
@@ -1844,19 +1918,17 @@ function executePooledClr(runtime, input, options, verified) {
     session = {
       key,
       runtimeDirectory: runtime.directory,
-      typeName: runtime.descriptor.typeName,
-      depth,
       snapshot,
       files: verified.map((file) => ({ name: file.name })),
       worker,
       port1,
       signal,
       flags,
-      active: false,
+      active: 0,
+      backlog: new Map(),
     };
     pooledHosts.set(key, session);
   }
-  if (session.active) fail('Concurrent CLR pool invocation is unsupported.', 'LocalPluginHostBusy', 409);
   // The opened execution copy remains immutable and gets checked independently
   // of the source/compiled runtime checks above on every reused invocation.
   let intact = false;
@@ -1868,7 +1940,7 @@ function executePooledClr(runtime, input, options, verified) {
     /* Best-effort diagnostics and teardown must not mask the primary plugin result. */
   }
   if (!intact) {
-    stopClrHost(session, options.diagnostic);
+    stopClrHost(session, options.diagnostic, { failed: true });
     fail('Pooled CLR execution bytes changed.', 'LocalPluginSourceChanged', 409);
   }
   return executeClrSnapshot(runtime, input, options, session.snapshot, session);
@@ -1912,7 +1984,8 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
       transferList: [port2],
     });
   if (session) {
-    session.active = true;
+    session.active++;
+    session.backlog.set(invocationId, []);
     port1.postMessage({ kind: 'invoke', invocationId, input: invocation, timeout });
   } else worker.on('error', () => {});
   const deadline = Date.now() + timeout + 1000;
@@ -1940,16 +2013,28 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
   let calls = 0,
     result,
     ownedPid = session?.pid,
-    completed = false;
+    completed = false,
+    answered = false;
+  // A shared host carries the lines of every invocation in flight: the nested one reads them all and keeps an outer
+  // invocation's lines (from threads it left running) for that invocation's own loop.
+  const next = () => {
+    if (!session) return receiveMessageOnPort(port1);
+    const own = session.backlog.get(invocationId);
+    if (own?.length) return { message: own.shift() };
+    for (let packet; (packet = receiveMessageOnPort(port1));) {
+      const id = packet.message.invocationId;
+      if (packet.message.kind === 'owned-child' || id === invocationId) return packet;
+      session.backlog.get(id)?.push(packet.message);
+    }
+    return undefined;
+  };
   executionDepth++;
   try {
     if (executionDepth > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
     while (!result) {
       let packet;
-      while ((packet = receiveMessageOnPort(port1))) {
+      while ((packet = next())) {
         const message = packet.message;
-        if (session && message.kind !== 'owned-child' && message.invocationId !== invocationId)
-          fail('Stale pooled CLR output.', 'LocalPluginProtocol', 500);
         if (message.kind === 'owned-child') {
           if (!Number.isInteger(message.pid) || message.pid <= 0)
             fail('Invalid owned CLR process.', 'LocalPluginProtocol', 500);
@@ -1959,7 +2044,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
         } else if (message.kind === 'rpc') {
           let value, error;
           try {
-            if (++calls > 1000) fail('CLR SDK call limit exceeded.', 'LocalPluginCallLimit', 413);
+            calls++;
             value = dispatchSdkCall({
               store,
               sdkParentContext,
@@ -1978,24 +2063,28 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
               if (fault) error.organizationServiceFault = fault;
             }
           }
-          port1.postMessage({ kind: 'rpc-answer', value, error, ...(session ? { invocationId } : {}) });
+          port1.postMessage({ kind: 'rpc-answer', call: message.call, value, error, invocationId });
         } else if (message.kind === 'trace') {
-          if (typeof message.message !== 'string' || message.message.length > 16384)
-            fail('CLR trace exceeds the local limit.', 'LocalPluginOutputLimit', 413);
+          if (typeof message.message !== 'string') fail('CLR trace is not text.', 'LocalPluginOutputLimit', 413);
           traces.push(message.message);
           diagnostic({ code: 'PLUGIN_CLR_TRACE', message: message.message });
           // ITracingService: an event on the current (plugin-step) span.
           store?.traces?.current()?.event('trace', { message: message.message });
         } else if (message.kind === 'telemetry') {
-          // ILogger entries: natively Application Insights telemetry, never the plug-in trace log.
-          if (typeof message.message !== 'string' || message.message.length > 16384)
-            fail('CLR telemetry exceeds the local limit.', 'LocalPluginOutputLimit', 413);
+          // ILogger entries (native SandboxPluginEmptyLogger): local telemetry, never the plug-in trace log.
+          if (typeof message.message !== 'string') fail('CLR telemetry is not text.', 'LocalPluginOutputLimit', 413);
           diagnostic({ code: 'PLUGIN_CLR_TELEMETRY', level: String(message.level ?? ''), message: message.message });
           store?.traces
             ?.current()
             ?.event('telemetry', { level: String(message.level ?? ''), message: message.message });
         } else if (message.kind === 'failure') {
           if (message.code === 'LocalPluginTimeout') throw timedOut();
+          // A plug-in's own failure leaves its host healthy; a worker failure (exit, protocol) has already closed it.
+          answered = !String(message.code).startsWith('LocalPlugin') || message.code === 'LocalPluginSdkUnsupported';
+          if (message.code === 'LocalPluginHostExited')
+            throw new DataError(SANDBOX_WORKER_CRASH.message, 400, 'LocalPluginHostExited', {
+              innerCode: SANDBOX_WORKER_CRASH.code,
+            });
           const details = {
             sourceException: {
               type: message.exceptionType ?? null,
@@ -2044,6 +2133,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
         } else fail('Unknown CLR protocol result.', 'LocalPluginProtocol', 500);
       }
       if (result) break;
+      if (session?.dead) throw session.dead;
       if (Date.now() > deadline) throw timedOut();
       Atomics.wait(flags, 0, 0, 20);
       Atomics.store(flags, 0, 0);
@@ -2052,8 +2142,9 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
   } finally {
     executionDepth--;
     if (session) {
-      session.active = false;
-      if (!completed) stopClrHost(session, diagnostic);
+      session.active--;
+      session.backlog.delete(invocationId);
+      if (!completed && !answered && !session.dead) stopClrHost(session, diagnostic, { failed: true });
     } else {
       if (ownedPid)
         try {
@@ -2188,10 +2279,18 @@ export function clrContext({
       columns,
     });
   };
+  // The row a registered image holds: the record of its message property (Merge SubordinateId: the subordinate row,
+  // native mergeAccount), else the message's own record (Target).
+  const imageRow = (registration, row, post) => {
+    const rows = registration.messagePropertyName && frame.imageRows?.[registration.messagePropertyName];
+    return rows ? (post ? rows.record : rows.previous) : row;
+  };
   const collectImages = (registrations, post, target) => {
-    for (const registration of registrations)
-      if (post ? [1, 2].includes(registration.type) && record : [0, 2].includes(registration.type) && previous)
-        target[registration.alias || registration.name] = image(post ? record : previous, registration);
+    for (const registration of registrations) {
+      const row = imageRow(registration, post ? record : previous, post);
+      if ((post ? [1, 2] : [0, 2]).includes(registration.type) && row)
+        target[registration.alias || registration.name] = image(row, registration);
+    }
     return target;
   };
   const postAvailable = stage === 40 && operation !== 'delete';
@@ -2222,7 +2321,7 @@ export function clrContext({
           primaryName: primaryNameOn,
         })
       : { pre: {}, post: {} });
-  const renderImages = (entries, row) =>
+  const renderImages = (entries, row, post = false) =>
     Object.fromEntries(
       Object.entries(entries ?? {})
         .map(([alias, source]) => [
@@ -2233,7 +2332,7 @@ export function clrContext({
               ? asyncPrimaryName(row)
               : source.platform === BUSINESS_ENTITY_IMAGE
                 ? image(row, { attributes: source.attributes, exact: true })
-                : image(row, source),
+                : image(imageRow(source, row, post), source),
         ])
         .filter(([, value]) => value),
     );
@@ -2253,12 +2352,14 @@ export function clrContext({
         (frame.targets ?? []).map((_, index) =>
           post
             ? postRows
-              ? renderImages(set.post, frame.records?.[index])
+              ? renderImages(set.post, frame.records?.[index], true)
               : {}
             : renderImages(set.pre, frame.previousRecords?.[index]),
         ),
       );
-    return imageArray([post ? (postRows ? renderImages(set.post, record) : {}) : renderImages(set.pre, previous)]);
+    return imageArray([
+      post ? (postRows ? renderImages(set.post, record, true) : {}) : renderImages(set.pre, previous),
+    ]);
   };
   const messageName =
     frame.customApi?.name ??

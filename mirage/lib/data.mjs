@@ -2657,6 +2657,7 @@ export class DataStore {
           : { concurrencyBehavior: options.pluginConcurrencyBehavior }),
       bypassStepIds: options.bypassStepIds,
       bypassCustomPlugins: options.bypassCustomPlugins,
+      bypassCustomAsync: options.bypassCustomAsync === true,
       ...(awaitIo ? { awaitIo: true } : {}),
     });
     if (typeof frame?.then === 'function')
@@ -5372,7 +5373,7 @@ export class DataStore {
         );
     }
     if (isElastic(m)) {
-      this.recordCommittedEvent(m.logicalName, 'create', row, changedAttributes, {
+      this.recordCommittedEvent(m.logicalName, 'create', row, Object.keys(pluginTarget), {
         target: pluginTarget,
         previous: null,
         identity,
@@ -5384,7 +5385,7 @@ export class DataStore {
     }
     yield [m, 'create', 40, pluginTarget, row, null, identity, changedAttributes, options];
     if (!isElastic(m) && !options.deferCommittedEvent)
-      this.recordCommittedEvent(m.logicalName, 'create', row, changedAttributes, {
+      this.recordCommittedEvent(m.logicalName, 'create', row, Object.keys(asyncTarget), {
         target: asyncTarget,
         previous: null,
         identity,
@@ -5553,7 +5554,7 @@ export class DataStore {
     // Natively an Update that sets statecode runs the SetStateDynamicEntity pipeline inside its main operation, one
     // level deeper (recorded Web API PATCH statecode); the SetState message's own Update does not.
     if (options.stateMessage !== false && own(rawInput, 'statecode') && this.pluginPipeline)
-      runStateMessage(this, mapping, row, identity, options);
+      runStateMessage(this, mapping, row, identity, { ...options, previousRow: previous });
     // The asynchronous copy adds platform modification stamps without changing
     // the synchronous partial Target or its qualified core-parent projection.
     const asyncTargetBaseline = Object.fromEntries(

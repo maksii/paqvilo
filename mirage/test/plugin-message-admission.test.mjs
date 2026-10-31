@@ -145,7 +145,7 @@ async function fixture(t, message, extra = {}) {
   return { ...f, calls: () => calls };
 }
 
-// @test-kind unproven: local model of the Merge pipeline (no native capture of Merge steps on a mergeable table)
+// @test-kind unproven: local Merge pipeline details (a named step refusing before the delegated writes, the Update/30 writes); native mergeAccount (native and native-r2) proves only that global and table-filtered Merge steps with images run at 10/20/40 on account
 test('HTTP Merge runs its named step before target, subordinate or child writes', async (t) => {
   const f = await fixture(t, 'Merge');
   const before = structuredClone(f.store.tableRows('account'));
@@ -157,7 +157,7 @@ test('HTTP Merge runs its named step before target, subordinate or child writes'
   assert.equal(f.calls(), 1);
 });
 
-// @test-kind unproven: local model of the Merge pipeline (no native capture of Merge steps on a mergeable table)
+// @test-kind unproven: local Merge pipeline details (a named step refusing before the delegated writes, the Update/30 writes); native mergeAccount (native and native-r2) proves only that global and table-filtered Merge steps with images run at 10/20/40 on account
 test('direct record-message installation also runs the Merge step before delegated writes', async (t) => {
   const f = await fixture(t, 'Merge'),
     operations = new Map();

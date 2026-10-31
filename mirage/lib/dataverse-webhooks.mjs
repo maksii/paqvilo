@@ -466,12 +466,16 @@ export function remoteExecutionContext(store, facts) {
       }),
       false,
     );
+  // An image on another message property (Merge SubordinateId) holds that record's row (frame.imageRows).
   const images = (row, types) =>
-    row
-      ? (item.images ?? [])
-          .filter((spec) => types.includes(spec.type))
-          .map((spec) => ({ key: spec.alias || spec.name, value: entityOf(row, spec) }))
-      : [];
+    (item.images ?? [])
+      .filter((spec) => types.includes(spec.type))
+      .map((spec) => {
+        const rows = spec.messagePropertyName && frame.imageRows?.[spec.messagePropertyName];
+        return [spec, rows ? (types.includes(1) ? rows.record : rows.previous) : row];
+      })
+      .filter(([, source]) => source)
+      .map(([spec, source]) => ({ key: spec.alias || spec.name, value: entityOf(source, spec) }));
   const created = stage === 40 && operation === 'create';
   // Message-specific parameter collections retain the SDK's different Target,
   // Targets, Query and Custom API contracts.
@@ -568,7 +572,7 @@ export function remoteExecutionContext(store, facts) {
     // it, asynchronous steps never do. store.pluginInTransaction is that pipeline state (data.mjs exportedPluginPhase keeps an inherited one at stage 10).
     IsInTransaction: !asyncExecution && store.pluginInTransaction === true,
     IsOfflinePlayback: false,
-    IsolationMode: 1, // as in the documented sample
+    IsolationMode: 1, // native crud: a web hook context has IsolationMode 1
     MessageName: facts.customApi?.name ?? messageNameOf(facts.bridged ? multipleMessage(operation) : operation),
     Mode: asyncExecution ? 1 : 0,
     OperationCreatedOn:
