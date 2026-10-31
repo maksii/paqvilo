@@ -239,6 +239,7 @@ async function messageFixture(t, steps, { register } = {}) {
         seen.push({
           at: `${context.MessageName}/${context.Stage}`,
           entity: context.PrimaryEntityName,
+          id: context.PrimaryEntityId,
           parent: context.ParentContext ? `${context.ParentContext.MessageName}/${context.ParentContext.Stage}` : null,
           user: context.UserId,
           // The principal the platform runs the operation as (a CLR step reports it as UserId).
@@ -318,7 +319,8 @@ test('Web API GrantAccess runs the GrantAccess pipeline with the SDK inputs arou
   );
 });
 
-// @test-kind unproven: local Merge pipeline details (a named step refusing before the delegated writes, the Update/30 writes); native mergeAccount (native and native-r2) proves only that global and table-filtered Merge steps with images run at 10/20/40 on account
+// @test-kind parity: native recorder captures 2026-10-30 mergeAccount (native and native-r2): Web API Merge with a type-only UpdateContent runs Merge 10/20/40 around two subordinate Updates (PreOperation only here) under Merge/30, {statecode 1, statuscode 2} then {masterid, merged true}, and no target Update
+// @parity-evidence: native mergeAccount (native, native-r2): events 21/31 Update/20 < Merge/30/d1 Target accountid = subordinate, attributes statecode 1 + statuscode 2, then masterid = target + merged true; no Update of the target; GET of the subordinate merged true, statecode 1, statuscode 2, _masterid_value target
 test('Web API Merge runs its pipeline and its writes as Update pipelines under Merge/30', async (t) => {
   const f = await messageFixture(t, [
     ...stages(30, 'Merge', { entity: 'account' }),
@@ -327,7 +329,7 @@ test('Web API Merge runs its pipeline and its writes as Update pipelines under M
   const merged = await f.request('POST', '/Merge', {
     Target: { '@odata.type': 'Microsoft.Dynamics.CRM.account', accountid: row },
     Subordinate: { '@odata.type': 'Microsoft.Dynamics.CRM.account', accountid: peer },
-    UpdateContent: { '@odata.type': 'Microsoft.Dynamics.CRM.account', name: 'Merged' },
+    UpdateContent: { '@odata.type': 'Microsoft.Dynamics.CRM.account' },
     PerformParentingChecks: false,
   });
   assert(merged.status < 300, await merged.text());
@@ -341,7 +343,25 @@ test('Web API Merge runs its pipeline and its writes as Update pipelines under M
     'Target',
     'UpdateContent',
   ]);
-  assert.equal(f.store.tableRows('account').find((item) => item.accountid === row).name, 'Merged');
+  // Both Updates write the subordinate: its deactivation, then its merged mark (the target gains nothing).
+  const updates = f.seen.filter((entry) => entry.at === 'Update/20'),
+    [deactivated, marked] = updates.map((entry) => entry.inputs.Target);
+  assert.deepEqual(
+    updates.map((entry) => String(entry.id).toLowerCase()),
+    [peer, peer],
+  );
+  assert.deepEqual([deactivated.statecode, deactivated.statuscode, deactivated.merged], [1, 2, undefined]);
+  assert.equal(marked.merged, true);
+  assert.equal(String(marked.masterid?.id ?? marked.masterid).toLowerCase(), row);
+  assert.equal(marked.statecode, undefined);
+  const read = await f.request('GET', `/accounts(${peer})?$select=name,statecode,statuscode,_masterid_value,merged`);
+  assert.equal(read.status, 200, await read.clone().text());
+  const subordinate = await read.json();
+  assert.deepEqual(
+    [subordinate.merged, subordinate.statecode, subordinate.statuscode, String(subordinate._masterid_value)],
+    [true, 1, 2, row],
+  );
+  assert.equal(f.store.tableRows('account').find((item) => item.accountid === row).name, 'Kept');
 });
 
 // @test-kind parity: native recorder captures 2026-10-30 webApiNamed (native and native-r2): a bound custom API addressed by alternate key answers 200 and its Target carries the resolved id and KeyAttributes

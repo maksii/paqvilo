@@ -697,3 +697,31 @@ test('queued asynchronous work adds the job attachment to the request root', () 
     { fileattachment: 'Create' },
   );
 });
+
+// @test-kind parity: native bypassHeaders (native and native-r2) 'bypass async' ev 4-6: under the CustomAsync bypass the Create root lists only the written table, without the fileattachment the other requests (ev 11, 12, 18, 19) add
+test('a CustomAsync bypass adds no job attachment to the request root', () => {
+  const store = storeOf();
+  const seen = probe(store, (at) => at.endsWith('/40'), {
+    items: [
+      {
+        id: '30000000-0000-4000-8000-0000000000a3',
+        enabled: true,
+        entity: 'widget',
+        message: 'Update',
+        stage: 40,
+        mode: 'clr',
+        contract: { mode: 1 },
+        filteringAttributes: [],
+        images: [],
+      },
+    ],
+  });
+  store.updateRecord(
+    'widget',
+    id,
+    { title: 'Renamed' },
+    { admin: true },
+    { preValidationSourceOperation: 'upsert', bypassCustomAsync: true },
+  );
+  assert.deepEqual(rootOf(seen.at(-1).context).ChangedEntityTypes, { widget: 'Update' });
+});

@@ -609,7 +609,9 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
     if (value && typeof value === 'object' && value.id && value.logical_name)
       attributes[key] = reference(value.logical_name, value.id, value.name, value.partitionid ?? row[`${key}pid`]);
     else if (['lookup', 'customer', 'owner'].includes(type) && typeof value === 'string') {
-      let targets = field.targets;
+      // A thin mapping field ({ dataverseType } only, a standard table's stand-in) takes its targets from the
+      // organization's attribute metadata (account masterid: account, native mergeAccount read-back).
+      let targets = field.targets ?? (platform ??= store.platformFields?.(mapping.logicalName) ?? {})[key]?.targets;
       if (targets === undefined && type === 'lookup') {
         const relationships = Object.values(mapping.relationships ?? {}).filter(
           (relationship) => relationship?.many === false && canon(relationship.from) === canon(key),
@@ -779,7 +781,14 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
   };
 }
 export function recordToSdkReadEntity(store, entity, row, columns) {
-  const present = Object.fromEntries(Object.entries(row ?? {}).filter(([, value]) => value != null));
+  // A Web API projection names a lookup _<column>_value; the SDK attribute is the column itself.
+  const physical = (name) => /^_(.+)_value$/.exec(name)?.[1] ?? name;
+  const present = Object.fromEntries(
+    Object.entries(row ?? {})
+      .filter(([, value]) => value != null)
+      .map(([name, value]) => [physical(name), value]),
+  );
+  if (Array.isArray(columns?.columns)) columns = { ...columns, columns: columns.columns.map(physical) };
   // Image-only facts (storage-scale decimals, phonetic companions) are not applied: the corpus proves them for
   // pre/post images, not for SDK Retrieve results.
   const result = recordToSdkEntity(store, entity, present, sdkReadColumns(store, entity, columns));
@@ -2254,10 +2263,18 @@ export function clrContext({
       columns,
     });
   };
+  // The row a registered image holds: the record of its message property (Merge SubordinateId: the subordinate row,
+  // native mergeAccount), else the message's own record (Target).
+  const imageRow = (registration, row, post) => {
+    const rows = registration.messagePropertyName && frame.imageRows?.[registration.messagePropertyName];
+    return rows ? (post ? rows.record : rows.previous) : row;
+  };
   const collectImages = (registrations, post, target) => {
-    for (const registration of registrations)
-      if (post ? [1, 2].includes(registration.type) && record : [0, 2].includes(registration.type) && previous)
-        target[registration.alias || registration.name] = image(post ? record : previous, registration);
+    for (const registration of registrations) {
+      const row = imageRow(registration, post ? record : previous, post);
+      if ((post ? [1, 2] : [0, 2]).includes(registration.type) && row)
+        target[registration.alias || registration.name] = image(row, registration);
+    }
     return target;
   };
   const postAvailable = stage === 40 && operation !== 'delete';
@@ -2288,7 +2305,7 @@ export function clrContext({
           primaryName: primaryNameOn,
         })
       : { pre: {}, post: {} });
-  const renderImages = (entries, row) =>
+  const renderImages = (entries, row, post = false) =>
     Object.fromEntries(
       Object.entries(entries ?? {})
         .map(([alias, source]) => [
@@ -2299,7 +2316,7 @@ export function clrContext({
               ? asyncPrimaryName(row)
               : source.platform === BUSINESS_ENTITY_IMAGE
                 ? image(row, { attributes: source.attributes, exact: true })
-                : image(row, source),
+                : image(imageRow(source, row, post), source),
         ])
         .filter(([, value]) => value),
     );
@@ -2319,12 +2336,14 @@ export function clrContext({
         (frame.targets ?? []).map((_, index) =>
           post
             ? postRows
-              ? renderImages(set.post, frame.records?.[index])
+              ? renderImages(set.post, frame.records?.[index], true)
               : {}
             : renderImages(set.pre, frame.previousRecords?.[index]),
         ),
       );
-    return imageArray([post ? (postRows ? renderImages(set.post, record) : {}) : renderImages(set.pre, previous)]);
+    return imageArray([
+      post ? (postRows ? renderImages(set.post, record, true) : {}) : renderImages(set.pre, previous),
+    ]);
   };
   const messageName =
     frame.customApi?.name ??

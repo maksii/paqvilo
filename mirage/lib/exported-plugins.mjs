@@ -18,6 +18,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DataError } from './data-error.mjs';
 import { uploadedClrRuntime } from './plugin-uploaded.mjs';
+import { conditionsOf, publishedRules } from './dataverse-duplicates.mjs';
 import { parseSolutionXml } from './solution-xml.mjs';
 import {
   clrContext,
@@ -552,12 +553,17 @@ const pluginFault = (cause, item, stage, depth, fault = true) =>
     0,
   );
 // The registered images of one type set (0 pre, 1 post, 2 both) from source, keyed by alias, limited to their attributes
-// (imageAttributes: the handler context's images).
-const registeredImages = (item, types, source) =>
+// (imageAttributes: the handler context's images). An image on another message property (Merge SubordinateId) holds
+// that record's row (imageRows, plugin-platform-messages.mjs runMessagePipeline).
+const registeredImages = (item, types, source, imageRows) =>
   Object.fromEntries(
     (item.images ?? [])
-      .filter((spec) => types.includes(spec.type) && source)
-      .map((spec) => [spec.alias || spec.name, detachedRecord(imageAttributes(source, spec.attributes))]),
+      .map((spec) => {
+        const rows = spec.messagePropertyName && imageRows?.[spec.messagePropertyName];
+        return [spec, rows ? (types.includes(1) ? rows.record : rows.previous) : source];
+      })
+      .filter(([spec, row]) => types.includes(spec.type) && row)
+      .map(([spec, row]) => [spec.alias || spec.name, detachedRecord(imageAttributes(row, spec.attributes))]),
   );
 // InputParameters of a CRUD, external event or bulk message (IPluginExecutionContext.InputParameters).
 function typedInputParameters({ operation, target, targets, previous, changedAttributes = [] }) {
@@ -675,7 +681,7 @@ function typedContext({
   bridged = false,
 }) {
   const idColumn = entity && !(customApi && entity === 'none') ? store?.resolveMapping(entity)?.idColumn : null;
-  const images = (types, source) => registeredImages(item, types, source);
+  const images = (types, source) => registeredImages(item, types, source, frame?.imageRows);
   const preValidationParent =
     stage !== 10 &&
     (item.contract?.mode ?? 0) === 0 &&
@@ -1071,7 +1077,10 @@ export function pluginCatalogue({
     const uploaded = Boolean(step.uploadedAssemblyId && step.typeName && !step.serviceEndpointId);
     const runtime = runtimes.get(step.id),
       descriptor = descriptors.get(step.id),
-      unsupported = pluginUnsupported(step, { images: Boolean(runtime || descriptor || registered || uploaded) });
+      // A web hook step's delivery renders its registered images itself (dataverse-webhooks.mjs).
+      unsupported = pluginUnsupported(step, {
+        images: Boolean(runtime || descriptor || registered || uploaded || step.serviceEndpointId),
+      });
     const clrAvailable = uploaded || Boolean((runtime?.descriptor ?? descriptor)?.typeName === step.typeName);
     const defaultMode = step.serviceEndpointId ? 'webhook' : registered ? 'handler' : uploaded ? 'clr' : 'placeholder';
     return copyStepConstructorSettings(step, {
@@ -1234,11 +1243,14 @@ export function runPluginPhase({
   initialFrame,
   bypassStepIds,
   bypassCustomPlugins = false,
+  bypassCustomAsync = false,
   continuePhase = false,
   awaitIo = false,
   diagnostic = () => {},
   onStepExecuted,
   targetKeyAttributes,
+  // A named message's other image records by message property ({ SubordinateId: { previous, record } }, Merge).
+  imageRows,
 }) {
   // A saved row can be reused by a later Delete; its previous request frame
   // must not supply shared variables, correlation or parent context to this one.
@@ -1252,6 +1264,7 @@ export function runPluginPhase({
   if (targetKeyAttributes && stage === 10 && !asyncExecution) phaseFrame.targetKeyAttributes ??= targetKeyAttributes;
   // A request that entered as a multiple message (plugin-bulk.mjs) formats its Update Targets (plugin-formatted-values.mjs).
   if (bulkOrigin) phaseFrame.bulkOrigin = true;
+  if (imageRows) phaseFrame.imageRows = cloneStateData(imageRows);
   // The main operation's InputParameters are the PreValidation view; keep it for a main-operation ParentContext
   // when no PreValidation step produced a snapshot.
   if (stage === 10 && !asyncExecution && ['create', 'update', 'delete'].includes(operation))
@@ -1470,9 +1483,11 @@ export function runPluginPhase({
     // A single-record operation that queues asynchronous work adds the platform's job attachment, fileattachment
     // 'Create', after its table (native crud/faults/depth/upsert with async steps; none in crudNoAsync, reproduced in
     // native-r2). Native Associate and Web API CreateMultiple/UpdateMultiple roots show none during their stages.
+    // A CustomAsync bypass queues nothing (native bypassHeaders: no fileattachment under the header).
     const queuesAsync =
       stage === 40 &&
       !bulkOrigin &&
+      !bypassCustomAsync &&
       ['create', 'update', 'delete'].includes(operation) &&
       matchingPluginSteps(items, {
         store,
@@ -1549,8 +1564,10 @@ export function runPluginPhase({
     Number(lanes.length > 1 && String(a.message).toLowerCase() === lanes[1]) -
       Number(lanes.length > 1 && String(b.message).toLowerCase() === lanes[1]) ||
     a.id.localeCompare(b.id);
+  // A CustomAsync bypass queues no asynchronous step, so neither their images nor AsynchronousStepPrimaryName join the
+  // sets (native bypassHeaders).
   const stageSteps = (forStage) =>
-    (stageItems ? [false, ...(forStage === 40 ? [true] : [])] : [])
+    (stageItems ? [false, ...(forStage === 40 && !bypassCustomAsync ? [true] : [])] : [])
       .flatMap((asynchronous) =>
         lanes.flatMap((lane) =>
           matchingPluginSteps(stageItems, {
@@ -1585,17 +1602,26 @@ export function runPluginPhase({
         asynchronous: item.contract?.mode === 1,
       }));
   // The platform's PreBusinessEntity image of an Update (single record, a delegated record, a single-origin UpdateMultiple
-  // lane): the row's statecode before the operation unless the request changes it (observed attribute set, native crud,
-  // bulk, ownerAndState; other columns it sometimes carries follow no rule the corpus establishes).
-  const businessEntity = () =>
-    stageItems && singleOperation === 'update' && (operation === 'update' || !bulkLane)
-      ? {
-          [BUSINESS_ENTITY_IMAGE]: {
-            platform: BUSINESS_ENTITY_IMAGE,
-            attributes: ['statecode'].filter((name) => !changedAttributes.map(canonical).includes(name)),
-          },
-        }
-      : {};
+  // lane). Native crud, imagesOrder, relationsReads and mergeAccount: it holds the base attributes of the table's published
+  // duplicate-detection rules (rule order, then condition order), plus statecode when a rule excludes inactive records,
+  // minus the Target's columns (nulls are omitted by the renderer). A table with no published rule has no image.
+  const businessEntity = () => {
+    if (!(stageItems && singleOperation === 'update' && (operation === 'update' || !bulkLane))) return {};
+    const rules = store ? publishedRules(store, (rule) => canonical(rule.baseentityname) === canonical(entity)) : [];
+    if (rules.length === 0) return {};
+    const named = rules.flatMap((rule) =>
+      conditionsOf(store, rule).map((condition) => canonical(condition.baseattributename)),
+    );
+    if (rules.some((rule) => rule.excludeinactiverecords === true || rule.excludeinactiverecords === 1))
+      named.push('statecode');
+    const changed = changedAttributes.map(canonical);
+    return {
+      [BUSINESS_ENTITY_IMAGE]: {
+        platform: BUSINESS_ENTITY_IMAGE,
+        attributes: [...new Set(named)].filter((name) => !changed.includes(name)),
+      },
+    };
+  };
   // The set a step sees: the stage's registrations up to its own slot. PostOperation starts from the final PreOperation
   // pre-image set plus PreBusinessEntity (native bulk: the first PostOperation step sees the PreOperation image).
   const stageView = (item) => {
@@ -1725,8 +1751,11 @@ export function runPluginPhase({
         ...(multiple ? { Query: query } : {}),
         ...(read && !multiple ? { Target: { logicalName: entity, id: recordId }, ColumnSet: columns } : {}),
       },
-      preImages: registeredImages(item, [0, 2], previous),
-      postImages: stage === 40 && operation !== 'delete' && !read ? registeredImages(item, [1, 2], record) : {},
+      preImages: registeredImages(item, [0, 2], previous, phaseFrame.imageRows),
+      postImages:
+        stage === 40 && operation !== 'delete' && !read
+          ? registeredImages(item, [1, 2], record, phaseFrame.imageRows)
+          : {},
       sharedVariables: sharedValues(executionFrames.get(record)),
       context: {
         messageName: customApi?.name ?? messageNameOf(operation),
