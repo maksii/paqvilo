@@ -1,4 +1,5 @@
-// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30 (sdkMessages, sdkMerge, ownerAndState, bulk and associate scenarios), reproduced by the local recorder replay
+// @test-kind parity: native dev-environment plug-in recorder corpus, captures native and native-r2 (sdkMessages, sdkMerge, ownerAndState, bulk and associate scenarios)
+// @parity-evidence: tag reason only; the assertions cite the native and native-r2 captures of the same scenarios (audit C2-02 VAL-c8)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';

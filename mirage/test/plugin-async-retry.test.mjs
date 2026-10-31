@@ -114,7 +114,8 @@ if(mode=="always"||attempt<3)throw new InvalidPluginExecutionException(Operation
   return { root, makeStore, attach, attempts, stores };
 }
 
-// @test-kind parity: native asyncRetry (two concurrent captures): an always-Retry step executes five times and ends Failed with retrycount 4; coded and plain exceptions execute once; every failure has errorcode 0x80040265 and the authored text as friendlymessage; failed attempts' writes persist
+// @parity-evidence: tag reason only; native asyncRetry is one capture with two concurrent runs (audit C2-02 VAL-c8)
+// @test-kind parity: native asyncRetry (one capture, two concurrent runs): an always-Retry step executes five times and ends Failed with retrycount 4; coded and plain exceptions execute once; every failure has errorcode 0x80040265 and the authored text as friendlymessage; failed attempts' writes persist
 test(
   'original CLR async Retry has five independent executions, fresh contexts and preserved completed SDK effects',
   { skip: CLR_SKIP, timeout: 180000 },
