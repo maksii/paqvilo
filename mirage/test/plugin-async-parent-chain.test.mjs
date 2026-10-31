@@ -241,6 +241,106 @@ test(
   },
 );
 
+// An original CLR probe: an asynchronous step writes its own chain into a log row (x_level 100: "message/depth|request|
+// operation|frames", input names sorted); a PostOperation Update at Depth 1 named 'fan out' updates the other rows with an SDK UpdateMultiple;
+// an asynchronous Create of level 1 creates level 2.
+async function chainProbe(t, steps) {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-async-origin-')),
+    source = path.join(root, 'Probe.cs'),
+    sdk = clrSdk();
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(
+    source,
+    `using System;using System.Linq;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;namespace Invented{public sealed class Probe:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var t=(Entity)c.InputParameters["Target"];var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);
+if(c.Mode==1){if(t.GetAttributeValue<int>("x_level")>=100)return;var chain="";for(var f=c.ParentContext;f!=null;f=f.ParentContext)chain+=f.MessageName+"/"+f.Stage+"/"+f.Mode+"/"+f.Depth+"["+string.Join(",",f.InputParameters.Keys.OrderBy(k=>k).ToArray())+"];";
+var log=new Entity("x_node");log["x_level"]=100;log["x_name"]=c.MessageName+"/"+c.Depth+"|"+c.RequestId+"|"+c.OperationId+"|"+chain;s.Create(log);
+if(c.MessageName=="Create"&&t.GetAttributeValue<int>("x_level")==1){var n=new Entity("x_node");n["x_name"]="level 2";n["x_level"]=2;s.Create(n);}return;}
+if(c.MessageName=="Update"&&c.Depth==1&&t.GetAttributeValue<string>("x_name")=="fan out"){var targets=new EntityCollection{EntityName="x_node"};foreach(var e in s.RetrieveMultiple(new QueryExpression("x_node"){ColumnSet=new ColumnSet("x_level")}).Entities){if(e.Id==t.Id||e.GetAttributeValue<int>("x_level")>=100)continue;var u=new Entity("x_node",e.Id);u["x_level"]=9;targets.Entities.Add(u);}var request=new OrganizationRequest("UpdateMultiple");request["Targets"]=targets;s.Execute(request);}}}}`,
+  );
+  compileClr(source, path.join(root, 'Probe.dll'), { references: [sdk, 'System.Core.dll'] });
+  const runtime = await prepareClrRuntime({
+    trust: 'execute-local-assembly',
+    root,
+    assembly: 'Probe.dll',
+    typeName: 'Invented.Probe',
+    sdkRoot: path.dirname(sdk),
+    sdkAssembly: path.basename(sdk),
+    cacheRoot: path.join(root, 'cache'),
+    timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
+    serviceProfile: {
+      userId: CALLER,
+      evidence: 'Invented asynchronous origin probe',
+      grants: [{ entity: 'x_node', operations: ['read', 'create', 'update'] }],
+      bulkTables: [
+        { entity: 'x_node', tableType: 'standard', evidence: 'Invented bulk table', messages: ['UpdateMultiple'] },
+      ],
+    },
+    context: { initiatingUserId: CALLER, organizationId: id(5), businessUnitId: id(6) },
+  });
+  const probes = steps.map(([n, message, mode]) =>
+    step(n, message, 40, mode, { typeName: 'Invented.Probe', assemblyId: 'invented' }),
+  );
+  const org = await organization(t, probes, new Map(), {
+    runtimes: new Map(probes.map((probe) => [probe.id, runtime])),
+  });
+  const logs = () =>
+    org.store
+      .tableRows('x_node')
+      .filter((row) => row.x_level === 100)
+      .map((row) => {
+        const [job, requestId, operationId, chain] = row.x_name.split('|');
+        return { job, requestId, operationId, chain: chain.split(';').filter(Boolean) };
+      });
+  return { ...org, logs };
+}
+
+// Native and native-r2 asyncLoop d2..d12: a Create an asynchronous step issues is a new root operation of the
+// originating request, so its own job reports only its main operation (Create/30/m1/d2), not the issuing job's frames.
+// @test-kind parity: native and native-r2 asyncLoop (nested job chain Create/30/m1/dN, RequestId the originating request)
+test(
+  'a job of a Create an asynchronous step issued reports only its own main operation',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const { store, settle, logs } = await chainProbe(t, [[1, 'Create', 1]]);
+    await store.create('x_node', { x_name: 'level 1', x_level: 1 }, identity);
+    await settle();
+    await settle();
+    const byJob = Object.fromEntries(logs().map((log) => [log.job, log]));
+    assert.deepEqual(Object.keys(byJob).toSorted(), ['Create/1', 'Create/2']);
+    assert.deepEqual(byJob['Create/1'].chain, ['Create/30/1/1[Target]']);
+    assert.deepEqual(byJob['Create/2'].chain, ['Create/30/1/2[FromSandbox,Target]']);
+    assert.equal(byJob['Create/2'].requestId, byJob['Create/1'].requestId);
+  },
+);
+
+// Native and native-r2 sdkSurface 85-94: a record an SDK UpdateMultiple from a PostOperation step delegates queues a job
+// that reports the four frames its synchronous step saw, relabelled as the job (Update/40 < Update/30 < Update/40 <
+// Update/30), the root Update's job its main operation.
+// @test-kind parity: native and native-r2 sdkSurface (four-frame jobs of records a nested SDK UpdateMultiple delegates)
+test(
+  'a job of a record a nested SDK UpdateMultiple delegates reports its four synchronous frames',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const { store, settle, logs } = await chainProbe(t, [
+      [1, 'Update', 0],
+      [2, 'Update', 1],
+    ]);
+    const rows = [];
+    for (const name of ['root', 'first', 'second'])
+      rows.push(await store.create('x_node', { x_name: name, x_level: 1 }, identity));
+    await store.update('x_node', rows[0].x_nodeid, { x_name: 'fan out' }, identity);
+    await settle();
+    const chains = logs().map(
+      (log) => `${log.job} ${log.chain.map((frame) => frame.replace(/\[.*\]$/, '')).join(' < ')}`,
+    );
+    assert.deepEqual(chains.toSorted(), [
+      'Update/1 Update/30/1/1',
+      'Update/2 Update/40/1/2 < Update/30/1/2 < Update/40/1/2 < Update/30/1/2',
+      'Update/2 Update/40/1/2 < Update/30/1/2 < Update/40/1/2 < Update/30/1/2',
+    ]);
+  },
+);
+
 // Native crud, async and upsert asynchronous web hook payloads: the 30 RemoteExecutionContext properties, with the
 // caller's Entra object ids and user agent, the organization's unique name, the Create 'id' output, the platform's
 // AsynchronousStepPrimaryName image (pre for Delete), no Update ConcurrencyBehavior input, the job's main operation as
@@ -304,7 +404,8 @@ test('asynchronous record web hooks carry the context the asynchronous plug-in p
 
 // Native customApi and ownerAndState: a message without a main-operation model (a custom API called from a
 // PostOperation step, SetStateDynamicEntity under an Upsert) reports its synchronous caller chain relabelled as the
-// job, cut after three frames: new_RecorderApi/40 < new_RecorderApi/30 for a call made from an Update PostOperation step.
+// job, at most four frames (sdkSurface): new_RecorderApi/40 < new_RecorderApi/30 for a call made from an Update
+// PostOperation step.
 test('an asynchronous named message job reports its synchronous caller chain as its own frames', async (t) => {
   const { store, settle, received } = await organization(t, [webhook(1, 'Assign')]);
   const row = await store.create('x_node', { x_name: 'assigned', x_level: 1 }, identity);
@@ -353,7 +454,8 @@ test('an asynchronous named message job reports its synchronous caller chain as 
   assert.equal(received.length, 1);
   const [context] = received;
   assert.equal(context.MessageName, 'Assign');
-  assert.deepEqual(labels(context), ['Assign/40', 'Assign/30', 'Assign/30']);
+  // @parity-evidence: native and native-r2 sdkSurface 85-94: a four-frame synchronous chain stays four frames in its job (Update/40 < Update/30 < Update/40 < Update/30), so a job keeps four caller frames, not three
+  assert.deepEqual(labels(context), ['Assign/40', 'Assign/30', 'Assign/30', 'Assign/20']);
   assertJobFrames(context);
   for (let parent = context.ParentContext; parent; parent = parent.ParentContext)
     assert.equal(parent.PrimaryEntityName, 'x_node');

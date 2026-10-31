@@ -834,3 +834,50 @@ test('a plain Update statecode SetStateDynamicEntity runs in the Update request 
     assert.equal(main.ParentContext, null);
   }
 });
+
+// @test-kind parity: native and native-r2 asyncLoop d2..d12 and native-r2 async (SDK Retrieve from an asynchronous step)
+// An asynchronous step's SDK request is a new root operation of the originating request: no ParentContext at
+// PreValidation, the nested main operation alone above PreOperation, RequestId and OperationId the originating
+// request's id, the job's correlation and the job's Depth + 1.
+test('an asynchronous step request starts a new root operation in the originating request', () => {
+  const store = storeOf();
+  const seen = probe(
+    store,
+    (at) => ['create/40', 'create/10', 'create/20', 'retrieve/10', 'retrieve/20'].includes(at),
+    {
+      stepOf: (at) => step({ mode: at === 'create/40' ? 1 : 0 }),
+      act: (answer, at) => {
+        if (at !== 'create/40' || answer.context.Depth !== 1) return;
+        // The asynchronous runner runs a job outside any transaction (plugin-async.mjs runStep).
+        const inherited = store.pluginInTransaction;
+        store.pluginInTransaction = false;
+        try {
+          sdk(store, answer, 'Create', [{ $type: 'Entity', logicalName: 'widget', attributes: { title: 'Nested' } }]);
+          sdk(store, answer, 'Retrieve', [
+            'widget',
+            { $type: 'Guid', value: id },
+            { $type: 'ColumnSet', allColumns: true },
+          ]);
+        } finally {
+          store.pluginInTransaction = inherited;
+        }
+      },
+    },
+  );
+  store.createRecord('widget', { title: 'Root' }, { admin: true });
+  const job = seen.find((entry) => entry.label === 'create/40' && entry.context.Depth === 1).context;
+  assert.equal(job.Mode, 1);
+  const nested = (at) => seen.find((entry) => entry.label === at && entry.context.Depth === 2).context;
+  assert.deepEqual(chain(nested('create/10')).map(label), ['Create/10/d2']);
+  assert.deepEqual(chain(nested('create/20')).map(label), ['Create/20/d2', 'Create/30/d2']);
+  for (const at of ['retrieve/10', 'retrieve/20'])
+    assert.deepEqual(chain(nested(at)).map(label), [`Retrieve/${at.slice(-2)}/d2`]);
+  for (const at of ['create/10', 'create/20', 'retrieve/10']) {
+    const context = nested(at);
+    assert.equal(context.RequestId.value, job.RequestId.value);
+    assert.equal(context.OperationId.value, job.RequestId.value);
+    assert.equal(context.CorrelationId.value, job.CorrelationId.value);
+  }
+  assert.equal(nested('create/10').IsInTransaction, false);
+  assert.equal(nested('create/20').IsInTransaction, true);
+});

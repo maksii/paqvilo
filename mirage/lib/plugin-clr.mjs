@@ -18,6 +18,7 @@ import {
   mainOperationParent,
   observedParentChain,
   selectSdkEntryParent,
+  asyncOriginParent,
 } from './plugin-sdk-parent.mjs';
 import { delegatedPluginParent } from './plugin-delegation.mjs';
 import { internalStageContext, internalStageSource, internalStepReference } from './plugin-internal-stage.mjs';
@@ -871,7 +872,7 @@ export function dispatchSdkCall(args) {
   if (sdkParent) {
     if (sdkParent.$type !== 'ExecutionContext' || Buffer.byteLength(JSON.stringify(sdkParent)) > 4 * 1024 * 1024)
       fail('SDK ParentContext is invalid or excessive.', 'LocalPluginInputLimit', 413);
-    store.pluginParentContext = canonicalTagParent(cloneStateData(sdkParent), store.pluginSdkTag);
+    store.pluginParentContext = asyncOriginParent(canonicalTagParent(cloneStateData(sdkParent), store.pluginSdkTag));
   }
   store.pluginRequestId = message.method === 'Execute' ? message.arguments?.[0]?.requestId : undefined;
   // Collections the caller's operation starts after a plug-in request report no Accept-Language
@@ -2127,6 +2128,8 @@ export function clrContext({
   const descriptor = runtime.descriptor,
     context = descriptor.context,
     parent = frame.delegatedParentContext ?? store.pluginParentContext ?? pluginInvocationSdkParent(store),
+    // An asynchronous step's SDK request has no ParentContext (asyncOriginParent).
+    chainParent = parent?.asyncOrigin ? null : parent || null,
     primary = entity && !(frame.customApi && entity === 'none') ? store.resolveMapping(entity).idColumn : null;
   const contextDepth = frame.exactDepth
     ? frame.delegatedDepth
@@ -2429,7 +2432,7 @@ export function clrContext({
         // Native asynchronous contexts do not name their step.
         name: asynchronous ? null : step.name,
       },
-      ParentContext: parent || null,
+      ParentContext: chainParent,
       PreEntityImagesCollection: stageCollection(stage, false),
       PostEntityImagesCollection: stageCollection(stage, true),
     },
@@ -2529,7 +2532,14 @@ export function clrContext({
       (source.identity?.admin ? source.identity.id : null) ??
       context.initiatingUserId ??
       descriptor.serviceProfile.userId;
-    answer.context.ParentContext = delegatedPluginParent(source, answer.context, caller);
+    // An asynchronous job of a delegated record keeps the chain its synchronous step saw above the delegating frames
+    // (native sdkSurface: Update/40 < UpdateMultiple/40 < UpdateMultiple/30 < Update/40 < Update/30 for an SDK
+    // UpdateMultiple a PostOperation step issued).
+    answer.context.ParentContext = delegatedPluginParent(
+      source,
+      asynchronous ? { ...answer.context, ParentContext: frame.asyncCallerParent ?? null } : answer.context,
+      caller,
+    );
     // A single-origin *Multiple lane's parent is the single message's main operation with its image set (native crud
     // UpdateMultiple PreOperation/PostOperation: Update/30 [pre, PreBusinessEntity]).
     if (bulk && source.operation === operation.replace(/multiple$/, '') && frame.mainImages)
@@ -2548,7 +2558,7 @@ export function clrContext({
       context: bridged
         ? { ...answer.context, MessageName: operation[0].toUpperCase() + operation.slice(1) }
         : answer.context,
-      parent: asynchronous ? (frame.mainOuterParent ?? frame.asyncCallerParent ?? null) : parent,
+      parent: asynchronous ? (frame.mainOuterParent ?? frame.asyncCallerParent ?? null) : chainParent,
       userId: executionUserId,
       objectId,
       inputs: () =>
@@ -2600,7 +2610,8 @@ export function clrContext({
       ...mainParentTarget.attributes,
       ...recordToSdkEntity(store, entity, { [primary]: record[primary] }).attributes,
     };
-  if (!asynchronous && (crud || bulk) && stage !== 10) frame.mainOuterParent ??= parent ? cloneStateData(parent) : null;
+  if (!asynchronous && (crud || bulk) && stage !== 10)
+    frame.mainOuterParent ??= chainParent ? cloneStateData(chainParent) : null;
   // An asynchronous job sees the synchronous step parent chain as its own operation (plugin-sdk-parent.mjs).
   if (asynchronous)
     answer.context.ParentContext = asynchronousParentChain(

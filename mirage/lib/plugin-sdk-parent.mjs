@@ -66,6 +66,21 @@ export function selectSdkEntryParent(entry, frameworkSource) {
   return { $type: 'ExecutionContext', values };
 }
 
+/** The origin of an SDK request an asynchronous step issues: natively a new root operation in the job's request (native
+ * and native-r2 asyncLoop d2..d12, native-r2 async Retrieve d2): no ParentContext, the originating RequestId as RequestId
+ * and OperationId, the job's correlation, a new OperationCreatedOn and the job's Depth + 1. The origin stands in for the
+ * parent where its Depth and identity are read; every chain drops it (observedParentChain, asyncCallerParent,
+ * asynchronousParentChain). */
+export function asyncOriginParent(entry) {
+  if (entry?.values?.Mode !== 1 || entry.asyncOrigin) return entry;
+  const { ParentContext: _, OperationCreatedOn: __, ...values } = cloneStateData(entry.values);
+  return {
+    $type: 'ExecutionContext',
+    asyncOrigin: true,
+    values: { ...values, OperationId: cloneStateData(values.RequestId) },
+  };
+}
+
 /** Qualified fields of an asynchronous multiple-message main frame. The job's request, caller, organization and
  * environment facts and its own step complete it when observed (observedParentChain); opaque platform Shared values
  * are not invented. */
@@ -176,6 +191,7 @@ export function recordRequestRootChange(store, requestId, { table, sharing = fal
  * (recordRequestRootChange); a stage-30 frame never carries the Create telemetry root. objectId(userId) answers a
  * user's Azure AD object id; roots is the store's request root registry. */
 export function observedParentChain(node, context, objectId, roots) {
+  if (node?.asyncOrigin) return null;
   if (!node?.values) return node ?? null;
   const values = { ...node.values };
   for (const key of OBSERVED_FACTS)
@@ -274,11 +290,13 @@ const SHARED_FACTS = [
   'TenantId',
   'IsApplicationUser',
 ];
-/** Native async parents hold at most three frames (corpus depth.json: Depth 2-10 jobs all report X/30 < X/40 < X/30). */
-const ASYNC_PARENT_FRAMES = 3;
+/** Native async parents hold the frames their synchronous PostOperation step sees, at most four in the recorded corpus
+ * (depth: Depth 2-10 jobs report X/30 < X/40 < X/30; sdkSurface: a record an SDK UpdateMultiple delegates reports
+ * UpdateMultiple/40 < UpdateMultiple/30 < Update/40 < Update/30). */
+const ASYNC_PARENT_FRAMES = 4;
 
 /** An asynchronous job's ParentContext: the parent chain its message's synchronous PostOperation step sees, cut after
- * three frames. Each frame keeps its stage, inputs, outputs, shared variables, entity name, identities and Context4
+ * four frames. Each frame keeps its stage, inputs, outputs, shared variables, entity name, identities and Context4
  * image collections (native depth: the calling Create/40 frame keeps its AsynchronousStepPrimaryName post collection),
  * but reports the job's mode, depth, message, operation row (a bridged multiple's single row), isolation, step
  * (unnamed), operation id, correlation and creation time, outside a transaction, without step images (native corpus:
@@ -288,7 +306,7 @@ export function asynchronousParentChain(
   context,
   { remaining = ASYNC_PARENT_FRAMES, primaryEntityId = context.PrimaryEntityId } = {},
 ) {
-  if (!node?.values || remaining <= 0) return null;
+  if (!node?.values || node.asyncOrigin || remaining <= 0) return null;
   const shared = Object.fromEntries(
     SHARED_FACTS.filter((key) => node.values[key] === undefined && context[key] !== undefined).map((key) => [
       key,
@@ -323,7 +341,7 @@ export function asynchronousParentChain(
 /** The caller chain a committed message event keeps for its asynchronous jobs: the synchronous step parent
  * (store.pluginParentContext, else the invoking plug-in's SDK context), cut to the frames a job can report. */
 export function asyncCallerParent(parent, remaining = ASYNC_PARENT_FRAMES) {
-  if (!parent?.values || remaining <= 0) return null;
+  if (!parent?.values || parent.asyncOrigin || remaining <= 0) return null;
   const { ParentContext: next, ...values } = parent.values;
   return {
     $type: 'ExecutionContext',

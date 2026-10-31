@@ -279,6 +279,7 @@ function dataContract(value, polymorphic = true) {
         TopCount: value.topCount ?? null,
       });
     case 'ExecutionContext':
+      if (value.asyncOrigin) return null;
       return Object.fromEntries(
         Object.entries(value.values ?? {}).map(([key, item]) => [
           key,
@@ -377,7 +378,7 @@ function remoteFrame(values) {
     OrganizationName: values.OrganizationName ?? null,
     OutputParameters: pairs(values.OutputParameters?.values),
     OwningExtension: dataContract(values.OwningExtension, false),
-    ParentContext: remoteFrame(values.ParentContext?.values),
+    ParentContext: values.ParentContext?.asyncOrigin ? null : remoteFrame(values.ParentContext?.values),
     PostEntityImages: dataContract(values.PostEntityImages ?? { $type: 'EntityImageCollection', values: {} }),
     PreEntityImages: dataContract(values.PreEntityImages ?? { $type: 'EntityImageCollection', values: {} }),
     PrimaryEntityId: guidOf(values.PrimaryEntityId),

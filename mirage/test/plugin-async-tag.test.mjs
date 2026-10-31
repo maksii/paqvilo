@@ -86,14 +86,11 @@ if(mode=="Tagged failure")throw new InvalidPluginExecutionException("Invented as
               context.ParentContext.RequestId,
               'the SDK child retains its executing async caller request',
             );
-            assert.notEqual(
-              context.RequestId,
-              context.ParentContext.OperationId,
-              'request identity is not the System Job identity',
-            );
+            // Native asyncLoop and async (native and native-r2): an asynchronous step's SDK request is a new root
+            // operation of the originating request, its OperationId that RequestId, not the System Job.
             const job = store.tableRows('asyncoperation').find((row) => row.statuscode === 20);
-            assert.equal(context.ParentContext.OperationId, job.asyncoperationid);
-            assert.equal(Date.parse(context.ParentContext.OperationCreatedOn + 'Z'), Date.parse(job.createdon));
+            assert.equal(context.ParentContext.OperationId, context.RequestId);
+            assert.notEqual(context.ParentContext.OperationId, job.asyncoperationid);
             assert.equal(context.RequestId, requests.get(job.asyncoperationid));
             observed.push([target.title, context.SharedVariables.tag]);
           },
