@@ -127,6 +127,7 @@ async function probeFixture(t, steps, seen) {
           stage: context.Stage,
           mode: context.Mode,
           inputs: { ...context.InputParameters },
+          shared: { ...context.SharedVariables },
           parent: context.ParentContext?.InputParameters ? { ...context.ParentContext.InputParameters } : null,
         });
       },
@@ -230,4 +231,44 @@ test('record operations expose MSCRM bypass headers as InputParameters at every 
     [10, 20, 40],
   );
   assert.ok(bulk.every((entry) => entry.inputs.BypassBusinessLogicExecution === 'CustomAsync'));
+});
+
+// @test-kind parity: native recorder corpus bypassHeaders (native and native-r2): with MSCRM.BypassCustomPluginExecution true or BypassBusinessLogicExecution CustomSync no synchronous step runs, while each asynchronous Create and CreateMultiple step runs once, inside the request's frame (its tag) and with the header as an InputParameter
+// @parity-evidence: native and native-r2 bypassHeaders: 'bypass custom' and 'bypass sync' each run Create/40/m1 and CreateMultiple/40/m1, InputParameters BypassCustomPluginExecution true / BypassBusinessLogicExecution 'CustomSync', SharedVariables tag
+test('bypassing synchronous custom logic still runs the asynchronous steps in the request frame', async (t) => {
+  const seen = [];
+  const f = await probeFixture(
+    t,
+    [
+      probeStep('Create', 10, 61),
+      probeStep('Create', 40, 62),
+      probeStep('Create', 40, 63, { mode: 1 }),
+      probeStep('CreateMultiple', 40, 64, { mode: 1 }),
+    ],
+    seen,
+  );
+  const tagged = {};
+  for (const [header, value, input] of [
+    ['MSCRM.BypassCustomPluginExecution', 'true', ['BypassCustomPluginExecution', true]],
+    ['MSCRM.BypassBusinessLogicExecution', 'CustomSync', ['BypassBusinessLogicExecution', 'CustomSync']],
+  ]) {
+    seen.length = 0;
+    const response = await f.request(
+      'POST',
+      '/x_items?tag=' + encodeURIComponent('run ' + value),
+      { x_name: value },
+      {
+        [header]: value,
+      },
+    );
+    assert(response.status < 300, await response.text());
+    await f.backend.settle();
+    assert.deepEqual(seen.map((entry) => `${entry.message}/${entry.stage}/${entry.mode}`).sort(), [
+      'Create/40/1',
+      'CreateMultiple/40/1',
+    ]);
+    for (const entry of seen) assert.equal(entry.inputs[input[0]], input[1]);
+    tagged[value] = seen.map((entry) => entry.shared.tag);
+  }
+  assert.deepEqual(tagged, { true: ['run true', 'run true'], CustomSync: ['run CustomSync', 'run CustomSync'] });
 });

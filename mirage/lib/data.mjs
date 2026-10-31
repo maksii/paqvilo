@@ -2604,14 +2604,24 @@ export class DataStore {
     // The merged bulk driver already ran every selected source step. Public
     // custom-logic bypass instead remains a per-step ownership decision.
     if (options.skipPluginPipeline) return;
-    if (
-      !this.pluginPipeline ||
-      !this.pluginPipelineActive({
+    const stepsRun = (bypassCustomPlugins) =>
+      this.pluginPipelineActive({
         entity: mapping.logicalName,
         operation,
-        bypassCustomPlugins: options.bypassCustomPlugins,
+        bypassCustomPlugins,
         bypassStepIds: options.bypassStepIds,
-      })
+      });
+    // A request that bypasses its synchronous custom steps (MSCRM.BypassCustomPluginExecution, CustomSync) still
+    // queues its asynchronous ones (native bypassHeaders): with a step catalogue its phases run, without those steps, so
+    // the jobs keep the request's frame (tag, request identity, inputs).
+    if (
+      !this.pluginPipeline ||
+      !(
+        stepsRun(options.bypassCustomPlugins) ||
+        (options.bypassCustomPlugins === true &&
+          this.pluginPipeline.steps &&
+          stepsRun(options.bypassCustomAsync === true))
+      )
     ) {
       // A named message's main-operation write without steps of its own still changes the request root its
       // PostOperation lists (native soapMessages Assign/40, mergeAccount Merge/40; exported-plugins runPluginPhase
