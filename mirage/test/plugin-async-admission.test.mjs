@@ -127,8 +127,9 @@ for (const kind of ['plugin', 'webhook'])
         const [job] = f.store.tableRows('asyncoperation');
         assert.equal(job.statecode, 3);
         assert.equal(job.statuscode, expected);
-        // Native asyncStepDisabled / asyncStepDeleted (two captures): a disabled step's job is canceled with the platform's
-        // skip notice and no message; a deleted step's job fails 0x8004418b "Could not find plugin step description.".
+        // Native asyncStepDeleted (two captures, 3/31): a deleted step's job fails 0x8004418b "Could not find plugin step description.".
+        // Native asyncStepDisabled (one capture, native r1: 3/32 with the skip notice; native-r2 ran the step, 3/30, a start race):
+        // a disabled step's job is canceled with the platform's skip notice and no message.
         if (expected === 31) {
           assert.equal(job.message, 'Could not find plugin step description.');
           assert.equal(job.errorcode, 0x8004418b | 0);

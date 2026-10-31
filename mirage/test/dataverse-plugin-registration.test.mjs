@@ -1668,3 +1668,47 @@ describe('plug-in registration: assembly content and plug-in types', () => {
     assert.equal(rows.sdkmessageprocessingstepimage[0].messagepropertyname, 'EntityMoniker');
   });
 });
+
+// @test-kind parity: native rankNegative: a rank -1 Update PreOperation step runs before the rank 1 steps of the stage
+// @parity-evidence: native and native-r2 rankNegative (C05d)
+it('a rank -1 synchronous Update step runs before the rank 1, 2 and 10 steps of the same stage', async () => {
+  const state = emptyState();
+  state.mappings.x_widget = { entitySet: 'x_widgets', idColumn: 'x_widgetid' };
+  state.tables.x_widget = [];
+  const store = new DataStore({ state });
+  const row = await store.create('x_widget', { x_name: 'Ranked' }, { admin: true });
+  const order = [];
+  const ranks = [
+    ['10000000-0000-4000-8000-000000000061', -1],
+    ['10000000-0000-4000-8000-000000000062', 1],
+    ['10000000-0000-4000-8000-000000000063', 2],
+    ['10000000-0000-4000-8000-000000000064', 10],
+  ];
+  const steps = ranks.map(([id, rank]) => ({
+    id,
+    name: `Invented rank ${rank}`,
+    entity: 'x_widget',
+    message: 'Update',
+    enabled: true,
+    stage: 20,
+    rank,
+    mode: 0,
+    typeName: 'Invented.Ranked',
+    assemblyId: 'invented',
+    supportedDeployment: 0,
+    filteringAttributes: [],
+    images: [],
+  }));
+  const handlers = new Map(
+    ranks.map(([id, rank]) => [
+      id,
+      () => {
+        order.push(rank);
+      },
+    ]),
+  );
+  const items = pluginCatalogue({ plugins: { steps }, handlers });
+  store.setPluginPipeline((context) => runPluginPhase({ ...context, store, items, handlers }));
+  await store.update('x_widget', row.x_widgetid, { x_name: 'Changed' }, { admin: true });
+  assert.deepEqual(order, [-1, 1, 2, 10]);
+});
