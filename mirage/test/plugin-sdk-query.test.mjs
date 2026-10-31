@@ -886,3 +886,83 @@ test('SDK QueryExpression answers the same rows with and without TopCount, NotOn
       (error) => error.status === 400 && error.details?.innerCode === '0x80041120',
     );
 });
+
+// @test-kind unproven: bit-mask semantics are a local model; the docs only say "found in the specified bit-mask value"
+test('SDK Mask, NotMask and MasksSelect filter on the bits of an integer column, with and without TopCount', () => {
+  const store = data();
+  store.state.mappings.root.fields.bits = { type: 'integer' };
+  store.state.tables.root = [
+    { rootid: rootId, title: 'Five', bits: 5 },
+    { rootid: childId, title: 'Four', bits: 4 },
+    { rootid: leafId, title: 'Two', bits: 2 },
+  ];
+  const titles = (operatorName, topCount) =>
+    run(store, {
+      $type: 'QueryExpression',
+      entityName: 'root',
+      columnSet: { allColumns: false, columns: ['title'] },
+      criteria: { operatorName: 'And', conditions: [{ attributeName: 'bits', operatorName, values: [5] }] },
+      orders: [],
+      linkEntities: [],
+      ...(topCount ? { topCount } : {}),
+    })
+      .entities.map((entity) => entity.attributes.title)
+      .sort();
+  for (const topCount of [null, 5]) {
+    assert.deepEqual(titles('Mask', topCount), ['Five']);
+    assert.deepEqual(titles('NotMask', topCount), ['Four', 'Two']);
+    assert.deepEqual(titles('MasksSelect', topCount), ['Five', 'Four']);
+  }
+});
+
+// @test-kind unproven: the null set-value fault reuses the FetchXML null-value message; no native recording of the SDK fault text
+test('SDK In with a null value answers the platform null-value fault', () => {
+  const store = data();
+  for (const topCount of [null, 5])
+    assert.throws(
+      () =>
+        run(store, {
+          $type: 'QueryExpression',
+          entityName: 'root',
+          columnSet: { allColumns: true },
+          criteria: {
+            operatorName: 'And',
+            conditions: [{ attributeName: 'title', operatorName: 'In', values: ['Parent', null] }],
+          },
+          ...(topCount ? { topCount } : {}),
+        }),
+      (error) => error.status === 400 && /null is not a valid value/.test(error.message),
+    );
+});
+
+// @test-kind unproven: a condition on a link alias filtering the root rows is a local model of the linked query; no native recording
+test('SDK condition on a link alias filters the root rows', () => {
+  const store = data();
+  const orphanId = '50000000-0000-0000-0000-000000000001';
+  store.state.tables.root.push({ rootid: orphanId, title: 'Orphan' });
+  const titles = run(store, {
+    $type: 'QueryExpression',
+    entityName: 'root',
+    columnSet: { allColumns: false, columns: ['title'] },
+    criteria: {
+      operatorName: 'And',
+      conditions: [{ entityName: 'c', attributeName: 'amount', operatorName: 'GreaterThan', values: [10] }],
+    },
+    orders: [],
+    linkEntities: [
+      {
+        $type: 'LinkEntity',
+        linkFromEntityName: 'root',
+        linkToEntityName: 'child',
+        linkFromAttributeName: 'rootid',
+        linkToAttributeName: 'rootid',
+        entityAlias: 'c',
+        joinOperator: 'LeftOuter',
+        columns: { allColumns: false, columns: [] },
+        linkCriteria: { operatorName: 'And', conditions: [] },
+        linkEntities: [],
+      },
+    ],
+  }).entities.map((entity) => entity.attributes.title);
+  assert.deepEqual(titles, ['Parent']);
+});
