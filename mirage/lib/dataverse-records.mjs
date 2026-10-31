@@ -457,6 +457,42 @@ export function createRecordHandlers({
 }) {
   const authorize = (c, entity, operation, mapping, row) =>
     principals.authorize({ user: c.user, entity, operation, row, mapping });
+  // A missing table privilege (0x80040220) is refused at the stage native refuses it (recorded native privilegeSecond):
+  // a Create after PreValidation, a Retrieve or RetrieveMultiple after PreOperation, an Update or Delete before any
+  // step. Answers the refusal to raise later, or null; any other authorization failure throws at once.
+  const privilegeRefusal = (c, entity, operation, mapping, row) => {
+    try {
+      authorize(c, entity, operation, mapping, row);
+      return null;
+    } catch (error) {
+      if (error?.details?.innerCode !== '0x80040220') throw error;
+      return error;
+    }
+  };
+  const messageStepsRun = (c, mapping, operation) =>
+    Boolean(store.pluginPipeline) &&
+    store.pluginPipelineActive({
+      entity: mapping.logicalName,
+      operation,
+      bypassCustomPlugins: c.bypassCustomPlugins === true,
+      bypassStepIds: c.bypassStepIds,
+    });
+  // A create refusal waits for the Create's PreValidation steps when it has any (data.mjs raises it after stage 10).
+  const deferCreateRefusal = (c, mapping, data) => {
+    const refusal = privilegeRefusal(c, mapping.logicalName, 'create', mapping);
+    if (!refusal) return;
+    if (!messageStepsRun(c, mapping, 'create')) throw refusal;
+    createRefusals.set(data, refusal);
+  };
+  // A read refusal waits for the read's PreValidation and PreOperation steps when it has any.
+  const deferReadRefusal = (c, mapping, operation, row) => {
+    const refusal = privilegeRefusal(c, mapping.logicalName, 'read', mapping, row);
+    if (!refusal) return;
+    if (!messageStepsRun(c, mapping, operation)) throw refusal;
+    c.beforeMainRead = () => {
+      throw refusal;
+    };
+  };
   // One dataverse span per internal entry and per Web API dispatch (docs/design/tracing.md); a plug-in step's nested SDK
   // writes run on the same stack, so their spans nest under the step. c is the resolved context (internalContext).
   // Record identity (D-R3-1): a primary key names the record at start; an alternate key or a create's id is named by the
@@ -1284,6 +1320,7 @@ export function createRecordHandlers({
             ),
           },
           ...(c.sdkColumns ? {} : { readInitialFrame: webApiReadFrame(c, false) }),
+          ...(c.beforeMainRead ? { beforeMainRead: c.beforeMainRead } : {}),
           sdkTarget: c.sdkTarget,
           ...(c.sdkTarget
             ? {
@@ -1584,6 +1621,7 @@ export function createRecordHandlers({
       ...(ids ? { ids } : {}),
       readInitialFrame: readFrame,
       ...(readFrame ? { webApiFetchQuery: fetchPresentation(c, mapping) } : {}),
+      ...(c.beforeMainRead ? { beforeMainRead: c.beforeMainRead } : {}),
     });
     // The filter resolves field definitions per row; they are derived once for the whole synchronous query.
     const result =
@@ -1752,8 +1790,9 @@ export function createRecordHandlers({
     const { mapping, url } = c;
     if (isElastic(mapping) && url.searchParams.has('$expand'))
       throw invalid('Link entities are not supported', '0x80048d0b');
-    authorize(c, mapping.logicalName, 'read', mapping);
-    const readFilter = filterOf(c, mapping);
+    deferReadRefusal(c, mapping, 'retrievemultiple');
+    // A deferred refusal answers at the main read; the row filter of a caller without the privilege has no depth yet.
+    const readFilter = c.beforeMainRead ? null : filterOf(c, mapping);
     await source(c, mapping, { single: false, id: null });
     const answer = await firstAnswer('query', c, mapping);
     if (answer !== undefined)
@@ -1819,7 +1858,7 @@ export function createRecordHandlers({
         }))
     )
       throw notFoundRecord(mapping.logicalName, key.text);
-    authorize(c, mapping.logicalName, 'read', mapping, key.row);
+    deferReadRefusal(c, mapping, 'retrieve', key.row);
     const body = entityBody(c, mapping, key.row?.[mapping.idColumn] ?? key.id, entityParams(c, mapping), {
       allColumns: true,
     });
@@ -2003,13 +2042,15 @@ export function createRecordHandlers({
           runHooks('mainOperation', c, mapping, { operation, row, previous, target, ...request })
       : undefined;
   const derivedCreateColumns = new WeakMap();
+  // A create's privilege refusal, raised after its PreValidation stage (privilegeRefusal).
+  const createRefusals = new WeakMap();
   const createOptions = (c, extra = {}, data) =>
     writeOptions({
       ...extra,
       mainOperation: mainOperation(c),
       pluginAcceptLanguage: c.headers?.get?.('accept-language') ?? c.headers?.['accept-language'] ?? '',
       derivedCreateColumns: derivedCreateColumns.get(data),
-      afterPreValidation: phaseValidation(c, extra),
+      afterPreValidation: phaseValidation(c, { ...extra, refusal: createRefusals.get(data) }),
       sdkResponseToken: extra.sdkResponseToken ?? c.sdkResponseToken,
       sdkCreateId: extra.sdkCreateId ?? c.sdkCreateId,
       dataverseHttpReader: c.dataverseHttpReader,
@@ -2045,7 +2086,7 @@ export function createRecordHandlers({
   async function createData(c, mapping, body) {
     const data = createPayload(mapping, body);
     const logical = mapping.logicalName;
-    authorize(c, logical, 'create', mapping);
+    deferCreateRefusal(c, mapping, data);
     if (Object.keys(data).some((key) => key.endsWith(BIND))) authorize(c, logical, 'append', mapping);
     bindsOf(c, mapping, data, null);
     await deepPayload(c, mapping, data);
@@ -2184,9 +2225,11 @@ export function createRecordHandlers({
       await afterWrite(c, mapping, { operation: 'upsert', id: result.row[mapping.idColumn] });
       return { created: result.created, id: result.row[mapping.idColumn] };
     }
+    // An Update the caller has no privilege for is refused before any step, also the existence read (recorded native
+    // privilegeSecond: PATCH answers 403 with no step).
+    if (key.row) authorize(c, logical, 'update', mapping, key.row);
     if (ifMatch == null) upsertExistenceCheck(c, mapping, key, body);
     if (key.row) {
-      authorize(c, logical, 'update', mapping, key.row);
       // An elastic row's partitionid key is its partition: a body that changes it stays refused (elastic tables), not dropped.
       // The body's values for the URL's alternate key are dropped. The same rule applies to an If-Match: * update through
       // an alternate key, which is a guess: the drop is documented only for Upsert.
@@ -3028,8 +3071,9 @@ export function createRecordHandlers({
   // Platform validation after PreValidation observes the current Target, while
   // preserving the established earlier beforeWrite extension hook contract.
   function phaseValidation(c, extra) {
-    if (!hooks.list('afterPreValidation').length && !extra.afterPreValidation) return undefined;
+    if (!hooks.list('afterPreValidation').length && !extra.afterPreValidation && !extra.refusal) return undefined;
     return (entity, operation, target, previous) => {
+      if (extra.refusal) throw extra.refusal;
       extra.afterPreValidation?.(entity, operation, target, previous);
       return drive(
         writeHooks('afterPreValidation', c, store.resolveMapping(entity), {
@@ -3114,7 +3158,7 @@ export function createRecordHandlers({
   ) {
     const mapping = store.resolveMapping(logical);
     if (c.user && !authorized) {
-      authorize(c, mapping.logicalName, 'create', mapping);
+      deferCreateRefusal(c, mapping, data);
       authorizeLookups(c, mapping, data);
     }
     const derived = {};
