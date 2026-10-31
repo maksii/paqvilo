@@ -181,23 +181,130 @@ test('lazy read snapshots precede direct observer mutations and direct SDK write
   assert.equal(store.revision, 1);
 });
 
-test('Unserialized original SDK observer writes still fail before modifying data', () => {
+const gate = () => {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+
+// @test-kind parity: native readNested: a Retrieve/RetrieveMultiple step's SDK write commits in its own transaction and its row persists after the read's own fault
+// @parity-evidence: native and native-r2 readNested: the RetrieveMultiple and Retrieve steps' SDK Create children persist although the read answered 400
+test('a read step SDK write outside any transaction commits on its own, also when the read then faults', async () => {
   const store = fixture();
-  store.pluginReadOnly = true;
-  assert.throws(
-    () =>
+  let fault = false;
+  store.setPluginPipeline(
+    (context) => {
+      if (context.operation !== 'retrievemultiple' || context.stage !== 40) return {};
+      assert.equal(store.inTransaction(), false);
+      const before = store.tableRows('audit').length;
       dispatchSdkCall({
         store,
         profile,
         message: {
           method: 'Create',
           userId: user,
-          arguments: [{ $type: 'Entity', logicalName: 'audit', attributes: { title: 'Unsafe' } }],
+          arguments: [{ $type: 'Entity', logicalName: 'audit', attributes: { title: 'Read step write' } }],
         },
-      }),
-    (error) => error.code === 'LocalPluginReadWriteUnsupported',
+      });
+      // The step sees its own write.
+      assert.equal(store.tableRows('audit').length, before + 1);
+      if (fault) throw new Error('Invented read fault');
+      return {};
+    },
+    ({ operation }) => operation === 'retrievemultiple',
   );
+  assert.equal(store.query('widget', {}, { admin: true }).value.length, 1);
+  await store.settleReadLanes();
+  assert.deepEqual(
+    store.snapshot().tables.audit.map((row) => row.title),
+    ['Read step write'],
+  );
+  fault = true;
+  assert.throws(() => store.query('widget', {}, { admin: true }), /Invented read fault/);
+  await store.settleReadLanes();
+  assert.deepEqual(
+    store.snapshot().tables.audit.map((row) => row.title),
+    ['Read step write', 'Read step write'],
+  );
+});
+
+// @test-kind unproven: a read step's SDK write that itself fails leaves nothing; no native capture of a failing read-step write
+test('a read step SDK write that fails rolls back only itself', async () => {
+  const store = fixture();
+  store.setPluginPipeline(
+    (context) => {
+      if (context.operation === 'create' && context.entity === 'audit' && context.stage === 20)
+        throw new Error('Invented audit refusal');
+      if (context.operation !== 'retrievemultiple' || context.stage !== 40) return {};
+      assert.throws(
+        () =>
+          dispatchSdkCall({
+            store,
+            profile,
+            message: {
+              method: 'Create',
+              userId: user,
+              arguments: [{ $type: 'Entity', logicalName: 'audit', attributes: { title: 'Refused write' } }],
+            },
+          }),
+        /Invented audit refusal/,
+      );
+      return {};
+    },
+    ({ operation }) => ['retrievemultiple', 'create'].includes(operation),
+  );
+  assert.equal(store.query('widget', {}, { admin: true }).value.length, 1);
+  await store.settleReadLanes();
   assert.equal(store.snapshot().tables.audit.length, 0);
+});
+
+// @test-kind unproven: the commit order of an independent read's step write behind another request's open transaction is a local model (native commits it on its own; the ordering was not captured)
+test('a read step SDK write commits on its own while another request holds an open transaction, and survives its rollback', async () => {
+  const store = fixture(),
+    entered = gate(),
+    release = gate();
+  store.setPluginPipeline(
+    (context) => {
+      if (context.operation !== 'retrievemultiple' || context.stage !== 40) return {};
+      dispatchSdkCall({
+        store,
+        profile,
+        message: {
+          method: 'Create',
+          userId: user,
+          arguments: [{ $type: 'Entity', logicalName: 'audit', attributes: { title: 'Independent read write' } }],
+        },
+      });
+      return {};
+    },
+    ({ operation }) => operation === 'retrievemultiple',
+  );
+  // Request A: an open write transaction held by a controlled gate, then rolled back.
+  const pending = store.transact(
+    async () => {
+      localOrganizationService(store, profile).create('audit', { title: 'Provisional A' });
+      entered.resolve();
+      await release.promise;
+      throw new Error('Controlled rollback of A');
+    },
+    { isolated: true },
+  );
+  await entered.promise;
+  // Read B runs at once (no 501, no wait) and does not see A's provisional row.
+  assert.equal(store.query('widget', {}, { admin: true }).value.length, 1);
+  assert.deepEqual(
+    store.tableRows('audit').map((row) => row.title),
+    [],
+  );
+  release.resolve();
+  await assert.rejects(pending, /Controlled rollback of A/);
+  await store.settleReadLanes();
+  assert.deepEqual(
+    store.snapshot().tables.audit.map((row) => row.title),
+    ['Independent read write'],
+  );
 });
 
 test('Observers receive permission-expanded XML before the main join limit is enforced and backend captures survive failure', async () => {

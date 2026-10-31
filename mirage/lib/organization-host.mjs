@@ -51,7 +51,7 @@ import { organizationRecord } from './organization-context.mjs';
 import { clockFunction, systemClock, systemIds } from './runtime-clock.mjs';
 import { packDirectory } from './preset-registry.mjs';
 import { DataError } from './data-error.mjs';
-import { dataverseSettings } from './dataverse-settings.mjs';
+import { ASYNC_START_DELAY_MS, dataverseSettings } from './dataverse-settings.mjs';
 import { runtimeSettings } from './runtime-config.mjs';
 import { resolveDeploymentProfiles, loadDeploymentProfiles } from './deployment-profiles.mjs';
 import { readCanvasSources, canvasSourceCoverageGaps } from './canvas-source.mjs';
@@ -1278,7 +1278,7 @@ function hostLifecycle(c) {
         diagnostic,
         scheduler: c.scheduler,
         systemJobs: () => Boolean(c.organization),
-        asyncStartDelayMs: () => c.organization?.settings?.asyncStartDelayMs ?? 0,
+        asyncStartDelayMs: () => c.organization?.settings?.asyncStartDelayMs ?? ASYNC_START_DELAY_MS,
         connectors: c.connectors,
         secrets: providers.secrets,
         // Queue and topic service endpoints (contracts 2, 5, 6) deliver through providers.messaging (= api.providers.messaging).

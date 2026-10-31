@@ -78,3 +78,61 @@ test('a completed read keeps its asynchronous job when the enclosing request rol
   assert.equal(reads[0].MessageName, 'RetrieveMultiple');
   assert.equal(reads[0].Mode, 1);
 });
+
+// @test-kind parity: native readNested: a Retrieve whose PostOperation synchronous step faults answers 400 0x80040265, yet its asynchronous Retrieve step runs once with the read's BusinessEntity
+// @parity-evidence: native and native-r2 readNested event 30 (Retrieve/40 sync fault, GET 400 0x80040265) and the 'Recorder: Retrieve async' Retrieve/40/m1/d1 context with OutputParameters.BusinessEntity
+test('a Retrieve whose PostOperation step faults still runs its asynchronous Retrieve step with the read result', async (t) => {
+  const state = emptyState();
+  state.mappings.x_item = {
+    logicalName: 'x_item',
+    entitySet: 'x_items',
+    idColumn: 'x_itemid',
+    fields: { x_name: { dataverseType: 'nvarchar' } },
+  };
+  state.tables.x_item = [{ x_itemid: id(1), x_name: 'existing' }];
+  const reads = [];
+  const handlers = new Map([
+    ['Invented.ReadAsync', ({ context }) => reads.push(context)],
+    [
+      'Invented.ReadFault',
+      () => {
+        throw new Error('Invented read fault');
+      },
+    ],
+  ]);
+  const clock = fixedClock(),
+    store = new DataStore({ state, clock }),
+    scheduler = createScheduler({ clock, manual: true }),
+    items = pluginCatalogue({
+      plugins: {
+        steps: [step(1, 'Retrieve', 40, 1, 'Invented.ReadAsync'), step(2, 'Retrieve', 40, 0, 'Invented.ReadFault')],
+      },
+      handlers,
+    });
+  const backend = await createOrganizationBackend({ store, items: () => items, handlers, scheduler });
+  t.after(async () => {
+    await backend.close();
+    store.close();
+  });
+  // The request boundary of a Web API read whose steps run (dataverse-records.mjs): the read operation fails with the step.
+  await assert.rejects(
+    store.readOperation(() => store.get('x_item', id(1), { admin: true })),
+    (error) => {
+      assert.equal(error.status, 400);
+      assert.equal(error.details?.innerCode, '0x80040265');
+      assert.equal(error.message, 'Invented read fault');
+      return true;
+    },
+  );
+  // The read's job is staged in its own transaction, queued after the failed read.
+  await store.transact(() => {});
+  assert.equal(store.tableRows('asyncoperation').length, 1);
+  await scheduler.runDue();
+  await backend.asyncPluginRunner.drain();
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].MessageName, 'Retrieve');
+  assert.equal(reads[0].Mode, 1);
+  // A JavaScript handler's context carries the entity in its Web API shape.
+  assert.equal(reads[0].OutputParameters.BusinessEntity?.x_itemid, id(1));
+  assert.equal(reads[0].OutputParameters.BusinessEntity?.x_name, 'existing');
+});

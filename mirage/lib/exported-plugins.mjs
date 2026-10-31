@@ -44,7 +44,7 @@ import {
   pluginInvocationParent,
 } from './plugin-execution-lifetime.mjs';
 import { asyncMultiplePluginParent, recordRequestRootChange, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
-import { recordPluginTrace } from './plugin-trace.mjs';
+import { qualifiedTypeName, recordPluginTrace } from './plugin-trace.mjs';
 import { delegatedPluginParent, upsertSourceOperation } from './plugin-delegation.mjs';
 import { populatePluginSystemOutputs } from './plugin-response.mjs';
 import { notePluginFault, pluginFailure } from './plugin-fault.mjs';
@@ -60,6 +60,7 @@ import { ownershipOf } from './dataverse-security.mjs';
 import {
   recordStepConstructorSettings,
   copyStepConstructorSettings,
+  runtimeConstructorSettings,
   stepConstructorSettings,
 } from './plugin-constructor-configuration.mjs';
 
@@ -1046,9 +1047,16 @@ function handlerExecutionContext({
 
 // plugintracelog: organization.plugintracelogsetting 1 keeps the rows of failed executions, 2 keeps every execution, 0 keeps none.
 // Trace facts survive business rollback independently, as PluginTraceLog does natively.
-function writeTraceLog(store, { item, entity, operation, depth, asyncExecution, traces, started, startedAt, error }) {
+function writeTraceLog(
+  store,
+  { item, entity, operation, depth, asyncExecution, traces, started, startedAt, error, requestId, correlationId },
+) {
   recordPluginTrace(store, {
-    typeName: item.typeName,
+    typeName: qualifiedTypeName(store, {
+      typeName: item.typeName,
+      assemblyId: item.assemblyId,
+      assemblyName: item.assemblyName,
+    }),
     stepId: item.id,
     messageName: item.customApi?.name ?? messageNameOf(operation),
     entity,
@@ -1058,7 +1066,20 @@ function writeTraceLog(store, { item, entity, operation, depth, asyncExecution, 
     started,
     startedAt,
     error,
+    requestId,
+    correlationId,
+    ...stepConstructorTrace(store, item),
   });
+}
+
+// The step's constructor text as its trace row records it: unsecure configuration and the secure configuration when registered.
+function stepConstructorTrace(store, item) {
+  try {
+    const settings = runtimeConstructorSettings(store, item.id, stepConstructorSettings(item), {});
+    return { configuration: settings.unsecureConfiguration, secureConfiguration: settings.secureConfiguration };
+  } catch {
+    return {};
+  }
 }
 
 export function pluginCatalogue({
@@ -1111,7 +1132,7 @@ export function pluginCatalogue({
         typeName: step.typeName,
         unsupported,
         boundary:
-          'Top-level PreValidation SDK requests commit independently; PreOperation/PostOperation and nested PreValidation join the caller transaction. Read observer writes require a serialized readOperation boundary and explicit backend grants; top-level read SDK writes commit independently. CLR runs registered uploaded assembly bytes by default, or an explicitly trusted original assembly with a separate project backend security profile.',
+          'Top-level PreValidation SDK requests commit independently; PreOperation/PostOperation and nested PreValidation join the caller transaction. Read step SDK writes need explicit backend grants and commit in their own transaction (a read-operation boundary, or a read lane queued behind an open transaction). CLR runs registered uploaded assembly bytes by default, or an explicitly trusted original assembly with a separate project backend security profile.',
       },
     });
   });
@@ -1979,6 +2000,8 @@ export function runPluginPhase({
           started,
           startedAt,
           error,
+          requestId: executionFrames.get(record)?.requestId,
+          correlationId: executionFrames.get(record)?.correlationId,
         });
       try {
         if (item.mode === 'clr') {
@@ -2600,6 +2623,13 @@ export function runPluginPhase({
         // The run's trace lines, for an asynchronous job's failure message (plugin-async.mjs jobFailure).
         if (failure && typeof failure === 'object' && !Object.hasOwn(failure, 'pluginTraces'))
           Object.defineProperty(failure, 'pluginTraces', { value: [...traces], configurable: true });
+        // The operation's frame at the throw, for a faulted read's asynchronous steps (data.mjs stageFaultedRead). Each
+        // enclosing phase the fault passes replaces it, so the read's own phase leaves its frame last.
+        if (failure && typeof failure === 'object' && Object.isExtensible(failure))
+          Object.defineProperty(failure, 'pluginFrame', {
+            value: cloneStateData(executionFrames.get(record) ?? {}),
+            configurable: true,
+          });
         store?.counters?.increment('plugins.failures');
         // The fault identity (type, code, OperationStatus, plug-in type, step, stage, depth) travels on the error to every
         // span it fails; this step's span records it.

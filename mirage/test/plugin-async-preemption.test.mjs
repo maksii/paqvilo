@@ -8,6 +8,7 @@ import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
+import { ASYNC_START_DELAY_MS } from '../lib/dataverse-settings.mjs';
 
 const id = (n) => `40000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const ENDPOINT = id(1);
@@ -58,10 +59,11 @@ async function organization(t, steps, { asyncStartDelayMs } = {}) {
   const clock = fixedClock(),
     store = new DataStore({ state, clock }),
     scheduler = createScheduler({ clock, manual: true }),
-    items = pluginCatalogue({ plugins: { steps }, handlers });
+    // A step deleted through the registration API leaves the current step list (removeStep).
+    current = { items: pluginCatalogue({ plugins: { steps }, handlers }) };
   const backend = await createOrganizationBackend({
     store,
-    items: () => items,
+    items: () => current.items,
     handlers,
     scheduler,
     ...(asyncStartDelayMs === undefined ? {} : { asyncStartDelayMs: () => asyncStartDelayMs }),
@@ -78,7 +80,10 @@ async function organization(t, steps, { asyncStartDelayMs } = {}) {
     await scheduler.runDue();
     await backend.asyncPluginRunner.drain();
   };
-  return { store, scheduler, backend, settle, ran };
+  const removeStep = (stepId) => {
+    current.items = current.items.filter((item) => item.id !== stepId);
+  };
+  return { store, scheduler, backend, settle, ran, removeStep };
 }
 const admin = { admin: true };
 const assign = (store, row) =>
@@ -119,7 +124,7 @@ test('deleting a row stops every waiting plug-in and web hook job regarding it, 
   }
 });
 
-// @test-kind contract: asyncStartDelayMs is Paqvilo's calibration knob for the native asynchronous start latency (1.2-6 s recorded); 0 keeps the next-turn start
+// @test-kind contract: asyncStartDelayMs is Paqvilo's calibration knob for the native asynchronous start latency (0-6 s recorded); 0 keeps the next-turn start
 test('a configured asynchronous start delay keeps jobs Ready until due, so a deletion inside the window pre-empts them', async (t) => {
   const { store, scheduler, backend, settle, ran } = await organization(
     t,
@@ -131,7 +136,8 @@ test('a configured asynchronous start delay keeps jobs Ready until due, so a del
   assert.deepEqual(ran, [], 'a postponed job does not start on the next turn');
   const [job] = store.tableRows('asyncoperation');
   assert.equal(job.statecode, 0);
-  assert.equal(Date.parse(job.postponeuntil), store.clock.now() + 2000);
+  // The start time is internal: postponeuntil stays null (native: null on every job that was never retried).
+  assert.equal(job.postponeuntil ?? null, null);
   assert.equal(backend.asyncPluginRunner.status().pending, 0, 'settling does not wait for a job that is not due');
   await scheduler.advance(2000);
   await backend.asyncPluginRunner.drain();
@@ -143,6 +149,56 @@ test('a configured asynchronous start delay keeps jobs Ready until due, so a del
   await scheduler.advance(2000);
   await backend.asyncPluginRunner.drain();
   assert.deepEqual(ran, ['plugin Delete']);
+});
+
+// @test-kind parity: native asyncDeletedRow and async: with the organization's default start latency a row deleted right after its update cancels the waiting job, and a row deleted later lets it run
+// @parity-evidence: native and native-r2 asyncDeletedRow Update-lane jobs 3/32 'This system job was canceled because a referenced record was deleted.' with postponeuntil null; native-r2 async the same; native asyncLoop pickup 0-6 s
+test('with the default start latency a deletion right after the update cancels its job, and one after the latency does not', async (t) => {
+  const { store, scheduler, backend, settle, ran } = await organization(t, [typed(1, 'Update'), typed(2, 'Delete')], {
+    asyncStartDelayMs: ASYNC_START_DELAY_MS,
+  });
+  const row = await store.create('x_item', { x_name: 'brief' }, admin);
+  await store.update('x_item', row.x_itemid, { x_name: 'changed' }, admin);
+  // The next scheduler turns pass (the response travels back to the client) before the DELETE arrives.
+  await settle();
+  await store.remove('x_item', row.x_itemid, admin);
+  await scheduler.advance(ASYNC_START_DELAY_MS);
+  await backend.asyncPluginRunner.drain();
+  const update = store.tableRows('asyncoperation').find((job) => job.messagename === 'Update');
+  assert.deepEqual([update.statecode, update.statuscode, update.errorcode, update.message], [3, 32, null, null]);
+  assert.equal(update.friendlymessage, 'This system job was canceled because a referenced record was deleted.');
+  assert.equal(update.postponeuntil ?? null, null);
+  assert.equal(update.startedon ?? null, null);
+  assert.deepEqual(ran, ['plugin Delete']);
+  ran.length = 0;
+  // A row deleted after the latency: its Update job already ran.
+  const kept = await store.create('x_item', { x_name: 'kept' }, admin);
+  await store.update('x_item', kept.x_itemid, { x_name: 'kept and changed' }, admin);
+  await scheduler.advance(ASYNC_START_DELAY_MS);
+  await backend.asyncPluginRunner.drain();
+  assert.deepEqual(ran, ['plugin Update']);
+  await store.remove('x_item', kept.x_itemid, admin);
+  await scheduler.advance(ASYNC_START_DELAY_MS);
+  await backend.asyncPluginRunner.drain();
+  assert.deepEqual(ran, ['plugin Update', 'plugin Delete']);
+});
+
+// @test-kind parity: native asyncStepDeleted: a step deleted right after its job was queued fails the job 0x8004418b and never executes
+// @parity-evidence: native and native-r2 asyncStepDeleted jobs[0] 3/31 errorcode 0x8004418b 'Could not find plugin step description.' with 0 executions
+test('with the default start latency a step deleted right after its job was queued fails the job without executing', async (t) => {
+  const { store, scheduler, backend, settle, ran, removeStep } = await organization(t, [typed(1, 'Update')], {
+    asyncStartDelayMs: ASYNC_START_DELAY_MS,
+  });
+  const row = await store.create('x_item', { x_name: 'brief' }, admin);
+  await store.update('x_item', row.x_itemid, { x_name: 'changed' }, admin);
+  await settle();
+  removeStep(id(101));
+  await scheduler.advance(ASYNC_START_DELAY_MS);
+  await backend.asyncPluginRunner.drain();
+  const [job] = store.tableRows('asyncoperation');
+  assert.deepEqual([job.statecode, job.statuscode, job.errorcode], [3, 31, 0x8004418b | 0]);
+  assert.equal(job.message, 'Could not find plugin step description.');
+  assert.deepEqual(ran, []);
 });
 
 // @test-kind parity: native asyncLoop (two captures): an asynchronous Create step creating another row runs jobs at Depth 1 to 12; the Depth 12 job's create would start Depth 13 and fails it with 0x80044182

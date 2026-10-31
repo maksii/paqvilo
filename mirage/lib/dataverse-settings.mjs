@@ -1,5 +1,12 @@
 import { uuidV5 } from './dataverse-security.mjs';
 
+/** An organization's default start latency of an asynchronous job (dataverse asyncStartDelayMs). Native pickup
+ * (startedon - createdon, whole seconds) was 0-6 s, median 1-2 s, across the asyncLoop, async and asyncDeletedRow
+ * captures; a delete of the row or of the step sent right after the triggering response reached the queued job before
+ * it started (native asyncDeletedRow Update lane 3/32, asyncStepDeleted 3/31 with no execution, both captures). One
+ * second is the floor of the range, so such a follow-up write reaches the job locally as well. */
+export const ASYNC_START_DELAY_MS = 1000;
+
 const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Setting names mapped to their wire form on the token endpoint (grant_type values).
 export const GRANT_TYPES = {
@@ -318,9 +325,9 @@ export function dataverseSettings(value, label = 'dataverse') {
     duplicateDetection: boolean(input.duplicateDetection, `${label}.duplicateDetection`, true),
     // The plug-in execution limit of a custom API's handler; the platform's sandbox limit is 2 minutes.
     pluginTimeoutSeconds: integer(input.pluginTimeoutSeconds, `${label}.pluginTimeoutSeconds`, 120, 1, 3600),
-    // How long an asynchronous plug-in or web hook job waits before it may start. Native start latency varies (1-6 s
-    // observed); 0 starts it on the next scheduler turn. A job regarding a row deleted meanwhile never runs.
-    asyncStartDelayMs: integer(input.asyncStartDelayMs, `${label}.asyncStartDelayMs`, 0, 0, 600000),
+    // How long an asynchronous plug-in or web hook job waits before it may start (ASYNC_START_DELAY_MS: the native
+    // floor); 0 starts it on the next scheduler turn. A job regarding a row deleted meanwhile never runs.
+    asyncStartDelayMs: integer(input.asyncStartDelayMs, `${label}.asyncStartDelayMs`, ASYNC_START_DELAY_MS, 0, 600000),
     currencyCode: text(input.currencyCode, `${label}.currencyCode`, 'USD', /^[A-Z]{3}$/),
     currencySymbol: text(input.currencySymbol, `${label}.currencySymbol`, '$'),
     localeId: integer(input.localeId, `${label}.localeId`, 1033, 1, 65535),

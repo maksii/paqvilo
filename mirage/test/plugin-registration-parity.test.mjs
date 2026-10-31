@@ -351,6 +351,7 @@ test('table kinds and further standard tables take their native filter sets', as
 });
 
 // @test-kind observation: global steps accepted natively (native and native-r2 _steps.json: Recorder steps on PublishAll, Upsert, RetrieveExchangeRate, RetrieveEntityChanges, SetLocLabels); the refusing 'none' filter answer is one registration-probe capture
+// @parity-evidence: native _registration-probes.json (single capture): global Upsert, UpsertMultiple and Merge steps accepted; native-filters.json: Upsert's 'none' filter refuses custom steps (allowed false); no second capture
 // Native accepted global (no filter) steps on every existing message: PublishAll and RetrieveExchangeRate (no table filter
 // in scope), Upsert (its 'none' filter refuses custom steps); a step registered on that refusing 'none' filter is refused.
 test('a step without a filter is accepted on any existing message; a refusing filter still refuses', async (t) => {
@@ -363,6 +364,7 @@ test('a step without a filter is accepted on any existing message; a refusing fi
 });
 
 // @test-kind observation: native registration probes round 2 (corpus/native/_registration-probes-2.json, one capture)
+// @parity-evidence: native _registration-probes-2.json (single capture; native-r2 has only _registration.json, existence rows, and no round 2 codes): WhoAmI and RetrieveVersion 0x80044187, image refusals, supporteddeployment 0x80040203
 // Native registration round 2 (single capture of deterministic validation): global WhoAmI/RetrieveVersion refused, images
 // on SetStateDynamicEntity, GrantAccess and DeleteMultiple accepted, an unknown image attribute refused, a step without a
 // stage accepted, a missing message refused, a client deployment on a server-only filter refused, and a plug-in type with a
@@ -448,6 +450,7 @@ test('registration round 2 rules answer with the native codes and texts', async 
 });
 
 // @test-kind observation: native registration probes (corpus/native/_registration-probes.json, one capture)
+// @parity-evidence: native _registration-probes.json (single capture; native-r2 has no validation probe rows): async stage 0x80040203 text, IsValidStateTransition 0x80044187, unknown attribute 0x8004f036, image type 0x8004416d
 test('registration validation answers with the native codes and texts', async (t) => {
   const f = await fixture(t);
   const refused = async (response, code, pattern) => {
@@ -509,7 +512,8 @@ test('registration validation answers with the native codes and texts', async (t
   assert.equal((await image(await step('Update', { stage: 40 }), 0)).status, 201, 'image on a global Update');
 });
 
-// @test-kind unproven: inert global Upsert/UpsertMultiple steps are a local model; the Merge and async Retrieve parts cite mergeAccount and readAsync (native and native-r2)
+// @parity-evidence: native _registration-probes.json (single capture) shows the global Upsert, UpsertMultiple, Merge and async Retrieve registrations accepted; their execution is in mergeAccount and readAsync (both captures), the inert Upsert and UpsertMultiple in sdkMessages and bulk (both)
+// @test-kind observation: registration admission of global steps (_registration-probes.json, native capture only) combined with execution in mergeAccount and readAsync (both captures); the test mixes both, so it is not split
 test('execution admission: globals run on the actual table, Upsert/Merge globals are inert and async Retrieve runs', async (t) => {
   const f = await fixture(t);
   for (const [name, over] of [
@@ -589,6 +593,7 @@ test('a global Create runs for the table it fires on, and an asynchronous Retrie
 });
 
 // @test-kind unproven: the sdkmessage/sdkmessagefilter lifecycle of a runtime custom API (create, delete) is a local model until the NATIVE step-registration-rules capture; native customApi only proves the steps run around it
+// @parity-evidence: no new proof; retag from the file's parity. native and native-r2 customApi show the stage 10 edit seen at 20 and 40 and the asynchronous step, but no corpus file holds the custom API's sdkmessagefilter row (iscustomprocessingstepallowed) asserted here
 // Native customApi scenario: custom APIs provisioned over the Web API took steps at stages 10, 20, 40 and asynchronous
 // PostOperation; the stage-10 step edited the Text input that later stages saw, and the reply carried the stage-40 output.
 test('a custom API created at runtime gets its message and filter, and its registered steps run around it', async (t) => {

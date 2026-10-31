@@ -131,6 +131,63 @@ const transactionFrameOf = (store, { closed = false } = {}) => {
     if (frame.store === store && (closed || !frame.closed)) return frame;
   return null;
 };
+// The row changes a read lane's SDK writes left (DataStore#openReadLane): per table, rows created, columns changed or
+// removed, and rows deleted, keyed by the table's primary key.
+function laneChanges(base, next) {
+  const changes = [];
+  for (const table of new Set([...Object.keys(base.tables ?? {}), ...Object.keys(next.tables ?? {})])) {
+    const before = base.tables?.[table] ?? [],
+      after = next.tables?.[table] ?? [];
+    if (before === after) continue;
+    const idColumn = next.mappings?.[table]?.idColumn ?? base.mappings?.[table]?.idColumn ?? `${table}id`,
+      key = (row) => String(row?.[idColumn] ?? '').toLowerCase(),
+      old = new Map([...before].map((row) => [key(row), row])),
+      seen = new Set();
+    for (const row of after) {
+      const id = key(row),
+        previous = old.get(id);
+      seen.add(id);
+      if (!previous) changes.push({ table, idColumn, create: cloneStateData(row) });
+      else if (!isDeepStrictEqual({ ...previous }, { ...row })) {
+        const set = {};
+        for (const [column, value] of Object.entries(row))
+          if (!isDeepStrictEqual(previous[column], value)) set[column] = cloneStateData(value);
+        const unset = Object.keys(previous).filter((column) => !Object.hasOwn(row, column));
+        changes.push({ table, idColumn, id: row[idColumn], set, unset });
+      }
+    }
+    for (const [id, row] of old) if (!seen.has(id)) changes.push({ table, idColumn, remove: row[idColumn] });
+  }
+  return changes;
+}
+// Applies a read lane's row changes onto the store's current state, inside the lane's own commit transaction.
+function applyLaneChanges(store, changes, committed) {
+  const state = store.state,
+    find = (rows, idColumn, id) =>
+      rows.findIndex((row) => String(row?.[idColumn] ?? '').toLowerCase() === String(id ?? '').toLowerCase());
+  for (const change of changes) {
+    const rows = (state.tables[change.table] ??= []);
+    if (change.create) {
+      const index = find(rows, change.idColumn, change.create[change.idColumn]);
+      if (index < 0) store.insertRow(change.table, rows, change.create);
+      else {
+        for (const column of Object.keys(rows[index])) delete rows[index][column];
+        Object.assign(rows[index], change.create);
+      }
+    } else if (change.remove !== undefined) {
+      const index = find(rows, change.idColumn, change.remove);
+      if (index >= 0) store.removeRow(change.table, rows, index);
+    } else {
+      const row = rows[find(rows, change.idColumn, change.id)];
+      if (!row) continue;
+      Object.assign(row, change.set);
+      for (const column of change.unset) delete row[column];
+    }
+  }
+  if (Number.isFinite(committed?.rowVersion))
+    state.rowVersion = Math.max(Number(state.rowVersion) || 0, committed.rowVersion);
+  store.rowIndexes = null;
+}
 // Tracing (trace-store.mjs): a read inside one of these spans is already covered and opens no store span of its own.
 const COVERED_READS = new Set(['dataverse', 'store', 'read', 'bulk']);
 const READ_LABEL = { retrieve: 'Retrieve', retrievemultiple: 'RetrieveMultiple', fetchxml: 'FetchXml' };
@@ -2161,6 +2218,7 @@ export class DataStore {
    * requests commit before a later primary-operation rejection. */
   sdkMutation(fn) {
     if (!this.hasOperationContext()) return this.withOperationContext(() => this.sdkMutation(fn));
+    this.openReadLane();
     const savepoint = this.sdkSavepoint();
     try {
       const result = fn();
@@ -2191,6 +2249,99 @@ export class DataStore {
     } finally {
       savepoint.close();
     }
+  }
+  /** A Retrieve or RetrieveMultiple step's SDK write commits in a transaction of its own (native readNested: the
+   * children persist after the read's own fault). A read outside any transaction (pluginReadOnly: none of its own, and
+   * never one borrowed from another request) opens a private lane at its first SDK write: from then on the read works on
+   * a copy of the committed state, so the step sees its own writes while other operations do not. When the read ends
+   * (closeReadLane) the rows its SDK writes left, its committed events and its trace rows commit in one transaction queued
+   * behind the open ones, rebased onto the state they leave: created rows are inserted, changed columns set, deleted rows
+   * removed. ponytail: the rebase diffs the lane's tables against the state it started from (O(state) per lane, only for
+   * a read whose step writes) and keeps last-writer-wins columns; a row another transaction deleted meanwhile is not
+   * recreated by a column change. */
+  openReadLane() {
+    if (this.pluginReadOnly !== true || this.pluginRollbackBoundary || this.pluginReadLane) return;
+    const base = this._state,
+      frame = { store: this, working: cloneInternal(base), initializing: false, parent: transactionFrames.getStore() },
+      boundary = { backup: null, independentCommit: false, eventCount: 0, parent: null };
+    const lane = {
+      base,
+      frame,
+      boundary,
+      previous: {
+        frame: frame.parent,
+        rowTransaction: this.rowTransaction,
+        committedEventCandidates: this.committedEventCandidates,
+      },
+    };
+    this.isolatedCount = (this.isolatedCount ?? 0) + 1;
+    transactionFrames.enterWith(frame);
+    this.pluginReadLane = lane;
+    this.pluginRollbackBoundary = boundary;
+    this.pluginReadOnly = false;
+    this.rowTransaction = null;
+    this.committedEventCandidates = [];
+  }
+  /** Ends the lane `closeReadLane` finds opened since `previous` (the lane before the read began): `failure` is the read's
+   * own error, after which only the SDK writes that completed (and its trace rows) commit, plus what a rollback note
+   * stages on its own (stageFaultedRead). */
+  closeReadLane(previous, failure = null) {
+    const lane = this.pluginReadLane;
+    if (!lane || lane === previous || lane.closed) return;
+    lane.closed = true;
+    const { boundary, frame } = lane,
+      committed = boundary.independentCommit ? boundary.backup : null,
+      events = failure
+        ? (this.committedEventCandidates ?? []).slice(0, boundary.eventCount)
+        : [...(this.committedEventCandidates ?? [])],
+      traces = [...(boundary.pluginTraceRows?.values() ?? [])].map((row) => clone(row));
+    frame.closed = true;
+    frame.working = null;
+    this.isolatedCount--;
+    transactionFrames.enterWith(lane.previous.frame);
+    this.pluginReadLane = previous ?? null;
+    this.pluginRollbackBoundary = null;
+    this.pluginReadOnly = true;
+    this.rowTransaction = lane.previous.rowTransaction;
+    this.committedEventCandidates = lane.previous.committedEventCandidates;
+    this.rowIndexes = null;
+    if (failure)
+      for (const note of boundary.rollbackNotes ?? [])
+        try {
+          note(failure);
+        } catch {
+          /* a note never changes the failure */
+        }
+    const changes = committed ? laneChanges(lane.base, committed) : [];
+    if (!changes.length && !events.length && !traces.length) return;
+    const commit = this.withOperationContext(
+      () =>
+        this.transact(
+          () => {
+            applyLaneChanges(this, changes, committed);
+            for (const row of traces) {
+              const rows = (this.state.tables.plugintracelog ??= []);
+              if (!rows.some((value) => value.plugintracelogid === row.plugintracelogid))
+                this.insertRow('plugintracelog', rows, row);
+            }
+            this.committedEventCandidates.push(...events);
+          },
+          { skipSaveIfUnchanged: true },
+        ),
+      { fresh: true },
+    );
+    const tracked = commit
+      .catch((error) => {
+        (this.committedEventErrors ??= []).push({ code: error.code ?? 'ReadLaneCommitError', message: error.message });
+        throw error;
+      })
+      .finally(() => this.readLaneCommits.delete(tracked));
+    tracked.catch(() => {});
+    (this.readLaneCommits ??= new Set()).add(tracked);
+  }
+  /** Resolves once the read lanes closed so far committed (rejects with a lane's commit failure). */
+  async settleReadLanes() {
+    await Promise.all([...(this.readLaneCommits ?? [])]);
   }
   // One SDK call's savepoint (sdkMutation, sdkMutationAsync): commit, rollback, then close.
   sdkSavepoint() {
@@ -2571,6 +2722,26 @@ export class DataStore {
   }
   /** Runs fn(error) when the outermost open transaction rolls back: the note for a post that already left the process and
    * cannot be withdrawn (dataverse-webhooks.mjs SERVICE_ENDPOINT_SENT_BEFORE_ROLLBACK). Outside a transaction it does nothing. */
+  /** A read whose PostOperation synchronous step faulted still queues its asynchronous steps (native readNested): inside a
+   * transaction the event joins it and, when that transaction rolls back with the fault, is staged in a queued transaction
+   * of its own; outside one it is staged on its own at once. */
+  stageFaultedRead(entity, operation, record, details) {
+    if (!this.commitStagers?.size) return;
+    const readEvent = clone(details),
+      readRecord = clone(record),
+      stage = () =>
+        this.transact(() => this.recordCommittedEvent(entity, operation, readRecord, [], readEvent), {
+          skipSaveIfUnchanged: true,
+        }).catch((error) => {
+          (this.committedEventErrors ??= []).push({ code: error.code ?? 'CommitStagerError', message: error.message });
+        });
+    if (!this.committedEventCandidates) return void stage();
+    readEvent.frame.asyncCallerParent ??= asyncCallerParent(
+      this.pluginParentContext ?? pluginInvocationSdkParent(this),
+    );
+    this.recordCommittedEvent(entity, operation, record, [], clone(readEvent));
+    this.onRollback(stage);
+  }
   onRollback(fn) {
     let boundary = this.pluginRollbackBoundary;
     while (boundary?.parent) boundary = boundary.parent;
@@ -3255,7 +3426,8 @@ export class DataStore {
         holder = {
           target: clone(options.sdkTarget ?? { $type: 'EntityReference', logicalName: m.logicalName, id: originalId }),
         },
-        previousReadOnly = this.pluginReadOnly;
+        previousReadOnly = this.pluginReadOnly,
+        previousLane = this.pluginReadLane;
       this.pluginReadOnly = !this.pluginRollbackBoundary;
       try {
         this.pluginPipeline({
@@ -3304,19 +3476,37 @@ export class DataStore {
         if (!row) return null;
         Object.assign(record, row, { [m.idColumn]: originalId });
         holder.entity = recordToSdkReadEntity(this, m.logicalName, row, columns);
-        const responseFrame = this.pluginPipeline({
-          entity: m.logicalName,
-          operation: 'retrieve',
-          stage: 40,
-          record,
-          identity,
-          columns,
-          holder,
-          changedAttributes: [],
-          bypassCustomPlugins: options.bypassCustomPlugins === true,
-          bypassStepIds: options.bypassStepIds,
-          portalRequest: options.portalRequest === true,
-        });
+        let responseFrame;
+        try {
+          responseFrame = this.pluginPipeline({
+            entity: m.logicalName,
+            operation: 'retrieve',
+            stage: 40,
+            record,
+            identity,
+            columns,
+            holder,
+            changedAttributes: [],
+            bypassCustomPlugins: options.bypassCustomPlugins === true,
+            bypassStepIds: options.bypassStepIds,
+            portalRequest: options.portalRequest === true,
+          });
+        } catch (error) {
+          // Native readNested (two captures): a Retrieve whose PostOperation synchronous step faults answers the fault,
+          // yet its asynchronous Retrieve steps still run with the read's result (OutputParameters.BusinessEntity). The
+          // read completed outside the failing request, so its event is staged on its own, with the frame at the throw.
+          this.stageFaultedRead(m.logicalName, 'retrieve', record, {
+            target: {},
+            columns,
+            holder,
+            identity,
+            frame: error?.pluginFrame ?? {},
+            messageEvent: true,
+            bypassCustomAsync: options.bypassCustomAsync === true,
+            bypassStepIds: options.bypassStepIds,
+          });
+          throw error;
+        }
         handoffPluginResponse(this, 'retrieve', m.logicalName, responseFrame, options.sdkResponseToken);
         if (
           holder.entity?.$type !== 'Entity' ||
@@ -3357,7 +3547,11 @@ export class DataStore {
           [m.idColumn]: row[m.idColumn],
           ...(isElastic(m) ? { partitionid: row.partitionid ?? null } : {}),
         };
+      } catch (error) {
+        this.closeReadLane(previousLane, error);
+        throw error;
       } finally {
+        this.closeReadLane(previousLane);
         this.pluginReadOnly = previousReadOnly;
       }
     }
@@ -4027,7 +4221,8 @@ export class DataStore {
     const mapping = this.resolveMapping(entity),
       query = clone(original),
       record = { [mapping.idColumn]: '00000000-0000-0000-0000-000000000000' },
-      previousReadOnly = this.pluginReadOnly;
+      previousReadOnly = this.pluginReadOnly,
+      previousLane = this.pluginReadLane;
     if (
       !identity.admin &&
       this.state.settings.permissionMode !== 'permissive' &&
@@ -4202,7 +4397,11 @@ export class DataStore {
         answer.total_record_count = collection.totalRecordCount;
       }
       return answer;
+    } catch (error) {
+      this.closeReadLane(previousLane, error);
+      throw error;
     } finally {
+      this.closeReadLane(previousLane);
       this.pluginReadOnly = previousReadOnly;
     }
   }

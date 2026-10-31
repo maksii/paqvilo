@@ -11,6 +11,7 @@ export const storeOperationFields = [
   'pluginExecutionUserId',
   'pluginSdkTag',
   'pluginRequestId',
+  'pluginReadLane',
   'rowTransaction',
   'committedEventCandidates',
   'flowChain',

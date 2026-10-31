@@ -44,7 +44,7 @@ import {
   PLUGIN_MAX_DEPTH,
   pluginDepthFault,
 } from './plugin-clr.mjs';
-import { recordPluginTrace } from './plugin-trace.mjs';
+import { qualifiedTypeName, recordPluginTrace } from './plugin-trace.mjs';
 import { uploadedAssemblyOfType, uploadedClrRuntime } from './plugin-uploaded.mjs';
 import { pluginStepBypassed, pluginBypassOwnership } from './plugin-bypass.mjs';
 import { denied } from './dataverse-fls.mjs';
@@ -532,7 +532,7 @@ async function runHandler(api, handler, ctx, plugin, timeoutMs, contextOf) {
     throw failure;
   } finally {
     recordPluginTrace(api.store, {
-      typeName: plugin.type,
+      typeName: qualifiedTypeName(api.store, { typeName: plugin.type, assemblyId: plugin.assemblyId }),
       messageName: plugin.name,
       entity: ctx.target?.logicalName ?? 'none',
       depth,
@@ -540,6 +540,7 @@ async function runHandler(api, handler, ctx, plugin, timeoutMs, contextOf) {
       started,
       startedAt,
       error: failure,
+      ...plugin.traceIds?.(),
     });
   }
 }
@@ -552,6 +553,13 @@ function typeRegistration(store, row, pluginTypes) {
   const type = store.tableRows('plugintype').find((item) => key(item.plugintypeid) === key(typeId));
   const handler = type && pluginTypes.get(type.typename);
   return handler ? { handler, pluginType: type.typename } : undefined;
+}
+
+// The assembly of the plug-in type a custom API names: the trace row's typename is assembly-qualified (qualifiedTypeName).
+function typeAssemblyId(store, row) {
+  const typeId = row.plugintypeid?.id ?? row.plugintypeid;
+  const type = typeId ? store.tableRows('plugintype').find((item) => key(item.plugintypeid) === key(typeId)) : null;
+  return type?.pluginassemblyid?.id ?? type?.pluginassemblyid ?? null;
 }
 
 // Without a descriptor, a plug-in type in an assembly with uploaded content runs those bytes, as a registered step does
@@ -654,7 +662,7 @@ function runHandlerSync(api, handler, ctx, plugin, contextOf) {
   } finally {
     execution.close();
     recordPluginTrace(api.store, {
-      typeName: plugin.type,
+      typeName: qualifiedTypeName(api.store, { typeName: plugin.type, assemblyId: plugin.assemblyId }),
       messageName: plugin.name,
       entity: ctx.target?.logicalName ?? 'none',
       depth,
@@ -662,6 +670,7 @@ function runHandlerSync(api, handler, ctx, plugin, contextOf) {
       started,
       startedAt,
       error: failure,
+      ...plugin.traceIds?.(),
     });
   }
 }
@@ -781,9 +790,12 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
     name: row.uniquename,
     id: row.customapiid,
     type: registration?.pluginType ?? original?.type?.typename ?? row.uniquename,
+    assemblyId: typeAssemblyId(store, row),
     traces: [],
     stage: 30,
     depth: pluginExecutionDepth() + 1,
+    // The request identity the main operation's context carries (read when its trace row is written).
+    traceIds: () => ({ requestId: frame?.requestId, correlationId: frame?.correlationId }),
   };
   // Typed inputs, the bound target (entity or collection) and the caller. Without a pack handler the outputs are the defaults.
   const ctx = {
@@ -1020,8 +1032,9 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
               );
         throw failure;
       } finally {
+        // The main operation is constructed with null configuration (native), so the trace row carries none.
         recordPluginTrace(store, {
-          typeName: plugin.type,
+          typeName: qualifiedTypeName(store, { typeName: plugin.type, assemblyId: plugin.assemblyId }),
           stepId: step.id,
           messageName: plugin.name,
           entity,
@@ -1030,6 +1043,7 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
           started,
           startedAt,
           error: failure,
+          ...plugin.traceIds(),
         });
       }
       frame.inputParameters = messageParameters.inputParameters = answer.inputParameters;

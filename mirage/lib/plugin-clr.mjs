@@ -1148,16 +1148,13 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFro
       'RetrieveRelationship',
       'RetrieveMetadataChanges',
     ].includes(message.arguments?.[0]?.requestName);
+  // A read step's SDK write outside any transaction commits in its own (data.mjs openReadLane; native readNested).
   if (
     store.pluginReadOnly &&
     ['Create', 'Update', 'Delete', 'Associate', 'Disassociate', 'Execute'].includes(message.method) &&
     !readExecute
   )
-    fail(
-      'SDK writes from a RetrieveMultiple observer require a serialized read-operation transaction adapter.',
-      'LocalPluginReadWriteUnsupported',
-      501,
-    );
+    store.openReadLane();
   // The organization's internal entries (store.recordPipeline): an SDK call runs the Web API write rules and read projection.
   const service = localOrganizationService(store, profile, undefined, {
     diagnostic,

@@ -242,7 +242,9 @@ async function mergeRows(api, ctx, body, target, subordinate, transact = (fn) =>
   const children = [];
   for (const [, rel] of Object.entries(relationshipsOf(api.store, mapping.logicalName, mapping.relationships))) {
     // Only a relationship whose Merge cascades moves its rows (Learn: Cascade, the only option on a mergeable table).
-    if (!rel.many || rel.intersect || rel.cascade?.merge === 'NoCascade') continue;
+    // A system job regarding the subordinate is not a child record the merge moves (native mergeAccount: the Merge
+    // answers 204 while the scenario's asynchronous jobs still wait, and they run afterwards).
+    if (!rel.many || rel.intersect || rel.cascade?.merge === 'NoCascade' || rel.entity === 'asyncoperation') continue;
     const childMapping = api.store.resolveMapping(rel.entity);
     const nav = lookupNav(api, childMapping, mapping.logicalName, rel.to) ?? rel.to;
     for (const row of api.store.tableRows(childMapping.logicalName)) {

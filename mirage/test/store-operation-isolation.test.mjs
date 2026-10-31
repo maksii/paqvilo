@@ -44,35 +44,39 @@ function independentRead(store, attempts) {
       ])
         assert.equal(store[name] == null, true, name);
       const deniedProfile = { ...profile, grants: [{ entity: 'child', operations: ['read'] }] };
-      for (const [write, code] of [
-        [
-          () => localOrganizationService(store, deniedProfile).create('child', { title: 'Independent direct SDK' }),
-          'LocalBackendPermissionDenied',
-        ],
-        [
-          () =>
-            dispatchSdkCall({
-              store,
-              profile,
-              message: {
-                method: 'Create',
-                userId: user,
-                arguments: [
-                  {
-                    $type: 'Entity',
-                    logicalName: 'child',
-                    id: '00000000-0000-0000-0000-000000000000',
-                    attributes: { title: 'Independent CLR SDK' },
-                  },
-                ],
-              },
-            }),
-          'LocalPluginReadWriteUnsupported',
-        ],
-      ]) {
-        assert.throws(write, { code });
-        attempts.push('refused');
-      }
+      assert.throws(
+        () => localOrganizationService(store, deniedProfile).create('child', { title: 'Independent direct SDK' }),
+        { code: 'LocalBackendPermissionDenied' },
+      );
+      attempts.push('refused');
+      // @parity-evidence: native and native-r2 readNested: a Retrieve/RetrieveMultiple step's SDK write commits in its own transaction (its child rows persist after the read's own 400)
+      // The read step's authorized SDK write commits in a transaction of its own (data.mjs openReadLane): it never joins,
+      // waits inside or sees the awaiting transaction, and inherits none of its identity, tag or chain.
+      dispatchSdkCall({
+        store,
+        profile,
+        message: {
+          method: 'Create',
+          userId: user,
+          arguments: [
+            {
+              $type: 'Entity',
+              logicalName: 'child',
+              id: '00000000-0000-0000-0000-000000000000',
+              attributes: { title: 'Independent CLR SDK' },
+            },
+          ],
+        },
+      });
+      assert.equal(store.pluginInTransaction === true, false);
+      for (const name of ['pluginParentContext', 'pluginSdkTag', 'flowChain'])
+        assert.equal(store[name] == null, true, name);
+      assert.deepEqual(
+        store.tableRows('child').map((row) => row.title),
+        ['Independent CLR SDK'],
+        'the read sees its own write, never the awaiting provisional one',
+      );
+      attempts.push('committed');
       return {};
     },
     ({ operation }) => operation === 'retrievemultiple',
@@ -122,18 +126,29 @@ test('an independent read cannot inherit an awaiting transaction capability, ide
     },
     { isolated: true },
   );
+  // The awaiting transaction has not committed: the read's write waits in its own queued commit, unseen by others.
+  assert.equal(
+    store.tableRows('child').some((row) => row.title === 'Independent CLR SDK'),
+    false,
+  );
   release.resolve();
   await assert.rejects(pending, /Controlled rollback/);
+  await store.settleReadLanes();
   await queued;
   await store.flushCommittedEvents();
-  assert.deepEqual(attempts, ['refused', 'refused']);
+  assert.deepEqual(attempts, ['refused', 'committed']);
+  // The read's write survives the other transaction's rollback, committed before the later independent operation.
   assert.deepEqual(
     store.tableRows('child').map((row) => row.title),
-    ['Later independent operation'],
+    ['Independent CLR SDK', 'Later independent operation'],
   );
-  assert.equal(committed.length, 1);
-  assert.equal(committed[0].row.title, 'Later independent operation');
-  assert.equal(committed[0].chain, null);
+  // Row events (the read's own RetrieveMultiple message event commits with its lane, as inside a read operation).
+  const rowEvents = committed.filter((event) => event.entity === 'child');
+  assert.deepEqual(
+    rowEvents.map((event) => event.row.title),
+    ['Independent CLR SDK', 'Later independent operation'],
+  );
+  for (const event of committed) assert.equal(event.chain, null);
 });
 
 test('a bare asynchronous record facade keeps its phase flags private while awaiting a provider', async (t) => {
@@ -160,8 +175,13 @@ test('a bare asynchronous record facade keeps its phase flags private while awai
   independentRead(store, attempts);
   release.resolve();
   const row = await pending;
+  await store.settleReadLanes();
   assert.equal(row.title, 'Awaiting write');
-  assert.deepEqual(attempts, ['refused', 'refused']);
+  assert.deepEqual(attempts, ['refused', 'committed']);
+  assert.deepEqual(
+    store.tableRows('child').map((value) => value.title),
+    ['Independent CLR SDK'],
+  );
   assert.equal(store.pluginInTransaction == null, true);
 });
 

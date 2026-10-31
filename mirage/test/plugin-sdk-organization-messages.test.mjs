@@ -1,4 +1,4 @@
-// @test-kind compatibility: Microsoft.Xrm.Sdk / Microsoft.Crm.Sdk.Proxy message contracts (WhoAmI, RetrieveVersion, ExecuteMultiple, ExecuteTransaction, RetrieveEntity, ConcurrencyBehavior) answered on the plug-in SDK drive; no native capture of these messages from a plug-in yet
+// @test-kind compatibility: Microsoft.Xrm.Sdk / Microsoft.Crm.Sdk.Proxy message contracts (WhoAmI, RetrieveVersion, ExecuteMultiple, ExecuteTransaction, RetrieveEntity, ConcurrencyBehavior) answered on the plug-in SDK drive; these are contract checks against the SDK message contracts, and the native bulkRequests capture is compared in the parity harness, not here
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

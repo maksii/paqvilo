@@ -58,7 +58,8 @@ test('independent HTTP reads cannot borrow an awaiting main operation transactio
   };
   let during = false,
     nestedReadWrite = false;
-  const refused = [];
+  const refused = [],
+    independentWrites = [];
   f.store.setPluginPipeline(
     (context) => {
       if (
@@ -87,38 +88,39 @@ test('independent HTTP reads cannot borrow an awaiting main operation transactio
         ])
           assert.equal(f.store[name] == null, true, name);
         const deniedProfile = { ...profile, grants: [{ entity: 'account', operations: ['read'] }] };
-        for (const [write, code] of [
-          [
-            () =>
-              localOrganizationService(f.store, deniedProfile).create('account', {
-                name: 'Independent direct SDK write',
-              }),
-            'LocalBackendPermissionDenied',
-          ],
-          [
-            () =>
-              dispatchSdkCall({
-                store: f.store,
-                profile,
-                message: {
-                  method: 'Create',
-                  userId,
-                  arguments: [
-                    {
-                      $type: 'Entity',
-                      logicalName: 'account',
-                      id: '00000000-0000-0000-0000-000000000000',
-                      attributes: { name: 'Independent CLR SDK write' },
-                    },
-                  ],
-                },
-              }),
-            'LocalPluginReadWriteUnsupported',
-          ],
-        ]) {
-          assert.throws(write, { code });
-          refused.push(true);
-        }
+        assert.throws(
+          () =>
+            localOrganizationService(f.store, deniedProfile).create('account', {
+              name: 'Independent direct SDK write',
+            }),
+          { code: 'LocalBackendPermissionDenied' },
+        );
+        refused.push(true);
+        // @parity-evidence: native and native-r2 readNested: a read step's SDK write commits in its own transaction
+        // The authorized CLR write commits in a transaction of its own (data.mjs openReadLane), queued behind the
+        // awaiting main operation: it neither joins that transaction nor sees its provisional row.
+        dispatchSdkCall({
+          store: f.store,
+          profile,
+          message: {
+            method: 'Create',
+            userId,
+            arguments: [
+              {
+                $type: 'Entity',
+                logicalName: 'account',
+                id: '00000000-0000-0000-0000-000000000000',
+                attributes: { name: 'Independent CLR SDK write' },
+              },
+            ],
+          },
+        });
+        assert.equal(f.store.pluginInTransaction === true, false);
+        assert.equal(
+          f.store.tableRows('account').some((row) => row.name === 'Provisional awaiting main'),
+          false,
+        );
+        independentWrites.push(true);
       }
       return {};
     },
@@ -146,10 +148,13 @@ test('independent HTTP reads cannot borrow an awaiting main operation transactio
   assert.ok(answer.status >= 400);
   during = false;
   assert.equal(nestedReadWrite, true);
-  assert.equal(refused.length, 4);
+  assert.equal(refused.length, 2);
+  assert.equal(independentWrites.length, 2);
+  await f.store.settleReadLanes();
+  // The main operation rolled back; each read's own write committed after it.
   assert.deepEqual(
     f.store.tableRows('account').map((row) => row.name),
-    ['Committed baseline'],
+    ['Committed baseline', 'Independent CLR SDK write', 'Independent CLR SDK write'],
   );
 });
 

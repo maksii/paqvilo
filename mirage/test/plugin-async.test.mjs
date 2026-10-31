@@ -106,7 +106,7 @@ test('Async source registrations execute only after commit and keep independent 
   await runner.close();
   assert.deepEqual(runner.status(), { pending: 0, closed: true });
 });
-// @test-kind unproven: local recursion limit (maxDepth option) and no async job on rollback; no native capture of async recursion bounds
+// @test-kind unproven: local maxDepth option below the native Depth 12 (native asyncLoop records Depth 12) and no async job on rollback
 test('Async recursion is bounded and rollback emits no asynchronous job', async (t) => {
   const store = data(),
     notes = [],
@@ -139,6 +139,37 @@ test('Async recursion is bounded and rollback emits no asynchronous job', async 
   await assert.rejects(store.create('widget', { title: 'Rejected' }, { admin: true }), /Main rejection/);
   await runner.drain();
   assert.equal(store.snapshot().tables.widget.length, count);
+});
+// @test-kind contract: committed asynchronous work is never dropped by a run budget (no per-chain cap; the 150-row native fan-out capture is pending)
+test('committed asynchronous work is never dropped: a root run that fans out 150 children runs all 151 without a limit', async (t) => {
+  const store = data(),
+    notes = [];
+  let runs = 0;
+  const handlers = new Map([
+    [
+      id,
+      (context) => {
+        runs++;
+        if (context.record.title !== 'Root') return;
+        for (let n = 0; n < 150; n++)
+          store.sdkMutation(() => store.createRecord('widget', { title: `Child ${n}` }, { admin: true }));
+      },
+    ],
+  ]);
+  const items = () => pluginCatalogue({ plugins: { steps: [step] }, handlers }),
+    runner = createAsyncPluginRunner({
+      store,
+      items,
+      handlers,
+      runtimes: new Map(),
+      diagnostic: (n) => notes.push(n),
+    });
+  t.after(() => runner.close());
+  await store.create('widget', { title: 'Root' }, { admin: true });
+  await runner.drain();
+  assert.equal(runs, 151);
+  assert.equal(store.snapshot().tables.widget.length, 151);
+  assert.ok(!notes.some((n) => n.code === 'PLUGIN_ASYNC_LIMIT'));
 });
 test('Explicit disabled and mock choices remain selectable for source-unsupported registrations', async (t) => {
   const store = data(),

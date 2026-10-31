@@ -3833,9 +3833,8 @@ export function createRecordHandlers({
           bypassEvents(span, c);
           // A read whose Retrieve or RetrieveMultiple steps run gets a read-operation boundary: a step's SDK write commits
           // on its own even when the read later fails (recorded native readNested), as the portal's reads do. An independent
-          // read never waits behind, or borrows, another operation's transaction: while one is open the read runs without a
-          // boundary and its steps cannot write (501 LocalPluginReadWriteUnsupported).
-          // ponytail: concurrency-dependent read-step writes; a per-read commit outside the transaction queue would lift it.
+          // read never waits behind, or borrows, another operation's transaction: while one is open the read runs at once
+          // and a step's SDK write commits in a transaction of its own, queued behind the open ones (data.mjs openReadLane).
           const readSteps =
             ctx.method === 'GET' &&
             typeof store.readOperation === 'function' &&
