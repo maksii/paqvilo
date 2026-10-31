@@ -381,9 +381,9 @@ const sdkRef = (logicalName, id) => ({ $type: 'EntityReference', logicalName, id
 // sdkMessages). The caller's privileges still decide whether it may write.
 async function namedUpdate(s, logical, id, data, system = false) {
   const store = s.api.store,
-    previous = store.pluginExecutionUserId;
+    previous = store.pluginPlatformUserId;
   if (system)
-    store.pluginExecutionUserId =
+    store.pluginPlatformUserId =
       store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM')?.systemuserid ?? previous;
   try {
     await s.api.records.updateInternal(s, logical, id, data, {
@@ -391,7 +391,7 @@ async function namedUpdate(s, logical, id, data, system = false) {
     });
     return {};
   } finally {
-    store.pluginExecutionUserId = previous;
+    store.pluginPlatformUserId = previous;
   }
 }
 // A named message and the Update its main operation delegates commit as one request transaction, so the message's
@@ -728,7 +728,10 @@ async function relate(s, target, relationship, related, remove) {
   // operation, even when a later member or PostOperation step refuses it.
   await captureSoapResponse(s, remove ? 'disassociate' : 'associate', binding.entity, (token) => {
     const atomic = () =>
-      s.api.runAtomic ? s.api.runAtomic(() => write(token)) : s.api.store.transact(() => write(token));
+      s.api.runAtomic
+        ? // Its PreValidation runs outside the transaction (native relationsReads: SOAP Associate/10 IsInTransaction false).
+          s.api.runAtomic(() => write(token), { pluginVisible: false })
+        : s.api.store.transact(() => write(token));
     return s.api.change ? s.api.change(atomic) : atomic();
   });
 }

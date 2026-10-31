@@ -43,7 +43,13 @@ import {
   pluginInvocationSdkParent,
   pluginInvocationParent,
 } from './plugin-execution-lifetime.mjs';
-import { asyncMultiplePluginParent, recordRequestRootChange, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
+import {
+  asyncMultiplePluginParent,
+  recordRequestRootChange,
+  requestRootSnapshot,
+  selectSdkEntryParent,
+  withRequestRootChanges,
+} from './plugin-sdk-parent.mjs';
 import { qualifiedTypeName, recordPluginTrace } from './plugin-trace.mjs';
 import { delegatedPluginParent, upsertSourceOperation } from './plugin-delegation.mjs';
 import { populatePluginSystemOutputs } from './plugin-response.mjs';
@@ -700,7 +706,9 @@ function typedContext({
     PrimaryEntityName: ['associate', 'disassociate'].includes(operation) ? 'none' : entity,
     ...(operation === 'update' || (customApi && entity === 'none') ? { SecondaryEntityName: 'none' } : {}),
     // A queued DeleteMultiple job names no row (native crud, async, upsert).
+    // A queued custom API job names no row (native customApi); its Target still names the row.
     PrimaryEntityId:
+      (customApi && !customApi.platformMessage && (item.contract?.mode ?? 0) === 1) ||
       ['associate', 'disassociate'].includes(operation) ||
       (bridged && operation === 'delete' && (item.contract?.mode ?? 0) === 1)
         ? '00000000-0000-0000-0000-000000000000'
@@ -713,7 +721,7 @@ function typedContext({
     Mode: item.contract?.mode ?? 0,
     Depth: depth,
     InitiatingUserId: initiating,
-    UserId: item.impersonatingUserId ?? executing,
+    UserId: item.impersonatingUserId ?? store?.pluginPlatformUserId ?? executing,
     ParentContext: pluginContextValues(parent, store),
     ...(frame?.requestId === undefined ? {} : { RequestId: frame.requestId }),
     ...(frame?.operationId === undefined ? {} : { OperationId: frame.operationId }),
@@ -1181,15 +1189,13 @@ function matchingPluginSteps(
 
 /** The entries the platform puts in every pipeline's SharedVariables (native recordings of Web API and plug-in
  * SDK requests): IsAutoTransact (false for reads), the caller's Accept-Language ('' for a plug-in's SDK request)
- * and, on Create, DefaultsAddedFlag; CreateMultiple carries it when its steps run for a Create or a plug-in requested
- * it, not for a Web API CreateMultiple or UpsertMultiple request (native bulk). */
-function platformSharedVariables(operation, acceptLanguage = '', { nested = false, bulkOrigin = false } = {}) {
+ * and, on Create, DefaultsAddedFlag; CreateMultiple carries it when its steps run for a Create, not for a CreateMultiple
+ * request, from the Web API, an UpsertMultiple or a plug-in (native bulk; sdkSurface CreateMultiple at Depth 2). */
+function platformSharedVariables(operation, acceptLanguage = '', { bulkOrigin = false } = {}) {
   return {
     IsAutoTransact: !['retrieve', 'retrievemultiple'].includes(operation),
     AcceptLang: String(acceptLanguage ?? ''),
-    ...(operation === 'create' || (operation === 'createmultiple' && (nested || !bulkOrigin))
-      ? { DefaultsAddedFlag: true }
-      : {}),
+    ...(operation === 'create' || (operation === 'createmultiple' && !bulkOrigin) ? { DefaultsAddedFlag: true } : {}),
   };
 }
 
@@ -1263,6 +1269,7 @@ export function runPluginPhase({
   asyncExecution = false,
   initialFrame,
   bypassStepIds,
+  systemParameters,
   bypassCustomPlugins = false,
   bypassCustomAsync = false,
   continuePhase = false,
@@ -1299,6 +1306,9 @@ export function runPluginPhase({
     if (mainOperation.exactDepth) phaseFrame.exactDepth = true;
     if (mainOperation.internalRead && operation === 'retrievemultiple') phaseFrame.internalRead = true;
     if (mainOperation.namedMessage) phaseFrame.namedMainOperation = true;
+    // A Retrieve a platform main operation runs has the platform's read input shape (clrContext sdkShapedRead).
+    if (operation === 'retrieve' && !(store?.pluginParentContext || pluginInvocationSdkParent(store)))
+      phaseFrame.platformRead = true;
     // A refused message's per-record PreValidation (DeleteMultiple) has no platform SharedVariables (native bulk).
     if (mainOperation.preValidationOnly) phaseFrame.platformSharedSeeded = true;
     // The request tag is an input of the message, not of the operations it delegates (SDK Upsert keeps it).
@@ -1441,12 +1451,23 @@ export function runPluginPhase({
     !asyncExecution &&
     ['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation)
   ) {
-    // A sandboxed plug-in's SDK request is marked FromSandbox in its PreValidation (and main operation) inputs.
-    if (sdkFromSandbox) {
+    // The MSCRM bypass headers a request sent are InputParameters of its contexts (dataverse-api.mjs systemParameters).
+    if (systemParameters && Object.keys(systemParameters).length) {
+      phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
+      for (const [key, value] of Object.entries(systemParameters)) phaseFrame.inputParameters.values[key] ??= value;
+    }
+    // A sandboxed plug-in's SDK request is marked FromSandbox in its PreValidation (and main operation) inputs; the records
+    // a bulk request delegates are not (native sdkSurface).
+    if (sdkFromSandbox && !(bulkOrigin && !['createmultiple', 'updatemultiple'].includes(operation))) {
       phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
       phaseFrame.inputParameters.values.FromSandbox ??= true;
     }
     phaseFrame.mainOperationInputs ??= cloneStateData(phaseFrame.inputParameters?.values ?? {});
+  }
+  // A sandboxed plug-in's SDK Retrieve is marked FromSandbox as well (recorded native async Depth 2).
+  if (stage === 10 && !asyncExecution && operation === 'retrieve' && sdkFromSandbox) {
+    phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
+    phaseFrame.inputParameters.values.FromSandbox ??= true;
   }
   if (
     store &&
@@ -1468,17 +1489,29 @@ export function runPluginPhase({
     // Native pipelines start every SharedVariables collection with the platform's entries (see
     // platformSharedVariables). A plug-in-issued SDK request carries no Accept-Language.
     const nested = Boolean(store?.pluginParentContext || pluginInvocationSdkParent(store)),
+      // A changeset member's collections lead with the batch's transaction facts (native batch).
+      odata =
+        !nested && store?.pluginODataChangeset
+          ? { IsODataTransaction: true, ODataChangesetRequestCount: store.pluginODataChangeset.requestCount }
+          : {},
       // A record a bulk message delegates keeps only its own message's entries; the platform's belong to the bulk
       // message's collections (native bulk).
       platform =
         bulkOrigin && !['createmultiple', 'updatemultiple'].includes(operation)
           ? operation === 'create'
-            ? { DefaultsAddedFlag: true }
-            : {}
-          : platformSharedVariables(operation, nested ? '' : acceptLanguage || identity?.dataverse?.acceptLanguage, {
-              nested,
-              bulkOrigin,
-            });
+            ? { ...odata, DefaultsAddedFlag: true }
+            : { ...odata }
+          : {
+              ...odata,
+              ...platformSharedVariables(
+                operation,
+                nested ? '' : acceptLanguage || identity?.dataverse?.acceptLanguage,
+                {
+                  nested,
+                  bulkOrigin,
+                },
+              ),
+            };
     // The PreValidation collection exists before any step ran; remember how many plug-in requests preceded it.
     if (stage === 10) phaseFrame.sdkRequestsBefore ??= store?.pluginSdkRequests ?? 0;
     if (!phaseFrame.platformSharedSeeded) {
@@ -1562,6 +1595,24 @@ export function runPluginPhase({
     frame.inputParameters = messageParameters.inputParameters ?? { $type: 'ParameterCollection', values: {} };
     frame.outputParameters = messageParameters.outputParameters ?? { $type: 'ParameterCollection', values: {} };
     executionFrames.set(record, frame);
+  }
+  if (stage === 40 && !asyncExecution) {
+    // The request root's changes when PostOperation began: this operation's asynchronous jobs report them
+    // (plugin-sdk-parent requestRootSnapshot).
+    phaseFrame.requestRootAtPostOperation ??= requestRootSnapshot(store, phaseFrame.requestId);
+    // A named message no plug-in or platform operation issued is the request root: its PostOperation collection, and
+    // its jobs', list the request's changes (native webApiNamed GrantAccess/40, soapMessages Assign/40, mergeAccount
+    // Merge/40, sync and asynchronous); its PreValidation and PreOperation ones do not.
+    if (
+      customApi?.platformMessage &&
+      phaseFrame.requestRootAtPostOperation &&
+      !phaseFrame.delegatedParentContext &&
+      !(store?.pluginParentContext || pluginInvocationSdkParent(store))
+    )
+      phaseFrame.sharedVariables = {
+        $type: 'ParameterCollection',
+        values: withRequestRootChanges(phaseFrame.sharedVariables?.values ?? {}, phaseFrame.requestRootAtPostOperation),
+      };
   }
   const read = ['retrieve', 'retrievemultiple'].includes(operation),
     multiple = operation === 'retrievemultiple',

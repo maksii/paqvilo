@@ -212,3 +212,89 @@ test('a Retrieve hands its steps an empty RelatedEntitiesQuery collection', asyn
     values: [],
   });
 });
+
+// Reads one Retrieve's inputs as its CLR step sees them; the flags name how the read was issued (see clrContext).
+function retrieveInputs(f, flags = {}) {
+  const runtime = {
+    descriptor: {
+      context: {
+        executionUserId: '10000000-0000-0000-0000-0000000000d9',
+        initiatingUserId: '10000000-0000-0000-0000-0000000000d9',
+        organizationId: '10000000-0000-0000-0000-0000000000d9',
+        businessUnitId: '10000000-0000-0000-0000-0000000000d9',
+      },
+      serviceProfile: {
+        userId: '10000000-0000-0000-0000-0000000000d9',
+        evidence: 'Invented Retrieve inputs',
+        grants: [],
+      },
+    },
+  };
+  const record = { x_itemid: id };
+  const frame = runPluginPhase({
+    items: [],
+    handlers: new Map(),
+    store: f.store,
+    entity: 'x_item',
+    operation: 'retrieve',
+    stage: 10,
+    record,
+    identity: {},
+    columns: { allColumns: false, columns: ['x_name'] },
+    holder: { target: { $type: 'EntityReference', logicalName: 'x_item', id } },
+    sdkFromSandbox: flags.sandboxed === true,
+  });
+  Object.assign(frame, flags.frame ?? {});
+  return clrContext({
+    runtime,
+    store: f.store,
+    step: { id: '30000000-0000-0000-0000-0000000000db', name: 'Invented read', images: [], contract: {} },
+    entity: 'x_item',
+    operation: 'retrieve',
+    stage: 10,
+    record,
+    frame,
+    depth: 1,
+  }).inputParameters.values;
+}
+
+// @test-kind parity: native recorder corpus async (SDK Retrieve at Depth 2) and mergeAccount (platform Retrieve), two captures each: RelatedEntitiesQuery null and ReturnNotifications false, no IncludeAnnotations; Web API Retrieve keeps the empty collection
+test('an SDK-issued sandboxed Retrieve and a platform Retrieve have the SDK input shape', async (t) => {
+  const f = await fixture(t);
+  const sdk = retrieveInputs(f, { sandboxed: true, frame: { sdkIssued: true } });
+  assert.equal(sdk.RelatedEntitiesQuery, null);
+  assert.equal(sdk.ReturnNotifications, false);
+  assert.equal(Object.hasOwn(sdk, 'IncludeAnnotations'), false);
+  assert.equal(sdk.FromSandbox, true);
+  const platform = retrieveInputs(f, { frame: { platformRead: true } });
+  assert.equal(platform.RelatedEntitiesQuery, null);
+  assert.equal(platform.ReturnNotifications, false);
+  assert.equal(Object.hasOwn(platform, 'IncludeAnnotations'), false);
+  assert.equal(Object.hasOwn(platform, 'FromSandbox'), false);
+});
+
+// @test-kind parity: native recorder corpus async (SDK Retrieve at Depth 2) and mergeAccount (platform Retrieve), two captures each: RelatedEntitiesQuery null and ReturnNotifications false, no IncludeAnnotations; Web API Retrieve keeps the empty collection
+test('a Retrieve keeps a RelatedEntitiesQuery its inputs supply', async (t) => {
+  const f = await fixture(t);
+  const supplied = { $type: 'RelationshipQueryCollection', values: [{ $type: 'RelationshipQuery', name: 'invented' }] };
+  const inputs = retrieveInputs(f, { sandboxed: true, frame: { sdkIssued: true } });
+  assert.equal(inputs.RelatedEntitiesQuery, null);
+  const withSupplied = retrieveInputs(f, {
+    sandboxed: true,
+    frame: {
+      sdkIssued: true,
+      inputParameters: { $type: 'ParameterCollection', values: { RelatedEntitiesQuery: supplied } },
+    },
+  });
+  assert.deepEqual(withSupplied.RelatedEntitiesQuery, supplied);
+});
+
+// @test-kind parity: native recorder corpus async (SDK Retrieve at Depth 2) and mergeAccount (platform Retrieve), two captures each: RelatedEntitiesQuery null and ReturnNotifications false, no IncludeAnnotations; Web API Retrieve keeps the empty collection
+test('a Web API Retrieve keeps the empty RelatedEntitiesQuery collection with IncludeAnnotations and ReturnNotifications false', async (t) => {
+  const f = await fixture(t);
+  const http = retrieveInputs(f);
+  assert.deepEqual(http.RelatedEntitiesQuery, { $type: 'RelationshipQueryCollection', values: [] });
+  assert.equal(http.IncludeAnnotations, false);
+  assert.equal(http.ReturnNotifications, false);
+  assert.equal(Object.hasOwn(http, 'FromSandbox'), false);
+});

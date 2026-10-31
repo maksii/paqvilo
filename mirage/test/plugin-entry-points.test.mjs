@@ -10,6 +10,7 @@ import { clrContext } from '../lib/plugin-clr.mjs';
 import { handleSoap } from '../lib/dataverse-soap.mjs';
 import { NS } from '../lib/dataverse-soap-xml.mjs';
 import { install as installCustomApis } from '../lib/dataverse-customapi.mjs';
+import { grantAccessNow } from '../lib/dataverse-security.mjs';
 
 const row = '20000000-0000-0000-0000-0000000000c1';
 const peer = '20000000-0000-0000-0000-0000000000c2';
@@ -243,7 +244,8 @@ async function messageFixture(t, steps, { register } = {}) {
           parent: context.ParentContext ? `${context.ParentContext.MessageName}/${context.ParentContext.Stage}` : null,
           user: context.UserId,
           // The principal the platform runs the operation as (a CLR step reports it as UserId).
-          executing: f.store.pluginExecutionUserId ?? null,
+          // @parity-evidence: native and native-r2 sdkMessages and soapMessages: Update/20,40 under Assign/30 UserId SYSTEM, InitiatingUserId the caller; the SYSTEM user moved to the platform-user operation field
+          executing: f.store.pluginPlatformUserId ?? f.store.pluginExecutionUserId ?? null,
           inputs: structuredClone(context.InputParameters),
           outputs: structuredClone(context.OutputParameters),
         });
@@ -394,6 +396,32 @@ test('Web API sharing runs no Retrieve pipeline and a shared team reports the sh
   assert.equal(access.status, 200, await access.clone().text());
   assert.equal((await access.json()).AccessRights, 'ReadAccess, WriteAccess');
   assert.deepEqual(f.seen, []);
+});
+
+// @test-kind parity: native recorder corpus webApiNamed (native and native-r2): RetrieveSharedPrincipalsAndAccess/40 OutputParameters.PrincipalAccesses is PrincipalAccess[] of { Principal: EntityReference (team, name null), AccessMask: AccessRights }, not the HTTP JSON
+test('Web API RetrieveSharedPrincipalsAndAccess gives its steps typed PrincipalAccess outputs', async (t) => {
+  const f = await messageFixture(t, [step(41, 'RetrieveSharedPrincipalsAndAccess', 40, { entity: 'account' })]);
+  const team = '10000000-0000-0000-0000-0000000000e2';
+  f.store.state.tables.team = [...(f.store.state.tables.team ?? []), { teamid: team, name: 'Invented team' }];
+  // The share row a ModifyAccess of read and write rights writes.
+  await f.store.transact(() =>
+    grantAccessNow(f.store, {
+      target: { logical: 'account', id: row },
+      principal: { id: team, logical_name: 'team' },
+      mask: 3,
+    }),
+  );
+  const target = `@t={'@odata.id':'accounts(${row})'}`;
+  const answer = await f.request('GET', '/RetrieveSharedPrincipalsAndAccess(Target=@t)?' + target);
+  assert.equal(answer.status, 200, await answer.clone().text());
+  // The HTTP body keeps the Web API shape.
+  assert.equal((await answer.json()).PrincipalAccesses[0].AccessMask, 'ReadAccess, WriteAccess');
+  const [output] = f.seen.map((entry) => entry.outputs.PrincipalAccesses);
+  const values = Array.isArray(output) ? output : output.values;
+  assert.equal(values.length, 1);
+  assert.equal(values[0].$type, 'PrincipalAccess');
+  assert.deepEqual(values[0].principal, { $type: 'EntityReference', logicalName: 'team', id: team, name: null });
+  assert.equal(values[0].accessMask, 3);
 });
 
 // @test-kind parity: native recorder captures 2026-10-30 soapMessages (native and native-r2): SOAP Assign runs Assign 10/20/40 and its owner Update 20/40 (no PreValidation) under Assign/30 as SYSTEM; SOAP SetState runs SetStateDynamicEntity 10/20/40 and its Update 20/40 under SetStateDynamicEntity/30 as the caller

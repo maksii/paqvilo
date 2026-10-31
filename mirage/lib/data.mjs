@@ -34,7 +34,7 @@ import {
 } from './alternate-key-values.mjs';
 import { assertElasticRecord, isElastic, samePartition, recordKey } from './dataverse-elastic.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
-import { traceDecision } from './dataverse-security.mjs';
+import { ownershipOf, traceDecision } from './dataverse-security.mjs';
 import { StateStorage } from './state-storage.mjs';
 import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
 import { jsonChunks, stateDigest } from './state-stream.mjs';
@@ -77,7 +77,7 @@ import {
   pluginInvocationDepth,
   pluginInvocationSdkParent,
 } from './plugin-execution-lifetime.mjs';
-import { asyncCallerParent } from './plugin-sdk-parent.mjs';
+import { asyncCallerParent, recordRequestRootChange } from './plugin-sdk-parent.mjs';
 import { runStateMessage } from './plugin-platform-messages.mjs';
 import {
   storeOperationFields,
@@ -223,7 +223,9 @@ function committedPluginParent(store, mapping, operation, target, row, options) 
   const tag = store.pluginSdkTag,
     values = {
       ...(tag === undefined ? {} : { tag }),
-      ...(operation === 'update'
+      // A main operation's own Update (Assign, SetState, Merge: omitConcurrencyBehavior) has none, also for its jobs
+      // (native sdkMessages, soapMessages, mergeAccount).
+      ...(operation === 'update' && !options.omitConcurrencyBehavior
         ? { ConcurrencyBehavior: { $type: 'ConcurrencyBehavior', value: options.pluginConcurrencyBehavior ?? 0 } }
         : {}),
       ...(operation === 'create' && options.sdkFromSandbox === true ? { FromSandbox: true } : {}),
@@ -1722,6 +1724,9 @@ export class DataStore {
    * it is a normal transaction. A plain call inside an open isolated transaction joins
    * it the same way. `isolated: true` keeps the changes private to the
    * async context until the commit, so concurrent readers see the committed state.
+   * `pluginVisible: false` keeps an isolated boundary out of the plug-in pipeline's IsInTransaction: a single request
+   * that runs atomically for itself (a top-level custom API or SOAP message) still starts outside the transaction at
+   * PreValidation, as natively; a $batch changeset stays visible.
    */
   transact(
     fn,
@@ -1733,6 +1738,7 @@ export class DataStore {
       nested = false,
       isolated = false,
       privateInitialization = false,
+      pluginVisible = true,
     } = {},
   ) {
     // ponytail: a nested throw that the caller catches keeps that call's partial writes;
@@ -1812,7 +1818,7 @@ export class DataStore {
           const previousEvents = this.committedEventCandidates;
           this.committedEventCandidates = [];
           this.pluginRollbackBoundary = boundary;
-          this.pluginInTransaction = isolated;
+          this.pluginInTransaction = isolated && (pluginVisible || previousTransaction === true);
           try {
             if (isolated) this.isolatedCount = (this.isolatedCount ?? 0) + 1;
             const result = await fn();
@@ -2542,6 +2548,9 @@ export class DataStore {
       chain: this.flowChain ? clone(this.flowChain) : null,
       correlationId: currentRequest()?.correlationId ?? null,
       operationMark: details.operationMark ?? this.operationMark(),
+      // The SDK run-as user and the platform main operation's user at the write: its asynchronous jobs run as them.
+      executionUserId: this.pluginExecutionUserId ?? null,
+      platformUserId: this.pluginPlatformUserId ?? null,
     };
     // The operation's synchronous caller chain, for its asynchronous jobs' ParentContext (plugin-sdk-parent.mjs
     // asynchronousParentChain): a named message's steps see it directly, a record operation under its main operation.
@@ -2771,16 +2780,38 @@ export class DataStore {
     // The merged bulk driver already ran every selected source step. Public
     // custom-logic bypass instead remains a per-step ownership decision.
     if (options.skipPluginPipeline) return;
-    if (
-      !this.pluginPipeline ||
-      !this.pluginPipelineActive({
+    const stepsRun = (bypassCustomPlugins) =>
+      this.pluginPipelineActive({
         entity: mapping.logicalName,
         operation,
-        bypassCustomPlugins: options.bypassCustomPlugins,
+        bypassCustomPlugins,
         bypassStepIds: options.bypassStepIds,
-      })
-    )
+      });
+    // A request that bypasses its synchronous custom steps (MSCRM.BypassCustomPluginExecution, CustomSync) still
+    // queues its asynchronous ones (native bypassHeaders): with a step catalogue its phases run, without those steps, so
+    // the jobs keep the request's frame (tag, request identity, inputs).
+    if (
+      !this.pluginPipeline ||
+      !(
+        stepsRun(options.bypassCustomPlugins) ||
+        (options.bypassCustomPlugins === true &&
+          this.pluginPipeline.steps &&
+          stepsRun(options.bypassCustomAsync === true))
+      )
+    ) {
+      // A named message's main-operation write without steps of its own still changes the request root its
+      // PostOperation lists (native soapMessages Assign/40, mergeAccount Merge/40; exported-plugins runPluginPhase
+      // records it when the write runs a pipeline).
+      if (
+        stage === 40 &&
+        this.pluginMainOperation?.namedMessage &&
+        ownershipOf(mapping.logicalName, null, mapping) === 'user'
+      )
+        recordRequestRootChange(this, this.pluginMainOperation.context?.values?.RequestId?.value, {
+          table: mapping.logicalName,
+        });
       return;
+    }
     if (
       this.rowTransaction &&
       this.pluginPipelineRequiresCheckpoint({
@@ -2829,6 +2860,7 @@ export class DataStore {
       bypassStepIds: options.bypassStepIds,
       bypassCustomPlugins: options.bypassCustomPlugins,
       bypassCustomAsync: options.bypassCustomAsync === true,
+      systemParameters: options.systemParameters,
       ...(awaitIo ? { awaitIo: true } : {}),
     });
     if (typeof frame?.then === 'function')
@@ -3443,6 +3475,7 @@ export class DataStore {
           bypassCustomPlugins: options.bypassCustomPlugins === true,
           bypassStepIds: options.bypassStepIds,
           portalRequest: options.portalRequest === true,
+          sdkFromSandbox: options.sdkFromSandbox === true,
         });
         this.pluginPipeline({
           entity: m.logicalName,
@@ -3456,6 +3489,7 @@ export class DataStore {
           bypassCustomPlugins: options.bypassCustomPlugins === true,
           bypassStepIds: options.bypassStepIds,
           portalRequest: options.portalRequest === true,
+          sdkFromSandbox: options.sdkFromSandbox === true,
         });
         if (
           holder.target?.$type !== 'EntityReference' ||
@@ -3490,6 +3524,7 @@ export class DataStore {
             bypassCustomPlugins: options.bypassCustomPlugins === true,
             bypassStepIds: options.bypassStepIds,
             portalRequest: options.portalRequest === true,
+            sdkFromSandbox: options.sdkFromSandbox === true,
           });
         } catch (error) {
           // Native readNested (two captures): a Retrieve whose PostOperation synchronous step faults answers the fault,
@@ -5772,6 +5807,7 @@ export class DataStore {
         target: committedTarget(),
         previous,
         identity,
+        ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,
         frame: { ...(this.pluginFrames?.get(row) ?? {}), asyncSourceParent },
@@ -5784,6 +5820,7 @@ export class DataStore {
         target: asyncTarget,
         previous,
         identity,
+        ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
         operationMark,
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,

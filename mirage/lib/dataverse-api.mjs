@@ -3,6 +3,7 @@ import {
   accessNamesOf,
   entryMessageActive,
   maskOfNames,
+  recordSharingChange,
   runEntryMessage,
   sharedMaskOf,
 } from './plugin-platform-messages.mjs';
@@ -789,7 +790,10 @@ async function shareAction(d, c, route, common) {
             }),
       },
       context: common,
-      main: () => run().then(() => ({})),
+      main: () => {
+        recordSharingChange(d.store, target.logical);
+        return run().then(() => ({}));
+      },
     });
   const shared = entryMessageActive(d.store, route.name, target.logical, common) ? pipelined : run;
   // Inside a $batch the batch already holds the change slot (see ownsChange); a nested change call would wait on itself.
@@ -1483,8 +1487,12 @@ async function batchCall(d, c, common) {
     if (impersonation.refused) return impersonation.refused;
     const user = impersonation.user ?? common.user;
     const identity = impersonation.user
-      ? organizationPrincipalContext(d.store, user, { caller: common.caller, appId: common.identity?.dataverse?.appId })
-          .identity
+      ? organizationPrincipalContext(d.store, user, {
+          caller: common.caller,
+          appId: common.identity?.dataverse?.appId,
+          userAgent: common.identity?.dataverse?.userAgent,
+          acceptLanguage: common.identity?.dataverse?.acceptLanguage,
+        }).identity
       : common.identity;
     // Extension routes (metadata writes and the other api.addRoute writes) answer inside a batch as they do at top level. In a
     // changeset they run in its transaction, so a metadata change rolls back with the changeset.
@@ -1550,7 +1558,12 @@ async function batchCall(d, c, common) {
       ...(failure ? { failure } : {}),
     };
   };
-  dispatch.transaction = (fn) => runAtomic(d.api, fn);
+  // A changeset's contexts start with the batch's transaction facts (native batch: IsODataTransaction and count).
+  dispatch.transaction = (fn, { requests } = {}) =>
+    runAtomic(d.api, () => {
+      d.store.pluginODataChangeset = { requestCount: requests };
+      return fn();
+    });
   const continueOnError = common.prefer.continueOnError;
   const traces = tracesOf(d);
   const root = traces?.enabled ? traces.current() : null;

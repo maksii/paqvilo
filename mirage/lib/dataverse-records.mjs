@@ -2061,6 +2061,7 @@ export function createRecordHandlers({
       bypassCustomPlugins: c.bypassCustomPlugins === true || extra.bypassCustomPlugins === true,
       bypassCustomAsync: c.bypassCustomAsync === true || extra.bypassCustomAsync === true,
       bypassStepIds: extra.bypassStepIds ?? c.bypassStepIds,
+      systemParameters: extra.systemParameters ?? c.systemParameters,
       deferCommittedEvent: extra.deferCommittedEvent === true,
     });
   // An object extra.systemColumns (an internal writer's kept stamps, e.g. CalculateRollupField's modifiedon) lands over the stamps.
@@ -2082,6 +2083,7 @@ export function createRecordHandlers({
       bypassCustomPlugins: c.bypassCustomPlugins === true || extra.bypassCustomPlugins === true,
       bypassCustomAsync: c.bypassCustomAsync === true || extra.bypassCustomAsync === true,
       bypassStepIds: extra.bypassStepIds ?? c.bypassStepIds,
+      systemParameters: extra.systemParameters ?? c.systemParameters,
       deferCommittedEvent: extra.deferCommittedEvent === true,
     });
   };
@@ -2960,6 +2962,7 @@ export function createRecordHandlers({
       bypassCustomPlugins: c.bypassCustomPlugins === true,
       bypassCustomAsync: c.bypassCustomAsync === true,
       bypassStepIds: c.bypassStepIds,
+      systemParameters: c.systemParameters,
       authorize: (operation, values, previous) => {
         authorize(c, mapping.logicalName, operation, mapping, previous ?? values);
         authorizeLookups(c, mapping, values);

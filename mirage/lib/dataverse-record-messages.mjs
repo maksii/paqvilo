@@ -8,7 +8,12 @@ import { DataError } from './data-error.mjs';
 import { parseEntityReference } from './data.mjs';
 import { contextUrl, preferenceApplied } from './dataverse-odata.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
-import { entryMessageActive, runEntryMessage, runMergeDeactivationReads } from './plugin-platform-messages.mjs';
+import {
+  entryMessageActive,
+  recordSharingChange,
+  runEntryMessage,
+  runMergeDeactivationReads,
+} from './plugin-platform-messages.mjs';
 import { recordToSdkEntity } from './plugin-clr.mjs';
 
 // Only account and contact are documented for Merge; lead and incident are assumed to merge too.
@@ -175,7 +180,12 @@ async function merge(api, ctx) {
         context: ctx,
         // An image registered on SubordinateId holds the subordinate row (native mergeAccount).
         imageRecords: { SubordinateId: subordinate.id },
-        main: () => mergeRows(api, ctx, body, target, subordinate, (fn) => fn()).then(() => ({})),
+        // The merge records a principalobjectaccess change with POADistributionChanged 1 before its writes (native
+        // mergeAccount: Update/20 < Merge/30 already lists it).
+        main: () => {
+          recordSharingChange(api.store, null, 1);
+          return mergeRows(api, ctx, body, target, subordinate, (fn) => fn()).then(() => ({}));
+        },
       }),
     ).then(() => ({ status: 204 }));
   await mergeRows(api, ctx, body, target, subordinate);

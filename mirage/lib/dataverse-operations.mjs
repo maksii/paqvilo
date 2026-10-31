@@ -72,7 +72,10 @@ async function runOperationMessage(store, op, context) {
     main: async () => {
       response = await op.handle(context);
       const body = response?.body;
-      return body && typeof body === 'object' && !Buffer.isBuffer(body) ? entryParameters(store, body) : {};
+      if (!body || typeof body !== 'object' || Buffer.isBuffer(body)) return {};
+      // An operation with structured outputs gives its steps the SDK's typed values (op.pluginOutputs); the HTTP body
+      // stays as it is.
+      return op.pluginOutputs ? op.pluginOutputs(body, context) : entryParameters(store, body);
     },
   });
   return response;

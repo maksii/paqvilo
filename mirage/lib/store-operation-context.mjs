@@ -9,12 +9,15 @@ export const storeOperationFields = [
   'pluginReadOnly',
   'pluginParentContext',
   'pluginExecutionUserId',
+  // The user a platform main operation's delegated write runs as (Assign's owner Update as SYSTEM); changes UserId only.
+  'pluginPlatformUserId',
   'pluginSdkTag',
   'pluginRequestId',
   'pluginReadLane',
   'rowTransaction',
   'committedEventCandidates',
   'flowChain',
+  'pluginODataChangeset',
 ];
 
 const active = (store) => {

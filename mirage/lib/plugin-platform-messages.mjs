@@ -79,11 +79,34 @@ export const maskOfNames = (names) =>
     .split(',')
     .map((part) => ACCESS_RIGHTS[part.trim().replace(/Access$/, '')] ?? 0)
     .reduce((mask, right) => mask | right, 0);
+/** The request root's record of a sharing change made by the running named message's main operation (GrantAccess,
+ * ModifyAccess, RevokeAccess: POADistributionChanged 10760; Merge: 1). */
+export const recordSharingChange = (store, table, distribution = 10760) =>
+  recordRequestRootChange(store, store.pluginMainOperation?.context?.values?.RequestId?.value, {
+    sharing: true,
+    table,
+    distribution,
+  });
 const sharesOf = (store, target) =>
   store
     .tableRows('principalobjectaccess')
     .filter((row) => same(row.objectid, target.id) && same(row.objecttypecode, target.logicalName));
 const principalIdOf = (row) => row.principalid?.id ?? row.principalid;
+/** RetrieveSharedPrincipalsAndAccess's typed PrincipalAccesses output (PrincipalAccess[]: the principal's
+ * EntityReference and its AccessRights; native webApiNamed and sdkMessages). target: { logicalName, id }. */
+export const principalAccessesOf = (store, target) => ({
+  $type: 'SdkArray',
+  elementType: 'PrincipalAccess',
+  values: sharesOf(store, target).map((share) => {
+    const id = principalIdOf(share);
+    const team = store.tableRows('team').some((row) => same(row.teamid, id));
+    return {
+      $type: 'PrincipalAccess',
+      principal: { $type: 'EntityReference', logicalName: team ? 'team' : 'systemuser', id, name: null },
+      accessMask: Number(share.accessrightsmask),
+    };
+  }),
+});
 /** The rights a principal's direct shares of a row give it (a team with only a share answers the shared mask). */
 export const sharedMaskOf = (store, logicalName, id, principalId) =>
   sharesOf(store, { logicalName, id })
@@ -200,6 +223,9 @@ function runMessagePipeline(
     sharedVariables: {
       $type: 'ParameterCollection',
       values: {
+        ...(store.pluginODataChangeset && !(store.pluginParentContext ?? pluginInvocationSdkParent(store))
+          ? { IsODataTransaction: true, ODataChangesetRequestCount: store.pluginODataChangeset.requestCount }
+          : {}),
         AcceptLang: acceptLanguage,
         IsAutoTransact: autoTransact,
         ...(requestTag === undefined ? {} : { tag: requestTag }),
@@ -217,7 +243,10 @@ function runMessagePipeline(
   let settled = true,
     first = true;
   const phase = (stage) => {
-    if (stage !== 10) store.pluginInTransaction = true;
+    // PreOperation and PostOperation join the automatic transaction, which reads skip (native webApiNamed
+    // RetrievePrincipalAccess and RetrieveSharedPrincipalsAndAccess 10/20/40 false); an SDK-issued read inside a caller's
+    // transaction stays in it (native sdkMessages).
+    if (stage !== 10) store.pluginInTransaction = inherited === true || autoTransact;
     if (!active) return;
     const initial = first;
     first = false;
@@ -298,6 +327,8 @@ function runMessagePipeline(
         messageEvent: true,
         bypassCustomAsync,
         bypassStepIds,
+        // The frame travels with the event: a staged copy of the record no longer finds it in store.pluginFrames.
+        frame,
       };
       if (store.committedEventCandidates || !store.commitStagers?.size)
         store.recordCommittedEvent(mapping.logicalName, operation, record, [], event);
@@ -406,8 +437,8 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
       named({ Target: parameters.Target, Assignee: parameters.Assignee }, target, () => {
         // Natively the Assign main operation updates the owner as the organization's system user.
         const system = store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM');
-        const previous = store.pluginExecutionUserId;
-        if (system) store.pluginExecutionUserId = system.systemuserid;
+        const previous = store.pluginPlatformUserId;
+        if (system) store.pluginPlatformUserId = system.systemuserid;
         try {
           innerUpdate(
             target,
@@ -415,7 +446,7 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
             { assignOwner: true },
           );
         } finally {
-          store.pluginExecutionUserId = previous;
+          store.pluginPlatformUserId = previous;
         }
       });
       return respond();
@@ -454,8 +485,9 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
           ? { Target: parameters.Target, Revokee: parameters.Revokee }
           : { Target: parameters.Target, PrincipalAccess: parameters.PrincipalAccess };
       named(inputs, target, () => {
-        // The request's root collection records the sharing change (native sdkMessages root after each message).
-        recordRequestRootChange(store, store.pluginMainOperation?.context?.values?.RequestId?.value, { sharing: true });
+        // The request's root collection records the sharing change (native sdkMessages root after each message,
+        // webApiNamed: principalobjectaccess, then the shared table).
+        recordSharingChange(store, target.logicalName);
         const share = {
           target: { logical: target.logicalName, id: target.id },
           principal: { id: principal.id, logical_name: principal.logicalName },
@@ -498,21 +530,7 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
       const target = reference(parameters.Target, 'Target');
       existing(target, 'read');
       return respond(
-        named({ Target: parameters.Target }, target, () => ({
-          PrincipalAccesses: {
-            $type: 'SdkArray',
-            elementType: 'PrincipalAccess',
-            values: sharesOf(store, target).map((share) => {
-              const id = principalIdOf(share);
-              const team = store.tableRows('team').some((row) => same(row.teamid, id));
-              return {
-                $type: 'PrincipalAccess',
-                principal: { $type: 'EntityReference', logicalName: team ? 'team' : 'systemuser', id, name: null },
-                accessMask: Number(share.accessrightsmask),
-              };
-            }),
-          },
-        })),
+        named({ Target: parameters.Target }, target, () => ({ PrincipalAccesses: principalAccessesOf(store, target) })),
       );
     }
     case 'Upsert': {
@@ -658,7 +676,7 @@ export async function runEntryMessage(store, { message, entity, id, inputs, cont
     id,
     inputs,
     identity: context.identity ?? {},
-    acceptLanguage: header('accept-language') ?? '',
+    acceptLanguage: header('accept-language') ?? context.identity?.dataverse?.acceptLanguage ?? '',
     bypassStepIds: context.bypassStepIds,
     bypassCustomPlugins: context.bypassCustomPlugins === true,
     bypassCustomAsync: context.bypassCustomAsync === true,

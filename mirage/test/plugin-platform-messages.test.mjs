@@ -2,9 +2,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
-import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
+import { clrContext, dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { assertPluginMessageAdmission, pluginMessageHasPipeline } from '../lib/plugin-message-admission.mjs';
-import { pluginStepMatchesEntity, pluginUnsupported } from '../lib/exported-plugins.mjs';
+import { pluginStepMatchesEntity, pluginUnsupported, runPluginPhase } from '../lib/exported-plugins.mjs';
 
 // Invented organization: one widget row, a second user, a team and the SYSTEM user.
 const caller = '10000000-0000-4000-8000-000000000001',
@@ -67,7 +67,8 @@ function recording(store, messages) {
         outputs: structuredClone(context.messageParameters?.outputParameters?.values ?? {}),
         concurrencyBehavior: context.concurrencyBehavior,
         under: main ? `${main.MessageName}/${main.Stage}/d${main.Depth}` : null,
-        executionUser: store.pluginExecutionUserId,
+        // @parity-evidence: native and native-r2 sdkMessages and soapMessages: Update/20,40 under Assign/30 UserId SYSTEM, InitiatingUserId the caller; the SYSTEM user moved to the platform-user operation field
+        executionUser: store.pluginPlatformUserId ?? store.pluginExecutionUserId,
       });
     },
     (context) => messages.includes(context.operation),
@@ -90,6 +91,81 @@ test('SDK Assign runs its own pipeline around an owner Update that has no PreVal
   assert.ok(inner.every((entry) => entry.executionUser === system));
   assert.equal(store.pluginMainOperation ?? null, null);
   assert.equal(store.tableRows('widget')[0].ownerid.id, other);
+});
+
+// Invented application caller: the application id and Azure AD object id of the caller's row, and the organization.
+const callerApp = '30000000-0000-4000-8000-000000000001',
+  callerObject = '50000000-0000-4000-8000-000000000001',
+  org = '60000000-0000-4000-8000-000000000001',
+  unit = '60000000-0000-4000-8000-000000000002',
+  empty = '00000000-0000-0000-0000-000000000000';
+// An application user as the caller: its row carries the application id and its Azure AD object id.
+const applicationCallerStore = () => {
+  const store = storeOf(),
+    row = store.tableRows('systemuser').find((user) => user.systemuserid === caller);
+  Object.assign(row, { applicationid: callerApp, azureactivedirectoryobjectid: callerObject });
+  return store;
+};
+// The CLR context of each Update phase, built the way a CLR step's entry builds it (plugin-clr.mjs clrContext).
+function updateContexts(store) {
+  const byStage = new Map();
+  store.setPluginPipeline(
+    (phase) => {
+      const frame = runPluginPhase({ ...phase, store, items: [], handlers: new Map() });
+      frame.callerIdentity ??= phase.identity;
+      const { context } = clrContext({
+        runtime: ownerRuntime,
+        store,
+        step: { id: 'invented-owner-update', images: [], contract: { mode: 0 } },
+        entity: phase.entity,
+        operation: phase.operation,
+        stage: phase.stage,
+        target: phase.target,
+        record: phase.record,
+        previous: phase.previous,
+        frame,
+        depth: 1,
+      });
+      byStage.set(phase.stage, context);
+    },
+    (context) => context.operation === 'update',
+  );
+  return byStage;
+}
+const ownerRuntime = {
+  descriptor: {
+    context: { executionUserId: caller, initiatingUserId: caller, organizationId: org, businessUnitId: unit },
+    serviceProfile: { userId: caller, evidence: 'Invented owner Update probe', grants: [] },
+  },
+};
+
+// @test-kind parity: native recorder corpus sdkMessages and soapMessages (native and native-r2): Assign's owner Update/20,40 run as SYSTEM (UserId) while InitiatingUserId and AuthenticatedUserId stay the caller, IsApplicationUser and InitiatingUserApplicationId follow the caller application
+test('the owner Update of an SDK Assign runs as SYSTEM while an application caller still initiates it', () => {
+  const store = applicationCallerStore(),
+    byStage = updateContexts(store);
+  const response = execute(store, 'Assign', { Target: ref('widget', id), Assignee: ref('systemuser', other) });
+  assert.equal(response.responseName, 'Assign');
+  for (const stage of [20, 40]) {
+    const context = byStage.get(stage);
+    assert.equal(context.UserId.value, system);
+    assert.equal(context.InitiatingUserId.value, caller);
+    assert.equal(context.AuthenticatedUserId.value, caller);
+    assert.equal(context.IsApplicationUser, true);
+    assert.equal(context.InitiatingUserApplicationId.value, callerApp);
+    assert.equal(context.UserAzureActiveDirectoryObjectId.value, empty);
+    assert.equal(context.InitiatingUserAzureActiveDirectoryObjectId.value, callerObject);
+    assert.equal(context.ParentContext.values.UserId.value, system);
+    assert.equal(context.ParentContext.values.InitiatingUserId.value, caller);
+  }
+  // A SetState's delegated Update runs entirely as the caller.
+  byStage.clear();
+  execute(store, 'SetState', {
+    EntityMoniker: ref('widget', id),
+    State: { $type: 'OptionSetValue', value: 1 },
+    Status: { $type: 'OptionSetValue', value: 2 },
+  });
+  assert.equal(byStage.get(20).UserId.value, caller);
+  assert.equal(byStage.get(20).InitiatingUserId.value, caller);
 });
 
 test('SDK SetState runs as SetStateDynamicEntity with IsValid and no nested state message', () => {
@@ -424,4 +500,135 @@ test('a read observer receives Web API lookup properties as their logical attrib
   const query = odataToSdkQuery('widget', { $select: '_ownerid_value,title', $filter: `_ownerid_value eq ${caller}` });
   assert.deepEqual(query.columnSet.columns, ['ownerid', 'title']);
   assert.equal(query.criteria.conditions[0].attributeName, 'ownerid');
+});
+
+// A user-owned invented table; the registered steps record the stage, the message and the AcceptLang they see.
+async function sharedFixture(t, steps, seen) {
+  const { contractModuleFixture } = await import('./contract-module-fixture.mjs');
+  const { createOrganizationBackend } = await import('../lib/organization-backend.mjs');
+  const { pluginCatalogue } = await import('../lib/exported-plugins.mjs');
+  const f = await contractModuleFixture(t, {
+    mappings: {
+      x_item: {
+        logicalName: 'x_item',
+        entitySet: 'x_items',
+        idColumn: 'x_itemid',
+        ownership: 'UserOwned',
+        fields: { x_name: { dataverseType: 'nvarchar' } },
+      },
+    },
+    tables: { x_item: [{ x_itemid: id, x_name: 'Existing' }] },
+    extension: { name: 'accept-language-probe', install: () => {} },
+  });
+  const handlers = new Map([
+    [
+      'Invented.Probe',
+      ({ context }) =>
+        void seen.push({ at: `${context.MessageName}/${context.Stage}`, lang: context.SharedVariables?.AcceptLang }),
+    ],
+  ]);
+  const items = pluginCatalogue({ plugins: { steps }, handlers });
+  const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
+  t.after(() => backend.close());
+  return f;
+}
+
+// @test-kind parity: native recorder corpus webApiNamed and soapMessages (two captures each): AcceptLang at stages 10/20/40 is the request Accept-Language; SDK-issued messages report ''
+test('a Web API GrantAccess reports the request Accept-Language at every stage, an SDK-issued Assign reports none', async (t) => {
+  const seen = [];
+  const f = await sharedFixture(
+    t,
+    [10, 20, 40].flatMap((stage) => [bulkStep('GrantAccess', stage, stage), bulkStep('Assign', stage, stage + 100)]),
+    seen,
+  );
+  const user = f.store.tableRows('systemuser').find((item) => item.fullname !== 'SYSTEM').systemuserid;
+  const granted = await f.request(
+    'POST',
+    '/GrantAccess',
+    {
+      Target: { '@odata.type': 'Microsoft.Dynamics.CRM.x_item', x_itemid: id },
+      PrincipalAccess: {
+        Principal: { '@odata.type': 'Microsoft.Dynamics.CRM.systemuser', systemuserid: user },
+        AccessMask: 'ReadAccess',
+      },
+    },
+    { 'accept-language': 'x-test' },
+  );
+  assert.ok(granted.status < 300, await granted.text());
+  assert.deepEqual(
+    seen.map((entry) => entry.at),
+    ['GrantAccess/10', 'GrantAccess/20', 'GrantAccess/40'],
+  );
+  assert.ok(
+    seen.every((entry) => entry.lang === 'x-test'),
+    JSON.stringify(seen),
+  );
+  seen.length = 0;
+  const caller = f.store.tableRows('systemuser').find((item) => item.applicationid).systemuserid;
+  dispatchSdkCall({
+    store: f.store,
+    profile: { ...profile, userId: caller, grants: [{ entity: 'x_item', operations: ['read', 'update'] }] },
+    sdkFromSandbox: true,
+    message: {
+      method: 'Execute',
+      userId: caller,
+      arguments: [request('Assign', { Target: ref('x_item', id), Assignee: ref('systemuser', user) })],
+    },
+  });
+  assert.deepEqual(
+    seen.map((entry) => entry.at),
+    ['Assign/10', 'Assign/20', 'Assign/40'],
+  );
+  assert.ok(
+    seen.every((entry) => entry.lang === ''),
+    JSON.stringify(seen),
+  );
+});
+
+// @test-kind parity: native recorder corpus webApiNamed and soapMessages (two captures each): AcceptLang at stages 10/20/40 is the request Accept-Language; SDK-issued messages report ''
+test('a SOAP Assign reports the request Accept-Language at every stage', async (t) => {
+  const { handleSoap } = await import('../lib/dataverse-soap.mjs');
+  const { NS } = await import('../lib/dataverse-soap-xml.mjs');
+  const seen = [];
+  const steps = [10, 20, 40].map((stage) => bulkStep('Assign', stage, stage));
+  const f = await sharedFixture(t, steps, seen);
+  const caller = f.store.tableRows('systemuser').find((item) => item.applicationid);
+  const assignee = f.store.tableRows('systemuser').find((item) => item.fullname !== 'SYSTEM').systemuserid;
+  const pair = (key, value) =>
+    `<a:KeyValuePairOfstringanyType><b:key>${key}</b:key>${value}</a:KeyValuePairOfstringanyType>`;
+  const reference = (logical, value) =>
+    `<b:value i:type="a:EntityReference"><a:Id>${value}</a:Id><a:LogicalName>${logical}</a:LogicalName></b:value>`;
+  const parameters = pair('Target', reference('x_item', id)) + pair('Assignee', reference('systemuser', assignee));
+  const xmlns = Object.entries(NS)
+    .map(([key, uri]) => `xmlns:${key}="${uri}"`)
+    .join(' ');
+  const bodyText = `<s:Envelope ${xmlns}><s:Body><Execute xmlns="${NS.svc}"><request i:type="a:OrganizationRequest"><a:Parameters>${parameters}</a:Parameters><a:RequestName>Assign</a:RequestName></request></Execute></s:Body></s:Envelope>`;
+  const response = await handleSoap(
+    {
+      method: 'POST',
+      headers: {},
+      bodyText,
+      user: caller,
+      caller,
+      // The router's identity carries the request Accept-Language (organizationPrincipalContext, dataverse.acceptLanguage).
+      identity: {
+        admin: true,
+        id: caller.systemuserid,
+        systemUserId: caller.systemuserid,
+        dataverse: { acceptLanguage: 'x-test' },
+      },
+      origin: f.server.origin,
+      version: 'v9.2',
+    },
+    f.api,
+  );
+  assert.doesNotMatch(response.body, /Fault/, response.body);
+  assert.deepEqual(
+    seen.map((entry) => entry.at),
+    ['Assign/10', 'Assign/20', 'Assign/40'],
+  );
+  assert.ok(
+    seen.every((entry) => entry.lang === 'x-test'),
+    JSON.stringify(seen),
+  );
 });

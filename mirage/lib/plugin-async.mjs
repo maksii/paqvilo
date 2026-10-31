@@ -448,11 +448,16 @@ export function createAsyncPluginRunner({
         const previousChain = store.flowChain,
           previousFlag = store.pluginInTransaction,
           previousParent = store.pluginParentContext,
-          previousTag = store.pluginSdkTag;
+          previousTag = store.pluginSdkTag,
+          previousExecution = store.pluginExecutionUserId,
+          previousPlatform = store.pluginPlatformUserId;
         store.flowChain = { id: chain.id, depth: chain.depth + 1 };
         store.pluginInTransaction = false;
         store.pluginParentContext = null;
         store.pluginSdkTag = event.frame?.requestTag;
+        // The SDK run-as user and the platform user that queued the step (data.mjs recordCommittedEvent), not the request's.
+        store.pluginExecutionUserId = event.executionUserId ?? undefined;
+        store.pluginPlatformUserId = event.platformUserId ?? undefined;
         try {
           if (!item) {
             job.stepMissing();
@@ -492,8 +497,9 @@ export function createAsyncPluginRunner({
             previousRecords: event.previousRecords,
             records: event.records,
             initialFrame: jobExecutionFrame(store, id, event),
-            // A record a bulk message delegated has no ConcurrencyBehavior input (recorded corpus).
-            ...(event.fromBulk ? { concurrencyBehavior: null } : {}),
+            // A record a bulk message delegated, and a main operation's own Update, have no ConcurrencyBehavior input
+            // (recorded corpus: bulk; sdkMessages, soapMessages and mergeAccount jobs).
+            ...(event.fromBulk || event.omitConcurrencyBehavior ? { concurrencyBehavior: null } : {}),
             bridgedMessage: event.bridgedMessage ?? null,
             asyncExecution: true,
             diagnostic,
@@ -538,6 +544,8 @@ export function createAsyncPluginRunner({
           store.pluginInTransaction = previousFlag;
           store.pluginParentContext = previousParent;
           store.pluginSdkTag = previousTag;
+          store.pluginExecutionUserId = previousExecution;
+          store.pluginPlatformUserId = previousPlatform;
         }
       });
       return retrying ? retryCommittedJob : undefined;

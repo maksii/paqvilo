@@ -354,7 +354,7 @@ async function composeOrganizationRuntime({
       routes.push({ match, handler, anonymous });
     },
     // A changeset or a SOAP transaction runs fn as one unit against this api's store and change log (see runAtomic).
-    runAtomic: (fn) => runAtomic(api, fn),
+    runAtomic: (fn, options) => runAtomic(api, fn, options),
     dataRevision: () => store.dataRevision?.(),
     // Host providers (organization-host.mjs) and the runtime's packs, set before any extension installs.
     // An explicit `secrets` resolver option wins over providers.secrets; api.secrets stays its alias for the message handlers.
@@ -504,7 +504,7 @@ async function composeOrganizationRuntime({
     environmentId,
     requests: () => [],
     runOwned,
-    runAtomic: (fn) => runAtomic(api, fn),
+    runAtomic: (fn, options) => runAtomic(api, fn, options),
     read: (fn) =>
       store.transact(fn, { nested: true, skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true }),
     reseed: async () => {

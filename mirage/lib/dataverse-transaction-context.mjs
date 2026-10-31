@@ -12,11 +12,12 @@ export const ownsChange = () => {
   return value === true || value?.inBatch === true;
 };
 
-export async function runAtomic(api, fn) {
+/** pluginVisible false: the boundary is the request's own, invisible to IsInTransaction (data.mjs transact). */
+export async function runAtomic(api, fn, { pluginVisible = true } = {}) {
   const revision = api.changes?.current();
   const elasticSequence = api.store.elasticCommitSequence ?? 0;
   try {
-    return await api.store.transact(fn, { isolated: true, cloneResult: false });
+    return await api.store.transact(fn, { isolated: true, cloneResult: false, pluginVisible });
   } catch (error) {
     // The rolled-back writes' committed events must not survive in the change log (a DELETE would read as deleted).
     await api.store.flushCommittedEvents?.();
