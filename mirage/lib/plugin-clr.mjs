@@ -2311,13 +2311,26 @@ export function clrContext({
       guidOf(inherited('BusinessUnitId')) ??
       (caller ? guidOf(user(initiatingUserId)?.businessunitid?.id ?? user(initiatingUserId)?.businessunitid) : null) ??
       context.businessUnitId,
-    objectId = (id) => user(id)?.azureactivedirectoryobjectid ?? empty;
+    objectId = (id) => user(id)?.azureactivedirectoryobjectid ?? empty,
+    sameUser = (a, b) => a != null && b != null && String(a).toLowerCase() === String(b).toLowerCase();
+  // The initiating user's application: a nested context initiated by its parent's initiating user keeps the parent's
+  // (CreateOrganizationService(Guid.Empty)); the request's own acting user (also an impersonated one) reports the
+  // caller's application; any other initiating user (SYSTEM, another user) its own application id, else Guid.Empty
+  // (native bypassHeaders MSCRMCallerID, readNested and sdkSurface run-as contexts).
+  const initiatingApplicationId =
+    (sameUser(guidOf(inherited('InitiatingUserId')), initiatingUserId)
+      ? inherited('InitiatingUserApplicationId')
+      : undefined) ??
+    typed(
+      'Guid',
+      (sameUser(caller?.systemUserId, initiatingUserId) ? caller?.dataverse?.appId : null) ??
+        user(initiatingUserId)?.applicationid ??
+        empty,
+    );
   const identityFacts = {
     UserAzureActiveDirectoryObjectId: typed('Guid', objectId(executionUserId)),
     InitiatingUserAzureActiveDirectoryObjectId: typed('Guid', objectId(initiatingUserId)),
-    InitiatingUserApplicationId:
-      inherited('InitiatingUserApplicationId') ??
-      typed('Guid', caller?.dataverse?.appId ?? user(initiatingUserId)?.applicationid ?? empty),
+    InitiatingUserApplicationId: initiatingApplicationId,
     AuthenticatedUserId: typed('Guid', authenticatedUserId),
     // A request a plug-in issues through its IOrganizationService, and the asynchronous jobs it queues, report no user
     // agent (native depth, faults, sdkMessages and customApi, also at Depth 1); others report the caller's.
@@ -2327,8 +2340,8 @@ export function clrContext({
         : (inherited('InitiatingUserAgent') ?? caller?.dataverse?.userAgent ?? null),
     EnvironmentId: context.environmentId ?? store.state?.dataverse?.environmentId ?? null,
     TenantId: typed('Guid', context.tenantId ?? store.state?.dataverse?.tenantId ?? empty),
-    IsApplicationUser:
-      inherited('IsApplicationUser') ?? context.isApplicationUser ?? Boolean(user(authenticatedUserId)?.applicationid),
+    // True exactly when the initiating user is an application user (native: every context of native-r2).
+    IsApplicationUser: context.isApplicationUser ?? Boolean(user(initiatingUserId)?.applicationid),
   };
   // The main operation populates system results once. Keep custom values and
   // subsequent PostOperation replacements across ranks for every message shape.

@@ -131,6 +131,13 @@ const OBSERVED_FACTS = [
   'OperationCreatedOn',
 ];
 
+const INITIATING_FACTS = [
+  'InitiatingUserId',
+  'InitiatingUserAzureActiveDirectoryObjectId',
+  'InitiatingUserApplicationId',
+  'IsApplicationUser',
+];
+
 // ponytail: the root changes of the latest 256 requests; an asynchronous job of an older request keeps its snapshot.
 const REQUEST_ROOT_LIMIT = 256;
 
@@ -193,6 +200,9 @@ export function observedParentChain(node, context, objectId, roots) {
   const values = { ...node.values };
   for (const key of OBSERVED_FACTS)
     if (!Object.hasOwn(values, key) && Object.hasOwn(context, key)) values[key] = cloneStateData(context[key]);
+  // Every ancestor reports the observing context's initiating identity; each keeps its own UserId (native sdkSurface,
+  // readNested: inside a run-as SYSTEM or other-user SDK call the ancestors carry that initiating user).
+  for (const key of INITIATING_FACTS) if (Object.hasOwn(context, key)) values[key] = cloneStateData(context[key]);
   if (!Object.hasOwn(values, 'UserAzureActiveDirectoryObjectId'))
     values.UserAzureActiveDirectoryObjectId =
       values.UserId?.value === context.UserId?.value

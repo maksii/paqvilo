@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
-import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
+import { clrContext, dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { sdkFault } from '../lib/plugin-sdk-messages.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 
@@ -156,4 +156,99 @@ test('the nested operation of a plug-in SDK call is initiated by the service use
     [system, system],
     [id('Invented admin'), id('Invented admin')],
   ]);
+});
+
+// Initiating identity flags of request, run-as and impersonated contexts. Invented users: an application user (the
+// request's caller), a plain user and SYSTEM.
+const appCaller = '77000000-0000-0000-0000-0000000000b1',
+  plainUser = '77000000-0000-0000-0000-0000000000b2',
+  systemUser = '77000000-0000-0000-0000-0000000000b3',
+  appId = '77000000-0000-0000-0000-0000000000c1',
+  appObject = '77000000-0000-0000-0000-0000000000d1';
+function identityContext({ callerIdentity, executionUser, parent }) {
+  const store = new DataStore({
+    state: {
+      ...emptyState(),
+      mappings: { x_item: { entitySet: 'x_items', idColumn: 'x_itemid' } },
+      tables: {
+        x_item: [],
+        systemuser: [
+          {
+            systemuserid: appCaller,
+            fullname: 'Invented app',
+            applicationid: appId,
+            azureactivedirectoryobjectid: appObject,
+          },
+          { systemuserid: plainUser, fullname: 'Invented plain' },
+          { systemuserid: systemUser, fullname: 'SYSTEM' },
+        ],
+      },
+    },
+  });
+  const run = () =>
+    clrContext({
+      runtime: {
+        descriptor: {
+          context: { executionUserId: appCaller, initiatingUserId: appCaller },
+          serviceProfile: { userId: appCaller, evidence: 'Invented identity flags', grants: [] },
+        },
+      },
+      store,
+      step: { id: '77000000-0000-0000-0000-0000000000e1', name: 'Invented step', images: [], contract: { mode: 0 } },
+      entity: 'x_item',
+      operation: 'create',
+      stage: 10,
+      target: { x_name: 'Probe' },
+      record: { x_itemid: '77000000-0000-0000-0000-0000000000f1', x_name: 'Probe' },
+      previous: null,
+      frame: { callerIdentity, ...(parent ? { delegatedParentContext: parent } : {}) },
+      depth: parent ? 2 : 1,
+    }).context;
+  return store.withOperationContext(() => {
+    if (executionUser) store.pluginExecutionUserId = executionUser;
+    return run();
+  });
+}
+const guid = (value) => ({ $type: 'Guid', value });
+// The calling step of the application caller: a parent snapshot as the CLR host reports it.
+const appParent = {
+  $type: 'ExecutionContext',
+  values: {
+    MessageName: 'Update',
+    Stage: 40,
+    Mode: 0,
+    Depth: 1,
+    UserId: guid(appCaller),
+    InitiatingUserId: guid(appCaller),
+    AuthenticatedUserId: guid(appCaller),
+    InitiatingUserApplicationId: guid(appId),
+    InitiatingUserAzureActiveDirectoryObjectId: guid(appObject),
+    IsApplicationUser: true,
+  },
+};
+
+// @test-kind parity: native recorder corpus bypassHeaders, readNested and sdkSurface (native and native-r2): IsApplicationUser is true exactly when the initiating user is an application user; MSCRMCallerID keeps the caller's application id, a run-as SYSTEM or other-user SDK call reports its own (Guid.Empty) and re-stamps every ancestor's initiating fields, Guid.Empty keeps the caller's
+test('initiating identity flags follow the initiating user and re-stamp nested ancestors', () => {
+  // A request impersonating the plain user (MSCRMCallerID) by the application caller.
+  const impersonated = identityContext({
+    callerIdentity: { systemUserId: plainUser, dataverse: { appId, callerId: appCaller } },
+  });
+  assert.equal(impersonated.IsApplicationUser, false);
+  assert.equal(impersonated.InitiatingUserApplicationId.value, appId);
+  assert.equal(impersonated.AuthenticatedUserId.value, appCaller);
+  // CreateOrganizationService(null): SYSTEM initiates the nested operation.
+  const asSystem = identityContext({ executionUser: systemUser, parent: structuredClone(appParent) });
+  assert.equal(asSystem.InitiatingUserId.value, systemUser);
+  assert.equal(asSystem.IsApplicationUser, false);
+  assert.equal(asSystem.InitiatingUserApplicationId.value, EMPTY);
+  const ancestor = asSystem.ParentContext.values;
+  assert.equal(ancestor.InitiatingUserId.value, systemUser);
+  assert.equal(ancestor.IsApplicationUser, false);
+  assert.equal(ancestor.InitiatingUserApplicationId.value, EMPTY);
+  assert.equal(ancestor.InitiatingUserAzureActiveDirectoryObjectId.value, EMPTY);
+  assert.equal(ancestor.UserId.value, appCaller);
+  // CreateOrganizationService(Guid.Empty): the step's user, the application caller, keeps the caller's flags.
+  const asStepUser = identityContext({ executionUser: appCaller, parent: structuredClone(appParent) });
+  assert.equal(asStepUser.IsApplicationUser, true);
+  assert.equal(asStepUser.InitiatingUserApplicationId.value, appId);
 });
