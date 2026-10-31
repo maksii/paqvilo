@@ -174,6 +174,7 @@ export function observedConfig(value, label = 'observed') {
         'codeComponents',
         'canvasDisplay',
         'sdkMessages',
+        'businessLogicOwnership',
         'pluginSources',
         'formSubmissionErrorMessage',
         'fetchPreOperationSerialization',
@@ -343,7 +344,7 @@ export function observedConfig(value, label = 'observed') {
         !message ||
         typeof message !== 'object' ||
         Array.isArray(message) ||
-        Object.keys(message).some((key) => !['name', 'evidence'].includes(key)) ||
+        Object.keys(message).some((key) => !['name', 'evidence', 'availability', 'filterAvailability'].includes(key)) ||
         typeof message.name !== 'string' ||
         !/^[a-z][a-z0-9_]{0,199}$/i.test(message.name) ||
         typeof message.evidence !== 'string' ||
@@ -353,7 +354,74 @@ export function observedConfig(value, label = 'observed') {
         throw new Error(`${label}.sdkMessages requires GUID keys, SDK names and evidence`);
       if (Object.hasOwn(observed.sdkMessages, id))
         throw new Error(`${label}.sdkMessages has a duplicate SDK message GUID`);
-      observed.sdkMessages[id] = { name: message.name, evidence: message.evidence };
+      if (message.availability !== undefined && ![0, 1, 2].includes(message.availability))
+        throw new Error(`${label}.sdkMessages availability must be 0 (server), 1 (client) or 2 (both)`);
+      if (
+        message.filterAvailability !== undefined &&
+        (!message.filterAvailability ||
+          typeof message.filterAvailability !== 'object' ||
+          Array.isArray(message.filterAvailability) ||
+          Object.keys(message.filterAvailability).length > 1000 ||
+          Object.entries(message.filterAvailability).some(
+            ([entity, availability]) => !/^[a-z][a-z0-9_]{0,199}$/i.test(entity) || ![0, 1, 2].includes(availability),
+          ))
+      )
+        throw new Error(
+          `${label}.sdkMessages filterAvailability must map logical table names to availability 0, 1 or 2`,
+        );
+      if (
+        message.filterAvailability &&
+        new Set(Object.keys(message.filterAvailability).map((entity) => entity.toLowerCase())).size !==
+          Object.keys(message.filterAvailability).length
+      )
+        throw new Error(`${label}.sdkMessages filterAvailability has a duplicate logical table name`);
+      observed.sdkMessages[id] = {
+        name: message.name,
+        evidence: message.evidence,
+        ...(message.availability !== undefined ? { availability: message.availability } : {}),
+        ...(message.filterAvailability
+          ? {
+              filterAvailability: Object.fromEntries(
+                Object.entries(message.filterAvailability).map(([entity, availability]) => [
+                  entity.toLowerCase(),
+                  availability,
+                ]),
+              ),
+            }
+          : {}),
+      };
+    }
+  }
+  if (value.businessLogicOwnership != null) {
+    if (
+      !value.businessLogicOwnership ||
+      typeof value.businessLogicOwnership !== 'object' ||
+      Array.isArray(value.businessLogicOwnership) ||
+      Object.keys(value.businessLogicOwnership).length > 1000
+    )
+      throw new Error(
+        `${label}.businessLogicOwnership must map at most 1000 business logic GUIDs to evidenced ownership`,
+      );
+    observed.businessLogicOwnership = {};
+    for (const [raw, ownership] of Object.entries(value.businessLogicOwnership)) {
+      const id = raw.replace(/[{}]/g, '').toLowerCase();
+      if (
+        !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id) ||
+        !ownership ||
+        typeof ownership !== 'object' ||
+        Array.isArray(ownership) ||
+        Object.keys(ownership).some((key) => !['kind', 'evidence'].includes(key)) ||
+        !['system', 'microsoft', 'custom', 'unknown'].includes(ownership.kind) ||
+        typeof ownership.evidence !== 'string' ||
+        !ownership.evidence.trim() ||
+        ownership.evidence.length > 2000
+      )
+        throw new Error(
+          `${label}.businessLogicOwnership requires GUID keys, a system/microsoft/custom/unknown kind and evidence`,
+        );
+      if (Object.hasOwn(observed.businessLogicOwnership, id))
+        throw new Error(`${label}.businessLogicOwnership has a duplicate GUID`);
+      observed.businessLogicOwnership[id] = { kind: ownership.kind, evidence: ownership.evidence };
     }
   }
   if (value.codeComponents != null) {

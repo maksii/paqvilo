@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of Service Bus service endpoint delivery; no native capture cited
 // A Dataverse service endpoint (contract 2 queue, 5 topic) mapped to a servicebus-emulator provider delivers through the core
 // AMQP bus (dataverse-webhooks.mjs serviceEndpointDelivery → bus.send) to the loopback fake broker.
 // A synchronous step runs inside its operation on the asynchronous pipeline (data.mjs createRecordAsync): the send is awaited and

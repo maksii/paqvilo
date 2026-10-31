@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';

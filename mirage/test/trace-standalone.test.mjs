@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Standalone host tracing (docs/design/tracing.md, DV-A-9, DV-A-3, DV-B2-15): a /_sim/api write is an http root on the
 // `sim` host acting as the simulator, with its refusal's code on the root; reads, the trace routes and the run-starting
 // flow routes open no administration root; simulator.trace.flush() is exposed.

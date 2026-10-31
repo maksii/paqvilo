@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Render spans (docs/design/tracing.md): renderPage opens one `render` span; every template invocation opens one
 // `render-template` span under the enclosing invocation's span, and reads issued by a template run inside its span.
 import test from 'node:test';

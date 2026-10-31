@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // The dev panel in Mirage mode with a portal export and Solution root.
 import { test } from 'node:test';
@@ -93,6 +94,7 @@ test('the first _sim state read reuses the implementation fingerprint taken when
   assert.deepEqual(reads, [], 'an unchanged implementation tree is not read again');
 });
 
+// @test-kind contract+security: hostile diagnostic text renders as text in the Mirage panel
 test(
   'Mirage panel inspects permissions, templates, forms and Solution sources, signs this browser in and out, and switches permissions and scenario',
   { timeout: 180_000 },
@@ -233,6 +235,8 @@ test(
         }),
       }),
     );
+    // The Issues row comes from the panel's response observer: a request before it is ready is not seen.
+    await panel.readyFor(page);
     await page.evaluate(() => fetch('/_api/broken'));
     await openTab('issues');
     await panelLocator('.body')
@@ -394,6 +398,16 @@ test(
       'the confirmation is revealed inside the scrolled Tweaks panel',
     );
     await evidence('panel-tweaks-confirmation');
+    // Regression: the sign-out waited for the Mirage's reload for at most 4 s, then ran in the
+    // document that a slower reload destroyed, and this browser stayed signed in (hosted Edge).
+    // Holding the reload's document past that old fallback proves the sign-out waits for the reload itself.
+    const reloadHeld = async (route) => {
+      if (!route.request().isNavigationRequest()) return route.fallback();
+      await page.unroute(`${app.url}/secure/`, reloadHeld);
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      return route.fallback();
+    };
+    await page.route(`${app.url}/secure/`, reloadHeld);
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'load' }),
       panelLocator('[data-act="confirm-yes"]').click(),

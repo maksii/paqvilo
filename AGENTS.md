@@ -45,3 +45,11 @@ Browser document load does not establish local interception readiness. Wait for 
 Verify the PR's effective merge state as well as job results. `gh pr checks <number> --required` and a successful historical check-run list can disagree with the PR panel when a newer workflow omits a required context. Run `npm run check:pr -- --pr <number>` and require the pushed HEAD to match, both gates to pass, no pending checks, and GitHub's merge state to be `CLEAN`. A `BLOCKED` or `UNKNOWN` PR is not a green result. Keep the required `CI gate` name stable across PR events.
 
 Every PR must report all CodeQL configurations present on main, including unchanged languages and documentation-only changes. Successful workflow jobs and zero open findings do not prove merge readiness when required analysis configurations are missing.
+
+## Test kinds
+
+Every test you add or modify declares its kind with `// @test-kind <kind>: <reason>` (file-level in the first 40 lines, or directly above a test to override it): `parity`, `observation`, `compatibility`, `unproven`, `contract`, `security` or `tooling`. Definitions, syntax and evidence rules are in [docs/test-kinds.md](docs/test-kinds.md); pre-commit and CI run `scripts/check-test-tags.mjs` on changed test files.
+
+- `parity` assertions reproduce behaviour proven by a reproduced native recording or by an official Microsoft package. A failing parity assertion means the code is wrong: fix the code. Change, loosen, retag or remove a parity assertion only with an explicit user request naming the exact change, or new proof of that same guarantee (a fresh native recording/replay, official Microsoft package behaviour), stated in a `// @parity-evidence: <proof>` line in the same change. Documentation, memory, another tool, a forum post or an assumption is not proof.
+- A single unreproduced capture is `observation`; a local model without proof is `unproven` and must never be presented as parity. Never weaken a `security` test without explicit user approval.
+- Do not tag a whole file `parity` because one test is; split or tag per test.

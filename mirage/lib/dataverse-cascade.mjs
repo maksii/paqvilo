@@ -1,4 +1,6 @@
-// Cascade actions of one-to-many relationships in the Dataverse API: Assign executes; Share, Unshare, Reparent and Merge are contract only.
+// Cascade actions of one-to-many relationships in the Dataverse API: Assign and Reparent run here; Share and Unshare run in
+// dataverse-security.mjs (grantAccessNow, revokeAccessNow); Merge moves the subordinate's children in
+// dataverse-record-messages.mjs (mergeRows).
 //
 // A relationship's CascadeConfiguration (relationship.cascade, read through store.referencesTo) names what happens to the
 // referencing rows when the referenced row changes. Assign executes: when an update changes the row's ownerid, the afterWrite
@@ -16,9 +18,8 @@
 // documented). A host without api.principals (portal only) cascades without the check.
 // The owner before the write is kept per request context (WeakMap), so a write that fails between beforeWrite and afterWrite
 // leaves nothing behind for a later afterWrite to consume.
-// Share, Unshare, Reparent and Merge are not simulated: nothing is granted, revoked, re-parented or merged. install and
-// every reseed report CASCADE_<ACTION>_NOT_SIMULATED once per table that declares such a cascade; describe() lists the
-// seam each one needs in the host (listed in describe().seams).
+// Reparent: when an update changes a row's lookup to its parent through a relationship whose Reparent cascades, the row
+// inherits the new parent's access (dataverse-security.mjs reparentAccess), and so do its own cascading children.
 // Assumption: a child's own Assign cascade also runs for grandchildren (the recursion follows the parental model).
 // UserOwned means "owned by the same user as the primary row"; after the write that row has the new owner, so the owner
 // from before the write is compared.
@@ -26,32 +27,12 @@
 // ponytail: active workflows and business rules on reassigned rows are not deactivated (natively they are); add when a
 // test reads them.
 import { onceReporter } from './dataverse-addon-common.mjs';
+import { reparentAccess } from './dataverse-security.mjs';
 
 const ASSIGN_BEHAVIOURS = new Set(['Cascade', 'Active', 'UserOwned']);
-const NOT_SIMULATED = {
-  share: 'CASCADE_SHARE_NOT_SIMULATED',
-  unshare: 'CASCADE_UNSHARE_NOT_SIMULATED',
-  reparent: 'CASCADE_REPARENT_NOT_SIMULATED',
-  merge: 'CASCADE_MERGE_NOT_SIMULATED',
-};
+const CASCADING = new Set(['Cascade', 'Active', 'UserOwned']);
 const OPERATIONS = ['CascadeAssign', 'CascadeShare', 'CascadeUnshare', 'CascadeReparent', 'CascadeMerge'];
-const OPERATION_LEVELS = {
-  CascadeAssign: 'behaviour',
-  CascadeShare: 'contract',
-  CascadeUnshare: 'contract',
-  CascadeReparent: 'contract',
-  CascadeMerge: 'contract',
-};
-const SEAMS = {
-  CascadeShare:
-    'mirage/lib/dataverse-security.mjs grantAccess(store, { target, principal, mask }) for each referencing row, from an afterWrite hook',
-  CascadeUnshare:
-    'mirage/lib/dataverse-security.mjs revokeAccess(store, { target, principal }) for each referencing row',
-  CascadeReparent:
-    'no existing seam: a beforeWrite/afterWrite hook on the referencing table where its lookup column changes (mirage/lib/dataverse-records.mjs updateData)',
-  CascadeMerge:
-    "mirage/lib/dataverse-record-messages.mjs merge(api, ctx), the Merge action, after the subordinate's children move",
-};
+const OPERATION_LEVELS = Object.fromEntries(OPERATIONS.map((operation) => [operation, 'behaviour']));
 
 const bare = (value) =>
   String(value ?? '')
@@ -63,7 +44,8 @@ const keyOf = (logical, id) => `${logical}\u0000${bare(id)}`;
 
 const states = new WeakMap();
 function stateOf(api) {
-  if (!states.has(api)) states.set(api, { reporter: onceReporter(), previousOwner: new WeakMap() });
+  if (!states.has(api))
+    states.set(api, { reporter: onceReporter(), previousOwner: new WeakMap(), previousParents: new WeakMap() });
   return states.get(api);
 }
 
@@ -75,29 +57,15 @@ function report(
   state.reporter.report(entry, key);
 }
 
-// Share, Unshare, Reparent and Merge declared by any relationship: one diagnostic per table and action.
-function scanDeclared(api, state) {
-  const references = api.store.referencesByTable({});
-  for (const logical of Object.keys(api.store.state.mappings ?? {})) {
-    for (const reference of references.get(logical) ?? []) {
-      for (const [action, code] of Object.entries(NOT_SIMULATED)) {
-        const behaviour = reference.cascade?.[action];
-        if (behaviour == null || behaviour === 'NoCascade') continue;
-        report(
-          state,
-          {
-            code,
-            table: logical,
-            referencing: reference.entity,
-            column: reference.column,
-            relationship: reference.schemaName ?? null,
-            message: `The ${action} cascade (${behaviour}) of ${logical} is not simulated: referencing ${reference.entity} rows are left as they are.`,
-          },
-          `${code}\u0000${logical}`,
-        );
-      }
-    }
-  }
+// The parents a row of `logical` references through relationships whose Reparent cascades: [{ parent, column }].
+// ponytail: scans every relationship per updated row; cache per mapping revision if updates get hot.
+function reparentParents(api, logical) {
+  const parents = [];
+  for (const [parent, references] of api.store.referencesByTable({ admin: true }))
+    for (const reference of references)
+      if (reference.entity === logical && CASCADING.has(reference.cascade?.reparent))
+        parents.push({ parent, column: reference.column });
+  return parents;
 }
 
 // Gives the children of `parent` (a row of a table, with its idColumn) the owner `newOwner`, by each relationship's Assign:
@@ -207,6 +175,34 @@ function install(api, { diagnostic } = {}) {
     state.previousOwner
       .get(c)
       .set(keyOf(mapping.logicalName, existing[mapping.idColumn]), refId(existing.ownerid) ?? null);
+    const parents = reparentParents(api, mapping.logicalName);
+    if (!parents.length) return;
+    if (!state.previousParents.has(c)) state.previousParents.set(c, new Map());
+    state.previousParents.get(c).set(
+      keyOf(mapping.logicalName, existing[mapping.idColumn]),
+      parents.map((entry) => ({ ...entry, id: refId(existing[entry.column]) ?? null })),
+    );
+  });
+  // Reparent: a changed parental lookup gives the row (and its cascading children) the new parent's access.
+  api.recordHooks.add('afterWrite', (c, mapping, { operation, id }) => {
+    if (operation !== 'update' && operation !== 'upsert') return;
+    const key = keyOf(mapping.logicalName, id),
+      before = state.previousParents.get(c)?.get(key);
+    if (!before) return;
+    state.previousParents.get(c).delete(key);
+    const rows = api.store.tableRows(mapping.logicalName);
+    const row = rows[api.store.rowIndex(mapping, rows, id)] ?? null;
+    if (!row) return;
+    for (const { parent, column, id: previous } of before) {
+      const next = row[column];
+      if (sameId(refId(next), previous) || (refId(next) == null && previous == null)) continue;
+      if (next && typeof next === 'object' && next.logical_name && next.logical_name !== parent) continue;
+      reparentAccess(
+        api.store,
+        { logical: mapping.logicalName, id: row[mapping.idColumn] },
+        refId(next) == null ? null : { logical: parent, id: refId(next) },
+      );
+    }
   });
   api.recordHooks.add('afterWrite', (c, mapping, { operation, id, sync = false }) => {
     if (operation !== 'update' && operation !== 'upsert') return;
@@ -247,17 +243,16 @@ function install(api, { diagnostic } = {}) {
       done,
     );
   });
-  scanDeclared(api, state);
 }
 
 function reset(api) {
   const state = stateOf(api);
   state.reporter.clear();
   state.previousOwner = new WeakMap();
-  scanDeclared(api, state);
+  state.previousParents = new WeakMap();
 }
 
-/** Capability record. Module level is behaviour because Assign executes; operationLevels is per operation. */
+/** Capability record: every cascade action executes; operationLevels is per operation. */
 function describe() {
   return {
     name: 'dataverse-cascade',
@@ -270,7 +265,6 @@ function describe() {
     principal: 'platform',
     stateOwner: 'none',
     lifecycle: 'per-request',
-    seams: SEAMS,
   };
 }
 

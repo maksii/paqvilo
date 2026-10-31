@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of the Dataverse TDS endpoint protocol exchange; no native capture cited
 // Dataverse TDS protocol server (dataverse-tds-protocol.mjs). The unit tests drive TDS 8 strict mode with a hand-built
 // client over TLS (no client library). The end-to-end tests use tedious and are skipped unless TDS_TEDIOUS_PATH names the
 // tedious entry file, for example:

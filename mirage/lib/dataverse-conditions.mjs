@@ -33,9 +33,11 @@ const VALUE_OPERATORS = new Set([
   'ends-with',
   'not-end-with',
   'on',
+  'not-on',
   'on-or-before',
   'on-or-after',
 ]);
+const MASK_OPERATORS = new Set(['mask', 'not-mask', 'masks-select']);
 const LIST_OPERATORS = new Set(['in', 'not-in', 'contain-values', 'not-contain-values']);
 const PAIR_OPERATORS = new Set(['between', 'not-between']);
 const NO_VALUE_OPERATORS = new Set(['null', 'not-null', 'eq-userid', 'ne-userid', 'eq-userlanguage']);
@@ -84,6 +86,7 @@ export const FETCH_OPERATORS = new Set([
   ...LIST_OPERATORS,
   ...PAIR_OPERATORS,
   ...NO_VALUE_OPERATORS,
+  ...MASK_OPERATORS,
   ...DATE_OPERATORS,
 ]);
 export const UNSUPPORTED_FETCH_OPERATORS = UNSUPPORTED_OPERATORS;
@@ -93,7 +96,7 @@ export const dataverseFetchOperator = (operator) =>
   FETCH_OPERATORS.has(operator) || (DATAVERSE_IDENTITY_OPERATORS.has(operator) && !HIERARCHY_OPERATORS.has(operator));
 const COLUMN_COMPARISON_OPERATORS = new Set(['eq', 'ne', 'gt', 'ge', 'lt', 'le']);
 
-const nullMessage = (attribute) =>
+export const nullMessage = (attribute) =>
   `Condition for attribute '${attribute}': null is not a valid value for an attribute. Use 'Null' or 'NotNull' conditions instead.`;
 
 const isNullValue = (value) => value == null || value === '' || (Array.isArray(value) && value.length === 0);
@@ -149,7 +152,8 @@ export function compileOperator(
   const timeZoneOffsetMinutes = Number(settings.timeZoneOffsetMinutes ?? 0);
   const options = { kind, collation, timeZoneOffsetMinutes };
   const first = values[0];
-  if (VALUE_OPERATORS.has(op) && first === undefined) throw new DataError(nullMessage(attribute), 400, 'InvalidQuery');
+  if ((VALUE_OPERATORS.has(op) || MASK_OPERATORS.has(op)) && first === undefined)
+    throw new DataError(nullMessage(attribute), 400, 'InvalidQuery');
   if (LIST_OPERATORS.has(op) && !values.length)
     throw new DataError(
       `Condition for attribute '${attribute}': expected at least one value for operator ${operator}.`,
@@ -216,6 +220,7 @@ export function compileOperator(
       return (x) => !isNullValue(x) && match(x) !== negate;
     }
     case 'on':
+    case 'not-on':
     case 'on-or-before':
     case 'on-or-after': {
       const day = localDay(first, { timeZoneOffsetMinutes });
@@ -228,7 +233,8 @@ export function compileOperator(
       return (x) => {
         const value = localDay(x, { timeZoneOffsetMinutes });
         if (value == null) return false;
-        return op === 'on' ? value === day : op === 'on-or-before' ? value <= day : value >= day;
+        if (op === 'on' || op === 'not-on') return (value === day) === (op === 'on');
+        return op === 'on-or-before' ? value <= day : value >= day;
       };
     }
     case 'eq-userid':
@@ -252,6 +258,26 @@ export function compileOperator(
         const present = multiValues(x);
         const hit = present.some((item) => wanted.has(item));
         return op === 'contain-values' ? hit : !hit;
+      };
+    }
+    case 'mask':
+    case 'not-mask':
+    case 'masks-select': {
+      const mask = Number(scalar(first));
+      if (!Number.isSafeInteger(mask) || mask < 0)
+        throw new DataError(
+          `Condition for attribute '${attribute}': operator ${operator} requires an integer bit mask.`,
+          400,
+          'InvalidQuery',
+        );
+      // ponytail: bit semantics are a local model (the docs only say "found in the bit-mask"); a native SDK query capture (NATIVE sdk-values-queries) settles them.
+      const bits = BigInt(mask);
+      return (x) => {
+        if (isNullValue(x)) return false;
+        const value = Number(scalar(x));
+        if (!Number.isSafeInteger(value)) return false;
+        const both = BigInt(value) & bits;
+        return op === 'mask' ? both === bits : op === 'not-mask' ? both !== bits : both !== 0n;
       };
     }
     default: {

@@ -1,3 +1,4 @@
+// @test-kind contract+security: Paqvilo's tracing and activity design (docs/design/tracing.md); redaction keeps secrets, tokens and keys out of traces
 // End-to-end tracing on the real Power Pages host (docs/design/tracing.md, test/support/trace-scenario.mjs): one member's
 // Web API create, its permission decisions, plug-in stages and steps, a plug-in to plug-in chain, a web hook whose receiver
 // writes back with the forwarded headers, an asynchronous plug-in job, a row-triggered flow with a Key Vault secret, a
@@ -469,10 +470,12 @@ test('a step span carries its images by alias and filter, shared variables, inpu
   assert.deepEqual(postOperation.input.preImages, {});
   assert.deepEqual(postOperation.input.postImages, { after: { x_name: 'Order one', x_status: 'new' } });
   assert.deepEqual(preOperation.input.postImages, {});
-  // The shared variable PreOperation set is its output and the PostOperation step's input.
-  assert.deepEqual(preOperation.input.sharedVariables, {});
-  assert.deepEqual(preOperation.output.sharedVariables, { x_stamp: 'pre-operation' });
-  assert.deepEqual(postOperation.input.sharedVariables, { x_stamp: 'pre-operation' });
+  // The shared variable PreOperation set is its output and the PostOperation step's input, beside the platform's own
+  // Create entries (exported-plugins.mjs platformSharedVariables).
+  const platform = { IsAutoTransact: true, AcceptLang: '', DefaultsAddedFlag: true };
+  assert.deepEqual(preOperation.input.sharedVariables, platform);
+  assert.deepEqual(preOperation.output.sharedVariables, { ...platform, x_stamp: 'pre-operation' });
+  assert.deepEqual(postOperation.input.sharedVariables, { ...platform, x_stamp: 'pre-operation' });
   assert.equal(postOperation.input.inputParameters.Target.x_name, 'Order one');
   assert.equal(postOperation.input.inputParameters.Target.x_accesstoken, '[redacted]');
   // The execution context names the message, stage, mode and depth; every step of the request shares its correlation.
@@ -494,7 +497,12 @@ test('a step span carries its images by alias and filter, shared variables, inpu
   ]);
   assert.equal(preOperation.input.context.stage, 20);
   assert.equal(preOperation.input.context.correlationId, context.correlationId);
-  assert.equal(named(spans, 'job', 'When an order is created').attributes.correlationId, context.correlationId);
+  // The plug-in CorrelationId is the pipeline operation's own (plugin-operation-context.mjs); the flow job keeps the request's.
+  assert.match(context.correlationId, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i);
+  assert.match(
+    named(spans, 'job', 'When an order is created').attributes.correlationId,
+    /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i,
+  );
 });
 
 test('the flow reads its secret through an action span between the Dataverse connector call and the secret', () => {

@@ -1,3 +1,4 @@
+// @test-kind unproven: local async System Job delivery model (isolated commit during delivery, removed job row); no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Tracing across async boundaries (docs/design/tracing.md): a committed job opens its job span under the staging span
 // the trace store remembered for its id (never the context the scheduler inherited), staging is a job-staged event,
 // retries are events, and web hook posts are http-out spans that forward the trace to the loopback receiver. Invented

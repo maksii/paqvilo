@@ -280,7 +280,7 @@ async function composeOrganizationRuntime({
 
   const principals = createPrincipals(store, { organizationId, tenantId, objectTypeCode: typeCodeOf, schema });
   // Extension operations (dataverse-operations.mjs) answer before the built-in functions and actions.
-  const operations = createOperationRegistry();
+  const operations = createOperationRegistry({ store });
   const metadata = createMetadataService({
     organizationId,
     lcid: settings.localeId,
@@ -354,7 +354,7 @@ async function composeOrganizationRuntime({
       routes.push({ match, handler, anonymous });
     },
     // A changeset or a SOAP transaction runs fn as one unit against this api's store and change log (see runAtomic).
-    runAtomic: (fn) => runAtomic(api, fn),
+    runAtomic: (fn, options) => runAtomic(api, fn, options),
     dataRevision: () => store.dataRevision?.(),
     // Host providers (organization-host.mjs) and the runtime's packs, set before any extension installs.
     // An explicit `secrets` resolver option wins over providers.secrets; api.secrets stays its alias for the message handlers.
@@ -364,6 +364,9 @@ async function composeOrganizationRuntime({
     diagnostic: extensionDiagnostics(diagnostic),
   };
   api.secrets = api.providers.secrets;
+  // The plug-in SDK bridge holds only the store; it reaches the organization's message services (metadata, version) through
+  // the store's record entries (plugin-sdk-messages.mjs organizationApiOf).
+  Object.defineProperty(recordHandlers, 'organizationApi', { value: api, configurable: true });
   // Metadata functions over the metadata service's response builders.
   const metadataFunction = (name, respond, csdl) =>
     operations.register({
@@ -468,6 +471,9 @@ async function composeOrganizationRuntime({
     store.hierarchyResolver = (table, id, mode) => api.hierarchy.resolve(table, id, mode);
     api.hierarchyQueryWired = true;
   }
+  // Plug-in SDK values type the platform columns a Solution export omits (createdon, transactioncurrencyid,
+  // exchangerate, <money>_base) from the organization's attribute metadata.
+  store.platformFields = (logical) => metadata.recordFields(logical, { includeNonOData: true });
   // The organization's row-version counter starts above every stored row version, so the first write through the pipeline
   // (nextRowVersion) never stamps a row with a version at or below the one it carries (a seeded or restored state).
   store.state.rowVersion = Math.max(Number(store.state.rowVersion ?? 0), maxRowVersion(store.state));
@@ -498,7 +504,7 @@ async function composeOrganizationRuntime({
     environmentId,
     requests: () => [],
     runOwned,
-    runAtomic: (fn) => runAtomic(api, fn),
+    runAtomic: (fn, options) => runAtomic(api, fn, options),
     read: (fn) =>
       store.transact(fn, { nested: true, skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true }),
     reseed: async () => {

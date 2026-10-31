@@ -1,3 +1,4 @@
+// @test-kind unproven: local CLR context and output model; no native capture cited, and the evidence files record nativeQualified false
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
@@ -180,6 +181,7 @@ test('Original external-event DLL receives typed snapshots after commit', { skip
   assert.deepEqual(store.snapshot().tables.widget, []);
 });
 
+// @test-kind parity: native recorder corpus crud (both captures): System Create output from PostOperation
 test('System Create output begins at PostOperation and later-ranked output replacements survive', () => {
   const args = base(data(), 'create');
   for (const stage of [10, 20]) assert.deepEqual(clrContext({ ...args, stage }).outputParameters.values, {});

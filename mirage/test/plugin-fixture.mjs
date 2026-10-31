@@ -62,7 +62,13 @@ export async function pluginFixture(t, { simulator = true } = {}) {
     watch: false,
     initial: {
       version: 1,
-      mappings: { fx_widget: { entitySet: 'fx_widgets', idColumn: 'fx_widgetid' } },
+      mappings: {
+        fx_widget: {
+          entitySet: 'fx_widgets',
+          idColumn: 'fx_widgetid',
+          fields: { fx_title: { type: 'string' }, fx_note: { type: 'string' } },
+        },
+      },
       tables: { fx_widget: [] },
       plugins: [],
       permissions: [
@@ -97,10 +103,10 @@ export async function disableSteps(solution, from, to) {
 }
 
 /**
- * Compiles invented C# for Invented.WidgetRules.Validate, registers it for step 3 through an explicit pack and starts
+ * Compiles invented C# for Invented.WidgetRules.Validate, registers it for `steps` (default step 3) through an explicit pack and starts
  * a simulator over the fixture's sources; the runtime closes before the fixture directory is removed.
  */
-export async function originalStepSimulator(t, fixture, initial, { source, evidence, grants = [] }) {
+export async function originalStepSimulator(t, fixture, initial, { source, evidence, grants = [], steps = [3] }) {
   const sdk = clrSdk(),
     sourceFile = path.join(fixture.dir, 'Original.cs'),
     assembly = path.join(fixture.dir, 'Invented.WidgetRules.dll'),
@@ -123,7 +129,7 @@ export async function originalStepSimulator(t, fixture, initial, { source, evide
   await fs.writeFile(
     pack,
     'export default {id:"invented-original-step",name:"Invented original step",description:"Owned original CLR step fixture",matches:()=>true,presets:()=>({}),pluginRuntimes:' +
-      JSON.stringify({ [pluginId(3)]: descriptor }) +
+      JSON.stringify(Object.fromEntries(steps.map((n) => [pluginId(n), descriptor]))) +
       '};',
   );
   const app = await createSimulator({

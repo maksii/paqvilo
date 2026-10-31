@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Flow tracing (docs/design/tracing.md): a row-triggered flow job is an async segment of the committing request's trace
 // (job -> flow-run -> flow-action -> connector), a waiting run's resume opens a linked flow-run span, sealed runs and the
 // summary level capture no payloads, and portal flows and server logic nest under the portal request.
@@ -315,6 +316,7 @@ test('a resume the trace registry no longer knows becomes the run span the run v
   );
 });
 
+// @test-kind contract+security: a sealed run captures no action or connector payloads
 test('a sealed run captures no action or connector payloads; nested actions parent to their enclosing action', async () => {
   const store = await new DataStore({ state: emptyState() }).init();
   const traces = traced(store);
@@ -373,6 +375,7 @@ test('trace ids never enter state: two runs of the same fixture keep identical f
   assert.equal(states[0], states[1]);
 });
 
+// @test-kind contract+security: sealing reaches child flows and resumes, also after a level change
 test('a sealed run seals its child flow and its resume, also when the level turns full mid-run', async (t) => {
   const CHILD = '30000000-0000-4000-8000-0000000000f2';
   const clock = fixedClock();
@@ -818,6 +821,7 @@ test("a pack trigger's fire() is a detached occurrence: staged by a running call
 });
 
 // DV-C-14: a sealed run says so on its own spans, so a reader knows why their payloads are absent.
+// @test-kind contract+security: a Secret parameter makes its spans secure and payload-free
 test('a run with a Secret parameter marks its flow-run, flow-action and connector spans secure and captures no payload', async () => {
   const state = emptyState();
   state.tables.environmentvariabledefinition = [

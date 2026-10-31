@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo mock and handler step modes hand configured read results to SDK callers; inert modes leave read projections untouched
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';

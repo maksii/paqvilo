@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo CLR host lifecycle: startup probe allowance, explicit pooling opt-in, owned cache cleanup, worker protocol bounds
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -157,7 +158,7 @@ test('failed CLR preparation removes only its owned cache directory', { skip: CL
 });
 
 test(
-  'CLR workers reject non-object output and completion with pending SDK calls and kill owned children',
+  'CLR workers reject malformed output and bound a host stalled before dispatch, then kill owned children',
   { skip: CLR_SKIP },
   async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-protocol-'));
@@ -167,12 +168,13 @@ test(
     await fs.writeFile(
       source,
       `using System;public static class Protocol{public static void Main(){var line=Console.ReadLine();
+if(line.Contains("startup-gate")){Console.WriteLine("{\\"kind\\":\\"trace\\",\\"message\\":\\"Host waiting before plugin dispatch\\"}");Console.ReadLine();Console.WriteLine("{\\"kind\\":\\"result\\"}");return;}
 if(line.Contains("pending")){Console.WriteLine("{\\"kind\\":\\"rpc\\"}");Console.WriteLine("{\\"kind\\":\\"result\\"}");}
 else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("null");System.Threading.Thread.Sleep(30000);}}`,
     );
     compileClr(source, executable, { target: 'exe' });
     for (const pooled of [false, true])
-      for (const mode of ['null', 'array', 'pending'])
+      for (const mode of ['null', 'array', 'pending', 'startup-gate', ...(pooled ? ['invalid-timeout'] : [])])
         await t.test(`${pooled ? 'pooled' : 'fresh'} ${mode}`, async (sub) => {
           const { port1, port2 } = new MessageChannel(),
             signal = new SharedArrayBuffer(4),
@@ -181,7 +183,9 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
             new URL(pooled ? '../lib/plugin-clr-pool-worker.mjs' : '../lib/plugin-clr-worker.mjs', import.meta.url),
             { workerData: { port: port2, signal, executable, input, timeout: 10000 }, transferList: [port2] },
           );
-          let pid;
+          let pid,
+            waitingBeforeDispatch = false,
+            completed = false;
           sub.after(async () => {
             if (pid)
               try {
@@ -196,21 +200,43 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
           const failure = await new Promise((resolve, reject) => {
             worker.once('error', reject);
             port1.on('message', (message) => {
-              if (message.kind === 'owned-child') pid = message.pid;
-              if (message.kind === 'failure') resolve(message);
+              if (message.kind === 'trace' && message.message === 'Host waiting before plugin dispatch')
+                waitingBeforeDispatch = true;
+              if (message.kind === 'result') completed = true;
+              if (message.kind === 'owned-child') {
+                pid = message.pid;
+                if (mode === 'invalid-timeout')
+                  // One millisecond past the native 2-minute sandbox limit.
+                  port1.postMessage({ kind: 'invoke', invocationId: 'invented-invocation', input, timeout: 120_001 });
+              }
+              // A completion after an SDK callback line is legal: the callback came from a plug-in thread.
+              if (message.kind === 'failure' || (mode === 'pending' && message.kind === 'result')) resolve(message);
             });
-            if (pooled)
+            if (pooled && mode !== 'invalid-timeout')
               port1.postMessage({ kind: 'invoke', invocationId: 'invented-invocation', input, timeout: 10000 });
           });
-          assert.equal(failure.code, 'LocalPluginProtocol', failure.message);
+          if (mode === 'pending') assert.equal(failure.kind, 'result');
+          else
+            assert.equal(
+              failure.code,
+              mode === 'startup-gate' ? 'LocalPluginTimeout' : 'LocalPluginProtocol',
+              failure.message,
+            );
+          if (mode === 'startup-gate') {
+            assert.equal(waitingBeforeDispatch, true, 'the protocol gate precedes plugin dispatch');
+            assert.equal(completed, false, 'the gate cannot produce a result without a second input line');
+          }
           if (pooled) assert.equal(failure.invocationId, 'invented-invocation');
           assert.ok(pid > 0);
-          // The host sleeps 30 seconds after its malformed line, so only the worker's kill makes it absent.
-          assert.equal(await processAbsent(pid, HOST_EXIT_LIMIT_MS), true, 'worker must stop its malformed host');
+          // Malformed hosts stay alive and the startup gate waits for input the
+          // driver never sends, so only the worker's kill makes either absent.
+          if (!(pooled && mode === 'pending'))
+            assert.equal(await processAbsent(pid, HOST_EXIT_LIMIT_MS), true, 'worker must stop its malformed host');
         });
   },
 );
 
+// @test-kind security: pooled hosts are isolated per runtime and a tampered execution snapshot is refused (LocalPluginSourceChanged)
 test(
   'pooled process reuse, runtime isolation, snapshot tampering and throwing cleanup diagnostics',
   { skip: CLR_SKIP },
@@ -285,6 +311,7 @@ test(
   },
 );
 
+// @test-kind security: only the exact parent incarnation authorizes a CLR host; orphaned hosts terminate after abrupt parent death
 test(
   'exact parent incarnation closes fresh and pooled CPU-hung CLR hosts after abrupt Node death',
   { skip: CLR_SKIP },
@@ -391,7 +418,7 @@ test(
 );
 
 test(
-  'pooled original DLL gets fresh instance, configuration, context, frame and SDK callbacks; failures close owned hosts',
+  'pooled original DLL gets fresh instance, configuration, context, frame and SDK callbacks; a plug-in failure keeps its host, a timeout closes it',
   { skip: CLR_SKIP },
   async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-pool-')),
@@ -485,15 +512,16 @@ target["instanceCalls"]=++calls;target["configuration"]=config;target["request"]
     assert.equal(clrHostPoolStatus()[0].pid, pid);
     assert.equal(notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STARTED').length, 1);
     runtime.descriptor.unsecureConfiguration = 'reject';
+    // A plug-in exception leaves the worker running (native-r2 traceFaults: one domainStamp across faulting requests).
     assert.throws(invoke, /Configured rejection/);
-    assert.deepEqual(clrHostPoolStatus(), []);
-    assert.equal(notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED').at(-1).absenceVerified, true);
+    assert.equal(clrHostPoolStatus()[0].pid, pid);
     runtime.descriptor.unsecureConfiguration = 'after-rejection';
     assert.equal(invoke().target.attributes.configuration, 'after-rejection');
     runtime.descriptor.unsecureConfiguration = 'sleep';
     runtime.descriptor.timeoutMs = 1500;
     assert.throws(invoke, (error) => error.code === 'LocalPluginTimeout');
     assert.deepEqual(clrHostPoolStatus(), []);
+    assert.equal(notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED').at(-1).absenceVerified, true);
     runtime.descriptor.timeoutMs = 10000;
     runtime.descriptor.unsecureConfiguration = 'recovered';
     assert.equal(invoke().target.attributes.observed, 'Second');

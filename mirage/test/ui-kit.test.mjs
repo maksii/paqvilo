@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -28,6 +29,7 @@ const items = Array.from({ length: 23 }, (_, index) => ({
   tag: index % 2 ? 'Odd' : 'Even',
 }));
 
+// @test-kind contract+security: every admin builder escapes values
 test('escapeHtml escapes the admin table and every builder escapes values', () => {
   assert.equal(escapeHtml(`<a href="x">'&'</a>`), '&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;');
   assert.equal(escapeHtml(null), '');

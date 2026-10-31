@@ -58,8 +58,8 @@ const CONDITION_TABLE = [
   ['Mask', null], // no FetchXML bit-mask operator
   ['NotMask', null], // as Mask
   ['MasksSelect', null], // "for internal use only" in the SDK
-  ['Contains', 'like', '%'], // no FetchXML contains operator; a like with wrapping wildcards is assumed
-  ['DoesNotContain', 'not-like', '%'], // as Contains
+  ['Contains', null], // SDK full-text semantics require a qualified full-text provider.
+  ['DoesNotContain', null],
   ['EqualUserLanguage', 'eq-userlanguage'],
   ['NotOn', null], // "for internal use only" in the SDK
   ['OlderThanXMonths', 'olderthan-x-months'],
@@ -106,7 +106,7 @@ const CONDITIONS = new Map(CONDITION_TABLE.map(([name, op, wrap], value) => [nam
 const JOIN_TABLE = [
   ['Inner', 'inner'],
   ['LeftOuter', 'outer'],
-  ['Natural', 'inner'], // no FetchXML link-type is documented for Natural; inner is a placeholder
+  ['Natural', null], // Natural also changes duplicate projected columns; Inner is not equivalent.
   ['MatchFirstRowUsingCrossApply', 'matchfirstrowusingcrossapply'],
   ['In', 'in'],
   ['Exists', 'exists'],
@@ -133,6 +133,12 @@ function conditionOf(operator) {
   const name = typeof operator === 'number' ? CONDITION_TABLE[operator]?.[0] : operator;
   const entry = CONDITIONS.get(name);
   if (!entry) throw invalid(`Unknown condition operator '${operator}'.`);
+  if (['Contains', 'DoesNotContain'].includes(name))
+    throw new DataError(
+      'SDK full-text conditions require a source-qualified full-text execution adapter.',
+      501,
+      'LocalPluginQueryUnsupported',
+    );
   if (!entry.op) throw invalid(`Condition operator '${name}' has no FetchXML equivalent.`);
   return entry;
 }
@@ -140,6 +146,12 @@ function conditionOf(operator) {
 function joinTypeOf(joinOperator = 'Inner') {
   const name = typeof joinOperator === 'number' ? JOIN_TABLE[joinOperator]?.[0] : joinOperator;
   const linkType = JOINS.get(name);
+  if (name === 'Natural')
+    throw new DataError(
+      'Natural joins require a source-qualified projection adapter.',
+      501,
+      'LocalPluginQueryUnsupported',
+    );
   if (!linkType) throw invalid(`Unknown join operator '${joinOperator}'.`);
   return linkType;
 }
@@ -174,8 +186,13 @@ function filterXml(filter) {
   const { filterOperator = 'And', conditions = [], filters = [] } = filter ?? {};
   const type = FILTER_TYPES[filterOperator];
   if (!type) throw invalid(`Unknown filter operator '${filterOperator}'.`);
-  const inner = conditions.map(conditionXml).join('') + filters.map(filterXml).join('');
-  return inner ? `<filter type="${type}">${inner}</filter>` : '';
+  const inner =
+    conditions.map(conditionXml).join('') +
+    filters.map(filterXml).join('') +
+    (filter?.anyAllFilterLinkEntity ? linkXml(filter.anyAllFilterLinkEntity) : '');
+  return inner
+    ? `<filter type="${type}"${attr('hint', filter?.filterHint)}${flag('isquickfindfields', filter?.isQuickFindFilter)}>${inner}</filter>`
+    : '';
 }
 
 function columnsXml(columnSet) {
@@ -188,7 +205,7 @@ function ordersXml(orders = []) {
   return orders
     .map(
       (o) =>
-        `<order attribute="${esc(o.attributeName)}"${flag('descending', o.orderType === 1 || /^descending$/i.test(String(o.orderType)))}/>`,
+        `<order attribute="${esc(o.attributeName)}"${attr('entityname', o.entityName)}${flag('descending', o.orderType === 1 || /^descending$/i.test(String(o.orderType)))}/>`,
     )
     .join('');
 }
@@ -206,7 +223,7 @@ function linkXml(link) {
 
 // QueryExpression with no columns returns only the primary key; FetchXML with no attributes returns every column.
 function rootColumnsXml(columnSet, entityName, primaryIdOf) {
-  if (!columnSet || columnSet.allColumns || columnSet.columns?.length) return columnsXml(columnSet);
+  if (columnSet === undefined || columnSet?.allColumns || columnSet?.columns?.length) return columnsXml(columnSet);
   const primary = primaryIdOf(entityName);
   if (!primary) throw invalid(`No primary key is known for '${entityName}' to answer an empty ColumnSet.`);
   return `<attribute name="${esc(primary)}"/>`;
@@ -267,6 +284,88 @@ export function fromQueryByAttribute(model) {
   };
 }
 
+/** Preserve a decoded SOAP SDK value independently of Web API projection. */
+export function toSdkValue(v) {
+  if (v == null || typeof v !== 'object') return v;
+  if (v.type === 'EntityReference')
+    return {
+      $type: 'EntityReference',
+      logicalName: v.logicalName,
+      id: v.id,
+      name: v.name ?? null,
+      rowVersion: v.rowVersion ?? null,
+      keyAttributes: Object.fromEntries([...(v.keyAttributes ?? [])].map(([name, value]) => [name, toSdkValue(value)])),
+    };
+  const typed = {
+    guid: 'Guid',
+    decimal: 'Decimal',
+    long: 'Int64',
+    dateTime: 'DateTime',
+    Money: 'Money',
+    OptionSetValue: 'OptionSetValue',
+  }[v.type];
+  return typed ? { $type: typed, value: v.value } : v.value;
+}
+
+/** Retain the SDK QueryBase supplied over SOAP in registered read step inputs. */
+export function toSdkQuery(model, type = 'QueryExpression') {
+  const columns = (c) => (c == null ? c : { allColumns: c.allColumns === true, columns: c.columns ?? [] });
+  const value = toSdkValue;
+  const orders = (list) =>
+    (list ?? []).map((o) => ({
+      attributeName: o.attributeName,
+      entityName: o.entityName,
+      descending: o.orderType === 1 || /^descending$/i.test(String(o.orderType)),
+    }));
+  const criteria = (f = {}) => ({
+    operatorName: f.filterOperator === 1 ? 'Or' : f.filterOperator === 0 ? 'And' : (f.filterOperator ?? 'And'),
+    conditions: (f.conditions ?? []).map((c) => ({
+      attributeName: c.attributeName,
+      entityName: c.entityName,
+      operatorName: typeof c.operator === 'number' ? CONDITION_TABLE[c.operator]?.[0] : c.operator,
+      values: (c.values ?? []).map(value),
+      compareColumns: c.compareColumns === true,
+    })),
+    filters: (f.filters ?? []).map(criteria),
+    filterHint: f.filterHint,
+    isQuickFindFilter: f.isQuickFindFilter === true,
+    anyAllFilterLinkEntity: f.anyAllFilterLinkEntity ? link(f.anyAllFilterLinkEntity) : null,
+  });
+  const link = (l) => ({
+    linkFromEntityName: l.linkFromEntityName,
+    linkToEntityName: l.linkToEntityName,
+    linkFromAttributeName: l.linkFromAttributeName,
+    linkToAttributeName: l.linkToAttributeName,
+    entityAlias: l.entityAlias,
+    columns: columns(l.columns),
+    $type: 'LinkEntity',
+    joinOperator: typeof l.joinOperator === 'number' ? JOIN_TABLE[l.joinOperator]?.[0] : l.joinOperator,
+    linkCriteria: criteria(l.linkCriteria),
+    linkEntities: (l.linkEntities ?? []).map(link),
+    orders: orders(l.orders),
+  });
+  const query = {
+    $type: type,
+    entityName: model.entityName,
+    columnSet: columns(model.columnSet),
+    topCount: model.topCount,
+    pageInfo: model.pageInfo,
+    orders: orders(model.orders),
+  };
+  if (type === 'QueryByAttribute') {
+    query.attributes = model.attributes ?? [];
+    query.values = (model.values ?? []).map(value);
+  } else {
+    query.distinct = model.distinct === true;
+    query.noLock = model.noLock === true;
+    query.queryHints = model.queryHints;
+    query.dataSource = model.dataSource;
+    query.criteria = criteria(model.criteria);
+    query.linkEntities = (model.linkEntities ?? []).map(link);
+  }
+  return query;
+}
+
 function criteriaFromJson(criteria = {}) {
   // Dropping a link-type filter would widen or narrow the rows a BulkDelete matches, so it is refused.
   if (criteria.AnyAllFilterLinkEntity != null)
@@ -281,15 +380,29 @@ function criteriaFromJson(criteria = {}) {
       compareColumns: c.CompareColumns === true,
     })),
     filters: (criteria.Filters ?? []).map(criteriaFromJson),
+    filterHint: criteria.FilterHint,
+    isQuickFindFilter: criteria.IsQuickFindFilter === true,
   };
 }
 
+function rejectConfiguredQueryProperties(value, type, names) {
+  for (const name of names) {
+    const member = value?.[name];
+    if (member == null || member === '' || (Array.isArray(member) && !member.length)) continue;
+    throw new DataError(`Unsupported configured SDK property: ${type}.${name}`, 501, 'LocalPluginQueryUnsupported');
+  }
+}
+
 function columnSetFromJson(columnSet) {
+  rejectConfiguredQueryProperties(columnSet, 'ColumnSet', ['AttributeExpressions']);
   return columnSet ? { allColumns: columnSet.AllColumns === true, columns: columnSet.Columns ?? [] } : undefined;
 }
 
 function ordersFromJson(orders) {
-  return (orders ?? []).map((o) => ({ attributeName: o.AttributeName, orderType: o.OrderType }));
+  return (orders ?? []).map((o) => {
+    rejectConfiguredQueryProperties(o, 'OrderExpression', ['Alias']);
+    return { attributeName: o.AttributeName, entityName: o.EntityName, orderType: o.OrderType };
+  });
 }
 
 function pageInfoFromJson(pageInfo) {
@@ -304,6 +417,7 @@ function pageInfoFromJson(pageInfo) {
 }
 
 function linkFromJson(link) {
+  rejectConfiguredQueryProperties(link, 'LinkEntity', ['ForceSeek']);
   return {
     linkFromEntityName: link.LinkFromEntityName,
     linkFromAttributeName: link.LinkFromAttributeName,
@@ -320,7 +434,8 @@ function linkFromJson(link) {
 
 // QuerySet keys a BulkDelete QueryExpression may carry. Anything else is refused rather than dropped,
 // because a dropped LinkEntities or TopCount widens the delete to the whole table.
-// QueryHints maps to FetchXML options (a no-op in the engine); ForceSeek is "for internal use only" and is accepted and ignored.
+// QueryHints maps to FetchXML options. Configured internal SDK-only facets are
+// refused, consistently with the original CLR adapter.
 const BULK_DELETE_KEYS = new Set([
   '@odata.type',
   'EntityName',
@@ -335,10 +450,12 @@ const BULK_DELETE_KEYS = new Set([
   'DataSource',
   'QueryHints',
   'ForceSeek',
+  'SubQueryExpression',
 ]);
 
 /** BulkDelete JSON QuerySet item as a QueryExpression model. */
 export function fromBulkDeleteJson(querySetItem) {
+  rejectConfiguredQueryProperties(querySetItem, 'QueryExpression', ['ForceSeek', 'SubQueryExpression']);
   for (const key of Object.keys(querySetItem)) {
     if (!BULK_DELETE_KEYS.has(key)) throw invalid(`Unsupported BulkDelete QuerySet property '${key}'.`);
   }

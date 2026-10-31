@@ -1,3 +1,4 @@
+// @test-kind contract+security: Paqvilo's tracing and activity design (docs/design/tracing.md); redaction keeps secrets, tokens and keys out of traces
 // The trace store (lib/trace-store.mjs): span nesting, request-context fallback, explicit async parenting, levels,
 // redaction, caps, queries, statistics, events, export and persistence. Time comes from an injected clock, so every
 // duration below is exact; no assertion depends on how fast the host runs.

@@ -1,3 +1,4 @@
+// @test-kind contract+security: Paqvilo's tracing and activity design (docs/design/tracing.md); redaction keeps secrets, tokens and keys out of traces
 // Tracing of the Dataverse TDS endpoint (docs/design/tracing.md): every SQL statement is a root `http` span on host `tds`,
 // named by its text with literals redacted, run as the signed-in caller, with the entity reads it makes as children; at
 // full the span keeps the statement text, and a failed statement or batch carries the SQL error. Hand-built TDS 8 client

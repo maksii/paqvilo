@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -68,6 +69,7 @@ test('catalogue reports reuse their project cache and sweep selects the same pro
   assert.equal(uncached.summary.timings.cache.hits, 0);
 });
 
+// @test-kind contract+security: generated output stays out of the installed package, also through a junction
 test('generated output rejects the installed package and a junction back into it', async (t) => {
   const { root } = await fixture(t);
   const installed = path.join(root, 'node_modules/paqvilo');

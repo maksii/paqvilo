@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // The runtime log stream history (D-M-4): a bounded server-side ring (mirage.logs.retain) with the startup lines and every
 // later line, each naming its trace when it was emitted in one; GET /_sim/api/logs pages it; the `logs` SSE channel sends
 // the same lines; a declarative plugin rule is one `rule` span event and one `plugin` line from the same hook, with no

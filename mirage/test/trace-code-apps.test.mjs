@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Code app tracing (docs/design/tracing.md, DV-A-2/-3/-5/-13, DV-B1-1/-2): /_apps/code roots name the code-app host,
 // the app and the selected staff user; the client library joins every call to the trace of its getContext() answer;
 // error answers (a denied write, a failed or unsupported connector, no staff user) name their code on the root; the dev

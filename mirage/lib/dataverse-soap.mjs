@@ -3,9 +3,30 @@
 // api.records.handle and its result is encoded back. A DataError is a fault whose ErrorCode is the signed inner code.
 // Bearer checks and the HTTP socket belong to the router, which passes the resolved user, caller and identity.
 import { DataError } from './data-error.mjs';
+import { bypassStepIds as parseBypassStepIds } from './plugin-bypass.mjs';
+import { assertPluginMessageAdmission } from './plugin-message-admission.mjs';
+import { runEntryMessage } from './plugin-platform-messages.mjs';
+
+// The service's own built-in messages without a plug-in pipeline (record messages run theirs in the record handlers).
+const SOAP_UNPIPELINED = new Set([
+  'WhoAmI',
+  'RetrieveVersion',
+  'RetrieveCurrentOrganization',
+  'ExecuteMultiple',
+  'ExecuteTransaction',
+]);
 import { xmlEscapeAttribute } from './fetchxml-engine.mjs';
-import { NS, decodeValue, encodeValue, envelope, fault, parseEnvelope } from './dataverse-soap-xml.mjs';
-import { fromQueryByAttribute, toFetchXml } from './dataverse-soap-query.mjs';
+import {
+  NS,
+  decodeValue,
+  encodeValue,
+  envelope,
+  fault,
+  parseEnvelope,
+  assertSoapQueryProperties,
+  decodeColumnSet,
+} from './dataverse-soap-xml.mjs';
+import { fromQueryByAttribute, toFetchXml, toSdkQuery, toSdkValue } from './dataverse-soap-query.mjs';
 import { dataverseError, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { privilegeDeniedError } from './dataverse-security.mjs';
 import { fieldKind } from './dataverse-values.mjs';
@@ -14,6 +35,10 @@ import { FORMATTED } from './webapi-format.mjs';
 import { metadataRequests } from './dataverse-soap-metadata.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
 import { resultsOf } from './dataverse-soap-registry.mjs';
+import { associationRequestBinding } from './plugin-association.mjs';
+import { captureSdkResponseAsync } from './plugin-response.mjs';
+import { soapSdkResults } from './dataverse-soap-sdk-values.mjs';
+import { withPluginRequestTag } from './plugin-request-tag.mjs';
 import { recordHttpError } from './trace-store.mjs';
 
 const ANNOTATIONS = 'odata.include-annotations="*"';
@@ -105,6 +130,10 @@ function valueOf(node) {
 // An OrganizationRequest (Execute's request, or one item of a collection): the message name and its Parameters.
 // The generic OrganizationRequest names its message in RequestName; typed requests carry it in their type name.
 function requestOf(node) {
+  const suppliedId = kid(node, NS.a, 'RequestId');
+  const requestId = !suppliedId || isNilNode(suppliedId) ? undefined : suppliedId.text.trim();
+  if (requestId !== undefined && !GUID.test(requestId))
+    throw invalid('OrganizationRequest.RequestId requires a GUID value.');
   const type = typeKey(node);
   const params = new Map();
   for (const pair of kids(node, NS.a, 'Parameters'))
@@ -113,7 +142,7 @@ function requestOf(node) {
     type?.name === 'OrganizationRequest'
       ? kidText(node, NS.a, 'RequestName')
       : (type?.name ?? node.name).replace(/Request$/, '');
-  return { name, params };
+  return { name, params, requestId };
 }
 
 // Body operations: the SDK element children are named after the parameters, so they are mapped to the Execute names.
@@ -132,7 +161,7 @@ function bodyRequest(name, node) {
       break;
     case 'Retrieve':
       params.set('Target', reference(get('entityName'), get('id')));
-      params.set('ColumnSet', get('columnSet'));
+      params.set('ColumnSet', decodeColumnSet(node.children.find((child) => child.name === 'columnSet')));
       break;
     case 'RetrieveMultiple':
       params.set('Query', get('query'));
@@ -168,6 +197,12 @@ function criteriaOf(node) {
     filterOperator: kidText(node, NS.a, 'FilterOperator') ?? 'And',
     conditions: kids(node, NS.a, 'Conditions').map(conditionOf),
     filters: kids(node, NS.a, 'Filters').map(criteriaOf),
+    filterHint: kidText(node, NS.a, 'FilterHint'),
+    isQuickFindFilter: ['true', '1'].includes(kidText(node, NS.a, 'IsQuickFindFilter')),
+    anyAllFilterLinkEntity:
+      kid(node, NS.a, 'AnyAllFilterLinkEntity') && !isNilNode(kid(node, NS.a, 'AnyAllFilterLinkEntity'))
+        ? linkOf(kid(node, NS.a, 'AnyAllFilterLinkEntity'))
+        : null,
   };
 }
 
@@ -177,20 +212,23 @@ function conditionOf(node) {
     attributeName: kidText(node, NS.a, 'AttributeName'),
     operator: operatorOf(kidText(node, NS.a, 'Operator')),
     values: kids(node, NS.a, 'Values').map((item) => valueOf(item)),
-    compareColumns: kidText(node, NS.a, 'CompareColumns') === 'true',
+    compareColumns: ['true', '1'].includes(kidText(node, NS.a, 'CompareColumns')),
   };
 }
 
 const ordersOf = (node) =>
-  kids(node, NS.a, 'Orders').map((order) => ({
-    attributeName: kidText(order, NS.a, 'AttributeName'),
-    orderType: operatorOf(kidText(order, NS.a, 'OrderType')),
-  }));
+  kids(node, NS.a, 'Orders').map((order) => {
+    assertSoapQueryProperties(order, 'OrderExpression', { Alias: 'string' });
+    return {
+      attributeName: kidText(order, NS.a, 'AttributeName'),
+      entityName: kidText(order, NS.a, 'EntityName'),
+      orderType: operatorOf(kidText(order, NS.a, 'OrderType')),
+    };
+  });
 
-function columnSetOf(node) {
-  const set = kid(node, NS.a, 'ColumnSet');
-  const value = set ? valueOf(set) : null;
-  return value?.type === 'ColumnSet' ? value : undefined;
+function columnSetOf(node, name = 'ColumnSet') {
+  const set = kid(node, NS.a, name) ?? (name === 'Columns' ? kid(node, NS.a, 'ColumnSet') : null);
+  return set ? decodeColumnSet(set) : undefined;
 }
 
 function pageInfoOf(node) {
@@ -200,11 +238,12 @@ function pageInfoOf(node) {
     count: intOrNull(kidText(page, NS.a, 'Count')),
     pageNumber: intOrNull(kidText(page, NS.a, 'PageNumber')),
     pagingCookie: kidText(page, NS.a, 'PagingCookie'),
-    returnTotalRecordCount: kidText(page, NS.a, 'ReturnTotalRecordCount') === 'true',
+    returnTotalRecordCount: ['true', '1'].includes(kidText(page, NS.a, 'ReturnTotalRecordCount')),
   };
 }
 
 function linkOf(node) {
+  assertSoapQueryProperties(node, 'LinkEntity', { ForceSeek: 'string' });
   return {
     linkFromEntityName: kidText(node, NS.a, 'LinkFromEntityName'),
     linkFromAttributeName: kidText(node, NS.a, 'LinkFromAttributeName'),
@@ -212,7 +251,7 @@ function linkOf(node) {
     linkToAttributeName: kidText(node, NS.a, 'LinkToAttributeName'),
     joinOperator: operatorOf(kidText(node, NS.a, 'JoinOperator')) ?? 'Inner',
     entityAlias: kidText(node, NS.a, 'EntityAlias'),
-    columns: columnSetOf(node),
+    columns: columnSetOf(node, 'Columns'),
     linkCriteria: criteriaOf(kid(node, NS.a, 'LinkCriteria')),
     linkEntities: kids(node, NS.a, 'LinkEntities').map(linkOf),
     orders: ordersOf(node),
@@ -220,15 +259,17 @@ function linkOf(node) {
 }
 
 function queryModel(node) {
+  assertSoapQueryProperties(node, 'QueryExpression', { ForceSeek: 'string', SubQueryExpression: 'object' });
   return {
     entityName: kidText(node, NS.a, 'EntityName'),
     columnSet: columnSetOf(node),
     criteria: criteriaOf(kid(node, NS.a, 'Criteria')),
     linkEntities: kids(node, NS.a, 'LinkEntities').map(linkOf),
     orders: ordersOf(node),
-    distinct: kidText(node, NS.a, 'Distinct') === 'true',
-    noLock: kidText(node, NS.a, 'NoLock') === 'true',
+    distinct: ['true', '1'].includes(kidText(node, NS.a, 'Distinct')),
+    noLock: ['true', '1'].includes(kidText(node, NS.a, 'NoLock')),
     dataSource: kidText(node, NS.a, 'DataSource') || undefined,
+    queryHints: kidText(node, NS.a, 'QueryHints') || undefined,
     topCount: intOrNull(kidText(node, NS.a, 'TopCount')),
     pageInfo: pageInfoOf(node),
   };
@@ -241,8 +282,8 @@ function byAttributeModel(node) {
     values: kids(node, NS.a, 'Values').map((item) => valueOf(item)),
     columnSet: columnSetOf(node),
     orders: ordersOf(node),
-    distinct: kidText(node, NS.a, 'Distinct') === 'true',
-    noLock: kidText(node, NS.a, 'NoLock') === 'true',
+    distinct: ['true', '1'].includes(kidText(node, NS.a, 'Distinct')),
+    noLock: ['true', '1'].includes(kidText(node, NS.a, 'NoLock')),
     dataSource: kidText(node, NS.a, 'DataSource') || undefined,
     topCount: intOrNull(kidText(node, NS.a, 'TopCount')),
     pageInfo: pageInfoOf(node),
@@ -277,33 +318,93 @@ function actingAs(c, api, headers) {
 }
 
 // ---- Web API calls: each message is one call on the record handlers, with the router's context shape
-async function web(s, method, path, { body, query = {}, prefer = '', headers = {} } = {}) {
+async function web(
+  s,
+  method,
+  path,
+  {
+    body,
+    query = {},
+    prefer = '',
+    headers = {},
+    sdkQuery,
+    sdkColumns,
+    sdkTarget,
+    sdkCreateId,
+    sdkOperation,
+    sdkEntity,
+  } = {},
+) {
   const url = new URL(`/api/data/${s.version}/${path}`, s.origin);
   for (const [name, value] of Object.entries(query)) url.searchParams.set(name, value);
   const route = parseDataverseRoute(url.pathname);
   if (!route || route.kind === 'unknown' || route.kind === 'invalid')
     throw invalid(`The SOAP message addressed an unknown resource '${path}'.`, '0x8006088a');
-  const result = await s.api.records.handle({
-    method,
-    route,
-    url,
-    origin: s.origin,
-    version: route.version,
-    prefer: parsePrefer(prefer),
-    headers: {
-      prefer,
-      ...(method === 'GET' && s.sessionToken ? { 'mscrm.sessiontoken': s.sessionToken } : {}),
-      ...headers,
-    },
-    body,
-    user: s.user,
-    caller: s.caller,
-    identity: s.identity,
-    requestId: s.requestId,
-    bypassCustomPlugins: s.bypassCustomPlugins === true,
-  });
+  const call = (sdkResponseToken) =>
+    s.api.records.handle({
+      method,
+      route,
+      url,
+      origin: s.origin,
+      version: route.version,
+      prefer: parsePrefer(prefer),
+      headers: {
+        prefer,
+        ...(s.suppressDuplicateDetection === undefined
+          ? {}
+          : { 'mscrm.suppressduplicatedetection': String(s.suppressDuplicateDetection) }),
+        ...(method === 'GET' && s.sessionToken ? { 'mscrm.sessiontoken': s.sessionToken } : {}),
+        ...headers,
+      },
+      body,
+      user: s.user,
+      caller: s.caller,
+      identity: s.identity,
+      requestId: s.requestId,
+      bypassCustomPlugins: s.bypassCustomPlugins === true,
+      bypassCustomAsync: s.bypassCustomAsync === true,
+      bypassStepIds: s.bypassStepIds ?? [],
+      systemParameters: s.systemParameters,
+      sdkQuery,
+      sdkColumns,
+      sdkTarget,
+      sdkCreateId,
+      sdkResponseToken,
+    });
+  const result = sdkOperation ? await captureSoapResponse(s, sdkOperation, sdkEntity, call) : await call(undefined);
   if (result?.headers?.['x-ms-session-token']) s.responseSessionToken = result.headers['x-ms-session-token'];
   return result ?? { status: 204, headers: {} };
+}
+const sdkRef = (logicalName, id) => ({ $type: 'EntityReference', logicalName, id, name: null });
+// A named message's main-operation Update (Assign, SetState): no PreValidation, no ConcurrencyBehavior and no nested
+// SetStateDynamicEntity, under the message's stage-30 context; Assign's runs as SYSTEM (recorded native soapMessages,
+// sdkMessages). The caller's privileges still decide whether it may write.
+async function namedUpdate(s, logical, id, data, system = false, extra = {}) {
+  const store = s.api.store,
+    previous = store.pluginPlatformUserId;
+  if (system)
+    store.pluginPlatformUserId =
+      store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM')?.systemuserid ?? previous;
+  try {
+    await s.api.records.updateInternal(s, logical, id, data, {
+      writeOptions: { skipPreValidation: true, omitConcurrencyBehavior: true, stateMessage: false, ...extra },
+    });
+    return {};
+  } finally {
+    store.pluginPlatformUserId = previous;
+  }
+}
+// A named message and the Update its main operation delegates commit as one request transaction, so the message's
+// asynchronous steps and those of the delegated Update and UpdateMultiple are queued together on commit (recorded native
+// soapMessages: Assign/40 or SetStateDynamicEntity/40 with Update/40 and UpdateMultiple/40, all Mode 1, Depth 1).
+function namedTransaction(s, fn) {
+  const atomic = () => (s.api.runAtomic ? s.api.runAtomic(fn) : s.api.store.transact(fn));
+  return s.api.change ? s.api.change(atomic) : atomic();
+}
+async function captureSoapResponse(s, operation, entity, execute) {
+  const captured = await captureSdkResponseAsync(s.api.store, operation, entity, execute);
+  s.sdkResults = captured.results;
+  return captured.value;
 }
 
 // Lookup columns are set through their navigation (the relationship whose lookup is the column).
@@ -315,15 +416,6 @@ function lookupNav(store, mapping, attribute) {
       (nav) => relationships[nav].many === false && relationships[nav].from === attribute,
     ) ?? attribute
   );
-}
-
-// Relationship SchemaName -> the navigation the Web API uses (ref routes take the navigation name).
-function navOfRelationship(store, mapping, schemaName) {
-  const nav = Object.keys(relationshipsOf(store, mapping.logicalName, mapping.relationships)).find(
-    (name) => name.toLowerCase() === String(schemaName ?? '').toLowerCase(),
-  );
-  if (!nav) throw invalid(`Relationship '${schemaName}' is not defined on '${mapping.logicalName}'.`, '0x80048d19');
-  return nav;
 }
 
 function jsonValue(v, name) {
@@ -354,6 +446,12 @@ function jsonValue(v, name) {
 
 // Entity attributes as a Web API body: lookups become nav@odata.bind, everything else is a plain property.
 function attributesJson(s, entity) {
+  if (entity.relatedEntities?.length)
+    throw new DataError(
+      'SOAP Entity.RelatedEntities requires a qualified graph-write adapter.',
+      501,
+      'LocalSoapInputUnsupported',
+    );
   const mapping = mappingOf(s.api, entity.logicalName);
   const out = {};
   for (const [name, value] of entity.attributes ?? []) {
@@ -465,16 +563,35 @@ const recordKey = (api, target, what) =>
 const partitionQuery = (s) => (s.partitionId == null ? {} : { partitionId: s.partitionId });
 
 async function createRow(s, entity) {
-  const result = await web(s, 'POST', setOf(s.api, entity.logicalName), { body: attributesJson(s, entity) });
+  const result = await web(s, 'POST', setOf(s.api, entity.logicalName), {
+    body: attributesJson(s, entity),
+    sdkCreateId: entity.id,
+    sdkOperation: 'create',
+    sdkEntity: entity.logicalName,
+  });
   return idFromLocation(result.headers?.['OData-EntityId']);
 }
 
 async function retrieveRow(s, target, columnSet) {
+  if (columnSet === null)
+    throw new DataError(
+      'A nil SOAP Retrieve ColumnSet requires a separately qualified input adapter.',
+      501,
+      'LocalSoapInputUnsupported',
+    );
   const select =
-    columnSet && !columnSet.allColumns && columnSet.columns?.length ? { $select: columnSet.columns.join(',') } : {};
+    columnSet && !columnSet.allColumns
+      ? { $select: columnSet.columns?.length ? columnSet.columns.join(',') : primaryOf(s.api, target.logicalName) }
+      : {};
   const result = await web(s, 'GET', `${setOf(s.api, target.logicalName)}(${recordKey(s.api, target, 'Retrieve')})`, {
     query: { ...select, ...partitionQuery(s), ...(s.unmask ? { UnMaskedData: 'true' } : {}) },
     prefer: ANNOTATIONS,
+    sdkColumns: columnSet
+      ? { allColumns: columnSet.allColumns === true, columns: [...(columnSet.columns ?? [])] }
+      : undefined,
+    sdkTarget: toSdkValue(target),
+    sdkOperation: 'retrieve',
+    sdkEntity: target.logicalName,
   });
   return entityFrom(s, target.logicalName, result.body);
 }
@@ -501,6 +618,9 @@ async function retrieveMany(s, query) {
   const result = await web(s, 'GET', setOf(s.api, logical), {
     query: { fetchXml, ...(s.unmask ? { UnMaskedData: 'true' } : {}) },
     prefer: ANNOTATIONS,
+    sdkQuery: query.type === 'Fetch' ? undefined : toSdkQuery(query.model, query.type),
+    sdkOperation: 'retrievemultiple',
+    sdkEntity: logical,
   });
   return collectionFrom(s, logical, result.body);
 }
@@ -509,12 +629,16 @@ async function updateRow(s, entity) {
   await web(s, 'PATCH', `${setOf(s.api, entity.logicalName)}(${recordKey(s.api, entity, 'Update')})`, {
     body: attributesJson(s, entity),
     headers: { 'if-match': '*' },
+    sdkOperation: 'update',
+    sdkEntity: entity.logicalName,
   });
 }
 
 async function deleteRow(s, target) {
   await web(s, 'DELETE', `${setOf(s.api, target.logicalName)}(${recordKey(s.api, target, 'Delete')})`, {
     query: partitionQuery(s),
+    sdkOperation: 'delete',
+    sdkEntity: target.logicalName,
   });
 }
 
@@ -544,13 +668,72 @@ async function upsertRow(s, target) {
 }
 
 async function relate(s, target, relationship, related, remove) {
-  const mapping = mappingOf(s.api, target.logicalName);
-  const base = `${mapping.entitySet}(${requireId(s.api, target, 'Associate')})/${navOfRelationship(s.api.store, mapping, relationship?.schemaName)}/$ref`;
-  for (const ref of related?.values ?? []) {
-    const child = `${setOf(s.api, ref.logicalName)}(${ref.id})`;
-    if (remove) await web(s, 'DELETE', base, { query: { $id: child } });
-    else await web(s, 'POST', base, { body: { '@odata.id': child } });
-  }
+  const parameters = {
+    Target: {
+      $type: 'EntityReference',
+      logicalName: target?.logicalName,
+      id: requireId(s.api, target, 'Associate'),
+      name: target?.name ?? null,
+    },
+    Relationship: {
+      $type: 'Relationship',
+      schemaName: relationship?.schemaName,
+      primaryEntityRole: relationship?.primaryEntityRole ?? null,
+    },
+    RelatedEntities: {
+      $type: 'EntityReferenceCollection',
+      values: (related?.values ?? []).map((ref) => ({
+        $type: 'EntityReference',
+        logicalName: ref.logicalName,
+        id: ref.id,
+        name: ref.name ?? null,
+      })),
+    },
+  };
+  const binding = associationRequestBinding(s.api.store, parameters, s.identity, { navigationFallback: true });
+  const url = new URL(
+    `/api/data/${s.version}/${binding.mapping.entitySet}(${binding.id})/${binding.navigation}/$ref`,
+    s.origin,
+  );
+  const context = {
+    method: remove ? 'DELETE' : 'POST',
+    route: parseDataverseRoute(url.pathname),
+    url,
+    origin: s.origin,
+    version: s.version,
+    prefer: parsePrefer(''),
+    headers: {},
+    user: s.user,
+    caller: s.caller,
+    identity: s.identity,
+    requestId: s.requestId,
+    bypassCustomPlugins: s.bypassCustomPlugins === true,
+    bypassCustomAsync: s.bypassCustomAsync === true,
+    bypassStepIds: s.bypassStepIds ?? [],
+    systemParameters: s.systemParameters,
+  };
+  const write = (sdkResponseToken) =>
+    s.api.records[remove ? 'disassociateInternal' : 'associateInternal'](
+      context,
+      binding.entity,
+      binding.id,
+      binding.navigation,
+      binding.related.values.map((ref) => ref.id),
+      {
+        associationParameters: parameters,
+        writeOptions: { sdkResponseToken, ...(s.partitionId == null ? {} : { partitionId: s.partitionId }) },
+      },
+    );
+  // One SOAP message has one RelatedEntities collection and one atomic main
+  // operation, even when a later member or PostOperation step refuses it.
+  await captureSoapResponse(s, remove ? 'disassociate' : 'associate', binding.entity, (token) => {
+    const atomic = () =>
+      s.api.runAtomic
+        ? // Its PreValidation runs outside the transaction (native relationsReads: SOAP Associate/10 IsInTransaction false).
+          s.api.runAtomic(() => write(token), { pluginVisible: false })
+        : s.api.store.transact(() => write(token));
+    return s.api.change ? s.api.change(atomic) : atomic();
+  });
 }
 
 // ---- Messages: each returns { name, responseType, namespace, results: Map of typed values }
@@ -563,13 +746,37 @@ const reply = (name, results = new Map(), namespace = NS.a) => ({
 
 // BypassCustomPluginExecution (a request parameter, per item) needs the privilege the HTTP header needs.
 function bypassed(s, params) {
-  if (params.get('BypassCustomPluginExecution')?.value !== true) return s;
+  const plugins = params.get('BypassCustomPluginExecution');
+  const businessLogic = params.get('BypassBusinessLogicExecution');
+  const bypassStepIds = parseBypassStepIds(s.api.store, params.get('BypassBusinessLogicExecutionStepIds')?.value);
+  if (plugins && plugins.type !== 'boolean') throw invalid('BypassCustomPluginExecution requires a Boolean value.');
+  if (businessLogic && businessLogic.type !== 'string')
+    throw invalid('BypassBusinessLogicExecution requires a String value.');
+  const logic = String(businessLogic?.value ?? '')
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  if (logic.some((value) => !['customsync', 'customasync'].includes(value)))
+    throw invalid('BypassBusinessLogicExecution accepts CustomSync and CustomAsync.');
   const { principals } = s.api;
-  const held =
-    principals.privileges(s.caller).has('prvBypassCustomPlugins') ||
+  const held = (privilege) =>
+    principals.privileges(s.caller).has(privilege) ||
     principals.roles(s.caller).some((role) => BYPASS_ROLES.has(role.name));
-  if (!held) throw privilegeDeniedError(s.caller, 'prvBypassCustomPlugins', 'systemuser');
-  return { ...s, bypassCustomPlugins: true };
+  if (plugins?.value === true && !held('prvBypassCustomPlugins'))
+    throw privilegeDeniedError(s.caller, 'prvBypassCustomPlugins', 'systemuser');
+  if ((logic.length || bypassStepIds.length) && !held('prvBypassCustomBusinessLogic'))
+    throw privilegeDeniedError(s.caller, 'prvBypassCustomBusinessLogic', 'systemuser');
+  return {
+    ...s,
+    bypassCustomPlugins: plugins?.value === true || logic.includes('customsync'),
+    bypassCustomAsync: logic.includes('customasync'),
+    bypassStepIds,
+    systemParameters: Object.fromEntries(
+      ['BypassCustomPluginExecution', 'BypassBusinessLogicExecution', 'BypassBusinessLogicExecutionStepIds']
+        .filter((key) => params.has(key))
+        .map((key) => [key, params.get(key).value]),
+    ),
+  };
 }
 
 // One dataverse span per SOAP message (D-R3-8), an ExecuteMultiple or ExecuteTransaction item included: named by the
@@ -577,7 +784,7 @@ function bypassed(s, params) {
 // captured at full. A fault fails the span with its error.
 function runRequest(base, request, requestIndex) {
   const traces = base.api.store?.traces;
-  if (!traces?.enabled) return runMessage(base, request);
+  if (!traces?.enabled) return runTaggedRequest(base, request);
   const { name, params } = request;
   const target = params.get('Target') ?? params.get('EntityMoniker');
   const query = params.get('Query');
@@ -600,7 +807,7 @@ function runRequest(base, request, requestIndex) {
       input: () => Object.fromEntries(params),
     },
     async (span) => {
-      const result = await runMessage(base, request);
+      const result = await runTaggedRequest(base, request);
       // A Create names the record it created.
       const created = name === 'Create' ? result.results?.get('id')?.value : null;
       if (created) span.setEntity(entity, created);
@@ -610,7 +817,64 @@ function runRequest(base, request, requestIndex) {
   );
 }
 
-async function runMessage(base, { name, params }) {
+// The request's own operation context and tag (a batch member included).
+function runTaggedRequest(base, request) {
+  const tagged = request.params.has('tag') ? { tag: request.params.get('tag')?.value ?? null } : {};
+  if (request.params.has('tag') && request.params.get('tag')?.type !== 'string')
+    throw invalid('tag requires a String value.');
+  const store = base.api.store;
+  return store.withOperationContext(
+    () => {
+      // The batch wrapper and each member own separate request metadata. A nil
+      // member RequestId must not inherit its wrapper's authored identifier.
+      store.pluginRequestId = request.requestId;
+      return withPluginRequestTag(store, tagged, () => runRequestCore(base, request));
+    },
+    { fresh: true },
+  );
+}
+async function runRequestCore(base, { name, params }) {
+  const inputs = {
+    Create: ['Target'],
+    Update: ['Target', 'ConcurrencyBehavior'],
+    Delete: ['Target'],
+    Retrieve: ['Target', 'ColumnSet'],
+    RetrieveMultiple: ['Query'],
+    Associate: ['Target', 'Relationship', 'RelatedEntities'],
+    Disassociate: ['Target', 'Relationship', 'RelatedEntities'],
+    Upsert: ['Target'],
+    Assign: ['Target', 'Assignee'],
+    SetState: ['EntityMoniker', 'State', 'Status'],
+  }[name];
+  const optional = [
+    'tag',
+    'partitionId',
+    'SessionToken',
+    'BypassCustomPluginExecution',
+    'BypassBusinessLogicExecution',
+    'BypassBusinessLogicExecutionStepIds',
+    'SuppressDuplicateDetection',
+    ...(['Retrieve', 'RetrieveMultiple'].includes(name) ? ['UnMaskedData'] : []),
+  ];
+  if (inputs)
+    for (const key of params.keys())
+      if (!inputs.includes(key) && !optional.includes(key))
+        throw new DataError(`Unsupported SOAP ${name} request parameter: ${key}`, 501, 'LocalSoapInputUnsupported');
+  for (const key of ['partitionId', 'SessionToken'])
+    if (params.get(key) != null && params.get(key).type !== 'string') throw invalid(`${key} requires a String value.`);
+  if (params.get('UnMaskedData') != null && params.get('UnMaskedData').type !== 'boolean')
+    throw invalid('UnMaskedData requires a Boolean value.');
+  const suppression = params.get('SuppressDuplicateDetection');
+  if (params.has('SuppressDuplicateDetection')) {
+    if (!['Create', 'Update'].includes(name))
+      throw new DataError(
+        'SuppressDuplicateDetection is supported only for Create and Update.',
+        501,
+        'LocalSoapInputUnsupported',
+      );
+    if (suppression?.type !== 'boolean' || typeof suppression.value !== 'boolean')
+      throw invalid('SuppressDuplicateDetection requires a Boolean value.');
+  }
   // UnMaskedData: request["UnMaskedData"] = true asks the clear value of masked columns.
   const unmask = [true, 'true'].includes(params.get('UnMaskedData')?.value);
   const s = {
@@ -618,31 +882,57 @@ async function runMessage(base, { name, params }) {
     partitionId: params.get('partitionId')?.value,
     sessionToken: params.get('SessionToken')?.value,
     unmask,
+    suppressDuplicateDetection: suppression?.value,
   };
   const writeReply = (results = new Map()) => {
+    if (s.sdkResults !== undefined) results = soapSdkResults(s.sdkResults);
     if (s.responseSessionToken) results.set('x-ms-session-token', { type: 'string', value: s.responseSessionToken });
     return reply(name, results);
   };
   const p = (key) => params.get(key);
+  // Requests relayed to a registered operation run its pipeline there (dataverse-operations.mjs), Assign runs its own
+  // below; the service's other built-in messages have no pipeline and refuse a step chosen for them.
+  if (SOAP_UNPIPELINED.has(name) || metadataRequests(s.api).has(name))
+    assertPluginMessageAdmission(s.api.store, name, { ...s, params: Object.fromEntries(params) });
   switch (name) {
     case 'Create': {
       const id = await createRow(s, p('Target'));
       return writeReply(new Map([['id', guid(id)]]));
     }
-    case 'Retrieve':
-      return reply(name, new Map([['Entity', await retrieveRow(s, p('Target'), p('ColumnSet'))]]));
-    case 'RetrieveMultiple':
-      return reply(name, new Map([['EntityCollection', await retrieveMany(s, p('Query'))]]));
+    case 'Retrieve': {
+      const row = await retrieveRow(s, p('Target'), p('ColumnSet'));
+      return reply(
+        name,
+        s.sdkResults === undefined
+          ? new Map([['Entity', row]])
+          : soapSdkResults(s.sdkResults, [['BusinessEntity', 'Entity']]),
+      );
+    }
+    case 'RetrieveMultiple': {
+      const rows = await retrieveMany(s, p('Query'));
+      return reply(
+        name,
+        s.sdkResults === undefined
+          ? new Map([['EntityCollection', rows]])
+          : soapSdkResults(s.sdkResults, [['BusinessEntityCollection', 'EntityCollection']]),
+      );
+    }
     case 'Update':
+      if (params.has('ConcurrencyBehavior'))
+        throw new DataError(
+          'Authored SDK ConcurrencyBehavior requires a qualified optimistic-concurrency execution adapter.',
+          501,
+          'LocalSoapInputUnsupported',
+        );
       await updateRow(s, p('Target'));
       return writeReply();
     case 'Delete':
       await deleteRow(s, p('Target'));
-      return reply(name);
+      return reply(name, s.sdkResults === undefined ? new Map() : soapSdkResults(s.sdkResults));
     case 'Associate':
     case 'Disassociate':
       await relate(s, p('Target'), p('Relationship'), p('RelatedEntities'), name === 'Disassociate');
-      return reply(name);
+      return reply(name, s.sdkResults === undefined ? new Map() : soapSdkResults(s.sdkResults));
     case 'Upsert': {
       const target = p('Target');
       const { created, id } = await upsertRow(s, target);
@@ -656,18 +946,57 @@ async function runMessage(base, { name, params }) {
     case 'Assign': {
       const target = p('Target');
       const assignee = p('Assignee');
-      await web(s, 'PATCH', `${setOf(s.api, target.logicalName)}(${requireId(s.api, target, 'Assign')})`, {
-        body: {
-          'ownerid@odata.bind': `/${setOf(s.api, assignee.logicalName)}(${requireId(s.api, assignee, 'Assign assignee')})`,
-        },
-      });
+      const id = requireId(s.api, target, 'Assign'),
+        assigneeId = requireId(s.api, assignee, 'Assign assignee'),
+        logical = primaryTable(s.api, target.logicalName) ?? target.logicalName,
+        assigneeTable = primaryTable(s.api, assignee.logicalName) ?? assignee.logicalName;
+      // Assign runs its own pipeline; its main operation updates the owner as SYSTEM (recorded native soapMessages).
+      await namedTransaction(s, () =>
+        runEntryMessage(s.api.store, {
+          message: 'Assign',
+          entity: logical,
+          id,
+          inputs: { Target: sdkRef(logical, id), Assignee: sdkRef(assigneeTable, assigneeId) },
+          context: s,
+          main: () =>
+            namedUpdate(
+              s,
+              logical,
+              id,
+              { 'ownerid@odata.bind': `/${setOf(s.api, assigneeTable)}(${assigneeId})` },
+              true,
+              { assignOwner: true },
+            ),
+        }),
+      );
       return reply(name, new Map(), NS.g);
     }
     case 'SetState': {
       const moniker = p('EntityMoniker');
-      const body = { statecode: num(p('State')?.value) };
-      if (p('Status')?.value != null) body.statuscode = num(p('Status').value);
-      await web(s, 'PATCH', `${setOf(s.api, moniker.logicalName)}(${requireId(s.api, moniker, 'SetState')})`, { body });
+      const id = requireId(s.api, moniker, 'SetState'),
+        logical = primaryTable(s.api, moniker.logicalName) ?? moniker.logicalName,
+        state = num(p('State')?.value),
+        status = p('Status')?.value == null ? null : num(p('Status').value);
+      // SetState runs as SetStateDynamicEntity; its main operation updates the state as the caller (recorded native
+      // soapMessages). Registered SetState steps never run.
+      await namedTransaction(s, () =>
+        runEntryMessage(s.api.store, {
+          message: 'SetStateDynamicEntity',
+          entity: logical,
+          id,
+          inputs: {
+            EntityMoniker: sdkRef(logical, id),
+            State: { $type: 'OptionSetValue', value: state },
+            Status: { $type: 'OptionSetValue', value: status ?? -1 },
+          },
+          context: s,
+          main: () =>
+            namedUpdate(s, logical, id, {
+              statecode: state,
+              ...(status == null || status === -1 ? {} : { statuscode: status }),
+            }).then(() => ({ IsValid: true })),
+        }),
+      );
       return reply(name, new Map(), NS.g);
     }
     case 'WhoAmI': {
@@ -734,10 +1063,10 @@ async function runMessage(base, { name, params }) {
       if (!transaction && collection.length > MAX_BATCH) {
         throw invalid(`The ExecuteMultiple request has ${collection.length} requests; the maximum is ${MAX_BATCH}.`); // ponytail: fixed limit; unverified message text
       }
-      const continueOnError = !transaction && localText(settings, 'ContinueOnError') === 'true';
+      const continueOnError = !transaction && ['true', '1'].includes(localText(settings, 'ContinueOnError'));
       const returnResponses = transaction
         ? p('ReturnResponses')?.value === true
-        : localText(settings, 'ReturnResponses') === 'true';
+        : ['true', '1'].includes(localText(settings, 'ReturnResponses'));
       const outcomes = await runMany(s, collection, { continueOnError, transaction });
       const items = outcomes
         .filter((o) => o.error || returnResponses)
@@ -786,14 +1115,22 @@ async function registryRequest(s, name, params) {
   const action = op.kind === 'action';
   const values = Object.fromEntries(
     [...params]
-      .filter(([key]) => key !== 'BypassCustomPluginExecution')
+      .filter(
+        ([key]) =>
+          ![
+            'BypassCustomPluginExecution',
+            'BypassBusinessLogicExecution',
+            'BypassBusinessLogicExecutionStepIds',
+            'tag',
+          ].includes(key),
+      )
       .map(([key, value]) => [key, plainOf(s, value)]),
   );
   let target;
   let path = name;
   if (binding === 'entity') {
     const mapping = s.api.store.resolveMapping(bound.entity);
-    const row = s.api.store.get(bound.entity, bound.id, s.identity);
+    const row = s.api.store.get(bound.entity, bound.id, s.identity, { skipPluginRead: true });
     if (!row)
       throw new DataError(`${bound.entity} With Id = ${bound.id} Does Not Exist`, 404, 'NotFound', { id: bound.id });
     target = { mapping, id: bound.id, row };
@@ -815,16 +1152,25 @@ async function registryRequest(s, name, params) {
     caller: s.caller,
     identity: s.identity,
     requestId: s.requestId,
+    bypassCustomPlugins: s.bypassCustomPlugins === true,
+    bypassCustomAsync: s.bypassCustomAsync === true,
+    bypassStepIds: s.bypassStepIds ?? [],
+    systemParameters: s.systemParameters,
     api: s.api,
   });
   const { results, responseName } = resultsOf({
     api: s.api,
     registry,
     op,
-    body: result?.body,
+    body: result?.sdkOutputs === undefined ? result?.body : undefined,
     entityOf: (logical, row) => entityFrom(s, logical, row),
   });
-  return { name, responseType: responseName ?? 'OrganizationResponse', namespace: responseName ? NS.g : NS.a, results };
+  return {
+    name,
+    responseType: responseName ?? 'OrganizationResponse',
+    namespace: responseName ? NS.g : NS.a,
+    results: result?.sdkOutputs === undefined ? results : soapSdkResults(result.sdkOutputs.values),
+  };
 }
 
 // The bound table of a request: an entity reference binds to its row's table (binding "entity"), a reference collection to
@@ -916,7 +1262,7 @@ const prefixOf = (namespace) => (namespace === NS.g ? 'g' : 'a');
 const kvp = (key, valueXml) =>
   `<a:KeyValuePairOfstringanyType><b:key>${esc(key)}</b:key>${valueXml}</a:KeyValuePairOfstringanyType>`;
 const resultsXml = (results) =>
-  [...results].map(([key, value]) => value.rawValueXml ?? kvp(key, encodeValue('b:value', value))).join('');
+  [...results].map(([key, value]) => value?.rawValueXml ?? kvp(key, encodeValue('b:value', value))).join('');
 
 // Typed fault members for one item or top-level fault (shared by ExecuteMultiple items and the SOAP fault).
 function faultParts(error, c) {
@@ -977,7 +1323,13 @@ function executeXml(result) {
 // Body-operation response: the named result element, when the operation returns one.
 function bodyXml(result) {
   const resultName = BODY_RESULTS[result.name];
-  const inner = resultName ? encodeValue(`svc:${resultName}`, [...result.results.values()][0]) : '';
+  const key = { Create: 'id', Retrieve: 'Entity', RetrieveMultiple: 'EntityCollection' }[result.name];
+  const value = result.results.has(key)
+    ? result.results.get(key)
+    : result.name === 'Create'
+      ? guid('00000000-0000-0000-0000-000000000000')
+      : null;
+  const inner = resultName ? encodeValue(`svc:${resultName}`, value) : '';
   return `<svc:${result.name}Response>${inner}</svc:${result.name}Response>`;
 }
 

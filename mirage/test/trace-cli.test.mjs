@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // paqvilo mirage trace (mirage/trace.mjs) and connectRuntime().trace against a loopback server built from the trace router
 // (sim-trace-routes.mjs), a status route, a CSRF state route and a /_sim/events `trace` channel (createTraceChannel). The
 // event stream produces its spans once the channel is attached, so no step waits on time; with `endStream` the server

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Model-driven client trace propagation in a real browser (docs/design/tracing.md, DV-A-13): the shell's calls to
 // /_apps/api (catalogue, records) and Xrm.WebApi through the bridge carry the page root's trace headers, so they are
 // children of the GET /main.aspx root in one trace.

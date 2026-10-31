@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft Learn asyncoperation system jobs, asyncautodelete and organization plugintracelogsetting for plug-in executions
 // Plug-in system jobs: asyncoperation rows for async steps, plugintracelog rows, the Custom API plug-in type route and the
 // TriggerServiceEndpointCheck probe.
 import { describe, it, afterEach, mock } from 'node:test';
@@ -17,6 +18,7 @@ import {
 } from '../lib/exported-plugins.mjs';
 import { customApiHandlers, install as installCustomApis } from '../lib/dataverse-customapi.mjs';
 import { install as installRegistration } from '../lib/dataverse-plugin-registration.mjs';
+import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
 
 const WIDGET = 'bbbbbbbb-0000-4000-8000-000000000001';
 const STEP = '5c0b0000-0000-4000-8000-000000000001';
@@ -60,8 +62,17 @@ function fixtureState() {
 
 // A store with the pipeline wired the way server.mjs wires it. With dataverse true the Dataverse API is started on it, which
 // seeds the asyncoperation and plugintracelog tables; the runner then writes system jobs.
-async function world({ dataverse, handlers, items: _items = () => [], traceLevel = null, steps = [] }) {
-  const store = await new DataStore({ state: fixtureState() }).init();
+async function world({
+  dataverse,
+  handlers,
+  items: _items = () => [],
+  traceLevel = null,
+  steps = [],
+  clock,
+  scheduler = null,
+}) {
+  const store = await new DataStore({ state: fixtureState(), clock }).init();
+  if (scheduler) store.scheduler = scheduler;
   const diagnostics = [];
   const diagnostic = (entry) => diagnostics.push(entry);
   const api = dataverse
@@ -117,6 +128,8 @@ describe('async steps write asyncoperation system jobs when the Dataverse API is
     world_ = null;
   });
 
+  // @test-kind parity: native and native-r2 jobs[]: plug-in job rows have primaryentitytype null and a numeric executiontimespan
+  // @parity-evidence: native and native-r2 jobs[]: 53/53 primaryentitytype null, executiontimespan numeric, 0 on statuscode 32 with startedon null
   it('a succeeded run ends Completed/Succeeded with the step, the regarding row and the System Event type', async () => {
     const handlers = pluginHandlers([{ id: 'invented', pluginSteps: { [STEP]: () => {} } }]);
     world_ = await world({ dataverse: true, handlers, steps: [step()] });
@@ -128,13 +141,15 @@ describe('async steps write asyncoperation system jobs when the Dataverse API is
     assert.equal(job.statuscode, 30);
     assert.equal(job.owningextensionid.id, STEP);
     assert.equal(job.regardingobjectid.id, WIDGET);
-    assert.equal(job.primaryentitytype, 'contoso_widget');
+    assert.equal(job.primaryentitytype, null);
+    assert.equal(typeof job.executiontimespan, 'number');
+    assert.ok(job.executiontimespan >= 0);
     assert.equal(job.messagename, 'Create');
     assert.equal(job.depth, 1);
     assert.ok(Date.parse(job.startedon) <= Date.parse(job.completedon), `${job.startedon} .. ${job.completedon}`);
   });
 
-  it('a failing run ends Completed/Failed with the message, the friendly message and error code 0 for an error without a Dataverse code', async () => {
+  it('a failing run ends Completed/Failed with the message, the friendly message and the ordinary plug-in exception code', async () => {
     const handlers = pluginHandlers([
       {
         id: 'invented',
@@ -151,9 +166,12 @@ describe('async steps write asyncoperation system jobs when the Dataverse API is
     const [job] = world_.store.tableRows('asyncoperation');
     assert.equal(job.statecode, 3);
     assert.equal(job.statuscode, 31);
-    assert.equal(job.message, 'Invented asynchronous rejection');
+    // Native asyncRetry (two captures): a failed plug-in job keeps the authored text as friendlymessage, the plug-in
+    // trace block as message and errorcode 0x80040265 for any plug-in exception (plain, coded or Retry).
     assert.equal(job.friendlymessage, 'Invented asynchronous rejection');
-    assert.equal(job.errorcode, 0);
+    assert.match(job.message, /^Plugin Trace:\r\n/);
+    assert.match(job.message, /Message: Invented asynchronous rejection/);
+    assert.equal(job.errorcode, 0x80040265 | 0);
   });
 
   it('asyncautodelete removes a succeeded job row only, and a failed one stays', async () => {
@@ -188,8 +206,199 @@ describe('async steps write asyncoperation system jobs when the Dataverse API is
       [31],
     );
   });
+
+  // @test-kind parity: native-r2 asyncLoop and asyncDeletedRow: every job row's correlationid is the CorrelationId of the contexts of its request
+  // @parity-evidence: native-r2 asyncLoop and asyncDeletedRow jobs[].correlationid vs events CorrelationId
+  it('each job row carries the CorrelationId its request contexts report: bridged siblings, a three-hop chain and a nested create', async () => {
+    const SYNC_STEP = '5c0b0000-0000-4000-8000-000000000011',
+      BRIDGED_STEP = '5c0b0000-0000-4000-8000-000000000012',
+      SYNC_TYPE = 'Contoso.Plugins.WidgetSync',
+      BRIDGED_TYPE = 'Contoso.Plugins.WidgetBridge',
+      NESTED = 'bbbbbbbb-0000-4000-8000-000000000004';
+    // A plug-in type handler that records the context's CorrelationId and the row's name for its lane.
+    const seenBy = (seen, lane) => (args) => {
+      seen.push({ lane, correlationId: args.context.CorrelationId, name: args.record?.contoso_name });
+    };
+    // (a) one write: an asynchronous Create, its CreateMultiple (a bridged job of the same operation) and a synchronous Create.
+    {
+      const seen = [];
+      const handlers = pluginHandlers([
+        {
+          id: 'invented',
+          pluginTypes: {
+            [TYPE]: seenBy(seen, 'async'),
+            [BRIDGED_TYPE]: seenBy(seen, 'bridged'),
+            [SYNC_TYPE]: seenBy(seen, 'sync'),
+          },
+        },
+      ]);
+      const w = await world({
+        dataverse: true,
+        handlers,
+        steps: [
+          step({
+            id: SYNC_STEP,
+            typeName: SYNC_TYPE,
+            typeId: '5c0b0000-0000-4000-8000-000000000013',
+            mode: 0,
+            stage: 20,
+          }),
+          step(),
+          step({
+            id: BRIDGED_STEP,
+            typeName: BRIDGED_TYPE,
+            typeId: '5c0b0000-0000-4000-8000-000000000014',
+            message: 'CreateMultiple',
+          }),
+        ],
+      });
+      try {
+        await w.store.create('contoso_widget', { contoso_widgetid: WIDGET, contoso_name: 'alpha' }, { admin: true });
+        await w.runner.drain();
+        const jobs = w.store.tableRows('asyncoperation');
+        assert.deepEqual(seen.map((entry) => entry.lane).sort(), ['async', 'bridged', 'sync']);
+        const [correlation] = seen.map((entry) => entry.correlationId);
+        assert.ok(correlation);
+        assert.ok(seen.every((entry) => entry.correlationId === correlation));
+        assert.equal(jobs.length, 2);
+        assert.ok(jobs.every((job) => job.correlationid === correlation));
+      } finally {
+        await w.close();
+      }
+    }
+    // (b) an asynchronous Create that creates a row through the SDK, three runs deep: the chain shares one correlation.
+    {
+      const seen = [];
+      let hops = 0,
+        w = null;
+      const handlers = pluginHandlers([
+        {
+          id: 'invented',
+          pluginTypes: {
+            [TYPE]: (args) => {
+              seenBy(seen, 'async')(args);
+              hops++;
+              if (hops < 3)
+                w.store.sdkMutation(() =>
+                  w.store.createRecord('contoso_widget', { contoso_name: `hop ${hops}` }, { admin: true }),
+                );
+            },
+          },
+        },
+      ]);
+      w = await world({ dataverse: true, handlers, steps: [step()] });
+      try {
+        await w.store.create('contoso_widget', { contoso_widgetid: WIDGET, contoso_name: 'root' }, { admin: true });
+        await w.runner.drain();
+        const jobs = w.store.tableRows('asyncoperation');
+        assert.equal(hops, 3);
+        assert.equal(jobs.length, 3);
+        const [correlation] = seen.map((entry) => entry.correlationId);
+        assert.ok(correlation);
+        assert.ok(seen.every((entry) => entry.correlationId === correlation));
+        assert.ok(jobs.every((job) => job.correlationid === correlation));
+      } finally {
+        await w.close();
+      }
+    }
+    // (c) a synchronous Create that creates a row through the SDK: the nested row's asynchronous job shares the outer request's correlation.
+    {
+      const seen = [];
+      let w = null;
+      const handlers = pluginHandlers([
+        {
+          id: 'invented',
+          pluginTypes: {
+            [SYNC_TYPE]: (args) => {
+              seenBy(seen, 'sync')(args);
+              if (args.record.contoso_name === 'outer')
+                w.store.sdkMutation(() =>
+                  w.store.createRecord(
+                    'contoso_widget',
+                    { contoso_widgetid: NESTED, contoso_name: 'nested' },
+                    { admin: true },
+                  ),
+                );
+            },
+            [TYPE]: seenBy(seen, 'async'),
+          },
+        },
+      ]);
+      w = await world({
+        dataverse: true,
+        handlers,
+        steps: [
+          step({
+            id: SYNC_STEP,
+            typeName: SYNC_TYPE,
+            typeId: '5c0b0000-0000-4000-8000-000000000013',
+            mode: 0,
+            stage: 20,
+          }),
+          step(),
+        ],
+      });
+      try {
+        await w.store.create('contoso_widget', { contoso_widgetid: WIDGET, contoso_name: 'outer' }, { admin: true });
+        await w.runner.drain();
+        const outer = seen.find((entry) => entry.lane === 'sync' && entry.name === 'outer');
+        const nestedJob = w.store.tableRows('asyncoperation').find((job) => job.regardingobjectid?.id === NESTED);
+        assert.ok(outer?.correlationId);
+        assert.ok(nestedJob, 'the nested row has its own asynchronous job');
+        assert.equal(nestedJob.correlationid, outer.correlationId);
+        assert.equal(
+          seen.find((entry) => entry.lane === 'async' && entry.name === 'nested')?.correlationId,
+          outer.correlationId,
+        );
+      } finally {
+        await w.close();
+      }
+    }
+  });
+
+  // @test-kind parity: native and native-r2 jobs[]: plug-in job rows have primaryentitytype null and a numeric executiontimespan
+  // @parity-evidence: native and native-r2 jobs[]: 53/53 primaryentitytype null, executiontimespan numeric, 0 on statuscode 32 with startedon null
+  it('a job deleted before it starts keeps executiontimespan 0 without a start time; a run records its elapsed seconds', async () => {
+    const clock = fixedClock(),
+      scheduler = createScheduler({ clock, manual: true });
+    // The handler advances the store clock by 1.5 s: the attempt's elapsed time.
+    const handlers = pluginHandlers([
+      {
+        id: 'invented',
+        pluginSteps: {
+          [STEP]: () => {
+            clock.advance(1500);
+          },
+        },
+      },
+    ]);
+    const w = await world({ dataverse: true, handlers, steps: [step()], clock, scheduler });
+    try {
+      await w.store.create('contoso_widget', { contoso_widgetid: WIDGET, contoso_name: 'waiting' }, { admin: true });
+      await w.store.remove('contoso_widget', WIDGET, { admin: true });
+      await scheduler.runDue();
+      const [canceled] = w.store.tableRows('asyncoperation');
+      assert.equal(canceled.statuscode, 32);
+      assert.equal(canceled.executiontimespan, 0);
+      assert.equal(canceled.startedon ?? null, null);
+
+      await w.store.create(
+        'contoso_widget',
+        { contoso_widgetid: 'bbbbbbbb-0000-4000-8000-000000000003', contoso_name: 'runs' },
+        { admin: true },
+      );
+      await scheduler.runDue();
+      await w.runner.drain();
+      const ran = w.store.tableRows('asyncoperation').find((job) => job.statuscode === 30);
+      assert.equal(ran.executiontimespan, 1.5);
+    } finally {
+      await w.close();
+      await scheduler.close();
+    }
+  });
 });
 
+// @test-kind contract: Paqvilo design: the Dataverse API switch adds system jobs without changing portal results
 describe('the portal path is unchanged by system jobs', () => {
   it('a portal write that triggers an async step returns the same rows with the Dataverse API on and off; only the system job differs', async () => {
     const handlers = pluginHandlers([{ id: 'invented', pluginSteps: { [STEP]: () => {} } }]);
@@ -254,7 +463,8 @@ describe('plugintracelog follows organization.plugintracelogsetting', () => {
       assert.equal(row.messageblock, 'Invented trace line');
       assert.equal(row.mode, 0);
       assert.equal(row.depth, 1);
-      assert.equal(row.exceptiondetails, null);
+      // native traceFaults: exceptiondetails is empty after a successful run (it was null before)
+      assert.equal(row.exceptiondetails, '');
       assert.equal(row.pluginstepid.id, STEP);
       assert.equal(Number.isInteger(row.performanceexecutionduration), true);
     } finally {
@@ -351,6 +561,7 @@ describe('plugintracelog follows organization.plugintracelogsetting', () => {
   });
 });
 
+// @test-kind contract: Paqvilo pack API: pluginTypes handlers serve Custom API plug-in types; customApis entries take precedence
 describe('a Custom API whose plug-in type has a pluginTypes handler runs it', () => {
   const API_ID = 'cccccccc-0000-4000-8000-000000000001';
   const ADMIN = { systemuserid: 'aaaaaaaa-0000-4000-8000-000000000001' };
@@ -437,13 +648,17 @@ describe('a Custom API whose plug-in type has a pluginTypes handler runs it', ()
     assert.deepEqual(calls, []);
   });
 
-  it('a plug-in type with no handler leaves the API without one: the action answers 204 without running a handler', async () => {
+  it('a plug-in type with no handler leaves the API without one and refuses its unavailable main operation', async () => {
     const { call, calls } = await routed({ typeName: 'Contoso.Plugins.Unhandled' });
-    assert.deepEqual(await call(), { status: 204 });
+    await assert.rejects(
+      call(),
+      (error) => error.status === 501 && error.code === 'LocalPluginMainOperationUnavailable',
+    );
     assert.deepEqual(calls, []);
   });
 });
 
+// @test-kind security: loopback-only delivery: TriggerServiceEndpointCheck contacts only loopback webhooks; other URLs are never contacted
 describe('TriggerServiceEndpointCheck probes a loopback webhook endpoint', () => {
   let server;
   // Awaited, so the next test starts only after the endpoint stopped listening and dropped its connections.

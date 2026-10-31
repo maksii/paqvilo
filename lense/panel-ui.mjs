@@ -1887,8 +1887,9 @@ function panelBrowserImpl(data) {
           runtime?.error ? esc(runtime.error) : 'Tweaks change the local Mirage runtime.',
         );
       const t = S.tweaks;
-      if (!t || S.tweaksLoading !== null)
-        return loadingState('Loading local setup…', 'Reading personas, permissions and scenarios.');
+      // A refresh keeps the current Tweaks (the body is aria-busy meanwhile), so an open
+      // confirmation and its keyboard focus survive a newer runtime version.
+      if (!t) return loadingState('Loading local setup…', 'Reading personas, permissions and scenarios.');
       if (!t.ok)
         return (
           emptyState('Tweaks unavailable', esc(t.error ?? '')) +

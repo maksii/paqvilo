@@ -963,24 +963,21 @@ export function enablePanel(context, session, opts = {}) {
     });
     return { ok: true, navigating: true, via, returnUrl, contactId: contactId ?? null };
   };
-  /** The page's next load, or `ms` later when no reload comes; cancel() drops it. */
-  const nextLoad = (page, ms) => {
-    let timer, listener;
+  /**
+   * The page's next load; cancel() drops it. A Mirage write reloads every portal page through its
+   * reload event (or the ready revision when the stream reconnects), so no deadline stands in for
+   * it: a deadline that expired while a slow reload was still loading ran the session flow in the
+   * document that reload then destroyed.
+   */
+  const nextLoad = (page) => {
+    let listener;
     const promise = new Promise((resolve) => {
-      listener = () => {
-        clearTimeout(timer);
-        page.off?.('load', listener);
-        resolve();
-      };
-      timer = setTimeout(listener, ms);
+      listener = () => resolve();
       page.once?.('load', listener);
     });
     return {
       promise,
-      cancel: () => {
-        clearTimeout(timer);
-        page.off?.('load', listener);
-      },
+      cancel: () => page.off?.('load', listener),
     };
   };
   const lineOf = (file, find) => {
@@ -1885,7 +1882,7 @@ export function enablePanel(context, session, opts = {}) {
       const session = scenario && scenario.persona !== undefined ? await readSession(page) : null;
       const contactId = scenario?.persona?.contactId ?? null;
       const change = Boolean(session?.supported) && (session.signedIn ? session.contactId : null) !== contactId;
-      const reloaded = change ? nextLoad(page, 4000) : null;
+      const reloaded = change ? nextLoad(page) : null;
       const result = await mirageWrite(`/scenarios/${encodeURIComponent(body.id)}/apply`, 'POST', {});
       if (!result.ok) {
         reloaded?.cancel();
@@ -1894,9 +1891,9 @@ export function enablePanel(context, session, opts = {}) {
       afterTweak(`Scenario applied: ${body.id}`);
       if (!change) return { ok: true };
       reloaded.promise
-        .then(() => startSessionFlow(page, contactId))
+        .then(() => (disposed || page.isClosed() ? null : startSessionFlow(page, contactId)))
         .then((started) => {
-          if (!started.ok)
+          if (started && !started.ok)
             log({
               type: 'switch',
               text: `Scenario applied, but this browser's session did not change: ${started.error}`,

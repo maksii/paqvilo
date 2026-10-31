@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of named SDK Execute parameter contracts and rollback; CLR scenario marked not natively qualified
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
@@ -40,7 +41,7 @@ const request = (requestName, values) => ({
 const invoke = (store, value) =>
   dispatchSdkCall({ store, profile, message: { method: 'Execute', userId: user, arguments: [value] } });
 
-test('Named SDK Execute validates parameter contracts before writes and retains typed responses', () => {
+test('Named SDK Execute validates parameter contracts before writes and retains typed responses', async () => {
   const store = storeOf(),
     before = store.snapshot();
   assert.throws(
@@ -49,10 +50,40 @@ test('Named SDK Execute validates parameter contracts before writes and retains 
         store,
         request('Create', { Target: entity({ title: 'Untrusted override' }), BypassCustomPluginExecution: true }),
       ),
-    /Unsupported SDK Execute/,
+    (error) => error.code === 'LocalBackendPermissionDenied' && error.status === 403,
   );
-  assert.throws(() => invoke(store, request('ExecuteTransaction', { Requests: [] })), /Unsupported SDK Execute/);
+  // ExecuteTransaction is answered now (plugin-sdk-messages.mjs); Requests must be an OrganizationRequestCollection.
+  assert.throws(
+    () => invoke(store, request('ExecuteTransaction', { Requests: [] })),
+    (error) => error.code === 'InvalidArgument' && error.details?.innerCode === '0x80040203',
+  );
+  assert.throws(() => invoke(store, request('NotAMessage', {})), /Unsupported SDK Execute/);
   assert.deepEqual(store.snapshot(), before);
+  const bypassStore = storeOf();
+  let observed = 0;
+  bypassStore.setPluginPipeline(
+    () => {
+      observed++;
+    },
+    (c) => c.operation === 'update',
+  );
+  const bypassed = dispatchSdkCall({
+    store: bypassStore,
+    profile: { ...profile, privileges: ['prvBypassCustomPlugins'] },
+    message: {
+      method: 'Execute',
+      userId: user,
+      arguments: [
+        request('Update', {
+          Target: entity({ title: 'Authorized bypass' }),
+          BypassCustomPluginExecution: true,
+        }),
+      ],
+    },
+  });
+  assert.equal(bypassed.responseName, 'Update');
+  assert.equal(bypassStore.tableRows('secondary')[0].title, 'Authorized bypass');
+  assert.equal(observed, 0);
   const retrieved = invoke(
     store,
     request('Retrieve', {
@@ -76,11 +107,14 @@ test('Named SDK Execute validates parameter contracts before writes and retains 
     ).results.Entity.id,
     id,
   );
-  assert.throws(
-    () => invoke(store, request('Delete', { Target: { $type: 'EntityReference', logicalName: 'secondary', id } })),
-    /serialized read-operation/,
-  );
+  // An independent read's step write commits in a transaction of its own (data.mjs openReadLane): the read sees it at
+  // once, the committed state after the lane closes and its commit settles.
+  invoke(store, request('Delete', { Target: { $type: 'EntityReference', logicalName: 'secondary', id } }));
+  assert.equal(store.tableRows('secondary').length, 0);
+  store.closeReadLane(null);
   assert.equal(store.snapshot().tables.secondary.length, 1);
+  await store.settleReadLanes();
+  assert.equal(store.snapshot().tables.secondary.length, 0);
 });
 
 test(

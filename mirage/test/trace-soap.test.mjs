@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Tracing of the SOAP Organization service (docs/design/tracing.md): the listener root is on host `soap` and names the SOAP
 // operation, the message and its query kind; every message (an ExecuteMultiple item included) is a dataverse span named by
 // the message with its table, record and parameters; a fault is the root's error with the Dataverse code. Invented schema.

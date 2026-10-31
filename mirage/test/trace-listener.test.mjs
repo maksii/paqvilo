@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Tracing of the Dataverse Web API listener (docs/design/tracing.md): the root keeps its request at full (query, headers,
 // body) and names a handled or refused answer's error; built-in functions, registered functions and actions, and bulk
 // messages open their own span named by the message; at level off the listener reads nothing for tracing. Invented schema.

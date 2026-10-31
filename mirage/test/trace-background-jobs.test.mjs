@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Tracing of background work (docs/design/tracing.md decision 4, D-R3-6): a BulkDelete job, an api.systemJob, a background
 // operation (Prefer: respond-async) with its callback, RunDesktopFlow, a background ExecuteWorkflow, the rollup mass job,
 // the elastic TTL purge, cascades and business rules. Each job runs detached under a `job` span parented by the span that

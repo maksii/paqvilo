@@ -1,4 +1,12 @@
 import { readRawBody } from './http-body.mjs';
+import {
+  accessNamesOf,
+  entryMessageActive,
+  maskOfNames,
+  recordSharingChange,
+  runEntryMessage,
+  sharedMaskOf,
+} from './plugin-platform-messages.mjs';
 import { dataverseHttpReaderContext } from './dataverse-scalar-reader.mjs';
 // Dataverse HTTP listeners: STS, discovery, SOAP and the Web API router.
 // Table rows are delegated to dataverse-records.mjs; metadata to dataverse-metadata.mjs.
@@ -16,6 +24,8 @@ import { organizationPrincipalContext } from './dataverse-principal-context.mjs'
 import { gzipSync } from 'node:zlib';
 import { acceptsGzip } from './http-content-encoding.mjs';
 import { DataError } from './data-error.mjs';
+import { bypassStepIds as parseBypassStepIds } from './plugin-bypass.mjs';
+import { withPluginRequestTag } from './plugin-request-tag.mjs';
 import { createAuthority, verifySecret } from './dataverse-auth.mjs';
 import { executeBatch, parseBatch } from './dataverse-batch.mjs';
 import {
@@ -96,7 +106,7 @@ const RING_SIZE = 500;
 const MAX_HEADER_SIZE = 65536;
 const MAX_URL_LENGTH = 32768;
 const PLAIN_INVALID_URL = 'Bad Request - Invalid URL';
-// The other MSCRM headers (SuppressDuplicateDetection, SolutionUniqueName, MergeLabels) and Consistency are accepted and ignored.
+// SuppressDuplicateDetection is handled by record validation; SolutionUniqueName, MergeLabels and Consistency have no local effect.
 // Names a browser or client may use for the listeners: the TLS certificate's subjectAltNames and the listener's own host.
 const TLS_HOST_NAMES = ['localhost', '127.0.0.1', '[::1]'];
 
@@ -598,14 +608,40 @@ function metadataChanges(d, c, route) {
   };
 }
 
-function principalAccess(d, c, route, subjectId, common) {
+async function principalAccess(d, c, route, subjectId, common) {
   const reference = referenceOf(parseFunctionParameters(route.params, c.url.searchParams).Target);
   const target = referenceRoute(reference, c.origin, route.version);
   if (target?.kind !== 'entity') throw new DataError('Invalid argument.', 400, 'InvalidKey');
   const logical = d.store.resolveMapping(target.set).logicalName;
   const rowId = parseKey(target.key)?.id ?? target.key;
-  const row = d.store.get(logical, rowId, common.identity);
+  // No Retrieve pipeline runs before RetrievePrincipalAccess (recorded native webApiNamed).
+  const row = d.store.get(logical, rowId, common.identity, { skipPluginRead: true });
   if (!row) throw new DataError(`${logical} With Id = ${rowId} Does Not Exist`, 404, 'NotFound', { id: rowId });
+  // RetrievePrincipalAccess runs its own pipeline (Target the row, Principal the bound subject; recorded native
+  // webApiNamed), as the SDK path does (plugin-platform-messages.mjs).
+  const subjectTable = route.set === 'teams' ? 'team' : route.set === 'organizations' ? 'organization' : 'systemuser';
+  if (subjectTable !== 'organization' && entryMessageActive(d.store, 'RetrievePrincipalAccess', logical, common)) {
+    let answer;
+    await runEntryMessage(d.store, {
+      message: 'RetrievePrincipalAccess',
+      entity: logical,
+      id: rowId,
+      inputs: {
+        Target: { $type: 'EntityReference', logicalName: logical, id: rowId, name: null },
+        Principal: { $type: 'EntityReference', logicalName: subjectTable, id: subjectId, name: null },
+      },
+      context: common,
+      main: () => {
+        answer = principalAccessAnswer(d, c, route, subjectId, common, logical, row);
+        return { AccessRights: { $type: 'AccessRights', value: maskOfNames(answer.body.AccessRights) } };
+      },
+    });
+    return answer;
+  }
+  return principalAccessAnswer(d, c, route, subjectId, common, logical, row);
+}
+
+function principalAccessAnswer(d, c, route, subjectId, common, logical, row) {
   let AccessRights;
   if (route.set === 'systemusers') {
     const subject = d.principals.byId(subjectId);
@@ -613,12 +649,19 @@ function principalAccess(d, c, route, subjectId, common) {
       throw new DataError(`systemuser With Id = ${subjectId} Does Not Exist`, 404, 'NotFound', { id: subjectId });
     AccessRights = d.principals.principalAccess({ user: subject, entity: logical, row });
   } else if (route.set === 'teams') {
-    const team = d.store.get('team', subjectId, common.identity);
+    const team = d.store.get('team', subjectId, common.identity, { skipPluginRead: true });
     if (!team) throw new DataError(`team With Id = ${subjectId} Does Not Exist`, 404, 'NotFound', { id: subjectId });
     AccessRights = d.principals.teamAccess({ team, entity: logical, row });
   } else {
     AccessRights = d.principals.organizationAccess({ entity: logical });
   }
+  // A team's direct share gives it the shared rights on the row (recorded native webApiNamed: a team holding only a
+  // share answers them), as on the SDK path. A user's share without the table privilege stays None (local model).
+  if (route.set === 'teams')
+    AccessRights = accessNamesOf(
+      maskOfNames(AccessRights) |
+        sharedMaskOf(d.store, logical, row[d.store.resolveMapping(logical).idColumn], subjectId),
+    );
   return {
     status: 200,
     body: {
@@ -686,7 +729,8 @@ function entityParameter(d, value) {
 async function shareAction(d, c, route, common) {
   const body = common.body ?? {};
   const target = entityParameter(d, body.Target);
-  const row = d.store.get(target.logical, target.id, common.identity);
+  // No Retrieve pipeline runs before a sharing message (recorded native webApiNamed).
+  const row = d.store.get(target.logical, target.id, common.identity, { skipPluginRead: true });
   if (!row)
     throw new DataError(`${target.logical} With Id = ${target.id} Does Not Exist`, 404, 'NotFound', { id: target.id });
   // Sharing needs Read on the row as well as Share.
@@ -707,7 +751,7 @@ async function shareAction(d, c, route, common) {
   const principal = entityParameter(d, route.name === 'RevokeAccess' ? body.Revokee : body.PrincipalAccess?.Principal);
   if (
     !['systemuser', 'team'].includes(principal.logical) ||
-    !d.store.get(principal.logical, principal.id, common.identity)
+    !d.store.get(principal.logical, principal.id, common.identity, { skipPluginRead: true })
   )
     throw invalidArgument();
   const share = {
@@ -725,8 +769,35 @@ async function shareAction(d, c, route, common) {
       identity: common.identity,
     });
   };
+  // The message's own plug-in pipeline runs around the share inside its write (the change slot's transaction), with
+  // the SDK's inputs (Target and PrincipalAccess, or Revokee), as the SDK path does (plugin-platform-messages.mjs).
+  const ref = ({ logical, id }) => ({ $type: 'EntityReference', logicalName: logical, id, name: null });
+  const pipelined = () =>
+    runEntryMessage(d.store, {
+      message: route.name,
+      entity: target.logical,
+      id: target.id,
+      inputs: {
+        Target: ref(target),
+        ...(route.name === 'RevokeAccess'
+          ? { Revokee: ref(principal) }
+          : {
+              PrincipalAccess: {
+                $type: 'PrincipalAccess',
+                principal: ref(principal),
+                accessMask: share.mask,
+              },
+            }),
+      },
+      context: common,
+      main: () => {
+        recordSharingChange(d.store, target.logical);
+        return run().then(() => ({}));
+      },
+    });
+  const shared = entryMessageActive(d.store, route.name, target.logical, common) ? pipelined : run;
   // Inside a $batch the batch already holds the change slot (see ownsChange); a nested change call would wait on itself.
-  await (ownsChange() ? run() : d.change(run));
+  await (ownsChange() ? shared() : d.change(shared));
   return { status: 204 };
 }
 
@@ -863,6 +934,9 @@ async function recordCall(d, route, common) {
     identity: common.identity,
     requestId: common.requestId,
     bypassCustomPlugins: common.bypassCustomPlugins === true,
+    bypassCustomAsync: common.bypassCustomAsync === true,
+    bypassStepIds: common.bypassStepIds,
+    systemParameters: common.systemParameters,
     dataverseHttpReader: dataverseHttpReaderContext({
       method: common.method,
       route,
@@ -1061,7 +1135,13 @@ async function authenticated(d, c, handle) {
     if (impersonation.refused) return impersonation.refused;
     const user = impersonation.user ?? caller;
 
-    const { identity } = organizationPrincipalContext(d.store, user, { caller, appId: verdict.claims.appid });
+    const { identity } = organizationPrincipalContext(d.store, user, {
+      caller,
+      appId: verdict.claims.appid,
+      // Plug-in contexts report the caller's User-Agent (InitiatingUserAgent) and Accept-Language (AcceptLang).
+      userAgent: req.headers['user-agent'] ?? null,
+      acceptLanguage: req.headers['accept-language'] ?? '*',
+    });
     const actorKind = verdict.claims.appid ? 'app' : 'staff';
     // The root span opened before the caller was known: it takes the resolved caller as its actor (the actorKind and
     // actorId filters match it, and the spans it starts inherit it), and the attributes keep the impersonated user.
@@ -1157,7 +1237,11 @@ function bodyOf(method, headers, bodyBuffer, route, isRecordSet = () => false) {
 
 // Answers one Web API request for a caller already authenticated. The HTTP path and $batch parts both come through here,
 // and it returns a result rather than writing to the response.
-async function handleDataRequest(
+function handleDataRequest(d, request) {
+  const parameters = request.url.searchParams.has('tag') ? { tag: request.url.searchParams.get('tag') } : {};
+  return withPluginRequestTag(d.store, parameters, () => handleTaggedDataRequest(d, request));
+}
+async function handleTaggedDataRequest(
   d,
   { method, url, route, headers = {}, bodyBuffer = Buffer.alloc(0), user, caller, identity, prefer, origin, requestId },
 ) {
@@ -1181,6 +1265,19 @@ async function handleDataRequest(
   if (logic.length && !holds('prvBypassCustomBusinessLogic'))
     throw privilegeDenied(d, caller, 'prvBypassCustomBusinessLogic');
   const bypassCustomPlugins = plugins || logic.includes('customsync');
+  const bypassCustomAsync = logic.includes('customasync');
+  const bypassStepIds = parseBypassStepIds(d.store, headers['mscrm.bypassbusinesslogicexecutionstepids']);
+  if (bypassStepIds.length && !holds('prvBypassCustomBusinessLogic'))
+    throw privilegeDenied(d, caller, 'prvBypassCustomBusinessLogic');
+  const systemParameters = {
+    ...(Object.hasOwn(headers, 'mscrm.bypasscustompluginexecution') ? { BypassCustomPluginExecution: plugins } : {}),
+    ...(Object.hasOwn(headers, 'mscrm.bypassbusinesslogicexecution')
+      ? { BypassBusinessLogicExecution: headers['mscrm.bypassbusinesslogicexecution'] }
+      : {}),
+    ...(Object.hasOwn(headers, 'mscrm.bypassbusinesslogicexecutionstepids')
+      ? { BypassBusinessLogicExecutionStepIds: headers['mscrm.bypassbusinesslogicexecutionstepids'] }
+      : {}),
+  };
   const body = bodyOf(method, headers, bodyBuffer, route, (set) => entitySetNamed(d.store, set));
 
   const common = {
@@ -1196,6 +1293,9 @@ async function handleDataRequest(
     caller,
     identity,
     bypassCustomPlugins,
+    bypassCustomAsync,
+    bypassStepIds,
+    systemParameters,
   };
   const operated = await operationCall(d, route, common);
   if (operated) return operated;
@@ -1267,6 +1367,7 @@ export async function operationCall(d, route, common) {
   let entity;
   let mapping;
   let id;
+  let keyAttributes;
   // The name is registered, so a bound route the operation cannot serve (unknown set, alternate key) is a 404, not a built-in.
   const unroutable = () => notFound({ url: common.url, requestId: common.requestId });
   if (route.kind !== 'function') {
@@ -1278,8 +1379,20 @@ export async function operationCall(d, route, common) {
     entity = mapping.logicalName;
     if (route.key == null) binding = 'collection';
     else {
-      // ponytail: alternate-key addressing is not resolved for operations; a GUID key is the supported form.
-      id = parseKey(route.key)?.id;
+      // A row addressed by an alternate key binds by its id and keeps the key for the Target (recorded native
+      // webApiNamed: a bound custom API by alternate key answers 200 with Target.KeyAttributes).
+      const key = parseKey(route.key);
+      id = key?.id;
+      if (!id && key?.alternate) {
+        let keyed;
+        try {
+          keyed = d.store.findByKey(mapping, route.key);
+        } catch {
+          keyed = null; // an undeclared key names no row
+        }
+        id = keyed?.[mapping.idColumn];
+        keyAttributes = id ? key.alternate : undefined;
+      }
       if (!id) return unroutable();
       binding = 'entity';
     }
@@ -1288,9 +1401,10 @@ export async function operationCall(d, route, common) {
   if (!op) return notFound({ url: common.url, requestId: common.requestId });
   let target;
   if (binding === 'entity') {
-    const row = d.store.get(entity, id, common.identity);
+    // The platform loads a bound operation's target without a Retrieve pipeline (recorded native customApi).
+    const row = d.store.get(entity, id, common.identity, { skipPluginRead: true });
     if (!row) throw new DataError(`${entity} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id });
-    target = { mapping, id, row };
+    target = { mapping, id, row, ...(keyAttributes ? { keyAttributes } : {}) };
   } else if (binding === 'collection') target = { mapping };
   return runOperation(d, op, route, route.params, common, target);
 }
@@ -1322,6 +1436,10 @@ async function runOperation(d, op, route, paramsText, common, target) {
     identity: common.identity,
     requestId: common.requestId,
     target,
+    bypassCustomPlugins: common.bypassCustomPlugins === true,
+    bypassCustomAsync: common.bypassCustomAsync === true,
+    bypassStepIds: common.bypassStepIds,
+    systemParameters: common.systemParameters,
     api: d.api,
   };
   // A Prefer: respond-async call to a custom API is answered 202 here and runs later; otherwise the operation runs now.
@@ -1369,8 +1487,12 @@ async function batchCall(d, c, common) {
     if (impersonation.refused) return impersonation.refused;
     const user = impersonation.user ?? common.user;
     const identity = impersonation.user
-      ? organizationPrincipalContext(d.store, user, { caller: common.caller, appId: common.identity?.dataverse?.appId })
-          .identity
+      ? organizationPrincipalContext(d.store, user, {
+          caller: common.caller,
+          appId: common.identity?.dataverse?.appId,
+          userAgent: common.identity?.dataverse?.userAgent,
+          acceptLanguage: common.identity?.dataverse?.acceptLanguage,
+        }).identity
       : common.identity;
     // Extension routes (metadata writes and the other api.addRoute writes) answer inside a batch as they do at top level. In a
     // changeset they run in its transaction, so a metadata change rolls back with the changeset.
@@ -1436,7 +1558,12 @@ async function batchCall(d, c, common) {
       ...(failure ? { failure } : {}),
     };
   };
-  dispatch.transaction = (fn) => runAtomic(d.api, fn);
+  // A changeset's contexts start with the batch's transaction facts (native batch: IsODataTransaction and count).
+  dispatch.transaction = (fn, { requests } = {}) =>
+    runAtomic(d.api, () => {
+      d.store.pluginODataChangeset = { requestCount: requests };
+      return fn();
+    });
   const continueOnError = common.prefer.continueOnError;
   const traces = tracesOf(d);
   const root = traces?.enabled ? traces.current() : null;

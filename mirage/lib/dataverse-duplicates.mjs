@@ -11,6 +11,7 @@ import { contextUrl } from './dataverse-odata.mjs';
 import { uuidV5 } from './dataverse-security.mjs';
 import { BULK_DUPLICATE_TYPE } from './dataverse-async.mjs';
 import { childText, parseSolutionXml } from './solution-xml.mjs';
+import { conditionsOf, publishedRules } from './dataverse-duplicate-rules.mjs';
 import { pluralizeEntitySetName } from './solution-standard.mjs';
 
 const ACTIVE = 1; // statecode Active
@@ -195,11 +196,6 @@ function matchesRow(store, rule, conditions, base, row) {
     return compare('exact', null, left, right, rule.iscasesensitive === true);
   });
 }
-
-const publishedRules = (store, filter) =>
-  store.tableRows('duplicaterule').filter((r) => Number(r.statuscode) === PUBLISHED && filter(r));
-const conditionsOf = (store, rule) =>
-  store.tableRows('duplicaterulecondition').filter((c) => same(c.regardingobjectid, rule.duplicateruleid));
 
 // Rows of the rule's matching table that duplicate `base`. selfId excludes the record being written when the tables are the same.
 function duplicatesUnder(store, rule, base, selfId) {
@@ -576,6 +572,6 @@ export function install(api) {
     handle: compoundUpdateRule(api),
     csdl: CSDL_COMPOUND_UPDATE,
   });
-  api.recordHooks.add('beforeWrite', (c, mapping, change) => beforeWrite(store, c, mapping, change));
+  api.recordHooks.add('afterPreValidation', (c, mapping, change) => beforeWrite(store, c, mapping, change));
   return api.change(() => reset(api));
 }

@@ -30,6 +30,10 @@ const READY = 0,
   LOCKED = 2;
 // ponytail: a job whose transaction rolls back is tried 3 times, then finished Failed; a per-kind retry policy can replace the constant.
 const MAX_ATTEMPTS = 3;
+// An intentional per-kind retry already durably recorded its own attempt. It
+// must not consume the unrelated infrastructure/rollback poison budget.
+export const retryCommittedJob = Symbol('retry committed job');
+export const wholeSecond = (ms) => new Date(Math.floor(ms / 1000) * 1000).toISOString();
 export const encodeEvent = (event) => v8.serialize(event).toString('base64');
 const decodeEvent = (text) => v8.deserialize(Buffer.from(text, 'base64'));
 const jobOf = (row) => {
@@ -73,29 +77,40 @@ export function committedJobs(store) {
     running = new Set(),
     retry = new Set();
   let ticking = null,
-    kicked = false,
+    kicked = null,
     closed = false;
   const scheduler = () => storeScheduler(store);
-  const now = () => new Date(clockFunction(store.clock ?? systemClock)()).toISOString();
+  const nowMs = () => clockFunction(store.clock ?? systemClock)();
+  const now = () => new Date(nowMs()).toISOString();
+  // A Ready row waits until its start time: the job's internal start latency (data startAfter, plugin-async.mjs; its
+  // postponeuntil stays null as natively) or a postponeuntil; 0 when it is due.
+  const waitOf = (row) => {
+    const after = jobOf(row)?.startAfter,
+      until = Number.isFinite(after) ? after : row?.postponeuntil ? Date.parse(row.postponeuntil) : NaN;
+    return Number.isFinite(until) ? Math.max(0, until - nowMs()) : 0;
+  };
   const autoRuns = () => {
     const status = scheduler().status();
     return !status.manual && !status.closed;
   };
-  const kick = () => {
-    if (kicked || closed) return;
-    kicked = true;
+  // One scheduled tick at a time: an earlier one replaces a later one (that later one still runs, as a harmless no-op tick).
+  const kick = (delay = 0) => {
+    if (closed) return;
+    const due = nowMs() + delay;
+    if (kicked !== null && kicked <= due) return;
+    kicked = due;
     if (
       scheduler().schedule(
         () =>
           detached(store, () => {
-            kicked = false;
+            if (kicked === due) kicked = null;
             return tick();
           }),
-        0,
+        delay,
         { name: 'committed-jobs' },
       ) === null
     )
-      kicked = false;
+      kicked = null;
   };
   // Diagnostics go to each distinct sink the registered kinds were given.
   const report = (note) => {
@@ -116,17 +131,30 @@ export function committedJobs(store) {
       payload = payloadOf(rows[index]);
     return payload && kinds.has(payload.kind) ? { id, payload, index } : null;
   };
-  // The queued ids not yet tried in this tick, in table order (FIFO).
+  // The queued ids not yet tried in this tick and due, in table order (FIFO).
   const scan = (seen) => {
     const rows = store.state.tables?.asyncoperation ?? [],
       jobs = [];
     for (const id of queued) {
       if (seen.has(id) || started.has(id)) continue;
       const job = readyJob(rows, id);
-      if (job) jobs.push(job);
+      if (job && !waitOf(rows[job.index])) jobs.push(job);
     }
     return jobs.sort((a, b) => a.index - b.index);
   };
+  // The start latency left of a row that waits only for it (data startAfter); null for a row without one.
+  const latencyOf = (row) => (Number.isFinite(jobOf(row)?.startAfter) ? waitOf(row) : null);
+  // The shortest wait of the queued Ready rows not started (0: one is due; null: none waits).
+  const nextWait = (rows = store.state.tables?.asyncoperation ?? [], of = waitOf) => {
+    let wait = null;
+    for (const id of queued) {
+      const job = started.has(id) ? null : readyJob(rows, id),
+        rowWait = job ? of(rows[job.index]) : null;
+      if (rowWait !== null) wait = Math.min(wait ?? Infinity, rowWait);
+    }
+    return wait;
+  };
+  const latencyWait = () => nextWait(undefined, latencyOf);
   // A row still Ready after its run means the run's transaction rolled back.
   const countAttempt = async (id, kind, failure) => {
     if (!readyJob(store.state.tables?.asyncoperation ?? [], id)) return;
@@ -150,15 +178,19 @@ export function committedJobs(store) {
   };
   const execute = async ({ id, payload }) => {
     started.add(id);
-    let failure = null;
+    let failure = null,
+      outcome;
     try {
-      await kinds.get(payload.kind)?.run({ id, payload, event: decodeEvent(payload.event) });
+      outcome = await kinds.get(payload.kind)?.run({ id, payload, event: decodeEvent(payload.event) });
     } catch (error) {
       failure = error;
       remember(id, payload.kind, error);
     }
     try {
-      if (kinds.has(payload.kind)) await countAttempt(id, payload.kind, failure);
+      if (kinds.has(payload.kind)) {
+        if (outcome === retryCommittedJob && readyJob(store.state.tables?.asyncoperation ?? [], id)) retry.add(id);
+        else await countAttempt(id, payload.kind, failure);
+      }
     } catch (error) {
       remember(id, payload.kind, error);
     } finally {
@@ -172,16 +204,17 @@ export function committedJobs(store) {
       }
     }
   };
+  // createdon is a Dataverse date-time: whole seconds. An entry may carry the time its operation created the job.
   const readyRows = (entries) => {
     const ids = store.ids ?? systemIds,
-      stamp = now();
+      stamp = wholeSecond(clockFunction(store.clock ?? systemClock)());
     return entries.map(({ id, kind, columns = {}, event, staging, ...rest }) => ({
       asyncoperationid: id ?? ids.uuid(),
       operationtype: SYSTEM_EVENT,
       statecode: READY,
       statuscode: 0,
       ...columns,
-      createdon: stamp,
+      createdon: columns.createdon ?? stamp,
       data: JSON.stringify({ kind, ...rest, event: encodeEvent(event) }),
     }));
   };
@@ -220,7 +253,11 @@ export function committedJobs(store) {
         for (const id of retry) queued.add(id);
         retry.clear();
         ticking = null;
-        if (queued.size) kick();
+        // A concurrent delivery remains queued until it finishes, but cannot
+        // run twice. Only new Ready work needs another tick; repeatedly kicking
+        // for an in-flight delivery starves I/O on a manual scheduler. A postponed row gets a tick when it is due.
+        const wait = nextWait(rows);
+        if (wait !== null) kick(wait);
       }
     })());
   const jobs = (store.committedJobs = {
@@ -312,7 +349,13 @@ export function committedJobs(store) {
       return closed;
     },
     // A manual scheduler counts a running tick itself (status().pending), and leaves out a blocked one.
-    pending: () => enqueues.size + running.size + (ticking && !manual() ? 1 : 0) + (autoRuns() ? queued.size : 0),
+    // A postponed row is not pending: like a scheduler timer that is not due, settle does not wait for it. A row that
+    // waits only for its start latency is pending: settle waits for it, as a job the platform picks up on its own.
+    pending: () =>
+      enqueues.size +
+      running.size +
+      (ticking && !manual() ? 1 : 0) +
+      (autoRuns() && (nextWait() === 0 || latencyWait() !== null) ? queued.size : 0),
     async drain() {
       for (;;) {
         await store.flushCommittedEvents();
@@ -324,12 +367,14 @@ export function committedJobs(store) {
           const current = ticking;
           await scheduler().drain();
           if (ticking === current) return;
-        } else if (autoRuns() && queued.size) {
+        } else if (autoRuns() && nextWait() === 0) {
           kick();
           await scheduler().drain();
           if (!ticking && !running.size && !enqueues.size && queued.size)
             await new Promise((resolve) => setImmediate(resolve));
-        } else return;
+        } else if (autoRuns() && latencyWait() !== null)
+          await new Promise((resolve) => setTimeout(resolve, latencyWait()));
+        else return;
       }
     },
   });

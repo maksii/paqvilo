@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of Dataverse TDS queries over the simulated store; no native capture cited
 // TDS endpoint wired into the Dataverse API: login with an Entra token, SELECT through the real record handlers
 // (so table security applies to the caller), refusals and unknown tables.
 // The tedious checks run only when TDS_TEDIOUS_PATH names the tedious entry file.
@@ -133,6 +134,7 @@ describe('TDS endpoint wired into the Dataverse API', () => {
     }
   });
 
+  // @test-kind unproven+security: local model of row filtering by the token's security role
   it('a Basic User token SELECTs only the rows its security role may read', async () => {
     const { client } = await login(api.tdsPort, basicToken);
     try {
@@ -144,6 +146,7 @@ describe('TDS endpoint wired into the Dataverse API', () => {
     }
   });
 
+  // @test-kind unproven+security: local model of refusing an invalid token at login
   it('an invalid token is refused at login', async () => {
     const { client, reply } = await login(api.tdsPort, 'not-a-token');
     try {
@@ -165,6 +168,7 @@ describe('TDS endpoint wired into the Dataverse API', () => {
     }
   });
 
+  // @test-kind contract+security: Paqvilo's private runtime storage is never reachable over TDS
   it('private runtime storage is an unknown SQL object even for an administrator', async () => {
     const { client } = await login(api.tdsPort, appToken);
     try {

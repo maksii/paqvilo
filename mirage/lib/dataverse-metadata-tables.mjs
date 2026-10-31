@@ -21,6 +21,7 @@ import {
   projectManagedFlags,
 } from './dataverse-metadata-relationships.mjs';
 import { grantTablePrivileges, revokeTablePrivileges, uuidV5 } from './dataverse-security.mjs';
+import { resyncMessageFilters } from './dataverse-plugin-registration.mjs';
 import { pluralizeEntitySetName } from './solution-standard.mjs';
 import { alternateKeyOf, alternateKeyValues, alternateKeyKinds } from './alternate-key-values.mjs';
 import {
@@ -419,6 +420,7 @@ export function createTable(c, body) {
   mappings[logical] = mapping;
   (api.store.state.tables ??= {})[logical] ??= [];
   grantTablePrivileges(api.store, api.settings.organizationId, logical); // Dataverse creates the table's privileges with it
+  resyncMessageFilters(api); // and its sdkmessagefilter rows (native: a custom table's filters come with it)
   return { status: 204, headers: { 'OData-EntityId': entityIdUrl(c, logical) } };
 }
 
@@ -458,6 +460,7 @@ export function dropTable(api, logical) {
   delete api.store.state.tables?.[logical];
   delete api.store.state.dataverse?.customColumns?.[logical];
   logMetadataChange(api, 'delete', 'entity', logical);
+  resyncMessageFilters(api); // the table's sdkmessagefilter rows go with it
 }
 
 // Columns may be added to any table, Solution and seeded tables included (Dataverse allows custom columns there).
@@ -720,14 +723,18 @@ export function reset(api) {
   });
 }
 
+/** PublishXml and PublishAllXml (route.kind 'function'), synchronously: a plug-in's SDK Execute calls it too. */
+export function handleMetadataPublish(c) {
+  const { api, method, route } = c;
+  if (!PUBLISH.has(route.name)) throw fail(`${route.name} is not a metadata action.`, 404, 'NotFound');
+  if (method === 'POST') requireMetadataPrivilege(api, c, 'prvWriteEntity', route.name); // assumed: publishing needs the customizer write privilege
+  return publish(c);
+}
+
 /** Dispatches one metadata write. The privilege is checked first; each change then runs in one store transaction. */
 export async function handleMetadataWrite(c) {
   const { api, method, route } = c;
-  if (route.kind === 'function') {
-    if (!PUBLISH.has(route.name)) throw fail(`${route.name} is not a metadata action.`, 404, 'NotFound');
-    if (method === 'POST') requireMetadataPrivilege(api, c, 'prvWriteEntity', route.name); // assumed: publishing needs the customizer write privilege
-    return publish(c);
-  }
+  if (route.kind === 'function') return handleMetadataPublish(c);
   if (route.set !== 'EntityDefinitions') throw fail(`${route.set} is not a metadata resource.`, 404, 'NotFound');
   if (c.body !== undefined && (typeof c.body !== 'object' || c.body === null || Array.isArray(c.body)))
     throw fail('The request body must be a JSON object.');

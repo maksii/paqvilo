@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // mirage.trace (lib/trace-settings.mjs): defaults, ranges, unknown keys and the run-time merge the trace store applies.
 import test from 'node:test';
 import assert from 'node:assert/strict';

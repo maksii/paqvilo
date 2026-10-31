@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of business process flow instances and messages; no native capture cited
 // Business process flows (lib/dataverse-bpf.mjs): category-4 inventory, instance rows through createInstance, the existing BPF
 // messages and the SetProcess 501 with its pack override.
 import test from 'node:test';
@@ -141,6 +142,7 @@ test('createInstance writes the instance at the first stage when the instance ta
     owninguser,
     owningteam,
     owningbusinessunit,
+    organizationid,
     versionnumber,
     statecode,
     statuscode,
@@ -149,6 +151,7 @@ test('createInstance writes the instance at the first stage when the instance ta
   assert.equal(typeof createdon, 'string', 'the pipeline stamps the row');
   assert.equal(modifiedon, createdon);
   assert.equal(createdby?.name, 'SYSTEM');
+  assert.equal(organizationid?.logical_name, 'organization', 'an organization-owned instance records its organization');
   assert.deepEqual(stored, {
     x_orderflowid: first.x_orderflowid,
     businessprocessflowinstanceid: first.x_orderflowid,

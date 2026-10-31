@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of the SDK service on record hooks (depth cap 12: native depth39 and asyncLoop (two captures each): chains run to Depth 12 and the next level fails 0x80044182)
 // The SDK IOrganizationService on the organization record pipeline: synchronous rule hooks run inline, an asynchronous
 // hook remainder finishes after the synchronous call and reports SDK_DEFERRED_EFFECT on failure, and without an
 // organization the service says it writes the store directly.
@@ -8,6 +9,8 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
+import { install as installCustomApis } from '../lib/dataverse-customapi.mjs';
+import { pluginInvocationDepth } from '../lib/plugin-execution-lifetime.mjs';
 
 const USER = '77777777-7777-4777-8777-0000000000f1';
 const profile = {
@@ -28,6 +31,117 @@ const mappings = {
     },
   },
 };
+
+test('record hooks preserve nested JavaScript main depth and caught SDK write poisoning without consuming outside depth', async (t) => {
+  const depths = [],
+    hookDepths = [];
+  let sdk,
+    callerProfile,
+    mode = 'recurse';
+  const extension = {
+    name: 'invented-hook-depth',
+    describe: () => ({ name: 'invented-hook-depth', level: 'contract' }),
+    async install(api) {
+      api.store.state.tables.customapi = [{ customapiid: USER, uniquename: 'x_Hooked', bindingtype: 0 }];
+      api.recordHooks.add('beforeWrite', (_c, mapping, info) => {
+        if (mapping.logicalName !== 'x_item') return;
+        hookDepths.push(pluginInvocationDepth(api.store));
+        if (info.data.x_name === 'outside') return;
+        if (mode === 'reject') throw new Error('Invented rejected SDK child write');
+        sdk.executeMessageSync('x_Hooked', null, { $type: 'ParameterCollection', values: {} });
+      });
+      const installation = installCustomApis(
+        { ...api, change: (fn) => fn() },
+        {
+          handlers: new Map([
+            [
+              'x_hooked',
+              {
+                handler: ({ api: scoped }) => {
+                  depths.push(pluginInvocationDepth(api.store));
+                  const child = localOrganizationService(scoped.store, callerProfile);
+                  if (mode === 'reject') {
+                    try {
+                      child.create('x_item', { x_name: 'rejected' });
+                    } catch (error) {
+                      assert.match(error.message, /Invented rejected/);
+                    }
+                  } else child.create('x_item', { x_name: 'nested' });
+                  return { outputs: {} };
+                },
+              },
+            ],
+          ]),
+        },
+      );
+      await installation.ready;
+      installation.sync();
+    },
+  };
+  const store = await storeWith(t, [extension]);
+  callerProfile = {
+    ...profile,
+    userId: store.tableRows('systemuser')[0].systemuserid,
+    grants: [...profile.grants, { message: 'x_Hooked', operations: ['execute'] }],
+  };
+  sdk = localOrganizationService(store, callerProfile);
+  sdk.create('x_item', { x_name: 'outside' });
+  assert.deepEqual(hookDepths, [0]);
+  await assert.rejects(
+    store.transact(() => sdk.executeMessageSync('x_Hooked', null, { $type: 'ParameterCollection', values: {} })),
+    { code: 'LocalPluginDepth' },
+  );
+  // The nested depth cap is 12 (native depth39 and asyncLoop (two captures each): chains run to Depth 12 and the next level fails 0x80044182).
+  assert.deepEqual(
+    depths,
+    Array.from({ length: 12 }, (_, i) => i + 1),
+  );
+  assert.deepEqual(hookDepths, [0, ...depths]);
+  mode = 'reject';
+  await assert.rejects(
+    store.transact(() => sdk.executeMessageSync('x_Hooked', null, { $type: 'ParameterCollection', values: {} })),
+    { code: 'PluginTransactionAborted' },
+  );
+  assert.deepEqual(
+    store.tableRows('x_item').map((row) => row.x_name),
+    ['outside'],
+  );
+});
+
+test('a synchronous SDK refusal closes the asynchronous record hook before its controlled continuation resumes', async (t) => {
+  let release, finish, sdk;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const completed = new Promise((resolve) => {
+    finish = resolve;
+  });
+  const errors = [];
+  const store = await storeWith(t, [
+    {
+      name: 'invented-refused-async-hook',
+      describe: () => ({ name: 'invented-refused-async-hook', level: 'contract' }),
+      install(api) {
+        api.recordHooks.add('beforeWrite', async (_c, mapping) => {
+          if (mapping.logicalName !== 'x_item') return;
+          await gate;
+          try {
+            sdk.create('x_item', { x_name: 'Late hook write' });
+          } catch (error) {
+            errors.push(error.code);
+          }
+          finish();
+        });
+      },
+    },
+  ]);
+  sdk = localOrganizationService(store, profile);
+  assert.throws(() => sdk.create('x_item', { x_name: 'Refused' }), { code: 'SdkAsyncPreOperationUnsupported' });
+  release();
+  await completed;
+  assert.deepEqual(errors, ['LocalPluginExecutionExpired']);
+  assert.equal(store.tableRows('x_item').length, 0);
+});
 
 async function storeWith(t, extensions = []) {
   const state = emptyState();
@@ -109,6 +223,7 @@ test('an SDK write runs synchronous rule hooks inline and reports a failed async
   );
 });
 
+// @test-kind contract: Paqvilo SDK service says in its description that it writes the store directly without an organization
 test('without an organization the SDK service writes the store and says so in its description', async (t) => {
   const store = await storeWith(t, null);
   const sdk = localOrganizationService(store, profile);
@@ -117,6 +232,7 @@ test('without an organization the SDK service writes the store and says so in it
   assert.equal(row.versionnumber, undefined, 'no organization row version without an organization');
 });
 
+// @test-kind security: column security: secured columns stay masked on SDK Retrieve, RetrieveMultiple and FetchXML as on the Web API
 test('SDK Retrieve and RetrieveMultiple apply column security like the Web API read projection', async (t) => {
   const { readFixture, CUST } = await import('./read-projection-fixture.mjs');
   const ITEM = '77777777-7777-4777-8777-000000000001';

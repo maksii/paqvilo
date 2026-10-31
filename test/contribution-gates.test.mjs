@@ -1,3 +1,4 @@
+// @test-kind tooling: git hooks, change-scope gate selection and CI receipts of the contribution workflow
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -332,7 +333,12 @@ test('PR scope excludes unrelated base-branch code but includes both sides of re
 
 function hookFixture(t, { classifier, readyDependencies = false } = {}) {
   const { root, env, git, write } = fixture(t);
-  for (const name of ['scripts/git-hooks.mjs', 'scripts/ensure-dependencies.mjs', '.github/scripts/change-scope.mjs']) {
+  for (const name of [
+    'scripts/git-hooks.mjs',
+    'scripts/ensure-dependencies.mjs',
+    'scripts/check-test-tags.mjs',
+    '.github/scripts/change-scope.mjs',
+  ]) {
     write(name, fs.readFileSync(new URL(`../${name}`, import.meta.url)));
   }
   if (classifier) write('.github/scripts/change-scope.mjs', classifier);

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 // Host wiring on both hosts (Power Pages simulator and standalone dataverse-api runtime): status `docs`, `routes` (from
 // the mounted routers' own `routes` lists) and `modelDrivenApps`; ISO request times on the dashboard; the in-process Web
 // API behind Xrm.WebApi.execute; the default /search/ page; the portal document control; Solution custom connectors and
@@ -419,6 +420,7 @@ for (const [name, start] of [
   });
 }
 
+// @test-kind contract+security: the local search route keeps the site's CSP, framing and nosniff headers
 test('Power Pages: /search/ carries the same site HTTP/* headers, CSP and nosniff as every portal page', async () => {
   const sim = await sharedPowerPages();
   const page = await fetch(sim.url + '/'),

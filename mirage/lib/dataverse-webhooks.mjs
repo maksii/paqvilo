@@ -1,3 +1,4 @@
+import { asyncMultipleJobParent, asynchronousParentChain } from './plugin-sdk-parent.mjs';
 import { organizationRecord } from './organization-context.mjs';
 import { recordHttpError, statusFromHttp } from './trace-store.mjs';
 // Webhooks. A plug-in step whose eventhandler is a service endpoint with contract 8 (Webhook) POSTs the
@@ -25,7 +26,12 @@ import { syncIo } from './sync-io-bridge.mjs';
 import { systemClock, systemIds } from './runtime-clock.mjs';
 import { DataError } from './data-error.mjs';
 import { messageNameOf } from './exported-plugins.mjs';
-import { recordToSdkEntity } from './plugin-clr.mjs';
+import { clrContext, recordToSdkEntity } from './plugin-clr.mjs';
+import { imageAttributes } from './plugin-images.mjs';
+import { PLATFORM_TYPES } from './dataverse-operation-contracts.mjs';
+import { delegatedPluginParent } from './plugin-delegation.mjs';
+import { bridgeTargetInputs, multipleMessage } from './plugin-single-multiple.mjs';
+import { exactNumeric, stringifyExactJson } from './exact-numeric.mjs';
 
 const LOOPBACK = /^(?:(?:[a-z0-9-]+\.)*localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i;
 const WEBHOOK_CONTRACT = 8;
@@ -138,10 +144,78 @@ function fetchAtAddresses(url, init, addresses) {
 // DataContract JSON: collections are {key, value} arrays and entities or references carry __type. Typed values follow the
 // SDK's contract namespace; the money, option set and collection shapes are guesses.
 const pairs = (object) => Object.entries(object ?? {}).map(([key, value]) => ({ key, value: dataContract(value) }));
-function dataContract(value) {
+const queryContracts = new Map(PLATFORM_TYPES.map((entry) => [entry[1].Name, entry]));
+// The SDK wire codec uses camelCase and symbolic enums; derive the public
+// property names and enum values from the same documented structural contracts
+// used by the Web API metadata, rather than inventing a second operator table.
+function queryContract(value, type) {
+  const contract = queryContracts.get(type);
+  if (!contract)
+    throw new DataError(
+      `The webhook query type ${type} has no structural contract.`,
+      501,
+      'LocalWebhookContextUnsupported',
+    );
+  const fields = new Set(['$type']);
+  const result = {
+    ...({
+      ColumnSet: { AllColumns: false, Columns: [], AttributeExpressions: [] },
+      FilterExpression: { AnyAllFilterLinkEntity: null, FilterOperator: 0, Conditions: [], Filters: [] },
+      ConditionExpression: { CompareColumns: false, EntityName: null },
+      OrderExpression: { Alias: null, EntityName: null },
+      PagingInfo: { ReturnRecordCountLessThanMarv: false },
+      QueryExpression: { Distinct: false, NoLock: false },
+    }[type] ?? {}),
+  };
+  for (const [kind, property] of contract.slice(2)) {
+    if (kind !== 'Property') continue;
+    const field = property.Name[0].toLowerCase() + property.Name.slice(1);
+    fields.add(field);
+    let item = value[field];
+    if (property.Name === 'Operator' || property.Name === 'FilterOperator') {
+      fields.add('operatorName');
+      item = value.operatorName ?? item;
+    }
+    if (property.Name === 'OrderType') {
+      fields.add('descending');
+      item = value.descending == null ? (item ?? 'Ascending') : value.descending ? 'Descending' : 'Ascending';
+    }
+    if (item === undefined) continue;
+    const convert = (entry, declared) => {
+      if (entry == null) return null;
+      const name = declared.replace(/^mscrm\./, ''),
+        spec = queryContracts.get(name);
+      if (spec?.[0] === 'EnumType') {
+        const member = spec
+          .slice(2)
+          .find(
+            ([, attributes]) =>
+              attributes.Name === entry || (typeof entry === 'number' && Number(attributes.Value) === entry),
+          );
+        if (!member) throw new DataError(`Unknown webhook query ${name} value.`, 501, 'LocalWebhookContextUnsupported');
+        return Number(member[1].Value);
+      }
+      return name !== 'Object' && spec?.[0] === 'ComplexType' ? queryContract(entry, name) : dataContract(entry);
+    };
+    const collection = /^Collection\((.+)\)$/.exec(property.Type);
+    result[property.Name] = collection
+      ? item.map((entry) => convert(entry, collection[1]))
+      : convert(item, property.Type);
+  }
+  for (const field of Object.keys(value))
+    if (!fields.has(field))
+      throw new DataError(
+        `The webhook query property ${type}.${field} has no structural contract.`,
+        501,
+        'LocalWebhookContextUnsupported',
+      );
+  return result;
+}
+// Exported so the DateTime wire format can be tested without a delivery receiver.
+export function dataContract(value, polymorphic = true) {
   if (value == null || typeof value !== 'object') return value ?? null;
-  if (Array.isArray(value)) return value.map(dataContract);
-  const typed = (type, body) => ({ __type: `${type}:${NS}`, ...body });
+  if (Array.isArray(value)) return value.map((item) => dataContract(item));
+  const typed = (type, body) => ({ ...(polymorphic ? { __type: `${type}:${NS}` } : {}), ...body });
   switch (value.$type) {
     case 'Entity':
       return typed('Entity', {
@@ -149,7 +223,7 @@ function dataContract(value) {
         EntityState: null,
         FormattedValues: pairs(value.formattedValues),
         Id: value.id ?? null,
-        KeyAttributes: [],
+        KeyAttributes: pairs(value.keyAttributes),
         LogicalName: value.logicalName,
         RelatedEntities: [],
         RowVersion: value.rowVersion ?? null,
@@ -157,32 +231,229 @@ function dataContract(value) {
     case 'EntityReference':
       return typed('EntityReference', {
         Id: value.id,
-        KeyAttributes: [],
+        KeyAttributes: pairs(value.keyAttributes),
         LogicalName: value.logicalName,
         Name: value.name ?? null,
-        RowVersion: null,
+        RowVersion: value.rowVersion ?? null,
+      });
+    case 'EntityCollection':
+      return typed('EntityCollection', {
+        Entities: (value.entities ?? []).map((entity) => dataContract(entity, false)),
+        EntityName: value.entityName ?? null,
+        MinActiveRowVersion: value.minActiveRowVersion ?? null,
+        MoreRecords: value.moreRecords ?? false,
+        PagingCookie: value.pagingCookie ?? null,
+        TotalRecordCount: value.totalRecordCount ?? -1,
+        RecordCountLessThanMarv: value.recordCountLessThanMarv ?? 0,
+        TotalRecordCountLimitExceeded: value.totalRecordCountLimitExceeded ?? false,
+      });
+    case 'Relationship':
+      return typed('Relationship', {
+        SchemaName: value.schemaName,
+        PrimaryEntityRole: value.primaryEntityRole == null ? null : value.primaryEntityRole === 'Referenced' ? 1 : 0,
+      });
+    case 'ColumnSet':
+      return typed('ColumnSet', queryContract({ allColumns: false, columns: [], ...value }, 'ColumnSet'));
+    case 'FetchExpression':
+      return typed('FetchExpression', { Query: value.query });
+    case 'QueryExpression':
+      return typed('QueryExpression', queryContract(value, 'QueryExpression'));
+    case 'QueryByAttribute':
+      for (const field of Object.keys(value))
+        if (
+          !['$type', 'entityName', 'attributes', 'values', 'columnSet', 'orders', 'pageInfo', 'topCount'].includes(
+            field,
+          )
+        )
+          throw new DataError(
+            `The webhook query property QueryByAttribute.${field} has no structural contract.`,
+            501,
+            'LocalWebhookContextUnsupported',
+          );
+      return typed('QueryByAttribute', {
+        EntityName: value.entityName,
+        Attributes: [...(value.attributes ?? [])],
+        Values: (value.values ?? []).map((item) => dataContract(item)),
+        ColumnSet: value.columnSet ? queryContract(value.columnSet, 'ColumnSet') : null,
+        Orders: (value.orders ?? []).map((order) => queryContract(order, 'OrderExpression')),
+        PageInfo: value.pageInfo ? queryContract(value.pageInfo, 'PagingInfo') : null,
+        TopCount: value.topCount ?? null,
+      });
+    case 'ExecutionContext':
+      if (value.rootOrigin) return null;
+      return Object.fromEntries(
+        Object.entries(value.values ?? {}).map(([key, item]) => [
+          key,
+          key === 'OperationCreatedOn' && item?.$type === 'DateTime'
+            ? `/Date(${operationTimeEpoch(item.value)})/`
+            : dataContract(item),
+        ]),
+      );
+    case 'ParameterCollection':
+      return pairs(value.values);
+    case 'EntityImageCollection':
+      return Object.entries(value.values ?? {}).map(([key, image]) => ({ key, value: dataContract(image, false) }));
+    case 'EntityReferenceCollection':
+      return (value.values ?? []).map((reference) => dataContract(reference));
+    case 'EntityImageCollectionArray':
+    case 'SdkArray':
+    case 'GuidArray':
+    case 'PrimitiveArray':
+      return (value.values ?? []).map((item) => dataContract(item));
+    case 'OptionSetValueCollection':
+      return (value.values ?? []).map((item) =>
+        dataContract(item?.$type ? item : { $type: 'OptionSetValue', value: item }),
+      );
+    case 'AliasedValue':
+      return typed('AliasedValue', {
+        AttributeLogicalName: value.attributeLogicalName,
+        EntityLogicalName: value.entityLogicalName,
+        Value: dataContract(value.value),
       });
     case 'OptionSetValue':
-    case 'Money':
       return typed(value.$type, { Value: Number(value.value) });
+    case 'ConcurrencyBehavior':
+      if (![0, 1, 2].includes(value.value))
+        throw new DataError('Unsupported SDK ConcurrencyBehavior value.', 501, 'LocalWebhookContextUnsupported');
+      return value.value;
+    case 'Money':
+      return typed('Money', { Value: exactNumeric(value.value, 'Money') });
     case 'DateTime': {
-      const ms = Date.parse(value.value);
+      // Unspecified (no zone designator) is the wall clock read as UTC, serialised with the zero offset; a Utc value keeps
+      // the bare form. Never reinterpreted in host local time.
+      const text = String(value.value ?? '');
+      if (value.kind === 'Unspecified' || !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(text)) {
+        const ms = Date.parse(text.length === 10 ? `${text}T00:00:00Z` : `${text}Z`);
+        return Number.isFinite(ms) ? `/Date(${ms}+0000)/` : null;
+      }
+      const ms = Date.parse(text);
       return Number.isFinite(ms) ? `/Date(${ms})/` : null;
     }
     case 'Guid':
       return value.value == null ? null : String(value.value);
-    case 'Decimal':
     case 'Double':
-    case 'Int64':
       return Number(value.value);
-    // ponytail: any other typed collection is its values in order; the native shape is not known.
+    case 'Decimal':
+    case 'Int64':
+      return exactNumeric(value.value, value.$type);
     default:
-      return Array.isArray(value.values) ? value.values.map(dataContract) : null;
+      if (!value.$type)
+        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, dataContract(item)]));
+      throw new DataError(
+        `The webhook context cannot serialize SDK value ${value.$type}.`,
+        501,
+        'LocalWebhookContextUnsupported',
+      );
   }
 }
 
-/** The RemoteExecutionContext of one step run, with the 27 properties in the documented sample order (ParentContext is null:
- * nested contexts are not built). */
+// Pipeline creation times use UTC components even when the SDK wire carries
+// DateTimeKind.Unspecified. Do not reinterpret those components in host local
+// time; general authored DateTime attribute values keep their separate codec.
+function operationTimeEpoch(value) {
+  const text = typeof value === 'string' ? value : '';
+  const epoch = Date.parse(/(?:Z|[+-]\d{2}:\d{2})$/i.test(text) ? text : text + 'Z');
+  if (!Number.isFinite(epoch))
+    throw new DataError('The pipeline operation creation time is unavailable.', 501, 'LocalWebhookContextUnsupported');
+  return epoch;
+}
+
+// An asynchronous job's OperationCreatedOn is an Unspecified DateTime: DataContractJsonSerializer appends the zero
+// offset (native asynchronous web hook payloads: '/Date(1793373678000+0000)/').
+const operationCreatedOn = (value) => `/Date(${operationTimeEpoch(value)}+0000)/`;
+const guidOf = (value) => (value !== null && typeof value === 'object' ? (value.value ?? null) : (value ?? null));
+
+/** One RemoteExecutionContext frame (the 30 documented properties) from an SDK ExecutionContext's values. */
+function remoteFrame(values) {
+  if (!values) return null;
+  return {
+    BusinessUnitId: guidOf(values.BusinessUnitId),
+    CorrelationId: guidOf(values.CorrelationId),
+    Depth: values.Depth,
+    InitiatingUserAgent: values.InitiatingUserAgent ?? null,
+    InitiatingUserAzureActiveDirectoryObjectId: guidOf(values.InitiatingUserAzureActiveDirectoryObjectId),
+    InitiatingUserId: guidOf(values.InitiatingUserId),
+    InputParameters: pairs(values.InputParameters?.values),
+    IsExecutingOffline: false,
+    IsInTransaction: values.IsInTransaction === true,
+    IsOfflinePlayback: false,
+    IsolationMode: values.IsolationMode,
+    MessageName: values.MessageName,
+    Mode: values.Mode,
+    OperationCreatedOn: operationCreatedOn(values.OperationCreatedOn?.value ?? values.OperationCreatedOn),
+    OperationId: guidOf(values.OperationId),
+    OrganizationId: guidOf(values.OrganizationId),
+    OrganizationName: values.OrganizationName ?? null,
+    OutputParameters: pairs(values.OutputParameters?.values),
+    OwningExtension: dataContract(values.OwningExtension, false),
+    ParentContext: values.ParentContext?.rootOrigin ? null : remoteFrame(values.ParentContext?.values),
+    PostEntityImages: dataContract(values.PostEntityImages ?? { $type: 'EntityImageCollection', values: {} }),
+    PreEntityImages: dataContract(values.PreEntityImages ?? { $type: 'EntityImageCollection', values: {} }),
+    PrimaryEntityId: guidOf(values.PrimaryEntityId),
+    PrimaryEntityName: values.PrimaryEntityName,
+    RequestId: guidOf(values.RequestId),
+    SecondaryEntityName: values.SecondaryEntityName ?? 'none',
+    SharedVariables: pairs(values.SharedVariables?.values),
+    Stage: values.Stage,
+    UserAzureActiveDirectoryObjectId: guidOf(values.UserAzureActiveDirectoryObjectId),
+    UserId: guidOf(values.UserId),
+  };
+}
+
+/** An asynchronous Create, Update or Delete web hook reports the context the CLR pipeline builds for the same job
+ * (plugin-clr.mjs clrContext): identities with their Entra object ids and user agent, SYSTEM for Delete, the
+ * organization's unique name, the asynchronous parent chain, the Create 'id' output and the platform's
+ * AsynchronousStepPrimaryName image (native crud, async, upsert, bulk, ownerAndState web hook payloads). Only the
+ * Update ConcurrencyBehavior input is absent from the remote contract. */
+function asyncRecordContext(store, facts, initiating) {
+  const { item, entity, operation, stage, target = {}, record, previous, identity, depth } = facts;
+  const frame = facts.initialFrame;
+  frame.callerIdentity ??= identity;
+  // The job runs under its request's correlation (x-ms-correlation-request-id), as the delivery does.
+  frame.correlationId ??= facts.correlationId;
+  const answer = clrContext({
+    runtime: { descriptor: { context: {}, serviceProfile: { userId: initiating } } },
+    store,
+    step: { ...item, isolationMode: 1, contract: { ...item.contract, mode: 1 } },
+    entity,
+    operation,
+    stage,
+    target,
+    record,
+    previous,
+    frame,
+    depth,
+    // A bridged multiple step runs the single operation under its multiple message (plugin-single-multiple.mjs).
+    bridged: facts.bridged === true,
+  });
+  const { ConcurrencyBehavior: _, ...inputs } = answer.inputParameters.values;
+  // Its ParentContext frames have none either (native crud, async, batch, customApi web hook payloads: Update/30 and
+  // Delete/30 list Target and tag only).
+  const withoutConcurrency = (node) => {
+    if (!node?.values) return node ?? null;
+    const { ConcurrencyBehavior: __, ...values } = node.values.InputParameters?.values ?? {};
+    return {
+      ...node,
+      values: {
+        ...node.values,
+        InputParameters: { $type: 'ParameterCollection', values },
+        ParentContext: withoutConcurrency(node.values.ParentContext),
+      },
+    };
+  };
+  return remoteFrame({
+    ...answer.context,
+    ParentContext: withoutConcurrency(answer.context.ParentContext),
+    InputParameters: { $type: 'ParameterCollection', values: inputs },
+    OutputParameters: answer.outputParameters,
+    SharedVariables: answer.sharedVariables,
+    PreEntityImages: { $type: 'EntityImageCollection', values: answer.preImages },
+    PostEntityImages: { $type: 'EntityImageCollection', values: answer.postImages },
+  });
+}
+
+/** The RemoteExecutionContext of one step run, with the documented sample
+ * properties and typed message parameters. */
 export function remoteExecutionContext(store, facts) {
   const {
     item,
@@ -197,50 +468,125 @@ export function remoteExecutionContext(store, facts) {
     correlationId,
     asyncExecution,
   } = facts;
-  const idColumn = store.resolveMapping(entity).idColumn;
+  const idColumn = entity && entity !== 'none' ? store.resolveMapping(entity).idColumn : null;
+  const frame = facts.initialFrame ?? facts.frame ?? {};
+  const preValidationParent =
+    !asyncExecution &&
+    stage !== 10 &&
+    (item.contract?.mode ?? 0) === 0 &&
+    ['create', 'update', 'delete'].includes(operation)
+      ? frame.preValidationContext
+      : null;
   const org = organizationRecord(store) ?? {};
   const initiating = identity?.systemUserId ?? identity?.id ?? null;
+  if (asyncExecution && facts.initialFrame && !facts.customApi && ['create', 'update', 'delete'].includes(operation))
+    return asyncRecordContext(store, facts, initiating);
   const user = store.tableRows('systemuser').find((row) => same(row.systemuserid, initiating));
   const entityOf = (row, spec) =>
     dataContract(
-      recordToSdkEntity(store, entity, row, { allColumns: !spec.attributes?.length, columns: spec.attributes ?? [] }),
+      recordToSdkEntity(store, entity, imageAttributes(row), {
+        allColumns: !spec.attributes?.length,
+        columns: spec.attributes ?? [],
+      }),
+      false,
     );
+  // An image on another message property (Merge SubordinateId) holds that record's row (frame.imageRows).
   const images = (row, types) =>
-    row
-      ? (item.images ?? [])
-          .filter((spec) => types.includes(spec.type))
-          .map((spec) => ({ key: spec.alias || spec.name, value: entityOf(row, spec) }))
-      : [];
+    (item.images ?? [])
+      .filter((spec) => types.includes(spec.type))
+      .map((spec) => {
+        const rows = spec.messagePropertyName && frame.imageRows?.[spec.messagePropertyName];
+        return [spec, rows ? (types.includes(1) ? rows.record : rows.previous) : row];
+      })
+      .filter(([, source]) => source)
+      .map(([spec, source]) => ({ key: spec.alias || spec.name, value: entityOf(source, spec) }));
   const created = stage === 40 && operation === 'create';
-  // Create, update and delete carry the Target. A delete's Target is a reference, not the row. Bulk messages carry no Target here.
-  const inputs =
-    operation === 'delete'
-      ? [
-          {
-            key: 'Target',
-            value: {
-              __type: `EntityReference:${NS}`,
-              Id: record[idColumn],
-              KeyAttributes: [],
-              LogicalName: entity,
-              Name: null,
-              RowVersion: null,
-            },
-          },
-        ]
-      : ['create', 'update'].includes(operation)
-        ? [
-            {
-              key: 'Target',
-              value: dataContract(
-                recordToSdkEntity(store, entity, { [idColumn]: record?.[idColumn], ...target }, { allColumns: true }),
-              ),
-            },
-          ]
-        : [];
-  return {
+  // Message-specific parameter collections retain the SDK's different Target,
+  // Targets, Query and Custom API contracts.
+  const inputValues =
+    facts.messageParameters?.inputParameters?.values ?? (facts.customApi ? frame.inputParameters?.values : undefined);
+  let inputs = inputValues
+    ? pairs(inputValues)
+    : facts.associationParameters
+      ? pairs(facts.associationParameters)
+      : ['createmultiple', 'updatemultiple'].includes(operation)
+        ? pairs({
+            Targets: { $type: 'EntityCollection', entities: facts.targets ?? frame.targets ?? [], totalRecordCount: 0 },
+          })
+        : operation === 'retrievemultiple'
+          ? pairs({ Query: facts.query ?? frame.query })
+          : operation === 'retrieve'
+            ? pairs({
+                Target: facts.holder?.target ??
+                  frame.retrieveTarget ?? { $type: 'EntityReference', logicalName: entity, id: record?.[idColumn] },
+                ColumnSet: { $type: 'ColumnSet', ...(facts.columns ?? frame.columns ?? {}) },
+              })
+            : operation === 'delete'
+              ? [
+                  {
+                    key: 'Target',
+                    value: {
+                      __type: `EntityReference:${NS}`,
+                      Id: record[idColumn],
+                      KeyAttributes: [],
+                      LogicalName: entity,
+                      Name: null,
+                      RowVersion: null,
+                    },
+                  },
+                ]
+              : ['create', 'update'].includes(operation)
+                ? [
+                    {
+                      key: 'Target',
+                      value: dataContract(
+                        recordToSdkEntity(
+                          store,
+                          entity,
+                          { [idColumn]: record?.[idColumn], ...target },
+                          { allColumns: true },
+                        ),
+                      ),
+                    },
+                  ]
+                : [];
+  if (frame.inputParameters?.values) {
+    if (frame.inputParametersStage === stage) inputs = pairs(frame.inputParameters.values);
+    else {
+      const known = new Set(inputs.map((entry) => entry.key));
+      inputs.push(
+        ...pairs(Object.fromEntries(Object.entries(frame.inputParameters.values).filter(([name]) => !known.has(name)))),
+      );
+    }
+  }
+  // A bridged multiple step (plugin-single-multiple.mjs) receives the single Target as one Targets record.
+  if (facts.bridged) {
+    const sdkTarget =
+      operation === 'delete'
+        ? { $type: 'EntityReference', logicalName: entity, id: record?.[idColumn] }
+        : frame.inputParametersStage === stage && frame.inputParameters?.values?.Target?.$type === 'Entity'
+          ? frame.inputParameters.values.Target
+          : recordToSdkEntity(store, entity, { [idColumn]: record?.[idColumn], ...target }, { allColumns: true });
+    inputs = [
+      ...inputs.filter((entry) => entry.key !== 'Target'),
+      ...pairs(bridgeTargetInputs({ Target: sdkTarget }, entity)),
+    ];
+  }
+  const outputs =
+    facts.messageParameters?.outputParameters?.values ??
+    frame.outputParameters?.values ??
+    (created
+      ? { id: record[idColumn] }
+      : stage === 40 && operation === 'createmultiple'
+        ? { Ids: { $type: 'GuidArray', values: record.bulkIds ?? [] } }
+        : stage === 40 && operation === 'retrieve'
+          ? { BusinessEntity: facts.holder?.entity ?? frame.entity }
+          : stage === 40 && operation === 'retrievemultiple'
+            ? { BusinessEntityCollection: facts.collection ?? frame.collection }
+            : {});
+  const context = {
     BusinessUnitId: lookup(user?.businessunitid) ?? store.tableRows('businessunit')[0]?.businessunitid ?? null,
-    CorrelationId: correlationId,
+    CorrelationId: frame.correlationId ?? correlationId,
     Depth: depth,
     InitiatingUserId: initiating,
     InputParameters: inputs,
@@ -250,14 +596,20 @@ export function remoteExecutionContext(store, facts) {
     // it, asynchronous steps never do. store.pluginInTransaction is that pipeline state (data.mjs exportedPluginPhase keeps an inherited one at stage 10).
     IsInTransaction: !asyncExecution && store.pluginInTransaction === true,
     IsOfflinePlayback: false,
-    IsolationMode: 1, // as in the documented sample
-    MessageName: messageNameOf(operation),
+    IsolationMode: 1, // native crud: a web hook context has IsolationMode 1
+    MessageName: facts.customApi?.name ?? messageNameOf(facts.bridged ? multipleMessage(operation) : operation),
     Mode: asyncExecution ? 1 : 0,
-    OperationCreatedOn: `/Date(${(store.clock ?? systemClock).now()})/`,
-    OperationId: (store.ids ?? systemIds).uuid(),
+    OperationCreatedOn:
+      asyncExecution && frame.asyncOperation
+        ? operationCreatedOn(frame.asyncOperation.createdOn)
+        : `/Date(${frame.createdOn == null ? (store.clock ?? systemClock).now() : operationTimeEpoch(frame.createdOn)})/`,
+    OperationId:
+      (asyncExecution && frame.asyncOperation ? frame.asyncOperation.id : frame.operationId) ??
+      (store.ids ?? systemIds).uuid(),
     OrganizationId: org.organizationid ?? null,
-    OrganizationName: org.name ?? null,
-    OutputParameters: created ? [{ key: 'id', value: record[idColumn] }] : [],
+    // The unique name, as in every plug-in context (plugin-clr.mjs).
+    OrganizationName: store.state?.dataverse?.uniqueName ?? org.name ?? null,
+    OutputParameters: pairs(outputs),
     OwningExtension: {
       Id: item.id,
       KeyAttributes: [],
@@ -265,17 +617,59 @@ export function remoteExecutionContext(store, facts) {
       Name: null,
       RowVersion: null,
     },
-    ParentContext: null,
+    ParentContext: dataContract(
+      frame.delegatedParentContext ?? preValidationParent ?? store.pluginParentContext ?? null,
+    ),
     PostEntityImages: stage === 40 && operation !== 'delete' ? images(record, [1, 2]) : [],
     PreEntityImages: images(previous, [0, 2]),
-    PrimaryEntityId: record?.[idColumn] ?? previous?.[idColumn] ?? null,
-    PrimaryEntityName: entity,
-    RequestId: null,
+    PrimaryEntityId:
+      ['associate', 'disassociate'].includes(operation) || (facts.bridged && asyncExecution && operation === 'delete')
+        ? '00000000-0000-0000-0000-000000000000'
+        : (record?.[idColumn] ??
+          previous?.[idColumn] ??
+          (facts.customApi ? '00000000-0000-0000-0000-000000000000' : null)),
+    PrimaryEntityName: ['associate', 'disassociate'].includes(operation)
+      ? 'none'
+      : entity || (facts.customApi ? 'none' : entity),
+    RequestId: frame.requestId ?? null,
     SecondaryEntityName: 'none',
-    SharedVariables: [],
+    SharedVariables: pairs(frame.sharedVariables?.values),
     Stage: stage,
-    UserId: item.impersonatingUserId ?? initiating,
+    UserId: item.impersonatingUserId ?? store.pluginPlatformUserId ?? initiating,
   };
+  if (frame.delegatedSourceOperation) {
+    const source = frame.delegatedSourceOperation;
+    context.ParentContext = dataContract(
+      delegatedPluginParent(
+        source,
+        context,
+        store.pluginExecutionUserId ?? source.identity?.systemUserId ?? source.identity?.id ?? initiating,
+      ),
+    );
+  }
+  // A bridged multiple reports the single operation's frames, another asynchronous message its synchronous caller chain,
+  // relabelled as the job (plugin-sdk-parent.mjs).
+  const guid = (value) => ({ $type: 'Guid', value });
+  const job = {
+    MessageName: context.MessageName,
+    Depth: context.Depth,
+    PrimaryEntityId: guid(context.PrimaryEntityId),
+    IsolationMode: context.IsolationMode,
+    OwningExtension: { $type: 'EntityReference', logicalName: 'sdkmessageprocessingstep', id: item.id, name: null },
+    OperationId: guid(context.OperationId),
+    OperationCreatedOn: frame.createdOnWire,
+  };
+  const chain =
+    asyncMultipleJobParent(frame, facts.bridged ? multipleMessage(operation) : operation, entity, job) ??
+    (asyncExecution && frame.asyncOperation && !frame.delegatedSourceOperation
+      ? // A platform message's frames (a statecode Update's SetStateDynamicEntity) are relabelled like a CLR job's.
+        asynchronousParentChain(
+          frame.delegatedParentContext ?? (context.ParentContext ? null : frame.asyncCallerParent),
+          job,
+        )
+      : null);
+  if (chain) context.ParentContext = remoteFrame(chain.values);
+  return context;
 }
 
 // The authentication values. The stored format is not documented: XML settings as the Plug-in Registration Tool writes them,
@@ -307,14 +701,14 @@ function requestOf(store, endpoint, facts) {
     'content-type': 'application/json',
     'x-ms-dynamics-organization': String(org.domainname ?? org.name ?? ''), // the environment's domain name; the fallback to the organization name is a guess
     'x-ms-dynamics-entity-name': facts.entity ?? '',
-    'x-ms-dynamics-request-name': messageNameOf(facts.operation),
+    'x-ms-dynamics-request-name': facts.customApi?.name ?? messageNameOf(facts.operation),
     'x-ms-correlation-request-id': facts.correlationId,
   };
   const context = remoteExecutionContext(store, facts);
-  let body = JSON.stringify(context);
+  let body = stringifyExactJson(context);
   if (Buffer.byteLength(body) > MAX_BODY) {
     for (const key of ['ParentContext', 'InputParameters', 'PreEntityImages', 'PostEntityImages']) delete context[key];
-    body = JSON.stringify(context);
+    body = stringifyExactJson(context);
     headers['x-ms-dynamics-msg-size-exceeded'] = 'true'; // only the header's presence is documented; the value is a guess
   }
   return {
@@ -910,3 +1304,51 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
 
 /** Alias of serviceEndpointDelivery: the name the organization backend calls (without options, contract 8 only). */
 export const webhookDelivery = (store, options) => serviceEndpointDelivery(store, options);
+
+/**
+ * IServiceEndpointNotificationService.Execute from a plug-in (plugin-sdk-messages.mjs): posts the plug-in's RemoteExecutionContext
+ * (serialized by the CLR host with the official DataContractJsonSerializer) to a web hook endpoint on the synchronous I/O bridge,
+ * under the rule of a synchronous step: a contacted endpoint answering outside 2xx fails the call ("Endpoint unavailable"); a
+ * non-loopback endpoint is not contacted (WEBHOOK_NOT_CONTACTED). Answers null: the web hook's response body is not returned.
+ * Other contracts (Service Bus queues, topics, Event Hub, two-way listeners) are not posted from a plug-in locally (501).
+ */
+export function notifyServiceEndpoint(store, endpointId, body, diagnostic = () => {}) {
+  const endpoint = store.tableRows('serviceendpoint').find((row) => same(row.serviceendpointid, endpointId));
+  if (!endpoint)
+    throw new DataError(`serviceendpoint With Id = ${endpointId} Does Not Exist`, 404, 'NotFound', {
+      innerCode: '0x80040217',
+    });
+  if (Number(endpoint.contract) !== WEBHOOK_CONTRACT)
+    throw new DataError(
+      `Service endpoint contract ${Number(endpoint.contract)} is not posted from a plug-in locally; only web hooks (contract 8) are.`,
+      501,
+      'LocalPluginSdkUnsupported',
+    );
+  if (!isLoopbackUrl(endpoint.url)) {
+    diagnostic({
+      code: 'WEBHOOK_NOT_CONTACTED',
+      severity: 'warning',
+      reason: 'non-loopback',
+      host: hostnameOf(endpoint.url),
+      message: 'The simulator contacts only loopback webhook endpoints. The endpoint was not called.',
+    });
+    return null;
+  }
+  const context = JSON.parse(body),
+    org = organizationRecord(store) ?? {};
+  const { status } = postSync({
+    url: new URL(endpoint.url).toString(),
+    headers: {
+      'content-type': 'application/json',
+      'x-ms-dynamics-organization': String(org.domainname ?? org.name ?? ''),
+      'x-ms-dynamics-entity-name': context.PrimaryEntityName ?? '',
+      'x-ms-dynamics-request-name': context.MessageName ?? '',
+      'x-ms-correlation-request-id': context.CorrelationId ?? '',
+    },
+    body,
+    auth: { type: Number(endpoint.authtype), value: endpoint.authvalue ?? '' },
+  });
+  store.counters?.increment(status >= 200 && status < 300 ? 'webhooks.delivered' : 'webhooks.failed');
+  if (!(status >= 200 && status < 300)) throw unavailable();
+  return null;
+}

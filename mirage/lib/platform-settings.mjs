@@ -1,5 +1,6 @@
 import { organizationRecord } from './organization-context.mjs';
 import { DataError } from './data-error.mjs';
+import { parseXmlDocument } from './fetchxml-engine.mjs';
 
 const learn = 'https://learn.microsoft.com/en-us/';
 const organization = learn + 'power-apps/developer/data-platform/organization-table';
@@ -21,6 +22,16 @@ const item = (key, type, defaultValue, access, coverage, source, description, ex
 
 /** Curated feature-documented controls, not every writable Organization column. */
 const PLATFORM_SETTINGS = Object.freeze([
+  item(
+    'BypassBusinessLogicExecutionStepIdsLimit',
+    'integer',
+    3,
+    'OrgDbOrgSettings',
+    'Selective synchronous and asynchronous plug-in step bypass',
+    learn + 'power-apps/developer/data-platform/bypass-custom-business-logic#limit-on-the-number-of-steps',
+    'Maximum step IDs supplied for one operation. Microsoft recommends no more than ten; exported organization settings remain authoritative.',
+    { min: 0, max: 2147483647, orgDbOrgSetting: true },
+  ),
   item(
     'QueryLinkEntityLimit',
     'integer',
@@ -173,6 +184,7 @@ const PLATFORM_SETTINGS = Object.freeze([
   ),
 ]);
 const definitions = new Map(PLATFORM_SETTINGS.map((x) => [x.key, x]));
+const organizationSettingsCache = new WeakMap();
 export function validatePlatformOverrides(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new DataError('Platform overrides must be an object.', 400, 'InvalidPlatformSetting');
@@ -193,15 +205,43 @@ export function platformSettingEntries(state) {
   const { evidence: configuredEvidence, ...configured } = state.simulator?.platformDefaults ?? {};
   validatePlatformOverrides(configured);
   const org = organizationRecord(state) ?? {};
+  let orgDbOrg;
+  const orgValue = (d) => {
+    if (!d.orgDbOrgSetting || !org.orgdborgsettings) return undefined;
+    if (!orgDbOrg) {
+      const cached = organizationSettingsCache.get(org);
+      orgDbOrg = cached?.xml === org.orgdborgsettings ? cached.document : parseXmlDocument(org.orgdborgsettings);
+      organizationSettingsCache.set(org, { xml: org.orgdborgsettings, document: orgDbOrg });
+    }
+    const matches = [];
+    const visit = (node) => {
+      if (node.name.split(':').at(-1) === d.key) matches.push(node.text.trim());
+      for (const child of node.children ?? []) visit(child);
+    };
+    visit(orgDbOrg);
+    if (!matches.length) return undefined;
+    const value = Number(matches[0]);
+    if (
+      matches.length !== 1 ||
+      !/^\d+$/.test(matches[0]) ||
+      !Number.isSafeInteger(value) ||
+      value < d.min ||
+      value > d.max
+    )
+      throw new DataError('Invalid organization setting ' + d.key, 400, 'InvalidPlatformSetting');
+    return value;
+  };
   return PLATFORM_SETTINGS.map((d) => {
+    const orgDbOrgValue = orgValue(d);
     const local = Object.hasOwn(overrides, d.key),
       catalogued = Object.hasOwn(configured, d.key),
-      fromOrganization = d.column && Object.hasOwn(org, d.column) && org[d.column] != null,
+      fromOrganization =
+        orgDbOrgValue !== undefined || (d.column && Object.hasOwn(org, d.column) && org[d.column] != null),
       fromSetting = d.stateSetting && state.settings?.[d.stateSetting] != null,
       source = catalogued
         ? configured[d.key]
         : fromOrganization
-          ? org[d.column]
+          ? (orgDbOrgValue ?? org[d.column])
           : fromSetting
             ? state.settings[d.stateSetting]
             : d.defaultValue;

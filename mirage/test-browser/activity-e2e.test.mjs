@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // The /_sim/ Activity workspace (view-activity.mjs) over the real end-to-end scenario (test/support/trace-scenario.mjs) on
 // the Power Pages host: a member's create, a REJECTED create, a page render and a stranger's refused read, each its own
 // activity. A developer finds the failed request, reads Why, the steps, its log lines and findings, the rendered
@@ -498,6 +499,7 @@ test('at phone width nothing scrolls sideways and step names wrap; dark and ligh
   }
 });
 
+// @test-kind contract+security: a hostile audit filter value renders as text, never markup
 test('a denied request shows its code and portal code, audit filters narrow, and export downloads', async (t) => {
   const { sim, stranger, orderId } = run;
   const { page, errors } = await pageOf(t);

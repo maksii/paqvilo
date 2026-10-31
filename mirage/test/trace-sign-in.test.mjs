@@ -1,3 +1,4 @@
+// @test-kind contract+security: Paqvilo's tracing and activity design (docs/design/tracing.md); redaction keeps secrets, tokens and keys out of traces
 // Sign-in in the trace (docs/design/tracing.md, D-R3-3, D-R3-4, D-R3-5, D-R3-8, D-R3-12): a local sign-in names the
 // signed-in contact on its root (display name from first and last name when the contact has no full name) with a signIn
 // event; a refused sign-in names its refusal; an external sign-in through the local identity provider records the

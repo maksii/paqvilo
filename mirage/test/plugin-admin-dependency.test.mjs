@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo admin operation API (plugin-step mode clr, mock, disabled) decides whether original CLR loopback calls run
 import test from 'node:test';
 import { CLR_SKIP } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo acceptance API page/context lifecycle observer: failed or pending reads stay visible, settling is bounded and fails closed
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -54,6 +55,35 @@ async function fixture(t) {
   t.after(() => context.close());
   const page = await context.newPage();
   return { origin, context, page };
+}
+
+// Drive only the observer's clock. Mocking global timers also pauses Playwright
+// protocol timeouts and can deadlock real browser I/O before the next tick.
+function observerClock() {
+  let now = Date.now(),
+    sequence = 0;
+  const timers = new Map(),
+    admissions = new Map();
+  return {
+    now: () => now,
+    setTimeout(fn, ms) {
+      const id = ++sequence,
+        at = now + ms;
+      timers.set(id, { at, fn });
+      admissions.get(at)?.forEach((resolve) => resolve());
+      admissions.delete(at);
+      return id;
+    },
+    clearTimeout: (id) => timers.delete(id),
+    waitingAt(at) {
+      if ([...timers.values()].some((timer) => timer.at === at)) return Promise.resolve();
+      return new Promise((resolve) => admissions.set(at, [...(admissions.get(at) ?? []), resolve]));
+    },
+    tick(ms) {
+      now += ms;
+      for (const [id, timer] of [...timers]) if (timer.at <= now && timers.delete(id)) timer.fn();
+    },
+  };
 }
 
 test('a detached iframe read needs lifecycle evidence at failure time', async (t) => {
@@ -229,7 +259,8 @@ test('a streaming HTTP error stays failed when its document is replaced', async 
 
 test('a page created during context settling joins the same bounded observation', async (t) => {
   const { origin, context, page } = await fixture(t);
-  const observer = await observeContextLifecycle(context, { origin });
+  const clock = observerClock();
+  const observer = await observeContextLifecycle(context, { origin, clock });
   t.after(() => observer.dispose());
   t.after(releaseHeldReads);
   await page.goto(origin);
@@ -241,13 +272,14 @@ test('a page created during context settling joins the same bounded observation'
   // Hold the first page busy and freeze the observer clock. Advancing past the
   // quiet window before creating the real second page reproduces the ordering
   // that previously allowed settlement to finish before page admission.
-  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  const started = clock.now();
   let finished = false;
-  const pending = observer.settle({ timeout: 700, quietMs: 300 }).then((result) => {
+  const pending = observer.settle({ timeout: 700, quietMs: 300, pollMs: 25 }).then((result) => {
     finished = true;
     return result;
   });
-  t.mock.timers.tick(350);
+  await clock.waitingAt(started + 25);
+  clock.tick(350);
   await Promise.resolve();
   assert.equal(finished, false, 'the held request prevents quiet settlement');
   const late = await context.newPage();
@@ -258,7 +290,8 @@ test('a page created during context settling joins the same bounded observation'
     fetch('/pending-late').catch(() => {});
   });
   await lateRequest;
-  t.mock.timers.tick(350);
+  await clock.waitingAt(started + 375);
+  clock.tick(350);
   const result = await pending;
   assert.equal(result.settled, false);
   assert.equal(result.passed, false);
@@ -314,24 +347,38 @@ test('nested frame replacement retires predecessor reads and preserves replaceme
 
 test('context settling refreshes an earlier quiet page after another page finishes waiting', async (t) => {
   const { origin, context, page } = await fixture(t);
-  const observer = await observeContextLifecycle(context, { origin });
+  const clock = observerClock();
+  const observer = await observeContextLifecycle(context, { origin, clock });
   t.after(() => observer.dispose());
   const other = await context.newPage();
   await observer.ready();
   await Promise.all([page.goto(origin), other.goto(origin)]);
   t.after(releaseHeldReads);
+  const admitted = new Promise((resolve) => {
+    const onRequest = (request) => {
+      if (request.url !== '/held-read') return;
+      server.off('request', onRequest);
+      resolve();
+    };
+    server.on('request', onRequest);
+    t.after(() => server.off('request', onRequest));
+  });
   const held = other.waitForRequest((request) => request.url().endsWith('/held-read'));
   await other.evaluate(() => {
     fetch('/held-read').catch(() => {});
   });
   await held;
+  // The browser's request event can precede server admission. Releasing before
+  // the fixture owns the response leaves it open and never emits requestfinished.
+  await admitted;
   // The other page keeps the context busy until its held read is released.
   // Advance an exact clock after the context has begun waiting on both pages.
   // The first page completes its quiet window while the other read is still held.
-  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
-  const resultPromise = observer.settle({ timeout: 700, quietMs: 75 });
-  await new Promise((resolve) => setImmediate(resolve));
-  t.mock.timers.tick(75);
+  const started = clock.now();
+  const resultPromise = observer.settle({ timeout: 700, quietMs: 75, pollMs: 25 });
+  await clock.waitingAt(started + 25);
+  clock.tick(75);
+  await clock.waitingAt(started + 100);
   await new Promise((resolve) => setImmediate(resolve));
   const late = page.waitForRequest((request) => request.url().endsWith('/pending-after-quiet'));
   await page.evaluate(() => {
@@ -341,9 +388,9 @@ test('context settling refreshes an earlier quiet page after another page finish
   const finished = other.waitForEvent('requestfinished', (request) => request.url().endsWith('/held-read'));
   releaseHeldReads();
   await finished;
-  t.mock.timers.tick(75);
-  await new Promise((resolve) => setImmediate(resolve));
-  t.mock.timers.tick(550);
+  clock.tick(75);
+  await clock.waitingAt(started + 175);
+  clock.tick(550);
   const result = await resultPromise;
   assert.equal(result.settled, false);
   assert.equal(result.passed, false);

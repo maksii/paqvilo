@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
 // Portal forms, native services and refused reads in the trace (docs/design/tracing.md, D-R3-10, D-R3-11, D-R3-14): a basic
 // form submission is one `form` span above its Dataverse write; the list grid service names its table and view; a note
 // attachment upload and download name the file column, name and size (never the bytes); a refused Web API collection read

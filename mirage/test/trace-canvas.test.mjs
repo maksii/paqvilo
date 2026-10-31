@@ -1,3 +1,4 @@
+// @test-kind contract+security: Paqvilo's tracing and activity design (docs/design/tracing.md); redaction keeps secrets, tokens and keys out of traces
 // Canvas app tracing (docs/design/tracing.md, DV-B1-4/-5, DV-A-2/-3/-13/-14): the /_apps/api/canvas root names the
 // canvas host, the app and the staff user it runs as; every driver action is one `canvas` span (start, select
 // <control>.<property>, run <formula>) with the formula text at level full, its error outcome and the Dataverse and
@@ -296,15 +297,19 @@ test('the player sends the page root on its driver calls and leaves the source w
   assert.match(code, /\?revision=1`, \{\s+signal: controller\.signal,\s+untraced: true,/);
 });
 
-test('a write a plug-in refuses names the fault identity of its Dataverse spans on the canvas span; the answer keeps its code', async () => {
+test('a write a plug-in refuses names the fault identity of its Dataverse spans on the canvas span and answers the fault as a Power Fx refusal', async () => {
   const { admin } = await runtime();
   await drive({ action: 'start' }, { cookie: admin.cookie });
   const { response, answer, tree, root } = await drive(
     { action: 'select', control: 'BadButton' },
     { cookie: admin.cookie },
   );
-  // The answer is unchanged: a formula failure without an HTTP status answers 200 with the entry's own code.
-  assert.deepEqual([response.status, root.status, answer.errors[0].code], [200, 'ok', 'InventedBadItem']);
+  // The handler's ordinary exception is the platform's unhandled plug-in fault (400 0x80040224, its message; native
+  // faults.json), so the formula answers that Dataverse refusal as a Power Fx error with the fault's status.
+  assert.deepEqual(
+    [response.status, root.status, answer.errors[0].code, answer.errors[0].message],
+    [400, 'error', 'PowerFxError', 'Bad items are refused.'],
+  );
   const action = tree.spans.find((span) => span.kind === 'canvas');
 
   const step = tree.spans.find((span) => span.kind === 'plugin-step' && span.error);

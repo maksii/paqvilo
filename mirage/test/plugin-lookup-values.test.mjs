@@ -1,3 +1,4 @@
+// @test-kind compatibility: Learn SDK lookup columns are EntityReference values; polymorphic inference unqualified; nativeQualified false
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
@@ -72,7 +73,21 @@ test('Monomorphic source-declared lookup GUIDs retain SDK EntityReference; ambig
     name: 'Parent',
   });
   assert.deepEqual(recordToSdkEntity(store, 'widget', { widgetid: id, title: parent }).attributes.title, parent);
-  for (const targets of [undefined, [], ['widget', 'other'], ['invalid name']]) {
+  store.state.mappings.widget.fields.parentid.targets = undefined;
+  assert.deepEqual(convert(parent), {
+    $type: 'EntityReference',
+    logicalName: 'widget',
+    id: parent,
+    name: null,
+  });
+  const sourceParent = store.state.mappings.widget.relationships.parent;
+  delete store.state.mappings.widget.relationships.parent;
+  try {
+    assert.throws(() => convert(parent), /one exact source-declared target/);
+  } finally {
+    store.state.mappings.widget.relationships.parent = sourceParent;
+  }
+  for (const targets of [[], ['widget', 'other'], ['invalid name']]) {
     store.state.mappings.widget.fields.parentid.targets = targets;
     assert.throws(() => convert(parent), /one exact source-declared target/);
   }
