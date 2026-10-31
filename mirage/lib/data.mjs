@@ -1632,6 +1632,10 @@ export class DataStore {
       boundary.backup === null
     );
   }
+  /** True while any transaction of this store is queued or running, in any async context. */
+  transactionPending() {
+    return (this.transactionsQueued ?? 0) > 0;
+  }
   /** True inside an open transaction of this store in this async context: a new transact here would queue behind it. */
   inTransaction() {
     const frame = transactionFrameOf(this);
@@ -1684,6 +1688,8 @@ export class DataStore {
       throw new Error('Private initialization requires an unpublished, usable store.');
     this.contendReadLeases();
     const frame = { store: this, working: null, initializing: privateInitialization };
+    // Queued and running transactions (transactionPending): an independent read does not queue behind one.
+    this.transactionsQueued = (this.transactionsQueued ?? 0) + 1;
     const run = this.queue.then(() =>
       this.withOperationContext(
         async () => {
@@ -1900,6 +1906,10 @@ export class DataStore {
       ),
     );
     this.queue = run.catch(() => {});
+    const settled = () => {
+      this.transactionsQueued--;
+    };
+    run.then(settled, settled);
     return run;
   }
   /** Rewrite a streamed checkpoint without copying the in-memory state. Queued

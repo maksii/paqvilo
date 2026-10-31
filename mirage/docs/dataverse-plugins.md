@@ -98,8 +98,9 @@ A Retrieve or RetrieveMultiple step may write through the SDK, as natively: a
 portal or Dataverse Web API read (and SOAP, which reads through it) whose read steps
 run gets a read-operation boundary, so the write commits on its own and stays when
 the read later faults, while the read context itself is not transacted
-(`IsInTransaction` false). A read outside any operation (an internal store read)
-still refuses the write with `501 LocalPluginReadWriteUnsupported`.
+(`IsInTransaction` false). A read never waits behind or borrows another operation's open
+transaction: while one is open, and for a read outside any operation, the step's
+write is refused with `501 LocalPluginReadWriteUnsupported`.
 
 ## What is simulated
 
