@@ -313,8 +313,9 @@ function runMessagePipeline(
 /**
  * IOrganizationService.Execute of a named platform message from a plug-in. service is the caller's local organization
  * service; invoke(method, args) runs a record SDK method (Create, Update, RetrieveMultiple) as the plug-in would.
- * Authorization uses the explicit backend grants: update on the target for Assign, SetState and sharing changes, read for
- * the access queries (the profile's grants stand in for the Assign/Share privileges, which it does not model).
+ * Authorization is the run-as user's security roles, or the explicit profile grants when the store has no security model
+ * (authorizeGrant): Assign checks Write (update) and Assign on the target row, SetState checks Write, the sharing changes
+ * check Share, the access queries check Read.
  */
 export function executePlatformSdkMessage({ store, profile, service, request, parameters, options = {}, invoke }) {
   const name = request.requestName,
@@ -368,7 +369,7 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
     case 'Assign': {
       const target = reference(parameters.Target, 'Target'),
         assignee = principalOf(store, parameters.Assignee, 'Assignee');
-      existing(target, 'update');
+      authorizeGrant(store, profile, target.logicalName, 'assign', existing(target, 'update'));
       named({ Target: parameters.Target, Assignee: parameters.Assignee }, target, () => {
         // Natively the Assign main operation updates the owner as the organization's system user.
         const system = store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM');
@@ -406,7 +407,7 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
     case 'ModifyAccess':
     case 'RevokeAccess': {
       const target = reference(parameters.Target, 'Target');
-      existing(target, 'update');
+      existing(target, 'share');
       const access = parameters.PrincipalAccess;
       if (name !== 'RevokeAccess' && access?.$type !== 'PrincipalAccess')
         fail('SDK PrincipalAccess requires a typed value.');

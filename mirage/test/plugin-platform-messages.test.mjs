@@ -16,7 +16,8 @@ const caller = '10000000-0000-4000-8000-000000000001',
 const profile = {
   userId: caller,
   evidence: 'Invented platform message proof',
-  grants: [{ entity: 'widget', operations: ['read', 'update'] }],
+  // @parity-evidence: fixture grant only; Microsoft Learn "Privileges by message" (AssignRequest prvAssign, GrantAccess/ModifyAccess/RevokeAccess prvShare), audit C2-04
+  grants: [{ entity: 'widget', operations: ['read', 'update', 'assign', 'share'] }],
 };
 const storeOf = () =>
   new DataStore({

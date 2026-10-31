@@ -58,7 +58,8 @@ export function sdkRecordKey(store, entity, target, partitionId) {
     : id;
 }
 
-const OPERATIONS = ['read', 'create', 'update', 'delete', 'associate', 'disassociate'];
+// assign and share are the SDK Assign and sharing privileges (prvAssign, prvShare); principals.authorize maps them by name.
+const OPERATIONS = ['read', 'create', 'update', 'delete', 'associate', 'disassociate', 'assign', 'share'];
 // The privilege an association checks on the row, as the Web API's $ref routes do.
 const ROLE_OPERATION = { associate: 'appendto', disassociate: 'appendto' };
 const BULK_MESSAGES = ['CreateMultiple', 'UpdateMultiple'];
