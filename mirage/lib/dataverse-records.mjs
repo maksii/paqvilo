@@ -2829,7 +2829,8 @@ export function createRecordHandlers({
       );
       const seen = new Set(),
         creates = [],
-        updates = [];
+        updates = [],
+        created = new Set();
       for (const [index, target] of targets.entries()) {
         const folded = texts[index].toLowerCase();
         if (seen.has(folded)) throw invalid('Duplicate key in Targets.', '0x80040203'); // native message text is a guess
@@ -2838,19 +2839,16 @@ export function createRecordHandlers({
         const values = { ...target };
         delete values['@odata.id'];
         if (key.row) updates.push({ ...values, [mapping.idColumn]: key.row[mapping.idColumn] });
-        else creates.push(values);
+        else {
+          creates.push(values);
+          created.add(index);
+        }
       }
       // UpsertMultiple runs no steps of its own (registered UpsertMultiple steps do not fire): its main operation
       // (UpsertMultiple/30) runs the new records through the CreateMultiple pipeline, then the existing ones through
       // UpdateMultiple, whose message input carries ConcurrencyBehavior; both in its transaction, request and correlation,
       // under it as ParentContext (recorded native bulk).
-      const main = upsertMultipleOperation(
-        c,
-        mapping,
-        targets,
-        texts,
-        (index) => !lookupKey(c, mapping, texts[index]).row,
-      );
+      const main = upsertMultipleOperation(c, mapping, targets, texts, (index) => created.has(index));
       await runWrite(async () => {
         const previousMain = store.pluginMainOperation;
         store.pluginMainOperation = main;
