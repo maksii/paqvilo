@@ -1412,7 +1412,25 @@ export function runPluginPhase({
     // After the main operation wrote, the request's root collection lists the security-relevant tables it changed,
     // also those of nested plug-in requests (plugin-sdk-parent recordRequestRootChange).
     const table = stage === 40 ? changedEntityType(store, operation, entity, intersectEntity) : null;
-    if (table) recordRequestRootChange(store, phaseFrame.requestId, { table });
+    // A single-record operation that queues asynchronous work adds the platform's job attachment, fileattachment
+    // 'Create', after its table (native crud/faults/depth/upsert with async steps; none in crudNoAsync, reproduced in
+    // native-r2). Native Associate and Web API CreateMultiple/UpdateMultiple roots show none during their stages.
+    const queuesAsync =
+      stage === 40 &&
+      !bulkOrigin &&
+      ['create', 'update', 'delete'].includes(operation) &&
+      matchingPluginSteps(items, {
+        store,
+        entity,
+        operation,
+        stage,
+        changedAttributes,
+        asyncExecution: true,
+        bypassStepIds: bypassStepIds ?? [],
+        bypassCustomPlugins,
+        diagnostic: () => {},
+      }).some((item) => item.mode !== 'disabled');
+    if (table || queuesAsync) recordRequestRootChange(store, phaseFrame.requestId, { table, asyncQueued: queuesAsync });
     if (stage === 40 && !nested && !phaseFrame.delegatedParentContext && !bulkParent) {
       // An HTTP Upsert's framework operation (plugin-sdk-parent selectSdkEntryParent) is the root when present; an
       // upsert-created row's Create main operation is not the root (native upsert: Create/30 has no entry).

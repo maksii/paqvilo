@@ -81,11 +81,12 @@ const step = ({ mode = 0, impersonatingUserId } = {}) => ({
 });
 // The CLR context of every phase that `want` selects; `act(answer, phase)` runs as the probe step's body.
 // multiple: registrations whose multiple message runs for each single one (organization-backend.mjs bridging).
-function probe(store, want, { act, stepOf = () => step(), multiple } = {}) {
+// items: registrations the real phase matches (asynchronous ones only queue, they never execute here).
+function probe(store, want, { act, stepOf = () => step(), multiple, items = [] } = {}) {
   const seen = [],
     snapshots = new WeakMap();
   const pipeline = (phase) => {
-    const frame = runPluginPhase({ ...phase, store, items: [], handlers: new Map() });
+    const frame = runPluginPhase({ ...phase, store, items, handlers: new Map() });
     // @parity-evidence: native recorder corpus crud/depth/faults (two captures): a single Create/Update/Delete runs its paired multiple message's steps on the same frame (audit C26a); only this probe helper changes, no assertion
     // A single Create/Update/Delete also runs its multiple message's steps on its own frame (plugin-single-multiple.mjs).
     const labels = [
@@ -411,9 +412,10 @@ test('the DeleteMultiple refusal runs each Delete PreValidation inside the Delet
   assert.equal(single.context.OperationId.value, bulk.OperationId.value);
 });
 
-// Native depth (one capture, eight depths, stages 10/20/40): an SDK request from a step at Depth 2 or deeper keeps the
+// Native depth (two captures, eight depths, stages 10/20/40): an SDK request from a step at Depth 2 or deeper keeps the
 // depth-1 step as ParentContext: Create/10/dN < Create/40/d1 < Create/30/d1 for N 3..10.
-// @test-kind observation: single native depth capture (dataverse-recorder depth); parity after a second capture (N7)
+// @test-kind parity: native depth captures r1 and r2 (dataverse-recorder depth, native-r2 depth) reproduce the chain
+// @parity-evidence: native-r2 depth repeats Create/10/dN < Create/40/d1 < Create/30/d1 and CreateMultiple/20/d3 < Create/30/d3 < Create/40/d1 (second capture, N7)
 test('an SDK request from a nested step keeps the depth-1 step as its parent', () => {
   const store = storeOf();
   const seen = probe(store, (at) => ['create/10', 'create/40'].includes(at), {
@@ -437,7 +439,8 @@ test('an SDK request from a nested step keeps the depth-1 step as its parent', (
 
 // Native depth: a CreateMultiple step running for a nested Create sees that Create's main operation at its own depth
 // (CreateMultiple/20/d3 < Create/30/d3 < Create/40/d1 < Create/30/d1).
-// @test-kind observation: single native depth capture (dataverse-recorder depth); parity after a second capture (N7)
+// @test-kind parity: native depth captures r1 and r2 (dataverse-recorder depth, native-r2 depth) reproduce the chain
+// @parity-evidence: native-r2 depth repeats Create/10/dN < Create/40/d1 < Create/30/d1 and CreateMultiple/20/d3 < Create/30/d3 < Create/40/d1 (second capture, N7)
 test('a multiple step of a nested Create sees its main operation at the nested depth', () => {
   const store = storeOf();
   const seen = probe(store, (at) => ['create/40', 'createmultiple/20'].includes(at), {
@@ -639,9 +642,10 @@ test('a stage-30 ancestor never carries the Create telemetry root', () => {
   assert.deepEqual(observed.values.ParentContext.values.SharedVariables.values, { kept: 2 });
 });
 
-// Native faults (one capture): after a Create PreValidation step's own SDK request, the Depth-1 Create's PreOperation
+// Native faults (two captures): after a Create PreValidation step's own SDK request, the Depth-1 Create's PreOperation
 // and PostOperation collection reports AcceptLang '' while its main-operation collection keeps the caller's.
-// @test-kind observation: single native faults capture of a PreValidation SDK request
+// @test-kind parity: native faults captures r1 and r2 both show Create/20 and Create/40 at Depth 1 with AcceptLang ''
+// @parity-evidence: native-r2 faults reproduces AcceptLang '' on the Depth-1 Create/20 and Create/40 collections after the PreValidation step's SDK request, '*' on Create/30
 test('a PreValidation SDK request leaves the later stages of its operation without Accept-Language', () => {
   const store = storeOf();
   const seen = probe(store, (at) => ['create/10', 'create/20'].includes(at), {
@@ -659,4 +663,36 @@ test('a PreValidation SDK request leaves the later stages of its operation witho
     plain = probe(quiet, (at) => at === 'create/20');
   quiet.createRecord('widget', { title: 'Root' }, { admin: true }, { pluginAcceptLanguage: '*' });
   assert.equal(plain[0].shared.values.AcceptLang, '*');
+});
+
+// Native crud/faults/depth/upsert (r1 and r2): with asynchronous steps registered, the request root lists
+// fileattachment 'Create' after the written table; native-r2 crudNoAsync, with every asynchronous step disabled, lists
+// only the table. An organization-owned table's root lists only the attachment (depth: {fileattachment: Create}).
+test('queued asynchronous work adds the job attachment to the request root', () => {
+  const asyncStep = (entity, message) => ({
+    id: '30000000-0000-4000-8000-0000000000a' + (message === 'Update' ? '1' : '2'),
+    enabled: true,
+    entity,
+    message,
+    stage: 40,
+    mode: 'clr',
+    contract: { mode: 1 },
+    filteringAttributes: [],
+    images: [],
+  });
+  const rootAt = (items, run) => {
+    const store = storeOf();
+    const seen = probe(store, (at) => at.endsWith('/40'), { items });
+    run(store);
+    return rootOf(seen.at(-1).context).ChangedEntityTypes;
+  };
+  const update = (store) =>
+    store.updateRecord('widget', id, { title: 'Renamed' }, { admin: true }, { preValidationSourceOperation: 'upsert' });
+  assert.deepEqual(rootAt([asyncStep('widget', 'Update')], update), { widget: 'Update', fileattachment: 'Create' });
+  assert.deepEqual(rootAt([], update), { widget: 'Update' });
+  assert.deepEqual(rootAt([{ ...asyncStep('widget', 'Update'), enabled: false }], update), { widget: 'Update' });
+  assert.deepEqual(
+    rootAt([asyncStep('ledger', 'Create')], (store) => store.createRecord('ledger', { title: 'Org' }, { admin: true })),
+    { fileattachment: 'Create' },
+  );
 });
