@@ -104,14 +104,15 @@ const emptyImageCollections = () => ({ $type: 'EntityImageCollectionArray', valu
 
 /** The ObjectModel Implementation step of a message on a table. Native step ids are generated per environment and
  * are stable per message and table (recorded Create on two tables, Update, Upsert/none, UpsertMultiple/none), so only
- * that identity structure is reproduced. */
-export function mainOperationStep(messageName, entity) {
+ * that identity structure is reproduced. variant names a second platform step of that message and table (native
+ * imagesOrder: the Update main operation above SetStateDynamicEntity has its own ObjectModel step). */
+export function mainOperationStep(messageName, entity, variant) {
   return {
     $type: 'EntityReference',
     logicalName: 'sdkmessageprocessingstep',
     id: uuidV5(
       '00000000-0000-0000-0000-000000000000',
-      `sdkmessageprocessingstep:${MAIN_OPERATION_STEP}:${messageName}:${entity ?? 'none'}`,
+      `sdkmessageprocessingstep:${MAIN_OPERATION_STEP}:${messageName}:${entity ?? 'none'}${variant ? ':' + variant : ''}`,
     ),
     name: MAIN_OPERATION_STEP,
   };

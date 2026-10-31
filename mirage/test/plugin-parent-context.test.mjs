@@ -769,3 +769,68 @@ test('a PATCH statecode SetStateDynamicEntity parent carries the request tag', (
     assertTaggedUpsert(state.ParentContext.values);
   }
 });
+
+// Native imagesOrder (two captures): a PATCH {statecode, statuscode} with If-Match runs SetStateDynamicEntity at d2 in
+// the Update's request and correlation, under two Update/30 frames at d2: the Update main operation as it then stands
+// (Target with the modification stamps, the PreOperation inputs and shared variables, the final PreOperation images
+// plus PreBusinessEntity, its own ObjectModel step) over the main operation the Update's PreOperation steps see.
+// @test-kind parity: native imagesOrder (native and native-r2) SetStateDynamicEntity under a PATCH statecode with If-Match
+test('a plain Update statecode SetStateDynamicEntity runs in the Update request under its two main-operation frames', () => {
+  const store = storeOf();
+  const imaged = (n, stage, images) => ({
+    id: `30000000-0000-4000-8000-00000000001${n}`,
+    enabled: true,
+    entity: 'widget',
+    message: 'Update',
+    stage,
+    rank: 1,
+    mode: 'mock',
+    contract: { mode: 0 },
+    images,
+  });
+  const seen = probe(
+    store,
+    (at) => ['update/20', 'SetStateDynamicEntity/10', 'SetStateDynamicEntity/20'].includes(at),
+    {
+      items: [
+        imaged(1, 10, [{ alias: 'pre', type: 0 }]),
+        imaged(2, 20, [{ alias: 'pre', type: 0, attributes: ['title'] }]),
+        imaged(3, 20, [{ alias: 'late', type: 0, attributes: ['level'] }]),
+      ],
+    },
+  );
+  store.pluginSdkTag = tag;
+  try {
+    store.updateRecord('widget', id, { statecode: 1, statuscode: 2 }, { admin: true, systemUserId: caller });
+  } finally {
+    store.pluginSdkTag = undefined;
+  }
+  const update = seen.find((entry) => entry.label === 'update/20').context;
+  for (const at of ['SetStateDynamicEntity/10', 'SetStateDynamicEntity/20']) {
+    const state = seen.find((entry) => entry.label === at).context;
+    const [, current, main] = chain(state);
+    assert.deepEqual(chain(state).map(label), [`${at}/d2`, 'Update/30/d2', 'Update/30/d2']);
+    for (const level of [state, current, main]) {
+      assert.equal(level.RequestId.value, update.RequestId.value);
+      assert.equal(level.OperationId.value, update.OperationId.value);
+      assert.equal(level.CorrelationId.value, update.CorrelationId.value);
+    }
+    assert.deepEqual(Object.keys(current.InputParameters.values), ['Target', 'ConcurrencyBehavior']);
+    assert.ok(
+      ['modifiedon', 'modifiedby', 'modifiedonbehalfby'].every((name) =>
+        Object.hasOwn(current.InputParameters.values.Target.attributes, name),
+      ),
+    );
+    assert.deepEqual(Object.keys(main.InputParameters.values).toSorted(), ['ConcurrencyBehavior', 'Target', 'tag']);
+    assert.equal(current.SharedVariables.values.tag, tag);
+    assert.notEqual(current.OwningExtension.id, main.OwningExtension.id);
+    assert.equal(current.OwningExtension.name, 'ObjectModel Implementation');
+    // The final PreOperation set plus PreBusinessEntity, against the PreValidation set of the main operation.
+    const [currentImages] = current.PreEntityImagesCollection.values,
+      [mainImages] = main.PreEntityImagesCollection.values;
+    assert.deepEqual(Object.keys(currentImages.values).toSorted(), ['PreBusinessEntity', 'late', 'pre']);
+    assert.deepEqual(Object.keys(currentImages.values.pre.attributes), ['title']);
+    assert.ok(Object.keys(mainImages.values.pre.attributes).length > 2);
+    assert.equal(main.ParentContext, null);
+  }
+});

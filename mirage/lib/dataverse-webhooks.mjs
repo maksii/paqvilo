@@ -633,8 +633,12 @@ export function remoteExecutionContext(store, facts) {
   };
   const chain =
     asyncMultipleJobParent(frame, facts.bridged ? multipleMessage(operation) : operation, entity, job) ??
-    (asyncExecution && !context.ParentContext && frame.asyncOperation
-      ? asynchronousParentChain(frame.asyncCallerParent, job)
+    (asyncExecution && frame.asyncOperation && !frame.delegatedSourceOperation
+      ? // A platform message's frames (a statecode Update's SetStateDynamicEntity) are relabelled like a CLR job's.
+        asynchronousParentChain(
+          frame.delegatedParentContext ?? (context.ParentContext ? null : frame.asyncCallerParent),
+          job,
+        )
       : null);
   if (chain) context.ParentContext = remoteFrame(chain.values);
   return context;

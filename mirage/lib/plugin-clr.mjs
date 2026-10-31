@@ -2074,6 +2074,22 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
     executionMode: session ? 'pooled-fresh-instance' : 'fresh-host',
   };
 }
+/** A registered image of a row as a step receives it, with the formatted values of formatUserId. */
+export function pluginImage(store, entity, row, registration, formatUserId) {
+  if (!row) return null;
+  const { formattedValues: _, ...value } = recordToSdkEntity(store, entity, imageAttributes(row), {
+    // PreBusinessEntity names its attributes exactly, also none.
+    allColumns: !registration.exact && !registration.attributes?.length,
+    columns: registration.attributes ?? [],
+    image: true,
+  });
+  const formattedValues = pipelineFormattedValues(store, entity, value, {
+    userId: formatUserId,
+    retrieved: true,
+    currencyId: row.transactioncurrencyid,
+  });
+  return Object.keys(formattedValues).length ? { ...value, formattedValues } : value;
+}
 export function clrContext({
   runtime,
   store,
@@ -2142,21 +2158,7 @@ export function clrContext({
     frame.callerIdentity?.systemUserId ??
     context.executionUserId ??
     descriptor.serviceProfile.userId;
-  const image = (row, registration) => {
-    if (!row) return null;
-    const { formattedValues: _, ...value } = recordToSdkEntity(store, entity, imageAttributes(row), {
-      // PreBusinessEntity names its attributes exactly, also none.
-      allColumns: !registration.exact && !registration.attributes?.length,
-      columns: registration.attributes ?? [],
-      image: true,
-    });
-    const formattedValues = pipelineFormattedValues(store, entity, value, {
-      userId: formatUserId,
-      retrieved: true,
-      currencyId: row.transactioncurrencyid,
-    });
-    return Object.keys(formattedValues).length ? { ...value, formattedValues } : value;
-  };
+  const image = (row, registration) => pluginImage(store, entity, row, registration, formatUserId);
   const asynchronous = (step.contract?.mode ?? 0) === 1,
     crud = ['create', 'update', 'delete'].includes(operation),
     bulk = ['createmultiple', 'updatemultiple'].includes(operation),

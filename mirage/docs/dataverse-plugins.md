@@ -31,8 +31,11 @@ message's depth, without its PreValidation stage, ConcurrencyBehavior input or a
 nested SetStateDynamicEntity; Assign's Update runs as the organization's SYSTEM
 user; its steps see the named message's main operation directly as ParentContext.
 An Update that sets `statecode` runs the SetStateDynamicEntity pipeline inside its
-main operation; under a bare PATCH it joins the Update's request beneath an Upsert
-main-operation frame at its own depth. Sharing changes and reads use
+main operation, in the Update's request and correlation at its own depth: under a
+bare PATCH beneath an Upsert main-operation frame, under a plain Update beneath two
+Update/30 frames (the main operation as it then stands, with its own ObjectModel
+step, over the one the Update's PreOperation steps see); its asynchronous jobs
+report those frames relabelled as the job. Sharing changes and reads use
 `principalobjectaccess`; the two access reads report `IsAutoTransact` false.
 Registered Upsert, UpsertMultiple and SetState steps never execute, as natively:
 an SDK Upsert reads the record and runs Create or Update (by primary key, or by

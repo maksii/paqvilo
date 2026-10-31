@@ -1622,6 +1622,13 @@ export function runPluginPhase({
       pre: { ...stageImageSet({ stage: 10, steps: stageSteps(10) }).pre, ...businessEntity() },
       post: {},
     };
+  // The Update main operation a statecode change runs SetStateDynamicEntity in holds the final PreOperation set plus
+  // PreBusinessEntity (native imagesOrder: Update/30 [pre, late, PreBusinessEntity] above SetStateDynamicEntity).
+  if (stage === 20 && operation === 'update' && !asyncExecution)
+    phaseFrame.operationImages = {
+      pre: { ...stageImageSet({ stage: 20, steps: stageSteps(20) }).pre, ...businessEntity() },
+      post: {},
+    };
   // Mock/handler read outputs also belong to the SDK response frame. Ordinary reads
   // without an executing observer keep the plain projection path.
   if (

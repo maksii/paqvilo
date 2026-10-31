@@ -359,6 +359,34 @@ test('an asynchronous named message job reports its synchronous caller chain as 
     assert.equal(parent.PrimaryEntityName, 'x_node');
 });
 
+// Native imagesOrder (two captures): the asynchronous SetStateDynamicEntity job of a plain Update that sets statecode
+// reports the two Update/30 frames its synchronous steps see, relabelled as the job: SetStateDynamicEntity/30 (the
+// main operation as it then stands: Target and ConcurrencyBehavior) < SetStateDynamicEntity/30 (the PreValidation
+// inputs, with the request's tag).
+// @test-kind parity: native imagesOrder (native and native-r2) SetStateDynamicEntity under a PATCH statecode with If-Match
+test('a plain Update statecode job reports both Update main-operation frames', async (t) => {
+  const { store, settle, received } = await organization(
+    t,
+    [
+      webhook(1, 'SetStateDynamicEntity'),
+      step(2, 'Update', 20, 0, { typeName: 'Invented.Observe', assemblyId: 'invented' }),
+    ],
+    new Map([['Invented.Observe', () => {}]]),
+  );
+  const row = await store.create('x_node', { x_name: 'stateful', x_level: 1 }, identity);
+  await store.update('x_node', row.x_nodeid, { statecode: 1, statuscode: 2 }, identity);
+  await settle();
+  assert.equal(received.length, 1);
+  const [context] = received;
+  assert.deepEqual(labels(context), ['SetStateDynamicEntity/30', 'SetStateDynamicEntity/30']);
+  assertJobFrames(context);
+  assert.deepEqual(
+    context.ParentContext.InputParameters.map(({ key }) => key),
+    ['Target', 'ConcurrencyBehavior'],
+  );
+  assert.ok(context.ParentContext.ParentContext.InputParameters.some(({ key }) => key === 'Target'));
+});
+
 // Native depth.json and crud: a bridged CreateMultiple/UpdateMultiple job's parent frames report the job's identities
 // (user, initiating user, business unit, organization), although the queued single operation kept only its request.
 test('a bridged multiple job parent reports the job identities', () => {
