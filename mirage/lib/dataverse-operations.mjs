@@ -1,7 +1,7 @@
 // Operation registry for extension-defined Web API functions and actions. Pure: it stores and finds definitions;
 // the router in dataverse-api.mjs calls handle(ctx) for the one it finds.
 import { PLATFORM_OPERATIONS, platformOperationCsdl, platformCsdl } from './dataverse-operation-contracts.mjs';
-import { assertPluginMessageAdmission } from './plugin-message-admission.mjs';
+import { entryMessageActive, entryParameters, runEntryMessage } from './plugin-platform-messages.mjs';
 
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const KINDS = new Set(['function', 'action']);
@@ -38,6 +38,46 @@ function declarationOf(op) {
   return [complex, `${head}\n${body}\n</${tag}>`].filter(Boolean).join('\n');
 }
 
+// A registered operation's message runs its plug-in pipeline around the operation (Web API actions and functions, and the
+// SOAP requests relayed to them): Target is the bound row, the other inputs the request's values, the outputs the
+// response's properties. An operation that runs its own pipeline (ownPipeline: Merge) and custom APIs (their own steps)
+// call the handler directly, as does a message without a registered step for the request table.
+async function runOperationMessage(store, op, context) {
+  const bound = context.target?.mapping,
+    boundId = context.target?.id;
+  const inputs = {
+    ...(boundId
+      ? {
+          Target: {
+            $type: 'EntityReference',
+            logicalName: bound.logicalName,
+            id: boundId,
+            name: null,
+            ...(context.target.keyAttributes ? { keyAttributes: { ...context.target.keyAttributes } } : {}),
+          },
+        }
+      : {}),
+    ...entryParameters(store, op.kind === 'action' ? context.body : context.params),
+  };
+  // The message's primary row is its Target (a record message's Target, also of an unbound one, natively: GrantAccess,
+  // RetrieveSharedPrincipalsAndAccess, Merge), else the bound table, else none.
+  const subject = inputs.Target?.$type === 'EntityReference' ? inputs.Target : null;
+  let response;
+  await runEntryMessage(store, {
+    message: op.name,
+    entity: subject?.logicalName ?? bound?.logicalName ?? 'none',
+    id: subject?.id ?? boundId,
+    inputs,
+    context,
+    main: async () => {
+      response = await op.handle(context);
+      const body = response?.body;
+      return body && typeof body === 'object' && !Buffer.isBuffer(body) ? entryParameters(store, body) : {};
+    },
+  });
+  return response;
+}
+
 export function createOperationRegistry({ store } = {}) {
   const operations = [];
   const providers = new Map();
@@ -60,13 +100,14 @@ export function createOperationRegistry({ store } = {}) {
       binding: op.binding,
       entity,
       handle: store
-        ? (context) => {
-            assertPluginMessageAdmission(store, op.name, context);
-            return op.handle(context);
-          }
+        ? (context) =>
+            !op.ownPipeline && entryMessageActive(store, op.name, context.target?.mapping?.logicalName, context)
+              ? runOperationMessage(store, op, context)
+              : op.handle(context)
         : op.handle,
       csdl,
       ...(op.soapResult ? { soapResult: op.soapResult } : {}),
+      ...(op.ownPipeline ? { ownPipeline: true } : {}),
     };
   };
   const current = () => {

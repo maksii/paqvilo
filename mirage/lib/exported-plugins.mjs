@@ -249,6 +249,9 @@ export function parsePluginDocument(xml) {
             name: value(image, 'Name') || '',
             alias: value(image, 'EntityAlias') || '',
             type: numeric(value(image, 'ImageType')),
+            ...(value(image, 'MessagePropertyName')
+              ? { messagePropertyName: value(image, 'MessagePropertyName') }
+              : {}),
             attributes: String(value(image, 'Attributes') ?? '')
               .split(',')
               .map(canonical)
@@ -1183,6 +1186,7 @@ export function runPluginPhase({
   awaitIo = false,
   diagnostic = () => {},
   onStepExecuted,
+  targetKeyAttributes,
 }) {
   // A saved row can be reused by a later Delete; its previous request frame
   // must not supply shared variables, correlation or parent context to this one.
@@ -1192,6 +1196,8 @@ export function runPluginPhase({
   const continued = executionFrames.has(record) && !initialFrame && !(stage === 10 && !continuePhase);
   if (initialFrame) executionFrames.set(record, cloneStateData(initialFrame));
   const phaseFrame = executionFrames.get(record) ?? {};
+  // The alternate key a Delete was addressed by (dataverse-records.mjs deleteEntity) belongs to its PreValidation Target.
+  if (targetKeyAttributes && stage === 10 && !asyncExecution) phaseFrame.targetKeyAttributes ??= targetKeyAttributes;
   // A request that entered as a multiple message (plugin-bulk.mjs) formats its Update Targets (plugin-formatted-values.mjs).
   if (bulkOrigin) phaseFrame.bulkOrigin = true;
   // The main operation's InputParameters are the PreValidation view; keep it for a main-operation ParentContext
@@ -1205,6 +1211,7 @@ export function runPluginPhase({
     phaseFrame.delegatedParentContext ??= cloneStateData(mainOperation.context);
     phaseFrame.delegatedDepth ??= mainOperation.depth;
     if (mainOperation.exactDepth) phaseFrame.exactDepth = true;
+    if (mainOperation.internalRead && operation === 'retrievemultiple') phaseFrame.internalRead = true;
     if (mainOperation.namedMessage) phaseFrame.namedMainOperation = true;
     // A refused message's per-record PreValidation (DeleteMultiple) has no platform SharedVariables (native bulk).
     if (mainOperation.preValidationOnly) phaseFrame.platformSharedSeeded = true;
@@ -1568,9 +1575,12 @@ export function runPluginPhase({
   // Tracing (docs/design/tracing.md): a plugin-stage span only when steps matched, and one plugin-step span per step that
   // runs (handler, CLR, mock, web hook). The step body runs inside its span, so its SDK calls and writes nest under it.
   const tracing = matched.length && store?.traces?.enabled ? store.traces : null;
-  // The record the stage and its steps act on (D-R3-1): the target row's id; a bulk or multi-row message has none.
+  // The record the stage and its steps act on (D-R3-1): the target row's id; a bulk or multi-row message, or an unbound
+  // custom API (table 'none'), has none.
   const recordId =
-    tracing && !bulk && !multiple && record ? (record[store.resolveMapping(entity)?.idColumn] ?? null) : null;
+    tracing && !bulk && !multiple && record && entity !== 'none'
+      ? (record[store.resolveMapping(entity)?.idColumn] ?? null)
+      : null;
   // A step's input at level full (D-R3-20): the target, the input parameters, the registered images by alias and attribute
   // filter, the shared variables and the execution context. A CLR step's comes from the host bridge context (clrStepInput)
   // and a handler's from the context it receives (contextStepInput); this one is for steps that receive none (mock, web hook).

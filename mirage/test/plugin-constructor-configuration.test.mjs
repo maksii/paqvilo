@@ -115,8 +115,9 @@ for (const format of ['xml', 'zip'])
     );
   });
 
-// @test-kind contract: Paqvilo resolution of absent, cleared and unavailable secure configuration references
-test('constructor settings distinguish absent registration, explicit clearing and unavailable secure references', () => {
+// @test-kind unproven: absent secure configuration rows construct with null secure text (Learn: Solution export omits secure
+// configuration); what native passes after an import is not captured
+test('constructor settings distinguish absent registration, explicit clearing and absent secure configuration rows', () => {
   const tables = { sdkmessageprocessingstep: [], sdkmessageprocessingstepsecureconfig: [] };
   const store = { tableRows: (name) => tables[name] ?? [] };
   const descriptor = { unsecureConfiguration: 'Descriptor U', secureConfiguration: 'Descriptor S' };
@@ -132,23 +133,47 @@ test('constructor settings distinguish absent registration, explicit clearing an
   });
   tables.sdkmessageprocessingstep[0].sdkmessageprocessingstepsecureconfigid = id(8);
   assert.equal(runtimeConstructorSettings(store, id(5), {}, descriptor).secureConfiguration, 'Descriptor S');
-  assert.throws(() => runtimeConstructorSettings(store, id(5), {}, {}), {
-    code: 'LocalPluginConfigurationUnavailable',
-  });
+  assert.equal(
+    runtimeConstructorSettings(store, id(5), {}, {}).secureConfiguration,
+    null,
+    'a dangling reference is null',
+  );
   tables.sdkmessageprocessingstepsecureconfig.push({
     sdkmessageprocessingstepsecureconfigid: id(8),
   });
   assert.equal(runtimeConstructorSettings(store, id(5), {}, descriptor).secureConfiguration, 'Descriptor S');
-  assert.throws(() => runtimeConstructorSettings(store, id(5), {}, {}), {
-    code: 'LocalPluginConfigurationUnavailable',
-  });
+  assert.equal(
+    runtimeConstructorSettings(store, id(5), {}, {}).secureConfiguration,
+    null,
+    'a row without text is null',
+  );
   tables.sdkmessageprocessingstepsecureconfig[0].secureconfig = null;
   assert.equal(runtimeConstructorSettings(store, id(5), {}, descriptor).secureConfiguration, null);
   tables.sdkmessageprocessingstepsecureconfig[0].secureconfig = 'API S';
   assert.equal(runtimeConstructorSettings(store, id(5), {}, descriptor).secureConfiguration, 'API S');
   tables.sdkmessageprocessingstep[0].configuration = { unlisted: 'not constructor text' };
   assert.throws(() => runtimeConstructorSettings(store, id(5), {}, descriptor), {
-    code: 'LocalPluginConfigurationUnsupported',
+    code: 'LocalPluginConfigurationInvalid',
+  });
+});
+
+// @test-kind parity: native custom API main operations (stage 30) are constructed with null unsecure and secure configuration
+// (native customApi scenario, stage-30 events: configuration unsecure null, secure null), even when the trusted runtime
+// descriptor carries constructor text; a registered step still takes its row configuration
+test('a custom API main operation is constructed with null configuration whatever the descriptor supplies', () => {
+  const tables = {
+    sdkmessageprocessingstep: [{ sdkmessageprocessingstepid: id(5), configuration: 'Row U' }],
+    sdkmessageprocessingstepsecureconfig: [],
+  };
+  const store = { tableRows: (name) => tables[name] ?? [] };
+  const descriptor = { unsecureConfiguration: 'Descriptor U', secureConfiguration: 'Descriptor S' };
+  assert.deepEqual(runtimeConstructorSettings(store, id(6), {}, descriptor, { mainOperation: true }), {
+    unsecureConfiguration: null,
+    secureConfiguration: null,
+  });
+  assert.deepEqual(runtimeConstructorSettings(store, id(5), {}, descriptor), {
+    unsecureConfiguration: 'Row U',
+    secureConfiguration: 'Descriptor S',
   });
 });
 
