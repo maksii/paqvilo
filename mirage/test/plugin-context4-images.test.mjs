@@ -29,10 +29,9 @@ const caller = uuid(1, 1),
 const ASPN = 'AsynchronousStepPrimaryName',
   PBE = 'PreBusinessEntity';
 
-let prepared;
-const root = path.join(os.tmpdir(), `paq-context4-${process.pid}`),
-  log = path.join(root, 'seen.txt');
-after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+// @parity-evidence: native recorder corpus crud, bulk, ownerAndState and sdkMessages (native and native-r2), as the file tag; only the observer scratch folder moves to a private mkdtemp directory (CodeQL js/insecure-temporary-file), no assertion changed
+let prepared, root, log;
+after(() => root && fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
 // @parity-evidence: native imageAliasOrder (native and native-r2): AsynchronousStepPrimaryName attributes enumerate name then key; the observer also logs those attribute names (no existing assertion changed)
 // @parity-evidence: native crud.json ev 1648/1653 (repeated at 1658, imagesOrder 7680/7686): an asynchronous single-origin *Multiple step's own AsynchronousStepPrimaryName names the target row; the observer now also logs that image's id (no existing assertion changed)
 // One original assembly whose Observer logs, per execution: step id, message, stage, mode, the Context4 collections
@@ -40,7 +39,8 @@ after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
 // PreBusinessEntity attributes and the owner of each own image.
 async function observer() {
   prepared ??= (async () => {
-    await fs.mkdir(root, { recursive: true });
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-context4-'));
+    log = path.join(root, 'seen.txt');
     const source = path.join(root, 'Observer.cs');
     await fs.writeFile(
       source,

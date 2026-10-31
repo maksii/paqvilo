@@ -387,7 +387,8 @@ test('a PATCH statecode SetStateDynamicEntity joins the Update request under its
   const update = seen.find((entry) => entry.label === 'update/20').context;
   for (const at of ['SetStateDynamicEntity/10', 'SetStateDynamicEntity/40']) {
     const state = seen.find((entry) => entry.label === at).context;
-    assert.deepEqual(chain(state).map(label), [at.replace('/', '/') + '/d2', 'Upsert/30/d2']);
+    // @parity-evidence: native recorder corpus upsert (native and native-r2): the SetStateDynamicEntity chain under its Upsert frame; the expected label is the same string written without a no-op replace (CodeQL js/identity-replacement), no assertion changed
+    assert.deepEqual(chain(state).map(label), [`${at}/d2`, 'Upsert/30/d2']);
     assert.equal(state.RequestId.value, update.RequestId.value);
     assert.equal(state.OperationId.value, update.OperationId.value);
     assert.equal(state.ParentContext.values.RequestId.value, update.RequestId.value);
