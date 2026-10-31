@@ -35,6 +35,7 @@ after(() => root && fs.rm(root, { recursive: true, force: true, maxRetries: 5 })
 // @parity-evidence: native imageAliasOrder (native and native-r2): AsynchronousStepPrimaryName attributes enumerate name then key; the observer also logs those attribute names (no existing assertion changed)
 // @parity-evidence: native crud.json ev 1648/1653 (repeated at 1658, imagesOrder 7680/7686): an asynchronous single-origin *Multiple step's own AsynchronousStepPrimaryName names the target row; the observer now also logs that image's id (no existing assertion changed)
 // @parity-evidence: native imagesOrder (native and native-r2) ev 61 Probe: SetStateDynamicEntity 40 images; the observer also logs its own images' statecode (no existing assertion changed)
+// @parity-evidence: native crud, imagesOrder, relationsReads and mergeAccount (native and native-r2): PreBusinessEntity holds the published duplicate rules' base attributes plus statecode when a rule excludes inactive records; the fixture now seeds a published rule that excludes inactive records, so the asserted statecode image is unchanged (no assertion changed)
 // One original assembly whose Observer logs, per execution: step id, message, stage, mode, the Context4 collections
 // (sets joined by '/', aliases in collection order), its own image aliases, the main-operation parent's pre set, the
 // PreBusinessEntity attributes and the owner of each own image.
@@ -78,7 +79,9 @@ const profile = {
     { entity: 'gadget', tableType: 'standard', evidence: 'Invented bulk table', messages: ['CreateMultiple'] },
   ],
 };
-function storeOf() {
+// A published duplicate rule on gadget that excludes inactive records (its PreBusinessEntity holds statecode), unless
+// `rule: false`; `conditions` are its duplicaterulecondition rows.
+function storeOf({ rule = true, conditions = [] } = {}) {
   const state = emptyState();
   state.mappings.gadget = {
     entitySet: 'gadgets',
@@ -93,6 +96,19 @@ function storeOf() {
     },
   };
   state.tables.gadget = [{ gadgetid: id, title: 'Before', size: 3, statecode: 0, statuscode: 1 }];
+  if (rule)
+    state.tables.duplicaterule = [
+      {
+        duplicateruleid: uuid(5, 1),
+        baseentityname: 'gadget',
+        matchingentityname: 'gadget',
+        statuscode: 2,
+        statecode: 1,
+        excludeinactiverecords: true,
+        name: 'Invented statecode rule',
+      },
+    ];
+  state.tables.duplicaterulecondition = conditions;
   return new DataStore({ state, clock: fixedClock() });
 }
 const step = (n, message, stage, rank, { mode = 0, images = [] } = {}) => ({
@@ -382,6 +398,41 @@ test('PreBusinessEntity holds the statecode the request does not change', { skip
   );
   assert.equal(seen[1][0].business, 'statecode');
 });
+
+// @test-kind parity: native crud, imagesOrder, relationsReads and mergeAccount (native and native-r2): PreBusinessEntity holds the published duplicate rules' base attributes plus statecode when a rule excludes inactive records, minus the Target columns; a table without a published rule has none
+test(
+  'PreBusinessEntity holds the published duplicate rules base attributes, and none without a rule',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const conditions = [
+      {
+        duplicateruleconditionid: uuid(6, 1),
+        regardingobjectid: uuid(5, 1),
+        baseattributename: 'title',
+        matchingattributename: 'title',
+        operatorcode: 0,
+      },
+    ];
+    const updateSize = async (store) => store.update('gadget', id, { size: 4 }, identity);
+    const updateTitle = async (store) => store.update('gadget', id, { title: 'After' }, identity);
+    const steps = [step(1, 'Update', 40, 1)];
+    // (a) the rule's condition column and statecode (the rule excludes inactive records).
+    const withRule = await observe(t, steps, updateSize, storeOf({ conditions }));
+    assert.equal(withRule[1][0].business, 'title,statecode');
+    // (b) the Target's columns leave the image.
+    assert.equal((await observe(t, steps, updateTitle, storeOf({ conditions })))[1][0].business, 'statecode');
+    // (c) a null column is omitted.
+    const nullTitle = storeOf({ conditions });
+    nullTitle.state.tables.gadget[0].title = null;
+    assert.equal((await observe(t, steps, updateSize, nullTitle))[1][0].business, 'statecode');
+    // A table without a published rule has no PreBusinessEntity: neither the step's images nor the main operation's.
+    const withoutRule = await observe(t, steps, updateSize, storeOf({ rule: false }));
+    assert.equal(withoutRule[1][0].business, '-');
+    assert.equal(withoutRule[1][0].pre.includes(PBE), false);
+    assert.match(withoutRule[1][0].parent, /^Update\/30:/);
+    assert.equal(withoutRule[1][0].parent.includes(PBE), false);
+  },
+);
 
 // @test-kind parity: native ownerAndState capture 2026-10-30 (Web API ownerid bind: Update/20 and /40 Targets add the new owner's owningbusinessunit, the saved row's modifiedonbehalfby is the caller) and sdkMessages (Assign's Update Target: owninguser, owningbusinessunit, modifiedonbehalfby = caller), each reproduced over its Update stages
 test('an owner change adds the owner columns to the Update Target and saves the caller as modifiedonbehalfby', () => {

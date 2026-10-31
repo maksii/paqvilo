@@ -196,9 +196,9 @@ function matchesRow(store, rule, conditions, base, row) {
   });
 }
 
-const publishedRules = (store, filter) =>
+export const publishedRules = (store, filter) =>
   store.tableRows('duplicaterule').filter((r) => Number(r.statuscode) === PUBLISHED && filter(r));
-const conditionsOf = (store, rule) =>
+export const conditionsOf = (store, rule) =>
   store.tableRows('duplicaterulecondition').filter((c) => same(c.regardingobjectid, rule.duplicateruleid));
 
 // Rows of the rule's matching table that duplicate `base`. selfId excludes the record being written when the tables are the same.

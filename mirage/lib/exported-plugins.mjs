@@ -18,6 +18,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DataError } from './data-error.mjs';
 import { uploadedClrRuntime } from './plugin-uploaded.mjs';
+import { conditionsOf, publishedRules } from './dataverse-duplicates.mjs';
 import { parseSolutionXml } from './solution-xml.mjs';
 import {
   clrContext,
@@ -1587,17 +1588,26 @@ export function runPluginPhase({
         asynchronous: item.contract?.mode === 1,
       }));
   // The platform's PreBusinessEntity image of an Update (single record, a delegated record, a single-origin UpdateMultiple
-  // lane): the row's statecode before the operation unless the request changes it (observed attribute set, native crud,
-  // bulk, ownerAndState; other columns it sometimes carries follow no rule the corpus establishes).
-  const businessEntity = () =>
-    stageItems && singleOperation === 'update' && (operation === 'update' || !bulkLane)
-      ? {
-          [BUSINESS_ENTITY_IMAGE]: {
-            platform: BUSINESS_ENTITY_IMAGE,
-            attributes: ['statecode'].filter((name) => !changedAttributes.map(canonical).includes(name)),
-          },
-        }
-      : {};
+  // lane). Native crud, imagesOrder, relationsReads and mergeAccount: it holds the base attributes of the table's published
+  // duplicate-detection rules (rule order, then condition order), plus statecode when a rule excludes inactive records,
+  // minus the Target's columns (nulls are omitted by the renderer). A table with no published rule has no image.
+  const businessEntity = () => {
+    if (!(stageItems && singleOperation === 'update' && (operation === 'update' || !bulkLane))) return {};
+    const rules = store ? publishedRules(store, (rule) => canonical(rule.baseentityname) === canonical(entity)) : [];
+    if (rules.length === 0) return {};
+    const named = rules.flatMap((rule) =>
+      conditionsOf(store, rule).map((condition) => canonical(condition.baseattributename)),
+    );
+    if (rules.some((rule) => rule.excludeinactiverecords === true || rule.excludeinactiverecords === 1))
+      named.push('statecode');
+    const changed = changedAttributes.map(canonical);
+    return {
+      [BUSINESS_ENTITY_IMAGE]: {
+        platform: BUSINESS_ENTITY_IMAGE,
+        attributes: [...new Set(named)].filter((name) => !changed.includes(name)),
+      },
+    };
+  };
   // The set a step sees: the stage's registrations up to its own slot. PostOperation starts from the final PreOperation
   // pre-image set plus PreBusinessEntity (native bulk: the first PostOperation step sees the PreOperation image).
   const stageView = (item) => {

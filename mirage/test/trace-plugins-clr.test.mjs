@@ -1,4 +1,5 @@
 // @test-kind contract: Paqvilo's tracing and activity design (docs/design/tracing.md)
+// @parity-evidence: native crud, imagesOrder, relationsReads and mergeAccount (native and native-r2): PreBusinessEntity holds the published duplicate rules' base attributes plus statecode when a rule excludes inactive records; the fixture now seeds a published rule that excludes inactive records, so the asserted statecode image is unchanged (no assertion changed)
 // Tracing of a compiled CLR plug-in (docs/design/tracing.md): the plugin-step span has module clr, each SDK RPC is an
 // sdk-call span under it with the Dataverse operation it drives nested under that, and ITracingService lines are
 // trace events on the step. Invented C# and schemas; skips like the other CLR tests without the Windows .NET Framework
@@ -174,6 +175,19 @@ test(
       fields: { x_name: { dataverseType: 'nvarchar' }, x_code: { dataverseType: 'nvarchar' } },
     };
     state.tables.x_item = [];
+    // A published duplicate rule that excludes inactive records (the PreBusinessEntity of the step holds statecode).
+    state.tables.duplicaterule = [
+      {
+        duplicateruleid: '40000000-0000-4000-8000-0000000000c2',
+        baseentityname: 'x_item',
+        matchingentityname: 'x_item',
+        statuscode: 2,
+        statecode: 1,
+        excludeinactiverecords: true,
+        name: 'Invented statecode rule',
+      },
+    ];
+    state.tables.duplicaterulecondition = [];
     const store = await new DataStore({ state }).init();
     const organization = await createOrganizationRuntime({
       store,
