@@ -7,9 +7,19 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { modelDrivenFixture } from './model-driven-fixture.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { randomBytes } from 'node:crypto';
+import { zipOf } from '../lib/dataverse-solutions.mjs';
+import { assemblyBase64 } from './clr-assembly-fixture.mjs';
 
 const CLIENT = '99999999-9999-4999-8999-999999999998';
 const ITEM = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+// An invented plug-in assembly: one IPlugin type, so the package registers it.
+const UNSIGNED = assemblyBase64({
+  name: 'Contoso.Unsigned',
+  version: '1.0.0.0',
+  typeRefs: ['Microsoft.Xrm.Sdk.IPlugin'],
+  typeDefs: [{ full: 'Contoso.Plugins.Unsigned', interfaces: ['Microsoft.Xrm.Sdk.IPlugin'] }],
+});
 const label = (text) => ({ LocalizedLabels: [{ Label: text, LanguageCode: 1033 }] });
 const newTable = () => ({
   '@odata.type': '#Microsoft.Dynamics.CRM.EntityMetadata',
@@ -274,3 +284,42 @@ test('deep declared operation schema keeps source API edits and deletions after 
   );
   for (const [file, xml] of files) assert.equal(await fs.readFile(file, 'utf8'), xml);
 });
+
+// The secure configuration text and the plug-in package content are control-plane runtime rows at every level that
+// persists pack DATA: they never land in the project's pack files (the secure text and up to 16 MB of package bytes).
+async function controlPlaneRowsStayOutOfPackData(t, level) {
+  const data = await pack(t, level),
+    fixture = await modelDrivenFixture(t, data.options),
+    { sim } = fixture,
+    c = await client(sim);
+  const secret = `invented-secure-text-${randomBytes(8).toString('hex')}`;
+  await body(await c.org('POST', '/sdkmessageprocessingstepsecureconfigs', { secureconfig: secret }), 201);
+  const content = zipOf([
+    {
+      name: 'Contoso.Package.nuspec',
+      data: Buffer.from(
+        '<?xml version="1.0"?><package><metadata><id>Contoso.Package</id><version>1.0.0</version></metadata></package>',
+      ),
+    },
+    { name: 'lib/net462/Contoso.Unsigned.dll', data: Buffer.from(UNSIGNED, 'base64') },
+  ]).toString('base64');
+  await body(await c.org('POST', '/pluginpackages', { content }), 201);
+  assert.ok(sim.store.tableRows('sdkmessageprocessingstepsecureconfig').some((row) => row.secureconfig === secret));
+  assert.ok(sim.store.tableRows('pluginpackage').some((row) => row.name === 'Contoso.Package'));
+  await sim.reload();
+  const text = await fs.readFile(data.file, 'utf8');
+  const packData = JSON.parse(text);
+  for (const table of ['sdkmessageprocessingstepsecureconfig', 'pluginpackage']) {
+    assert.equal(Object.hasOwn(packData.newTables, table), false);
+    assert.equal(Object.hasOwn(packData.schema.schemaRecords ?? {}, table), false);
+  }
+  assert.equal(text.includes(secret), false);
+  assert.equal(text.includes(content), false);
+}
+
+// @test-kind security: secure configuration text and plug-in package content never land in project pack DATA
+test('plug-in package content and secure configuration stay out of simulation pack DATA', (t) =>
+  controlPlaneRowsStayOutOfPackData(t, 'simulation'));
+// @test-kind security: secure configuration text and plug-in package content never land in project pack DATA
+test('plug-in package content and secure configuration stay out of deep pack DATA', (t) =>
+  controlPlaneRowsStayOutOfPackData(t, 'deep'));
