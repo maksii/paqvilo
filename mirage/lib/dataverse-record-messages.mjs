@@ -152,7 +152,7 @@ async function merge(api, ctx) {
     throw invalid('The PerformParentingChecks parameter is required.');
   const { mapping } = target;
   // Merge runs its own plug-in pipeline around the merge (Target, SubordinateId, UpdateContent, PerformParentingChecks),
-  // with the table as PrimaryEntityName; the writes below are its main operation's (no native capture: local model).
+  // with the table as PrimaryEntityName; the writes below are its main operation's (recorded native mergeAccount).
   // One transaction holds the pipeline and the writes, so a failing step undoes the merge.
   if (entryMessageActive(api.store, 'Merge', mapping.logicalName, ctx))
     return write(api, () =>
@@ -171,6 +171,8 @@ async function merge(api, ctx) {
           PerformParentingChecks: body.PerformParentingChecks,
         },
         context: ctx,
+        // An image registered on SubordinateId holds the subordinate row (native mergeAccount).
+        imageRecords: { SubordinateId: subordinate.id },
         main: () => mergeRows(api, ctx, body, target, subordinate, (fn) => fn()).then(() => ({})),
       }),
     ).then(() => ({ status: 204 }));
@@ -219,8 +221,21 @@ async function mergeRows(api, ctx, body, target, subordinate, transact = (fn) =>
     mapping.logicalName === 'incident'
       ? {}
       : Object.fromEntries(Object.entries(body.UpdateContent ?? {}).filter(([name]) => contentAllowed(name)));
-  const subordinateChanges = { statecode: 1 };
-  if (Object.hasOwn(fields, 'masterid')) subordinateChanges.masterid = target.id;
+  // The subordinate is deactivated (the inactive state with its default status), then marked merged into the target,
+  // in two Updates (recorded native mergeAccount: {statecode 1, statuscode 2}, then {masterid, merged true}).
+  const declared = (column) =>
+    Object.hasOwn(fields, column) ||
+    Boolean(api.store.fieldDefinition(mapping.logicalName, column, api.metadataFields));
+  const inactive = 1,
+    state = fieldOf(api, mapping, 'statecode'),
+    inactiveStatus =
+      (state.states ?? state.options ?? []).find((option) => Number(option.value) === inactive)?.defaultStatus ??
+      mapping.stateStatusDefaults?.[inactive];
+  const deactivation = { statecode: inactive, ...(inactiveStatus == null ? {} : { statuscode: inactiveStatus }) };
+  const mergedMark = {
+    ...(declared('masterid') ? { masterid: { id: target.id, logical_name: mapping.logicalName } } : {}),
+    ...(declared('merged') ? { merged: true } : {}),
+  };
 
   const children = [];
   for (const [, rel] of Object.entries(relationshipsOf(api.store, mapping.logicalName, mapping.relationships))) {
@@ -233,7 +248,7 @@ async function mergeRows(api, ctx, body, target, subordinate, transact = (fn) =>
   }
   for (const child of children) authorize(api, ctx, child.childMapping, 'append', child.row);
 
-  // The three writes run the record pipeline (hooks, column security, audit, plug-in steps, modifiedby and version stamps);
+  // The writes run the record pipeline (hooks, column security, audit, plug-in steps, modifiedby and version stamps);
   // the privileges were checked above. Without an organization (a bare store) there is no pipeline to run.
   // The main operation's Updates: PreOperation and PostOperation only, no ConcurrencyBehavior and no nested
   // SetStateDynamicEntity for the deactivated subordinate (recorded native mergeAccount).
@@ -242,9 +257,12 @@ async function mergeRows(api, ctx, body, target, subordinate, transact = (fn) =>
     api.records?.updateInternal
       ? api.records.updateInternal(ctx, logical, id, data, { authorized: true, writeOptions })
       : api.store.updateRecordAsync(logical, id, data, ctx.identity, writeOptions);
+  const targetChanges = { ...copied, ...content };
   await transact(async () => {
-    await updated(mapping.logicalName, targetRow[idColumn], { ...copied, ...content });
-    await updated(mapping.logicalName, subRow[idColumn], subordinateChanges);
+    // The target is written only when it gains values (native mergeAccount: no target Update for an empty UpdateContent).
+    if (Object.keys(targetChanges).length) await updated(mapping.logicalName, targetRow[idColumn], targetChanges);
+    await updated(mapping.logicalName, subRow[idColumn], deactivation);
+    if (Object.keys(mergedMark).length) await updated(mapping.logicalName, subRow[idColumn], mergedMark);
     for (const { childMapping, row, nav } of children) {
       await updated(childMapping.logicalName, row[childMapping.idColumn], {
         [`${nav}@odata.bind`]: `${mapping.entitySet}(${target.id})`,

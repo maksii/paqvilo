@@ -466,12 +466,16 @@ export function remoteExecutionContext(store, facts) {
       }),
       false,
     );
+  // An image on another message property (Merge SubordinateId) holds that record's row (frame.imageRows).
   const images = (row, types) =>
-    row
-      ? (item.images ?? [])
-          .filter((spec) => types.includes(spec.type))
-          .map((spec) => ({ key: spec.alias || spec.name, value: entityOf(row, spec) }))
-      : [];
+    (item.images ?? [])
+      .filter((spec) => types.includes(spec.type))
+      .map((spec) => {
+        const rows = spec.messagePropertyName && frame.imageRows?.[spec.messagePropertyName];
+        return [spec, rows ? (types.includes(1) ? rows.record : rows.previous) : row];
+      })
+      .filter(([, source]) => source)
+      .map(([spec, source]) => ({ key: spec.alias || spec.name, value: entityOf(source, spec) }));
   const created = stage === 40 && operation === 'create';
   // Message-specific parameter collections retain the SDK's different Target,
   // Targets, Query and Custom API contracts.

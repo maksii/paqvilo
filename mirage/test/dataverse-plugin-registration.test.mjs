@@ -1114,6 +1114,27 @@ describe('plug-in registration: pipeline', () => {
     assert.equal(context.UserId, basicId);
   });
 
+  // @test-kind contract: Paqvilo design: a Web API-registered image keeps its messagepropertyname, which selects the record it holds at run time (plugin-clr.mjs imageRow)
+  it('a registered image keeps its message property in the step list', async () => {
+    const step = await registerStep({ name: 'Update with a property image', stage: 40, ...binds('Update') });
+    const posted = await call('sdkmessageprocessingstepimages', {
+      method: 'POST',
+      body: {
+        name: 'Before',
+        entityalias: 'before',
+        imagetype: 0,
+        messagepropertyname: 'Target',
+        'sdkmessageprocessingstepid@odata.bind': `/sdkmessageprocessingsteps(${step})`,
+      },
+    });
+    assert.equal(posted.status, 204);
+    const registered = overlayRegisteredSteps({ steps: [] }, store).steps.find((entry) => entry.id === step);
+    assert.deepEqual(
+      registered.images.map((entry) => entry.messagePropertyName),
+      ['Target'],
+    );
+  });
+
   it('filtering attributes decide whether an update runs the step', async () => {
     await registerStep({ name: 'Name only', stage: 20, ...binds('Update'), filteringattributes: 'contoso_name' });
     const widget = idFromLocation(await createWidget('delta'));

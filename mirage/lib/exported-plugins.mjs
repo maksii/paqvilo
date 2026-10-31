@@ -548,12 +548,17 @@ const pluginFault = (cause, item, stage, depth, fault = true) =>
     0,
   );
 // The registered images of one type set (0 pre, 1 post, 2 both) from source, keyed by alias, limited to their attributes
-// (imageAttributes: the handler context's images).
-const registeredImages = (item, types, source) =>
+// (imageAttributes: the handler context's images). An image on another message property (Merge SubordinateId) holds
+// that record's row (imageRows, plugin-platform-messages.mjs runMessagePipeline).
+const registeredImages = (item, types, source, imageRows) =>
   Object.fromEntries(
     (item.images ?? [])
-      .filter((spec) => types.includes(spec.type) && source)
-      .map((spec) => [spec.alias || spec.name, detachedRecord(imageAttributes(source, spec.attributes))]),
+      .map((spec) => {
+        const rows = spec.messagePropertyName && imageRows?.[spec.messagePropertyName];
+        return [spec, rows ? (types.includes(1) ? rows.record : rows.previous) : source];
+      })
+      .filter(([spec, row]) => types.includes(spec.type) && row)
+      .map(([spec, row]) => [spec.alias || spec.name, detachedRecord(imageAttributes(row, spec.attributes))]),
   );
 // InputParameters of a CRUD, external event or bulk message (IPluginExecutionContext.InputParameters).
 function typedInputParameters({ operation, target, targets, previous, changedAttributes = [] }) {
@@ -671,7 +676,7 @@ function typedContext({
   bridged = false,
 }) {
   const idColumn = entity && !(customApi && entity === 'none') ? store?.resolveMapping(entity)?.idColumn : null;
-  const images = (types, source) => registeredImages(item, types, source);
+  const images = (types, source) => registeredImages(item, types, source, frame?.imageRows);
   const preValidationParent =
     stage !== 10 &&
     (item.contract?.mode ?? 0) === 0 &&
@@ -1228,6 +1233,8 @@ export function runPluginPhase({
   diagnostic = () => {},
   onStepExecuted,
   targetKeyAttributes,
+  // A named message's other image records by message property ({ SubordinateId: { previous, record } }, Merge).
+  imageRows,
 }) {
   // A saved row can be reused by a later Delete; its previous request frame
   // must not supply shared variables, correlation or parent context to this one.
@@ -1241,6 +1248,7 @@ export function runPluginPhase({
   if (targetKeyAttributes && stage === 10 && !asyncExecution) phaseFrame.targetKeyAttributes ??= targetKeyAttributes;
   // A request that entered as a multiple message (plugin-bulk.mjs) formats its Update Targets (plugin-formatted-values.mjs).
   if (bulkOrigin) phaseFrame.bulkOrigin = true;
+  if (imageRows) phaseFrame.imageRows = cloneStateData(imageRows);
   // The main operation's InputParameters are the PreValidation view; keep it for a main-operation ParentContext
   // when no PreValidation step produced a snapshot.
   if (stage === 10 && !asyncExecution && ['create', 'update', 'delete'].includes(operation))
@@ -1714,8 +1722,11 @@ export function runPluginPhase({
         ...(multiple ? { Query: query } : {}),
         ...(read && !multiple ? { Target: { logicalName: entity, id: recordId }, ColumnSet: columns } : {}),
       },
-      preImages: registeredImages(item, [0, 2], previous),
-      postImages: stage === 40 && operation !== 'delete' && !read ? registeredImages(item, [1, 2], record) : {},
+      preImages: registeredImages(item, [0, 2], previous, phaseFrame.imageRows),
+      postImages:
+        stage === 40 && operation !== 'delete' && !read
+          ? registeredImages(item, [1, 2], record, phaseFrame.imageRows)
+          : {},
       sharedVariables: sharedValues(executionFrames.get(record)),
       context: {
         messageName: customApi?.name ?? messageNameOf(operation),

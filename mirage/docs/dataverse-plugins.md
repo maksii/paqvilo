@@ -55,10 +55,13 @@ or user, with the Target table as `PrimaryEntityName`) and
 RetrieveSharedPrincipalsAndAccess run theirs with the SDK inputs and no Retrieve
 pipeline before them; a team holding only a share reports the shared rights.
 Web API Merge on a mergeable table runs its pipeline (inputs Target, SubordinateId,
-UpdateContent, PerformParentingChecks) around the target and subordinate Updates,
-which run without PreValidation or a nested SetStateDynamicEntity, in one
-transaction; global Merge steps run there (recorded mergeAccount). Merge step
-images and the platform's internal stage-50 reads are not modelled. Every other
+UpdateContent, PerformParentingChecks) around its Updates, which run without
+PreValidation or a nested SetStateDynamicEntity, in one transaction: the
+subordinate is deactivated (the inactive state with its default status), then
+marked merged with the target as its master, and the target is written only when
+it gains values. Global Merge steps run there, and an image registered on
+SubordinateId holds the subordinate row, one on Target the target row (recorded
+mergeAccount). The platform's internal stage-50 reads are not modelled. Every other
 registered Web API action or function (and the SOAP requests relayed to it) runs
 a generic pipeline around its operation: PrimaryEntityName and PrimaryEntityId
 are the request's Target row (else the bound table, else `none`), the inputs are

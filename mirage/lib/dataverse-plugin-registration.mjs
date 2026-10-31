@@ -622,6 +622,8 @@ function mutableOf(row, images) {
       name: image.name ?? '',
       alias: image.entityalias ?? '',
       type: Number(image.imagetype ?? 0),
+      // The message property whose record the image holds (Target, SubordinateId, Id, ...), read at run time.
+      ...(image.messagepropertyname ? { messagePropertyName: String(image.messagepropertyname) } : {}),
       attributes: lowerList(image.attributes),
     })),
   };

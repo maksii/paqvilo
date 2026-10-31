@@ -131,6 +131,9 @@ function runMessagePipeline(
     // Reads run outside the automatic transaction (native sdkMessages: RetrievePrincipalAccess and
     // RetrieveSharedPrincipalsAndAccess report IsAutoTransact false).
     autoTransact = true,
+    // Other records of the message an image can hold (registration messagePropertyName: Merge's SubordinateId), by
+    // property: the row id on the message's table. Target stays the message's own record.
+    imageRecords = {},
   },
 ) {
   // An unbound message (PrimaryEntityName none) has no table and an empty PrimaryEntityId.
@@ -145,6 +148,13 @@ function runMessagePipeline(
   const storedRow = () =>
     cloneStateData(store.tableRows(mapping.logicalName).find((row) => same(row[mapping.idColumn], id)) ?? null);
   const previous = id && id !== EMPTY ? storedRow() : null;
+  const rowOf = (rowId) =>
+    cloneStateData(store.tableRows(mapping.logicalName).find((row) => same(row[mapping.idColumn], rowId)) ?? null);
+  const imageRows = Object.keys(imageRecords).length
+    ? Object.fromEntries(
+        Object.entries(imageRecords).map(([property, rowId]) => [property, { previous: rowOf(rowId), record: null }]),
+      )
+    : null;
   const values = { ...inputs };
   if (requestTag !== undefined && inputTag) values.tag = requestTag;
   if (Object.hasOwn(inputs, 'FromSandbox')) {
@@ -204,6 +214,7 @@ function runMessagePipeline(
         bypassCustomPlugins,
         customApi,
         messageParameters,
+        ...(imageRows ? { imageRows } : {}),
         ...(initial ? { initialFrame: frame } : {}),
       }) ?? frame;
   };
@@ -253,6 +264,7 @@ function runMessagePipeline(
       if (preValidationOnly) return outputs;
       messageParameters.outputParameters.values = { ...outputs };
       if (previous) Object.assign(record, storedRow() ?? {});
+      for (const [property, rows] of Object.entries(imageRows ?? {})) rows.record = rowOf(imageRecords[property]);
       phase(40);
       store.pluginFrames ??= new WeakMap();
       store.pluginFrames.set(record, frame);
@@ -613,7 +625,7 @@ export const entryMessageActive = (store, message, entity, context = {}) =>
  * path does (executePlatformSdkMessage). main may answer a promise; it answers the message's typed outputs. The entry
  * point's request identity, Accept-Language and bypass choices apply. Answers a promise of the outputs.
  */
-export async function runEntryMessage(store, { message, entity, id, inputs, context = {}, main }) {
+export async function runEntryMessage(store, { message, entity, id, inputs, context = {}, main, imageRecords }) {
   const header = (name) => context.headers?.get?.(name) ?? context.headers?.[name];
   return runMessagePipeline(store, {
     message,
@@ -627,6 +639,7 @@ export async function runEntryMessage(store, { message, entity, id, inputs, cont
     bypassCustomAsync: context.bypassCustomAsync === true,
     // The access reads run outside the automatic transaction, as on the SDK path (native sdkMessages).
     autoTransact: !['RetrievePrincipalAccess', 'RetrieveSharedPrincipalsAndAccess'].includes(message),
+    imageRecords,
     main,
   });
 }
