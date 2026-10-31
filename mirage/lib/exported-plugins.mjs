@@ -1070,7 +1070,10 @@ export function pluginCatalogue({
     const uploaded = Boolean(step.uploadedAssemblyId && step.typeName && !step.serviceEndpointId);
     const runtime = runtimes.get(step.id),
       descriptor = descriptors.get(step.id),
-      unsupported = pluginUnsupported(step, { images: Boolean(runtime || descriptor || registered || uploaded) });
+      // A web hook step's delivery renders its registered images itself (dataverse-webhooks.mjs).
+      unsupported = pluginUnsupported(step, {
+        images: Boolean(runtime || descriptor || registered || uploaded || step.serviceEndpointId),
+      });
     const clrAvailable = uploaded || Boolean((runtime?.descriptor ?? descriptor)?.typeName === step.typeName);
     const defaultMode = step.serviceEndpointId ? 'webhook' : registered ? 'handler' : uploaded ? 'clr' : 'placeholder';
     return copyStepConstructorSettings(step, {

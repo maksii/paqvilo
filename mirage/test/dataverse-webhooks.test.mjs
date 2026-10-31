@@ -439,6 +439,96 @@ describe('asynchronous web hooks', () => {
       ),
     );
   });
+
+  // @test-kind parity: native imagesOrder (native-r2, 'Webhook: Update async images'): two asynchronous Update web hook steps registered through the Web API on one endpoint each deliver per PATCH; the one with images POSTed after the step sends PreEntityImages [pre] and PostEntityImages [post, AsynchronousStepPrimaryName], the bare one [] and [AsynchronousStepPrimaryName]
+  it('an image-bearing web hook step registered through the API delivers its own images beside a bare step', async () => {
+    const at = route();
+    const { store, api } = await widgetApi('contoso');
+    const updateId = store.tableRows('sdkmessage').find((row) => row.name === 'Update').sdkmessageid;
+    const filterId = store
+      .tableRows('sdkmessagefilter')
+      .find(
+        (row) => row.sdkmessageid === updateId && row.primaryobjecttypecode === 'contoso_widget',
+      ).sdkmessagefilterid;
+    await store.create(
+      'serviceendpoint',
+      {
+        serviceendpointid: ENDPOINT,
+        name: 'Invented hook',
+        url: `${receiver.origin}${at}/status/200`,
+        authtype: 5,
+        contract: 8,
+        authvalue: '',
+      },
+      { admin: true },
+    );
+    const bare = 'dddddddd-0000-4000-8000-000000000031',
+      imaged = 'dddddddd-0000-4000-8000-000000000032';
+    for (const [id, name] of [
+      [bare, 'Invented bare hook'],
+      [imaged, 'Invented image hook'],
+    ])
+      await store.create(
+        'sdkmessageprocessingstep',
+        {
+          sdkmessageprocessingstepid: id,
+          name,
+          sdkmessageid: updateId,
+          sdkmessagefilterid: filterId,
+          eventhandler: { id: ENDPOINT, logical_name: 'serviceendpoint' },
+          stage: 40,
+          mode: 1,
+          rank: 1,
+          statecode: 0,
+          supporteddeployment: 0,
+        },
+        { admin: true },
+      );
+    // The images are registered after their step, as the recorder harness does.
+    for (const [type, alias] of [
+      [0, 'pre'],
+      [1, 'post'],
+    ])
+      await store.create(
+        'sdkmessageprocessingstepimage',
+        {
+          sdkmessageprocessingstepimageid: `eeeeeeee-0000-4000-8000-00000000003${type}`,
+          name: alias,
+          entityalias: alias,
+          imagetype: type,
+          messagepropertyname: 'Target',
+          sdkmessageprocessingstepid: { id: imaged, logical_name: 'sdkmessageprocessingstep' },
+        },
+        { admin: true },
+      );
+    const runner = wireRegisteredSteps(store, webhookDelivery(store));
+    session = { close: async () => (await runner.close(), await api.close()) };
+    await create(store, 'before');
+    await store.update('contoso_widget', WIDGET, { contoso_name: 'after' }, { admin: true });
+    await runner.drain();
+    const delivered = Object.fromEntries(
+      (await receiver.log(at)).map((entry) => [entry.body.OwningExtension.Id, entry.body]),
+    );
+    const keys = (images) => images.map((image) => image.key).sort();
+    const nameOf = (images, key) =>
+      images.find((image) => image.key === key).value.Attributes.find((pair) => pair.key === 'contoso_name')?.value;
+    assert.deepEqual(Object.keys(delivered).sort(), [bare, imaged]);
+    assert.deepEqual(
+      [keys(delivered[bare].PreEntityImages), keys(delivered[bare].PostEntityImages)],
+      [[], ['AsynchronousStepPrimaryName']],
+    );
+    assert.deepEqual(
+      [keys(delivered[imaged].PreEntityImages), keys(delivered[imaged].PostEntityImages)],
+      [['pre'], ['AsynchronousStepPrimaryName', 'post']],
+    );
+    assert.equal(nameOf(delivered[imaged].PreEntityImages, 'pre'), 'before');
+    assert.equal(nameOf(delivered[imaged].PostEntityImages, 'post'), 'after');
+    assert.equal(
+      store.tableRows('asyncoperation').filter((job) => job.statuscode === 30).length,
+      2,
+      'both jobs succeed',
+    );
+  });
 });
 
 describe('TriggerServiceEndpointCheck probes loopback endpoints only', () => {
