@@ -1465,7 +1465,7 @@ describe('plug-in registration: assembly content and plug-in types', () => {
   });
 
   // Microsoft Learn dependent assemblies: the package's IPlugin assemblies are registered and associated with it; signing is
-  // not required; name and version are fixed; an update cannot drop a type that steps use; a package with steps cannot be
+  // not required; an update cannot drop a type that steps use; a package with steps cannot be
   // unregistered; a package-owned assembly is not deleted on its own (0x80081117).
   it('a plug-in package registers its plug-in assemblies and types and follows the package rules', async () => {
     const { store, run } = await registry();
@@ -1504,10 +1504,6 @@ describe('plug-in registration: assembly content and plug-in types', () => {
       (error) => error.details?.innerCode === '0x80081117',
     );
     const existing = { pluginpackageid: pkg.pluginpackageid, name: pkg.name, version: pkg.version };
-    await assert.rejects(
-      run('pluginpackage', 'update', { version: '2.0.0' }, existing),
-      (error) => error.status === 400,
-    );
     await assert.rejects(
       run('pluginpackage', 'create', {
         name: 'x',
@@ -1549,6 +1545,32 @@ describe('plug-in registration: assembly content and plug-in types', () => {
       false,
     );
     assert.equal(typesOf().length, 0);
+  });
+
+  // @test-kind parity: native trial captures native-trial and native-trial-r2 (dataverse-recorder round 2, n3-package): a package-owned assembly has sourcetype 4, and PATCH of the package version and name answer 204 (contrary to Microsoft Learn)
+  it('a plug-in package registers its assembly with sourcetype 4, and its name and version can be changed', async () => {
+    const { store, run } = await registry();
+    const content = zipOf([
+      {
+        name: 'Contoso.Package.nuspec',
+        data: Buffer.from(
+          '<?xml version="1.0"?><package><metadata><id>Contoso.Package</id><version>1.0.0</version></metadata></package>',
+        ),
+      },
+      { name: 'lib/net462/Contoso.Unsigned.dll', data: Buffer.from(UNSIGNED, 'base64') },
+    ]).toString('base64');
+    const pkg = { content };
+    await run('pluginpackage', 'create', pkg);
+    const owned = store.tableRows('pluginassembly').find((row) => row.packageid === pkg.pluginpackageid);
+    assert.equal(owned.sourcetype, 4);
+    assert.equal(owned.isolationmode, 2);
+    const existing = { pluginpackageid: pkg.pluginpackageid, name: pkg.name, version: pkg.version };
+    const version = { version: '1.0.1' };
+    await run('pluginpackage', 'update', version, existing);
+    assert.equal(version.version, '1.0.1');
+    const name = { name: 'Contoso.Package.Renamed' };
+    await run('pluginpackage', 'update', name, { ...existing, version: '1.0.1' });
+    assert.equal(name.name, 'Contoso.Package.Renamed');
   });
 
   // @test-kind contract: SolutionPackager step image XML carries MessagePropertyName; the mirrored row keeps it

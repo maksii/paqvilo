@@ -215,6 +215,7 @@ describe('uploaded plug-in assemblies run by default', { skip: CLR_SKIP }, () =>
     assert.equal(fs.existsSync(current), false);
   });
 
+  // @test-kind parity: native trial captures native-trial and native-trial-r2 (dataverse-recorder round 2, n3-package): a step on a packaged type runs and the package's dependent unsigned assembly resolves at execution
   it("a plug-in package's other lib assembly resolves as the plug-in's dependency", async () => {
     const nuspec = Buffer.from(
       '<?xml version="1.0"?><package><metadata><id>Contoso.Packaged</id><version>1.0.0</version></metadata></package>',
@@ -234,6 +235,7 @@ describe('uploaded plug-in assemblies run by default', { skip: CLR_SKIP }, () =>
     assert.equal(await nameOf(id), 'gamma-helper');
   });
 
+  // @test-kind contract: user decision 2026-10-30 (C08): an uploaded assembly that cannot load faults 0x80040224 and rolls back; the message wording is a local model
   it('without a Microsoft.Xrm.Sdk the step fails with the plug-in load fault 0x80040224 and the create rolls back', async () => {
     const previous = uploads.sdkAssembly;
     uploads.sdkAssembly = path.join(uploads.cacheRoot, 'missing', 'Microsoft.Xrm.Sdk.dll');

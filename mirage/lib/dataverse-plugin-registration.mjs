@@ -932,16 +932,13 @@ function validateAssembly({ store, data, existing }) {
 
 // A plug-in package (dependent assemblies, Microsoft Learn): the content is a NuGet package; each lib/ assembly that declares
 // an IPlugin type is registered as a pluginassembly row of the package (packageid, no strong name needed) with a plugintype row
-// per plug-in type (workflow activities are not supported in packages). The bytes are inspected, never loaded. Name and
-// version are fixed once created; an update that drops an assembly or type that steps use is refused, and the rows it drops
-// otherwise are removed. The codes of the package refusals are not documented: 0x8004418b is the documented "required types /
-// content cannot be updated" error, 0x80040203 for the fixed name and version a guess.
+// per plug-in type (workflow activities are not supported in packages). Registration inspects the bytes; a registered step
+// runs them (plugin-uploaded.mjs, with the package's other lib/ assemblies as dependencies). Name and version can be changed
+// (native trial captures n3-package, reproduced: PATCH 204, though Microsoft Learn says they are fixed); a package-owned
+// assembly has sourcetype 4. An update that drops an assembly or type that steps use is refused, and the rows it drops
+// otherwise are removed; 0x8004418b is the documented "required types / content cannot be updated" error.
 function validatePackage({ store, data, existing, operation }) {
   const val = (column) => valueOf(data, existing, column);
-  if (operation === 'update')
-    for (const column of ['name', 'version'])
-      if (data[column] !== undefined && String(data[column] ?? '') !== String(existing?.[column] ?? ''))
-        throw fail('The name and version of a plug-in package cannot be changed.', '0x80040203');
   const content = typeof data.content === 'string' && data.content !== '' ? data.content : null;
   let facts = null;
   if (content)
@@ -994,7 +991,7 @@ function validatePackage({ store, data, existing, operation }) {
         major: assembly.major,
         minor: assembly.minor,
         isolationmode: 2,
-        sourcetype: 0,
+        sourcetype: 4,
         content: assembly.bytes.toString('base64'),
         packageid: packageId,
         organizationid: org,
