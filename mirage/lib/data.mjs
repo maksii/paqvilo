@@ -2571,6 +2571,26 @@ export class DataStore {
   }
   /** Runs fn(error) when the outermost open transaction rolls back: the note for a post that already left the process and
    * cannot be withdrawn (dataverse-webhooks.mjs SERVICE_ENDPOINT_SENT_BEFORE_ROLLBACK). Outside a transaction it does nothing. */
+  /** A read whose PostOperation synchronous step faulted still queues its asynchronous steps (native readNested): inside a
+   * transaction the event joins it and, when that transaction rolls back with the fault, is staged in a queued transaction
+   * of its own; outside one it is staged on its own at once. */
+  stageFaultedRead(entity, operation, record, details) {
+    if (!this.commitStagers?.size) return;
+    const readEvent = clone(details),
+      readRecord = clone(record),
+      stage = () =>
+        this.transact(() => this.recordCommittedEvent(entity, operation, readRecord, [], readEvent), {
+          skipSaveIfUnchanged: true,
+        }).catch((error) => {
+          (this.committedEventErrors ??= []).push({ code: error.code ?? 'CommitStagerError', message: error.message });
+        });
+    if (!this.committedEventCandidates) return void stage();
+    readEvent.frame.asyncCallerParent ??= asyncCallerParent(
+      this.pluginParentContext ?? pluginInvocationSdkParent(this),
+    );
+    this.recordCommittedEvent(entity, operation, record, [], clone(readEvent));
+    this.onRollback(stage);
+  }
   onRollback(fn) {
     let boundary = this.pluginRollbackBoundary;
     while (boundary?.parent) boundary = boundary.parent;
@@ -3303,19 +3323,37 @@ export class DataStore {
         if (!row) return null;
         Object.assign(record, row, { [m.idColumn]: originalId });
         holder.entity = recordToSdkReadEntity(this, m.logicalName, row, columns);
-        const responseFrame = this.pluginPipeline({
-          entity: m.logicalName,
-          operation: 'retrieve',
-          stage: 40,
-          record,
-          identity,
-          columns,
-          holder,
-          changedAttributes: [],
-          bypassCustomPlugins: options.bypassCustomPlugins === true,
-          bypassStepIds: options.bypassStepIds,
-          portalRequest: options.portalRequest === true,
-        });
+        let responseFrame;
+        try {
+          responseFrame = this.pluginPipeline({
+            entity: m.logicalName,
+            operation: 'retrieve',
+            stage: 40,
+            record,
+            identity,
+            columns,
+            holder,
+            changedAttributes: [],
+            bypassCustomPlugins: options.bypassCustomPlugins === true,
+            bypassStepIds: options.bypassStepIds,
+            portalRequest: options.portalRequest === true,
+          });
+        } catch (error) {
+          // Native readNested (two captures): a Retrieve whose PostOperation synchronous step faults answers the fault,
+          // yet its asynchronous Retrieve steps still run with the read's result (OutputParameters.BusinessEntity). The
+          // read completed outside the failing request, so its event is staged on its own, with the frame at the throw.
+          this.stageFaultedRead(m.logicalName, 'retrieve', record, {
+            target: {},
+            columns,
+            holder,
+            identity,
+            frame: error?.pluginFrame ?? {},
+            messageEvent: true,
+            bypassCustomAsync: options.bypassCustomAsync === true,
+            bypassStepIds: options.bypassStepIds,
+          });
+          throw error;
+        }
         handoffPluginResponse(this, 'retrieve', m.logicalName, responseFrame, options.sdkResponseToken);
         if (
           holder.entity?.$type !== 'Entity' ||

@@ -2560,6 +2560,13 @@ export function runPluginPhase({
         // The run's trace lines, for an asynchronous job's failure message (plugin-async.mjs jobFailure).
         if (failure && typeof failure === 'object' && !Object.hasOwn(failure, 'pluginTraces'))
           Object.defineProperty(failure, 'pluginTraces', { value: [...traces], configurable: true });
+        // The operation's frame at the throw, for a faulted read's asynchronous steps (data.mjs stageFaultedRead). Each
+        // enclosing phase the fault passes replaces it, so the read's own phase leaves its frame last.
+        if (failure && typeof failure === 'object' && Object.isExtensible(failure))
+          Object.defineProperty(failure, 'pluginFrame', {
+            value: cloneStateData(executionFrames.get(record) ?? {}),
+            configurable: true,
+          });
         store?.counters?.increment('plugins.failures');
         // The fault identity (type, code, OperationStatus, plug-in type, step, stage, depth) travels on the error to every
         // span it fails; this step's span records it.

@@ -382,7 +382,9 @@ result) use the actual affected table and record in their execution context;
 images on a global write project from that table. Global steps on Upsert and
 UpsertMultiple are accepted and never run, as natively. Asynchronous Retrieve
 steps run once after the read commits, with its Target, ColumnSet and result
-(recorded readAsync), and global Merge steps run on a mergeable table (recorded
+(recorded readAsync), also when a synchronous Retrieve PostOperation step
+faults the read (recorded readNested: the GET answers the fault and the
+asynchronous step still runs with the read result), and global Merge steps run on a mergeable table (recorded
 mergeAccount). An impersonating step runs with the impersonated user as
 `UserId`. Update filtering
 includes the table's implicit primary key, even when the caller did not author
