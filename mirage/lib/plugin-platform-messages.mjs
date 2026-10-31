@@ -7,8 +7,21 @@ import { DataError } from './data-error.mjs';
 import { cloneStateData } from './state-clone.mjs';
 import { initializePluginOperation } from './plugin-operation-context.mjs';
 import { pluginInvocationDepth, pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
-import { pluginDepthFault, PLUGIN_MAX_DEPTH, pluginExecutionDepth, recordToSdkEntity } from './plugin-clr.mjs';
-import { mainOperationParent, recordRequestRootChange, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
+import {
+  pluginDepthFault,
+  pluginImage,
+  PLUGIN_MAX_DEPTH,
+  pluginExecutionDepth,
+  recordToSdkEntity,
+} from './plugin-clr.mjs';
+import {
+  mainOperationParent,
+  mainOperationStep,
+  recordRequestRootChange,
+  selectSdkEntryParent,
+} from './plugin-sdk-parent.mjs';
+import { BUSINESS_ENTITY_IMAGE } from './plugin-images.mjs';
+import { changedEntityType, pluginPhaseMatches } from './exported-plugins.mjs';
 import { internalStepReference, setInternalStageSource } from './plugin-internal-stage.mjs';
 import { pluginEntryStep } from './plugin-message-admission.mjs';
 import { authorizeGrant, sdkRecordKey } from './local-organization-service.mjs';
@@ -881,10 +894,14 @@ export function runMergeDeactivationReads(store, { mapping, row, target, identit
   }
 }
 
-/** The SetStateDynamicEntity pipeline of an Update that sets statecode (data.mjs commitUpdateSteps), one level below it.
- * Under a bare Web API PATCH it joins the Update's request beneath that request's Upsert main operation, at its own
- * depth (native ownerAndState: SetStateDynamicEntity/10/d2 < Upsert/30/d2, one RequestId and OperationId). */
-export function runStateMessage(store, mapping, row, identity, options = {}) {
+/** The SetStateDynamicEntity pipeline of an Update that sets statecode (data.mjs commitUpdateSteps), one level below it,
+ * in the Update's request and correlation. Under a bare Web API PATCH it runs beneath that request's Upsert main
+ * operation, at its own depth (native ownerAndState: SetStateDynamicEntity/10/d2 < Upsert/30/d2, one RequestId and
+ * OperationId). Under a plain Update (PATCH with If-Match) it runs beneath two Update/30 frames at its depth (native
+ * imagesOrder): the Update's main operation as it then stands (the written Target with its modification stamps, the
+ * PreOperation inputs and shared variables, the final PreOperation images, its own ObjectModel step and a new
+ * OperationCreatedOn) over the main operation PreOperation and PostOperation steps see. */
+export function runStateMessage(store, mapping, row, identity, options = {}, { target = {}, previous = null } = {}) {
   const scalar = (value) => Number(value?.value ?? value);
   const id = row[mapping.idColumn],
     update = store.pluginFrames?.get(row),
@@ -912,7 +929,9 @@ export function runStateMessage(store, mapping, row, identity, options = {}) {
         },
         update.sdkFrameworkSource,
       )
-    : undefined;
+    : update?.requestId && !update.delegatedParentContext
+      ? updateOperationFrames(store, mapping, row, identity, { update, request, depth, target, previous })
+      : undefined;
   runMessagePipeline(store, {
     message: 'SetStateDynamicEntity',
     entity: mapping.logicalName,
@@ -926,13 +945,133 @@ export function runStateMessage(store, mapping, row, identity, options = {}) {
     identity,
     depth,
     parentContext,
+    ...(update?.requestId
+      ? {
+          frame: {
+            requestId: update.requestId,
+            operationId: update.operationId ?? update.requestId,
+            correlationId: update.correlationId,
+          },
+        }
+      : {}),
     acceptLanguage: options.pluginAcceptLanguage ?? '',
     bypassStepIds: options.bypassStepIds,
     bypassCustomPlugins: options.bypassCustomPlugins === true,
     bypassCustomAsync: options.bypassCustomAsync === true,
-    main: () => ({ IsValid: true }),
-    previous: options.previousRow,
+    previous: options.previousRow ?? previous,
+    main: () => {
+      // The state change is the write of this main operation: from its PostOperation on, the Update's root lists the
+      // table and, when the Update queues asynchronous work, the job attachment (native imagesOrder:
+      // SetStateDynamicEntity/40 sees Update/30 with ChangedEntityTypes, its PreValidation and PreOperation do not).
+      if (update?.requestId && !update.sdkFrameworkSource)
+        recordRequestRootChange(store, update.requestId, {
+          table: changedEntityType(store, 'update', mapping.logicalName),
+          asyncQueued: pluginPhaseMatches(store.pluginPipeline?.steps?.() ?? [], {
+            store,
+            entity: mapping.logicalName,
+            operation: 'update',
+            stage: 40,
+            changedAttributes: Object.keys(target),
+            asyncExecution: true,
+            bypassStepIds: options.bypassStepIds ?? [],
+            bypassCustomPlugins: options.bypassCustomPlugins === true,
+            diagnostic: () => {},
+          }),
+        });
+      return { IsValid: true };
+    },
   });
+}
+
+/** The two Update/30 frames above the SetStateDynamicEntity of a plain Update (runStateMessage). */
+function updateOperationFrames(store, mapping, row, identity, { update, request, depth, target, previous }) {
+  const entity = mapping.logicalName,
+    id = row[mapping.idColumn],
+    userId = store.pluginExecutionUserId ?? identity?.systemUserId ?? identity?.id ?? EMPTY,
+    objectId = (user) =>
+      store.tableRows('systemuser').find((entry) => same(entry.systemuserid, user))?.azureactivedirectoryobjectid ??
+      EMPTY;
+  const images = (set) => {
+    const values = Object.fromEntries(
+      Object.entries(set?.pre ?? {})
+        .map(([alias, source]) => [
+          alias,
+          pluginImage(
+            store,
+            entity,
+            previous,
+            source.platform === BUSINESS_ENTITY_IMAGE ? { attributes: source.attributes, exact: true } : source,
+            userId,
+          ),
+        ])
+        .filter(([, value]) => value),
+    );
+    return {
+      $type: 'EntityImageCollectionArray',
+      values: Object.keys(values).length ? [{ $type: 'EntityImageCollection', values }] : [],
+    };
+  };
+  const outer = store.pluginParentContext ?? pluginInvocationSdkParent(store) ?? null;
+  const context = {
+    MessageName: 'Update',
+    PrimaryEntityName: entity,
+    SecondaryEntityName: 'none',
+    PrimaryEntityId: { $type: 'Guid', value: id },
+    Stage: 30,
+    Mode: 0,
+    Depth: depth,
+    IsInTransaction: true,
+    IsolationMode: 2,
+    ...request,
+    ...(update.createdOnWire ? { OperationCreatedOn: cloneStateData(update.createdOnWire) } : {}),
+    ParentContext: outer,
+  };
+  const main = mainOperationParent({
+    frame: update,
+    context,
+    parent: outer,
+    userId,
+    objectId,
+    inputs: () => ({
+      ...cloneStateData(update.mainOperationInputs ?? {}),
+      Target: recordToSdkEntity(store, entity, { ...(update.mainOperationTarget ?? target), [mapping.idColumn]: id }),
+    }),
+    images: images(update.mainImages),
+  });
+  // Every level reports the state message's depth (native imagesOrder: Update/30/d2 < Update/30/d2).
+  main.values.Depth = depth;
+  const stamps = Object.fromEntries(
+    ['modifiedon', 'modifiedby', 'modifiedonbehalfby'].map((name) => [name, cloneStateData(row[name] ?? null)]),
+  );
+  const now = new Date(Math.floor((store.clock?.now() ?? Date.now()) / 1000) * 1000).toISOString();
+  const concurrency = update.inputParameters?.values?.ConcurrencyBehavior;
+  return {
+    $type: 'ExecutionContext',
+    values: {
+      ...cloneStateData(main.values),
+      InputParameters: {
+        $type: 'ParameterCollection',
+        values: {
+          // A message Target: references without names and no formatted values (native imagesOrder).
+          Target: {
+            ...recordToSdkEntity(
+              store,
+              entity,
+              { ...target, [mapping.idColumn]: id, ...stamps },
+              { allColumns: true, target: true },
+            ),
+            formattedValues: {},
+          },
+          ...(concurrency ? { ConcurrencyBehavior: cloneStateData(concurrency) } : {}),
+        },
+      },
+      SharedVariables: cloneStateData(update.sharedVariables ?? { $type: 'ParameterCollection', values: {} }),
+      OwningExtension: mainOperationStep('Update', entity, 'state'),
+      OperationCreatedOn: { $type: 'DateTime', value: now.replace(/Z$/, '') },
+      PreEntityImagesCollection: images(update.operationImages),
+      ParentContext: main,
+    },
+  };
 }
 
 /**

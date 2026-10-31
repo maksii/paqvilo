@@ -1,4 +1,4 @@
-// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30 (crud, upsert, sdkMessages, ownerAndState, bulk, faults, depth, customApi): ParentContext levels a CLR step can reach
+// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30 (crud, upsert, nestedImages, sdkMessages, ownerAndState, bulk, faults, depth, customApi): ParentContext levels a CLR step can reach
 // Every ParentContext level a CLR step reads, against the native recorder corpus: no level leaves a property
 // unavailable, ancestors report the observing context's IsInTransaction and InitiatingUserAgent, an impersonating
 // step's main operation runs as its user, named messages are the direct parent of the record operations they
@@ -31,7 +31,8 @@ const caller = '10000000-0000-4000-8000-000000000001',
   id = '20000000-0000-4000-8000-000000000001',
   stepId = '30000000-0000-4000-8000-000000000001';
 
-const storeOf = () =>
+// `rule`: a published duplicate rule on widget that excludes inactive records (its PreBusinessEntity holds statecode).
+const storeOf = ({ rule = false } = {}) =>
   new DataStore({
     state: {
       version: 1,
@@ -51,6 +52,22 @@ const storeOf = () =>
           { systemuserid: system, fullname: 'SYSTEM' },
         ],
         principalobjectaccess: [],
+        ...(rule
+          ? {
+              duplicaterule: [
+                {
+                  duplicateruleid: '60000000-0000-4000-8000-000000000001',
+                  baseentityname: 'widget',
+                  matchingentityname: 'widget',
+                  statecode: 1,
+                  statuscode: 2,
+                  excludeinactiverecords: true,
+                  name: 'Invented statecode rule',
+                },
+              ],
+              duplicaterulecondition: [],
+            }
+          : {}),
       },
       permissions: [],
       plugins: [],
@@ -488,7 +505,8 @@ test('a plug-in request reports no user agent on its context and ancestors', () 
   const agents = (at) =>
     chain(seen.find((entry) => entry.label === at).context).map((level) => level.InitiatingUserAgent);
   assert.deepEqual(agents('update/40'), ['invented-agent/1', 'invented-agent/1', 'invented-agent/1']);
-  assert.deepEqual(agents('create/20'), ['', '', '', '', '']);
+  // @parity-evidence: native and native-r2 nestedImages: a Create issued by an Update/40 step inside a bare PATCH reports Create/20/d2 < Create/30/d2 < Upsert/30/d1, InitiatingUserAgent '' on all three levels (the Update/40 < Update/30 levels are not part of its chain)
+  assert.deepEqual(agents('create/20'), ['', '', '']);
 });
 
 // Native depth/faults/pipelineEffects: the ObjectModel Implementation step id differs per table for one message and is
@@ -724,4 +742,357 @@ test('a CustomAsync bypass adds no job attachment to the request root', () => {
     { preValidationSourceOperation: 'upsert', bypassCustomAsync: true },
   );
   assert.deepEqual(rootOf(seen.at(-1).context).ChangedEntityTypes, { widget: 'Update' });
+});
+
+// Native nestedImages and ownerAndState (two captures each): SDK and SetStateDynamicEntity parents under a bare
+// PATCH's Upsert/30 frame, which carries the request tag in InputParameters and SharedVariables.
+// A bare PATCH of the probe record, carrying the request tag the plug-in SDK forwards.
+const tag = 'invented-tag';
+const taggedPatch = (store, values) => {
+  store.pluginSdkTag = tag;
+  try {
+    store.updateRecord('widget', id, values, { admin: true }, { preValidationSourceOperation: 'upsert' });
+  } finally {
+    store.pluginSdkTag = undefined;
+  }
+};
+// The Upsert/30 frame of a bare PATCH: its InputParameters and SharedVariables both carry the request tag.
+const assertTaggedUpsert = (upsert) => {
+  assert.equal(upsert.MessageName, 'Upsert');
+  assert.deepEqual(Object.keys(upsert.InputParameters.values), ['Target', 'ReturnRowVersion', 'tag']);
+  assert.equal(upsert.InputParameters.values.tag, tag);
+  assert.equal(upsert.SharedVariables.values.tag, tag);
+};
+// Each nested Create issued by an Update step at stage `at` under a bare PATCH.
+const nestedCreateUnder = (at) => {
+  const store = storeOf();
+  const seen = probe(store, (name) => [at, 'create/10', 'create/20'].includes(name), {
+    act: (answer, name) => {
+      if (name === at && answer.context.Depth === 1)
+        sdk(store, answer, 'Create', [{ $type: 'Entity', logicalName: 'widget', attributes: { title: 'Nested' } }]);
+    },
+  });
+  taggedPatch(store, { title: 'Renamed' });
+  return seen;
+};
+
+// Native nestedImages: a Create issued by an Update step at stage 40 inside a bare PATCH reports the Upsert/30 frame as
+// its parent, like a stage-20 step: Create/10/d2 < Upsert/30/d1 and Create/20/d2 < Create/30/d2 < Upsert/30/d1.
+test('a stage-40 step request under a bare PATCH has the Upsert main operation as parent', () => {
+  const seen = nestedCreateUnder('update/40');
+  const create10 = seen.find((entry) => entry.label === 'create/10' && entry.context.Depth === 2).context,
+    create20 = seen.find((entry) => entry.label === 'create/20' && entry.context.Depth === 2).context;
+  assert.deepEqual(chain(create10).map(label), ['Create/10/d2', 'Upsert/30/d1']);
+  assert.deepEqual(chain(create20).map(label), ['Create/20/d2', 'Create/30/d2', 'Upsert/30/d1']);
+  assertTaggedUpsert(chain(create10).at(-1));
+});
+
+// Native nestedImages: the stage-20 step's nested Create keeps the Upsert/30 frame as its parent (unchanged), with the tag.
+test('a stage-20 step request under a bare PATCH has the tagged Upsert main operation as parent', () => {
+  const seen = nestedCreateUnder('update/20');
+  const create10 = seen.find((entry) => entry.label === 'create/10' && entry.context.Depth === 2).context;
+  assert.deepEqual(chain(create10).map(label), ['Create/10/d2', 'Upsert/30/d1']);
+  assertTaggedUpsert(chain(create10).at(-1));
+});
+
+// @test-kind unproven: native has no capture of an SDK request from a PreValidation step inside a bare PATCH
+test('a stage-10 step request keeps its own step as parent', () => {
+  const seen = nestedCreateUnder('update/10');
+  const create10 = seen.find((entry) => entry.label === 'create/10' && entry.context.Depth === 2).context;
+  assert.equal(chain(create10).map(label)[1], 'Update/10/d1');
+});
+
+// Native ownerAndState: a PATCH statecode's SetStateDynamicEntity at stage 10 and 20 runs under the Upsert/30 frame of
+// the request, which carries the request tag in InputParameters and SharedVariables.
+test('a PATCH statecode SetStateDynamicEntity parent carries the request tag', () => {
+  const store = storeOf();
+  const seen = probe(store, (name) => ['SetStateDynamicEntity/10', 'SetStateDynamicEntity/20'].includes(name));
+  taggedPatch(store, { statecode: 1, statuscode: 2 });
+  for (const at of ['SetStateDynamicEntity/10', 'SetStateDynamicEntity/20']) {
+    const state = seen.find((entry) => entry.label === at).context;
+    assert.equal(label(state.ParentContext.values), 'Upsert/30/d2');
+    assertTaggedUpsert(state.ParentContext.values);
+  }
+});
+
+// Native imagesOrder (two captures): a PATCH {statecode, statuscode} with If-Match runs SetStateDynamicEntity at d2 in
+// the Update's request and correlation, under two Update/30 frames at d2: the Update main operation as it then stands
+// (Target with the modification stamps, the PreOperation inputs and shared variables, the final PreOperation images
+// plus PreBusinessEntity, its own ObjectModel step) over the main operation the Update's PreOperation steps see.
+// @test-kind parity: native imagesOrder (native and native-r2) SetStateDynamicEntity under a PATCH statecode with If-Match
+// @parity-evidence: native and native-r2 imagesOrder SetStateDynamicEntity/40 (Update/30 root with ChangedEntityTypes): the probe also selects that stage; no earlier assertion changed
+// @parity-evidence: native crud, imagesOrder, relationsReads, mergeAccount (native and native-r2): PreBusinessEntity follows the published duplicate rules (Q7 C2-74); this test seeds the rule the probe table has natively, no assertion changed
+test('a plain Update statecode SetStateDynamicEntity runs in the Update request under its two main-operation frames', () => {
+  const store = storeOf({ rule: true });
+  const imaged = (n, stage, images) => ({
+    id: `30000000-0000-4000-8000-00000000001${n}`,
+    enabled: true,
+    entity: 'widget',
+    message: 'Update',
+    stage,
+    rank: 1,
+    mode: 'mock',
+    contract: { mode: 0 },
+    images,
+  });
+  const seen = probe(
+    store,
+    (at) =>
+      ['update/20', 'SetStateDynamicEntity/10', 'SetStateDynamicEntity/20', 'SetStateDynamicEntity/40'].includes(at),
+    {
+      items: [
+        imaged(1, 10, [{ alias: 'pre', type: 0 }]),
+        imaged(2, 20, [{ alias: 'pre', type: 0, attributes: ['title'] }]),
+        imaged(3, 20, [{ alias: 'late', type: 0, attributes: ['level'] }]),
+      ],
+    },
+  );
+  store.pluginSdkTag = tag;
+  try {
+    store.updateRecord('widget', id, { statecode: 1, statuscode: 2 }, { admin: true, systemUserId: caller });
+  } finally {
+    store.pluginSdkTag = undefined;
+  }
+  const update = seen.find((entry) => entry.label === 'update/20').context;
+  for (const at of ['SetStateDynamicEntity/10', 'SetStateDynamicEntity/20']) {
+    const state = seen.find((entry) => entry.label === at).context;
+    const [, current, main] = chain(state);
+    assert.deepEqual(chain(state).map(label), [`${at}/d2`, 'Update/30/d2', 'Update/30/d2']);
+    for (const level of [state, current, main]) {
+      assert.equal(level.RequestId.value, update.RequestId.value);
+      assert.equal(level.OperationId.value, update.OperationId.value);
+      assert.equal(level.CorrelationId.value, update.CorrelationId.value);
+    }
+    assert.deepEqual(Object.keys(current.InputParameters.values), ['Target', 'ConcurrencyBehavior']);
+    assert.ok(
+      ['modifiedon', 'modifiedby', 'modifiedonbehalfby'].every((name) =>
+        Object.hasOwn(current.InputParameters.values.Target.attributes, name),
+      ),
+    );
+    assert.deepEqual(Object.keys(main.InputParameters.values).toSorted(), ['ConcurrencyBehavior', 'Target', 'tag']);
+    assert.equal(current.SharedVariables.values.tag, tag);
+    assert.notEqual(current.OwningExtension.id, main.OwningExtension.id);
+    assert.equal(current.OwningExtension.name, 'ObjectModel Implementation');
+    // The final PreOperation set plus PreBusinessEntity, against the PreValidation set of the main operation.
+    const [currentImages] = current.PreEntityImagesCollection.values,
+      [mainImages] = main.PreEntityImagesCollection.values;
+    assert.deepEqual(Object.keys(currentImages.values).toSorted(), ['PreBusinessEntity', 'late', 'pre']);
+    assert.deepEqual(Object.keys(currentImages.values.pre.attributes), ['title']);
+    assert.ok(Object.keys(mainImages.values.pre.attributes).length > 2);
+    assert.equal(main.ParentContext, null);
+    // The current main operation's Target is a message Target: no reference names, no formatted values.
+    assert.deepEqual(current.InputParameters.values.Target.formattedValues, {});
+    assert.equal(current.InputParameters.values.Target.attributes.modifiedby?.name ?? null, null);
+    // The state change is the write: the root lists the table from PostOperation on only.
+    assert.equal(Object.hasOwn(main.SharedVariables.values, 'ChangedEntityTypes'), false);
+  }
+  const [, , written] = chain(seen.find((entry) => entry.label === 'SetStateDynamicEntity/40').context);
+  assert.deepEqual(written.SharedVariables.values.ChangedEntityTypes, { widget: 'Update' });
+});
+
+// @test-kind parity: native and native-r2 asyncLoop d2..d12 and native-r2 async (SDK Retrieve from an asynchronous step)
+// An asynchronous step's SDK request is a new root operation of the originating request: no ParentContext at
+// PreValidation, the nested main operation alone above PreOperation, RequestId and OperationId the originating
+// request's id, the job's correlation and the job's Depth + 1.
+test('an asynchronous step request starts a new root operation in the originating request', () => {
+  const store = storeOf();
+  const seen = probe(
+    store,
+    (at) => ['create/40', 'create/10', 'create/20', 'retrieve/10', 'retrieve/20'].includes(at),
+    {
+      stepOf: (at) => step({ mode: at === 'create/40' ? 1 : 0 }),
+      act: (answer, at) => {
+        if (at !== 'create/40' || answer.context.Depth !== 1) return;
+        // The asynchronous runner runs a job outside any transaction (plugin-async.mjs runStep).
+        const inherited = store.pluginInTransaction;
+        store.pluginInTransaction = false;
+        try {
+          sdk(store, answer, 'Create', [{ $type: 'Entity', logicalName: 'widget', attributes: { title: 'Nested' } }]);
+          sdk(store, answer, 'Retrieve', [
+            'widget',
+            { $type: 'Guid', value: id },
+            { $type: 'ColumnSet', allColumns: true },
+          ]);
+        } finally {
+          store.pluginInTransaction = inherited;
+        }
+      },
+    },
+  );
+  store.createRecord('widget', { title: 'Root' }, { admin: true });
+  const job = seen.find((entry) => entry.label === 'create/40' && entry.context.Depth === 1).context;
+  assert.equal(job.Mode, 1);
+  const nested = (at) => seen.find((entry) => entry.label === at && entry.context.Depth === 2).context;
+  assert.deepEqual(chain(nested('create/10')).map(label), ['Create/10/d2']);
+  assert.deepEqual(chain(nested('create/20')).map(label), ['Create/20/d2', 'Create/30/d2']);
+  for (const at of ['retrieve/10', 'retrieve/20'])
+    assert.deepEqual(chain(nested(at)).map(label), [`Retrieve/${at.slice(-2)}/d2`]);
+  for (const at of ['create/10', 'create/20', 'retrieve/10']) {
+    const context = nested(at);
+    assert.equal(context.RequestId.value, job.RequestId.value);
+    assert.equal(context.OperationId.value, job.RequestId.value);
+    assert.equal(context.CorrelationId.value, job.CorrelationId.value);
+  }
+  assert.equal(nested('create/10').IsInTransaction, false);
+  assert.equal(nested('create/20').IsInTransaction, true);
+  // Its root does not show the originating request's root changes (native asyncLoop: Create/30/d2 without
+  // ChangedEntityTypes).
+  assert.equal(Object.hasOwn(chain(nested('create/20'))[1].SharedVariables.values, 'ChangedEntityTypes'), false);
+});
+
+// @test-kind parity: native and native-r2 bulkRequests (an Update/40 step's ExecuteTransaction and ExecuteMultiple of two Creates each)
+// ExecuteTransaction runs its requests at the caller's depth under the caller's chain, in its transaction and
+// correlation, InputParameters [Target] with the tag only in SharedVariables; ExecuteMultiple runs each request as a
+// new root operation at the caller's Depth + 2, outside the transaction at PreValidation, with a new CorrelationId per
+// request, the caller's RequestId and no tag.
+test('ExecuteTransaction and ExecuteMultiple from a plug-in run their requests in their native frames', () => {
+  const store = storeOf();
+  const collection = (table, ...titles) => ({
+    $type: 'Collection',
+    type: 'Microsoft.Xrm.Sdk.OrganizationRequestCollection',
+    values: titles.map((title) => ({
+      $type: 'OrganizationRequest',
+      requestName: 'Create',
+      parameters: {
+        $type: 'ParameterCollection',
+        values: { Target: { $type: 'Entity', logicalName: table, attributes: { title } } },
+      },
+    })),
+  });
+  const settings = {
+    $type: 'Object',
+    type: 'Microsoft.Xrm.Sdk.ExecuteMultipleSettings',
+    members: { ContinueOnError: false, ReturnResponses: true },
+  };
+  const seen = probe(store, (at) => ['update/40', 'create/10', 'create/20'].includes(at), {
+    act: (answer, at) => {
+      if (at !== 'update/40' || answer.context.Depth !== 1) return;
+      sdk(
+        store,
+        answer,
+        'Execute',
+        executeRequest('ExecuteTransaction', { Requests: collection('widget', 'One', 'Two'), ReturnResponses: true }),
+      );
+      sdk(
+        store,
+        answer,
+        'Execute',
+        executeRequest('ExecuteMultiple', { Requests: collection('gizmo', 'Three', 'Four'), Settings: settings }),
+      );
+    },
+  });
+  store.pluginSdkTag = tag;
+  try {
+    store.updateRecord('widget', id, { title: 'Renamed' }, { admin: true, systemUserId: caller });
+  } finally {
+    store.pluginSdkTag = undefined;
+  }
+  const update = seen.find((entry) => entry.label === 'update/40').context;
+  const of = (table, at) => seen.filter((entry) => entry.label === at && entry.context.PrimaryEntityName === table);
+  for (const { context, inputs, shared } of of('widget', 'create/10')) {
+    assert.deepEqual(chain(context).map(label), ['Create/10/d1', 'Update/40/d1', 'Update/30/d1']);
+    assert.equal(context.IsInTransaction, true);
+    assert.equal(context.CorrelationId.value, update.CorrelationId.value);
+    assert.deepEqual(Object.keys(inputs), ['Target']);
+    assert.equal(shared.values.tag, tag);
+  }
+  for (const { context } of of('widget', 'create/20'))
+    assert.deepEqual(chain(context).map(label), ['Create/20/d1', 'Create/30/d1', 'Update/40/d1', 'Update/30/d1']);
+  const multiple = of('gizmo', 'create/10');
+  assert.equal(multiple.length, 2);
+  for (const { context, inputs, shared } of multiple) {
+    assert.deepEqual(chain(context).map(label), ['Create/10/d3']);
+    assert.equal(context.IsInTransaction, false);
+    assert.notEqual(context.CorrelationId.value, update.CorrelationId.value);
+    assert.equal(context.RequestId.value, update.RequestId.value);
+    assert.deepEqual(Object.keys(inputs), ['Target']);
+    assert.equal(Object.hasOwn(shared.values, 'tag'), false);
+  }
+  assert.notEqual(multiple[0].context.CorrelationId.value, multiple[1].context.CorrelationId.value);
+  for (const { context } of of('gizmo', 'create/20')) {
+    assert.deepEqual(chain(context).map(label), ['Create/20/d3', 'Create/30/d3']);
+    assert.equal(context.IsInTransaction, true);
+  }
+  assert.equal(store.tableRows('widget').length, 3);
+  assert.equal(store.tableRows('gizmo').length, 2);
+});
+
+// @test-kind parity: native and native-r2 bulk (Web API UpsertMultiple of one new and one existing row; Web API CreateMultiple)
+// UpsertMultiple's main operation (UpsertMultiple/30/d1, PrimaryEntityName none, Targets and tag) is the root of every
+// context its CreateMultiple and UpdateMultiple run, in one request and correlation; a delegated record sees the bulk
+// frames without Targets: CreateMultiple/30 [] and UpdateMultiple/20 and /30 [ConcurrencyBehavior] under an
+// UpsertMultiple, CreateMultiple/30 [tag] for a bulk-origin CreateMultiple.
+// @parity-evidence: native and native-r2 bulk: the fixture gains a two-option column with its default (the created UpsertMultiple Target lists it); no earlier assertion changed
+test('a Web API UpsertMultiple runs its bulk messages under the UpsertMultiple main operation', async (t) => {
+  const { contractModuleFixture } = await import('./contract-module-fixture.mjs');
+  const existing = '20000000-0000-4000-8000-0000000000a1',
+    fresh = '20000000-0000-4000-8000-0000000000a2',
+    other = '20000000-0000-4000-8000-0000000000a3';
+  const f = await contractModuleFixture(t, {
+    mappings: {
+      x_item: {
+        logicalName: 'x_item',
+        entitySet: 'x_items',
+        idColumn: 'x_itemid',
+        ownership: 'UserOwned',
+        fields: { x_name: { dataverseType: 'nvarchar' }, x_flag: { dataverseType: 'bit' } },
+        recordDefaults: { x_flag: false },
+      },
+    },
+    tables: { x_item: [{ x_itemid: existing, x_name: 'Existing', x_flag: true }] },
+    extension: { name: 'upsert-multiple-probe', install: () => {} },
+  });
+  const seen = probe(f.store, (at) =>
+    ['createmultiple/10', 'create/20', 'update/20', 'updatemultiple/20'].includes(at),
+  );
+  const target = (key) => ({ '@odata.type': 'Microsoft.Dynamics.CRM.x_item', x_itemid: key, x_name: 'Upserted' });
+  const response = await f.request('POST', '/x_items/Microsoft.Dynamics.CRM.UpsertMultiple?tag=invented-upsert', {
+    Targets: [target(fresh), target(existing)],
+  });
+  assert.equal(response.status, 204, await response.text());
+  const at = (name) => seen.find((entry) => entry.label === name).context;
+  assert.deepEqual(chain(at('createmultiple/10')).map(label), ['CreateMultiple/10/d1', 'UpsertMultiple/30/d1']);
+  assert.equal(at('createmultiple/10').IsInTransaction, true);
+  assert.deepEqual(chain(at('create/20')).map(label), [
+    'Create/20/d1',
+    'CreateMultiple/20/d1',
+    'CreateMultiple/30/d1',
+    'UpsertMultiple/30/d1',
+  ]);
+  assert.deepEqual(chain(at('update/20')).map(label), [
+    'Update/20/d1',
+    'UpdateMultiple/20/d1',
+    'UpdateMultiple/30/d1',
+    'UpsertMultiple/30/d1',
+  ]);
+  const [, createStage, createMain, upsert] = chain(at('create/20')),
+    [, updateStage, updateMain] = chain(at('update/20'));
+  assert.equal(upsert.PrimaryEntityName, 'none');
+  assert.equal(upsert.OwningExtension.name, 'ObjectModel Implementation');
+  assert.deepEqual(Object.keys(upsert.InputParameters.values).toSorted(), ['Targets', 'tag']);
+  // Its Targets are the delegated messages' own: the new record with its two-option default, the existing one as sent.
+  assert.deepEqual(
+    upsert.InputParameters.values.Targets.entities.map((entity) => Object.keys(entity.attributes).toSorted()),
+    [
+      ['x_flag', 'x_itemid', 'x_name'],
+      ['x_itemid', 'x_name'],
+    ],
+  );
+  assert.deepEqual(Object.keys(createStage.InputParameters.values), []);
+  assert.deepEqual(Object.keys(createMain.InputParameters.values), []);
+  assert.deepEqual(Object.keys(updateStage.InputParameters.values), ['ConcurrencyBehavior']);
+  assert.deepEqual(Object.keys(updateMain.InputParameters.values), ['ConcurrencyBehavior']);
+  for (const name of ['createmultiple/10', 'create/20', 'update/20', 'updatemultiple/20']) {
+    assert.equal(at(name).CorrelationId.value, upsert.CorrelationId.value, name);
+    assert.equal(at(name).RequestId.value, upsert.RequestId.value, name);
+  }
+  // A bulk-origin CreateMultiple's records see its main operation with the tag and without Targets.
+  seen.length = 0;
+  const created = await f.request('POST', '/x_items/Microsoft.Dynamics.CRM.CreateMultiple?tag=invented-bulk', {
+    Targets: [target(other)],
+  });
+  assert.equal(created.status, 200, await created.text());
+  const [, , bulkMain] = chain(at('create/20'));
+  assert.equal(label(bulkMain), 'CreateMultiple/30/d1');
+  assert.deepEqual(Object.keys(bulkMain.InputParameters.values), ['tag']);
 });

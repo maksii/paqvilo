@@ -143,7 +143,9 @@ test(
           line.chain,
           stage === 10
             ? `>CreateMultiple/10/0/${empty}//${bulkStep(10)}`
-            : `>CreateMultiple/${stage}/0/${empty}//${bulkStep(stage)}` + at('CreateMultiple', stage)[0].chain,
+            : // @parity-evidence: native and native-r2 bulk events 5-6 and 8-11: a delegated Create sees the CreateMultiple/30 main operation without Targets (Create/20 < CreateMultiple/20 [] < CreateMultiple/30 [tag]), while the bulk step itself sees it with Targets
+              `>CreateMultiple/${stage}/0/${empty}//${bulkStep(stage)}` +
+                at('CreateMultiple', stage)[0].chain.replace(`/${empty}/Targets/`, `/${empty}//`),
         );
     }
     // The platform variables belong to the bulk message's collections, DefaultsAddedFlag to each Create's own.
@@ -152,7 +154,8 @@ test(
     assert.ok(at('Create', 10).every((line) => line.shared.split('+').includes('DefaultsAddedFlag')));
     assert.ok(!at('CreateMultiple', 10)[0].shared.split('+').includes('DefaultsAddedFlag'));
     // A queued Create job sees that chain as its own operation (native: Create/40/m1 <- Create/40/m1 <- Create/30/m1).
+    // @parity-evidence: native and native-r2 bulk events 33-38: a delegated Create's job sees CreateMultiple/30 relabelled without Targets (Create/40/m1 [] < Create/30/m1 [tag]); this request has no tag
     for (const line of at('Create', 40, '1'))
-      assert.match(line.chain, new RegExp(`^>Create/40/1/${line.primary}/[^>]*>Create/30/1/${line.primary}/Targets/`));
+      assert.match(line.chain, new RegExp(`^>Create/40/1/${line.primary}/[^>]*>Create/30/1/${line.primary}//`));
   },
 );

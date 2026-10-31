@@ -6,7 +6,6 @@ import { pluginStepBypassed } from './plugin-bypass.mjs';
 import { messageNameOf, pluginStepMatchesEntity } from './exported-plugins.mjs';
 import { initializePluginOperation } from './plugin-operation-context.mjs';
 import { pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
-import { bulkTargetsCollection } from './plugin-single-multiple.mjs';
 import { isDeepStrictEqual } from 'node:util';
 const emptyId = '00000000-0000-0000-0000-000000000000';
 const samePrimary = (target, primary) =>
@@ -154,9 +153,15 @@ function* bulkSteps(
   // One request identity for the bulk message and every record it delegates (native bulk: all contexts of one request,
   // queued jobs included, share RequestId and CorrelationId).
   const operationIdentity = {};
-  initializePluginOperation(operationIdentity, store, store.pluginParentContext ?? pluginInvocationSdkParent(store));
-  let bulkFrameStarted = false,
-    submittedTargets;
+  // A bulk message UpsertMultiple's main operation runs shares its request (dataverse-records.mjs).
+  initializePluginOperation(
+    operationIdentity,
+    store,
+    store.pluginParentContext ??
+      pluginInvocationSdkParent(store) ??
+      (store.pluginMainOperation?.bulkWrapper ? store.pluginMainOperation.context : null),
+  );
+  let bulkFrameStarted = false;
   const bulkFrame = () => {
     if (bulkFrameStarted) return {};
     bulkFrameStarted = true;
@@ -174,6 +179,20 @@ function* bulkSteps(
   // only the request tag as input, PreOperation's and PostOperation's none and the CreateMultiple/30 main operation as
   // their own parent (native bulk; owned by the bulk step that ran last in that stage).
   const tagOf = () => (delegated ? undefined : (finalBulkFrame?.requestTag ?? store.pluginSdkTag));
+  // A delegated record sees the bulk message's inputs without Targets: PreValidation's and the main operation's tag,
+  // FromSandbox and ConcurrencyBehavior, PreOperation's and PostOperation's ConcurrencyBehavior (native bulk, sdkSurface:
+  // UpdateMultiple/20 [ConcurrencyBehavior] < UpdateMultiple/30 [tag, FromSandbox, ConcurrencyBehavior]).
+  const childInputs = (stage) => {
+    const own = finalBulkFrame?.mainOperationInputs ?? finalBulkFrame?.inputParameters?.values ?? {},
+      values = {};
+    if (stage === 10 && tagOf() !== undefined) values.tag = tagOf();
+    if (stage === 10 && own.FromSandbox !== undefined) values.FromSandbox = own.FromSandbox;
+    const concurrency =
+      own.ConcurrencyBehavior ??
+      (concurrencyBehavior === undefined ? undefined : { $type: 'ConcurrencyBehavior', value: concurrencyBehavior });
+    if (update && concurrency !== undefined) values.ConcurrencyBehavior = structuredClone(concurrency);
+    return { $type: 'ParameterCollection', values };
+  };
   const stageSource = (stage, step) => ({
     operation,
     messageName: messageNameOf(operation),
@@ -190,10 +209,7 @@ function* bulkSteps(
           },
         }
       : {}),
-    inputParameters: {
-      $type: 'ParameterCollection',
-      values: stage === 10 && tagOf() !== undefined ? { tag: tagOf() } : {},
-    },
+    inputParameters: childInputs(stage),
     sharedVariables: structuredClone(finalBulkFrame?.sharedVariables ?? { $type: 'ParameterCollection', values: {} }),
     frame: requestIdentity(),
     ...(finalBulkFrame?.operationDepth ? { depth: finalBulkFrame.operationDepth } : {}),
@@ -206,16 +222,7 @@ function* bulkSteps(
             messageName: messageNameOf(operation),
             entity: mapping.logicalName,
             primaryId: emptyId,
-            inputParameters: {
-              $type: 'ParameterCollection',
-              values: {
-                Targets: structuredClone(
-                  finalBulkFrame?.mainOperationTargets ??
-                    bulkTargetsCollection(mapping.logicalName, submittedTargets, { submitted: true }),
-                ),
-                ...(tagOf() === undefined ? {} : { tag: tagOf() }),
-              },
-            },
+            inputParameters: childInputs(10),
             sharedVariables: structuredClone(
               finalBulkFrame?.mainSharedVariables ??
                 finalBulkFrame?.sharedVariables ?? { $type: 'ParameterCollection', values: {} },
@@ -381,7 +388,6 @@ function* bulkSteps(
     check();
   };
   try {
-    submittedTargets = structuredClone(targets);
     yield* phase(10, []);
     const stamped = targets.map((target, index) => {
       const values = Object.fromEntries(

@@ -18,6 +18,8 @@ import { associationRequestBinding, navigationRole } from './plugin-association.
 import { recordToSdkEntity } from './plugin-clr.mjs';
 import { odataToSdkQuery } from './plugin-query.mjs';
 import { upsertSourceOperation } from './plugin-delegation.mjs';
+import { initializePluginOperation } from './plugin-operation-context.mjs';
+import { bulkTargetsCollection } from './plugin-single-multiple.mjs';
 import { isElastic, recordKey, samePartition } from './dataverse-elastic.mjs';
 import { parseEntityReference, parseFetchXml, uncheckedLookup } from './data.mjs';
 import { DATAVERSE_SYSTEM_COLUMNS, parseXmlDocument, webApiPagingCookie } from './fetchxml-engine.mjs';
@@ -2772,15 +2774,92 @@ export function createRecordHandlers({
         if (key.row) updates.push({ ...values, [mapping.idColumn]: key.row[mapping.idColumn] });
         else creates.push(values);
       }
-      // Natively UpsertMultiple runs no pipeline of its own: the new records go through the CreateMultiple pipeline,
-      // then the existing ones through UpdateMultiple, whose message input carries ConcurrencyBehavior (recorded corpus).
+      // UpsertMultiple runs no steps of its own (registered UpsertMultiple steps do not fire): its main operation
+      // (UpsertMultiple/30) runs the new records through the CreateMultiple pipeline, then the existing ones through
+      // UpdateMultiple, whose message input carries ConcurrencyBehavior; both in its transaction, request and correlation,
+      // under it as ParentContext (recorded native bulk).
+      const main = upsertMultipleOperation(
+        c,
+        mapping,
+        targets,
+        texts,
+        (index) => !lookupKey(c, mapping, texts[index]).row,
+      );
       await runWrite(async () => {
-        if (creates.length) await bulkWrite(c, false, creates, { delegated: true });
-        if (updates.length) await bulkWrite(c, true, updates, { concurrencyBehavior: 0, delegated: true });
+        const previousMain = store.pluginMainOperation;
+        store.pluginMainOperation = main;
+        try {
+          if (creates.length) await bulkWrite(c, false, creates, { delegated: true });
+          if (updates.length) await bulkWrite(c, true, updates, { concurrencyBehavior: 0, delegated: true });
+        } finally {
+          store.pluginMainOperation = previousMain;
+        }
       });
       return { status: 204 };
     }
     throw noResource(c);
+  }
+
+  // The UpsertMultiple main operation of a Web API request (native bulk: UpsertMultiple/30/d1, PrimaryEntityName none,
+  // InputParameters Targets (the submitted records) and tag, SharedVariables IsAutoTransact, AcceptLang and tag).
+  function upsertMultipleOperation(c, mapping, targets, texts, creates) {
+    const empty = '00000000-0000-0000-0000-000000000000',
+      tag = store.pluginSdkTag,
+      identity = {};
+    initializePluginOperation(identity, store, null);
+    // The Targets the delegated messages share: a new record's carries the two-option defaults its CreateMultiple adds
+    // (native bulk: the created entity lists pqwp_boolean false, the updated one its submitted columns only).
+    // ponytail: the submitted plain columns only; a lookup bind (an annotated key) is not shown in the frame.
+    const entities = targets.map((target, index) => {
+      const values = store.normalizeRecord(
+        mapping,
+        Object.fromEntries(Object.entries(target).filter(([key]) => !key.includes('@'))),
+        c.identity,
+      );
+      if (creates(index))
+        for (const [name, value] of Object.entries(mapping.recordDefaults ?? {}))
+          if (
+            !Object.hasOwn(values, name) &&
+            fieldKind(store.fieldDefinition(mapping.logicalName, name, fieldsOf)) === 'boolean'
+          )
+            values[name] = structuredClone(value);
+      return { ...recordToSdkEntity(store, mapping.logicalName, values), id: texts[index] || empty };
+    });
+    const withTag = (values) => (tag === undefined ? values : { ...values, tag });
+    const guid = (value) => ({ $type: 'Guid', value });
+    return {
+      context: {
+        $type: 'ExecutionContext',
+        values: {
+          MessageName: 'UpsertMultiple',
+          PrimaryEntityName: 'none',
+          SecondaryEntityName: 'none',
+          PrimaryEntityId: guid(empty),
+          Stage: 30,
+          Mode: 0,
+          Depth: 1,
+          IsInTransaction: true,
+          IsolationMode: 2,
+          RequestId: guid(identity.requestId),
+          OperationId: guid(identity.operationId),
+          CorrelationId: guid(identity.correlationId),
+          OperationCreatedOn: cloneStateData(identity.createdOnWire),
+          InputParameters: {
+            $type: 'ParameterCollection',
+            values: withTag({ Targets: bulkTargetsCollection(mapping.logicalName, entities, { submitted: true }) }),
+          },
+          OutputParameters: { $type: 'ParameterCollection', values: {} },
+          SharedVariables: {
+            $type: 'ParameterCollection',
+            values: withTag({ IsAutoTransact: true, AcceptLang: updateOptions(c).pluginAcceptLanguage ?? '' }),
+          },
+          ParentContext: null,
+        },
+      },
+      depth: 1,
+      exactDepth: true,
+      bulkWrapper: true,
+    };
   }
 
   // DeleteMultiple is available on elastic tables only: a standard table runs its PreValidation, then refuses.

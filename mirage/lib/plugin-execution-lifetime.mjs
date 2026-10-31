@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { DataError } from './data-error.mjs';
 import { copyPluginValueSource } from './plugin-value-provenance.mjs';
 import { cloneStateData } from './state-clone.mjs';
+import { asyncOriginParent } from './plugin-sdk-parent.mjs';
 
 // Async callbacks retain their invocation, including after Promise.race has
 // returned. A finished invocation must never re-enter the organization store.
@@ -177,11 +178,16 @@ export function pluginInvocationParent(store) {
 }
 
 /** An SDK child receives the server's per-step entry snapshot. In-flight
- * edits remain visible to their author and are published only on step return. */
+ * edits remain visible to their author and are published only on step return.
+ * A step at Depth 2 or deeper keeps the outermost step as the parent of its own
+ * requests, as dispatchSdkCall does (native depth: Create/10/dN < Create/40/d1 <
+ * Create/30/d1); an asynchronous step's child starts a new root operation
+ * (asyncOriginParent). */
 export function pluginInvocationSdkParent(store) {
+  let outermost = null;
   for (let frame = executions.getStore(); frame; frame = frame.parent)
-    if (frame.store === store && frame.sdkContext) return structuredClone(frame.sdkContext);
-  return null;
+    if (frame.store === store && frame.sdkContext) outermost = frame.sdkContext;
+  return outermost ? asyncOriginParent(structuredClone(outermost)) : null;
 }
 
 export function pluginExecutionLifetime(

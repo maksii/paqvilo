@@ -279,6 +279,7 @@ function dataContract(value, polymorphic = true) {
         TopCount: value.topCount ?? null,
       });
     case 'ExecutionContext':
+      if (value.rootOrigin) return null;
       return Object.fromEntries(
         Object.entries(value.values ?? {}).map(([key, item]) => [
           key,
@@ -377,7 +378,7 @@ function remoteFrame(values) {
     OrganizationName: values.OrganizationName ?? null,
     OutputParameters: pairs(values.OutputParameters?.values),
     OwningExtension: dataContract(values.OwningExtension, false),
-    ParentContext: remoteFrame(values.ParentContext?.values),
+    ParentContext: values.ParentContext?.rootOrigin ? null : remoteFrame(values.ParentContext?.values),
     PostEntityImages: dataContract(values.PostEntityImages ?? { $type: 'EntityImageCollection', values: {} }),
     PreEntityImages: dataContract(values.PreEntityImages ?? { $type: 'EntityImageCollection', values: {} }),
     PrimaryEntityId: guidOf(values.PrimaryEntityId),
@@ -637,8 +638,12 @@ export function remoteExecutionContext(store, facts) {
   };
   const chain =
     asyncMultipleJobParent(frame, facts.bridged ? multipleMessage(operation) : operation, entity, job) ??
-    (asyncExecution && !context.ParentContext && frame.asyncOperation
-      ? asynchronousParentChain(frame.asyncCallerParent, job)
+    (asyncExecution && frame.asyncOperation && !frame.delegatedSourceOperation
+      ? // A platform message's frames (a statecode Update's SetStateDynamicEntity) are relabelled like a CLR job's.
+        asynchronousParentChain(
+          frame.delegatedParentContext ?? (context.ParentContext ? null : frame.asyncCallerParent),
+          job,
+        )
       : null);
   if (chain) context.ParentContext = remoteFrame(chain.values);
   return context;

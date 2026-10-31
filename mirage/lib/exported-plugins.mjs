@@ -1174,7 +1174,7 @@ function platformSharedVariables(operation, acceptLanguage = '', { nested = fals
 
 /** The ChangedEntityTypes key a main operation adds (always with the value 'Update', also for Create and Delete).
  * Natively it lists user-owned tables and association intersects; an organization-owned table is absent. */
-function changedEntityType(store, operation, entity, intersectEntity) {
+export function changedEntityType(store, operation, entity, intersectEntity) {
   if (['associate', 'disassociate'].includes(operation)) return intersectEntity ?? null;
   if (!['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation) || !store) return null;
   const mapping = store.resolveMapping(entity);
@@ -1286,6 +1286,17 @@ export function runPluginPhase({
   }
   // Records a bulk message delegates, and a bulk message UpsertMultiple delegates, have no tag input (recorded corpus).
   if (!inheritsRequestTag && !continued) phaseFrame.inputTagConsumed = true;
+  // A request of an ExecuteTransaction a plug-in issued runs at the caller's depth and has no tag input (native
+  // bulkRequests; plugin-sdk-messages.mjs inCallerOperation).
+  const sdkWrapper = store?.pluginSdkWrapper;
+  if (sdkWrapper && !asyncExecution && !continued && !phaseFrame.delegatedParentContext && !bulkParent) {
+    phaseFrame.inputTagConsumed = true;
+    if (sdkWrapper.depth !== undefined) {
+      phaseFrame.operationDepth ??= sdkWrapper.depth;
+      phaseFrame.delegatedDepth ??= sdkWrapper.depth;
+      phaseFrame.exactDepth = true;
+    }
+  }
   // Such a record runs under the bulk message's context of the current stage and shares its request identity
   // (native bulk: Create/10 <- CreateMultiple/10, Create/20 <- CreateMultiple/20 <- CreateMultiple/30).
   if (bulkParent && !asyncExecution) {
@@ -1334,6 +1345,7 @@ export function runPluginPhase({
           ...(frameworkInputTarget ?? target),
           [store.resolveMapping(entity).idColumn]: record[store.resolveMapping(entity).idColumn],
         }),
+        tag: phaseFrame.requestTag ?? store.pluginSdkTag,
       };
   }
   // A bare Web API PATCH runs Create or Update inside an Upsert main operation: PreValidation's parent is that
@@ -1507,7 +1519,11 @@ export function runPluginPhase({
       const root = phaseFrame.sdkFrameworkSource
         ? (phaseFrame.sdkFrameworkSource.sharedVariables ??= {
             $type: 'ParameterCollection',
-            values: { AcceptLang: phaseFrame.sdkFrameworkSource.acceptLanguage ?? '', IsAutoTransact: false },
+            values: {
+              AcceptLang: phaseFrame.sdkFrameworkSource.acceptLanguage ?? '',
+              IsAutoTransact: false,
+              ...(phaseFrame.sdkFrameworkSource.tag === undefined ? {} : { tag: phaseFrame.sdkFrameworkSource.tag }),
+            },
           })
         : preValidationSourceOperation === 'upsert'
           ? null
@@ -1652,6 +1668,13 @@ export function runPluginPhase({
   if (stage !== 10 && !asyncExecution)
     phaseFrame.mainImages = {
       pre: { ...stageImageSet({ stage: 10, steps: stageSteps(10) }).pre, ...businessEntity() },
+      post: {},
+    };
+  // The Update main operation a statecode change runs SetStateDynamicEntity in holds the final PreOperation set plus
+  // PreBusinessEntity (native imagesOrder: Update/30 [pre, late, PreBusinessEntity] above SetStateDynamicEntity).
+  if (stage === 20 && operation === 'update' && !asyncExecution)
+    phaseFrame.operationImages = {
+      pre: { ...stageImageSet({ stage: 20, steps: stageSteps(20) }).pre, ...businessEntity() },
       post: {},
     };
   // Mock/handler read outputs also belong to the SDK response frame. Ordinary reads

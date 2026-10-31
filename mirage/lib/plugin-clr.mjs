@@ -18,6 +18,7 @@ import {
   mainOperationParent,
   observedParentChain,
   selectSdkEntryParent,
+  asyncOriginParent,
 } from './plugin-sdk-parent.mjs';
 import { delegatedPluginParent } from './plugin-delegation.mjs';
 import { internalStageContext, internalStageSource, internalStepReference } from './plugin-internal-stage.mjs';
@@ -924,9 +925,12 @@ export function dispatchSdkCall(args) {
   const { store, message } = args,
     previous = store.pluginParentContext,
     previousRequestMetadata = store.pluginRequestId,
-    previousMainOperation = store.pluginMainOperation;
-  // A plug-in's SDK request is its own operation, never part of a named message's main operation.
+    previousMainOperation = store.pluginMainOperation,
+    previousWrapper = store.pluginSdkWrapper;
+  // A plug-in's SDK request is its own operation, never part of a named message's main operation or of the
+  // ExecuteTransaction its caller runs in (plugin-sdk-messages.mjs).
   store.pluginMainOperation = null;
+  store.pluginSdkWrapper = null;
   // A plug-in that itself runs inside an SDK-issued pipeline (Depth 2 and deeper) keeps the depth-1 sandbox step as the
   // ParentContext of its own SDK requests; Depth still counts every level (native depth: Create/10/dN < Create/40/d1
   // < Create/30/d1 for N 3..10).
@@ -935,7 +939,7 @@ export function dispatchSdkCall(args) {
     : (args.sdkParentContext ?? message.parentContext ?? pluginInvocationSdkParent(store));
   if (sdkParent) {
     if (sdkParent.$type !== 'ExecutionContext') fail('SDK ParentContext is invalid.', 'LocalPluginInputLimit', 413);
-    store.pluginParentContext = canonicalTagParent(cloneStateData(sdkParent), store.pluginSdkTag);
+    store.pluginParentContext = asyncOriginParent(canonicalTagParent(cloneStateData(sdkParent), store.pluginSdkTag));
   }
   store.pluginRequestId = message.method === 'Execute' ? message.arguments?.[0]?.requestId : undefined;
   // Collections the caller's operation starts after a plug-in request report no Accept-Language
@@ -980,6 +984,7 @@ export function dispatchSdkCall(args) {
     store.pluginParentContext = previous;
     store.pluginRequestId = previousRequestMetadata;
     store.pluginMainOperation = previousMainOperation;
+    store.pluginSdkWrapper = previousWrapper;
   }
 }
 // The sdk-call span of one CLR RPC (tracing): it runs on the main thread inside the plugin-step span, so the record entries it
@@ -1262,13 +1267,14 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFro
           userId: profile.userId,
           request,
           parameters,
-          dispatch: (inner) =>
+          dispatch: (inner, overrides = {}) =>
             dispatchSdkCallAuthorized({
               store,
               profile,
               message: { ...message, method: 'Execute', arguments: [inner] },
               diagnostic,
               sdkFromSandbox,
+              ...overrides,
             }),
         });
         if (answer !== undefined) return answer;
@@ -2165,6 +2171,22 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
     executionMode: session ? 'pooled-fresh-instance' : 'fresh-host',
   };
 }
+/** A registered image of a row as a step receives it, with the formatted values of formatUserId. */
+export function pluginImage(store, entity, row, registration, formatUserId) {
+  if (!row) return null;
+  const { formattedValues: _, ...value } = recordToSdkEntity(store, entity, imageAttributes(row), {
+    // PreBusinessEntity names its attributes exactly, also none.
+    allColumns: !registration.exact && !registration.attributes?.length,
+    columns: registration.attributes ?? [],
+    image: true,
+  });
+  const formattedValues = pipelineFormattedValues(store, entity, value, {
+    userId: formatUserId,
+    retrieved: true,
+    currencyId: row.transactioncurrencyid,
+  });
+  return Object.keys(formattedValues).length ? { ...value, formattedValues } : value;
+}
 export function clrContext({
   runtime,
   store,
@@ -2202,6 +2224,8 @@ export function clrContext({
   const descriptor = runtime.descriptor,
     context = descriptor.context,
     parent = frame.delegatedParentContext ?? store.pluginParentContext ?? pluginInvocationSdkParent(store),
+    // An asynchronous step's SDK request has no ParentContext (asyncOriginParent).
+    chainParent = parent?.rootOrigin ? null : parent || null,
     primary = entity && !(frame.customApi && entity === 'none') ? store.resolveMapping(entity).idColumn : null;
   const contextDepth = frame.exactDepth
     ? frame.delegatedDepth
@@ -2233,21 +2257,7 @@ export function clrContext({
     frame.callerIdentity?.systemUserId ??
     context.executionUserId ??
     descriptor.serviceProfile.userId;
-  const image = (row, registration) => {
-    if (!row) return null;
-    const { formattedValues: _, ...value } = recordToSdkEntity(store, entity, imageAttributes(row), {
-      // PreBusinessEntity names its attributes exactly, also none.
-      allColumns: !registration.exact && !registration.attributes?.length,
-      columns: registration.attributes ?? [],
-      image: true,
-    });
-    const formattedValues = pipelineFormattedValues(store, entity, value, {
-      userId: formatUserId,
-      retrieved: true,
-      currencyId: row.transactioncurrencyid,
-    });
-    return Object.keys(formattedValues).length ? { ...value, formattedValues } : value;
-  };
+  const image = (row, registration) => pluginImage(store, entity, row, registration, formatUserId);
   const asynchronous = (step.contract?.mode ?? 0) === 1,
     crud = ['create', 'update', 'delete'].includes(operation),
     bulk = ['createmultiple', 'updatemultiple'].includes(operation),
@@ -2517,7 +2527,11 @@ export function clrContext({
       CorrelationId: typed('Guid', (frame.correlationId ??= parent?.values.CorrelationId?.value ?? randomUUID())),
       OperationId: typed('Guid', frame.operationId),
       OperationCreatedOn: cloneStateData(frame.createdOnWire),
-      IsInTransaction: store.pluginInTransaction === true,
+      // An ExecuteMultiple request's PreValidation runs outside the caller's transaction (sdkRootOperationParent).
+      IsInTransaction:
+        stage === 10 && parent?.ownTransaction && contextDepth === Number(parent.values.Depth) + 1
+          ? false
+          : store.pluginInTransaction === true,
       IsExecutingOffline: false,
       IsOfflinePlayback: false,
       IsolationMode: step.isolationMode ?? 2,
@@ -2528,7 +2542,7 @@ export function clrContext({
         // Native asynchronous contexts do not name their step.
         name: asynchronous ? null : step.name,
       },
-      ParentContext: parent || null,
+      ParentContext: chainParent,
       PreEntityImagesCollection: stageCollection(stage, false),
       PostEntityImagesCollection: stageCollection(stage, true),
     },
@@ -2628,7 +2642,39 @@ export function clrContext({
       (source.identity?.admin ? source.identity.id : null) ??
       context.initiatingUserId ??
       descriptor.serviceProfile.userId;
-    answer.context.ParentContext = delegatedPluginParent(source, answer.context, caller);
+    // An asynchronous job of a delegated record keeps the chain its synchronous step saw above the delegating frames
+    // (native sdkSurface: Update/40 < UpdateMultiple/40 < UpdateMultiple/30 < Update/40 < Update/30 for an SDK
+    // UpdateMultiple a PostOperation step issued).
+    // Natively those caller frames lose their Context4 image collections in the job (native and native-r2 sdkSurface:
+    // Update/40 < UpdateMultiple/40 < UpdateMultiple/30 < Update/40 [] < Update/30 []).
+    const callerChain = (node) =>
+      node?.values
+        ? {
+            $type: 'ExecutionContext',
+            values: {
+              ...node.values,
+              PreEntityImagesCollection: { $type: 'EntityImageCollectionArray', values: [] },
+              PostEntityImagesCollection: { $type: 'EntityImageCollectionArray', values: [] },
+              ParentContext: callerChain(node.values.ParentContext),
+            },
+          }
+        : null;
+    answer.context.ParentContext = delegatedPluginParent(
+      source,
+      asynchronous
+        ? { ...answer.context, ParentContext: answer.context.ParentContext ?? callerChain(frame.asyncCallerParent) }
+        : answer.context,
+      caller,
+    );
+    // A delegated record's job sees the UpsertMultiple main operation without its Targets, as the bulk frames
+    // (native bulk: Create/40 < Create/30 [] < Create/30 [tag], the last the relabelled UpsertMultiple/30).
+    if (asynchronous) answer.context.ParentContext = cloneStateData(answer.context.ParentContext);
+    if (asynchronous)
+      for (let level = answer.context.ParentContext; level?.values; level = level.values.ParentContext)
+        if (level.values.MessageName === 'UpsertMultiple' && level.values.InputParameters?.values?.Targets) {
+          const { Targets: _, ...inputs } = level.values.InputParameters.values;
+          level.values.InputParameters = { $type: 'ParameterCollection', values: inputs };
+        }
     // A single-origin *Multiple lane's parent is the single message's main operation with its image set (native crud
     // UpdateMultiple PreOperation/PostOperation: Update/30 [pre, PreBusinessEntity]).
     if (bulk && source.operation === operation.replace(/multiple$/, '') && frame.mainImages)
@@ -2647,7 +2693,7 @@ export function clrContext({
       context: bridged
         ? { ...answer.context, MessageName: operation[0].toUpperCase() + operation.slice(1) }
         : answer.context,
-      parent: asynchronous ? (frame.mainOuterParent ?? frame.asyncCallerParent ?? null) : parent,
+      parent: asynchronous ? (frame.mainOuterParent ?? frame.asyncCallerParent ?? null) : chainParent,
       userId: executionUserId,
       objectId,
       inputs: () =>
@@ -2699,7 +2745,8 @@ export function clrContext({
       ...mainParentTarget.attributes,
       ...recordToSdkEntity(store, entity, { [primary]: record[primary] }).attributes,
     };
-  if (!asynchronous && (crud || bulk) && stage !== 10) frame.mainOuterParent ??= parent ? cloneStateData(parent) : null;
+  if (!asynchronous && (crud || bulk) && stage !== 10)
+    frame.mainOuterParent ??= chainParent ? cloneStateData(chainParent) : null;
   // An asynchronous job sees the synchronous step parent chain as its own operation (plugin-sdk-parent.mjs).
   if (asynchronous)
     answer.context.ParentContext = asynchronousParentChain(
@@ -2719,11 +2766,14 @@ export function clrContext({
         UserAzureActiveDirectoryObjectId: typed('Guid', objectId(executionUserId)),
       },
     };
+  // A new root operation of an earlier request (asyncOriginParent, sdkRootOperationParent) does not show that request's
+  // root changes (native asyncLoop and bulkRequests: their Create/30 roots have no ChangedEntityTypes).
+  if (parent?.rootOrigin) frame.ownRoot = true;
   answer.context.ParentContext = observedParentChain(
     answer.context.ParentContext,
     answer.context,
     objectId,
-    store.pluginRequestRoots,
+    frame.ownRoot ? undefined : store.pluginRequestRoots,
   );
   formatPipelineTargets(store, {
     entity,
