@@ -483,7 +483,7 @@ export function createFlowTriggerRunner({
             name: item.key,
             regardingobjecttypecode: event.entity,
             primaryentitytype: event.entity,
-            correlationid: chain.id,
+            correlationid: event.correlationId ?? chain.id,
             depth: chain.depth + 1,
           },
           key: item.key,

@@ -43,7 +43,7 @@ import {
   pluginInvocationParent,
 } from './plugin-execution-lifetime.mjs';
 import { asyncMultiplePluginParent, recordRequestRootChange, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
-import { recordPluginTrace } from './plugin-trace.mjs';
+import { qualifiedTypeName, recordPluginTrace } from './plugin-trace.mjs';
 import { delegatedPluginParent, upsertSourceOperation } from './plugin-delegation.mjs';
 import { populatePluginSystemOutputs } from './plugin-response.mjs';
 import { notePluginFault, pluginFailure } from './plugin-fault.mjs';
@@ -59,6 +59,7 @@ import { ownershipOf } from './dataverse-security.mjs';
 import {
   recordStepConstructorSettings,
   copyStepConstructorSettings,
+  runtimeConstructorSettings,
   stepConstructorSettings,
 } from './plugin-constructor-configuration.mjs';
 
@@ -1033,9 +1034,16 @@ function handlerExecutionContext({
 
 // plugintracelog: organization.plugintracelogsetting 1 keeps the rows of failed executions, 2 keeps every execution, 0 keeps none.
 // Trace facts survive business rollback independently, as PluginTraceLog does natively.
-function writeTraceLog(store, { item, entity, operation, depth, asyncExecution, traces, started, startedAt, error }) {
+function writeTraceLog(
+  store,
+  { item, entity, operation, depth, asyncExecution, traces, started, startedAt, error, requestId, correlationId },
+) {
   recordPluginTrace(store, {
-    typeName: item.typeName,
+    typeName: qualifiedTypeName(store, {
+      typeName: item.typeName,
+      assemblyId: item.assemblyId,
+      assemblyName: item.assemblyName,
+    }),
     stepId: item.id,
     messageName: item.customApi?.name ?? messageNameOf(operation),
     entity,
@@ -1045,7 +1053,20 @@ function writeTraceLog(store, { item, entity, operation, depth, asyncExecution, 
     started,
     startedAt,
     error,
+    requestId,
+    correlationId,
+    ...stepConstructorTrace(store, item),
   });
+}
+
+// The step's constructor text as its trace row records it: unsecure configuration and the secure configuration when registered.
+function stepConstructorTrace(store, item) {
+  try {
+    const settings = runtimeConstructorSettings(store, item.id, stepConstructorSettings(item), {});
+    return { configuration: settings.unsecureConfiguration, secureConfiguration: settings.secureConfiguration };
+  } catch {
+    return {};
+  }
 }
 
 export function pluginCatalogue({
@@ -1916,6 +1937,8 @@ export function runPluginPhase({
           started,
           startedAt,
           error,
+          requestId: executionFrames.get(record)?.requestId,
+          correlationId: executionFrames.get(record)?.correlationId,
         });
       try {
         if (item.mode === 'clr') {

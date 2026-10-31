@@ -994,9 +994,10 @@ test(
       f.store.tableRows('child').map((row) => row.title),
       ['SDK main input', 'Main input'],
     );
+    // native traceFaults: plugintracelog typename is assembly-qualified ('<type>, <assembly>, Version=...'), not the bare type name
     const mainTraces = f.store
       .tableRows('plugintracelog')
-      .filter((trace) => trace.typename === 'Invented.OriginalMain');
+      .filter((trace) => trace.typename?.startsWith('Invented.OriginalMain, OriginalMain, Version='));
     assert.equal(mainTraces.length, 3);
     assert.match(mainTraces.at(-1).exceptiondetails, /Original main refused/);
     assert.ok(
@@ -1022,7 +1023,7 @@ test(
     await f.call('Refreshed runtime');
     const refreshed = f.store
       .tableRows('plugintracelog')
-      .filter((trace) => trace.typename === 'Invented.OriginalMain')
+      .filter((trace) => trace.typename?.startsWith('Invented.OriginalMain, OriginalMain, Version='))
       .at(-1);
     assert.equal(refreshed.pluginstepid.id, replacement.context.mainOperationStepId);
     const beforeDelete = f.diagnostics.filter((entry) => entry.code === 'PLUGIN_CLR_HOST_STOPPED').length;

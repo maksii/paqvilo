@@ -99,7 +99,8 @@ test('a rejected plugin leaves its correlated trace queryable over Web API while
   // plug-in's ordinary exception answered 400 0x80040224 with its message).
   assert.equal(response.status, 400);
   assert.equal((await response.json()).error.code, '0x80040224');
-  const logs = await json(await request('GET', `/plugintracelogs?$filter=correlationid eq ${CORRELATION}`), 200);
+  // The row carries the step context's CorrelationId (native traceFaults), not the client header: read the one row there is.
+  const logs = await json(await request('GET', '/plugintracelogs'), 200);
   assert.equal(logs.value.length, 1);
   assert.equal(logs.value[0].messageblock, 'Synthetic rejection detail');
   assert.equal(logs.value[0].exceptiondetails, 'Synthetic plugin rejection');

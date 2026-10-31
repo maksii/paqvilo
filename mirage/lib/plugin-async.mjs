@@ -100,9 +100,12 @@ function jobColumns(store, item, event, chain) {
     owningextensionid: { id: item.id, logical_name: 'sdkmessageprocessingstep', name: item.name },
     regardingobjectid: recordId ? { id: recordId, logical_name: event.entity } : null,
     regardingobjecttypecode: event.entity,
-    primaryentitytype: event.entity,
+    // Native: all 53 plug-in and web hook job rows have a null primaryentitytype.
+    primaryentitytype: null,
     messagename: event.customApi?.name ?? messageNameOf(event.bridgedMessage ?? event.operation),
-    correlationid: chain.id,
+    // The CorrelationId the job's execution context reports (jobExecutionFrame); chain.id only for a frameless synthetic event.
+    correlationid: event.frame?.correlationId ?? event.correlationId ?? chain.id,
+    executiontimespan: 0,
     depth: event.frame?.operationDepth ?? chain.depth + 1,
     // Created when its operation's PostOperation began (data.mjs operationMark).
     ...(Number.isFinite(event.operationMark?.at) ? { createdon: wholeSecond(event.operationMark.at) } : {}),
@@ -128,8 +131,11 @@ function jobExecutionFrame(store, id, event) {
       501,
       'LocalPluginAsyncContextUnavailable',
     );
+  // The row's correlation (jobColumns) when the event frame has none, so the context and the row agree.
+  const correlationId = event.frame?.correlationId ?? rows[index].correlationid ?? null;
   return {
     ...structuredClone(event.frame ?? {}),
+    ...(correlationId == null ? {} : { correlationId }),
     operationId: id,
     createdOn,
     // Keep the saved UTC stamp internally; native async contexts expose its
@@ -142,7 +148,16 @@ function jobExecutionFrame(store, id, event) {
 }
 // Claims a Ready job (Locked, In Progress) and returns its finish/cancel; null when the job left Ready (a cancel) or is gone.
 function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = false } = {}) {
-  const now = () => new Date(clockFunction(store.clock ?? systemClock)()).toISOString();
+  const clockMs = () => clockFunction(store.clock ?? systemClock)();
+  const now = () => new Date(clockMs()).toISOString();
+  // The start of this attempt (store clock, ms). retry, finish, cancel and stepMissing add its elapsed seconds to
+  // executiontimespan, accumulated across retries (each retry claims again); a removed row takes no time.
+  let startedMs = null;
+  const addExecution = (row) => {
+    if (startedMs === null) return;
+    const nowMs = clockMs();
+    row.executiontimespan = Math.round(((row.executiontimespan ?? 0) + (nowMs - startedMs) / 1000) * 1000) / 1000;
+  };
   const { rows, index } = liveJob(store, id);
   if (index < 0 || rows[index].statecode !== 0) return null;
   let attempt;
@@ -171,10 +186,11 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
     attempt = previous + 1;
     rows[index].data = JSON.stringify({ ...payload, pluginAttempts: attempt });
   }
+  startedMs = clockMs();
   Object.assign(rows[index], {
     statecode: 2,
     statuscode: 20,
-    startedon: now(),
+    startedon: new Date(startedMs).toISOString(),
     ...(pluginAttempt ? { retrycount: attempt - 1 } : {}),
   });
   const autodelete =
@@ -194,6 +210,7 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
       if (index < 0) return false;
       const row = rows[index],
         payload = JSON.parse(row.data);
+      addExecution(row);
       row.data = JSON.stringify({
         ...payload,
         pluginLastFailure: jobFailure(item, error),
@@ -217,6 +234,7 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
         store.removeRow('asyncoperation', rows, index);
         return;
       }
+      addExecution(rows[index]);
       Object.assign(
         rows[index],
         error
@@ -237,6 +255,7 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
         store.removeRow('asyncoperation', rows, index);
         return;
       }
+      addExecution(rows[index]);
       Object.assign(rows[index], {
         statecode: 3,
         statuscode: 32,
@@ -253,6 +272,7 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
         store.removeRow('asyncoperation', rows, index);
         return;
       }
+      addExecution(rows[index]);
       Object.assign(rows[index], {
         statecode: 3,
         statuscode: 31,
@@ -670,15 +690,12 @@ export function createAsyncPluginRunner({
                     }
                   : {}),
               };
-        // A root event (no chain) starts its own chain, so the rows of one bulk commit never share one chain budget.
+        // A root event (no chain) starts its own chain.
         const chain = event.chain ?? { id: (store.ids ?? systemIds).uuid(), depth: 0 },
           count = (counts.get(chain.id) ?? runs.get(chain.id) ?? 0) + 1;
-        // Native asyncLoop: a chain of asynchronous hops runs to Depth 12 (the depth fault stops the next level); the
-        // per-chain run budget is a local guard.
-        if (
-          chain.depth >= Math.min(limits.maxDepth ?? PLUGIN_MAX_DEPTH, PLUGIN_MAX_DEPTH) ||
-          count > Math.min(limits.maxChainRuns ?? 100, 1000)
-        ) {
+        // Native asyncLoop: a chain of asynchronous hops runs to Depth 12 (the depth fault stops the next level); there is
+        // no per-chain run budget.
+        if (chain.depth >= Math.min(limits.maxDepth ?? PLUGIN_MAX_DEPTH, PLUGIN_MAX_DEPTH)) {
           notes.push({ code: 'PLUGIN_ASYNC_LIMIT', stepId: item.id, chainId: chain.id });
           continue;
         }
