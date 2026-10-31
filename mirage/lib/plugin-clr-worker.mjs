@@ -1,4 +1,5 @@
 import { clrOutputFailure, decodeClrMessage } from './plugin-clr-protocol.mjs';
+import { SANDBOX_WORKER_CRASH } from './plugin-fault.mjs';
 import { workerData } from 'node:worker_threads';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
@@ -37,7 +38,8 @@ child.on('exit', (code) => {
     finish({
       kind: 'failure',
       code: 'LocalPluginHostExited',
-      message: 'CLR host stopped without a result (' + code + ').',
+      message: SANDBOX_WORKER_CRASH.message,
+      hostExitCode: code,
     });
 });
 child.stderr.on('data', (chunk) => {

@@ -2,6 +2,13 @@
 // core plug-in code (exported-plugins.mjs) can load it without pulling in the Dataverse modules.
 import { DataError } from './data-error.mjs';
 
+// Microsoft Learn, Web service error codes: 0x8004418d SandboxWorkerNotAvailable, a sandbox worker process that crashed.
+export const SANDBOX_WORKER_CRASH = {
+  code: '0x8004418d',
+  message:
+    'The plug-in execution failed because the Sandbox Worker process crashed. This is typically due to an error in the plug-in code. Please refer to this document: https://go.microsoft.com/fwlink/?linkid=2189390',
+};
+
 // Same URL as dataverse-odata.mjs cdsHelpLink (kept here so this module has no Dataverse import).
 const cdsHelpLink = (code) =>
   `http://go.microsoft.com/fwlink/?LinkID=398563&error=Microsoft.Crm.CrmException%3a${code.slice(2)}&client=platform`;

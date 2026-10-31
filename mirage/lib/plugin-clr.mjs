@@ -8,7 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { Worker, MessageChannel, receiveMessageOnPort } from 'node:worker_threads';
 import { DataError } from './data-error.mjs';
-import { pluginFailure } from './plugin-fault.mjs';
+import { pluginFailure, SANDBOX_WORKER_CRASH } from './plugin-fault.mjs';
 import { bypassStepIds as parseBypassStepIds } from './plugin-bypass.mjs';
 import { pluginInvocationDepth, pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
 import {
@@ -1980,6 +1980,10 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
             ?.event('telemetry', { level: String(message.level ?? ''), message: message.message });
         } else if (message.kind === 'failure') {
           if (message.code === 'LocalPluginTimeout') throw timedOut();
+          if (message.code === 'LocalPluginHostExited')
+            throw new DataError(SANDBOX_WORKER_CRASH.message, 400, 'LocalPluginHostExited', {
+              innerCode: SANDBOX_WORKER_CRASH.code,
+            });
           const details = {
             sourceException: {
               type: message.exceptionType ?? null,

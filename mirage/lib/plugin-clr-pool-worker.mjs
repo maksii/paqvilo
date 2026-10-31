@@ -1,4 +1,5 @@
 import { clrOutputFailure, decodeClrMessage } from './plugin-clr-protocol.mjs';
+import { SANDBOX_WORKER_CRASH } from './plugin-fault.mjs';
 // Explicit opt-in host reuse. One invocation and one synchronous SDK callback
 // may be outstanding; unsolicited or stale protocol output closes the host.
 import { workerData } from 'node:worker_threads';
@@ -35,7 +36,12 @@ child.on('error', () =>
   stop({ kind: 'failure', code: 'LocalPluginHostUnavailable', message: 'Owned pooled CLR host could not start.' }),
 );
 child.on('exit', (code) =>
-  stop({ kind: 'failure', code: 'LocalPluginHostExited', message: 'Owned pooled CLR host exited (' + code + ').' }),
+  stop({
+    kind: 'failure',
+    code: 'LocalPluginHostExited',
+    message: SANDBOX_WORKER_CRASH.message,
+    hostExitCode: code,
+  }),
 );
 child.stderr.on('data', (chunk) => {
   stderr += chunk.length;
