@@ -1845,6 +1845,22 @@
       "evidence": "The handler records every message into a temporary test-page array solely to assert native modal postback communication. It never authorizes an action, inserts markup or executes received data. The actual entity-grid runtime message handler separately checks event.origin === location.origin and data === Success before refreshing grids.",
       "verification": "mirage/test-browser/solution-form.test.mjs: passive message assertion; mirage/lib/entity-grid-compat.js: actual modal completion origin gate",
       "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/115"
+    },
+    {
+      "number": 360,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/test/plugin-uploaded-assembly.test.mjs",
+        "start_line": 77,
+        "end_line": 77,
+        "start_column": 13,
+        "end_column": 66
+      },
+      "disposition": "false-positive",
+      "evidence": "Test-only. The test compiles invented plug-in assemblies with csc into its own temporary directory and uploads those bytes as pluginassembly content to the Mirage Web API it started on loopback, to prove uploaded plug-in bytes run (user decision C08). The request origin is the local test server; no repository, user or system file reaches a remote origin.",
+      "verification": "mirage/test/plugin-uploaded-assembly.test.mjs: call() targets the started startDataverseApi origin on 127.0.0.1; inputs are compileClr outputs of the test sources",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/360"
     }
   ],
   "followUpReview": {
