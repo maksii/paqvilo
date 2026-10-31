@@ -1,4 +1,4 @@
-// @test-kind unproven: local model of the SDK service on record hooks (depth cap 16 assumed; native corpus only showed a Depth 10 chain succeeding)
+// @test-kind unproven: local model of the SDK service on record hooks (depth cap 12: native depth39 and asyncLoop (two captures each): chains run to Depth 12 and the next level fails 0x80044182)
 // The SDK IOrganizationService on the organization record pipeline: synchronous rule hooks run inline, an asynchronous
 // hook remainder finishes after the synchronous call and reports SDK_DEFERRED_EFFECT on failure, and without an
 // organization the service says it writes the store directly.
@@ -91,10 +91,10 @@ test('record hooks preserve nested JavaScript main depth and caught SDK write po
     store.transact(() => sdk.executeMessageSync('x_Hooked', null, { $type: 'ParameterCollection', values: {} })),
     { code: 'LocalPluginDepth' },
   );
-  // The nested depth cap is 16 (native corpus: a nested Create chain reached Depth 10 and succeeded).
+  // The nested depth cap is 12 (native depth39 and asyncLoop (two captures each): chains run to Depth 12 and the next level fails 0x80044182).
   assert.deepEqual(
     depths,
-    Array.from({ length: 16 }, (_, i) => i + 1),
+    Array.from({ length: 12 }, (_, i) => i + 1),
   );
   assert.deepEqual(hookDepths, [0, ...depths]);
   mode = 'reject';

@@ -15,7 +15,7 @@ import {
 } from './committed-work.mjs';
 import { clockFunction, systemClock, systemIds } from './runtime-clock.mjs';
 import { createRequestContext, runWithRequest } from './request-context.mjs';
-import { recordToSdkEntity } from './plugin-clr.mjs';
+import { PLUGIN_MAX_DEPTH, recordToSdkEntity } from './plugin-clr.mjs';
 import { multipleMessage } from './plugin-single-multiple.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
 import { DataError } from './data-error.mjs';
@@ -50,11 +50,13 @@ const ISV_ABORTED = 0x80040265 | 0;
 const ORGANIZATION_SERVICE_FAULT = 'System.ServiceModel.FaultException`1[Microsoft.Xrm.Sdk.OrganizationServiceFault]';
 /** The failure columns of a plug-in job. Native asyncRetry: every plug-in exception (Retry, coded, plain) ends with
  * errorcode 0x80040265 (the authored code is not kept), the authored text as friendlymessage and the plug-in trace block
- * as message. Other local failures keep their own code and text. */
+ * as message; a platform fault the plug-in let through keeps its own code (native asyncLoop: 0x80044182). Local
+ * failures outside a plug-in run keep their own code and text. */
 function jobFailure(item, error, plugin = true) {
   const text = String(error?.message ?? error),
-    code = error?.details?.innerCode;
-  if (!plugin || !['0x80040265', '0x80040224'].includes(code))
+    code = error?.details?.innerCode,
+    isv = ['0x80040265', '0x80040224'].includes(code);
+  if (!plugin || !(isv || error?.pluginTraces))
     return { message: text, friendlymessage: text, errorcode: errorNumber(error) };
   const type = item?.typeName ?? '',
     assembly = item?.assemblyName ?? (type.includes('.') ? type.slice(0, type.lastIndexOf('.')) : type),
@@ -64,12 +66,12 @@ function jobFailure(item, error, plugin = true) {
     code === '0x80040224'
       ? `Exception type: Microsoft.Crm.CrmException\r\nMessage: ${text}\r\n-- End stack trace --\r\n\r\n`
       : `${ORGANIZATION_SERVICE_FAULT}: ${text}`;
+  // Native: without trace lines the block between the step and the error is empty (asyncLoop).
+  const block = lines.length ? `\t\r\n\t${lines.join('\r\n\t')}\r\n\t\r\n` : '';
   return {
-    message:
-      `Plugin Trace:\r\n\r\n[${assembly}: ${type}]\r\n[${item?.id}: ${item?.name}]\r\n\r\n\t\r\n\t` +
-      `${lines.join('\r\n\t')}\r\n\t\r\n\r\n\r\nError Message:\r\n\r\n${failure}`,
+    message: `Plugin Trace:\r\n\r\n[${assembly}: ${type}]\r\n[${item?.id}: ${item?.name}]\r\n\r\n${block}\r\n\r\nError Message:\r\n\r\n${failure}`,
     friendlymessage: text,
-    errorcode: ISV_ABORTED,
+    errorcode: isv ? ISV_ABORTED : errorNumber(error),
   };
 }
 
@@ -228,7 +230,7 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
       );
     },
     // A web hook the simulator cannot deliver in any form is Canceled (statuscode 32), with the message as its reason.
-    cancel(message) {
+    cancel(message, friendlymessage = message) {
       const { rows, index } = live();
       if (index < 0) return;
       if (!systemJobs()) {
@@ -240,7 +242,24 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
         statuscode: 32,
         completedon: now(),
         message,
-        friendlymessage: message,
+        friendlymessage,
+      });
+    },
+    // Native asyncStepDeleted (two captures): a job whose step was deleted after it was queued fails 0x8004418b.
+    stepMissing() {
+      const { rows, index } = live();
+      if (index < 0) return;
+      if (!systemJobs()) {
+        store.removeRow('asyncoperation', rows, index);
+        return;
+      }
+      Object.assign(rows[index], {
+        statecode: 3,
+        statuscode: 31,
+        completedon: now(),
+        message: 'Could not find plugin step description.',
+        friendlymessage: null,
+        errorcode: 0x8004418b | 0,
       });
     },
   };
@@ -274,13 +293,17 @@ export function createAsyncPluginRunner({
   const itemOf = (id) => items().find((item) => sameId(item.id, id)) ?? null;
   // The durable event is a snapshot; execution choices remain local/current.
   // This is a simulator admission contract, not a native queue snapshot policy.
-  const skippedRegistration = (item, event, kind) => {
+  const skippedRegistration = (item, event, kind, jobId) => {
     const skip = (message, code) => {
       if (code) diagnostic({ code, severity: 'warning', stepId: item.id, message });
       return message;
     };
-    if (!item.enabled || item.mode === 'disabled')
-      return skip('Simulator: this asynchronous step is disabled; nothing was executed.', 'PLUGIN_STEP_DISABLED');
+    // Native asyncStepDisabled: a step disabled before its queued job started cancels the job with no message and the
+    // platform's skip notice as friendly message.
+    if (!item.enabled || item.mode === 'disabled') {
+      skip('Simulator: this asynchronous step is disabled; nothing was executed.', 'PLUGIN_STEP_DISABLED');
+      return [null, `Skipping Async Operation '${jobId}' Sdk processing step '${item.id}' is in disabled state`];
+    }
     if (item.mode === 'placeholder')
       return skip(
         'Simulator: this asynchronous step has no local handler; nothing was executed.',
@@ -321,13 +344,13 @@ export function createAsyncPluginRunner({
       });
       if (!job) return;
       try {
-        if (!item)
-          throw Object.assign(new Error('The asynchronous step registration is no longer available.'), {
-            code: 'LocalPluginAsyncUnavailable',
-          });
-        const skipped = skippedRegistration(item, event, 'webhook');
+        if (!item) {
+          await store.transact(() => job.stepMissing());
+          return;
+        }
+        const skipped = skippedRegistration(item, event, 'webhook', id);
         if (skipped) {
-          await store.transact(() => job.cancel(skipped));
+          await store.transact(() => job.cancel(...[skipped].flat()));
           return;
         }
         if (!webhooks) {
@@ -409,13 +432,13 @@ export function createAsyncPluginRunner({
         store.pluginParentContext = null;
         store.pluginSdkTag = event.frame?.requestTag;
         try {
-          if (!item)
-            throw Object.assign(new Error('The asynchronous step registration is no longer available.'), {
-              code: 'LocalPluginAsyncUnavailable',
-            });
-          const skipped = skippedRegistration(item, event, 'plugin');
+          if (!item) {
+            job.stepMissing();
+            return;
+          }
+          const skipped = skippedRegistration(item, event, 'plugin', id);
           if (skipped) {
-            job.cancel(skipped);
+            job.cancel(...[skipped].flat());
             return;
           }
           let executed = false;
@@ -646,7 +669,12 @@ export function createAsyncPluginRunner({
         // A root event (no chain) starts its own chain, so the rows of one bulk commit never share one chain budget.
         const chain = event.chain ?? { id: (store.ids ?? systemIds).uuid(), depth: 0 },
           count = (counts.get(chain.id) ?? runs.get(chain.id) ?? 0) + 1;
-        if (chain.depth >= Math.min(limits.maxDepth ?? 8, 16) || count > Math.min(limits.maxChainRuns ?? 100, 1000)) {
+        // Native asyncLoop: a chain of asynchronous hops runs to Depth 12 (the depth fault stops the next level); the
+        // per-chain run budget is a local guard.
+        if (
+          chain.depth >= Math.min(limits.maxDepth ?? PLUGIN_MAX_DEPTH, PLUGIN_MAX_DEPTH) ||
+          count > Math.min(limits.maxChainRuns ?? 100, 1000)
+        ) {
           notes.push({ code: 'PLUGIN_ASYNC_LIMIT', stepId: item.id, chainId: chain.id });
           continue;
         }

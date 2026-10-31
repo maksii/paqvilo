@@ -1,4 +1,4 @@
-// @test-kind unproven: local model of custom API stages, bypass, Power Fx fencing and depth (cap 16 assumed; native corpus only showed Depth 10 succeeding)
+// @test-kind unproven: local model of custom API stages, bypass, Power Fx fencing and depth (cap 12: native depth39 and asyncLoop (two captures each): chains run to Depth 12 and the next level fails 0x80044182)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -849,8 +849,8 @@ test('synchronous SDK execution refuses an async-only main handler and fences it
   assert.equal(f.store.tableRows('child').length, 0);
 });
 
-// The shared cap is 16 levels (native corpus: a nested Create chain reached Depth 10 and succeeded).
-test('recursive JavaScript custom API main operations share the sixteen-level plugin depth limit', async (t) => {
+// The shared cap is 12 levels (native depth39 and asyncLoop (two captures each): chains run to Depth 12 and the next level fails 0x80044182).
+test('recursive JavaScript custom API main operations share the twelve-level plugin depth limit', async (t) => {
   let calls = 0;
   const f = await fixture(t, {
     stages: [],
@@ -874,7 +874,7 @@ test('recursive JavaScript custom API main operations share the sixteen-level pl
     },
   });
   await assert.rejects(f.call(), (error) => error.code === 'LocalPluginDepth');
-  assert.equal(calls, 16);
+  assert.equal(calls, 12);
 });
 
 test('overlapping asynchronous main operations on separate organizations keep independent invocation depths', async (t) => {

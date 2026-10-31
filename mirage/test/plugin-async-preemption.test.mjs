@@ -7,6 +7,7 @@ import { DataStore, emptyState } from '../lib/data.mjs';
 import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
+import { localOrganizationService } from '../lib/local-organization-service.mjs';
 
 const id = (n) => `40000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const ENDPOINT = id(1);
@@ -142,4 +143,62 @@ test('a configured asynchronous start delay keeps jobs Ready until due, so a del
   await scheduler.advance(2000);
   await backend.asyncPluginRunner.drain();
   assert.deepEqual(ran, ['plugin Delete']);
+});
+
+// @test-kind parity: native asyncLoop (two captures): an asynchronous Create step creating another row runs jobs at Depth 1 to 12; the Depth 12 job's create would start Depth 13 and fails it with 0x80044182
+test('an asynchronous create loop stops at Depth 12 with the infinite-loop fault', async (t) => {
+  const state = emptyState();
+  state.mappings.x_item = {
+    logicalName: 'x_item',
+    entitySet: 'x_items',
+    idColumn: 'x_itemid',
+    fields: { x_name: { dataverseType: 'nvarchar' } },
+  };
+  state.tables.x_item = [];
+  let service;
+  const handlers = new Map([
+    [
+      'Invented.Loop',
+      () => {
+        service.create('x_item', { x_name: 'next' });
+      },
+    ],
+    ['Invented.Pre', () => {}],
+  ]);
+  const clock = fixedClock(),
+    store = new DataStore({ state, clock }),
+    scheduler = createScheduler({ clock, manual: true }),
+    items = pluginCatalogue({
+      plugins: {
+        steps: [
+          step(1, 'Create', { typeName: 'Invented.Loop', assemblyId: 'invented' }),
+          step(2, 'Create', { typeName: 'Invented.Pre', assemblyId: 'invented', stage: 20, mode: 0 }),
+        ],
+      },
+      handlers,
+    });
+  const backend = await createOrganizationBackend({ store, items: () => items, handlers, scheduler });
+  t.after(async () => {
+    await backend.close();
+    store.close();
+  });
+  service = localOrganizationService(store, {
+    userId: '40000000-0000-4000-8000-000000000099',
+    evidence: 'Invented loop caller',
+    grants: [{ entity: 'x_item', operations: ['read', 'create'] }],
+  });
+  await store.create('x_item', { x_name: 'first' }, admin);
+  for (let turn = 0; turn < 20; turn++) {
+    await scheduler.runDue();
+    await backend.asyncPluginRunner.drain();
+  }
+  const jobs = store.tableRows('asyncoperation').toSorted((a, b) => a.depth - b.depth);
+  assert.deepEqual(
+    jobs.map((job) => job.depth),
+    Array.from({ length: 12 }, (_, i) => i + 1),
+  );
+  assert.ok(jobs.slice(0, 11).every((job) => job.statuscode === 30));
+  assert.deepEqual([jobs[11].statecode, jobs[11].statuscode, jobs[11].errorcode], [3, 31, 0x80044182 | 0]);
+  assert.match(jobs[11].friendlymessage, /included an infinite loop/);
+  assert.equal(store.tableRows('x_item').length, 12);
 });

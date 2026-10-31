@@ -59,13 +59,18 @@ const canon = (id) =>
     .toLowerCase();
 const hostSource = fileURLToPath(new URL('./plugin-clr-host.cs', import.meta.url));
 let executionDepth = 0;
-// The nested plug-in Depth cap. Native evidence: a synchronous Create chain reached Depth 10 and the request
-// succeeded (the documented on-premises default of 8 does not apply online); the native limit itself is not observed.
-export const PLUGIN_MAX_DEPTH = 16;
+// The nested plug-in Depth cap. Native depth39 and asyncLoop (two captures each): synchronous and asynchronous Create
+// chains run to Depth 12, and the operation that would start Depth 13 fails with 0x80044182 (the whole synchronous
+// chain rolls back).
+export const PLUGIN_MAX_DEPTH = 12;
 // An invocation's deadline includes its nested SDK calls (and their plug-ins). Native plug-in execution and the whole
 // message operation are limited to 2 minutes (Learn: Analyze plug-in performance), so a descriptor may ask up to that.
 const CLR_MAX_TIMEOUT_MS = 120_000;
-export const PLUGIN_DEPTH_MESSAGE = `Plug-in nested execution depth exceeds ${PLUGIN_MAX_DEPTH}.`;
+const PLUGIN_DEPTH_MESSAGE =
+  'This workflow job was canceled because the workflow that started it included an infinite loop. Correct the workflow logic and try again. For information about workflow logic, see Help.';
+/** The platform's infinite-loop fault for an execution past PLUGIN_MAX_DEPTH (code LocalPluginDepth for local callers). */
+export const pluginDepthFault = () =>
+  new DataError(PLUGIN_DEPTH_MESSAGE, 400, 'LocalPluginDepth', { innerCode: '0x80044182' });
 let parentStartTicks;
 function clrParentIdentity(executable) {
   if (!parentStartTicks) {
@@ -1723,7 +1728,7 @@ export function clrHostPoolStatus() {
 function executePooledClr(runtime, input, options, verified) {
   const depth = executionDepth + 1,
     key = runtime.directory + '\0' + runtime.descriptor.typeName + '\0' + depth;
-  if (depth > PLUGIN_MAX_DEPTH) fail(PLUGIN_DEPTH_MESSAGE, 'LocalPluginDepth', 400);
+  if (depth > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
   let session = pooledHosts.get(key);
   if (!session) {
     if (pooledHosts.size >= 32) {
@@ -1862,7 +1867,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
     completed = false;
   executionDepth++;
   try {
-    if (executionDepth > PLUGIN_MAX_DEPTH) fail(PLUGIN_DEPTH_MESSAGE, 'LocalPluginDepth', 400);
+    if (executionDepth > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
     while (!result) {
       let packet;
       while ((packet = receiveMessageOnPort(port1))) {
@@ -2044,7 +2049,7 @@ export function clrContext({
           frame.operationDepth ?? 0,
           parent ? Number(parent.values.Depth) + 1 : 0,
         );
-  if (contextDepth > PLUGIN_MAX_DEPTH) fail(PLUGIN_DEPTH_MESSAGE, 'LocalPluginDepth', 400);
+  if (contextDepth > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
   const preValidationParent =
     stage !== 10 &&
     (step.contract?.mode ?? 0) === 0 &&

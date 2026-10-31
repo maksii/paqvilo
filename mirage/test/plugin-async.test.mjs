@@ -68,7 +68,8 @@ test('an asynchronous job skipped by a later disabled local choice is canceled i
   await scheduler.runDue();
   assert.equal(executions, 0);
   assert.equal(store.tableRows('asyncoperation')[0].statuscode, 32);
-  assert.match(store.tableRows('asyncoperation')[0].message, /disabled/);
+  // Native asyncStepDisabled: the canceled job keeps no message and names the disabled step in its friendly message.
+  assert.match(store.tableRows('asyncoperation')[0].friendlymessage, /is in disabled state/);
 });
 // @test-kind compatibility: Learn event pipeline: asynchronous steps run after the main transaction commits and their own SDK writes persist
 test('Async source registrations execute only after commit and keep independent SDK writes after later job failure', async (t) => {

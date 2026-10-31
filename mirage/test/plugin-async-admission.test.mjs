@@ -127,7 +127,18 @@ for (const kind of ['plugin', 'webhook'])
         const [job] = f.store.tableRows('asyncoperation');
         assert.equal(job.statecode, 3);
         assert.equal(job.statuscode, expected);
-        assert.match(job.message, expected === 31 ? /no longer available/ : /nothing was executed/);
+        // Native asyncStepDisabled / asyncStepDeleted (two captures): a disabled step's job is canceled with the platform's
+        // skip notice and no message; a deleted step's job fails 0x8004418b "Could not find plugin step description.".
+        if (expected === 31) {
+          assert.equal(job.message, 'Could not find plugin step description.');
+          assert.equal(job.errorcode, 0x8004418b | 0);
+        } else if (name === 'state' || name === 'disabled local choice') {
+          assert.equal(job.message, null);
+          assert.match(
+            job.friendlymessage,
+            /^Skipping Async Operation '.+' Sdk processing step '.+' is in disabled state$/,
+          );
+        } else assert.match(job.message, /nothing was executed/);
         assert.equal(f.store.tableRows('widget')[0].title, 'Committed caller');
       });
   });

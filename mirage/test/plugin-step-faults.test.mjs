@@ -106,3 +106,34 @@ test('a plug-in trace row keeps 10240 characters and names the fault it surfaced
     'System.ServiceModel.FaultException`1[Microsoft.Xrm.Sdk.OrganizationServiceFault]: Invented coded fault',
   );
 });
+
+// @test-kind parity: native traceExceptionOnly (r2, reproduced): with plugintracelogsetting 1 only the failing step's trace row is written
+test('exception-only tracing keeps only the failing step trace row', () => {
+  const state = emptyState();
+  state.mappings.plugintracelog = {
+    logicalName: 'plugintracelog',
+    entitySet: 'plugintracelogs',
+    idColumn: 'plugintracelogid',
+  };
+  state.tables.plugintracelog = [];
+  state.tables.organization = [{ organizationid: '60000000-0000-4000-8000-000000000009', plugintracelogsetting: 1 }];
+  const store = new DataStore({ state });
+  const write = (error) =>
+    recordPluginTrace(store, {
+      typeName: 'Invented.Trace',
+      stepId: STEP,
+      messageName: 'Delete',
+      entity: 'x_item',
+      depth: 1,
+      traces: ['Invented line'],
+      started: performance.now(),
+      startedAt: new Date(0).toISOString(),
+      error,
+    });
+  write(null);
+  write(Object.assign(new Error('Invented fault'), { details: { innerCode: '0x80040265' } }));
+  assert.deepEqual(
+    store.tableRows('plugintracelog').map((row) => row.exceptiondetails),
+    ['System.ServiceModel.FaultException`1[Microsoft.Xrm.Sdk.OrganizationServiceFault]: Invented fault'],
+  );
+});

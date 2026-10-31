@@ -19,7 +19,7 @@ import {
   pluginExecutionDepth,
   recordToSdkEntity,
   PLUGIN_MAX_DEPTH,
-  PLUGIN_DEPTH_MESSAGE,
+  pluginDepthFault,
 } from './plugin-clr.mjs';
 import { sdkValueToRecord } from './local-organization-service.mjs';
 import {
@@ -1962,7 +1962,7 @@ export function runPluginPhase({
                 Number((store?.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.Depth ?? 0) + 1,
               );
           nested = true;
-          if (handlerDepth > PLUGIN_MAX_DEPTH) throw new DataError(PLUGIN_DEPTH_MESSAGE, 400, 'LocalPluginDepth');
+          if (handlerDepth > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
           executed = true;
           started = performance.now();
           startedAt = new Date((store?.clock ?? systemClock).now()).toISOString();
