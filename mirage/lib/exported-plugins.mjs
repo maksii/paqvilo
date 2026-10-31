@@ -1262,6 +1262,17 @@ export function runPluginPhase({
   }
   // Records a bulk message delegates, and a bulk message UpsertMultiple delegates, have no tag input (recorded corpus).
   if (!inheritsRequestTag && !continued) phaseFrame.inputTagConsumed = true;
+  // A request of an ExecuteTransaction a plug-in issued runs at the caller's depth and has no tag input (native
+  // bulkRequests; plugin-sdk-messages.mjs inCallerOperation).
+  const sdkWrapper = store?.pluginSdkWrapper;
+  if (sdkWrapper && !asyncExecution && !continued && !phaseFrame.delegatedParentContext && !bulkParent) {
+    phaseFrame.inputTagConsumed = true;
+    if (sdkWrapper.depth !== undefined) {
+      phaseFrame.operationDepth ??= sdkWrapper.depth;
+      phaseFrame.delegatedDepth ??= sdkWrapper.depth;
+      phaseFrame.exactDepth = true;
+    }
+  }
   // Such a record runs under the bulk message's context of the current stage and shares its request identity
   // (native bulk: Create/10 <- CreateMultiple/10, Create/20 <- CreateMultiple/20 <- CreateMultiple/30).
   if (bulkParent && !asyncExecution) {

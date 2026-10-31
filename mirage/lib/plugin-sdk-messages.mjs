@@ -8,6 +8,8 @@ import { DataError } from './data-error.mjs';
 import { organizationRecord } from './organization-context.mjs';
 import { encodeValue, envelope } from './dataverse-soap-xml.mjs';
 import { xmlEscapeAttribute } from './fetchxml-engine.mjs';
+import { sdkRootOperationParent } from './plugin-sdk-parent.mjs';
+import { systemIds } from './runtime-clock.mjs';
 
 // The organization modules load after this one: a static import would close a module cycle through plugin-clr.mjs
 // (exported-plugins.mjs and the settings registry load it while they initialize). SDK calls run long after startup.
@@ -123,6 +125,36 @@ function metadataResponse(api, name, parameters) {
   };
 }
 
+// Each request of an ExecuteMultiple a plug-in issues is a new root operation two levels below the caller, with its own
+// correlation and without the request tag or FromSandbox (native and native-r2 bulkRequests). The caller's savepoint
+// keeps its writes: rollback follows the caller until the native fault matrix is captured.
+function asRootOperation(store, run) {
+  const previous = store.pluginParentContext,
+    previousTag = store.pluginSdkTag;
+  store.pluginParentContext = sdkRootOperationParent(previous, (store.ids ?? systemIds).uuid()) ?? previous;
+  store.pluginSdkTag = undefined;
+  try {
+    return run();
+  } finally {
+    store.pluginParentContext = previous;
+    store.pluginSdkTag = previousTag;
+  }
+}
+// Each request of an ExecuteTransaction a plug-in issues runs at the caller's depth under the caller's chain, in its
+// transaction and correlation, with the request tag only in its shared variables (native and native-r2 bulkRequests:
+// Create/10/d1 < Update/40/d1 < Update/30/d1, InputParameters [Target]). exported-plugins.mjs runPluginPhase reads the
+// wrapper; a nested SDK call clears it (plugin-clr.mjs dispatchSdkCall).
+function inCallerOperation(store, run) {
+  const previous = store.pluginSdkWrapper,
+    depth = store.pluginParentContext?.values?.Depth;
+  store.pluginSdkWrapper = { depth: depth === undefined ? undefined : Number(depth) };
+  try {
+    return run();
+  } finally {
+    store.pluginSdkWrapper = previous;
+  }
+}
+
 /**
  * Answers one Execute request whose message plugin-clr.mjs does not route itself, or returns undefined when the local
  * organization has no synchronous answer for it. userId is the service's user; dispatch(request) executes one nested
@@ -163,7 +195,7 @@ export function executeSdkOrganizationMessage({ store, userId, request, paramete
         try {
           if (inner.requestName === 'ExecuteMultiple')
             invalid('An ExecuteMultiple request cannot contain another ExecuteMultiple request.');
-          answer = dispatch(inner);
+          answer = asRootOperation(store, () => dispatch(inner, { sdkFromSandbox: false }));
         } catch (cause) {
           fault = sdkFault(cause);
           if (!fault) throw cause;
@@ -204,7 +236,7 @@ export function executeSdkOrganizationMessage({ store, userId, request, paramete
           if (['ExecuteMultiple', 'ExecuteTransaction'].includes(inner.requestName))
             invalid('An ExecuteTransaction cannot contain another ExecuteMultiple or ExecuteTransaction.');
           try {
-            return dispatch(inner);
+            return inCallerOperation(store, () => dispatch(inner, { sdkFromSandbox: false }));
           } catch (cause) {
             if (cause && typeof cause === 'object') cause.faultedRequestIndex = index;
             throw cause;

@@ -86,6 +86,13 @@ messages it answers WhoAmI (the service's user), RetrieveVersion, ExecuteMultipl
 (per-item faults, `ContinueOnError`, `ReturnResponses`), ExecuteTransaction
 (all or nothing, `ExecuteTransactionFault.FaultedRequestIndex`) and the metadata
 reads, which the official serializer reads from the SOAP service's answer.
+ExecuteTransaction runs its requests at the caller's depth under the caller's
+chain, transaction and correlation, with the request tag only in their shared
+variables; ExecuteMultiple runs each request as a new root operation two levels
+below the caller (no ParentContext, outside the transaction at PreValidation, a
+new CorrelationId per request, the caller's RequestId, no tag); neither passes
+`FromSandbox` (recorded native bulkRequests). Their writes stay in the caller's
+savepoint.
 Update and Delete honour `ConcurrencyBehavior` (`0x80060882` for a stale
 `RowVersion`, `0x80060883` without one); Create carries `RelatedEntities` as
 a deep insert and Retrieve answers `RelatedEntitiesQuery`. A missing row faults `0x80040217` ("Entity '<table>' With Id = <id> Does Not

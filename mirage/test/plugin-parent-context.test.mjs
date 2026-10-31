@@ -881,3 +881,80 @@ test('an asynchronous step request starts a new root operation in the originatin
   assert.equal(nested('create/10').IsInTransaction, false);
   assert.equal(nested('create/20').IsInTransaction, true);
 });
+
+// @test-kind parity: native and native-r2 bulkRequests (an Update/40 step's ExecuteTransaction and ExecuteMultiple of two Creates each)
+// ExecuteTransaction runs its requests at the caller's depth under the caller's chain, in its transaction and
+// correlation, InputParameters [Target] with the tag only in SharedVariables; ExecuteMultiple runs each request as a
+// new root operation at the caller's Depth + 2, outside the transaction at PreValidation, with a new CorrelationId per
+// request, the caller's RequestId and no tag.
+test('ExecuteTransaction and ExecuteMultiple from a plug-in run their requests in their native frames', () => {
+  const store = storeOf();
+  const collection = (table, ...titles) => ({
+    $type: 'Collection',
+    type: 'Microsoft.Xrm.Sdk.OrganizationRequestCollection',
+    values: titles.map((title) => ({
+      $type: 'OrganizationRequest',
+      requestName: 'Create',
+      parameters: {
+        $type: 'ParameterCollection',
+        values: { Target: { $type: 'Entity', logicalName: table, attributes: { title } } },
+      },
+    })),
+  });
+  const settings = {
+    $type: 'Object',
+    type: 'Microsoft.Xrm.Sdk.ExecuteMultipleSettings',
+    members: { ContinueOnError: false, ReturnResponses: true },
+  };
+  const seen = probe(store, (at) => ['update/40', 'create/10', 'create/20'].includes(at), {
+    act: (answer, at) => {
+      if (at !== 'update/40' || answer.context.Depth !== 1) return;
+      sdk(
+        store,
+        answer,
+        'Execute',
+        executeRequest('ExecuteTransaction', { Requests: collection('widget', 'One', 'Two'), ReturnResponses: true }),
+      );
+      sdk(
+        store,
+        answer,
+        'Execute',
+        executeRequest('ExecuteMultiple', { Requests: collection('gizmo', 'Three', 'Four'), Settings: settings }),
+      );
+    },
+  });
+  store.pluginSdkTag = tag;
+  try {
+    store.updateRecord('widget', id, { title: 'Renamed' }, { admin: true, systemUserId: caller });
+  } finally {
+    store.pluginSdkTag = undefined;
+  }
+  const update = seen.find((entry) => entry.label === 'update/40').context;
+  const of = (table, at) => seen.filter((entry) => entry.label === at && entry.context.PrimaryEntityName === table);
+  for (const { context, inputs, shared } of of('widget', 'create/10')) {
+    assert.deepEqual(chain(context).map(label), ['Create/10/d1', 'Update/40/d1', 'Update/30/d1']);
+    assert.equal(context.IsInTransaction, true);
+    assert.equal(context.CorrelationId.value, update.CorrelationId.value);
+    assert.deepEqual(Object.keys(inputs), ['Target']);
+    assert.equal(shared.values.tag, tag);
+  }
+  for (const { context } of of('widget', 'create/20'))
+    assert.deepEqual(chain(context).map(label), ['Create/20/d1', 'Create/30/d1', 'Update/40/d1', 'Update/30/d1']);
+  const multiple = of('gizmo', 'create/10');
+  assert.equal(multiple.length, 2);
+  for (const { context, inputs, shared } of multiple) {
+    assert.deepEqual(chain(context).map(label), ['Create/10/d3']);
+    assert.equal(context.IsInTransaction, false);
+    assert.notEqual(context.CorrelationId.value, update.CorrelationId.value);
+    assert.equal(context.RequestId.value, update.RequestId.value);
+    assert.deepEqual(Object.keys(inputs), ['Target']);
+    assert.equal(Object.hasOwn(shared.values, 'tag'), false);
+  }
+  assert.notEqual(multiple[0].context.CorrelationId.value, multiple[1].context.CorrelationId.value);
+  for (const { context } of of('gizmo', 'create/20')) {
+    assert.deepEqual(chain(context).map(label), ['Create/20/d3', 'Create/30/d3']);
+    assert.equal(context.IsInTransaction, true);
+  }
+  assert.equal(store.tableRows('widget').length, 3);
+  assert.equal(store.tableRows('gizmo').length, 2);
+});

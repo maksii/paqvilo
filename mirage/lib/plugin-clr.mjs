@@ -860,9 +860,12 @@ export function dispatchSdkCall(args) {
   const { store, message } = args,
     previous = store.pluginParentContext,
     previousRequestMetadata = store.pluginRequestId,
-    previousMainOperation = store.pluginMainOperation;
-  // A plug-in's SDK request is its own operation, never part of a named message's main operation.
+    previousMainOperation = store.pluginMainOperation,
+    previousWrapper = store.pluginSdkWrapper;
+  // A plug-in's SDK request is its own operation, never part of a named message's main operation or of the
+  // ExecuteTransaction its caller runs in (plugin-sdk-messages.mjs).
   store.pluginMainOperation = null;
+  store.pluginSdkWrapper = null;
   // A plug-in that itself runs inside an SDK-issued pipeline (Depth 2 and deeper) keeps the depth-1 sandbox step as the
   // ParentContext of its own SDK requests; Depth still counts every level (native depth: Create/10/dN < Create/40/d1
   // < Create/30/d1 for N 3..10).
@@ -917,6 +920,7 @@ export function dispatchSdkCall(args) {
     store.pluginParentContext = previous;
     store.pluginRequestId = previousRequestMetadata;
     store.pluginMainOperation = previousMainOperation;
+    store.pluginSdkWrapper = previousWrapper;
   }
 }
 // The sdk-call span of one CLR RPC (tracing): it runs on the main thread inside the plugin-step span, so the record entries it
@@ -1199,13 +1203,14 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFro
           userId: profile.userId,
           request,
           parameters,
-          dispatch: (inner) =>
+          dispatch: (inner, overrides = {}) =>
             dispatchSdkCallAuthorized({
               store,
               profile,
               message: { ...message, method: 'Execute', arguments: [inner] },
               diagnostic,
               sdkFromSandbox,
+              ...overrides,
             }),
         });
         if (answer !== undefined) return answer;
@@ -2129,7 +2134,7 @@ export function clrContext({
     context = descriptor.context,
     parent = frame.delegatedParentContext ?? store.pluginParentContext ?? pluginInvocationSdkParent(store),
     // An asynchronous step's SDK request has no ParentContext (asyncOriginParent).
-    chainParent = parent?.asyncOrigin ? null : parent || null,
+    chainParent = parent?.rootOrigin ? null : parent || null,
     primary = entity && !(frame.customApi && entity === 'none') ? store.resolveMapping(entity).idColumn : null;
   const contextDepth = frame.exactDepth
     ? frame.delegatedDepth
@@ -2421,7 +2426,11 @@ export function clrContext({
       CorrelationId: typed('Guid', (frame.correlationId ??= parent?.values.CorrelationId?.value ?? randomUUID())),
       OperationId: typed('Guid', frame.operationId),
       OperationCreatedOn: cloneStateData(frame.createdOnWire),
-      IsInTransaction: store.pluginInTransaction === true,
+      // An ExecuteMultiple request's PreValidation runs outside the caller's transaction (sdkRootOperationParent).
+      IsInTransaction:
+        stage === 10 && parent?.ownTransaction && contextDepth === Number(parent.values.Depth) + 1
+          ? false
+          : store.pluginInTransaction === true,
       IsExecutingOffline: false,
       IsOfflinePlayback: false,
       IsolationMode: step.isolationMode ?? 2,

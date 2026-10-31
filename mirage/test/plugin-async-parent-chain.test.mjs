@@ -243,7 +243,9 @@ test(
 
 // An original CLR probe: an asynchronous step writes its own chain into a log row (x_level 100: "message/depth|request|
 // operation|frames", input names sorted); a PostOperation Update at Depth 1 named 'fan out' updates the other rows with an SDK UpdateMultiple;
-// an asynchronous Create of level 1 creates level 2.
+// an asynchronous Create of level 1 creates level 2; a PostOperation Update named 'wrap' creates a row through an
+// ExecuteTransaction (x_level 5) and one through an ExecuteMultiple (x_level 6).
+// @parity-evidence: native and native-r2 bulkRequests: the probe only gains the ExecuteTransaction/ExecuteMultiple 'wrap' branch and a Messages using; no assertion changed
 async function chainProbe(t, steps) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-async-origin-')),
     source = path.join(root, 'Probe.cs'),
@@ -251,11 +253,12 @@ async function chainProbe(t, steps) {
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fs.writeFile(
     source,
-    `using System;using System.Linq;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;namespace Invented{public sealed class Probe:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var t=(Entity)c.InputParameters["Target"];var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);
+    `using System;using System.Linq;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;using Microsoft.Xrm.Sdk.Messages;namespace Invented{public sealed class Probe:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var t=(Entity)c.InputParameters["Target"];var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);
 if(c.Mode==1){if(t.GetAttributeValue<int>("x_level")>=100)return;var chain="";for(var f=c.ParentContext;f!=null;f=f.ParentContext)chain+=f.MessageName+"/"+f.Stage+"/"+f.Mode+"/"+f.Depth+"["+string.Join(",",f.InputParameters.Keys.OrderBy(k=>k).ToArray())+"];";
 var log=new Entity("x_node");log["x_level"]=100;log["x_name"]=c.MessageName+"/"+c.Depth+"|"+c.RequestId+"|"+c.OperationId+"|"+chain;s.Create(log);
 if(c.MessageName=="Create"&&t.GetAttributeValue<int>("x_level")==1){var n=new Entity("x_node");n["x_name"]="level 2";n["x_level"]=2;s.Create(n);}return;}
-if(c.MessageName=="Update"&&c.Depth==1&&t.GetAttributeValue<string>("x_name")=="fan out"){var targets=new EntityCollection{EntityName="x_node"};foreach(var e in s.RetrieveMultiple(new QueryExpression("x_node"){ColumnSet=new ColumnSet("x_level")}).Entities){if(e.Id==t.Id||e.GetAttributeValue<int>("x_level")>=100)continue;var u=new Entity("x_node",e.Id);u["x_level"]=9;targets.Entities.Add(u);}var request=new OrganizationRequest("UpdateMultiple");request["Targets"]=targets;s.Execute(request);}}}}`,
+if(c.MessageName=="Update"&&c.Depth==1&&t.GetAttributeValue<string>("x_name")=="fan out"){var targets=new EntityCollection{EntityName="x_node"};foreach(var e in s.RetrieveMultiple(new QueryExpression("x_node"){ColumnSet=new ColumnSet("x_level")}).Entities){if(e.Id==t.Id||e.GetAttributeValue<int>("x_level")>=100)continue;var u=new Entity("x_node",e.Id);u["x_level"]=9;targets.Entities.Add(u);}var request=new OrganizationRequest("UpdateMultiple");request["Targets"]=targets;s.Execute(request);}
+if(c.MessageName=="Update"&&c.Depth==1&&t.GetAttributeValue<string>("x_name")=="wrap"){Func<int,OrganizationRequestCollection> one=level=>{var n=new Entity("x_node");n["x_name"]="wrapped";n["x_level"]=level;var r=new OrganizationRequest("Create");r["Target"]=n;return new OrganizationRequestCollection{r};};var transaction=new OrganizationRequest("ExecuteTransaction");transaction["Requests"]=one(5);s.Execute(transaction);var multiple=new OrganizationRequest("ExecuteMultiple");multiple["Requests"]=one(6);multiple["Settings"]=new ExecuteMultipleSettings{ContinueOnError=false,ReturnResponses=true};s.Execute(multiple);}}}}`,
   );
   compileClr(source, path.join(root, 'Probe.dll'), { references: [sdk, 'System.Core.dll'] });
   const runtime = await prepareClrRuntime({
@@ -337,6 +340,33 @@ test(
       'Update/1 Update/30/1/1',
       'Update/2 Update/40/1/2 < Update/30/1/2 < Update/40/1/2 < Update/30/1/2',
       'Update/2 Update/40/1/2 < Update/30/1/2 < Update/40/1/2 < Update/30/1/2',
+    ]);
+  },
+);
+
+// Native and native-r2 bulkRequests: the job of a row an ExecuteTransaction from an Update/40 step created runs at the
+// caller's Depth with the caller's frames (Create/30 < Create/40 < Create/30), the job of a row an ExecuteMultiple created
+// at Depth 3 with only its main operation.
+// @test-kind parity: native and native-r2 bulkRequests (jobs of ExecuteTransaction and ExecuteMultiple requests)
+test(
+  'jobs of ExecuteTransaction and ExecuteMultiple requests report their native frames',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const { store, settle, logs } = await chainProbe(t, [
+      [1, 'Update', 0],
+      [2, 'Create', 1],
+    ]);
+    const row = await store.create('x_node', { x_name: 'caller', x_level: 1 }, identity);
+    await settle();
+    const before = logs().length;
+    await store.update('x_node', row.x_nodeid, { x_name: 'wrap' }, identity);
+    await settle();
+    const chains = logs()
+      .slice(before)
+      .map((log) => `${log.job} ${log.chain.map((frame) => frame.replace(/\[.*\]$/, '')).join(' < ')}`);
+    assert.deepEqual(chains.toSorted(), [
+      'Create/1 Create/30/1/1 < Create/40/1/1 < Create/30/1/1',
+      'Create/3 Create/30/1/3',
     ]);
   },
 );
