@@ -5553,7 +5553,7 @@ export class DataStore {
     // Natively an Update that sets statecode runs the SetStateDynamicEntity pipeline inside its main operation, one
     // level deeper (recorded Web API PATCH statecode); the SetState message's own Update does not.
     if (options.stateMessage !== false && own(rawInput, 'statecode') && this.pluginPipeline)
-      runStateMessage(this, mapping, row, identity, options);
+      runStateMessage(this, mapping, row, identity, { ...options, previousRow: previous });
     // The asynchronous copy adds platform modification stamps without changing
     // the synchronous partial Target or its qualified core-parent projection.
     const asyncTargetBaseline = Object.fromEntries(

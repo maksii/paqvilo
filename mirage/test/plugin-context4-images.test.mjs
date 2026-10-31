@@ -34,6 +34,7 @@ let prepared, root, log;
 after(() => root && fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
 // @parity-evidence: native imageAliasOrder (native and native-r2): AsynchronousStepPrimaryName attributes enumerate name then key; the observer also logs those attribute names (no existing assertion changed)
 // @parity-evidence: native crud.json ev 1648/1653 (repeated at 1658, imagesOrder 7680/7686): an asynchronous single-origin *Multiple step's own AsynchronousStepPrimaryName names the target row; the observer now also logs that image's id (no existing assertion changed)
+// @parity-evidence: native imagesOrder (native and native-r2) ev 61 Probe: SetStateDynamicEntity 40 images; the observer also logs its own images' statecode (no existing assertion changed)
 // One original assembly whose Observer logs, per execution: step id, message, stage, mode, the Context4 collections
 // (sets joined by '/', aliases in collection order), its own image aliases, the main-operation parent's pre set, the
 // PreBusinessEntity attributes and the owner of each own image.
@@ -47,9 +48,10 @@ async function observer() {
       `using System;using System.IO;using System.Linq;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Observer:IPlugin{
 static string Keys(EntityImageCollection[] sets){return string.Join("/",sets.Select(s=>string.Join(",",s.Keys)));}
 static string Owners(EntityImageCollection images){return string.Join(",",images.Select(i=>i.Key+":"+(i.Value.Contains("ownerid")?((EntityReference)i.Value["ownerid"]).Id.ToString():"-")));}
+static string States(EntityImageCollection images){return string.Join(",",images.Select(i=>i.Key+":"+(i.Value.Contains("statecode")?((OptionSetValue)i.Value["statecode"]).Value.ToString():"-")));}
 public void Execute(IServiceProvider p){var c=(IPluginExecutionContext4)p.GetService(typeof(IPluginExecutionContext));string parent;try{var pc=c.ParentContext as IPluginExecutionContext4;parent=pc==null?"none":pc.MessageName+"/"+pc.Stage+":"+Keys(pc.PreEntityImagesCollection);}catch(Exception){parent="unavailable";}
 var business=c.PreEntityImagesCollection.FirstOrDefault(s=>s.Contains("${PBE}"));
-File.AppendAllText(@"${log.replaceAll('"', '""')}",string.Join("|",c.OwningExtension.Id,c.MessageName,c.Stage,c.Mode,Keys(c.PreEntityImagesCollection),Keys(c.PostEntityImagesCollection),string.Join(",",c.PreEntityImages.Keys)+";"+string.Join(",",c.PostEntityImages.Keys),parent,business==null?"-":string.Join(",",business["${PBE}"].Attributes.Keys),Owners(c.PreEntityImages)+";"+Owners(c.PostEntityImages),c.PostEntityImages.Contains("${ASPN}")?c.PostEntityImages["${ASPN}"].Id.ToString():"-",c.PostEntityImages.Contains("${ASPN}")?string.Join(",",c.PostEntityImages["${ASPN}"].Attributes.Keys):"-")+Environment.NewLine);}}}`,
+File.AppendAllText(@"${log.replaceAll('"', '""')}",string.Join("|",c.OwningExtension.Id,c.MessageName,c.Stage,c.Mode,Keys(c.PreEntityImagesCollection),Keys(c.PostEntityImagesCollection),string.Join(",",c.PreEntityImages.Keys)+";"+string.Join(",",c.PostEntityImages.Keys),parent,business==null?"-":string.Join(",",business["${PBE}"].Attributes.Keys),Owners(c.PreEntityImages)+";"+Owners(c.PostEntityImages),c.PostEntityImages.Contains("${ASPN}")?c.PostEntityImages["${ASPN}"].Id.ToString():"-",c.PostEntityImages.Contains("${ASPN}")?string.Join(",",c.PostEntityImages["${ASPN}"].Attributes.Keys):"-",States(c.PreEntityImages)+";"+States(c.PostEntityImages))+Environment.NewLine);}}}`,
     );
     const sdk = clrSdk();
     compileClr(source, path.join(root, 'Observer.dll'), { references: [sdk] });
@@ -128,7 +130,7 @@ async function observe(t, steps, act, store = storeOf()) {
   await backend.asyncPluginRunner.drain();
   const seen = {};
   for (const line of (await fs.readFile(log, 'utf8')).trim().split(/\r?\n/).filter(Boolean)) {
-    const [stepId, message, stage, mode, pre, post, own, parent, business, owners, named, nameAttributes] =
+    const [stepId, message, stage, mode, pre, post, own, parent, business, owners, named, nameAttributes, states] =
       line.split('|');
     const n = Number(stepId.slice(-12));
     (seen[n] ??= []).push({
@@ -143,6 +145,7 @@ async function observe(t, steps, act, store = storeOf()) {
       owners,
       named,
       nameAttributes,
+      states,
     });
   }
   return seen;
@@ -284,6 +287,27 @@ test(
     assert.equal(seen[1][0].own, `;${ASPN}`);
     // Native ownerAndState ev 1085, sdkMessages ev 1536: PreBusinessEntity is present with no attributes.
     assert.deepEqual([seen[3][0].pre, seen[3][0].business], [PBE, '']);
+  },
+);
+
+// @test-kind parity: native imagesOrder (native-r2 ev 61, native ev 51) 'Probe: SetStateDynamicEntity 40 images': a state-changing Update's SetStateDynamicEntity pre image holds the row before the write (statecode 0, statuscode 1), the post image the row after (1, 2)
+test(
+  'a state-changing Update gives its SetStateDynamicEntity the row before the write as pre image and the row after as post image',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const seen = await observe(
+      t,
+      [
+        step(1, 'SetStateDynamicEntity', 40, 1, {
+          images: [
+            { alias: 'pre', type: 0 },
+            { alias: 'post', type: 1 },
+          ],
+        }),
+      ],
+      (store) => store.update('gadget', id, { statecode: 1, statuscode: 2 }, identity),
+    );
+    assert.equal(seen[1][0].states, 'pre:0;post:1');
   },
 );
 

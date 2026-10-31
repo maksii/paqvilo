@@ -134,6 +134,9 @@ function runMessagePipeline(
     // Other records of the message an image can hold (registration messagePropertyName: Merge's SubordinateId), by
     // property: the row id on the message's table. Target stays the message's own record.
     imageRecords = {},
+    // The message's row before the operation when the caller already wrote it (a PATCH statecode's
+    // SetStateDynamicEntity).
+    previous: suppliedPrevious,
   },
 ) {
   // An unbound message (PrimaryEntityName none) has no table and an empty PrimaryEntityId.
@@ -147,7 +150,8 @@ function runMessagePipeline(
   // it: registered images of Assign, SetState and the sharing messages hold the record (Microsoft Learn image table).
   const storedRow = () =>
     cloneStateData(store.tableRows(mapping.logicalName).find((row) => same(row[mapping.idColumn], id)) ?? null);
-  const previous = id && id !== EMPTY ? storedRow() : null;
+  const previous =
+    suppliedPrevious !== undefined ? cloneStateData(suppliedPrevious) : id && id !== EMPTY ? storedRow() : null;
   const rowOf = (rowId) =>
     cloneStateData(store.tableRows(mapping.logicalName).find((row) => same(row[mapping.idColumn], rowId)) ?? null);
   const imageRows = Object.keys(imageRecords).length
@@ -825,6 +829,7 @@ export function runStateMessage(store, mapping, row, identity, options = {}) {
     bypassCustomPlugins: options.bypassCustomPlugins === true,
     bypassCustomAsync: options.bypassCustomAsync === true,
     main: () => ({ IsValid: true }),
+    previous: options.previousRow,
   });
 }
 
