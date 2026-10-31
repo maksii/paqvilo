@@ -11,7 +11,7 @@ import { pluginDepthFault, PLUGIN_MAX_DEPTH, pluginExecutionDepth, recordToSdkEn
 import { mainOperationParent, recordRequestRootChange, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
 import { internalStepReference, setInternalStageSource } from './plugin-internal-stage.mjs';
 import { pluginEntryStep } from './plugin-message-admission.mjs';
-import { authorizeGrant } from './local-organization-service.mjs';
+import { authorizeGrant, sdkRecordKey } from './local-organization-service.mjs';
 import { ACCESS_RIGHTS, createPrincipals, grantAccessNow, revokeAccessNow } from './dataverse-security.mjs';
 
 const EMPTY = '00000000-0000-0000-0000-000000000000';
@@ -484,8 +484,19 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
       const target = parameters.Target;
       if (target?.$type !== 'Entity' || !target.logicalName) fail('SDK Upsert requires a typed Target Entity.');
       const mapping = store.resolveMapping(target.logicalName);
-      if (!GUID.test(target.id ?? '') || target.id === EMPTY)
-        fail('SDK Upsert requires a Target with a primary key value.', 'LocalPluginSdkUnsupported', 501);
+      // A Target by alternate key (Entity.KeyAttributes): the key must be one the table declares (store.findByKey, as
+      // the Web API's key segments); the existence query filters on the key columns (recorded native sdkSurface).
+      const keys = Object.keys(target.keyAttributes ?? {}).length ? target.keyAttributes : null;
+      if (keys) store.findByKey(mapping, sdkRecordKey(store, mapping.logicalName, target));
+      else if (!GUID.test(target.id ?? '') || target.id === EMPTY)
+        fail(
+          'SDK Upsert requires a Target with a primary key value or key attributes.',
+          'LocalPluginSdkUnsupported',
+          501,
+        );
+      const conditions = Object.entries(keys ?? { [mapping.idColumn]: { $type: 'Guid', value: target.id } }).map(
+        ([attributeName, value]) => ({ attributeName, operatorName: 'Equal', values: [value] }),
+      );
       // Natively both run at the calling plug-in's depth, with its context as their parent (recorded corpus).
       const caller = store.pluginParentContext ?? pluginInvocationSdkParent(store),
         previousMain = store.pluginMainOperation;
@@ -497,24 +508,15 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
       };
       // The existence query is the platform's own read (app-module inputs, no IncludeAnnotations; recorded sdkMessages).
       if (delegated) store.pluginMainOperation = { ...delegated, internalRead: true };
-      let created;
+      let created,
+        id = target.id;
       try {
         const found = invoke('RetrieveMultiple', [
           {
             $type: 'QueryExpression',
             entityName: mapping.logicalName,
             columnSet: { allColumns: false, columns: [] },
-            criteria: {
-              operatorName: 'And',
-              conditions: [
-                {
-                  attributeName: mapping.idColumn,
-                  operatorName: 'Equal',
-                  values: [{ $type: 'Guid', value: target.id }],
-                },
-              ],
-              filters: [],
-            },
+            criteria: { operatorName: 'And', conditions, filters: [] },
             orders: [],
             linkEntities: [],
             topCount: 2,
@@ -524,13 +526,26 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
         ]);
         created = !found?.entities?.length;
         if (delegated) store.pluginMainOperation = delegated;
-        invoke(created ? 'Create' : 'Update', [target]);
+        if (!keys) invoke(created ? 'Create' : 'Update', [target]);
+        else {
+          // By key, as the Web API upsert: a create keeps the Target's values and adds the key values it lacks (native
+          // Create Target: the attributes, then the key column, no KeyAttributes); an update addresses the found row and
+          // drops the key columns (Learn: the server removes the data that uses the same keys).
+          const attributes = { ...target.attributes };
+          for (const [name, value] of Object.entries(keys))
+            if (!created) delete attributes[name];
+            else if (!Object.hasOwn(attributes, name)) attributes[name] = value;
+          const written = invoke(created ? 'Create' : 'Update', [
+            { ...target, id: created ? (target.id ?? EMPTY) : found.entities[0].id, keyAttributes: {}, attributes },
+          ]);
+          id = created ? (written?.value ?? written) : found.entities[0].id;
+        }
       } finally {
         store.pluginMainOperation = previousMain;
       }
       return respond({
         RecordCreated: created,
-        Target: { $type: 'EntityReference', logicalName: mapping.logicalName, id: target.id, name: null },
+        Target: { $type: 'EntityReference', logicalName: mapping.logicalName, id, name: null },
       });
     }
     case 'Merge': {
