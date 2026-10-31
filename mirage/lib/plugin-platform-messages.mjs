@@ -2,8 +2,11 @@
 // (PreValidation, PreOperation, main operation, PostOperation and the committed asynchronous event), as the recorded
 // native corpus shows: Assign, SetState (executed as SetStateDynamicEntity), GrantAccess, ModifyAccess, RevokeAccess,
 // RetrievePrincipalAccess, RetrieveSharedPrincipalsAndAccess. Upsert runs no pipeline of its own: its existence query
-// and the delegated Create or Update run instead. Merge runs the Web API Merge main operation on a table with a Merge message filter and refuses others.
+// and the delegated Create or Update run instead. UpsertMultiple runs no pipeline of its own either: its creates go through
+// CreateMultiple, then its updates through UpdateMultiple. DeleteMultiple on a standard table runs PreValidation and refuses
+// (405 0x8004023b); on an elastic table it deletes each target. Merge runs the Web API Merge main operation on a table with a Merge message filter and refuses others.
 import { DataError } from './data-error.mjs';
+import { isElastic } from './dataverse-elastic.mjs';
 import { cloneStateData } from './state-clone.mjs';
 import { initializePluginOperation } from './plugin-operation-context.mjs';
 import { pluginInvocationDepth, pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
@@ -28,6 +31,8 @@ const SHAPES = {
   RetrievePrincipalAccess: ['Target', 'Principal'],
   RetrieveSharedPrincipalsAndAccess: ['Target'],
   Upsert: ['Target'],
+  UpsertMultiple: ['Targets'],
+  DeleteMultiple: ['Targets'],
   Merge: ['Target', 'SubordinateId', 'UpdateContent', 'PerformParentingChecks'],
 };
 export const isPlatformSdkMessage = (name) => Object.hasOwn(SHAPES, name);
@@ -310,6 +315,20 @@ function runMessagePipeline(
   }
 }
 
+// The calling plug-in's context and depth: the delegated creates, updates and existence query of Upsert and UpsertMultiple
+// run there, with its context as their parent (recorded corpus).
+function callerDelegation(store) {
+  const caller = store.pluginParentContext ?? pluginInvocationSdkParent(store);
+  return (
+    caller && {
+      context: caller,
+      depth: Math.max(Number(caller.values?.Depth ?? 1), pluginExecutionDepth()),
+      exactDepth: true,
+      keepsRequestTag: true,
+    }
+  );
+}
+
 /**
  * IOrganizationService.Execute of a named platform message from a plug-in. service is the caller's local organization
  * service; invoke(method, args) runs a record SDK method (Create, Update, RetrieveMultiple) as the plug-in would.
@@ -499,14 +518,8 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
         ([attributeName, value]) => ({ attributeName, operatorName: 'Equal', values: [value] }),
       );
       // Natively both run at the calling plug-in's depth, with its context as their parent (recorded corpus).
-      const caller = store.pluginParentContext ?? pluginInvocationSdkParent(store),
-        previousMain = store.pluginMainOperation;
-      const delegated = caller && {
-        context: caller,
-        depth: Math.max(Number(caller.values?.Depth ?? 1), pluginExecutionDepth()),
-        exactDepth: true,
-        keepsRequestTag: true,
-      };
+      const previousMain = store.pluginMainOperation,
+        delegated = callerDelegation(store);
       // The existence query is the platform's own read (app-module inputs, no IncludeAnnotations; recorded sdkMessages).
       if (delegated) store.pluginMainOperation = { ...delegated, internalRead: true };
       let created,
@@ -549,10 +562,113 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
         Target: { $type: 'EntityReference', logicalName: mapping.logicalName, id, name: null },
       });
     }
+    case 'UpsertMultiple': {
+      const targets = parameters.Targets;
+      if (targets?.$type !== 'EntityCollection' || !Array.isArray(targets.entities))
+        fail('Bulk SDK request requires a typed Targets EntityCollection.');
+      const entities = targets.entities;
+      if (!entities.length) throw emptyBulk();
+      const logical = entities[0]?.logicalName;
+      if (entities.some((entity) => entity?.$type !== 'Entity' || entity.logicalName !== logical))
+        throw unsupportedMessage('UpsertMultiple', 'none');
+      const mapping = store.resolveMapping(logical),
+        filters = messageFilters(store, mapping.logicalName);
+      if (filters && !filters.has('upsertmultiple')) throw unsupportedMessage('UpsertMultiple', mapping.logicalName);
+      // Each target is an existing row (by its id, or by its key attributes as Upsert) or a new one.
+      const plan = entities.map((target) => {
+        const keys = Object.keys(target.keyAttributes ?? {}).length ? target.keyAttributes : null;
+        const row = keys
+          ? (store.findByKey(mapping, sdkRecordKey(store, logical, target)) ?? null)
+          : (GUID.test(target.id ?? '') &&
+              target.id !== EMPTY &&
+              store.get(logical, target.id, { admin: true }, { skipPluginRead: true })) ||
+            null;
+        if (!keys) return { row, write: target };
+        // By key, as Upsert: an update drops the key columns, a create adds the key values it lacks.
+        const attributes = { ...target.attributes };
+        for (const [name, value] of Object.entries(keys))
+          if (row) delete attributes[name];
+          else if (!Object.hasOwn(attributes, name)) attributes[name] = value;
+        return {
+          row,
+          write: { ...target, id: row ? row[mapping.idColumn] : target.id, keyAttributes: {}, attributes },
+        };
+      });
+      // Creates run before updates, both at the calling plug-in's depth (as Upsert's delegated writes).
+      const previousMain = store.pluginMainOperation,
+        delegated = callerDelegation(store);
+      let createdIds = [];
+      if (delegated) store.pluginMainOperation = delegated;
+      try {
+        const creates = plan.filter(({ row }) => !row).map(({ write }) => write),
+          updates = plan.filter(({ row }) => row).map(({ write }) => write);
+        if (creates.length)
+          createdIds = invoke('CreateMultiple', [{ $type: 'EntityCollection', entities: creates }]).values.map(
+            (item) => item.value,
+          );
+        if (updates.length) invoke('UpdateMultiple', [{ $type: 'EntityCollection', entities: updates }]);
+      } finally {
+        store.pluginMainOperation = previousMain;
+      }
+      let next = 0;
+      return respond({
+        Results: {
+          $type: 'SdkArray',
+          elementType: 'UpsertResponse',
+          values: plan.map(({ row }) => ({
+            $type: 'OrganizationResponse',
+            responseName: 'Upsert',
+            contract: 'Upsert',
+            custom: false,
+            results: {
+              RecordCreated: !row,
+              Target: {
+                $type: 'EntityReference',
+                logicalName: mapping.logicalName,
+                id: row ? row[mapping.idColumn] : createdIds[next++],
+                name: null,
+              },
+            },
+          })),
+        },
+      });
+    }
+    case 'DeleteMultiple': {
+      const targets = parameters.Targets;
+      if (targets?.$type !== 'EntityReferenceCollection' || !Array.isArray(targets.values))
+        fail('SDK DeleteMultiple requires a typed Targets EntityReferenceCollection.');
+      if (!targets.values.length) throw emptyBulk();
+      const refs = targets.values.map((value) => reference(value, 'Targets')),
+        logical = refs[0].logicalName;
+      if (refs.some((ref) => ref.logicalName !== logical)) throw unsupportedMessage('DeleteMultiple', 'none');
+      const mapping = store.resolveMapping(logical),
+        rows = refs.map((ref) => existing(ref, 'delete'));
+      // A standard table runs DeleteMultiple's PreValidation and each target's Delete PreValidation, then refuses.
+      if (!isElastic(mapping))
+        refuseDeleteMultiple(store, {
+          mapping,
+          rows,
+          identity,
+          options: { bypassStepIds: options.bypassStepIds, bypassCustomPlugins: options.bypassCustomPlugins },
+        });
+      // An elastic table deletes each target and continues after a refusal, then throws the first (Web API elasticBulk).
+      let firstError;
+      for (const ref of refs)
+        try {
+          // Invoked as the plug-in's Delete: the logical name, then the reference.
+          invoke('Delete', [ref.logicalName, ref]);
+        } catch (error) {
+          if (!(error instanceof DataError)) throw error;
+          firstError ??= error;
+        }
+      if (firstError) throw firstError;
+      return respond();
+    }
     case 'Merge': {
       const target = reference(parameters.Target, 'Target');
       // The table's Merge message filter makes Merge available (native sdkMerge: none on a custom table, 0x80040800).
-      if (!messageFilters(store, target.logicalName)?.has('merge')) throw mergeUnsupported(target.logicalName);
+      if (!messageFilters(store, target.logicalName)?.has('merge'))
+        throw unsupportedMessage('Merge', target.logicalName);
       const subordinate = {
         logicalName: target.logicalName,
         id: parameters.SubordinateId?.$type === 'Guid' ? parameters.SubordinateId.value : null,
@@ -889,14 +1005,24 @@ export function mergeChanges(store, mapping, targetRow, subRow, { content = {}, 
   };
 }
 
-/** The platform's refusal of Merge on a table without a Merge message filter (recorded native fault 0x80040800). */
-function mergeUnsupported(logical) {
+/**
+ * The platform's refusal of a message on a table whose message filters lack it, or of a bulk message whose targets are
+ * not one table (recorded native fault 0x80040800; the Web API's boundAction gives the same text for a mixed table).
+ */
+function unsupportedMessage(message, logical) {
   return new DataError(
-    `The 'Merge' method does not support entities of type '${logical}'. MessageProcessorCache returned MessageProcessor.Empty. `,
+    `The '${message}' method does not support entities of type '${logical}'. MessageProcessorCache returned MessageProcessor.Empty. `,
     400,
-    'MergeUnsupported',
+    `${message}Unsupported`,
     { innerCode: '0x80040800' },
   );
+}
+
+/** A bulk message without targets (recorded native fault 0x80040216). */
+function emptyBulk() {
+  return new DataError('Custom state is not set for entity type crmbaseentity.', 400, 'InvalidRequest', {
+    innerCode: '0x80040216',
+  });
 }
 
 /**
