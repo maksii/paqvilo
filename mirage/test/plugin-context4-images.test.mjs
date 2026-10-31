@@ -327,24 +327,28 @@ test('an SDK Assign gets the primary-name image on its pre-image side', { skip: 
   assert.equal(seen[1][0].own, `${ASPN};`);
 });
 
-// @test-kind compatibility: Microsoft Learn "Messages that support entity images" (Assign Target: pre and post images); no native runtime capture of an image-bearing Assign step
+// @test-kind parity: native imagesOrder (native and native-r2) 'Probe: Assign 40 images': registered Assign pre/post images hold the row before/after the owner change; with an async Assign step the sync step's preC keys are [AsynchronousStepPrimaryName, pre] and postC [post]
+// @parity-evidence: native imagesOrder (native and native-r2) ev 92 Probe: Assign 40 images (PreEntityImages.pre ownerid old, PostEntityImages.post ownerid new, PreEntityImagesCollection [AsynchronousStepPrimaryName, pre], PostEntityImagesCollection [post])
 test('registered Assign images hold the row before and after the owner change', { skip: CLR_SKIP }, async (t) => {
   const store = storeOf();
   store.state.tables.gadget[0].ownerid = { id: caller, logical_name: 'systemuser' };
   const seen = await observe(
     t,
     [
-      step(1, 'Assign', 40, 1, {
+      step(1, 'Assign', 40, 1, { mode: 1 }),
+      step(2, 'Assign', 40, 2, {
         images: [
-          { alias: 'before', type: 0 },
-          { alias: 'after', type: 1 },
+          { alias: 'pre', type: 0 },
+          { alias: 'post', type: 1 },
         ],
       }),
     ],
     assign,
     store,
   );
-  assert.equal(seen[1][0].owners, `before:${caller};after:${other}`);
+  assert.equal(seen[2][0].owners, `pre:${caller};post:${other}`);
+  assert.equal(seen[2][0].own, 'pre;post');
+  assert.deepEqual([seen[2][0].pre, seen[2][0].post], [`${ASPN},pre`, 'post']);
 });
 
 // @test-kind observation: native crud, bulk, ownerAndState and sdkMessages captures 2026-10-30: PreBusinessEntity holds the pre-operation statecode unless the request changes it; the other columns it sometimes carries (crud: a text column) follow no rule the captures establish
