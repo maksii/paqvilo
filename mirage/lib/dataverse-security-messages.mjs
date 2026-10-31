@@ -743,7 +743,8 @@ function operations(api) {
       binding: 'unbound',
       handle: async (c) => {
         const { mapping, id } = targetRef(api, c.params?.Target);
-        const row = store.get(mapping.logicalName, id, c.identity);
+        // No Retrieve pipeline runs before it (recorded native webApiNamed).
+        const row = store.get(mapping.logicalName, id, c.identity, { skipPluginRead: true });
         if (!row) throw notFound(mapping.logicalName, id);
         api.principals.authorize({ user: c.user, entity: mapping.logicalName, operation: 'read', row, mapping });
         const shares = tableOf(store, 'principalobjectaccess').filter(

@@ -393,7 +393,7 @@ test('registration validation answers with the native codes and texts', async (t
   assert.equal((await image(await step('Update', { stage: 40 }), 0)).status, 201, 'image on a global Update');
 });
 
-test('execution admission: globals run on the actual table, Upsert/Merge globals and async Retrieve are inert', async (t) => {
+test('execution admission: globals run on the actual table, Upsert/Merge globals are inert and async Retrieve runs', async (t) => {
   const f = await fixture(t);
   for (const [name, over] of [
     ['Create', {}],
@@ -413,12 +413,16 @@ test('execution admission: globals run on the actual table, Upsert/Merge globals
   const of = (message, mode = 0) => items.find((item) => item.message === message && item.contract.mode === mode);
   assert.equal(pluginStepMatchesEntity(of('Create'), 'x_shared'), true);
   assert.equal(pluginStepMatchesEntity(of('RetrieveMultiple', 1), 'x_owned'), true);
-  for (const message of ['Upsert', 'UpsertMultiple', 'Merge'])
+  for (const message of ['Upsert', 'UpsertMultiple'])
     assert.equal(pluginStepMatchesEntity(of(message), 'x_owned'), false);
-  assert.equal(pluginStepMatchesEntity(of('Retrieve', 1), 'x_owned'), false);
+  // @parity-evidence: native recorder captures 2026-10-30 mergeAccount (native and native-r2): global Merge steps run 10/20/40 and async on a mergeable table; a table without a Merge filter refuses 0x80040800 before any step (sdkMerge)
+  assert.equal(pluginStepMatchesEntity(of('Merge'), 'x_owned'), true);
+  // @parity-evidence: native recorder captures 2026-10-30 readAsync (native and native-r2): global and table-filtered asynchronous Retrieve steps run once per GET when the row is kept (round 1 lost them to the row's deletion)
+  assert.equal(pluginStepMatchesEntity(of('Retrieve', 1), 'x_owned'), true);
   // An accepted registration the platform never executes is not a runtime refusal.
   const store = { pluginPipeline: { steps: () => items.map((item) => ({ ...item, mode: 'handler' })) } };
-  for (const message of ['Upsert', 'UpsertMultiple', 'Merge'])
+  // @parity-evidence: native recorder captures 2026-10-30 mergeAccount (native and native-r2): global Merge steps execute, so Merge is no longer an accepted-but-never-executed registration
+  for (const message of ['Upsert', 'UpsertMultiple'])
     assert.doesNotThrow(() => assertPluginMessageAdmission(store, message, {}, 'x_owned'), message);
   // An impersonating step is admitted (UserId is the impersonated user).
   assert.equal(
@@ -467,7 +471,8 @@ test('a global Create runs for the table it fires on, and an asynchronous Retrie
     seen.map(({ name, entity, mode }) => [name, entity, mode]),
     [['Async read', 'x_shared', 1]],
   );
-  assert.equal(seen[0].context.InputParameters.Query.entityName, 'x_shared');
+  // @parity-evidence: native recorder corpus 2026-10-30 reads: a Web API collection GET hands RetrieveMultiple (also its asynchronous step) a FetchExpression of the read table, not a QueryExpression
+  assert.match(seen[0].context.InputParameters.Query.query, /<entity name="x_shared">/);
   assert.equal(seen[0].context.OutputParameters.BusinessEntityCollection.length, 1);
 });
 

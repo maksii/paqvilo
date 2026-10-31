@@ -1,6 +1,8 @@
 import { DataError } from './data-error.mjs';
 import { parseODataExpression } from './odata-query.mjs';
 import { isExactNumeric, decimalParts } from './exact-numeric.mjs';
+import { queryExpressionToFetch } from './plugin-sdk-query.mjs';
+import { convertSdkQuery } from './plugin-query-conversion.mjs';
 const fail = (message) => {
   throw new DataError(message, 501, 'LocalPluginQueryUnsupported');
 };
@@ -427,4 +429,51 @@ export function sameSdkQuery(left, right) {
     );
   };
   return JSON.stringify(normalized(left)) === JSON.stringify(normalized(right));
+}
+
+const NATIVE_FETCH = 'distinct="false" useraworderby="true" no-lock="false" mapping="logical"';
+const BRACED = /(value="|<value>)\{?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}?(?="|<\/value>)/gi;
+
+/**
+ * The FetchExpression a Web API collection GET hands its RetrieveMultiple steps (recorded native reads): the root
+ * selection as FetchXML on the transport's first page of 5000, GUID values braced in upper case. Transport paging,
+ * counts and expansion stay on the read route. A $top keeps top= instead of the page (no native capture), and an
+ * empty filter is left out (no native capture). hidden names the primary key the Web API added to the client's
+ * $select, which the native FetchXML leaves out. Answers null when the query has no FetchXML form here.
+ */
+export function webApiFetchExpression(query, store, { hidden } = {}) {
+  let xml;
+  try {
+    xml = queryExpressionToFetch(query, store);
+  } catch {
+    return null;
+  }
+  const top = /^<fetch\b[^>]*\btop="(\d+)"/.exec(xml)?.[1];
+  xml = xml
+    .replace(/^<fetch\b[^>]*>/, `<fetch ${NATIVE_FETCH}${top ? ` top="${top}"` : ' page="1" count="5000"'}>`)
+    .replace(/<filter type="and"><\/filter>/g, '')
+    .replace(BRACED, (_, head, id) => `${head}{${id.toUpperCase()}}`);
+  if (hidden) xml = xml.replace(`<attribute name="${hidden}" />`, '');
+  return { $type: 'FetchExpression', query: xml };
+}
+
+/** The QueryExpression a step's edited Web API FetchExpression asks for, without the transport page it was shown. */
+export function webApiFetchToQuery(xml, store) {
+  const plain = xml
+    .replace(/^<fetch\b[^>]*>/, (head) => head.replace(/\s(?:page|count|useraworderby)="[^"]*"/g, ''))
+    .replace(BRACED, (_, head, id) => `${head}${id.toLowerCase()}`);
+  return convertSdkQuery(store, 'FetchXmlToQueryExpression', { FetchXml: plain }).Query;
+}
+
+/**
+ * The paging cookie of a RetrieveMultiple result as native steps see it (recorded native reads, crud, associate,
+ * upsert): a paged FetchExpression (a Web API collection GET) names its first and last primary keys, braced in upper
+ * case; any other read (the platform's own existence and intersect reads) has an empty cookie. An empty page answers
+ * an empty cookie (no native capture).
+ */
+export function readPagingCookie(query, idColumn, ids) {
+  const page = query?.$type === 'FetchExpression' ? /^<fetch\b[^>]*\bpage="(\d+)"/.exec(query.query)?.[1] : null;
+  if (!page || !ids.length || ids.some((id) => id == null)) return '';
+  const braced = (id) => `{${String(id).toUpperCase()}}`;
+  return `<cookie page="${page}"><${idColumn} last="${braced(ids.at(-1))}" first="${braced(ids[0])}" /></cookie>`;
 }

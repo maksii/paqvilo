@@ -19,6 +19,7 @@ import {
   selectSdkEntryParent,
 } from './plugin-sdk-parent.mjs';
 import { delegatedPluginParent } from './plugin-delegation.mjs';
+import { internalStageContext, internalStageSource, internalStepReference } from './plugin-internal-stage.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { localOrganizationService, validateServiceProfile, sdkValueToRecord } from './local-organization-service.mjs';
 import {
@@ -1991,6 +1992,26 @@ export function clrContext({
   depth,
   bridged = false,
 }) {
+  // A message an internal platform stage issues (plugin-internal-stage.mjs) sees the issuing operation's PreOperation
+  // context, as a PreOperation step would see it then, reported as that stage: built once, kept for later stages.
+  const internal = !frame.internalParentBuilt && internalStageSource(record);
+  if (internal) {
+    const issuing = clrContext({
+      runtime,
+      store,
+      step: { ...internalStepReference(internal.owner, internal.message), contract: { mode: 0 } },
+      entity: internal.entity,
+      operation: internal.operation,
+      stage: 20,
+      target: internal.target,
+      record: internal.record,
+      previous: internal.previous ?? null,
+      frame: internal.frame,
+      depth,
+    });
+    frame.delegatedParentContext = internalStageContext(clrSdkEntryContext(issuing), internal.stage, internal.userId);
+    frame.internalParentBuilt = true;
+  }
   const descriptor = runtime.descriptor,
     context = descriptor.context,
     parent = frame.delegatedParentContext ?? store.pluginParentContext ?? pluginInvocationSdkParent(store),
@@ -2249,12 +2270,14 @@ export function clrContext({
   // the app module is empty outside a model-driven app).
   // Explicit descriptor observations (portalInputParameters) keep precedence.
   const outsidePlugin = !store.pluginParentContext && !pluginInvocationSdkParent(store);
+  // The platform's own reads (an Upsert's existence query, an N:N intersect check; frame.internalRead) carry the
+  // app-module inputs, also inside a plug-in, and never IncludeAnnotations (recorded native crud, associate, sdkMessages).
   const readRequestParameters = Object.fromEntries(
     Object.entries(
-      !outsidePlugin
+      !outsidePlugin && !frame.internalRead
         ? {}
         : {
-            ...(frame.delegatedParentContext ? {} : { IncludeAnnotations: false }),
+            ...(frame.delegatedParentContext || frame.internalRead ? {} : { IncludeAnnotations: false }),
             ...(operation === 'retrievemultiple'
               ? { AppModuleId: typed('Guid', empty), IsAppModuleContext: false }
               : {}),
@@ -2340,6 +2363,8 @@ export function clrContext({
                         id: record[primary],
                       },
                       ColumnSet: { $type: 'ColumnSet', ...frame.columns },
+                      // Every Retrieve request carries its (empty) RelatedEntitiesQuery (recorded native reads).
+                      RelatedEntitiesQuery: { $type: 'RelationshipQueryCollection', values: [] },
                       ...(readRequestParameters.IncludeAnnotations === undefined
                         ? {}
                         : { IncludeAnnotations: false, ReturnNotifications: false }),
@@ -2347,7 +2372,15 @@ export function clrContext({
                   : {
                       Target:
                         operation === 'delete'
-                          ? { $type: 'EntityReference', logicalName: entity, id: record[primary] }
+                          ? {
+                              $type: 'EntityReference',
+                              logicalName: entity,
+                              id: record[primary],
+                              // A Delete addressed by an alternate key names it in its PreValidation Target (recorded native upsert).
+                              ...(stage === 10 && frame.targetKeyAttributes
+                                ? { keyAttributes: cloneStateData(frame.targetKeyAttributes) }
+                                : {}),
+                            }
                           : stage === 40 &&
                               frame.inputParametersStage === 40 &&
                               frame.inputParameters?.values?.Target?.$type === 'Entity'
@@ -2424,7 +2457,15 @@ export function clrContext({
               ...cloneStateData(frame.mainOperationInputs ?? {}),
               Target:
                 operation === 'delete'
-                  ? { $type: 'EntityReference', logicalName: entity, id: record[primary] }
+                  ? {
+                      $type: 'EntityReference',
+                      logicalName: entity,
+                      id: record[primary],
+                      // The main operation's Target is the PreValidation one, alternate key included (recorded native upsert).
+                      ...(frame.targetKeyAttributes
+                        ? { keyAttributes: cloneStateData(frame.targetKeyAttributes) }
+                        : {}),
+                    }
                   : {
                       ...recordToSdkEntity(
                         store,
