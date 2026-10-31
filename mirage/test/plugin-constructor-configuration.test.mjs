@@ -177,6 +177,28 @@ test('a custom API main operation is constructed with null configuration whateve
   });
 });
 
+// @test-kind parity: native N3 solution trial (native-trial/n3-solution.json): a step imported from a Solution has no secure
+// configuration (sdkmessageprocessingstepsecureconfigid null) and the plug-in is constructed with secure null while its
+// unsecure configuration is kept
+test('a Solution-imported step keeps its unsecure configuration and is constructed with null secure configuration', () => {
+  const imported = parsePluginDocument(
+    `<ImportExportXml><PluginAssembly PluginAssemblyId="${id(1)}" Name="Config"><PluginType PluginTypeId="${id(2)}" Name="Invented.Two"/></PluginAssembly><SdkMessageProcessingStep SdkMessageProcessingStepId="${id(5)}"><PluginTypeId>${id(2)}</PluginTypeId><MessageName>Create</MessageName><PrimaryEntity>widget</PrimaryEntity><Stage>20</Stage><Rank>1</Rank><Mode>0</Mode><SupportedDeployment>0</SupportedDeployment><Configuration>Source Two</Configuration><SdkMessageProcessingStepSecureConfigId>${id(8)}</SdkMessageProcessingStepSecureConfigId></SdkMessageProcessingStep></ImportExportXml>`,
+  );
+  const rows = solutionPluginRows(
+    importSolutionPlugins([{ documents: [{ file: 'Invented.xml', facts: { plugins: imported } }] }]),
+    {
+      organizationId: id(9),
+    },
+  );
+  const [row] = rows.sdkmessageprocessingstep;
+  assert.equal(row.sdkmessageprocessingstepsecureconfigid ?? null, null);
+  const tables = { sdkmessageprocessingstep: [row], sdkmessageprocessingstepsecureconfig: [] };
+  assert.deepEqual(runtimeConstructorSettings({ tableRows: (name) => tables[name] ?? [] }, id(5), {}, {}), {
+    unsecureConfiguration: 'Source Two',
+    secureConfiguration: null,
+  });
+});
+
 // @test-kind compatibility+security: Learn plug-in constructor (unsecure, secure) overload selection; secure text stays out of catalogue JSON
 test(
   'actual original constructors use source and current HTTP registration strings without mutating a reused runtime descriptor',

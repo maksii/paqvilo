@@ -566,7 +566,8 @@ export function solutionPluginRows(plugins, { organizationId } = {}) {
       ...(Object.hasOwn(stepConstructorSettings(step), 'unsecureConfiguration')
         ? { configuration: stepConstructorSettings(step).unsecureConfiguration }
         : {}),
-      ...(step.secureConfigurationId ? { sdkmessageprocessingstepsecureconfigid: step.secureConfigurationId } : {}),
+      // An imported step has no secure configuration (N3 solution trial: sdkmessageprocessingstepsecureconfigid null after
+      // import, the plug-in constructed with secure null); a trusted descriptor may still supply local secure text.
       ...(step.customizationLevel != null ? { customizationlevel: step.customizationLevel } : {}),
       filteringattributes: (step.filteringAttributes ?? []).join(',') || null,
       statecode: step.enabled === false ? 1 : 0,
@@ -866,6 +867,17 @@ function assemblyContent(content) {
   return facts;
 }
 
+// An assembly's identity for uniqueness: name, culture, public key token, major and minor version.
+function assemblyKey(row) {
+  const [major, minor] = versionParts(row.version);
+  const token = String(row.publickeytoken ?? '').toLowerCase();
+  return [
+    String(row.name ?? '').toLowerCase(),
+    String(row.culture ?? 'neutral').toLowerCase(),
+    token === 'null' ? '' : token,
+    `${row.major ?? major}.${row.minor ?? minor}`,
+  ].join('|');
+}
 const base64Bytes = (content) =>
   Math.floor((content.length * 3) / 4) - (content.endsWith('==') ? 2 : content.endsWith('=') ? 1 : 0);
 
@@ -883,8 +895,17 @@ function validateAssembly({ store, data, existing }) {
   }
   if (data.sourcetype !== undefined && data.sourcetype !== null && Number(data.sourcetype) !== 0)
     throw fail('The given plugin assembly source type is not supported for isolated plugin assemblies.', '0x8004417D');
-  if (data.isolationmode !== undefined && data.isolationmode !== null && Number(data.isolationmode) !== 2)
-    throw fail('The plug-in assembly registration configuration is invalid.', '0x80044170');
+  // Native (N3 package trial, a package-owned assembly) refuses an isolation mode other than sandbox with 403 0x80040256
+  // naming the assembly; other assemblies are assumed to answer the same.
+  if (data.isolationmode !== undefined && data.isolationmode !== null && Number(data.isolationmode) !== 2) {
+    const row = { ...existing, ...data };
+    throw new DataError(
+      `Action failed for assembly '${row.name}, Version=${row.version}, Culture=${row.culture ?? 'neutral'}, PublicKeyToken=${row.publickeytoken ?? 'null'}': No publisher is found, assembly must be registered in isolation.`,
+      403,
+      'Forbidden',
+      { innerCode: '0x80040256' },
+    );
+  }
   // Supplied content sets the identity, so a content-only create works. Strong-name signing is required unless a package owns it.
   if (typeof data.content === 'string' && data.content !== '') {
     const facts = assemblyContent(data.content);
@@ -900,15 +921,7 @@ function validateAssembly({ store, data, existing }) {
       throw fail('Plug-in assembly is not strong name signed.', '0x80081114');
   }
   for (const column of ['name', 'version']) if (val(column) == null || val(column) === '') throw required(column);
-  const keyOf = (row) => {
-    const [major, minor] = versionParts(row.version);
-    return [
-      String(row.name ?? '').toLowerCase(),
-      String(row.culture ?? 'neutral').toLowerCase(),
-      String(row.publickeytoken ?? '').toLowerCase(),
-      `${row.major ?? major}.${row.minor ?? minor}`,
-    ].join('|');
-  };
+  const keyOf = assemblyKey;
   const key = keyOf({ ...existing, ...data });
   const self = existing?.pluginassemblyid;
   if (store.tableRows('pluginassembly').some((row) => !same(row.pluginassemblyid, self) && keyOf(row) === key))
@@ -920,16 +933,14 @@ function validateAssembly({ store, data, existing }) {
 
 // A plug-in package (dependent assemblies, Microsoft Learn): the content is a NuGet package; each lib/ assembly that declares
 // an IPlugin type is registered as a pluginassembly row of the package (packageid, no strong name needed) with a plugintype row
-// per plug-in type (workflow activities are not supported in packages). The bytes are inspected, never loaded. Name and
-// version are fixed once created; an update that drops an assembly or type that steps use is refused, and the rows it drops
-// otherwise are removed. The codes of the package refusals are not documented: 0x8004418b is the documented "required types /
-// content cannot be updated" error, 0x80040203 for the fixed name and version a guess.
+// per plug-in type (workflow activities are not supported in packages). The bytes are inspected, never loaded. Native (N3
+// package trial) accepts a PATCH of the name or version, contrary to Microsoft Learn; registers package-owned assemblies with
+// source type 4 (file store), sandbox isolation and the literal public key token 'null' when unsigned; refuses a second
+// package whose assembly duplicates a registered one (0x80040265, the database unique key); and drops plug-in types the new
+// content no longer declares. An update that drops an assembly or type that steps use is refused (Learn; 0x8004418b, the
+// documented "required types / content cannot be updated" error, is a guess).
 function validatePackage({ store, data, existing, operation }) {
   const val = (column) => valueOf(data, existing, column);
-  if (operation === 'update')
-    for (const column of ['name', 'version'])
-      if (data[column] !== undefined && String(data[column] ?? '') !== String(existing?.[column] ?? ''))
-        throw fail('The name and version of a plug-in package cannot be changed.', '0x80040203');
   const content = typeof data.content === 'string' && data.content !== '' ? data.content : null;
   let facts = null;
   if (content)
@@ -971,8 +982,21 @@ function validatePackage({ store, data, existing, operation }) {
     const identity = {
       version: assembly.version,
       culture: assembly.culture,
-      publickeytoken: assembly.publicKeyToken,
+      publickeytoken: assembly.publicKeyToken ?? 'null',
     };
+    const duplicate = store
+      .tableRows('pluginassembly')
+      .find(
+        (row) =>
+          !same(row.pluginassemblyid, assemblyId) &&
+          assemblyKey(row) ===
+            assemblyKey({ name: assembly.name, ...identity, major: assembly.major, minor: assembly.minor }),
+      );
+    if (duplicate)
+      throw fail(
+        `Cannot insert duplicate key exception when executing non-query: System.Data.SqlClient.SqlCommand Exception: System.Data.SqlClient.SqlException (0x80131904): Violation of UNIQUE KEY constraint 'UQ_PluginAssemblyBase_AssemblyMetadata'. Cannot insert duplicate key in object 'dbo.PluginAssemblyBase'. The duplicate key value is (${assembly.name}, ${assembly.major}, ${assembly.minor}, ${assembly.culture}, ${identity.publickeytoken}, fd140aae-4df4-11dd-bd17-0019b9312238, 0, Jan  1 1900 12:00AM).`,
+        '0x80040265',
+      );
     upsert(store, 'pluginassembly', 'pluginassemblyid', [
       {
         ...current,
@@ -982,7 +1006,7 @@ function validatePackage({ store, data, existing, operation }) {
         major: assembly.major,
         minor: assembly.minor,
         isolationmode: 2,
-        sourcetype: 0,
+        sourcetype: 4,
         content: assembly.bytes.toString('base64'),
         packageid: packageId,
         organizationid: org,

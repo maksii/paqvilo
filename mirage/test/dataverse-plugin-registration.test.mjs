@@ -1453,9 +1453,15 @@ describe('plug-in registration: assembly content and plug-in types', () => {
       (error) => error.details?.innerCode === '0x8004417C',
     );
     const assembly = { name: 'Contoso.Other', version: '1.0.0.0' };
+    // @parity-evidence: native N3 package trial (native-trial/n3-package.json): PATCH isolationmode of an assembly answers 403 0x80040256 "Action failed for assembly
+    // '<full name>': No publisher is found, assembly must be registered in isolation."
     await assert.rejects(
       run('pluginassembly', 'create', { ...assembly, isolationmode: 1 }),
-      (error) => error.details?.innerCode === '0x80044170',
+      (error) =>
+        error.status === 403 &&
+        error.details?.innerCode === '0x80040256' &&
+        error.message ===
+          "Action failed for assembly 'Contoso.Other, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null': No publisher is found, assembly must be registered in isolation.",
     );
     await assert.rejects(
       run('pluginassembly', 'create', { ...assembly, sourcetype: 1 }),
@@ -1464,9 +1470,11 @@ describe('plug-in registration: assembly content and plug-in types', () => {
     await run('pluginassembly', 'create', { ...assembly, isolationmode: 2, sourcetype: 0 });
   });
 
-  // Microsoft Learn dependent assemblies: the package's IPlugin assemblies are registered and associated with it; signing is
-  // not required; name and version are fixed; an update cannot drop a type that steps use; a package with steps cannot be
-  // unregistered; a package-owned assembly is not deleted on its own (0x80081117).
+  // Native N3 package trial: the package's IPlugin assemblies are registered and associated with it (source type 4, token
+  // 'null' when unsigned); name and version PATCHes are accepted (Microsoft Learn says otherwise); a package-owned assembly
+  // is not deleted on its own (0x80081117); a second package with the same assembly is a duplicate key (0x80040265); a
+  // package with steps cannot be deleted (0x8004f01f), otherwise its assemblies and types go with it. Learn: an update cannot
+  // drop a type that steps use (the code is a guess).
   it('a plug-in package registers its plug-in assemblies and types and follows the package rules', async () => {
     const { store, run } = await registry();
     const nuspec = (version) =>
@@ -1492,6 +1500,7 @@ describe('plug-in registration: assembly content and plug-in types', () => {
       ['Contoso.Unsigned'],
       'only the assembly with an IPlugin type is registered',
     );
+    assert.deepEqual([owned[0].sourcetype, owned[0].isolationmode, owned[0].publickeytoken], [4, 2, 'null']);
     const typesOf = () =>
       store.tableRows('plugintype').filter((row) => row.pluginassemblyid === owned[0].pluginassemblyid);
     assert.deepEqual(
@@ -1504,9 +1513,13 @@ describe('plug-in registration: assembly content and plug-in types', () => {
       (error) => error.details?.innerCode === '0x80081117',
     );
     const existing = { pluginpackageid: pkg.pluginpackageid, name: pkg.name, version: pkg.version };
+    // @parity-evidence: native N3 package trial (native-trial/n3-package.json): PATCH version 204 (1.0.1) and PATCH name 204; the earlier refusal followed Learn only
+    await run('pluginpackage', 'update', { version: '2.0.0', name: 'Contoso.Package.Renamed' }, existing);
     await assert.rejects(
-      run('pluginpackage', 'update', { version: '2.0.0' }, existing),
-      (error) => error.status === 400,
+      run('pluginpackage', 'create', { name: 'Contoso.Second', version: '1.0.0', content: pkg.content }),
+      (error) =>
+        error.details?.innerCode === '0x80040265' &&
+        error.message.includes("Violation of UNIQUE KEY constraint 'UQ_PluginAssemblyBase_AssemblyMetadata'"),
     );
     await assert.rejects(
       run('pluginpackage', 'create', {
