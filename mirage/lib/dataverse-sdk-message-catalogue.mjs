@@ -311,3 +311,24 @@ export const PLATFORM_MESSAGES_UNRECORDED = Object.freeze([
   'ValidateRecurrenceRule',
 ]);
 export const PRIVATE_PLATFORM_MESSAGES_UNRECORDED = Object.freeze(['InviteUser', 'PromoteToAdmin', 'SetDevErrors']);
+
+// Requests (OrganizationRequest.RequestName, the Web API action name) whose sdkmessage has another name: the native filter
+// catalogues list AddMembers, RemoveMembers, SetParent, SetBusiness, RetrieveAllChildUsers, ReassignObjects, Publish,
+// PublishAll, Send, DeliverIncoming and DeliverPromote, and no row for the request name. Steps register on the sdkmessage and
+// a request's pipeline runs under it.
+const REQUEST_MESSAGES = Object.freeze({
+  AddMembersTeam: 'AddMembers',
+  RemoveMembersTeam: 'RemoveMembers',
+  SetParentTeam: 'SetParent',
+  SetParentSystemUser: 'SetParent',
+  SetBusinessSystemUser: 'SetBusiness',
+  RetrieveAllChildUsersSystemUser: 'RetrieveAllChildUsers',
+  ReassignObjectsSystemUser: 'ReassignObjects',
+  PublishXml: 'Publish',
+  PublishAllXml: 'PublishAll',
+  SendEmail: 'Send',
+  DeliverIncomingEmail: 'DeliverIncoming',
+  DeliverPromoteEmail: 'DeliverPromote',
+});
+/** The sdkmessage a request runs under. */
+export const requestMessage = (name) => REQUEST_MESSAGES[name] ?? name;

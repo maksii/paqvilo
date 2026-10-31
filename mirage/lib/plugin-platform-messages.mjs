@@ -17,6 +17,7 @@ import { pluginEntryStep } from './plugin-message-admission.mjs';
 import { authorizeGrant, messageFilters, sdkRecordKey, sdkValueToRecord } from './local-organization-service.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
 import { PLATFORM_TYPES } from './dataverse-operation-contracts.mjs';
+import { requestMessage } from './dataverse-sdk-message-catalogue.mjs';
 import { ACCESS_RIGHTS, createPrincipals, grantAccessNow, revokeAccessNow } from './dataverse-security.mjs';
 
 const EMPTY = '00000000-0000-0000-0000-000000000000';
@@ -811,6 +812,8 @@ function sdkToWebValue(store, value) {
       };
     case 'EntityReferenceCollection':
     case 'GuidArray':
+    case 'PrimitiveArray':
+    case 'Array':
     case 'SdkArray':
       return (value.values ?? []).map((item) => sdkToWebValue(store, item));
     default:
@@ -849,6 +852,47 @@ function webToSdkValue(store, type, value) {
   }
 }
 
+// Microsoft.Crm.Sdk.Messages requests whose Web API operation is bound to a row the request names by another parameter
+// (bound: [table, parameter]; the official request classes AddMembersTeamRequest TeamId/MemberIds, SendEmailRequest
+// EmailId, ...), or whose parameters the Web API names differently (body: the Web API values of the SDK parameters).
+const memberBody = (parameters) => ({
+  Members: [parameters.MemberIds?.values ?? []]
+    .flat()
+    .map((item) => ({ '@odata.type': 'Microsoft.Dynamics.CRM.systemuser', systemuserid: item?.value ?? item })),
+});
+const SDK_REQUESTS = {
+  AddMembersTeam: { bound: ['team', 'TeamId'], body: memberBody },
+  RemoveMembersTeam: { bound: ['team', 'TeamId'], body: memberBody },
+  RetrieveTeamPrivileges: { bound: ['team', 'TeamId'] },
+  SendEmail: { bound: ['email', 'EmailId'] },
+  DeliverPromoteEmail: { bound: ['email', 'EmailId'] },
+  AddPrivilegesRole: { bound: ['role', 'RoleId'] },
+  ReplacePrivilegesRole: { bound: ['role', 'RoleId'] },
+  RemovePrivilegeRole: { bound: ['role', 'RoleId'] },
+  AddUserToRecordTeam: { bound: ['systemuser', 'SystemUserId'] },
+  RemoveUserFromRecordTeam: { bound: ['systemuser', 'SystemUserId'] },
+  // The Web API answers the new record's data as its body; InitializeFromResponse carries it as Entity.
+  InitializeFrom: { response: (store, body, parameters) => ({ Entity: initializedEntity(store, body, parameters) }) },
+};
+function initializedEntity(store, body, parameters) {
+  const logical = String(parameters.TargetEntityName ?? ''),
+    values = {};
+  for (const [key, value] of Object.entries(body)) {
+    const bind = /^(\w+)@odata\.bind$/.exec(key);
+    if (!bind) {
+      if (!key.startsWith('@')) values[key] = value;
+      continue;
+    }
+    // A bound navigation names the lookup column it sets (dataverse-record-messages.mjs initializeFrom).
+    const reference = /^\/?(\w+)\(([^)]+)\)$/.exec(String(value));
+    const rel = store.resolveMapping(logical).relationships?.[bind[1]];
+    if (!reference) continue;
+    const target = store.resolveMapping(reference[1]);
+    values[rel?.from ?? bind[1]] = { id: reference[2], logical_name: target.logicalName };
+  }
+  return recordToSdkEntity(store, logical, values);
+}
+
 /**
  * IOrganizationService.Execute of a message that is a registered Web API action or function of the same name (its
  * Microsoft.Crm.Sdk.Messages request): the message's pipeline runs at the caller's depth + 1 (PreValidation,
@@ -859,9 +903,17 @@ function webToSdkValue(store, type, value) {
  */
 export function executeOperationSdkMessage({ store, profile, request, parameters, options = {} }) {
   const api = store.recordPipeline?.organizationApi,
-    name = request.requestName;
+    name = request.requestName,
+    contract = SDK_REQUESTS[name];
   if (!api?.registry) return undefined;
-  const target = parameters.Target?.$type === 'EntityReference' ? parameters.Target : null;
+  const boundId = contract?.bound && parameters[contract.bound[1]];
+  if (contract?.bound && (boundId?.$type !== 'Guid' || !GUID.test(boundId.value ?? '')))
+    fail(`SDK ${name} requires the ${contract.bound[1]} Guid.`, 'InvalidArgument', 400, { innerCode: '0x80040203' });
+  const target = boundId
+    ? { $type: 'EntityReference', logicalName: contract.bound[0], id: boundId.value, name: null }
+    : parameters.Target?.$type === 'EntityReference'
+      ? parameters.Target
+      : null;
   const find = (kind, binding) => api.registry.find({ name, kind, binding, entity: target?.logicalName ?? undefined });
   const op =
     (target && (find('action', 'entity') ?? find('function', 'entity'))) ??
@@ -876,8 +928,11 @@ export function executeOperationSdkMessage({ store, profile, request, parameters
         });
   const identity = { id: user.systemuserid, systemUserId: user.systemuserid, admin: true };
   const values = Object.fromEntries(
-    Object.entries(parameters)
-      .filter(([key]) => !SYSTEM_PARAMETERS.has(key) && !(op.binding === 'entity' && key === 'Target'))
+    Object.entries(contract?.body ? contract.body(parameters) : parameters)
+      .filter(
+        ([key]) =>
+          !SYSTEM_PARAMETERS.has(key) && key !== contract?.bound?.[1] && !(op.binding === 'entity' && key === 'Target'),
+      )
       .map(([key, value]) => [key, sdkToWebValue(store, value)]),
   );
   let bound;
@@ -908,8 +963,15 @@ export function executeOperationSdkMessage({ store, profile, request, parameters
   };
   const responseTypes = RESPONSE_TYPES.get(`${name}Response`) ?? new Map();
   // The response carries the outputs as PostOperation leaves them.
+  // A handler's synchronous variant (registration sdk) writes inside the caller's transaction, as an SDK record write does.
+  context.sdkWrite = (fn) =>
+    store.sdkMutation(() => {
+      store.promoteRowTransaction();
+      return fn();
+    });
   const results = runMessagePipeline(store, {
-    message: name,
+    // The request's sdkmessage (AddMembersTeam runs AddMembers: dataverse-sdk-message-catalogue.mjs).
+    message: requestMessage(name),
     entity: target?.logicalName ?? 'none',
     id: target?.id,
     inputs: {
@@ -927,6 +989,7 @@ export function executeOperationSdkMessage({ store, profile, request, parameters
         fail(`The ${name} operation is asynchronous; a plug-in's synchronous SDK Execute cannot wait for it.`);
       }
       const body = answer?.body && typeof answer.body === 'object' && !Buffer.isBuffer(answer.body) ? answer.body : {};
+      if (contract?.response) return contract.response(store, body, parameters);
       return Object.fromEntries(
         Object.entries(body)
           .filter(([key]) => !key.startsWith('@'))

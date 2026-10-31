@@ -211,8 +211,8 @@ async function mergeRows(api, ctx, body, target, subordinate, transact = (fn) =>
 }
 
 // InitializeFrom: the new record's data as a body; the parental lookup bind comes first.
-// A stored lookup on the source becomes its navigation bind on the target.
-async function initializeFrom(api, ctx) {
+// A stored lookup on the source becomes its navigation bind on the target. Synchronous: a plug-in's SDK Execute calls it too.
+function initializeFrom(api, ctx) {
   const params = ctx.params ?? {};
   const source = referenceOf(api, params.EntityMoniker, 'EntityMoniker');
   const target = api.store.resolveMapping(String(params.TargetEntityName ?? ''));
