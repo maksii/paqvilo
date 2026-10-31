@@ -82,6 +82,8 @@ test(
     );
     assert.equal(app.store.snapshot().tables.fx_widget.length, 1);
     assert.equal(app.store.snapshot().tables.fx_widget[0].fx_note, 'Original typed SDK metadata passed');
+    // The shared CLR host is persistent (one per prepared runtime): it stops when the runtime closes.
+    await app.close();
     const starts = app.state().diagnostics.filter((n) => n.code === 'PLUGIN_CLR_HOST_STARTED'),
       stops = app.state().diagnostics.filter((n) => n.code === 'PLUGIN_CLR_HOST_STOPPED');
     assert.equal(starts.length, 1);

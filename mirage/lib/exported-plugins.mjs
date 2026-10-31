@@ -18,7 +18,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DataError } from './data-error.mjs';
 import { uploadedClrRuntime } from './plugin-uploaded.mjs';
-import { conditionsOf, publishedRules } from './dataverse-duplicates.mjs';
+import { conditionsOf, publishedRules } from './dataverse-duplicate-rules.mjs';
 import { parseSolutionXml } from './solution-xml.mjs';
 import {
   clrContext,

@@ -142,15 +142,19 @@ export function committedJobs(store) {
     }
     return jobs.sort((a, b) => a.index - b.index);
   };
+  // The start latency left of a row that waits only for it (data startAfter); null for a row without one.
+  const latencyOf = (row) => (Number.isFinite(jobOf(row)?.startAfter) ? waitOf(row) : null);
   // The shortest wait of the queued Ready rows not started (0: one is due; null: none waits).
-  const nextWait = (rows = store.state.tables?.asyncoperation ?? []) => {
+  const nextWait = (rows = store.state.tables?.asyncoperation ?? [], of = waitOf) => {
     let wait = null;
     for (const id of queued) {
-      const job = started.has(id) ? null : readyJob(rows, id);
-      if (job) wait = Math.min(wait ?? Infinity, waitOf(rows[job.index]));
+      const job = started.has(id) ? null : readyJob(rows, id),
+        rowWait = job ? of(rows[job.index]) : null;
+      if (rowWait !== null) wait = Math.min(wait ?? Infinity, rowWait);
     }
     return wait;
   };
+  const latencyWait = () => nextWait(undefined, latencyOf);
   // A row still Ready after its run means the run's transaction rolled back.
   const countAttempt = async (id, kind, failure) => {
     if (!readyJob(store.state.tables?.asyncoperation ?? [], id)) return;
@@ -345,12 +349,13 @@ export function committedJobs(store) {
       return closed;
     },
     // A manual scheduler counts a running tick itself (status().pending), and leaves out a blocked one.
-    // A postponed row is not pending: like a scheduler timer that is not due, settle does not wait for it.
+    // A postponed row is not pending: like a scheduler timer that is not due, settle does not wait for it. A row that
+    // waits only for its start latency is pending: settle waits for it, as a job the platform picks up on its own.
     pending: () =>
       enqueues.size +
       running.size +
       (ticking && !manual() ? 1 : 0) +
-      (autoRuns() && nextWait() === 0 ? queued.size : 0),
+      (autoRuns() && (nextWait() === 0 || latencyWait() !== null) ? queued.size : 0),
     async drain() {
       for (;;) {
         await store.flushCommittedEvents();
@@ -367,7 +372,9 @@ export function committedJobs(store) {
           await scheduler().drain();
           if (!ticking && !running.size && !enqueues.size && queued.size)
             await new Promise((resolve) => setImmediate(resolve));
-        } else return;
+        } else if (autoRuns() && latencyWait() !== null)
+          await new Promise((resolve) => setTimeout(resolve, latencyWait()));
+        else return;
       }
     },
   });
