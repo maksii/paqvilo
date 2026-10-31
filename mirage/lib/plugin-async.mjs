@@ -634,7 +634,9 @@ export function createAsyncPluginRunner({
             }) &&
             (event.operation !== 'onexternalupdated' ||
               !item.filteringAttributes.length ||
-              item.filteringAttributes.some((name) => event.submittedAttributes.includes(name))),
+              item.filteringAttributes.some((name) =>
+                event.submittedAttributes.includes(String(name).trim().toLowerCase()),
+              )),
         )
         .sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
       for (const item of selected) {

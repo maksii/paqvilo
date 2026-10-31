@@ -8,6 +8,11 @@ import { DataError } from './data-error.mjs';
 import { ownershipTypeName, privilegeDeniedError, uuidV5 } from './dataverse-security.mjs';
 import { standardTableDef } from './dataverse-standard.mjs';
 import { SDK_MESSAGES, pluginUnsupported } from './exported-plugins.mjs';
+import {
+  PLATFORM_MESSAGES_UNRECORDED,
+  PLATFORM_SDK_MESSAGES,
+  PRIVATE_PLATFORM_MESSAGES_UNRECORDED,
+} from './dataverse-sdk-message-catalogue.mjs';
 import { InvalidAssembly, inspectAssembly, inspectPackage, inspectSigningCertificate } from './clr-assembly-reader.mjs';
 import { isLoopbackUrl, loopbackFetch, messagingOf, serviceEndpointTarget } from './dataverse-webhooks.mjs';
 import { tracedFetch } from './trace-hosts.mjs';
@@ -16,69 +21,24 @@ import { stepConstructorSettings, copyStepConstructorSettings } from './plugin-c
 
 const NAMESPACE = uuidV5('6ba7b811-9dad-11d1-80b4-00c04fd430c8', 'paqvilo-dataverse'); // same as dataverse-api.mjs DATAVERSE_NAMESPACE
 const SIXTEEN_MB = 16 * 1024 * 1024;
-// Platform SDK messages with their native sdkmessage ids (the same in every organization) and row flags (space separated):
-// private, server-only availability (0, else 2) and read (autotransact false). Recorded from native sdkmessage rows. Only
-// standard SDK messages belong here; messages a Microsoft solution installs (msdyn_, adx_, AI..., search...) are environment
-// content, not platform constants.
-const PLATFORM_MESSAGES = Object.fromEntries(
-  [
-    ['ApplyRecordCreationAndUpdateRule', 'b8c5bc44-f2cb-4a1a-99b0-f35802de0a6a', 'server read'],
-    ['Archive', 'd1b4b049-36f7-4788-93e1-21fa36b3a544', 'private'],
-    ['Assign', '8cbdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server'],
-    ['Associate', '16e7c888-3b24-448b-b7da-ebfe9b681762'],
-    ['BulkArchive', '87a84fbd-5d5c-42a0-a270-bddebee1f9f5', 'private'],
-    ['BulkRetain', '3c4af4bf-858c-4bbf-a730-7a4f05d4a1aa'],
-    ['Create', '9ebdbb1b-ea3e-db11-86a7-000a3a5473e8'],
-    ['CreateMultiple', 'eb9990f6-feff-497f-974c-eb457ee0d072'],
-    ['CreateMultipleLegacy', '9473dd2f-1787-4d63-8ed2-79d33ee9550e', 'private'],
-    ['Delete', 'a1bdbb1b-ea3e-db11-86a7-000a3a5473e8'],
-    ['DeleteMultiple', '3a2f175d-d34f-41ca-94f2-8ec927d1c9e9'],
-    ['Disassociate', 'bdfc191d-fc56-493a-a6b1-cb0c47a22ecc'],
-    ['Execute', 'a6bdbb1b-ea3e-db11-86a7-000a3a5473e8', 'read'],
-    ['Export', 'a9bdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server read'],
-    ['ExportAll', 'aabdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server read'],
-    ['ExportCompressed', 'f822e36d-ff93-42ad-b833-45697966f484', 'server read'],
-    ['ExportCompressedAll', '343f7101-2166-40ea-ae81-9b183909592e', 'server read'],
-    ['GrantAccess', 'c5bdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server'],
-    ['Import', 'c7bdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server read'],
-    ['ImportAll', 'c8bdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server read'],
-    ['ImportCompressedAll', 'ae6eb9c2-3c62-41f5-a1fe-f19f3709c75b', 'server read'],
-    ['ImportCompressedWithProgress', '0468d3d7-836b-4bb8-84cf-ca587cc30c68', 'server read'],
-    ['ImportWithProgress', '0368d3d7-836b-4bb8-84cf-ca587cc30c68', 'server read'],
-    ['IsValidStateTransition', 'cebdbb1b-ea3e-db11-86a7-000a3a5473e8'],
-    ['Merge', 'dbbdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server'],
-    ['ModifyAccess', 'dcbdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server'],
-    ['Publish', 'b2bdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server read'],
-    ['PublishAll', 'debdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server read'],
-    ['PurgeArchivedContent', '49648deb-0127-4175-8003-44a9755e15f1', 'private'],
-    ['PurgeRetainedContent', 'b7398baf-088d-4a42-8f14-1fdae647dc39'],
-    ['Retain', '96db29d8-db5f-4b63-ae1d-2e9a9f222261'],
-    ['Retrieve', 'f2bdbb1b-ea3e-db11-86a7-000a3a5473e8', 'read'],
-    ['ReplicateAssociate', 'b8a2d3e4-5f6a-4b7c-8d9e-0f1a2b3c4d5e'],
-    ['ReplicateDisassociate', '4b5c6d7e-8f9a-4b0c-1d2e-3f4a5b6c7d8e'],
-    ['RetrieveEntityChanges', 'ffe4e36f-d366-4c5f-8f20-47910c912cad', 'read'],
-    ['RetrieveExchangeRate', '126075c5-c77f-44fd-bb7d-3457a9168cee'],
-    ['RetrieveMultiple', '03bebb1b-ea3e-db11-86a7-000a3a5473e8', 'read'],
-    ['RetrievePersonalWall', 'df5b3fb2-79db-11e0-a0f5-1cc1de634cfe', 'server'],
-    ['RetrievePrincipalAccess', '04bebb1b-ea3e-db11-86a7-000a3a5473e8', 'read'],
-    ['RetrieveRecordWall', 'f03e8105-79da-11e0-a0f5-1cc1de634cfe', 'server'],
-    ['RetrieveSharedPrincipalsAndAccess', '10bebb1b-ea3e-db11-86a7-000a3a5473e8', 'read'],
-    ['RetrieveVersion', '31bebb1b-ea3e-db11-86a7-000a3a5473e8'],
-    ['RevokeAccess', '11bebb1b-ea3e-db11-86a7-000a3a5473e8', 'server'],
-    ['RollbackRetain', '9d8b5bbb-f49b-4d3b-8628-0b01f259ef75'],
-    ['SetLocLabels', '939dd666-7914-490e-adf9-4fb093dee8b7', 'server'],
-    ['SetState', '1cbebb1b-ea3e-db11-86a7-000a3a5473e8'],
-    ['SetStateDynamicEntity', '1dbebb1b-ea3e-db11-86a7-000a3a5473e8'],
-    ['Update', '20bebb1b-ea3e-db11-86a7-000a3a5473e8'],
-    ['UpdateMultiple', 'e2ac2e19-aea0-47a3-b024-f7a7015b4d60'],
-    ['UpdateMultipleLegacy', '9483dd2f-1787-4d63-8ed2-79d33ee9550e', 'private'],
-    ['Upsert', '437b4608-8fc1-472a-968d-3a3f55180fba', 'read'],
-    ['UpsertMultiple', 'a37ff683-98b5-4325-953f-9a338240dbf0'],
-    ['ValidateArchiveConfig', '8a60138c-3079-473b-ae9b-6d245b4ac3f1', 'private'],
-    ['ValidateRetentionConfig', 'd3181841-c5be-4b19-b09b-a20a75ab49ff'],
-    ['WhoAmI', '26bebb1b-ea3e-db11-86a7-000a3a5473e8', 'read'],
-  ].map(([name, id, flags = '']) => [name, { id, flags: flags.split(' ') }]),
-);
+// The platform SDK messages with their native sdkmessage ids and flags (dataverse-sdk-message-catalogue.mjs), and the
+// platform messages the native corpus names without recording their ids. Messages a Microsoft solution installs are
+// environment content, not platform constants.
+const PLATFORM_MESSAGES = PLATFORM_SDK_MESSAGES;
+const UNRECORDED_MESSAGES = [...PLATFORM_MESSAGES_UNRECORDED, ...PRIVATE_PLATFORM_MESSAGES_UNRECORDED];
+const PRIVATE_UNRECORDED = new Set(PRIVATE_PLATFORM_MESSAGES_UNRECORDED);
+// Web API actions whose sdkmessage has another name: the native team and systemuser filter sets (native filter catalogue
+// round 2) list AddMembers, RemoveMembers, SetParent, SetBusiness, RetrieveAllChildUsers and ReassignObjects and no
+// <message><Table> name, so these action names seed no sdkmessage row of their own.
+const ACTION_MESSAGES = {
+  AddMembersTeam: 'AddMembers',
+  RemoveMembersTeam: 'RemoveMembers',
+  SetParentTeam: 'SetParent',
+  SetParentSystemUser: 'SetParent',
+  SetBusinessSystemUser: 'SetBusiness',
+  RetrieveAllChildUsersSystemUser: 'RetrieveAllChildUsers',
+  ReassignObjectsSystemUser: 'ReassignObjects',
+};
 // Native per-table filters of a custom table (proven for a user-owned and an organization-owned one) follow its
 // capabilities. Every table: data, state, retention and archive messages (IsValidStateTransition takes no custom step on
 // a custom table). Custom tables add DeleteMultiple and the legacy bulk messages. User- or team-owned tables add the
@@ -157,9 +117,8 @@ const STANDARD_TABLE_FILTERS = {
     'ValidateArchiveConfig',
     'ValidateRetentionConfig',
   ].map((message) => [message, true, ACCOUNT_SERVER_FILTERS.has(message) ? 0 : 2]),
-  // Native filter catalogue round 2 (native-filters-2). Messages whose native sdkmessageid is not recorded are left out:
-  // Handle and Route (task), AddMembers and RemoveMembers (team), and the systemuser and team messages that refuse
-  // custom steps (InviteUser, PromoteToAdmin, SetParent, RetrieveMembers, ...).
+  // Native filter catalogue round 2 (native-filters-2). The messages of task, systemuser and team whose sdkmessageid it does
+  // not record take local ids (UNRECORDED_MESSAGES); contact's three adx_ filters are Power Pages solution content.
   contact: [
     ['Assign', true, 0],
     ['Create', true, 2],
@@ -185,12 +144,14 @@ const STANDARD_TABLE_FILTERS = {
     ['CreateMultiple', true, 2],
     ['Delete', true, 2],
     ['GrantAccess', true, 0],
+    ['Handle', true, 2],
     ['ModifyAccess', true, 0],
     ['Retrieve', true, 2],
     ['RetrieveMultiple', true, 2],
     ['RetrievePrincipalAccess', true, 2],
     ['RetrieveSharedPrincipalsAndAccess', true, 2],
     ['RevokeAccess', true, 0],
+    ['Route', true, 2],
     ['SetState', true, 2],
     ['SetStateDynamicEntity', true, 2],
     ['Update', true, 2],
@@ -199,18 +160,35 @@ const STANDARD_TABLE_FILTERS = {
   systemuser: [
     ['Create', true, 0],
     ['Delete', true, 0],
+    ['InviteUser', false, 0],
+    ['PromoteToAdmin', false, 2],
+    ['ReassignObjects', false, 0],
+    ['RemoveParent', false, 0],
     ['Retrieve', false, 2],
+    ['RetrieveAllChildUsers', false, 2],
     ['RetrieveMultiple', false, 2],
+    ['RetrieveTeams', false, 2],
+    ['RetrieveUserSettings', false, 2],
+    ['SetBusiness', false, 0],
+    ['SetDevErrors', false, 0],
+    ['SetParent', false, 0],
     ['SetState', true, 0],
     ['SetStateDynamicEntity', true, 0],
     ['Update', true, 0],
+    ['UpdateUserSettings', false, 2],
   ],
   team: [
+    ['AddMembers', true, 0],
     ['Archive', true, 2],
+    ['ConvertOwnerTeamToAccessTeam', false, 0],
     ['Create', true, 0],
     ['Delete', true, 0],
+    ['RemoveMembers', true, 0],
     ['Retrieve', true, 2],
+    ['RetrieveMembers', false, 2],
     ['RetrieveMultiple', true, 2],
+    ['SetParent', false, 0],
+    ['SyncGroupMembersToTeam', false, 0],
     ['Update', true, 0],
   ],
   transactioncurrency: [
@@ -227,7 +205,7 @@ const STANDARD_TABLE_FILTERS = {
 // Native filter sets of table kinds (native filter catalogue round 2): an N:N intersect table takes custom steps on
 // RetrieveMultiple only; an elastic table has data, bulk, Upsert, change-tracking, retention and archive filters (no state or
 // sharing messages; Assign and RetrievePrincipalAccess when owned); a virtual table has its data filters. All allow custom
-// steps with server-only availability. (UpsertMultipleLegacy, whose native id is not recorded, is left out.)
+// steps with server-only availability.
 const INTERSECT_MESSAGES = ['RetrieveMultiple'];
 const ELASTIC_MESSAGES = [
   'Archive',
@@ -250,6 +228,7 @@ const ELASTIC_MESSAGES = [
   'UpdateMultipleLegacy',
   'Upsert',
   'UpsertMultiple',
+  'UpsertMultipleLegacy',
   'ValidateArchiveConfig',
   'ValidateRetentionConfig',
 ];
@@ -263,38 +242,17 @@ const VIRTUAL_MESSAGES = [
   'Update',
   'UpdateMultipleLegacy',
 ];
-// The 'none' (no table) filters native has for platform messages, as message: [iscustomprocessingstepallowed, availability,
-// unfiltered]. The allowed flag governs a step registered on that filter. A step registered with no filter is accepted on any
-// existing message (Upsert, Merge and RetrieveEntityChanges included, whose 'none' filters refuse custom steps) except where
-// unfiltered is false: native refuses a global WhoAmI or RetrieveVersion step (0x80044187).
-const NONE_FILTERS = {
-  ApplyRecordCreationAndUpdateRule: [true, 0],
-  Associate: [true, 2],
-  Disassociate: [true, 2],
-  Execute: [true, 2],
-  Export: [true, 0],
-  ExportAll: [true, 0],
-  ExportCompressed: [true, 0],
-  ExportCompressedAll: [true, 0],
-  Import: [true, 0],
-  ImportAll: [true, 0],
-  ImportCompressedAll: [true, 0],
-  ImportCompressedWithProgress: [true, 0],
-  ImportWithProgress: [true, 0],
-  Merge: [false, 2],
-  Publish: [true, 0],
-  PublishAll: [true, 0],
-  ReplicateAssociate: [true, 2],
-  ReplicateDisassociate: [true, 2],
-  RetrieveEntityChanges: [false, 2],
-  RetrievePersonalWall: [true, 0],
-  RetrieveRecordWall: [true, 0],
-  RetrieveVersion: [false, 2, false],
-  SetLocLabels: [true, 0],
-  Upsert: [false, 2],
-  UpsertMultiple: [false, 2],
-  WhoAmI: [false, 2, false],
-};
+// The 'none' (no table) filters native has for platform messages (the catalogue's none flags), as message:
+// [iscustomprocessingstepallowed, availability, unfiltered]. The allowed flag governs a step registered on that filter. A step
+// registered with no filter is accepted on any existing message (Upsert, Merge and RetrieveEntityChanges included, whose 'none'
+// filters refuse custom steps) except where unfiltered is false: native refuses a global WhoAmI or RetrieveVersion step
+// (0x80044187). Whether other messages whose 'none' filter refuses custom steps (ExecuteMultiple, ...) refuse a global step is
+// not captured; they accept it.
+const NONE_FILTERS = Object.fromEntries(
+  Object.entries(PLATFORM_MESSAGES)
+    .filter(([, message]) => message.none)
+    .map(([name, { none }]) => [name, ['WhoAmI', 'RetrieveVersion'].includes(name) ? [...none, false] : [...none]]),
+);
 const EXTERNAL_MESSAGES = ['OnExternalCreated', 'OnExternalUpdated', 'OnExternalDeleted'];
 const STAGE_NAME = { 10: 'PreValidation', 20: 'PreOperation', 40: 'PostOperation' };
 // Mirage's own system tables and intersect tables take no custom processing step.
@@ -371,11 +329,17 @@ function handlerOf(data, existing) {
   return { id: ref(data, existing, 'eventhandler') ?? ref(data, existing, 'plugintypeid'), table: null };
 }
 
+// The attribute logical names a table's steps may filter or image on: the standard and mapped columns, the metadata
+// service's columns (platform columns such as modifiedon and statecode, and the primary key), lower-cased.
 const columnsOf = (store, table) =>
-  new Set([
-    ...Object.keys(standardTableDef(table)?.attributes ?? {}),
-    ...Object.keys(store.state.mappings?.[table]?.fields ?? {}),
-  ]);
+  new Set(
+    [
+      ...Object.keys(standardTableDef(table)?.attributes ?? {}),
+      ...Object.keys(store.state.mappings?.[table]?.fields ?? {}),
+      ...Object.keys(store.platformFields?.(table) ?? {}),
+      ...(store.state.mappings?.[table]?.idColumn ? [store.state.mappings[table].idColumn] : []),
+    ].map((name) => name.toLowerCase()),
+  );
 
 // Assembly facts without the content: the major and minor from version, the culture and public key token from FullName.
 const versionParts = (version) => {
@@ -395,12 +359,15 @@ function assemblyFacts(assembly) {
   };
 }
 
-// The message rows: the platform messages, every registered name and every custom API (private ones flagged).
+// The message rows: the platform messages (catalogue flags), the platform messages without recorded ids, every registered
+// name and every custom API (private ones flagged). A name outside the catalogue takes server-only availability and the
+// default flags.
 function messageRows(store, org, names, availability) {
   const apis = store.state.tables.customapi ?? [];
   const privateApis = new Set(apis.filter((api) => api.isprivate === true).map((api) => api.uniquename));
   const all = new Set([
     ...Object.keys(PLATFORM_MESSAGES),
+    ...UNRECORDED_MESSAGES,
     ...names,
     ...apis.map((api) => api.uniquename).filter(Boolean),
   ]);
@@ -409,12 +376,11 @@ function messageRows(store, org, names, availability) {
     return {
       sdkmessageid: messageId(name),
       name,
-      availability:
-        availability[name.toLowerCase()]?.message ?? (platform && !platform.flags.includes('server') ? 2 : 0),
+      availability: availability[name.toLowerCase()]?.message ?? platform?.availability ?? 0,
       isactive: true,
-      isprivate: privateApis.has(name) || platform?.flags.includes('private') === true,
-      workflowsdkstepenabled: false,
-      autotransact: !platform?.flags.includes('read'),
+      isprivate: privateApis.has(name) || platform?.isprivate === true || PRIVATE_UNRECORDED.has(name),
+      workflowsdkstepenabled: platform?.workflowsdkstepenabled === true,
+      autotransact: platform?.autotransact ?? true,
       organizationid: org,
     };
   });
@@ -517,8 +483,8 @@ function sourceAvailability(plugins) {
 }
 
 /**
- * The Solution's registrations as rows (solution-metadata plugins, from importSolutionPlugins). Keyed by table; the
- * content is never read. Steps keep their facts even when unsupported: overlayRegisteredSteps decides what runs.
+ * The Solution's registrations as rows (solution-metadata plugins, from importSolutionPlugins). Keyed by table; an
+ * assembly carries the exported bytes solution-metadata read and checked. Steps keep their facts even when unsupported: overlayRegisteredSteps decides what runs.
  */
 export function solutionPluginRows(plugins, { organizationId } = {}) {
   const org = organizationId;
@@ -534,6 +500,8 @@ export function solutionPluginRows(plugins, { organizationId } = {}) {
       ...facts,
       isolationmode: assembly.isolationMode ?? 2,
       sourcetype: assembly.sourceType ?? 0,
+      // The exported .dll bytes (solution-metadata.mjs), so its steps run them like uploaded content.
+      ...(assembly.content ? { content: assembly.content } : {}),
       organizationid: org,
     });
   }
@@ -579,11 +547,16 @@ export function solutionPluginRows(plugins, { organizationId } = {}) {
       impersonatinguserid: step.impersonatingUserId ?? null,
       organizationid: org,
     });
+    const imageAliasOf = (image) => image.alias || image.name;
     for (const image of step.images ?? []) {
+      // A shared alias (pre and post image of one name) keys the id by the image type too; a unique alias keeps its id.
+      const shared = (step.images ?? []).filter((other) => imageAliasOf(other) === imageAliasOf(image)).length > 1;
       rows.sdkmessageprocessingstepimage.push({
         sdkmessageprocessingstepimageid: uuidV5(
           org,
-          `sdkmessageprocessingstepimage:${step.id}:${image.alias || image.name}`,
+          shared
+            ? `sdkmessageprocessingstepimage:${step.id}:${image.type ?? 0}:${imageAliasOf(image)}`
+            : `sdkmessageprocessingstepimage:${step.id}:${imageAliasOf(image)}`,
         ),
         sdkmessageprocessingstepid: step.id,
         name: image.name || image.alias,
@@ -797,15 +770,28 @@ function seed(api, plugins = null) {
   const { store } = api;
   const org = organizationOf(store) || String(api.settings?.organizationId ?? '').toLowerCase(); // reset runs before the organization row is re-seeded
   const stepMessages = (plugins?.steps ?? []).map((step) => step.message).filter(Boolean);
-  const names = [...(api.registry?.names?.() ?? []), ...stepMessages];
+  const names = [...(api.registry?.names?.() ?? []).map((name) => ACTION_MESSAGES[name] ?? name), ...stepMessages];
   const availability = plugins ? sourceAvailability(plugins) : (store.state.dataverse?.pluginSourceAvailability ?? {});
   if (plugins) (store.state.dataverse ??= {}).pluginSourceAvailability = availability;
   upsert(store, 'sdkmessage', 'sdkmessageid', messageRows(store, org, names, availability), { fresh: true });
+  // A table's derived filters go with the table (a dropped table keeps none); custom API filters re-added below stay.
+  const filters = store.state.tables.sdkmessagefilter ?? [];
+  for (let i = filters.length - 1; i >= 0; i--) {
+    const table = filters[i].primaryobjecttypecode;
+    if (table !== 'none' && !Object.hasOwn(store.state.mappings ?? {}, table))
+      store.removeRow('sdkmessagefilter', filters, i);
+  }
   upsert(store, 'sdkmessagefilter', 'sdkmessagefilterid', filterRows(store, org, availability), { fresh: true });
   (store.state.dataverse ??= {}).customApiMessages = store.tableRows('customapi').map((api) => api.uniquename);
   if (plugins)
     for (const [logical, rows] of Object.entries(solutionPluginRows(plugins, { organizationId: org })))
       upsert(store, logical, `${logical}id`, rows);
+}
+
+// Re-derives the sdkmessage and sdkmessagefilter rows from the current tables (a table created or dropped at runtime gets or
+// loses its filters); the caller's store transaction holds the change.
+export function resyncMessageFilters(api) {
+  seed(api);
 }
 
 const typesOfAssembly = (store, assemblyId) =>
@@ -1303,15 +1289,15 @@ function validateStep({ store, principals, c, data, existing, operation }) {
   const deployment = Number(val('supporteddeployment') ?? 0);
   if ((deployment !== 0 && availability.includes(0)) || (deployment !== 1 && availability.includes(1)))
     throw fail('Supported deployment does not agree with message availability', '0x80040203');
-  // The attributes must be columns of the filter's table (a missing dependency natively); any message is accepted.
+  // The attributes must be columns of the filter's table (a missing dependency natively); any message is accepted. A padded
+  // token is refused by its raw text (native: 'Id= PQWP_Integer ' answers 0x8004f036), so the tokens are not trimmed.
   const table = filter?.primaryobjecttypecode;
   if (table && table !== 'none') {
     const columns = columnsOf(store, table);
     for (const attribute of String(val('filteringattributes') ?? '')
       .split(',')
-      .map((item) => item.trim().toLowerCase())
-      .filter(Boolean))
-      if (!columns.has(attribute))
+      .filter((item) => item !== ''))
+      if (!columns.has(attribute.toLowerCase()) || attribute !== attribute.trim())
         throw fail(
           `The dependent component Attribute (Id=${attribute}) does not exist.  Failure trying to associate it with SdkMessageProcessingStep (Id=${stepId()}) as a dependency. Missing dependency lookup type = AttributeNameLookup.`,
           '0x8004f036',

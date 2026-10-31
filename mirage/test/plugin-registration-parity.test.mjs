@@ -1,4 +1,5 @@
-// @test-kind parity: native registration probes and sdkmessage/sdkmessagefilter rows recorded on a dev environment (catalogue, codes, admission)
+// @test-kind parity: native sdkmessage/sdkmessagefilter catalogue rows (native filter catalogues native-filters.json and native-filters-2.json, platform constants); tests resting on other evidence carry their own tag
+// @parity-evidence: audit round 2 (REG-n7): the registration probes exist in one native capture (corpus/native only), the custom API message lifecycle and the Upsert inert rule have no native capture, so those tests are tagged observation or unproven per test; the team, task and systemuser sets follow native-filters-2.json
 // Registration catalogue, validation and execution admission that match native Dataverse (registration probes and
 // sdkmessagefilter rows recorded on a dev environment; the data here is invented).
 import test from 'node:test';
@@ -39,9 +40,9 @@ const mappings = {
   },
 };
 
-async function fixture(t) {
+async function fixture(t, extraMappings = {}) {
   const f = await contractModuleFixture(t, {
-    mappings,
+    mappings: { ...mappings, ...extraMappings },
     tables: {
       pluginassembly: [{ pluginassemblyid: ASSEMBLY, name: 'Invented.Parity', version: '1.0.0.0' }],
       plugintype: [{ plugintypeid: TYPE, typename: TYPE_NAME, pluginassemblyid: ASSEMBLY }],
@@ -67,6 +68,18 @@ async function fixture(t) {
     });
   const steps = () => overlayRegisteredSteps({ assemblies: [], types: [], steps: [] }, f.store).steps;
   return { ...f, message, filter, register, steps };
+}
+
+// The registered steps run as handler steps of the invented type; answers the catalogue getter.
+function handlerPipeline(f, handlers) {
+  const items = () =>
+    pluginCatalogue({ plugins: { steps: f.steps() }, handlers }).map((item) => ({ ...item, mode: 'handler' }));
+  f.store.setPluginPipeline(
+    (context) => runPluginPhase({ ...context, store: f.store, items: items(), handlers }),
+    ({ entity, operation }) =>
+      items().some((step) => pluginStepMatchesEntity(step, entity) && String(step.message).toLowerCase() === operation),
+  );
+  return items;
 }
 
 test('per-table filters follow table capability, with the native message ids and flags', async (t) => {
@@ -164,6 +177,61 @@ test('standard tables take their native filter sets, flags and availability', as
   assert.equal((await refused.json()).error.code, '0x80044187');
 });
 
+// @test-kind parity: native filter catalogue rows (native-filters.json 'none' and table filters with their sdkmessage ids and flags; platform constants), standard SDK messages named by the official Microsoft.Xrm.Sdk / Microsoft.Crm.Sdk.Proxy request classes
+// @parity-evidence: native-filters.json none rows ExecuteMultiple, ExecuteTransaction, UpsertMultipleLegacy, RetrieveEntity, SetProcess; native-filters-2.json team AddMembers (no AddMembersTeam filter)
+test('the platform message catalogue carries the native ids, flags and none filters', async (t) => {
+  const f = await fixture(t);
+  const row = (name) => {
+    const message = f.message(name);
+    return (
+      message && [
+        message.sdkmessageid,
+        message.isprivate,
+        message.availability,
+        message.autotransact,
+        message.workflowsdkstepenabled,
+      ]
+    );
+  };
+  assert.deepEqual(row('ExecuteMultiple'), ['d7e702f4-1799-4419-af3f-547339060f39', false, 2, false, false]);
+  assert.deepEqual(row('ExecuteTransaction'), ['c714829e-288c-4945-a022-d32c2d907825', false, 2, true, false]);
+  assert.deepEqual(row('UpsertMultipleLegacy'), ['9483dd2f-1787-4d63-8ed2-79d33ee9551e', true, 2, true, false]);
+  assert.deepEqual(row('RetrieveEntity'), ['71dc1ad4-4594-4326-aed8-dca5022f47ca', false, 2, false, false]);
+  assert.deepEqual(row('SetProcess'), ['9eb7119b-d924-4610-a9ce-58a88303e8f6', false, 2, true, true]);
+  for (const name of ['ExecuteMultiple', 'ExecuteTransaction', 'RetrieveEntity'])
+    assert.deepEqual(
+      [f.filter(name, 'none').iscustomprocessingstepallowed, f.filter(name, 'none').availability],
+      [false, 2],
+      name,
+    );
+  // A step on a 'none' filter that refuses custom steps is refused with the native code.
+  const refused = await f.register('ExecuteMultiple', { table: 'none' });
+  assert.equal(refused.status, 400);
+  assert.equal((await refused.json()).error.code, '0x80044187');
+  // The Web API action AddMembersTeam is the sdkmessage AddMembers: no AddMembersTeam row; AddMembers takes steps.
+  const listed = await f.json(
+    await f.request('GET', "/sdkmessages?$filter=name eq 'AddMembersTeam' or name eq 'SetParentTeam'&$select=name"),
+    200,
+  );
+  assert.deepEqual(listed.value, []);
+  assert.equal(f.message('AddMembers').isprivate, false);
+});
+
+// @test-kind observation: native and native-r2 _steps.json carry global Recorder steps on AddMembers (accepted); the team-filtered acceptance follows the native-filters-2.json team AddMembers filter (allowed); the local sdkmessage id of AddMembers is not recorded
+test('global and team-filtered AddMembers steps register; an unknown message refuses', async (t) => {
+  const f = await fixture(t, { team: { logicalName: 'team', entitySet: 'teams', idColumn: 'teamid', fields: {} } });
+  assert.equal((await f.register('AddMembers')).status, 201);
+  assert.equal((await f.register('AddMembers', { table: 'team' })).status, 201);
+  const unknown = await f.request('POST', '/sdkmessageprocessingsteps', {
+    name: 'Probe unknown message',
+    stage: 20,
+    mode: 0,
+    'sdkmessageid@odata.bind': '/sdkmessages(00000000-0000-4000-8000-0000000000aa)',
+    'eventhandler_plugintype@odata.bind': `/plugintypes(${TYPE})`,
+  });
+  assert.equal(unknown.status, 404);
+});
+
 // Native filter catalogue round 2: filter sets of contact, task, systemuser and team, and of an elastic, a virtual and an
 // N:N intersect table (invented tables of those kinds here).
 test('table kinds and further standard tables take their native filter sets', async (t) => {
@@ -221,22 +289,68 @@ test('table kinds and further standard tables take their native filter sets', as
   );
   for (const name of ['SetState', 'IsValidStateTransition', 'GrantAccess'])
     assert.equal(elastic[name], undefined, name);
+  // @parity-evidence: native-filters-2.json elastic table 25 filters incl. UpsertMultipleLegacy (its id from native-filters.json)
+  assert.deepEqual(elastic.UpsertMultipleLegacy, [true, 0]);
+  assert.equal(Object.keys(elastic).length, 25);
+  // contact has 20 native filters; the three adx_ ones are Power Pages solution content (the exported Solution's messages).
   assert.equal(Object.keys(filters('contact')).length, 17);
   assert.equal(filters('contact').Retain, undefined);
   assert.deepEqual(filters('contact').IsValidStateTransition, [true, 0]);
   assert.deepEqual(filters('task').SetState, [true, 2]);
-  assert.deepEqual(filters('systemuser').Retrieve, [false, 2]);
-  assert.deepEqual(filters('systemuser').Update, [true, 0]);
-  assert.deepEqual(filters('team'), {
-    Archive: [true, 2],
+  // @parity-evidence: native-filters-2.json task 17 filters with Handle and Route allowed, availability 2
+  assert.equal(Object.keys(filters('task')).length, 17);
+  assert.deepEqual(
+    [filters('task').Handle, filters('task').Route],
+    [
+      [true, 2],
+      [true, 2],
+    ],
+  );
+  // @parity-evidence: native-filters-2.json systemuser 18 filters (InviteUser, PromoteToAdmin, SetDevErrors private)
+  assert.deepEqual(filters('systemuser'), {
     Create: [true, 0],
     Delete: [true, 0],
+    InviteUser: [false, 0],
+    PromoteToAdmin: [false, 2],
+    ReassignObjects: [false, 0],
+    RemoveParent: [false, 0],
+    Retrieve: [false, 2],
+    RetrieveAllChildUsers: [false, 2],
+    RetrieveMultiple: [false, 2],
+    RetrieveTeams: [false, 2],
+    RetrieveUserSettings: [false, 2],
+    SetBusiness: [false, 0],
+    SetDevErrors: [false, 0],
+    SetParent: [false, 0],
+    SetState: [true, 0],
+    SetStateDynamicEntity: [true, 0],
+    Update: [true, 0],
+    UpdateUserSettings: [false, 2],
+  });
+  assert.deepEqual(
+    ['InviteUser', 'PromoteToAdmin', 'SetDevErrors', 'SetParent'].map(
+      (name) => f.store.tableRows('sdkmessage').find((row) => row.name === name).isprivate,
+    ),
+    [true, true, true, false],
+  );
+  // @parity-evidence: native-filters-2.json team 12 filters with AddMembers and RemoveMembers allowed
+  assert.deepEqual(filters('team'), {
+    AddMembers: [true, 0],
+    Archive: [true, 2],
+    ConvertOwnerTeamToAccessTeam: [false, 0],
+    Create: [true, 0],
+    Delete: [true, 0],
+    RemoveMembers: [true, 0],
     Retrieve: [true, 2],
+    RetrieveMembers: [false, 2],
     RetrieveMultiple: [true, 2],
+    SetParent: [false, 0],
+    SyncGroupMembersToTeam: [false, 0],
     Update: [true, 0],
   });
 });
 
+// @test-kind observation: global steps accepted natively (native and native-r2 _steps.json: Recorder steps on PublishAll, Upsert, RetrieveExchangeRate, RetrieveEntityChanges, SetLocLabels); the refusing 'none' filter answer is one registration-probe capture
 // Native accepted global (no filter) steps on every existing message: PublishAll and RetrieveExchangeRate (no table filter
 // in scope), Upsert (its 'none' filter refuses custom steps); a step registered on that refusing 'none' filter is refused.
 test('a step without a filter is accepted on any existing message; a refusing filter still refuses', async (t) => {
@@ -248,6 +362,7 @@ test('a step without a filter is accepted on any existing message; a refusing fi
   assert.equal((await refused.json()).error.code, '0x80044187');
 });
 
+// @test-kind observation: native registration probes round 2 (corpus/native/_registration-probes-2.json, one capture)
 // Native registration round 2 (single capture of deterministic validation): global WhoAmI/RetrieveVersion refused, images
 // on SetStateDynamicEntity, GrantAccess and DeleteMultiple accepted, an unknown image attribute refused, a step without a
 // stage accepted, a missing message refused, a client deployment on a server-only filter refused, and a plug-in type with a
@@ -332,6 +447,7 @@ test('registration round 2 rules answer with the native codes and texts', async 
   assert.equal((await f.request('GET', `/sdkmessageprocessingsteps(${kept})`)).status, 200, 'the step survives');
 });
 
+// @test-kind observation: native registration probes (corpus/native/_registration-probes.json, one capture)
 test('registration validation answers with the native codes and texts', async (t) => {
   const f = await fixture(t);
   const refused = async (response, code, pattern) => {
@@ -393,6 +509,7 @@ test('registration validation answers with the native codes and texts', async (t
   assert.equal((await image(await step('Update', { stage: 40 }), 0)).status, 201, 'image on a global Update');
 });
 
+// @test-kind unproven: inert global Upsert/UpsertMultiple steps are a local model; the Merge and async Retrieve parts cite mergeAccount and readAsync (native and native-r2)
 test('execution admission: globals run on the actual table, Upsert/Merge globals are inert and async Retrieve runs', async (t) => {
   const f = await fixture(t);
   for (const [name, over] of [
@@ -433,6 +550,7 @@ test('execution admission: globals run on the actual table, Upsert/Merge globals
   );
 });
 
+// @test-kind parity: native and native-r2 crud (global Create step on the created table) and reads (asynchronous RetrieveMultiple after a collection GET)
 test('a global Create runs for the table it fires on, and an asynchronous RetrieveMultiple runs after the read', async (t) => {
   const f = await fixture(t);
   assert.equal((await f.register('Create', { name: 'Global create' })).status, 201);
@@ -448,13 +566,7 @@ test('a global Create runs for the table it fires on, and an asynchronous Retrie
       },
     },
   ]);
-  const items = () =>
-    pluginCatalogue({ plugins: { steps: f.steps() }, handlers }).map((item) => ({ ...item, mode: 'handler' }));
-  f.store.setPluginPipeline(
-    (context) => runPluginPhase({ ...context, store: f.store, items: items(), handlers }),
-    ({ entity, operation }) =>
-      items().some((step) => pluginStepMatchesEntity(step, entity) && String(step.message).toLowerCase() === operation),
-  );
+  const items = handlerPipeline(f, handlers);
   const runner = createAsyncPluginRunner({ store: f.store, items, handlers });
   t.after(() => runner.close());
   const created = await f.request('POST', '/x_shareds', { x_name: 'one' });
@@ -476,6 +588,7 @@ test('a global Create runs for the table it fires on, and an asynchronous Retrie
   assert.equal(seen[0].context.OutputParameters.BusinessEntityCollection.length, 1);
 });
 
+// @test-kind unproven: the sdkmessage/sdkmessagefilter lifecycle of a runtime custom API (create, delete) is a local model until the NATIVE step-registration-rules capture; native customApi only proves the steps run around it
 // Native customApi scenario: custom APIs provisioned over the Web API took steps at stages 10, 20, 40 and asynchronous
 // PostOperation; the stage-10 step edited the Text input that later stages saw, and the reply carried the stage-40 output.
 test('a custom API created at runtime gets its message and filter, and its registered steps run around it', async (t) => {
@@ -580,4 +693,93 @@ test('a PreValidation Target with SDK choices and DateOnly values is stored like
   assert.equal(created.status, 201, await created.clone().text());
   assert.equal(f.store.tableRows('x_pick')[0].x_choices, '1,2');
   assert.equal(f.store.tableRows('x_pick')[0].x_day, '2026-10-30');
+});
+
+// @test-kind parity: native and native-r2 filters 'Probe: Update 40 filter modifiedon' and 'filter primary key' registered
+// @parity-evidence: native and native-r2 filters Probe: Update 40 filter modifiedon / filter primary key (registered and ran x2)
+test('Update 40 steps filtered on modifiedon and the primary key register and run on a PATCH of another column', async (t) => {
+  const f = await fixture(t);
+  for (const [name, attribute] of [
+    ['Probe: Update 40 filter modifiedon', 'modifiedon'],
+    ['Probe: Update 40 filter primary key', 'x_ownedid'],
+  ])
+    assert.equal(
+      (await f.register('Update', { table: 'x_owned', stage: 40, name, filteringattributes: attribute })).status,
+      201,
+      name,
+    );
+  const seen = [];
+  const handlers = pluginHandlers([
+    {
+      id: 'invented',
+      pluginTypes: {
+        [TYPE_NAME]: ({ step }) => {
+          seen.push(step.name);
+        },
+      },
+    },
+  ]);
+  handlerPipeline(f, handlers);
+  assert.equal((await f.request('POST', '/x_owneds', { x_name: 'one' })).status, 201);
+  const id = f.store.tableRows('x_owned')[0].x_ownedid;
+  seen.length = 0;
+  assert.equal((await f.request('PATCH', `/x_owneds(${id})`, { x_name: 'two' })).status, 200);
+  assert.deepEqual(seen.sort(), ['Probe: Update 40 filter modifiedon', 'Probe: Update 40 filter primary key']);
+});
+
+// @test-kind parity: native and native-r2 filters 'Probe: Update 40 filter spaced' refused 0x8004f036 with the raw token
+// @parity-evidence: native and native-r2 filters Probe: Update 40 filter spaced (refused 0x8004f036 naming the raw token ' PQWP_Integer ')
+test('an Update 40 step filtered on a padded attribute name is refused with the raw token', async (t) => {
+  const f = await fixture(t);
+  const response = await f.register('Update', {
+    table: 'x_owned',
+    stage: 40,
+    name: 'Probe: Update 40 filter spaced',
+    filteringattributes: ' X_Name ',
+  });
+  const body = await response.json();
+  assert.equal(response.status, 400, JSON.stringify(body));
+  assert.equal(body.error.code, '0x8004f036');
+  assert.match(
+    body.error.message,
+    /^The dependent component Attribute \(Id= X_Name \) does not exist\. {2}Failure trying to associate it with SdkMessageProcessingStep \(Id=[0-9a-f-]{36}\) as a dependency\. Missing dependency lookup type = AttributeNameLookup\.$/,
+  );
+  assert.equal(
+    f.store.tableRows('sdkmessageprocessingstep').some((row) => row.name === 'Probe: Update 40 filter spaced'),
+    false,
+  );
+});
+
+// @test-kind observation: image attributes on platform columns follow the filtering-attribute rule (registration probes, one capture)
+test('an image on an Update 40 step takes platform columns and the primary key', async (t) => {
+  const f = await fixture(t);
+  const stepId = (await (await f.register('Update', { table: 'x_owned', stage: 40 })).json())
+    .sdkmessageprocessingstepid;
+  const response = await f.request('POST', '/sdkmessageprocessingstepimages', {
+    name: 'img',
+    entityalias: 'img',
+    imagetype: 1,
+    messagepropertyname: 'Target',
+    attributes: 'modifiedon,x_ownedid',
+    'sdkmessageprocessingstepid@odata.bind': `/sdkmessageprocessingsteps(${stepId})`,
+  });
+  assert.equal(response.status, 201, await response.clone().text());
+});
+
+// @test-kind unproven: acceptance of these platform columns is not captured
+test('the platform columns createdon, ownerid, statecode and versionnumber register as filtering attributes', async (t) => {
+  const f = await fixture(t);
+  for (const attribute of ['createdon', 'ownerid', 'statecode', 'versionnumber'])
+    assert.equal(
+      (
+        await f.register('Update', {
+          table: 'x_owned',
+          stage: 40,
+          name: `Probe: filter ${attribute}`,
+          filteringattributes: attribute,
+        })
+      ).status,
+      201,
+      attribute,
+    );
 });

@@ -21,6 +21,7 @@ import {
   projectManagedFlags,
 } from './dataverse-metadata-relationships.mjs';
 import { grantTablePrivileges, revokeTablePrivileges, uuidV5 } from './dataverse-security.mjs';
+import { resyncMessageFilters } from './dataverse-plugin-registration.mjs';
 import { pluralizeEntitySetName } from './solution-standard.mjs';
 import { alternateKeyOf, alternateKeyValues, alternateKeyKinds } from './alternate-key-values.mjs';
 import {
@@ -419,6 +420,7 @@ export function createTable(c, body) {
   mappings[logical] = mapping;
   (api.store.state.tables ??= {})[logical] ??= [];
   grantTablePrivileges(api.store, api.settings.organizationId, logical); // Dataverse creates the table's privileges with it
+  resyncMessageFilters(api); // and its sdkmessagefilter rows (native: a custom table's filters come with it)
   return { status: 204, headers: { 'OData-EntityId': entityIdUrl(c, logical) } };
 }
 
@@ -458,6 +460,7 @@ export function dropTable(api, logical) {
   delete api.store.state.tables?.[logical];
   delete api.store.state.dataverse?.customColumns?.[logical];
   logMetadataChange(api, 'delete', 'entity', logical);
+  resyncMessageFilters(api); // the table's sdkmessagefilter rows go with it
 }
 
 // Columns may be added to any table, Solution and seeded tables included (Dataverse allows custom columns there).

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { solutionContentFingerprint } from './solution-content-fingerprint.mjs';
+import { solutionContentFingerprint, solutionLayerFiles } from './solution-content-fingerprint.mjs';
+import { InvalidAssembly, inspectAssembly } from './clr-assembly-reader.mjs';
 import { decodeXml, portalField as field } from './importer.mjs';
 import {
   parseSolutionXml,
@@ -295,10 +296,13 @@ export async function importSolutionMetadata(
     return [...map.values()];
   };
   const plugins = await resolvePluginSourceFiles(
-    importSolutionPlugins(scan.layers, {
-      sdkMessages: observed?.sdkMessages,
-      businessLogicOwnership: observed?.businessLogicOwnership,
-    }),
+    attachSolutionAssemblyContent(
+      importSolutionPlugins(scan.layers, {
+        sdkMessages: observed?.sdkMessages,
+        businessLogicOwnership: observed?.businessLogicOwnership,
+      }),
+      scan.layers,
+    ),
     observed?.pluginSources,
     portal?.sourceDir,
   );
@@ -900,4 +904,66 @@ export function applySolutionMetadata(portal, metadata) {
       entities: Object.keys(metadata.entities).length,
     },
   };
+}
+
+// An exported plug-in assembly's bytes: the Solution's PluginAssemblies/<name>-<id>/<name>.dll (its FileName), read from the
+// layer that exports the registration (directory or ZIP), its identity checked against the exported name and version. The
+// bytes become the assembly row's content, so its steps run them like uploaded content (native n3-solution: an imported
+// Solution's steps run). An export without the file (a Power Pages export carries no .dll) or with other bytes is a
+// diagnostic and its steps stay placeholders. The side-file hashes of solutionContentFingerprint already cover the files.
+const ASSEMBLY_LIMIT = 16 * 1024 * 1024;
+function attachSolutionAssemblyContent(plugins, layers) {
+  const digest = createHash('sha256').update(plugins.fingerprint ?? '');
+  const filesOf = new Map();
+  const layerFiles = (layer) => {
+    if (!filesOf.has(layer))
+      filesOf.set(
+        layer,
+        new Map(solutionLayerFiles(layer, /^pluginassemblies$/i).map((entry) => [entry.name.toLowerCase(), entry])),
+      );
+    return filesOf.get(layer);
+  };
+  const report = (assembly, code, message) =>
+    plugins.diagnostics.push({ code, assemblyId: assembly.id, sourceFile: assembly.sourceFile ?? null, message });
+  for (const assembly of plugins.assemblies ?? []) {
+    const name = String(assembly.binaryPath ?? '')
+      .replaceAll('\\', '/')
+      .replace(/^\/+/, '');
+    if (!name) continue;
+    const key = name.toLowerCase();
+    const owner = layers.find((layer) => layer.documents?.some((document) => document.file === assembly.sourceFile));
+    const entry = (owner ? [owner] : [...layers].reverse()).map((layer) => layerFiles(layer).get(key)).find(Boolean);
+    if (!entry) {
+      report(
+        assembly,
+        'PLUGIN_ASSEMBLY_CONTENT_MISSING',
+        `The exported assembly file ${name} is not in the Solution source; its steps need uploaded content or a trusted descriptor to run.`,
+      );
+      continue;
+    }
+    let bytes, facts;
+    try {
+      bytes = entry.read(ASSEMBLY_LIMIT);
+      facts = inspectAssembly(bytes);
+    } catch (error) {
+      const reason = error instanceof InvalidAssembly ? 'is not a .NET assembly' : `cannot be read (${error.message})`;
+      report(assembly, 'PLUGIN_ASSEMBLY_CONTENT_INVALID', `The exported assembly file ${name} ${reason}.`);
+      continue;
+    }
+    if (
+      String(facts.name).toLowerCase() !== String(assembly.name).toLowerCase() ||
+      (assembly.version && facts.version !== assembly.version)
+    ) {
+      report(
+        assembly,
+        'PLUGIN_ASSEMBLY_CONTENT_INVALID',
+        `The exported assembly file ${name} is ${facts.name} ${facts.version}, not the registered ${assembly.name} ${assembly.version ?? ''}.`.trimEnd(),
+      );
+      continue;
+    }
+    assembly.content = Buffer.from(bytes).toString('base64');
+    digest.update(assembly.id).update(bytes);
+  }
+  plugins.fingerprint = digest.digest('hex');
+  return plugins;
 }

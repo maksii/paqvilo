@@ -5372,7 +5372,7 @@ export class DataStore {
         );
     }
     if (isElastic(m)) {
-      this.recordCommittedEvent(m.logicalName, 'create', row, changedAttributes, {
+      this.recordCommittedEvent(m.logicalName, 'create', row, Object.keys(pluginTarget), {
         target: pluginTarget,
         previous: null,
         identity,
@@ -5384,7 +5384,7 @@ export class DataStore {
     }
     yield [m, 'create', 40, pluginTarget, row, null, identity, changedAttributes, options];
     if (!isElastic(m) && !options.deferCommittedEvent)
-      this.recordCommittedEvent(m.logicalName, 'create', row, changedAttributes, {
+      this.recordCommittedEvent(m.logicalName, 'create', row, Object.keys(asyncTarget), {
         target: asyncTarget,
         previous: null,
         identity,

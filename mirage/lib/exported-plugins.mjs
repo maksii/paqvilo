@@ -245,10 +245,10 @@ export function parsePluginDocument(xml) {
             ? { customizationLevel: numeric(value(step, 'CustomizationLevel')) }
             : {}),
           enabled: numeric(value(step, 'StateCode') ?? '0') === 0,
+          // Verbatim tokens (native refuses a padded one, and the row keeps the Solution's case); the runtime matcher canonicalises.
           filteringAttributes: String(value(step, 'FilteringAttributes') ?? '')
             .split(',')
-            .map(canonical)
-            .filter(Boolean),
+            .filter((item) => item !== ''),
           impersonatingUserId: lookupId(step, 'ImpersonatingUserId') || null,
           ...(lookupId(step, 'SdkMessageProcessingStepSecureConfigId')
             ? { secureConfigurationId: lookupId(step, 'SdkMessageProcessingStepSecureConfigId') }
@@ -488,11 +488,15 @@ export function pluginUnsupported(step, { images = false } = {}) {
   if (step.images?.length && !images) return 'Registered pre/post images require an explicit image adapter.';
   if (images && (step.images ?? []).some((image) => ![0, 1, 2].includes(image.type) || (!image.alias && !image.name)))
     return 'Registered image type or alias is unresolved.';
-  if (
-    images &&
-    new Set((step.images ?? []).map((image) => image.alias || image.name)).size !== (step.images ?? []).length
-  )
-    return 'Registered image aliases must be unique.';
+  // A pre and a post image may share an alias (native accepts 'dup' type 0 with 'dup' type 1); the aliases of one
+  // collection (pre: types 0 and 2, post: types 1 and 2) must be unique.
+  const duplicateAlias = (types) => {
+    const aliases = (step.images ?? [])
+      .filter((image) => types.includes(image.type))
+      .map((image) => image.alias || image.name);
+    return new Set(aliases).size !== aliases.length;
+  };
+  if (images && (duplicateAlias([0, 2]) || duplicateAlias([1, 2]))) return 'Registered image aliases must be unique.';
   if (step.eventHandlerId && !step.serviceEndpointId && !step.assemblyId)
     return "The step's EventHandler names neither a plug-in type nor a service endpoint of the organization (handler unresolved).";
   // A web hook step (serviceEndpointId) has no plug-in type.
@@ -941,12 +945,15 @@ function handlerExecutionContext({
         .values,
       ...rawInputs.values,
     };
-  const imageCollection = (current, source) => ({
+  // types: the image types of the collection (pre 0 and 2, post 1 and 2), so a shared alias picks its own registration.
+  const imageCollection = (current, source, types) => ({
     $type: 'EntityImageCollection',
     values: Object.fromEntries(
       Object.entries(current ?? {}).map(([alias, attributes]) => {
         if (attributes == null || attributes.$type === 'Entity') return [alias, cloneStateData(attributes)];
-        const spec = (item.images ?? []).find((entry) => (entry.alias || entry.name) === alias);
+        const spec = (item.images ?? []).find(
+          (entry) => types.includes(entry.type) && (entry.alias || entry.name) === alias,
+        );
         const original = recordToSdkEntity(store, entity, imageAttributes(source), {
           allColumns: !spec?.attributes?.length,
           columns: spec?.attributes ?? [],
@@ -983,20 +990,20 @@ function handlerExecutionContext({
       context.SharedVariables,
     ),
     ParentContext: parent ?? null,
-    PreEntityImages: imageCollection(context.PreEntityImages, previous),
-    PostEntityImages: imageCollection(context.PostEntityImages, context.Stage === 40 ? record : null),
+    PreEntityImages: imageCollection(context.PreEntityImages, previous, [0, 2]),
+    PostEntityImages: imageCollection(context.PostEntityImages, context.Stage === 40 ? record : null, [1, 2]),
   };
   if (['createmultiple', 'updatemultiple'].includes(operation)) {
     values.PreEntityImagesCollection = {
       $type: 'EntityImageCollectionArray',
       values: (context.PreEntityImagesCollection ?? []).map((images, index) =>
-        imageCollection(images, previousRecords?.[index]),
+        imageCollection(images, previousRecords?.[index], [0, 2]),
       ),
     };
     values.PostEntityImagesCollection = {
       $type: 'EntityImageCollectionArray',
       values: (context.PostEntityImagesCollection ?? []).map((images, index) =>
-        imageCollection(images, records?.[index]),
+        imageCollection(images, records?.[index], [1, 2]),
       ),
     };
   }
@@ -1102,9 +1109,13 @@ export function pluginCatalogue({
 }
 
 export function pluginStepMatchesAttributes(item, { store, entity, operation, changedAttributes = [] }) {
-  if (!['update', 'updatemultiple'].includes(operation) || !item.filteringAttributes?.length) return true;
+  // Create filters on the attributes its Target carries (native: a POST without the filtered column does not run the
+  // step); only Update adds the table's id column, which the Update Target always carries.
+  const filtered = ['create', 'createmultiple', 'update', 'updatemultiple'].includes(operation);
+  if (!filtered || !item.filteringAttributes?.length) return true;
   const attributes = new Set(changedAttributes.map(canonical));
-  if (store && entity) attributes.add(canonical(store.resolveMapping(entity).idColumn));
+  if (store && entity && ['update', 'updatemultiple'].includes(operation))
+    attributes.add(canonical(store.resolveMapping(entity).idColumn));
   return item.filteringAttributes.some((name) => attributes.has(canonical(name)));
 }
 
@@ -1760,8 +1771,8 @@ export function runPluginPhase({
     for (let index = from; index < matched.length; index++) {
       const item = matched[index],
         bridged = bridgedStep(item) === 1;
-      if (operation === 'update') changedAttributes = Object.keys(target ?? {});
-      else if (operation === 'updatemultiple')
+      if (['create', 'update'].includes(operation)) changedAttributes = Object.keys(target ?? {});
+      else if (['createmultiple', 'updatemultiple'].includes(operation))
         changedAttributes = [...new Set((targets ?? []).flatMap((entry) => Object.keys(entry.attributes ?? {})))];
       if (!pluginStepMatchesAttributes(item, { store, entity, operation, changedAttributes })) continue;
       phaseFrame.stageImages = { ...phaseFrame.stageImages, [stage]: stageView(item) };

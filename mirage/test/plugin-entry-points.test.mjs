@@ -318,7 +318,7 @@ test('Web API GrantAccess runs the GrantAccess pipeline with the SDK inputs arou
   );
 });
 
-// @test-kind unproven: local model of the Merge pipeline (no native capture of Merge steps on a mergeable table)
+// @test-kind unproven: local Merge pipeline details (a named step refusing before the delegated writes, the Update/30 writes); native mergeAccount (native and native-r2) proves only that global and table-filtered Merge steps with images run at 10/20/40 on account
 test('Web API Merge runs its pipeline and its writes as Update pipelines under Merge/30', async (t) => {
   const f = await messageFixture(t, [
     ...stages(30, 'Merge', { entity: 'account' }),
