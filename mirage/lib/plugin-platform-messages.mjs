@@ -79,6 +79,21 @@ const sharesOf = (store, target) =>
     .tableRows('principalobjectaccess')
     .filter((row) => same(row.objectid, target.id) && same(row.objecttypecode, target.logicalName));
 const principalIdOf = (row) => row.principalid?.id ?? row.principalid;
+/** RetrieveSharedPrincipalsAndAccess's typed PrincipalAccesses output (PrincipalAccess[]: the principal's
+ * EntityReference and its AccessRights; native webApiNamed and sdkMessages). target: { logicalName, id }. */
+export const principalAccessesOf = (store, target) => ({
+  $type: 'SdkArray',
+  elementType: 'PrincipalAccess',
+  values: sharesOf(store, target).map((share) => {
+    const id = principalIdOf(share);
+    const team = store.tableRows('team').some((row) => same(row.teamid, id));
+    return {
+      $type: 'PrincipalAccess',
+      principal: { $type: 'EntityReference', logicalName: team ? 'team' : 'systemuser', id, name: null },
+      accessMask: Number(share.accessrightsmask),
+    };
+  }),
+});
 /** The rights a principal's direct shares of a row give it (a team with only a share answers the shared mask). */
 export const sharedMaskOf = (store, logicalName, id, principalId) =>
   sharesOf(store, { logicalName, id })
@@ -478,21 +493,7 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
       const target = reference(parameters.Target, 'Target');
       existing(target, 'read');
       return respond(
-        named({ Target: parameters.Target }, target, () => ({
-          PrincipalAccesses: {
-            $type: 'SdkArray',
-            elementType: 'PrincipalAccess',
-            values: sharesOf(store, target).map((share) => {
-              const id = principalIdOf(share);
-              const team = store.tableRows('team').some((row) => same(row.teamid, id));
-              return {
-                $type: 'PrincipalAccess',
-                principal: { $type: 'EntityReference', logicalName: team ? 'team' : 'systemuser', id, name: null },
-                accessMask: Number(share.accessrightsmask),
-              };
-            }),
-          },
-        })),
+        named({ Target: parameters.Target }, target, () => ({ PrincipalAccesses: principalAccessesOf(store, target) })),
       );
     }
     case 'Upsert': {

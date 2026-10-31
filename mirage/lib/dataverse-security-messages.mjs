@@ -5,6 +5,7 @@ import { organizationRecord } from './organization-context.mjs';
 // Registered as extension operations (dataverse-operations.mjs).
 // The built-in RetrieveUserPrivileges and RetrievePrincipalAccess stay in dataverse-api.mjs and are not registered here.
 import { DataError } from './data-error.mjs';
+import { principalAccessesOf } from './plugin-platform-messages.mjs';
 import { objectTypeCode } from './dataverse-metadata.mjs';
 import {
   ACCESS_RIGHTS,
@@ -759,6 +760,11 @@ function operations(api) {
             };
           }),
         });
+      },
+      // Steps read PrincipalAccess[] (native webApiNamed RetrieveSharedPrincipalsAndAccess/40 OutputParameters).
+      pluginOutputs: (body, c) => {
+        const { mapping, id } = targetRef(api, c.params?.Target);
+        return { PrincipalAccesses: principalAccessesOf(store, { logicalName: mapping.logicalName, id }) };
       },
       csdl: csdlOf('function', 'RetrieveSharedPrincipalsAndAccess', {
         params: [['Target', 'mscrm.crmbaseentity']],
