@@ -18,6 +18,8 @@ export async function createOrganizationBackend({
   handlers = new Map(),
   runtimes = new Map(),
   descriptors = new Map(),
+  // The organization host passes its sharedClrRuntimePreparer() (long-lived shared hosts).
+  prepareRuntime = prepareClrRuntime,
   // { cacheRoot, sdkAssembly }: where registered uploaded assemblies are prepared and the SDK they bind (plugin-uploaded.mjs).
   clrUploads,
   operations = () => [],
@@ -85,7 +87,7 @@ export async function createOrganizationBackend({
   ))
     try {
       if (!item.clrAvailable) throw new Error('No exact trusted descriptor');
-      runtimes.set(item.id, await prepareClrRuntime(descriptors.get(item.id)));
+      runtimes.set(item.id, await prepareRuntime(descriptors.get(item.id)));
     } catch (error) {
       diagnostic({ code: 'PLUGIN_CLR_PREPARATION_FAILED', stepId: item.id, message: error.message });
     }

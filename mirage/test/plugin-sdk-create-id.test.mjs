@@ -359,8 +359,9 @@ public sealed class Timing:IPlugin{public void Execute(IServiceProvider p){var c
               assert.deepEqual(captured, [10, 20, 40]);
               if (pooled) {
                 const hosts = clrHostPoolStatus();
-                assert(hosts.some((host) => host.typeName === 'Invented.Caller' && host.depth === 1 && !host.active));
-                assert(hosts.some((host) => host.typeName === 'Invented.Observe' && host.depth === 2 && !host.active));
+                // One long-lived host per prepared runtime serves both types and depths (native-r2 depth: nested
+                // steps run on the caller's process); it is idle once the request completed.
+                assert(hosts.length > 0 && hosts.every((host) => !host.active));
               }
               const child = f.store.tableRows('widget')[0];
               assert.equal(f.store.tableRows('widget').length, 1);
