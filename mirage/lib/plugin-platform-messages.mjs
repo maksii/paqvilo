@@ -75,7 +75,7 @@ const principalIdOf = (row) => row.principalid?.id ?? row.principalid;
 export const sharedMaskOf = (store, logicalName, id, principalId) =>
   sharesOf(store, { logicalName, id })
     .filter((share) => same(principalIdOf(share), principalId))
-    .reduce((mask, share) => mask | Number(share.accessrightsmask), 0);
+    .reduce((mask, share) => mask | Number(share.accessrightsmask) | Number(share.inheritedaccessrightsmask ?? 0), 0);
 /** AccessRights names (ReadAccess, WriteAccess, ...) of a mask; None when empty. */
 export const accessNamesOf = (mask) =>
   Object.keys(ACCESS_RIGHTS)
@@ -473,7 +473,10 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
           // the shared mask).
           const shared = sharesOf(store, target)
             .filter((share) => same(principalIdOf(share), principal.id))
-            .reduce((mask, share) => mask | Number(share.accessrightsmask), 0);
+            .reduce(
+              (mask, share) => mask | Number(share.accessrightsmask) | Number(share.inheritedaccessrightsmask ?? 0),
+              0,
+            );
           return { AccessRights: { $type: 'AccessRights', value: maskOfNames(granted) | shared } };
         }),
       );
