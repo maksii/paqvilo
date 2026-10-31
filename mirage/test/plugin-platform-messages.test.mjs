@@ -423,3 +423,134 @@ test('a read observer receives Web API lookup properties as their logical attrib
   assert.deepEqual(query.columnSet.columns, ['ownerid', 'title']);
   assert.equal(query.criteria.conditions[0].attributeName, 'ownerid');
 });
+
+// A user-owned invented table; the registered steps record the stage, the message and the AcceptLang they see.
+async function sharedFixture(t, steps, seen) {
+  const { contractModuleFixture } = await import('./contract-module-fixture.mjs');
+  const { createOrganizationBackend } = await import('../lib/organization-backend.mjs');
+  const { pluginCatalogue } = await import('../lib/exported-plugins.mjs');
+  const f = await contractModuleFixture(t, {
+    mappings: {
+      x_item: {
+        logicalName: 'x_item',
+        entitySet: 'x_items',
+        idColumn: 'x_itemid',
+        ownership: 'UserOwned',
+        fields: { x_name: { dataverseType: 'nvarchar' } },
+      },
+    },
+    tables: { x_item: [{ x_itemid: id, x_name: 'Existing' }] },
+    extension: { name: 'accept-language-probe', install: () => {} },
+  });
+  const handlers = new Map([
+    [
+      'Invented.Probe',
+      ({ context }) =>
+        void seen.push({ at: `${context.MessageName}/${context.Stage}`, lang: context.SharedVariables?.AcceptLang }),
+    ],
+  ]);
+  const items = pluginCatalogue({ plugins: { steps }, handlers });
+  const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
+  t.after(() => backend.close());
+  return f;
+}
+
+// @test-kind parity: native recorder corpus webApiNamed and soapMessages (two captures each): AcceptLang at stages 10/20/40 is the request Accept-Language; SDK-issued messages report ''
+test('a Web API GrantAccess reports the request Accept-Language at every stage, an SDK-issued Assign reports none', async (t) => {
+  const seen = [];
+  const f = await sharedFixture(
+    t,
+    [10, 20, 40].flatMap((stage) => [bulkStep('GrantAccess', stage, stage), bulkStep('Assign', stage, stage + 100)]),
+    seen,
+  );
+  const user = f.store.tableRows('systemuser').find((item) => item.fullname !== 'SYSTEM').systemuserid;
+  const granted = await f.request(
+    'POST',
+    '/GrantAccess',
+    {
+      Target: { '@odata.type': 'Microsoft.Dynamics.CRM.x_item', x_itemid: id },
+      PrincipalAccess: {
+        Principal: { '@odata.type': 'Microsoft.Dynamics.CRM.systemuser', systemuserid: user },
+        AccessMask: 'ReadAccess',
+      },
+    },
+    { 'accept-language': 'x-test' },
+  );
+  assert.ok(granted.status < 300, await granted.text());
+  assert.deepEqual(
+    seen.map((entry) => entry.at),
+    ['GrantAccess/10', 'GrantAccess/20', 'GrantAccess/40'],
+  );
+  assert.ok(
+    seen.every((entry) => entry.lang === 'x-test'),
+    JSON.stringify(seen),
+  );
+  seen.length = 0;
+  const caller = f.store.tableRows('systemuser').find((item) => item.applicationid).systemuserid;
+  dispatchSdkCall({
+    store: f.store,
+    profile: { ...profile, userId: caller, grants: [{ entity: 'x_item', operations: ['read', 'update'] }] },
+    sdkFromSandbox: true,
+    message: {
+      method: 'Execute',
+      userId: caller,
+      arguments: [request('Assign', { Target: ref('x_item', id), Assignee: ref('systemuser', user) })],
+    },
+  });
+  assert.deepEqual(
+    seen.map((entry) => entry.at),
+    ['Assign/10', 'Assign/20', 'Assign/40'],
+  );
+  assert.ok(
+    seen.every((entry) => entry.lang === ''),
+    JSON.stringify(seen),
+  );
+});
+
+// @test-kind parity: native recorder corpus webApiNamed and soapMessages (two captures each): AcceptLang at stages 10/20/40 is the request Accept-Language; SDK-issued messages report ''
+test('a SOAP Assign reports the request Accept-Language at every stage', async (t) => {
+  const { handleSoap } = await import('../lib/dataverse-soap.mjs');
+  const { NS } = await import('../lib/dataverse-soap-xml.mjs');
+  const seen = [];
+  const steps = [10, 20, 40].map((stage) => bulkStep('Assign', stage, stage));
+  const f = await sharedFixture(t, steps, seen);
+  const caller = f.store.tableRows('systemuser').find((item) => item.applicationid);
+  const assignee = f.store.tableRows('systemuser').find((item) => item.fullname !== 'SYSTEM').systemuserid;
+  const pair = (key, value) =>
+    `<a:KeyValuePairOfstringanyType><b:key>${key}</b:key>${value}</a:KeyValuePairOfstringanyType>`;
+  const reference = (logical, value) =>
+    `<b:value i:type="a:EntityReference"><a:Id>${value}</a:Id><a:LogicalName>${logical}</a:LogicalName></b:value>`;
+  const parameters = pair('Target', reference('x_item', id)) + pair('Assignee', reference('systemuser', assignee));
+  const xmlns = Object.entries(NS)
+    .map(([key, uri]) => `xmlns:${key}="${uri}"`)
+    .join(' ');
+  const bodyText = `<s:Envelope ${xmlns}><s:Body><Execute xmlns="${NS.svc}"><request i:type="a:OrganizationRequest"><a:Parameters>${parameters}</a:Parameters><a:RequestName>Assign</a:RequestName></request></Execute></s:Body></s:Envelope>`;
+  const response = await handleSoap(
+    {
+      method: 'POST',
+      headers: {},
+      bodyText,
+      user: caller,
+      caller,
+      // The router's identity carries the request Accept-Language (organizationPrincipalContext, dataverse.acceptLanguage).
+      identity: {
+        admin: true,
+        id: caller.systemuserid,
+        systemUserId: caller.systemuserid,
+        dataverse: { acceptLanguage: 'x-test' },
+      },
+      origin: f.server.origin,
+      version: 'v9.2',
+    },
+    f.api,
+  );
+  assert.doesNotMatch(response.body, /Fault/, response.body);
+  assert.deepEqual(
+    seen.map((entry) => entry.at),
+    ['Assign/10', 'Assign/20', 'Assign/40'],
+  );
+  assert.ok(
+    seen.every((entry) => entry.lang === 'x-test'),
+    JSON.stringify(seen),
+  );
+});

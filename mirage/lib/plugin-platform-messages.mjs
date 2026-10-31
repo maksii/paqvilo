@@ -621,7 +621,7 @@ export async function runEntryMessage(store, { message, entity, id, inputs, cont
     id,
     inputs,
     identity: context.identity ?? {},
-    acceptLanguage: header('accept-language') ?? '',
+    acceptLanguage: header('accept-language') ?? context.identity?.dataverse?.acceptLanguage ?? '',
     bypassStepIds: context.bypassStepIds,
     bypassCustomPlugins: context.bypassCustomPlugins === true,
     bypassCustomAsync: context.bypassCustomAsync === true,
