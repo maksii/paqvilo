@@ -16,9 +16,9 @@ import { pluginInvocationParent } from '../lib/plugin-execution-lifetime.mjs';
 
 const user = '10000000-0000-0000-0000-000000000001',
   record = '20000000-0000-0000-0000-000000000001';
-test('named custom API SDK calls apply the same duplicate inherited tag gate before main execution', async () => {
-  const name = 'invented_TagChild',
-    seen = [],
+// A custom API main operation that records the shared tag its SDK caller's plug-in sees.
+async function customApiTagCall(name) {
+  const seen = [],
     store = new DataStore({
       state: { tables: { customapi: [{ customapiid: user, uniquename: name, bindingtype: 0 }] } },
     }),
@@ -48,10 +48,6 @@ test('named custom API SDK calls apply the same duplicate inherited tag gate bef
     evidence: 'Invented custom API tag contract',
     grants: [{ message: name, operations: ['execute'] }],
   };
-  const parentContext = {
-    $type: 'ExecutionContext',
-    values: { SharedVariables: { $type: 'ParameterCollection', values: { tag: 'parent' } } },
-  };
   const call = (values, parent, canonical = true) =>
     store.transact(() =>
       store.withOperationContext(
@@ -77,14 +73,21 @@ test('named custom API SDK calls apply the same duplicate inherited tag gate bef
         { fresh: true },
       ),
     );
+  return { store, seen, call };
+}
+test('named custom API SDK calls apply the same duplicate inherited tag gate before main execution', async () => {
+  const { store, seen, call } = await customApiTagCall('invented_TagChild');
+  const parentContext = {
+    $type: 'ExecutionContext',
+    values: { SharedVariables: { $type: 'ParameterCollection', values: { tag: 'parent' } } },
+  };
   for (const tag of ['child', 'parent']) {
     await assert.rejects(call({ tag }, parentContext), { code: 'LocalPluginTagDuplicate', status: 400 });
     assert.deepEqual(seen, [], 'Rejected descendants must not invoke the main operation');
     assert.equal(store.pluginSdkTag, undefined);
     assert.equal(store.pluginParentContext, undefined);
   }
-  for (const tag of [null, undefined, 42, 'x'.repeat(8193)])
-    await assert.rejects(call({ tag }), { code: 'LocalPluginSdkUnsupported' });
+  for (const tag of [null, undefined, 42]) await assert.rejects(call({ tag }), { code: 'LocalPluginSdkUnsupported' });
   await call({}, parentContext);
   await call({ tag: 'root' });
   await call({ tag: 'independent' }, parentContext, false);
@@ -95,6 +98,17 @@ test('named custom API SDK calls apply the same duplicate inherited tag gate bef
   );
   assert.equal(store.pluginSdkTag, undefined);
   assert.equal(store.pluginParentContext, undefined);
+});
+// @test-kind parity: native-r2 traceFaults accepts request tags up to 13094 bytes; native depth39 accepts an 8830-byte tag
+// @parity-evidence: native-r2 traceFaults tag 13094 bytes accepted; native depth39 8830 bytes
+test('a 13094-byte request tag is accepted and reaches the plug-in unchanged', async () => {
+  const tag = 't'.repeat(13094),
+    { store, seen, call } = await customApiTagCall('invented_LongTag');
+  await call({ tag });
+  assert.equal(seen.length, 1, 'The custom API main operation runs once');
+  assert.equal(seen[0].length, 13094);
+  assert.ok(seen[0] === tag, 'The tag reaches the plug-in unchanged');
+  assert.equal(store.pluginSdkTag, undefined);
 });
 test('typed JavaScript shared tag edits remain visible while an omitted child inherits the canonical input tag', async () => {
   const store = new DataStore({
@@ -186,7 +200,7 @@ test('Named SDK tag validation rejects unsupported values before backend changes
       evidence: 'Invented SDK tag contract',
       grants: [{ entity: 'item', operations: ['delete'] }],
     };
-  for (const tag of [null, 42, 'x'.repeat(8193)])
+  for (const tag of [null, 42])
     assert.throws(
       () =>
         dispatchSdkCall({
