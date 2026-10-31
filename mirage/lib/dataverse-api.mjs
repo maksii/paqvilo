@@ -1554,7 +1554,12 @@ async function batchCall(d, c, common) {
       ...(failure ? { failure } : {}),
     };
   };
-  dispatch.transaction = (fn) => runAtomic(d.api, fn);
+  // A changeset's contexts start with the batch's transaction facts (native batch: IsODataTransaction and count).
+  dispatch.transaction = (fn, { requests } = {}) =>
+    runAtomic(d.api, () => {
+      d.store.pluginODataChangeset = { requestCount: requests };
+      return fn();
+    });
   const continueOnError = common.prefer.continueOnError;
   const traces = tracesOf(d);
   const root = traces?.enabled ? traces.current() : null;

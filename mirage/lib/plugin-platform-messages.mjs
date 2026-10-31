@@ -169,6 +169,9 @@ function runMessagePipeline(
     sharedVariables: {
       $type: 'ParameterCollection',
       values: {
+        ...(store.pluginODataChangeset && !(store.pluginParentContext ?? pluginInvocationSdkParent(store))
+          ? { IsODataTransaction: true, ODataChangesetRequestCount: store.pluginODataChangeset.requestCount }
+          : {}),
         AcceptLang: acceptLanguage,
         IsAutoTransact: autoTransact,
         ...(requestTag === undefined ? {} : { tag: requestTag }),

@@ -837,6 +837,9 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
       sharedVariables: {
         $type: 'ParameterCollection',
         values: {
+          ...(store.pluginODataChangeset && !(store.pluginParentContext ?? pluginInvocationSdkParent(store))
+            ? { IsODataTransaction: true, ODataChangesetRequestCount: store.pluginODataChangeset.requestCount }
+            : {}),
           AcceptLang: String(acceptLanguage),
           IsAutoTransact: true,
           ...(requestTag === undefined ? {} : { tag: requestTag }),

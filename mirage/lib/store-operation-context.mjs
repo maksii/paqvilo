@@ -14,6 +14,7 @@ export const storeOperationFields = [
   'rowTransaction',
   'committedEventCandidates',
   'flowChain',
+  'pluginODataChangeset',
 ];
 
 const active = (store) => {

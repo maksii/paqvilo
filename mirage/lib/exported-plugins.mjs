@@ -1413,17 +1413,29 @@ export function runPluginPhase({
     // Native pipelines start every SharedVariables collection with the platform's entries (see
     // platformSharedVariables). A plug-in-issued SDK request carries no Accept-Language.
     const nested = Boolean(store?.pluginParentContext || pluginInvocationSdkParent(store)),
+      // A changeset member's collections lead with the batch's transaction facts (native batch).
+      odata =
+        !nested && store?.pluginODataChangeset
+          ? { IsODataTransaction: true, ODataChangesetRequestCount: store.pluginODataChangeset.requestCount }
+          : {},
       // A record a bulk message delegates keeps only its own message's entries; the platform's belong to the bulk
       // message's collections (native bulk).
       platform =
         bulkOrigin && !['createmultiple', 'updatemultiple'].includes(operation)
           ? operation === 'create'
-            ? { DefaultsAddedFlag: true }
-            : {}
-          : platformSharedVariables(operation, nested ? '' : acceptLanguage || identity?.dataverse?.acceptLanguage, {
-              nested,
-              bulkOrigin,
-            });
+            ? { ...odata, DefaultsAddedFlag: true }
+            : { ...odata }
+          : {
+              ...odata,
+              ...platformSharedVariables(
+                operation,
+                nested ? '' : acceptLanguage || identity?.dataverse?.acceptLanguage,
+                {
+                  nested,
+                  bulkOrigin,
+                },
+              ),
+            };
     // The PreValidation collection exists before any step ran; remember how many plug-in requests preceded it.
     if (stage === 10) phaseFrame.sdkRequestsBefore ??= store?.pluginSdkRequests ?? 0;
     if (!phaseFrame.platformSharedSeeded) {
