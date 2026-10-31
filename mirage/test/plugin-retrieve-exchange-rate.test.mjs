@@ -140,3 +140,56 @@ test('an Update that writes a money value runs RetrieveExchangeRate under Update
   assert.equal(f.seen.filter((entry) => entry.at.startsWith('RetrieveExchangeRate')).length, 3);
   assert.equal(f.store.tableRows('x_order')[0].x_total_base, 4.5);
 });
+
+// @test-kind parity: native-r2 nullSemantics all-null PATCH runs RetrieveExchangeRate 20/40/async under Update/25 < Update/30 (6986, 6989, 6998); a POST with money null and a PATCH without money run none
+test('an all-null PATCH of a row holding a currency runs RetrieveExchangeRate under Update/25', async (t) => {
+  const f = await fixture(t);
+  const created = await f.request('POST', '/x_orders', { x_orderid: priced, x_name: 'Priced', x_total: 3.5 });
+  assert(created.status < 300, await created.text());
+  await f.backend.settle();
+  f.seen.length = 0;
+  const cleared = await f.request('PATCH', `/x_orders(${priced})`, { x_total: null });
+  assert(cleared.status < 300, await cleared.text());
+  await f.backend.settle();
+  const system = f.store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM').systemuserid;
+  const currency = f.store.tableRows('x_order')[0].transactioncurrencyid;
+  const currencyId = String(currency?.id ?? currency).toLowerCase();
+  const runs = f.seen.filter((entry) => entry.at.startsWith('RetrieveExchangeRate'));
+  assert.deepEqual(
+    runs.map((entry) => entry.at),
+    ['RetrieveExchangeRate/20/0', 'RetrieveExchangeRate/40/0', 'RetrieveExchangeRate/40/1'],
+  );
+  for (const entry of runs) {
+    assert.equal(entry.entity, 'transactioncurrency');
+    assert.equal(entry.user, system);
+    assert.deepEqual(Object.keys(entry.inputs), ['TransactionCurrencyId']);
+    assert.equal(String(entry.inputs.TransactionCurrencyId).toLowerCase(), currencyId);
+    assert.equal(Number(entry.outputs.ExchangeRate), 1);
+  }
+  const pre = runs.find((entry) => entry.at === 'RetrieveExchangeRate/20/0');
+  assert.deepEqual(pre.chain, [`Update/25/${system}`, `Update/30/${system}`]);
+  assert.equal(f.store.tableRows('x_order')[0].x_total_base, null);
+});
+
+// @test-kind parity: native-r2 nullSemantics all-null PATCH runs RetrieveExchangeRate 20/40/async under Update/25 < Update/30 (6986, 6989, 6998); a POST with money null and a PATCH without money run none
+test('a POST with money null and a PATCH without money run no RetrieveExchangeRate', async (t) => {
+  const f = await fixture(t);
+  const nullPost = await f.request('POST', '/x_orders', { x_orderid: plain, x_name: 'Null', x_total: null });
+  assert(nullPost.status < 300, await nullPost.text());
+  await f.backend.settle();
+  assert.deepEqual(
+    f.seen.filter((entry) => entry.at.startsWith('RetrieveExchangeRate')),
+    [],
+  );
+  const created = await f.request('POST', '/x_orders', { x_orderid: priced, x_name: 'Priced', x_total: 3.5 });
+  assert(created.status < 300, await created.text());
+  await f.backend.settle();
+  f.seen.length = 0;
+  const renamed = await f.request('PATCH', `/x_orders(${priced})`, { x_name: 'x' });
+  assert(renamed.status < 300, await renamed.text());
+  await f.backend.settle();
+  assert.deepEqual(
+    f.seen.filter((entry) => entry.at.startsWith('RetrieveExchangeRate')),
+    [],
+  );
+});

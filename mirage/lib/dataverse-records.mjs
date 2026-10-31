@@ -930,12 +930,12 @@ export function createRecordHandlers({
     // The user-owner lookup carries its logical name only, no FormattedValue or navigation.
     delete formatted[`_owninguser_value${FORMATTED}`];
     delete formatted[`_owninguser_value${NAVIGATION}`];
-    // Organization-owned rows always answer the organization lookup, selected or not.
+    // Organization-owned rows answer the organization lookup when no $select is given or the $select names it.
     const organizationId = organizationRecord(store)?.organizationid;
     const selected = parseSelect(c.url.searchParams.get('$select'));
     if (
       organizationId &&
-      (!c.navigation || selected == null || selected.includes('_organizationid_value')) &&
+      (selected == null || selected.includes('_organizationid_value')) &&
       formatted._organizationid_value === undefined &&
       ownershipOf(mapping.logicalName, undefined, mapping) === 'org'
     ) {
@@ -1146,9 +1146,9 @@ export function createRecordHandlers({
 
   // One expanded child of a collection: its referencing lookup, and every column when the expansion selects none.
   function shapeChild(c, mapping, row, rel, child, item) {
+    if (item.select) return;
     if (rel.to && rel.from && child[`_${rel.to}_value`] === undefined)
       child[`_${rel.to}_value`] = row[rel.from] ?? null;
-    if (item.select) return;
     const target = store.resolveMapping(rel.entity);
     for (const name of columnNamesOf(target).names) if (!(name in child)) child[name] = null;
     const organizationId = organizationRecord(store)?.organizationid;
@@ -2020,7 +2020,13 @@ export function createRecordHandlers({
       : null;
   const systemColumns = (c, create) => (mapping, input) => ({
     ...(c.user
-      ? principals.systemColumns({ user: c.user, caller: c.caller, mapping, owner: ownerOf(input), create })
+      ? principals.systemColumns({
+          user: c.user,
+          caller: c.onBehalfOf ?? c.caller,
+          mapping,
+          owner: ownerOf(input),
+          create,
+        })
       : {}),
     ...(portalUser(c) ? { ...(create ? { createdby: portalUser(c) } : {}), modifiedby: portalUser(c) } : {}),
     versionnumber: nextRowVersion(store),

@@ -539,6 +539,9 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
   };
   for (const [key, value] of Object.entries(row ?? {})) {
     if (!columns.allColumns && !(columns.columns ?? []).includes(key)) continue;
+    // Native plug-in entities carry the row version only as Entity.RowVersion: all-column and Target/image projections
+    // omit the versionnumber attribute; an explicit ColumnSet that names it keeps it.
+    if (key === 'versionnumber' && (columns.allColumns || columns.target || columns.image)) continue;
     if (value == null) {
       attributes[key] = null;
       continue;
@@ -656,8 +659,8 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
         }),
       };
     } else if (['datetime', 'date'].includes(type))
-      // DateOnly and TimeZoneIndependent values carry no time zone: their SDK DateTime kind is Unspecified. The
-      // PreValidation Target (columns.submitted) still shows a TimeZoneIndependent value as the caller sent it.
+      // DateOnly and TimeZoneIndependent values carry no time zone: their SDK DateTime kind is Unspecified. Only the
+      // Create/CreateMultiple PreValidation Target (columns.submitted) keeps a TimeZoneIndependent value as sent.
       attributes[key] = typed(
         'DateTime',
         typeof value === 'string' &&
@@ -969,6 +972,7 @@ function dispatchSdkCallCore({
   diagnostic,
   sdkFromSandbox = false,
   invokingUserId,
+  initiatingUserId,
 }) {
   // IOrganizationServiceFactory.CreateOrganizationService (Learn): null is the organization's SYSTEM user, Guid.Empty the
   // step's executing user (context.UserId), any other id that system user. With an organization the calls are authorized by
@@ -1003,6 +1007,10 @@ function dispatchSdkCallCore({
       ...([profile, ...callerProfiles].find((candidate) => canon(candidate.userId) === canon(runAs)) ?? profile),
       userId: runAs,
     };
+  // A service that runs as another user than the step's user stamps the step's initiating user as on-behalf-of
+  // (recorded native sdkSurface: SYSTEM and another user's writes; the context user and Guid.Empty stamp none).
+  if (initiatingUserId && canon(runAs) !== canon(invokingUserId ?? profile.userId))
+    selected.onBehalfOfUserId = initiatingUserId;
   validateServiceProfile(selected);
   const previousExecutionUser = store.pluginExecutionUserId;
   store.pluginExecutionUserId = selected.userId;
@@ -1951,6 +1959,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
               callerProfiles: runtime.descriptor.sdkCallerProfiles,
               sdkFromSandbox: true,
               invokingUserId: input.context?.UserId?.value,
+              initiatingUserId: input.context?.InitiatingUserId?.value,
               message,
               diagnostic,
             });
@@ -2503,7 +2512,7 @@ export function clrContext({
                                       }
                                     : {
                                         allColumns: true,
-                                        submitted: stage === 10,
+                                        submitted: stage === 10 && operation === 'create',
                                         target: true,
                                         postOperation: stage === 40,
                                       },

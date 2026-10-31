@@ -520,3 +520,28 @@ describe('service endpoint bus steps', () => {
     assert.ok(session.diagnostics.some((entry) => entry.code === 'SERVICE_ENDPOINT_SEND_FAILED'));
   });
 });
+
+describe('webhook DateTime wire format', () => {
+  // @test-kind parity: native nullSemantics webhook payloads (DateOnly and TimeZoneIndependent values /Date(ms+0000)/ at the UTC wall clock, Utc createdon /Date(ms)/)
+  it('serialises Unspecified values at the UTC wall clock with +0000 and Utc values without a suffix, in any host zone', () => {
+    const code = `
+      import { dataContract } from ${JSON.stringify(new URL('../lib/dataverse-webhooks.mjs', import.meta.url).href)};
+      const values = [
+        { $type: 'DateTime', value: '2026-10-30' },
+        { $type: 'DateTime', value: '2026-10-30T10:00:00', kind: 'Unspecified' },
+        { $type: 'DateTime', value: '2026-10-30T10:00:00Z' },
+      ];
+      console.log(JSON.stringify(values.map((value) => dataContract(value))));
+    `;
+    const run = childProcess.spawnSync(process.execPath, ['--input-type=module', '-e', code], {
+      encoding: 'utf8',
+      env: { ...process.env, TZ: 'Europe/Kyiv' },
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(JSON.parse(run.stdout), [
+      '/Date(1793318400000+0000)/',
+      '/Date(1793354400000+0000)/',
+      '/Date(1793354400000)/',
+    ]);
+  });
+});

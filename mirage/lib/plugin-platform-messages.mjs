@@ -779,6 +779,9 @@ export function runStateMessage(store, mapping, row, identity, options = {}) {
       .filter(([, value]) => value != null)
       .map(([name, value]) => [name, { $type: 'Guid', value }]),
   );
+  // The Upsert parent's Target carries no FormattedValues (native ownerAndState: {}), unlike the state labels the
+  // framework source's Target lists.
+  const { formattedValues: _, ...parentTarget } = update?.sdkFrameworkSource?.target ?? {};
   const parentContext = update?.sdkFrameworkSource
     ? selectSdkEntryParent(
         {
@@ -791,7 +794,7 @@ export function runStateMessage(store, mapping, row, identity, options = {}) {
             ...(update.createdOnWire ? { OperationCreatedOn: cloneStateData(update.createdOnWire) } : {}),
           },
         },
-        update.sdkFrameworkSource,
+        { ...update.sdkFrameworkSource, target: parentTarget },
       )
     : undefined;
   runMessagePipeline(store, {

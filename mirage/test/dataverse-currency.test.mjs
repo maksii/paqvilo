@@ -1,3 +1,4 @@
+// @test-kind unproven: local currency model (stamping, rate direction, half-away rounding, refusal codes and messages) without a native capture; tests with native proof carry their own tag
 // Currency (lib/dataverse-currency.mjs): money columns stamped with the transaction currency, its rate and the base amounts on
 // write; RetrieveExchangeRate (dataverse-predefined.mjs) answers 200 and 404.
 import test, { after } from 'node:test';
@@ -31,8 +32,12 @@ const mappings = {
     },
     fields: {
       x_name: { dataverseType: 'nvarchar' },
-      x_price: { dataverseType: 'money', precision: 2 },
-      x_cost: { dataverseType: 'money', precision: 4 },
+      // AccuracySource 2 (the currency's precision), 0 (the column's own precision).
+      x_price: { dataverseType: 'money', precision: 2, precisionSource: 2 },
+      x_cost: { dataverseType: 'money', precision: 4, precisionSource: 2 },
+      // AccuracySource 0 (the column's own precision) and 2 (the currency's precision).
+      x_exact: { dataverseType: 'money', precision: 4, precisionSource: 0 },
+      x_rounded: { dataverseType: 'money', precision: 4, precisionSource: 2 },
     },
   },
   x_note: {
@@ -175,6 +180,15 @@ test('invalid money payloads retain the shared OData validation code and roll ba
   }
 });
 
+// @test-kind parity: native and native-r2 currency (pqwp_money 7.125 stores pqwp_money_base 7.125, column AccuracySource 0 Accuracy 4) and MoneyAttributeMetadata.PrecisionSource (Microsoft.Xrm.Sdk)
+test('the base amount takes the digits of its column PrecisionSource: 0 the column precision, 2 the currency precision', async () => {
+  const { request, json, ledger } = await sharedSetup();
+  await json(await request('POST', '/x_ledgers', { x_name: 'Source', x_exact: 7.125, x_rounded: 7.125 }), 201);
+  assert.equal(ledger('Source').exchangerate, 1);
+  assert.equal(ledger('Source').x_exact_base, 7.125);
+  assert.equal(ledger('Source').x_rounded_base, 7.13);
+});
+
 test("create with an explicit currency divides by its rate, rounded to the currency precision (not the column's)", async () => {
   const { request, json, ledger } = await sharedSetup();
   await json(
@@ -266,6 +280,7 @@ test('RetrieveExchangeRate answers the base and an invented currency, and 404 fo
   assert.equal(missing.error.code, '0x80040217');
 });
 
+// @test-kind contract: the extension's capability record (Paqvilo design)
 test('describe names the stamping and the reused exchange-rate function at behaviour level', () => {
   const record = EXTENSION.describe();
   assert.equal(record.level, 'behaviour');

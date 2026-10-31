@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
 import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
-import { recordToSdkEntity } from '../lib/plugin-clr.mjs';
+import { clrContext, recordToSdkEntity } from '../lib/plugin-clr.mjs';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { odataToSdkQuery } from '../lib/plugin-query.mjs';
 
@@ -27,7 +27,7 @@ const step = (n, message, stage) => ({
   assemblyId: 'invented',
 });
 
-async function fixture(t, edit = () => {}) {
+async function fixture(t, edit = () => {}, { fields = {}, extraSteps = [] } = {}) {
   const f = await contractModuleFixture(t, {
     mappings: {
       x_item: {
@@ -40,6 +40,7 @@ async function fixture(t, edit = () => {}) {
           x_code: { dataverseType: 'nvarchar' },
           x_amount: { dataverseType: 'money', precision: 2 },
           x_choices: { dataverseType: 'multiselectpicklist', options: [{ value: 1 }, { value: 2 }] },
+          ...fields,
         },
         alternateKeys: [{ name: 'x_code_key', attributes: ['x_code'] }],
       },
@@ -53,6 +54,7 @@ async function fixture(t, edit = () => {}) {
       [10, 20, 40].map((stage, s) => step(m * 3 + s + 1, message, stage)),
     ),
     ...[10, 20, 40].map((stage, s) => step(20 + s, 'RetrieveMultiple', stage)),
+    ...extraSteps,
   ];
   const handlers = new Map(
     [steps[0]].map((item) => [
@@ -79,7 +81,7 @@ async function fixture(t, edit = () => {}) {
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
   t.after(() => backend.close());
-  return { ...f, seen };
+  return { ...f, seen, backend };
 }
 
 const keysAt = (seen, message, stage) =>
@@ -249,4 +251,186 @@ test('a Web API lookup value property reads as its logical lookup column in an S
   const query = odataToSdkQuery('x_item', { $select: '_x_parentid_value', $filter: `_x_parentid_value eq ${keyed}` });
   assert.deepEqual(query.columnSet.columns, ['x_parentid']);
   assert.equal(query.criteria.conditions[0].attributeName, 'x_parentid');
+});
+
+// @test-kind parity: native recorder nullSemantics Create 10/20/40 and async 40, events 3751-3784 (native) and 6897-6936 (native-r2)
+test('a Web API Create keeps a null text column null in every Target; an Update Target shows it as an empty string', async (t) => {
+  const f = await fixture(t, undefined, { extraSteps: [{ ...step(30, 'Create', 40), mode: 1 }] });
+  const created = await f.request('POST', '/x_items', { x_itemid: id, x_name: 'Created', x_note: null });
+  assert(created.status < 300, await created.text());
+  await f.backend.settle();
+  const creates = f.seen.filter((entry) => entry.message === 'Create');
+  assert.deepEqual(creates.map((entry) => entry.stage).sort(), [10, 20, 40, 40]);
+  for (const entry of creates) {
+    assert(Object.hasOwn(entry.target, 'x_note'), `Create ${entry.stage} Target carries x_note`);
+    assert.equal(entry.target.x_note, null);
+  }
+  assert.equal(f.store.tableRows('x_item')[0].x_note, null);
+  f.seen.length = 0;
+  const cleared = await f.request('PATCH', `/x_items(${id})`, { x_note: null }, { 'If-Match': '*' });
+  assert(cleared.status < 300, await cleared.text());
+  for (const stage of [10, 20, 40])
+    assert.equal(f.seen.find((entry) => entry.message === 'Update' && entry.stage === stage).target.x_note, '');
+  assert.equal(f.store.tableRows('x_item')[0].x_note, null);
+});
+
+// @test-kind parity: native-r2 nullSemantics full PATCH Update 20/40/async timezoneruleversionnumber (6955, 6965, 6972); all-null PATCH without it
+test('a PATCH that writes a date-time value stamps timezoneruleversionnumber on Update 20, 40 and async; a null PATCH does not', async (t) => {
+  const f = await fixture(t, undefined, {
+    fields: {
+      x_when: { dataverseType: 'datetime', dateTimeBehavior: 'TimeZoneIndependent' },
+      x_day: { dataverseType: 'datetime', dateTimeBehavior: 'DateOnly' },
+    },
+    extraSteps: [{ ...step(31, 'Update', 40), mode: 1 }],
+  });
+  assert((await f.request('POST', '/x_items', { x_itemid: id, x_name: 'Created' })).status < 300);
+  f.seen.length = 0;
+  const dated = await f.request(
+    'PATCH',
+    `/x_items(${id})`,
+    { x_when: '2026-10-30T10:00:00Z', x_day: '2026-10-30' },
+    { 'If-Match': '*' },
+  );
+  assert(dated.status < 300, await dated.text());
+  await f.backend.settle();
+  assert.equal(f.store.tableRows('x_item')[0].timezoneruleversionnumber, 4);
+  const updates = (stage) => f.seen.filter((entry) => entry.message === 'Update' && entry.stage === stage);
+  assert.equal(updates(10).length, 1);
+  assert(!Object.hasOwn(updates(10)[0].target, 'timezoneruleversionnumber'));
+  assert.equal(updates(20).length, 1);
+  assert.equal(updates(20)[0].target.timezoneruleversionnumber, 4);
+  assert.equal(updates(40).length, 2);
+  for (const entry of updates(40)) assert.equal(entry.target.timezoneruleversionnumber, 4);
+  f.seen.length = 0;
+  const nulled = await f.request('PATCH', `/x_items(${id})`, { x_when: null, x_day: null }, { 'If-Match': '*' });
+  assert(nulled.status < 300, await nulled.text());
+  await f.backend.settle();
+  for (const stage of [10, 20, 40])
+    for (const entry of updates(stage)) assert(!Object.hasOwn(entry.target, 'timezoneruleversionnumber'));
+});
+
+const zoneUser = '10000000-0000-0000-0000-000000000001';
+const zoneRuntime = {
+  descriptor: {
+    context: { initiatingUserId: zoneUser, organizationId: zoneUser, businessUnitId: zoneUser },
+    serviceProfile: { userId: zoneUser, evidence: 'Invented TimeZoneIndependent kinds', grants: [] },
+  },
+};
+// @test-kind parity: native and native-r2 crud/crudNoAsync Create/10 and CreateMultiple/10 Utc, nullSemantics Update/10 and UpdateMultiple/10 Unspecified TimeZoneIndependent kinds
+test('a Create PreValidation Target keeps a TimeZoneIndependent value as sent; an Update Target strips its zone at stages 10 and 20', () => {
+  const store = new DataStore({
+    state: {
+      version: 1,
+      mappings: {
+        x_item: {
+          logicalName: 'x_item',
+          entitySet: 'x_items',
+          idColumn: 'x_itemid',
+          fields: { x_when: { dataverseType: 'datetime', dateTimeBehavior: 'TimeZoneIndependent' } },
+        },
+      },
+      tables: { x_item: [] },
+      permissions: [],
+      plugins: [],
+      settings: { permissionMode: 'permissive' },
+    },
+  });
+  const value = '2026-10-30T10:00:00Z';
+  const target = (operation, stage) =>
+    clrContext({
+      runtime: zoneRuntime,
+      store,
+      step: { id: '30000000-0000-0000-0000-000000000090', images: [], contract: { mode: 0 } },
+      entity: 'x_item',
+      operation,
+      stage,
+      target: { x_when: value },
+      record: { x_itemid: id, x_when: value },
+      previous: operation === 'update' ? { x_itemid: id, x_when: value } : null,
+      frame: {},
+      depth: 1,
+    }).inputParameters.values.Target;
+  assert.equal(target('create', 10).attributes.x_when.value, value);
+  assert.equal(target('update', 10).attributes.x_when.value, '2026-10-30T10:00:00');
+  assert.equal(target('update', 20).attributes.x_when.value, '2026-10-30T10:00:00');
+});
+
+// @test-kind parity: native-r2 relationsReads 1:N $ref associate child Update 10/20/40 Target keys
+test('a $ref association of a 1:N child sends a lookup-only Update 10 Target and stamps the child from stage 20', async (t) => {
+  const parent = '20000000-0000-0000-0000-0000000000b1',
+    child = '20000000-0000-0000-0000-0000000000b2';
+  const f = await contractModuleFixture(t, {
+    mappings: {
+      x_parent: {
+        logicalName: 'x_parent',
+        entitySet: 'x_parents',
+        idColumn: 'x_parentid',
+        fields: { x_name: { dataverseType: 'nvarchar' } },
+        relationships: {
+          x_parent_children: {
+            schemaName: 'x_parent_children',
+            entity: 'x_child',
+            from: 'x_parentid',
+            to: 'x_parentid',
+            many: true,
+            partner: 'x_parentid',
+          },
+        },
+      },
+      x_child: {
+        logicalName: 'x_child',
+        entitySet: 'x_children',
+        idColumn: 'x_childid',
+        fields: {
+          x_name: { dataverseType: 'nvarchar' },
+          x_parentid: { dataverseType: 'lookup', targets: ['x_parent'] },
+        },
+        relationships: {
+          x_parentid: {
+            schemaName: 'x_parent_children',
+            entity: 'x_parent',
+            from: 'x_parentid',
+            to: 'x_parentid',
+            many: false,
+            partner: 'x_parent_children',
+          },
+        },
+      },
+    },
+    tables: {
+      x_parent: [{ x_parentid: parent, x_name: 'Parent' }],
+      x_child: [{ x_childid: child, x_name: 'Child', x_parentid: null }],
+    },
+    extension: { name: 'data-semantics-relation', install: () => {} },
+  });
+  const seen = [];
+  const steps = [10, 20, 40].map((stage) => ({ ...step(40 + stage, 'Update', stage), entity: 'x_child' }));
+  const handlers = new Map([
+    [
+      steps[0].typeName,
+      ({ context }) => {
+        seen.push({
+          message: context.MessageName,
+          stage: context.Stage,
+          keys: Object.keys(context.InputParameters.Target ?? {}).sort(),
+        });
+      },
+    ],
+  ]);
+  const items = pluginCatalogue({ plugins: { steps }, handlers });
+  const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
+  t.after(() => backend.close());
+  await f.json(
+    await f.request('POST', `/x_parents(${parent})/x_parent_children/$ref`, {
+      '@odata.id': `${f.server.origin}/api/data/v9.2/x_children(${child})`,
+    }),
+    204,
+  );
+  await backend.settle();
+  const keys = (stage) => seen.find((entry) => entry.message === 'Update' && entry.stage === stage).keys;
+  assert.deepEqual(keys(10), ['x_childid', 'x_parentid']);
+  for (const stage of [20, 40]) {
+    for (const name of ['modifiedby', 'modifiedon', 'modifiedonbehalfby']) assert(keys(stage).includes(name), name);
+    assert(!keys(stage).includes('versionnumber'));
+  }
 });

@@ -236,6 +236,11 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     identity: localIdentity,
     userId: profile.userId,
     caller: null,
+    // The on-behalf-of user of a plug-in service (plugin-clr.mjs dispatchSdkCallCore): only the audit stamps name it,
+    // the write is not impersonation (privileges stay the service user's).
+    onBehalfOf: profile.onBehalfOfUserId
+      ? (store.recordPipeline?.organizationApi?.principals?.byId(profile.onBehalfOfUserId) ?? null)
+      : null,
     method: 'SDK',
     headers: {},
     bypassCustomPlugins: requestOptions.bypassCustomPlugins === true,

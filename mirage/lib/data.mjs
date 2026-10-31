@@ -69,6 +69,7 @@ import { preparePortalFetchXml } from './portal-fetchxml.mjs';
 import { compileODataPermissionQuery, authoredScalarODataFetch } from './odata-permission-query.mjs';
 import { assertPortalFetchXmlTransport } from './portal-fetch-transport.mjs';
 import { recordToSdkEntity, recordToSdkReadEntity, sdkQueryParameters, executeSdkFetch } from './plugin-clr.mjs';
+import { isSecuredField } from './dataverse-fls.mjs';
 import { queryExpressionToFetch, fetchResultToSdkCollection } from './plugin-sdk-query.mjs';
 import { sdkValueToRecord } from './local-organization-service.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
@@ -150,12 +151,12 @@ const notInTarget = (name, value) =>
   name === 'versionnumber' || (value == null && (name === 'createdonbehalfby' || name === 'owningteam'));
 // Update stamps the platform adds to the Target after PreValidation (native PreOperation/PostOperation Update).
 const UPDATE_TARGET_STAMPS = ['modifiedon', 'modifiedby', 'modifiedonbehalfby'];
-// A Web API string column written as null or empty reaches the Target as an empty string; the row stores null.
-function blankTextColumns(store, mapping, input, options) {
+// Web API Update: a string column written null or '' reaches the Target as ''; Create keeps null (nullSemantics).
+function blankTextColumns(store, mapping, input, options, operation) {
   if (!options.dataverseWebApi) return [];
   return Object.keys(input).filter(
     (name) =>
-      (input[name] === null || input[name] === '') &&
+      (input[name] === '' || (operation === 'update' && input[name] === null)) &&
       fieldKind(store.fieldDefinition(mapping.logicalName, name, options.metadata)) === 'string',
   );
 }
@@ -4097,6 +4098,14 @@ export class DataStore {
                     query,
                     mapping.idColumn,
                     (answer[key] ?? []).map((row, index) => row[mapping.idColumn] ?? answer.sdkRootIds?.[index]),
+                    // The page's $orderby values precede the key, as in the HTTP skiptoken (native-r2 faults); a secured
+                    // column's values never travel in a cookie.
+                    (answer.paging?.order ?? []).filter(
+                      (column) =>
+                        !isSecuredField(
+                          this.fieldDefinition(entity, column.name.replace(/^_(.+)_value$/, '$1'), options.metadata),
+                        ),
+                    ),
                   ),
                 totalRecordCount: answer['@odata.count'] ?? answer.total_record_count ?? -1,
               };
@@ -5127,7 +5136,7 @@ export class DataStore {
     const rows = (this.state.tables[m.logicalName] ??= []);
     const { input, nested, collectionBinds } = this.splitDeepInsert(m, data, identity);
     const row = { ...this.normalizeRecord(m, input, identity) };
-    const blanks = blankTextColumns(this, m, row, options);
+    const blanks = blankTextColumns(this, m, row, options, 'create');
     if (options.coerce) this.coerceRecord(m, row, options);
     const pluginTarget = clone(row);
     for (const name of blanks) pluginTarget[name] = '';
@@ -5425,7 +5434,7 @@ export class DataStore {
     const changes = this.normalizeRecord(m, data, identity);
     if (isElastic(m) && own(changes, 'partitionid') && !samePartition(changes.partitionid, rows[index].partitionid))
       throw new DataError('The partitionid value of an elastic table row cannot be changed.', 400, 'InvalidRequest');
-    const blanks = blankTextColumns(this, m, changes, options);
+    const blanks = blankTextColumns(this, m, changes, options, 'update');
     if (options.coerce) this.coerceRecord(m, changes, options);
     if (isElastic(m)) assertElasticRecord(changes);
     const input = {
@@ -5507,6 +5516,19 @@ export class DataStore {
     if (onBehalf && options.assignOwner) row.modifiedonbehalfby = clone(row.modifiedby);
     for (const name of UPDATE_TARGET_STAMPS)
       if (authorizedWrite && !own(target, name) && own(row, name)) target[name] = clone(row[name]);
+    // A write of a date-time value also stamps the row's time zone rule version (native Update 20/40 and async).
+    if (
+      authorizedWrite &&
+      !own(target, 'timezoneruleversionnumber') &&
+      own(row, 'timezoneruleversionnumber') &&
+      Object.keys(target).some(
+        (name) =>
+          !['createdon', 'modifiedon', 'overriddencreatedon'].includes(name) &&
+          target[name] != null &&
+          fieldKind(this.fieldDefinition(mapping.logicalName, name, options.metadata)) === 'datetime',
+      )
+    )
+      target.timezoneruleversionnumber = clone(row.timezoneruleversionnumber);
     yield [mapping, 'update', 20, target, row, previous, identity, changedAttributes, options];
     // A nested SDK request may patch or delete this row, or shift its position.
     // The outer update owns its current Target and staged system/default values;
@@ -6039,7 +6061,12 @@ export class DataStore {
         // This Update belongs to the association's execution policy. Parent
         // response tokens and one-use authorization capabilities belong to the
         // outer operation, so forward only its plug-in bypass controls.
-        yield* this.commitUpdateSteps(targetMapping, rows, rows.indexOf(target), next, identity, undefined, {
+        // The native Update Target carries the lookup and the primary key only; the stamps follow from stage 20.
+        const relinkTarget = {
+          [relationship.to]: clone(value),
+          [targetMapping.idColumn]: target[targetMapping.idColumn],
+        };
+        yield* this.commitUpdateSteps(targetMapping, rows, rows.indexOf(target), next, identity, relinkTarget, {
           bypassCustomPlugins: options.bypassCustomPlugins === true,
           bypassCustomAsync: options.bypassCustomAsync === true,
           bypassStepIds: options.bypassStepIds,

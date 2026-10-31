@@ -211,7 +211,8 @@ function queryContract(value, type) {
       );
   return result;
 }
-function dataContract(value, polymorphic = true) {
+// Exported so the DateTime wire format can be tested without a delivery receiver.
+export function dataContract(value, polymorphic = true) {
   if (value == null || typeof value !== 'object') return value ?? null;
   if (Array.isArray(value)) return value.map((item) => dataContract(item));
   const typed = (type, body) => ({ ...(polymorphic ? { __type: `${type}:${NS}` } : {}), ...body });
@@ -317,7 +318,14 @@ function dataContract(value, polymorphic = true) {
     case 'Money':
       return typed('Money', { Value: exactNumeric(value.value, 'Money') });
     case 'DateTime': {
-      const ms = Date.parse(value.value);
+      // Unspecified (no zone designator) is the wall clock read as UTC, serialised with the zero offset; a Utc value keeps
+      // the bare form. Never reinterpreted in host local time.
+      const text = String(value.value ?? '');
+      if (value.kind === 'Unspecified' || !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(text)) {
+        const ms = Date.parse(text.length === 10 ? `${text}T00:00:00Z` : `${text}Z`);
+        return Number.isFinite(ms) ? `/Date(${ms}+0000)/` : null;
+      }
+      const ms = Date.parse(text);
       return Number.isFinite(ms) ? `/Date(${ms})/` : null;
     }
     case 'Guid':

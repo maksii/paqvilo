@@ -57,6 +57,13 @@ function currencySymbol(store, attributes, currencyId) {
   return row?.currencysymbol ?? store.state?.settings?.currencySymbol ?? '';
 }
 
+// A null money, choice (not state or status) or date column is listed with a null value in a Create Target.
+const listsNull = (field) => {
+  const kind = fieldKind(field),
+    raw = String(field.dataverseType ?? field.type ?? '').toLowerCase();
+  return kind === 'money' || kind === 'datetime' || (kind === 'choice' && !['state', 'status'].includes(raw));
+};
+
 function formatOne(store, value, field, { attributes, retrieved, zone, currencyId }) {
   const kind = fieldKind(field);
   if (typeof value === 'boolean') return formattedValue(value, field);
@@ -103,16 +110,20 @@ export function pipelineFormattedValues(
   store,
   entity,
   sdkEntity,
-  { userId, retrieved = false, keys, currencyId } = {},
+  { userId, retrieved = false, keys, currencyId, nullEntries = false } = {},
 ) {
   const attributes = sdkEntity?.attributes ?? {},
     cache = {},
     out = {};
   let zone;
   for (const [key, value] of Object.entries(attributes)) {
-    if (value == null || (keys && !keys.includes(key))) continue;
+    if (keys && !keys.includes(key)) continue;
     const field = definitionOf(store, entity, key, cache);
     if (!field) continue;
+    if (value == null) {
+      if (nullEntries && listsNull(field)) out[key] = null;
+      continue;
+    }
     if (value?.$type === 'DateTime') zone ??= userTimeZone(store, userId);
     const text = formatOne(store, value, field, { attributes, retrieved, zone, currencyId });
     if (text !== undefined && text !== null) out[key] = text;
@@ -140,7 +151,12 @@ export function formatPipelineTargets(store, { entity, operation, stage, frame, 
     const keys = (frame.formattedTargetKeys[index] ?? Object.keys(target.attributes ?? {})).filter(
       (key) => !computedByCore(store, entity, key, cache),
     );
-    const fv = pipelineFormattedValues(store, entity, target, { userId, keys, currencyId });
+    const fv = pipelineFormattedValues(store, entity, target, {
+      userId,
+      keys,
+      currencyId,
+      nullEntries: operation.startsWith('create'),
+    });
     return Object.keys(fv).length ? { ...rest, formattedValues: fv } : rest;
   });
   if (bulk) values.Targets = { ...values.Targets, entities: next };

@@ -206,20 +206,12 @@ export function odataToSdkQuery(entity, params = {}, store) {
     if (node.type === 'string') {
       const value = literal(node.args[1]);
       if (typeof value !== 'string') fail('SDK string filters require a string literal.');
-      // SQL Like escaping preserves literal %, _ and [ characters in contains.
+      // SQL Like escaping preserves literal %, _ and [ characters in contains and startswith.
       const escaped = value.replaceAll('[', '[[]').replaceAll('%', '[%]').replaceAll('_', '[_]');
-      const operatorName =
-        node.name === 'contains'
-          ? negate
-            ? 'NotLike'
-            : 'Like'
-          : node.name === 'startswith'
-            ? negate
-              ? 'DoesNotBeginWith'
-              : 'BeginsWith'
-            : negate
-              ? 'DoesNotEndWith'
-              : 'EndsWith';
+      const like = node.name === 'contains' || node.name === 'startswith';
+      const operatorName = like ? (negate ? 'NotLike' : 'Like') : negate ? 'DoesNotEndWith' : 'EndsWith';
+      const pattern =
+        node.name === 'contains' ? '%' + escaped + '%' : node.name === 'startswith' ? escaped + '%' : value;
       return {
         operatorName: 'And',
         filters: [],
@@ -227,7 +219,7 @@ export function odataToSdkQuery(entity, params = {}, store) {
           {
             attributeName: column(node.args[0], variable),
             operatorName,
-            values: [node.name === 'contains' ? '%' + escaped + '%' : value],
+            values: [pattern],
           },
         ],
       };
@@ -469,11 +461,18 @@ export function webApiFetchToQuery(xml, store) {
  * The paging cookie of a RetrieveMultiple result as native steps see it (recorded native reads, crud, associate,
  * upsert): a paged FetchExpression (a Web API collection GET) names its first and last primary keys, braced in upper
  * case; any other read (the platform's own existence and intersect reads) has an empty cookie. An empty page answers
- * an empty cookie (no native capture).
+ * an empty cookie (no native capture). order ([{ name, last, first }]) is the page's $orderby column values (the
+ * read's paging order): each one comes before the primary key element, as the HTTP skiptoken carries it.
  */
-export function readPagingCookie(query, idColumn, ids) {
+export function readPagingCookie(query, idColumn, ids, order = []) {
   const page = query?.$type === 'FetchExpression' ? /^<fetch\b[^>]*\bpage="(\d+)"/.exec(query.query)?.[1] : null;
   if (!page || !ids.length || ids.some((id) => id == null)) return '';
   const braced = (id) => `{${String(id).toUpperCase()}}`;
-  return `<cookie page="${page}"><${idColumn} last="${braced(ids.at(-1))}" first="${braced(ids[0])}" /></cookie>`;
+  const XML = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
+  const attribute = (value) => String(value ?? '').replace(/[&<>"]/g, (ch) => XML[ch]);
+  const columns = order
+    .filter((column) => /^[A-Za-z_][\w.-]*$/.test(column.name) && column.name !== idColumn)
+    .map((column) => `<${column.name} last="${attribute(column.last)}" first="${attribute(column.first)}" />`)
+    .join('');
+  return `<cookie page="${page}">${columns}<${idColumn} last="${braced(ids.at(-1))}" first="${braced(ids[0])}" /></cookie>`;
 }
