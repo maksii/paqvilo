@@ -245,7 +245,7 @@ test(
 // operation|frames", input names sorted); a PostOperation Update at Depth 1 named 'fan out' updates the other rows with an SDK UpdateMultiple;
 // an asynchronous Create of level 1 creates level 2; a PostOperation Update named 'wrap' creates a row through an
 // ExecuteTransaction (x_level 5) and one through an ExecuteMultiple (x_level 6).
-// @parity-evidence: native and native-r2 bulkRequests: the probe only gains the ExecuteTransaction/ExecuteMultiple 'wrap' branch and a Messages using; no assertion changed
+// @parity-evidence: native and native-r2 bulkRequests and sdkSurface: the probe only gains the ExecuteTransaction/ExecuteMultiple 'wrap' branch, a Messages using and an image-count field; no assertion changed
 async function chainProbe(t, steps) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-async-origin-')),
     source = path.join(root, 'Probe.cs'),
@@ -255,7 +255,7 @@ async function chainProbe(t, steps) {
     source,
     `using System;using System.Linq;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;using Microsoft.Xrm.Sdk.Messages;namespace Invented{public sealed class Probe:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var t=(Entity)c.InputParameters["Target"];var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);
 if(c.Mode==1){if(t.GetAttributeValue<int>("x_level")>=100)return;var chain="";for(var f=c.ParentContext;f!=null;f=f.ParentContext)chain+=f.MessageName+"/"+f.Stage+"/"+f.Mode+"/"+f.Depth+"["+string.Join(",",f.InputParameters.Keys.OrderBy(k=>k).ToArray())+"];";
-var log=new Entity("x_node");log["x_level"]=100;log["x_name"]=c.MessageName+"/"+c.Depth+"|"+c.RequestId+"|"+c.OperationId+"|"+chain;s.Create(log);
+var log=new Entity("x_node");log["x_level"]=100;var images="";for(var f=c.ParentContext;f!=null;f=f.ParentContext){var g=(IPluginExecutionContext4)f;images+=(g.PreEntityImagesCollection.Length+g.PostEntityImagesCollection.Length)+";";}log["x_name"]=c.MessageName+"/"+c.Depth+"|"+c.RequestId+"|"+c.OperationId+"|"+chain+"|"+images;s.Create(log);
 if(c.MessageName=="Create"&&t.GetAttributeValue<int>("x_level")==1){var n=new Entity("x_node");n["x_name"]="level 2";n["x_level"]=2;s.Create(n);}return;}
 if(c.MessageName=="Update"&&c.Depth==1&&t.GetAttributeValue<string>("x_name")=="fan out"){var targets=new EntityCollection{EntityName="x_node"};foreach(var e in s.RetrieveMultiple(new QueryExpression("x_node"){ColumnSet=new ColumnSet("x_level")}).Entities){if(e.Id==t.Id||e.GetAttributeValue<int>("x_level")>=100)continue;var u=new Entity("x_node",e.Id);u["x_level"]=9;targets.Entities.Add(u);}var request=new OrganizationRequest("UpdateMultiple");request["Targets"]=targets;s.Execute(request);}
 if(c.MessageName=="Update"&&c.Depth==1&&t.GetAttributeValue<string>("x_name")=="wrap"){Func<int,OrganizationRequestCollection> one=level=>{var n=new Entity("x_node");n["x_name"]="wrapped";n["x_level"]=level;var r=new OrganizationRequest("Create");r["Target"]=n;return new OrganizationRequestCollection{r};};var transaction=new OrganizationRequest("ExecuteTransaction");transaction["Requests"]=one(5);s.Execute(transaction);var multiple=new OrganizationRequest("ExecuteMultiple");multiple["Requests"]=one(6);multiple["Settings"]=new ExecuteMultipleSettings{ContinueOnError=false,ReturnResponses=true};s.Execute(multiple);}}}}`,
@@ -291,8 +291,14 @@ if(c.MessageName=="Update"&&c.Depth==1&&t.GetAttributeValue<string>("x_name")=="
       .tableRows('x_node')
       .filter((row) => row.x_level === 100)
       .map((row) => {
-        const [job, requestId, operationId, chain] = row.x_name.split('|');
-        return { job, requestId, operationId, chain: chain.split(';').filter(Boolean) };
+        const [job, requestId, operationId, chain, images] = row.x_name.split('|');
+        return {
+          job,
+          requestId,
+          operationId,
+          chain: chain.split(';').filter(Boolean),
+          images: images.split(';').filter(Boolean).map(Number),
+        };
       });
   return { ...org, logs };
 }
@@ -341,6 +347,8 @@ test(
       'Update/2 Update/40/1/2 < Update/30/1/2 < Update/40/1/2 < Update/30/1/2',
       'Update/2 Update/40/1/2 < Update/30/1/2 < Update/40/1/2 < Update/30/1/2',
     ]);
+    // The caller's frames lose their Context4 image collections in a delegated record's job (native sdkSurface 85-90).
+    for (const log of logs().filter((entry) => entry.job === 'Update/2')) assert.deepEqual(log.images, [0, 0, 0, 0]);
   },
 );
 

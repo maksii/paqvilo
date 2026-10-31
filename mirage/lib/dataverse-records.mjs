@@ -2778,7 +2778,13 @@ export function createRecordHandlers({
       // (UpsertMultiple/30) runs the new records through the CreateMultiple pipeline, then the existing ones through
       // UpdateMultiple, whose message input carries ConcurrencyBehavior; both in its transaction, request and correlation,
       // under it as ParentContext (recorded native bulk).
-      const main = upsertMultipleOperation(c, mapping, targets, texts);
+      const main = upsertMultipleOperation(
+        c,
+        mapping,
+        targets,
+        texts,
+        (index) => !lookupKey(c, mapping, texts[index]).row,
+      );
       await runWrite(async () => {
         const previousMain = store.pluginMainOperation;
         store.pluginMainOperation = main;
@@ -2796,24 +2802,29 @@ export function createRecordHandlers({
 
   // The UpsertMultiple main operation of a Web API request (native bulk: UpsertMultiple/30/d1, PrimaryEntityName none,
   // InputParameters Targets (the submitted records) and tag, SharedVariables IsAutoTransact, AcceptLang and tag).
-  function upsertMultipleOperation(c, mapping, targets, texts) {
+  function upsertMultipleOperation(c, mapping, targets, texts, creates) {
     const empty = '00000000-0000-0000-0000-000000000000',
       tag = store.pluginSdkTag,
       identity = {};
     initializePluginOperation(identity, store, null);
+    // The Targets the delegated messages share: a new record's carries the two-option defaults its CreateMultiple adds
+    // (native bulk: the created entity lists pqwp_boolean false, the updated one its submitted columns only).
     // ponytail: the submitted plain columns only; a lookup bind (an annotated key) is not shown in the frame.
-    const entities = targets.map((target, index) => ({
-      ...recordToSdkEntity(
-        store,
-        mapping.logicalName,
-        store.normalizeRecord(
-          mapping,
-          Object.fromEntries(Object.entries(target).filter(([key]) => !key.includes('@'))),
-          c.identity,
-        ),
-      ),
-      id: texts[index] || empty,
-    }));
+    const entities = targets.map((target, index) => {
+      const values = store.normalizeRecord(
+        mapping,
+        Object.fromEntries(Object.entries(target).filter(([key]) => !key.includes('@'))),
+        c.identity,
+      );
+      if (creates(index))
+        for (const [name, value] of Object.entries(mapping.recordDefaults ?? {}))
+          if (
+            !Object.hasOwn(values, name) &&
+            fieldKind(store.fieldDefinition(mapping.logicalName, name, fieldsOf)) === 'boolean'
+          )
+            values[name] = structuredClone(value);
+      return { ...recordToSdkEntity(store, mapping.logicalName, values), id: texts[index] || empty };
+    });
     const withTag = (values) => (tag === undefined ? values : { ...values, tag });
     const guid = (value) => ({ $type: 'Guid', value });
     return {

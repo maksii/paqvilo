@@ -2544,10 +2544,24 @@ export function clrContext({
     // An asynchronous job of a delegated record keeps the chain its synchronous step saw above the delegating frames
     // (native sdkSurface: Update/40 < UpdateMultiple/40 < UpdateMultiple/30 < Update/40 < Update/30 for an SDK
     // UpdateMultiple a PostOperation step issued).
+    // Natively those caller frames lose their Context4 image collections in the job (native and native-r2 sdkSurface:
+    // Update/40 < UpdateMultiple/40 < UpdateMultiple/30 < Update/40 [] < Update/30 []).
+    const callerChain = (node) =>
+      node?.values
+        ? {
+            $type: 'ExecutionContext',
+            values: {
+              ...node.values,
+              PreEntityImagesCollection: { $type: 'EntityImageCollectionArray', values: [] },
+              PostEntityImagesCollection: { $type: 'EntityImageCollectionArray', values: [] },
+              ParentContext: callerChain(node.values.ParentContext),
+            },
+          }
+        : null;
     answer.context.ParentContext = delegatedPluginParent(
       source,
       asynchronous
-        ? { ...answer.context, ParentContext: answer.context.ParentContext ?? frame.asyncCallerParent ?? null }
+        ? { ...answer.context, ParentContext: answer.context.ParentContext ?? callerChain(frame.asyncCallerParent) }
         : answer.context,
       caller,
     );

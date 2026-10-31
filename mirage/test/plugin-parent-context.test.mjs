@@ -976,6 +976,7 @@ test('ExecuteTransaction and ExecuteMultiple from a plug-in run their requests i
 // context its CreateMultiple and UpdateMultiple run, in one request and correlation; a delegated record sees the bulk
 // frames without Targets: CreateMultiple/30 [] and UpdateMultiple/20 and /30 [ConcurrencyBehavior] under an
 // UpsertMultiple, CreateMultiple/30 [tag] for a bulk-origin CreateMultiple.
+// @parity-evidence: native and native-r2 bulk: the fixture gains a two-option column with its default (the created UpsertMultiple Target lists it); no earlier assertion changed
 test('a Web API UpsertMultiple runs its bulk messages under the UpsertMultiple main operation', async (t) => {
   const { contractModuleFixture } = await import('./contract-module-fixture.mjs');
   const existing = '20000000-0000-4000-8000-0000000000a1',
@@ -988,10 +989,11 @@ test('a Web API UpsertMultiple runs its bulk messages under the UpsertMultiple m
         entitySet: 'x_items',
         idColumn: 'x_itemid',
         ownership: 'UserOwned',
-        fields: { x_name: { dataverseType: 'nvarchar' } },
+        fields: { x_name: { dataverseType: 'nvarchar' }, x_flag: { dataverseType: 'bit' } },
+        recordDefaults: { x_flag: false },
       },
     },
-    tables: { x_item: [{ x_itemid: existing, x_name: 'Existing' }] },
+    tables: { x_item: [{ x_itemid: existing, x_name: 'Existing', x_flag: true }] },
     extension: { name: 'upsert-multiple-probe', install: () => {} },
   });
   const seen = probe(f.store, (at) =>
@@ -1022,6 +1024,14 @@ test('a Web API UpsertMultiple runs its bulk messages under the UpsertMultiple m
   assert.equal(upsert.PrimaryEntityName, 'none');
   assert.equal(upsert.OwningExtension.name, 'ObjectModel Implementation');
   assert.deepEqual(Object.keys(upsert.InputParameters.values).toSorted(), ['Targets', 'tag']);
+  // Its Targets are the delegated messages' own: the new record with its two-option default, the existing one as sent.
+  assert.deepEqual(
+    upsert.InputParameters.values.Targets.entities.map((entity) => Object.keys(entity.attributes).toSorted()),
+    [
+      ['x_flag', 'x_itemid', 'x_name'],
+      ['x_itemid', 'x_name'],
+    ],
+  );
   assert.deepEqual(Object.keys(createStage.InputParameters.values), []);
   assert.deepEqual(Object.keys(createMain.InputParameters.values), []);
   assert.deepEqual(Object.keys(updateStage.InputParameters.values), ['ConcurrencyBehavior']);
