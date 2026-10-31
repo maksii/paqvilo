@@ -2,7 +2,7 @@ import { DataError } from './data-error.mjs';
 import { parseXmlDocument } from './fetchxml-engine.mjs';
 import { sdkValueToRecord as sdkRecordValue } from './local-organization-service.mjs';
 import { isExactNumeric } from './exact-numeric.mjs';
-import { CRM_FUNCTIONS } from './dataverse-conditions.mjs';
+import { CRM_FUNCTIONS, nullMessage } from './dataverse-conditions.mjs';
 const sdkValueToRecord = (value) => {
   const decoded = sdkRecordValue(value);
   return isExactNumeric(decoded) ? decoded.value : decoded;
@@ -79,10 +79,12 @@ export function queryExpressionToFetch(query, store) {
       : (c?.columns ?? []).map((column) => '<attribute name="' + name(column) + '" />').join('')) +
     (c?.attributeExpressions ?? []).map(expressionColumn).join('');
   const condition = (c) => {
-    if (['Contains', 'DoesNotContain'].includes(c.operatorName))
-      fail(
-        'SDK full-text conditions require a source-qualified full-text execution adapter; wildcard LIKE is not equivalent.',
-      );
+    // Full-text conditions answer the platform fault of a column without a full-text index (dataverse-conditions.mjs
+    // CRM_FUNCTIONS.Contains), as a FetchXML or Web API query does.
+    if (['Contains', 'DoesNotContain'].includes(c.operatorName)) {
+      const { status, code, innerCode, message } = CRM_FUNCTIONS.Contains.rejection;
+      throw new DataError(message.replace('Contains', c.operatorName), status, code, { innerCode });
+    }
     const ops = {
       ...Object.fromEntries(
         Object.entries(CRM_FUNCTIONS)
@@ -105,6 +107,12 @@ export function queryExpressionToFetch(query, store) {
       EndsWith: 'ends-with',
       DoesNotBeginWith: 'not-begin-with',
       DoesNotEndWith: 'not-end-with',
+      // A FetchXML operator with no Web API query function.
+      NotOn: 'not-on',
+      // FetchXML schema operators with no Web API query function.
+      Mask: 'mask',
+      NotMask: 'not-mask',
+      MasksSelect: 'masks-select',
     };
     const op = ops[c.operatorName];
     if (!op) fail('Unsupported SDK condition ' + c.operatorName);
@@ -122,14 +130,17 @@ export function queryExpressionToFetch(query, store) {
       spec?.values === 'list' ||
       spec?.values === 'pair';
     if (!multiple) {
+      if (values.length === 1 && values[0] == null)
+        throw new DataError(nullMessage(c.attributeName), 400, 'InvalidQuery');
       if (values.length !== 1 || (values[0] !== null && typeof values[0] === 'object'))
         fail('Unsupported SDK condition values.');
       return start + attrs({ [c.compareColumns ? 'valueof' : 'value']: values[0] }) + ' />';
     }
+    if (values.some((v) => v == null)) throw new DataError(nullMessage(c.attributeName), 400, 'InvalidQuery');
     if (
       c.compareColumns ||
       !values.length ||
-      values.some((v) => v === null || typeof v === 'object') ||
+      values.some((v) => typeof v === 'object') ||
       ((['between', 'not-between'].includes(op) || spec?.values === 'pair') && values.length !== 2)
     )
       fail('Unsupported SDK set condition values.');

@@ -12,6 +12,7 @@ import {
   PLATFORM_MESSAGES_UNRECORDED,
   PLATFORM_SDK_MESSAGES,
   PRIVATE_PLATFORM_MESSAGES_UNRECORDED,
+  requestMessage,
 } from './dataverse-sdk-message-catalogue.mjs';
 import { InvalidAssembly, inspectAssembly, inspectPackage, inspectSigningCertificate } from './clr-assembly-reader.mjs';
 import { isLoopbackUrl, loopbackFetch, messagingOf, serviceEndpointTarget } from './dataverse-webhooks.mjs';
@@ -27,18 +28,6 @@ const SIXTEEN_MB = 16 * 1024 * 1024;
 const PLATFORM_MESSAGES = PLATFORM_SDK_MESSAGES;
 const UNRECORDED_MESSAGES = [...PLATFORM_MESSAGES_UNRECORDED, ...PRIVATE_PLATFORM_MESSAGES_UNRECORDED];
 const PRIVATE_UNRECORDED = new Set(PRIVATE_PLATFORM_MESSAGES_UNRECORDED);
-// Web API actions whose sdkmessage has another name: the native team and systemuser filter sets (native filter catalogue
-// round 2) list AddMembers, RemoveMembers, SetParent, SetBusiness, RetrieveAllChildUsers and ReassignObjects and no
-// <message><Table> name, so these action names seed no sdkmessage row of their own.
-const ACTION_MESSAGES = {
-  AddMembersTeam: 'AddMembers',
-  RemoveMembersTeam: 'RemoveMembers',
-  SetParentTeam: 'SetParent',
-  SetParentSystemUser: 'SetParent',
-  SetBusinessSystemUser: 'SetBusiness',
-  RetrieveAllChildUsersSystemUser: 'RetrieveAllChildUsers',
-  ReassignObjectsSystemUser: 'ReassignObjects',
-};
 // Native per-table filters of a custom table (proven for a user-owned and an organization-owned one) follow its
 // capabilities. Every table: data, state, retention and archive messages (IsValidStateTransition takes no custom step on
 // a custom table). Custom tables add DeleteMultiple and the legacy bulk messages. User- or team-owned tables add the
@@ -772,7 +761,7 @@ function seed(api, plugins = null) {
   const { store } = api;
   const org = organizationOf(store) || String(api.settings?.organizationId ?? '').toLowerCase(); // reset runs before the organization row is re-seeded
   const stepMessages = (plugins?.steps ?? []).map((step) => step.message).filter(Boolean);
-  const names = [...(api.registry?.names?.() ?? []).map((name) => ACTION_MESSAGES[name] ?? name), ...stepMessages];
+  const names = [...(api.registry?.names?.() ?? []).map(requestMessage), ...stepMessages];
   const availability = plugins ? sourceAvailability(plugins) : (store.state.dataverse?.pluginSourceAvailability ?? {});
   if (plugins) (store.state.dataverse ??= {}).pluginSourceAvailability = availability;
   upsert(store, 'sdkmessage', 'sdkmessageid', messageRows(store, org, names, availability), { fresh: true });

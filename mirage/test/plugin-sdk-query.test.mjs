@@ -697,8 +697,11 @@ test('Full-text SDK Contains cannot be silently executed as substring LIKE', () 
     q.linkEntities[0].linkCriteria.conditions = [{ attributeName: 'amount', operatorName, values: ['12'] }];
     assert.throws(
       () => run(store, q),
+      // The platform fault of a column without a full-text index (audit C2-05), not a local 501.
       (error) =>
-        error.code === 'LocalPluginQueryUnsupported' && error.status === 501 && /full-text/.test(error.message),
+        error.status === 400 &&
+        error.details?.innerCode === '0x80041120' &&
+        error.message === `Unknown Condition Operator: ${operatorName}. FetchXml does not support it`,
     );
   }
   q.linkEntities[0].linkCriteria.conditions = [{ attributeName: 'amount', operatorName: 'GreaterThan', values: [10] }];
@@ -834,4 +837,132 @@ test('aliased values named like the primary column cannot become SDK Entity.Id',
       });
     }
   }
+});
+
+// @test-kind compatibility: Microsoft.Xrm.Sdk.Query.ConditionOperator NotOn is the FetchXML not-on operator; Contains needs a full-text index (FetchXML answers 0x80041120 without one); QueryExpression.TopCount is the FetchXML top attribute, so one query answers the same with and without TopCount
+test('SDK QueryExpression answers the same rows with and without TopCount, NotOn included', () => {
+  const store = data();
+  store.state.mappings.root.fields.due = { type: 'datetime' };
+  store.state.tables.root = [
+    { rootid: rootId, title: 'Due on the day', due: '2026-03-04T10:00:00Z' },
+    { rootid: childId, title: 'Due later', due: '2026-03-05T10:00:00Z' },
+  ];
+  const titles = (topCount) =>
+    run(store, {
+      $type: 'QueryExpression',
+      entityName: 'root',
+      columnSet: { allColumns: false, columns: ['title'] },
+      criteria: {
+        operatorName: 'And',
+        conditions: [
+          {
+            attributeName: 'due',
+            operatorName: 'NotOn',
+            values: [{ $type: 'DateTime', value: '2026-03-04T00:00:00Z' }],
+          },
+          { attributeName: 'title', operatorName: 'Like', values: ['Due%'] },
+        ],
+      },
+      orders: [],
+      linkEntities: [],
+      ...(topCount ? { topCount } : {}),
+    }).entities.map((entity) => entity.attributes.title);
+  assert.deepEqual(titles(null), ['Due later']);
+  assert.deepEqual(titles(5), ['Due later']);
+  // A full-text condition answers the platform fault of a column without a full-text index, with and without TopCount.
+  for (const topCount of [null, 5])
+    assert.throws(
+      () =>
+        run(store, {
+          $type: 'QueryExpression',
+          entityName: 'root',
+          columnSet: { allColumns: true },
+          criteria: {
+            operatorName: 'And',
+            conditions: [{ attributeName: 'title', operatorName: 'Contains', values: ['Due'] }],
+          },
+          ...(topCount ? { topCount } : {}),
+        }),
+      (error) => error.status === 400 && error.details?.innerCode === '0x80041120',
+    );
+});
+
+// @test-kind unproven: bit-mask semantics are a local model; the docs only say "found in the specified bit-mask value"
+test('SDK Mask, NotMask and MasksSelect filter on the bits of an integer column, with and without TopCount', () => {
+  const store = data();
+  store.state.mappings.root.fields.bits = { type: 'integer' };
+  store.state.tables.root = [
+    { rootid: rootId, title: 'Five', bits: 5 },
+    { rootid: childId, title: 'Four', bits: 4 },
+    { rootid: leafId, title: 'Two', bits: 2 },
+  ];
+  const titles = (operatorName, topCount) =>
+    run(store, {
+      $type: 'QueryExpression',
+      entityName: 'root',
+      columnSet: { allColumns: false, columns: ['title'] },
+      criteria: { operatorName: 'And', conditions: [{ attributeName: 'bits', operatorName, values: [5] }] },
+      orders: [],
+      linkEntities: [],
+      ...(topCount ? { topCount } : {}),
+    })
+      .entities.map((entity) => entity.attributes.title)
+      .sort();
+  for (const topCount of [null, 5]) {
+    assert.deepEqual(titles('Mask', topCount), ['Five']);
+    assert.deepEqual(titles('NotMask', topCount), ['Four', 'Two']);
+    assert.deepEqual(titles('MasksSelect', topCount), ['Five', 'Four']);
+  }
+});
+
+// @test-kind unproven: the null set-value fault reuses the FetchXML null-value message; no native recording of the SDK fault text
+test('SDK In with a null value answers the platform null-value fault', () => {
+  const store = data();
+  for (const topCount of [null, 5])
+    assert.throws(
+      () =>
+        run(store, {
+          $type: 'QueryExpression',
+          entityName: 'root',
+          columnSet: { allColumns: true },
+          criteria: {
+            operatorName: 'And',
+            conditions: [{ attributeName: 'title', operatorName: 'In', values: ['Parent', null] }],
+          },
+          ...(topCount ? { topCount } : {}),
+        }),
+      (error) => error.status === 400 && /null is not a valid value/.test(error.message),
+    );
+});
+
+// @test-kind unproven: a condition on a link alias filtering the root rows is a local model of the linked query; no native recording
+test('SDK condition on a link alias filters the root rows', () => {
+  const store = data();
+  const orphanId = '50000000-0000-0000-0000-000000000001';
+  store.state.tables.root.push({ rootid: orphanId, title: 'Orphan' });
+  const titles = run(store, {
+    $type: 'QueryExpression',
+    entityName: 'root',
+    columnSet: { allColumns: false, columns: ['title'] },
+    criteria: {
+      operatorName: 'And',
+      conditions: [{ entityName: 'c', attributeName: 'amount', operatorName: 'GreaterThan', values: [10] }],
+    },
+    orders: [],
+    linkEntities: [
+      {
+        $type: 'LinkEntity',
+        linkFromEntityName: 'root',
+        linkToEntityName: 'child',
+        linkFromAttributeName: 'rootid',
+        linkToAttributeName: 'rootid',
+        entityAlias: 'c',
+        joinOperator: 'LeftOuter',
+        columns: { allColumns: false, columns: [] },
+        linkCriteria: { operatorName: 'And', conditions: [] },
+        linkEntities: [],
+      },
+    ],
+  }).entities.map((entity) => entity.attributes.title);
+  assert.deepEqual(titles, ['Parent']);
 });

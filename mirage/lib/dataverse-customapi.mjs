@@ -973,12 +973,18 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
           diagnostic: api.diagnostic,
         });
       else if (runtime?.descriptor !== original.descriptor) {
-        if (synchronous)
+        // Runtimes are prepared when the registration changes (prepareCustomApiRuntimes); a synchronous call cannot await one.
+        if (synchronous) {
+          const failure = options.preparationFailures?.get(original.id);
           throw new DataError(
-            'The explicitly trusted custom API main-operation runtime must be prepared before a synchronous SDK call.',
-            501,
-            'LocalPluginClrUnavailable',
+            failure
+              ? `The explicitly trusted custom API main-operation runtime could not be prepared: ${failure.message}`
+              : 'The explicitly trusted custom API main-operation runtime is still being prepared for its registration change.',
+            failure?.status ?? 501,
+            failure?.code ?? 'LocalPluginClrUnavailable',
+            failure ? { cause: failure.message } : undefined,
           );
+        }
         const previous = runtime;
         runtime = yield (options.prepareRuntime ?? prepareClrRuntime)(original.descriptor);
         if (previous) yield closeClrHostPool({ runtime: previous, diagnostic: api.diagnostic });
@@ -1712,9 +1718,17 @@ function executeMessageSyncInternal(api, request, options) {
   return { statusCode: result.status, body: result.body ?? {}, outputs: result.sdkOutputs };
 }
 
-export async function prepareCustomApiRuntimes(api, { refresh = false } = {}) {
+export function prepareCustomApiRuntimes(api, { refresh = false } = {}) {
   const options = executionConfigurations.get(api.store);
-  if (!options) return;
+  if (!options) return Promise.resolve();
+  // One pass at a time: two overlapping passes would prepare the same runtime twice and leak one host.
+  return (options.preparing = (options.preparing ?? Promise.resolve())
+    .catch(() => {})
+    .then(() => prepareRuntimesPass(api, options, refresh)));
+}
+
+async function prepareRuntimesPass(api, options, refresh) {
+  options.preparationFailures ??= new Map();
   const active = new Map();
   for (const row of api.store.tableRows('customapi')) {
     if (
@@ -1732,6 +1746,7 @@ export async function prepareCustomApiRuntimes(api, { refresh = false } = {}) {
     if (runtime) await closeClrHostPool({ runtime, diagnostic: api.diagnostic });
     options.runtimes.delete(id);
     options.mainRuntimeIds.delete(id);
+    options.preparationFailures.delete(id);
   }
   for (const original of active.values()) {
     options.mainRuntimeIds.add(original.id);
@@ -1741,7 +1756,9 @@ export async function prepareCustomApiRuntimes(api, { refresh = false } = {}) {
       if (previous) await closeClrHostPool({ runtime: previous, diagnostic: api.diagnostic });
       options.runtimes.delete(original.id);
       options.runtimes.set(original.id, await (options.prepareRuntime ?? prepareClrRuntime)(original.descriptor));
+      options.preparationFailures.delete(original.id);
     } catch (error) {
+      options.preparationFailures.set(original.id, error);
       api.diagnostic?.({ code: 'PLUGIN_CLR_PREPARATION_FAILED', customApi: original.name, message: error.message });
     }
   }
@@ -1767,6 +1784,7 @@ export function customApiHandlers(packs = []) {
 }
 
 const automatedHooks = new WeakSet();
+const MAIN_OPERATION_TABLES = new Set(['customapi', 'plugintype', 'pluginassembly', 'sdkmessageprocessingstep']);
 /**
  * Seeds the customapi tables and supplies their current operation definitions to
  * the canonical registry. Row edits, signatures and deletions are visible on its
@@ -1786,6 +1804,7 @@ export function install(api, options = {}) {
     runtimes: options.runtimes ?? previous?.runtimes ?? new Map(),
     mainRuntimeIds: previous?.mainRuntimeIds ?? new Set(),
     prepareRuntime: options.prepareRuntime,
+    preparing: previous?.preparing,
   };
   executionConfigurations.set(store, resolved);
   seed(store);
@@ -1874,6 +1893,13 @@ export function install(api, options = {}) {
       'beforeWrite',
       (c, mapping, info) => runAutomated(api, reported, c, mapping, info),
       'dataverse-customapi (automated low-code plug-ins)',
+    );
+    // A main operation registered or changed at runtime is prepared with the write, so its first call may be a plug-in's
+    // synchronous SDK Execute (native catchCoded: the API's first touch is the caught SDK call).
+    api.recordHooks.add(
+      'afterWrite',
+      (_c, mapping) => (MAIN_OPERATION_TABLES.has(mapping.logicalName) ? prepareCustomApiRuntimes(api) : undefined),
+      'dataverse-customapi (main-operation runtimes)',
     );
   }
   if (registry.setProvider) {

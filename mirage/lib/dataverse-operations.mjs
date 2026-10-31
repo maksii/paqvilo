@@ -2,6 +2,7 @@
 // the router in dataverse-api.mjs calls handle(ctx) for the one it finds.
 import { PLATFORM_OPERATIONS, platformOperationCsdl, platformCsdl } from './dataverse-operation-contracts.mjs';
 import { entryMessageActive, entryParameters, runEntryMessage } from './plugin-platform-messages.mjs';
+import { requestMessage } from './dataverse-sdk-message-catalogue.mjs';
 
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const KINDS = new Set(['function', 'action']);
@@ -64,7 +65,8 @@ async function runOperationMessage(store, op, context) {
   const subject = inputs.Target?.$type === 'EntityReference' ? inputs.Target : null;
   let response;
   await runEntryMessage(store, {
-    message: op.name,
+    // The request's sdkmessage (AddMembersTeam runs AddMembers, SendEmail runs Send: dataverse-sdk-message-catalogue.mjs).
+    message: requestMessage(op.name),
     entity: subject?.logicalName ?? bound?.logicalName ?? 'none',
     id: subject?.id ?? boundId,
     inputs,
@@ -104,10 +106,14 @@ export function createOperationRegistry({ store } = {}) {
       entity,
       handle: store
         ? (context) =>
-            !op.ownPipeline && entryMessageActive(store, op.name, context.target?.mapping?.logicalName, context)
+            !op.ownPipeline &&
+            entryMessageActive(store, requestMessage(op.name), context.target?.mapping?.logicalName, context)
               ? runOperationMessage(store, op, context)
               : op.handle(context)
         : op.handle,
+      // The operation's own handler (or its synchronous sdk variant), without the entry pipeline: a plug-in's SDK Execute
+      // runs that pipeline itself (plugin-platform-messages.mjs executeOperationSdkMessage).
+      main: op.sdk ?? op.handle,
       csdl,
       ...(op.soapResult ? { soapResult: op.soapResult } : {}),
       ...(op.ownPipeline ? { ownPipeline: true } : {}),

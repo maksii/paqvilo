@@ -9,7 +9,7 @@ import { isExactNumeric } from './exact-numeric.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
 import { requireMetadataPrivilege } from './dataverse-metadata-relationships.mjs';
 import { createMetadataService } from './dataverse-metadata.mjs';
-import { handleMetadataWrite, activateKey } from './dataverse-metadata-tables.mjs';
+import { handleMetadataPublish, handleMetadataWrite, activateKey } from './dataverse-metadata-tables.mjs';
 import { zipOf } from './dataverse-solutions.mjs';
 
 const DEFAULT_LCID = 1033;
@@ -496,6 +496,7 @@ function operations(api) {
       kind: 'action',
       csdl: '<Action Name="PublishAllXml" />',
       handle: (c) => handleMetadataWrite({ ...c, api, route: { kind: 'function', name: 'PublishAllXml' } }),
+      sdk: (c) => handleMetadataPublish({ ...c, api, route: { kind: 'function', name: 'PublishAllXml' } }),
     },
     {
       name: 'PublishAllXmlAsync',
@@ -522,6 +523,7 @@ function operations(api) {
       kind: 'action',
       csdl: '<Action Name="PublishXml"><Parameter Name="ParameterXml" Type="Edm.String" Nullable="false" Unicode="false" /></Action>',
       handle: (c) => handleMetadataWrite({ ...c, api, route: { kind: 'function', name: 'PublishXml' } }),
+      sdk: (c) => handleMetadataPublish({ ...c, api, route: { kind: 'function', name: 'PublishXml' } }),
     },
     // Autonumber seeds
     {
@@ -826,6 +828,7 @@ export const EXTENSION = {
         binding: op.binding ?? 'unbound',
         entity: op.entity,
         handle: op.handle,
+        ...(op.sdk ? { sdk: op.sdk } : {}),
         csdl: op.csdl,
         signature: op.signature,
       });

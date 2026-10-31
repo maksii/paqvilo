@@ -142,7 +142,7 @@ const CSDL_EXCHANGE_RATE = `<ComplexType Name="RetrieveExchangeRateResponse"><Pr
   <ReturnType Type="mscrm.RetrieveExchangeRateResponse" Nullable="false" />
 </Function>`;
 function retrieveExchangeRate(api) {
-  return async (c) => {
+  return (c) => {
     const id = c.params?.TransactionCurrencyId;
     if (!GUID_TEXT.test(idOf(id))) throw new DataError('TransactionCurrencyId must be a GUID.', 400, 'InvalidRequest'); // native message text is a guess
     const { principals, store } = api;
@@ -256,7 +256,9 @@ export function install(api) {
     name: 'RetrieveExchangeRate',
     kind: 'function',
     binding: 'unbound',
-    handle: retrieveExchangeRate(api),
+    // The Web API awaits the handler; a plug-in's synchronous SDK Execute calls it directly (sdk).
+    handle: async (c) => retrieveExchangeRate(api)(c),
+    sdk: retrieveExchangeRate(api),
     csdl: CSDL_EXCHANGE_RATE,
   });
   api.registry.register({

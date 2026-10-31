@@ -10,31 +10,15 @@ import { contextUrl, preferenceApplied } from './dataverse-odata.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
 import {
   entryMessageActive,
+  mergeChanges,
   recordSharingChange,
   runEntryMessage,
-  runMergeDeactivationReads,
+  writeMerge,
 } from './plugin-platform-messages.mjs';
 import { recordToSdkEntity } from './plugin-clr.mjs';
 
 // Only account and contact are documented for Merge; lead and incident are assumed to merge too.
 const MERGE_TABLES = new Set(['account', 'contact', 'lead', 'incident']);
-// Never copied by a merge: ownership, audit and state columns.
-const SYSTEM_COLUMNS = new Set([
-  'createdby',
-  'createdon',
-  'createdonbehalfby',
-  'modifiedby',
-  'modifiedon',
-  'modifiedonbehalfby',
-  'ownerid',
-  'owninguser',
-  'owningteam',
-  'owningbusinessunit',
-  'versionnumber',
-  'statecode',
-  'statuscode',
-  'masterid',
-]);
 const FIELD_TYPE_FLAG = {
   ValidForCreate: 'validForCreate',
   ValidForUpdate: 'validForUpdate',
@@ -143,7 +127,6 @@ function fieldTypeOf(value) {
 
 // Merge: the target gains the subordinate's empty values and UpdateContent; the subordinate
 // is deactivated, takes masterid when declared, and its child rows move to the target.
-// ponytail: the missing-parent variant of PerformParentingChecks (async cascade docs) is not modelled.
 async function merge(api, ctx) {
   const body = ctx.body ?? {};
   const target = typedRef(api, body.Target, MERGE_TABLES);
@@ -203,65 +186,16 @@ async function mergeRows(api, ctx, body, target, subordinate, transact = (fn) =>
   // Merge has no documented privilege of its own: update on both records and append on moved children are checked.
   authorize(api, ctx, mapping, 'update', targetRow);
   authorize(api, ctx, mapping, 'update', subRow);
-
-  if (body.PerformParentingChecks) {
-    // Only "check if the parent information is different" is documented; two different non-null values on the table's self lookup
-    // are taken to conflict.
-    for (const [nav, rel] of Object.entries(relationshipsOf(api.store, mapping.logicalName, mapping.relationships))) {
-      if (rel.many || rel.entity !== mapping.logicalName) continue;
-      const column = rel.from ?? nav;
-      const left = refId(targetRow[column]);
-      const right = refId(subRow[column]);
-      if (left != null && right != null && !sameId(left, right))
-        throw invalid('The Target and Subordinate records have different parent records.');
-    }
-  }
-
-  const copied = Object.fromEntries(
-    Object.keys(fields)
-      .filter(
-        (name) => name !== idColumn && !SYSTEM_COLUMNS.has(name) && subRow[name] != null && targetRow[name] == null,
-      )
-      .map((name) => [name, subRow[name]]),
-  );
-  // The incident merge ignores UpdateContent (reference: Merge behavior for incident).
   const contentAllowed = (name) =>
     !name.startsWith('@') &&
     name !== idColumn &&
     (Object.hasOwn(fields, name) || lookupBindNav(api, mapping, name) !== null);
-  const content =
-    mapping.logicalName === 'incident'
-      ? {}
-      : Object.fromEntries(Object.entries(body.UpdateContent ?? {}).filter(([name]) => contentAllowed(name)));
-  // The subordinate is deactivated (the inactive state with its default status), then marked merged into the target,
-  // in two Updates (recorded native mergeAccount: {statecode 1, statuscode 2}, then {masterid, merged true}).
-  const declared = (column) =>
-    Object.hasOwn(fields, column) ||
-    Boolean(api.store.fieldDefinition(mapping.logicalName, column, api.metadataFields));
-  const inactive = 1,
-    state = fieldOf(api, mapping, 'statecode'),
-    inactiveStatus =
-      (state.states ?? state.options ?? []).find((option) => Number(option.value) === inactive)?.defaultStatus ??
-      mapping.stateStatusDefaults?.[inactive];
-  const deactivation = { statecode: inactive, ...(inactiveStatus == null ? {} : { statuscode: inactiveStatus }) };
-  const mergedMark = {
-    ...(declared('masterid') ? { masterid: { id: target.id, logical_name: mapping.logicalName } } : {}),
-    ...(declared('merged') ? { merged: true } : {}),
-  };
-
-  const children = [];
-  for (const [, rel] of Object.entries(relationshipsOf(api.store, mapping.logicalName, mapping.relationships))) {
-    // Only a relationship whose Merge cascades moves its rows (Learn: Cascade, the only option on a mergeable table).
-    // A system job regarding the subordinate is not a child record the merge moves (native mergeAccount: the Merge
-    // answers 204 while the scenario's asynchronous jobs still wait, and they run afterwards).
-    if (!rel.many || rel.intersect || rel.cascade?.merge === 'NoCascade' || rel.entity === 'asyncoperation') continue;
-    const childMapping = api.store.resolveMapping(rel.entity);
-    const nav = lookupNav(api, childMapping, mapping.logicalName, rel.to) ?? rel.to;
-    for (const row of api.store.tableRows(childMapping.logicalName)) {
-      if (sameId(refId(row[rel.to]), refId(subRow[rel.from ?? idColumn]))) children.push({ childMapping, row, nav });
-    }
-  }
-  for (const child of children) authorize(api, ctx, child.childMapping, 'append', child.row);
+  const changes = mergeChanges(api.store, mapping, targetRow, subRow, {
+    content: Object.fromEntries(Object.entries(body.UpdateContent ?? {}).filter(([name]) => contentAllowed(name))),
+    performParentingChecks: body.PerformParentingChecks,
+    metadataFields: api.metadataFields,
+  });
+  for (const child of changes.children) authorize(api, ctx, child.childMapping, 'append', child.row);
 
   // The writes run the record pipeline (hooks, column security, audit, plug-in steps, modifiedby and version stamps);
   // the privileges were checked above. Without an organization (a bare store) there is no pipeline to run.
@@ -272,38 +206,24 @@ async function mergeRows(api, ctx, body, target, subordinate, transact = (fn) =>
     api.records?.updateInternal
       ? api.records.updateInternal(ctx, logical, id, data, { authorized: true, writeOptions })
       : api.store.updateRecordAsync(logical, id, data, ctx.identity, writeOptions);
-  const targetChanges = { ...copied, ...content };
-  await transact(async () => {
-    // The target is written only when it gains values (native mergeAccount: no target Update for an empty UpdateContent).
-    if (Object.keys(targetChanges).length) await updated(mapping.logicalName, targetRow[idColumn], targetChanges);
-    await updated(mapping.logicalName, subRow[idColumn], deactivation);
-    // The platform's internal stage 50 of that Update reads the subordinate's action cards and the subordinate (native
-    // mergeAccount), before the merged mark.
-    if (api.store.pluginPipeline) {
-      const after = rowOf(api, mapping, subordinate.id);
-      runMergeDeactivationReads(api.store, {
-        mapping,
-        row: after,
-        target: Object.fromEntries(
-          [...Object.keys(deactivation), 'modifiedon', 'modifiedby', 'modifiedonbehalfby']
-            .filter((name) => Object.hasOwn(after, name))
-            .map((name) => [name, after[name]]),
-        ),
-        identity: ctx.identity,
-      });
-    }
-    if (Object.keys(mergedMark).length) await updated(mapping.logicalName, subRow[idColumn], mergedMark);
-    for (const { childMapping, row, nav } of children) {
-      await updated(childMapping.logicalName, row[childMapping.idColumn], {
-        [`${nav}@odata.bind`]: `${mapping.entitySet}(${target.id})`,
-      });
-    }
-  });
+  await transact(() =>
+    writeMerge(
+      api.store,
+      { mapping, changes, identity: ctx.identity },
+      {
+        update: (id, data) => updated(mapping.logicalName, id, data),
+        moveChild: ({ childMapping, row, rel }) =>
+          updated(childMapping.logicalName, row[childMapping.idColumn], {
+            [`${lookupNav(api, childMapping, mapping.logicalName, rel.to) ?? rel.to}@odata.bind`]: `${mapping.entitySet}(${target.id})`,
+          }),
+      },
+    ),
+  );
 }
 
 // InitializeFrom: the new record's data as a body; the parental lookup bind comes first.
-// A stored lookup on the source becomes its navigation bind on the target.
-async function initializeFrom(api, ctx) {
+// A stored lookup on the source becomes its navigation bind on the target. Synchronous: a plug-in's SDK Execute calls it too.
+function initializeFrom(api, ctx) {
   const params = ctx.params ?? {};
   const source = referenceOf(api, params.EntityMoniker, 'EntityMoniker');
   const target = api.store.resolveMapping(String(params.TargetEntityName ?? ''));

@@ -83,8 +83,9 @@ const runtime = {
 const profile = {
   userId: caller,
   evidence: 'Invented parent-context probe',
+  // @parity-evidence: fixture grant only; Microsoft Learn "Privileges by message" (AssignRequest prvAssign, GrantAccess/ModifyAccess/RevokeAccess prvShare), audit C2-04
   grants: [
-    { entity: 'widget', operations: ['create', 'read', 'update'] },
+    { entity: 'widget', operations: ['create', 'read', 'update', 'assign', 'share'] },
     { entity: 'ledger', operations: ['create', 'read', 'update'] },
     { entity: 'gizmo', operations: ['create', 'read', 'update'] },
   ],

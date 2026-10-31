@@ -723,14 +723,18 @@ export function reset(api) {
   });
 }
 
+/** PublishXml and PublishAllXml (route.kind 'function'), synchronously: a plug-in's SDK Execute calls it too. */
+export function handleMetadataPublish(c) {
+  const { api, method, route } = c;
+  if (!PUBLISH.has(route.name)) throw fail(`${route.name} is not a metadata action.`, 404, 'NotFound');
+  if (method === 'POST') requireMetadataPrivilege(api, c, 'prvWriteEntity', route.name); // assumed: publishing needs the customizer write privilege
+  return publish(c);
+}
+
 /** Dispatches one metadata write. The privilege is checked first; each change then runs in one store transaction. */
 export async function handleMetadataWrite(c) {
   const { api, method, route } = c;
-  if (route.kind === 'function') {
-    if (!PUBLISH.has(route.name)) throw fail(`${route.name} is not a metadata action.`, 404, 'NotFound');
-    if (method === 'POST') requireMetadataPrivilege(api, c, 'prvWriteEntity', route.name); // assumed: publishing needs the customizer write privilege
-    return publish(c);
-  }
+  if (route.kind === 'function') return handleMetadataPublish(c);
   if (route.set !== 'EntityDefinitions') throw fail(`${route.set} is not a metadata resource.`, 404, 'NotFound');
   if (c.body !== undefined && (typeof c.body !== 'object' || c.body === null || Array.isArray(c.body)))
     throw fail('The request body must be a JSON object.');

@@ -1,4 +1,5 @@
-// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30 (sdkMessages, sdkMerge, ownerAndState, bulk and associate scenarios), reproduced by the local recorder replay
+// @test-kind parity: native dev-environment plug-in recorder corpus, captures native and native-r2 (sdkMessages, sdkMerge, ownerAndState, bulk and associate scenarios)
+// @parity-evidence: tag reason only; the assertions cite the native and native-r2 captures of the same scenarios (audit C2-02 VAL-c8)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 // @parity-evidence: import lines only (no assertion changes); the appended Assign test cites native sdkMessages 5179
@@ -19,7 +20,8 @@ const caller = '10000000-0000-4000-8000-000000000001',
 const profile = {
   userId: caller,
   evidence: 'Invented platform message proof',
-  grants: [{ entity: 'widget', operations: ['read', 'update'] }],
+  // @parity-evidence: fixture grant only; Microsoft Learn "Privileges by message" (AssignRequest prvAssign, GrantAccess/ModifyAccess/RevokeAccess prvShare), audit C2-04
+  grants: [{ entity: 'widget', operations: ['read', 'update', 'assign', 'share'] }],
 };
 const storeOf = () =>
   new DataStore({
@@ -705,7 +707,12 @@ test('an SDK Assign Update/20 Target names the assignee through ownerid and owne
   );
   const response = await dispatchSdkCall({
     store,
-    profile: { ...profile, userId: callerId, grants: [{ entity: 'widget', operations: ['read', 'update'] }] },
+    // @parity-evidence: fixture grant only, no assertion changed: Q1's SDK Assign authorization (C2-04, Microsoft Learn 'Privileges by message': AssignRequest prvAssign) needs the caller's assign grant
+    profile: {
+      ...profile,
+      userId: callerId,
+      grants: [{ entity: 'widget', operations: ['read', 'update', 'assign'] }],
+    },
     sdkFromSandbox: true,
     message: {
       method: 'Execute',

@@ -1155,3 +1155,64 @@ test('a bound custom API asynchronous context reports Guid.Empty as its primary 
     [40, 1, '00000000-0000-0000-0000-000000000000', user],
   ]);
 });
+
+// @test-kind compatibility: Microsoft.Xrm.Sdk OrganizationRequest is a DataContract of RequestName and Parameters; generated early-bound requests are subclasses that only set RequestName
+test(
+  'an original CLR caller executes a generated OrganizationRequest subclass, alone and inside ExecuteMultiple',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-customapi-subclass-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    const sdk = clrSdk(),
+      source = path.join(root, 'Subclass.cs'),
+      assembly = path.join(root, 'Subclass.dll');
+    await fs.writeFile(
+      source,
+      `using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Messages;namespace Invented {public sealed class MyApiRequest:OrganizationRequest{public MyApiRequest(){RequestName="${name}";}}public sealed class Subclass:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var target=(Entity)c.InputParameters["Target"];var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var request=new MyApiRequest();request.Parameters["Text"]="sub";var result=s.Execute(request);var single=(string)result.Results["Answer"]=="sub answered";var batch=new MyApiRequest();batch.Parameters["Text"]="batch";var multi=new ExecuteMultipleRequest{Requests=new OrganizationRequestCollection(),Settings=new ExecuteMultipleSettings{ContinueOnError=false,ReturnResponses=true}};multi.Requests.Add(batch);var responses=(ExecuteMultipleResponse)s.Execute(multi);var inBatch=responses.Responses.Count==1&&(string)responses.Responses[0].Response.Results["Answer"]=="batch answered";if(!single)throw new Exception("Subclass request response lost");if(!inBatch)throw new Exception("ExecuteMultiple subclass response lost");target["note"]="received";}}}`,
+    );
+    compileClr(source, assembly, { references: [sdk] });
+    const runtime = await prepareClrRuntime({
+      trust: 'execute-local-assembly',
+      root,
+      assembly: path.basename(assembly),
+      typeName: 'Invented.Subclass',
+      sdkRoot: path.dirname(sdk),
+      sdkAssembly: path.basename(sdk),
+      cacheRoot: path.join(root, 'cache'),
+      serviceProfile: {
+        userId: user,
+        evidence: 'Invented generated-request subclass execution grant',
+        grants: [{ message: name, operations: ['execute'] }],
+      },
+      context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
+    });
+    const f = await fixture(t, { stages: [], main: (ctx) => ({ outputs: { Answer: ctx.inputs.Text + ' answered' } }) });
+    f.store.state.mappings.widget = { entitySet: 'widgets', idColumn: 'widgetid' };
+    f.store.state.tables.widget = [];
+    f.store.recordPipeline = f.api.records;
+    const observed = await f.store.transact(() => {
+      f.store.pluginInTransaction = true;
+      try {
+        return executeClrPlugin(
+          runtime,
+          clrContext({
+            runtime,
+            store: f.store,
+            step: { id: user, name: 'Subclass', typeName: 'Invented.Subclass', contract: { mode: 0 }, images: [] },
+            entity: 'widget',
+            operation: 'create',
+            stage: 20,
+            target: { title: 'Subclass' },
+            record: { widgetid: user },
+            frame: {},
+            depth: 1,
+          }),
+          { store: f.store },
+        );
+      } finally {
+        f.store.pluginInTransaction = false;
+      }
+    });
+    assert.equal(observed.target.attributes.note, 'received');
+  },
+);

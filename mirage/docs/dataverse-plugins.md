@@ -51,8 +51,9 @@ bulk-origin request, UpdateMultiple's with ConcurrencyBehavior), and its job als
 the UpsertMultiple frame without Targets. DeleteMultiple on a standard
 table runs its PreValidation stage and each target's Delete PreValidation (Target
 only, no platform shared variables, the DeleteMultiple request identity), then
-answers `405 0x8004023b`. SDK Merge on a table without a Merge filter fails with
-the native `0x80040800` fault.
+answers `405 0x8004023b`. SDK Merge on a table with a Merge filter runs the Web
+API Merge main operation below (the same writes and stage-50 reads); on a table
+without one it fails with the native `0x80040800` fault.
 
 The SOAP and Web API entry points run the same pipelines at the request's depth
 (recorded native soapMessages and webApiNamed): SOAP Assign runs Assign around
@@ -322,7 +323,7 @@ An SDK write that fails inside a synchronous plugin invalidates its enclosing tr
 
 Source-defined Custom APIs run registered stages 10/20/40 around their main operation, subject to None, Async Only or Sync and Async processing-step policy. Committed asynchronous extensions retain their final input/output snapshot. The same message driver serves HTTP and synchronous SDK callers; an async-only local provider cannot implement a synchronous SDK call. A named original main plugin without a trusted implementation fails explicitly instead of returning default outputs as if its logic ran. A Custom API that names no implementation retains the platform default-output contract.
 
-An original Custom API main operation uses a pluginRuntimes descriptor keyed by the exact customapiid, with a typeName matching its exported plugin type. Its stage-30 OwningExtension comes from the exported internal SDK step, or context.mainOperationStepId plus bounded context.mainOperationStepEvidence. The API id is not substituted for a native processing-step id. Without a descriptor, a custom API whose plug-in type is in an assembly with uploaded content runs those bytes as its main operation by default, like a registered step (same cache and sweep, 2-minute deadline, `0x80040224` when it cannot load, the same identity defaults); its OwningExtension is the exported internal stage-30 step when there is exactly one, else a local id derived from the custom API id (uuidV5) named "CustomApi '<name>' implementation" (the platform creates that step with its own id).
+An original Custom API main operation uses a pluginRuntimes descriptor keyed by the exact customapiid, with a typeName matching its exported plugin type. Its stage-30 OwningExtension comes from the exported internal SDK step, or context.mainOperationStepId plus bounded context.mainOperationStepEvidence. The API id is not substituted for a native processing-step id. The descriptor runtime is prepared when the organization starts or refreshes and again with every write to a customapi, plugintype, pluginassembly or sdkmessageprocessingstep row, so a custom API registered at runtime can be first called from a plug-in's synchronous SDK Execute; a preparation that failed is raised on that call with its cause. A caught fault from the main operation aborts the calling plug-in's transaction like any other caught OrganizationService fault: the request answers 400 `0x8009000c` after the catching plug-in returns (native catchCoded). Without a descriptor, a custom API whose plug-in type is in an assembly with uploaded content runs those bytes as its main operation by default, like a registered step (same cache and sweep, 2-minute deadline, `0x80040224` when it cannot load, the same identity defaults); its OwningExtension is the exported internal stage-30 step when there is exactly one, else a local id derived from the custom API id (uuidV5) named "CustomApi '<name>' implementation" (the platform creates that step with its own id).
 
 ## Configure source facts
 
