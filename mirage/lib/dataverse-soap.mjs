@@ -721,7 +721,10 @@ async function relate(s, target, relationship, related, remove) {
   // operation, even when a later member or PostOperation step refuses it.
   await captureSoapResponse(s, remove ? 'disassociate' : 'associate', binding.entity, (token) => {
     const atomic = () =>
-      s.api.runAtomic ? s.api.runAtomic(() => write(token)) : s.api.store.transact(() => write(token));
+      s.api.runAtomic
+        ? // Its PreValidation runs outside the transaction (native relationsReads: SOAP Associate/10 IsInTransaction false).
+          s.api.runAtomic(() => write(token), { pluginVisible: false })
+        : s.api.store.transact(() => write(token));
     return s.api.change ? s.api.change(atomic) : atomic();
   });
 }

@@ -1665,6 +1665,9 @@ export class DataStore {
    * it is a normal transaction. A plain call inside an open isolated transaction joins
    * it the same way. `isolated: true` keeps the changes private to the
    * async context until the commit, so concurrent readers see the committed state.
+   * `pluginVisible: false` keeps an isolated boundary out of the plug-in pipeline's IsInTransaction: a single request
+   * that runs atomically for itself (a top-level custom API or SOAP message) still starts outside the transaction at
+   * PreValidation, as natively; a $batch changeset stays visible.
    */
   transact(
     fn,
@@ -1676,6 +1679,7 @@ export class DataStore {
       nested = false,
       isolated = false,
       privateInitialization = false,
+      pluginVisible = true,
     } = {},
   ) {
     // ponytail: a nested throw that the caller catches keeps that call's partial writes;
@@ -1755,7 +1759,7 @@ export class DataStore {
           const previousEvents = this.committedEventCandidates;
           this.committedEventCandidates = [];
           this.pluginRollbackBoundary = boundary;
-          this.pluginInTransaction = isolated;
+          this.pluginInTransaction = isolated && (pluginVisible || previousTransaction === true);
           try {
             if (isolated) this.isolatedCount = (this.isolatedCount ?? 0) + 1;
             const result = await fn();

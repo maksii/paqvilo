@@ -731,8 +731,10 @@ function invoke(api, name, c, options) {
   return tracedInvocation(api, name, c, (span) => {
     const execute = () => driveMessageAsync(invokeSteps(api, name, c, options, false, span));
     if (api.store.inTransaction?.()) return execute();
+    // The request's own atomic boundary: PreValidation still runs outside the transaction (native customApi,
+    // customApiNested, webApiNamed: a top-level stage-10 context reports IsInTransaction false, 20/30/40 true).
     const atomic = api.runAtomic ?? ((fn) => api.store.transact(fn));
-    return api.change(() => atomic(execute));
+    return api.change(() => atomic(execute, { pluginVisible: false }));
   });
 }
 

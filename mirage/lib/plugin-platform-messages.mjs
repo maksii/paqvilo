@@ -189,7 +189,10 @@ function runMessagePipeline(
   let settled = true,
     first = true;
   const phase = (stage) => {
-    if (stage !== 10) store.pluginInTransaction = true;
+    // PreOperation and PostOperation join the automatic transaction, which reads skip (native webApiNamed
+    // RetrievePrincipalAccess and RetrieveSharedPrincipalsAndAccess 10/20/40 false); an SDK-issued read inside a caller's
+    // transaction stays in it (native sdkMessages).
+    if (stage !== 10) store.pluginInTransaction = inherited === true || autoTransact;
     if (!active) return;
     const initial = first;
     first = false;
