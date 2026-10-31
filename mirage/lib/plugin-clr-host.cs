@@ -295,7 +295,7 @@ public static class PaqviloPluginHost {
  }
  sealed class LocalTracing:ITracingService {
   readonly InvocationLease Lease;public LocalTracing(InvocationLease lease){Lease=lease;}
-  public void Trace(string format,params object[] args){Lease.Check();Send(new {kind="trace",message=String.Format(CultureInfo.InvariantCulture,format,args)});}
+  public void Trace(string format,params object[] args){Lease.Check();Send(new {kind="trace",message=args==null||args.Length==0?format:String.Format(CultureInfo.InvariantCulture,format,args)});}
  }
  sealed class LocalServiceFactory:IOrganizationServiceFactory,IProxyTypesAssemblyProvider,IServiceEndpointNotificationService,IDisposable
 #if PAQVILO_CONTEXT7
