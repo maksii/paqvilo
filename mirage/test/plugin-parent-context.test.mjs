@@ -958,3 +958,73 @@ test('ExecuteTransaction and ExecuteMultiple from a plug-in run their requests i
   assert.equal(store.tableRows('widget').length, 3);
   assert.equal(store.tableRows('gizmo').length, 2);
 });
+
+// @test-kind parity: native and native-r2 bulk (Web API UpsertMultiple of one new and one existing row; Web API CreateMultiple)
+// UpsertMultiple's main operation (UpsertMultiple/30/d1, PrimaryEntityName none, Targets and tag) is the root of every
+// context its CreateMultiple and UpdateMultiple run, in one request and correlation; a delegated record sees the bulk
+// frames without Targets: CreateMultiple/30 [] and UpdateMultiple/20 and /30 [ConcurrencyBehavior] under an
+// UpsertMultiple, CreateMultiple/30 [tag] for a bulk-origin CreateMultiple.
+test('a Web API UpsertMultiple runs its bulk messages under the UpsertMultiple main operation', async (t) => {
+  const { contractModuleFixture } = await import('./contract-module-fixture.mjs');
+  const existing = '20000000-0000-4000-8000-0000000000a1',
+    fresh = '20000000-0000-4000-8000-0000000000a2',
+    other = '20000000-0000-4000-8000-0000000000a3';
+  const f = await contractModuleFixture(t, {
+    mappings: {
+      x_item: {
+        logicalName: 'x_item',
+        entitySet: 'x_items',
+        idColumn: 'x_itemid',
+        ownership: 'UserOwned',
+        fields: { x_name: { dataverseType: 'nvarchar' } },
+      },
+    },
+    tables: { x_item: [{ x_itemid: existing, x_name: 'Existing' }] },
+    extension: { name: 'upsert-multiple-probe', install: () => {} },
+  });
+  const seen = probe(f.store, (at) =>
+    ['createmultiple/10', 'create/20', 'update/20', 'updatemultiple/20'].includes(at),
+  );
+  const target = (key) => ({ '@odata.type': 'Microsoft.Dynamics.CRM.x_item', x_itemid: key, x_name: 'Upserted' });
+  const response = await f.request('POST', '/x_items/Microsoft.Dynamics.CRM.UpsertMultiple?tag=invented-upsert', {
+    Targets: [target(fresh), target(existing)],
+  });
+  assert.equal(response.status, 204, await response.text());
+  const at = (name) => seen.find((entry) => entry.label === name).context;
+  assert.deepEqual(chain(at('createmultiple/10')).map(label), ['CreateMultiple/10/d1', 'UpsertMultiple/30/d1']);
+  assert.equal(at('createmultiple/10').IsInTransaction, true);
+  assert.deepEqual(chain(at('create/20')).map(label), [
+    'Create/20/d1',
+    'CreateMultiple/20/d1',
+    'CreateMultiple/30/d1',
+    'UpsertMultiple/30/d1',
+  ]);
+  assert.deepEqual(chain(at('update/20')).map(label), [
+    'Update/20/d1',
+    'UpdateMultiple/20/d1',
+    'UpdateMultiple/30/d1',
+    'UpsertMultiple/30/d1',
+  ]);
+  const [, createStage, createMain, upsert] = chain(at('create/20')),
+    [, updateStage, updateMain] = chain(at('update/20'));
+  assert.equal(upsert.PrimaryEntityName, 'none');
+  assert.equal(upsert.OwningExtension.name, 'ObjectModel Implementation');
+  assert.deepEqual(Object.keys(upsert.InputParameters.values).toSorted(), ['Targets', 'tag']);
+  assert.deepEqual(Object.keys(createStage.InputParameters.values), []);
+  assert.deepEqual(Object.keys(createMain.InputParameters.values), []);
+  assert.deepEqual(Object.keys(updateStage.InputParameters.values), ['ConcurrencyBehavior']);
+  assert.deepEqual(Object.keys(updateMain.InputParameters.values), ['ConcurrencyBehavior']);
+  for (const name of ['createmultiple/10', 'create/20', 'update/20', 'updatemultiple/20']) {
+    assert.equal(at(name).CorrelationId.value, upsert.CorrelationId.value, name);
+    assert.equal(at(name).RequestId.value, upsert.RequestId.value, name);
+  }
+  // A bulk-origin CreateMultiple's records see its main operation with the tag and without Targets.
+  seen.length = 0;
+  const created = await f.request('POST', '/x_items/Microsoft.Dynamics.CRM.CreateMultiple?tag=invented-bulk', {
+    Targets: [target(other)],
+  });
+  assert.equal(created.status, 200, await created.text());
+  const [, , bulkMain] = chain(at('create/20'));
+  assert.equal(label(bulkMain), 'CreateMultiple/30/d1');
+  assert.deepEqual(Object.keys(bulkMain.InputParameters.values), ['tag']);
+});

@@ -43,7 +43,12 @@ an SDK Upsert reads the record and runs Create or Update (by primary key, or by
 the key columns, a create adds the key values the Target lacks, and an update
 addresses the found row without the key columns; the update path follows the Web
 API upsert and has no native capture), and UpsertMultiple runs
-CreateMultiple for new records, then UpdateMultiple. DeleteMultiple on a standard
+CreateMultiple for new records, then UpdateMultiple, inside its main operation
+(UpsertMultiple/30, PrimaryEntityName `none`, Targets and tag), which is the root of
+their chains, request and correlation; a record a bulk message delegates sees the
+bulk frames without Targets (PreValidation and the main operation with the tag of a
+bulk-origin request, UpdateMultiple's with ConcurrencyBehavior), and its job also sees
+the UpsertMultiple frame without Targets. DeleteMultiple on a standard
 table runs its PreValidation stage and each target's Delete PreValidation (Target
 only, no platform shared variables, the DeleteMultiple request identity), then
 answers `405 0x8004023b`. SDK Merge on a table without a Merge filter fails with

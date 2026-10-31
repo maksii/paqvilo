@@ -371,6 +371,111 @@ test(
   },
 );
 
+// Native and native-r2 bulk: the jobs of a Web API UpsertMultiple end in its relabelled main operation: a new record's
+// Create job Create/40 < Create/30 [] < Create/30 [tag] (UpsertMultiple/30 without Targets), an existing record's
+// Update job Update/40 [ConcurrencyBehavior] < Update/30 [ConcurrencyBehavior] < Update/30 [tag], and the
+// CreateMultiple job CreateMultiple/30 [Targets] < CreateMultiple/30 [Targets, tag]. The probe logs only from its
+// asynchronous registrations.
+// @test-kind parity: native and native-r2 bulk (asynchronous jobs of a Web API UpsertMultiple)
+test('jobs of a Web API UpsertMultiple end in its relabelled main operation', { skip: CLR_SKIP }, async (t) => {
+  const { contractModuleFixture } = await import('./contract-module-fixture.mjs');
+  const existing = id(201),
+    fresh = id(202);
+  const f = await contractModuleFixture(t, {
+    mappings: {
+      x_item: {
+        logicalName: 'x_item',
+        entitySet: 'x_items',
+        idColumn: 'x_itemid',
+        ownership: 'UserOwned',
+        fields: { x_name: { dataverseType: 'nvarchar' } },
+      },
+      x_log: {
+        logicalName: 'x_log',
+        entitySet: 'x_logs',
+        idColumn: 'x_logid',
+        fields: { x_name: { dataverseType: 'nvarchar' } },
+      },
+    },
+    tables: { x_item: [{ x_itemid: existing, x_name: 'Existing' }], x_log: [] },
+    extension: { name: 'upsert-multiple-jobs', install: () => {} },
+  });
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-upsert-jobs-')),
+    source = path.join(root, 'Log.cs'),
+    sdk = clrSdk();
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(
+    source,
+    `using System;using System.Linq;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Log:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.Mode!=1)return;var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var chain=c.MessageName;for(var f=c.ParentContext;f!=null;f=f.ParentContext)chain+=" < "+f.MessageName+"/"+f.Stage+"["+string.Join(",",f.InputParameters.Keys.OrderBy(k=>k,StringComparer.Ordinal).ToArray())+"]";var log=new Entity("x_log");log["x_name"]=chain;s.Create(log);}}}`,
+  );
+  compileClr(source, path.join(root, 'Log.dll'), { references: [sdk, 'System.Core.dll'] });
+  const runtime = await prepareClrRuntime({
+    trust: 'execute-local-assembly',
+    root,
+    assembly: 'Log.dll',
+    typeName: 'Invented.Log',
+    sdkRoot: path.dirname(sdk),
+    sdkAssembly: path.basename(sdk),
+    cacheRoot: path.join(root, 'cache'),
+    timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
+    serviceProfile: {
+      userId: CALLER,
+      evidence: 'Invented UpsertMultiple job probe',
+      grants: [{ entity: 'x_log', operations: ['create'] }],
+    },
+    context: { initiatingUserId: CALLER, organizationId: id(5), businessUnitId: id(6) },
+  });
+  // Synchronous steps on every stage of each message, as in the native scenario, beside the asynchronous ones.
+  const steps = ['Create', 'Update', 'CreateMultiple'].flatMap((message, index) =>
+    [
+      [40, 1],
+      [10, 0],
+      [20, 0],
+      [40, 0],
+    ].map(([stage, mode], slot) => ({
+      ...step(210 + index * 4 + slot, message, stage, mode, { typeName: 'Invented.Log', assemblyId: 'invented' }),
+      entity: 'x_item',
+    })),
+  );
+  const runtimes = new Map(steps.map((entry) => [entry.id, runtime])),
+    descriptors = new Map(steps.map((entry) => [entry.id, runtime.descriptor]));
+  const items = pluginCatalogue({
+    plugins: { steps },
+    handlers: new Map(),
+    runtimes,
+    descriptors,
+    overrides: Object.fromEntries(steps.map((entry) => ['plugin-step:' + entry.id, { mode: 'clr' }])),
+  });
+  const scheduler = createScheduler({ clock: f.store.clock, manual: true });
+  const backend = await createOrganizationBackend({
+    store: f.store,
+    items: () => items,
+    handlers: new Map(),
+    runtimes,
+    descriptors,
+    scheduler,
+  });
+  t.after(() => backend.close());
+  const target = (key) => ({ '@odata.type': 'Microsoft.Dynamics.CRM.x_item', x_itemid: key, x_name: 'Upserted' });
+  const response = await f.request('POST', '/x_items/Microsoft.Dynamics.CRM.UpsertMultiple?tag=invented-upsert', {
+    Targets: [target(fresh), target(existing)],
+  });
+  assert.equal(response.status, 204, await response.text());
+  await scheduler.runDue();
+  await backend.asyncPluginRunner.drain();
+  assert.deepEqual(
+    f.store
+      .tableRows('x_log')
+      .map((row) => row.x_name)
+      .toSorted(),
+    [
+      'Create < Create/40[] < Create/30[] < Create/30[tag]',
+      'CreateMultiple < CreateMultiple/30[Targets] < CreateMultiple/30[Targets,tag]',
+      'Update < Update/40[ConcurrencyBehavior] < Update/30[ConcurrencyBehavior] < Update/30[tag]',
+    ],
+  );
+});
+
 // Native crud, async and upsert asynchronous web hook payloads: the 30 RemoteExecutionContext properties, with the
 // caller's Entra object ids and user agent, the organization's unique name, the Create 'id' output, the platform's
 // AsynchronousStepPrimaryName image (pre for Delete), no Update ConcurrencyBehavior input, the job's main operation as

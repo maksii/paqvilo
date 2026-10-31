@@ -2546,9 +2546,20 @@ export function clrContext({
     // UpdateMultiple a PostOperation step issued).
     answer.context.ParentContext = delegatedPluginParent(
       source,
-      asynchronous ? { ...answer.context, ParentContext: frame.asyncCallerParent ?? null } : answer.context,
+      asynchronous
+        ? { ...answer.context, ParentContext: answer.context.ParentContext ?? frame.asyncCallerParent ?? null }
+        : answer.context,
       caller,
     );
+    // A delegated record's job sees the UpsertMultiple main operation without its Targets, as the bulk frames
+    // (native bulk: Create/40 < Create/30 [] < Create/30 [tag], the last the relabelled UpsertMultiple/30).
+    if (asynchronous) answer.context.ParentContext = cloneStateData(answer.context.ParentContext);
+    if (asynchronous)
+      for (let level = answer.context.ParentContext; level?.values; level = level.values.ParentContext)
+        if (level.values.MessageName === 'UpsertMultiple' && level.values.InputParameters?.values?.Targets) {
+          const { Targets: _, ...inputs } = level.values.InputParameters.values;
+          level.values.InputParameters = { $type: 'ParameterCollection', values: inputs };
+        }
     // A single-origin *Multiple lane's parent is the single message's main operation with its image set (native crud
     // UpdateMultiple PreOperation/PostOperation: Update/30 [pre, PreBusinessEntity]).
     if (bulk && source.operation === operation.replace(/multiple$/, '') && frame.mainImages)
