@@ -2395,6 +2395,9 @@ export class DataStore {
       chain: this.flowChain ? clone(this.flowChain) : null,
       correlationId: currentRequest()?.correlationId ?? null,
       operationMark: details.operationMark ?? this.operationMark(),
+      // The SDK run-as user and the platform main operation's user at the write: its asynchronous jobs run as them.
+      executionUserId: this.pluginExecutionUserId ?? null,
+      platformUserId: this.pluginPlatformUserId ?? null,
     };
     // The operation's synchronous caller chain, for its asynchronous jobs' ParentContext (plugin-sdk-parent.mjs
     // asynchronousParentChain): a named message's steps see it directly, a record operation under its main operation.

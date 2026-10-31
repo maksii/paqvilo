@@ -8,6 +8,7 @@ import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
 import { clrContext, dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { sdkFault } from '../lib/plugin-sdk-messages.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 
 const EMPTY = '00000000-0000-0000-0000-000000000000';
 
@@ -156,6 +157,60 @@ test('the nested operation of a plug-in SDK call is initiated by the service use
     [system, system],
     [id('Invented admin'), id('Invented admin')],
   ]);
+});
+
+// @test-kind parity: native recorder corpus sdkSurface and readNested (native-r2): asynchronous jobs queued by a run-as SDK write report that user as UserId and InitiatingUserId; Guid.Empty keeps the caller
+test('an asynchronous step queued by a run-as SDK write runs as that user', async (t) => {
+  const { store, id, create } = await organization(t);
+  const step = {
+    id: '77000000-0000-0000-0000-0000000000a2',
+    name: 'Invented asynchronous observer',
+    entity: 'x_item',
+    message: 'Create',
+    enabled: true,
+    stage: 40,
+    rank: 1,
+    mode: 1,
+    assemblyId: 'invented-run-as-async',
+    supportedDeployment: 0,
+    filteringAttributes: [],
+    images: [],
+    typeName: 'Invented.AsyncObserver',
+  };
+  const seen = [];
+  const handlers = new Map([
+    [
+      'Invented.AsyncObserver',
+      ({ context }) => {
+        seen.push([context.UserId, context.InitiatingUserId].map((v) => v?.value ?? v));
+      },
+    ],
+  ]);
+  const items = pluginCatalogue({ plugins: { steps: [step] }, handlers });
+  const backend = await createOrganizationBackend({ store, items: () => items, handlers });
+  t.after(() => backend.close());
+  const system = store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM').systemuserid;
+  // Each write commits on its own, queueing its asynchronous step.
+  store.transact(() => create(null, 'queued as system'));
+  store.transact(() => create(id('Invented admin'), 'queued as admin'));
+  store.transact(() => create(EMPTY, 'queued as step user'));
+  // A write by the request's admin whose run-as user is SYSTEM: its job still initiates as SYSTEM (the committed event
+  // keeps the run-as user; the request's identity alone would report the admin).
+  await store.withOperationContext(
+    () => {
+      store.pluginExecutionUserId = system;
+      return store.create('x_item', { x_name: 'queued beside the admin' }, { id: id('Invented admin'), admin: true });
+    },
+    { fresh: true },
+  );
+  await backend.settle();
+  // The step user is the plug-in's profile user (the admin), so Guid.Empty and the named admin report the same user.
+  assert.deepEqual(seen.slice(0, 3), [
+    [system, system],
+    [id('Invented admin'), id('Invented admin')],
+    [id('Invented admin'), id('Invented admin')],
+  ]);
+  assert.equal(seen[3][1], system);
 });
 
 // Initiating identity flags of request, run-as and impersonated contexts. Invented users: an application user (the

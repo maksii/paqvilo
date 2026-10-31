@@ -427,11 +427,16 @@ export function createAsyncPluginRunner({
         const previousChain = store.flowChain,
           previousFlag = store.pluginInTransaction,
           previousParent = store.pluginParentContext,
-          previousTag = store.pluginSdkTag;
+          previousTag = store.pluginSdkTag,
+          previousExecution = store.pluginExecutionUserId,
+          previousPlatform = store.pluginPlatformUserId;
         store.flowChain = { id: chain.id, depth: chain.depth + 1 };
         store.pluginInTransaction = false;
         store.pluginParentContext = null;
         store.pluginSdkTag = event.frame?.requestTag;
+        // The SDK run-as user and the platform user that queued the step (data.mjs recordCommittedEvent), not the request's.
+        store.pluginExecutionUserId = event.executionUserId ?? undefined;
+        store.pluginPlatformUserId = event.platformUserId ?? undefined;
         try {
           if (!item) {
             job.stepMissing();
@@ -517,6 +522,8 @@ export function createAsyncPluginRunner({
           store.pluginInTransaction = previousFlag;
           store.pluginParentContext = previousParent;
           store.pluginSdkTag = previousTag;
+          store.pluginExecutionUserId = previousExecution;
+          store.pluginPlatformUserId = previousPlatform;
         }
       });
       return retrying ? retryCommittedJob : undefined;
