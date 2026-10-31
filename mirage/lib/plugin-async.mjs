@@ -476,8 +476,9 @@ export function createAsyncPluginRunner({
             previousRecords: event.previousRecords,
             records: event.records,
             initialFrame: jobExecutionFrame(store, id, event),
-            // A record a bulk message delegated has no ConcurrencyBehavior input (recorded corpus).
-            ...(event.fromBulk ? { concurrencyBehavior: null } : {}),
+            // A record a bulk message delegated, and a main operation's own Update, have no ConcurrencyBehavior input
+            // (recorded corpus: bulk; sdkMessages, soapMessages and mergeAccount jobs).
+            ...(event.fromBulk || event.omitConcurrencyBehavior ? { concurrencyBehavior: null } : {}),
             bridgedMessage: event.bridgedMessage ?? null,
             asyncExecution: true,
             diagnostic,

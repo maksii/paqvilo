@@ -85,6 +85,7 @@ function* bulkSteps(
     bypassCustomAsync = false,
     bypassStepIds = [],
     systemParameters,
+    sdkFromSandbox = false,
     portalRequest = false,
     concurrencyBehavior,
     // A bulk message another message delegates (UpsertMultiple): inside its transaction, without the request tag.
@@ -300,6 +301,7 @@ function* bulkSteps(
       bulkOrigin: true,
       bypassStepIds,
       systemParameters,
+      sdkFromSandbox,
       bypassCustomPlugins,
       ...(concurrencyBehavior === undefined ? {} : { bulkConcurrencyBehavior: concurrencyBehavior }),
       ...(delegated ? { inheritsRequestTag: false } : {}),

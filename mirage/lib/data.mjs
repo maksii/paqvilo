@@ -166,7 +166,9 @@ function committedPluginParent(store, mapping, operation, target, row, options) 
   const tag = store.pluginSdkTag,
     values = {
       ...(tag === undefined ? {} : { tag }),
-      ...(operation === 'update'
+      // A main operation's own Update (Assign, SetState, Merge: omitConcurrencyBehavior) has none, also for its jobs
+      // (native sdkMessages, soapMessages, mergeAccount).
+      ...(operation === 'update' && !options.omitConcurrencyBehavior
         ? { ConcurrencyBehavior: { $type: 'ConcurrencyBehavior', value: options.pluginConcurrencyBehavior ?? 0 } }
         : {}),
       ...(operation === 'create' && options.sdkFromSandbox === true ? { FromSandbox: true } : {}),
@@ -5605,6 +5607,7 @@ export class DataStore {
         target: committedTarget(),
         previous,
         identity,
+        ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,
         frame: { ...(this.pluginFrames?.get(row) ?? {}), asyncSourceParent },
@@ -5617,6 +5620,7 @@ export class DataStore {
         target: asyncTarget,
         previous,
         identity,
+        ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
         operationMark,
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,

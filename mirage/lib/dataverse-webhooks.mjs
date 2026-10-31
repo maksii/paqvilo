@@ -418,8 +418,23 @@ function asyncRecordContext(store, facts, initiating) {
     bridged: facts.bridged === true,
   });
   const { ConcurrencyBehavior: _, ...inputs } = answer.inputParameters.values;
+  // Its ParentContext frames have none either (native crud, async, batch, customApi web hook payloads: Update/30 and
+  // Delete/30 list Target and tag only).
+  const withoutConcurrency = (node) => {
+    if (!node?.values) return node ?? null;
+    const { ConcurrencyBehavior: __, ...values } = node.values.InputParameters?.values ?? {};
+    return {
+      ...node,
+      values: {
+        ...node.values,
+        InputParameters: { $type: 'ParameterCollection', values },
+        ParentContext: withoutConcurrency(node.values.ParentContext),
+      },
+    };
+  };
   return remoteFrame({
     ...answer.context,
+    ParentContext: withoutConcurrency(answer.context.ParentContext),
     InputParameters: { $type: 'ParameterCollection', values: inputs },
     OutputParameters: answer.outputParameters,
     SharedVariables: answer.sharedVariables,

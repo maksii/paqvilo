@@ -761,6 +761,10 @@ export function localOrganizationService(store, profile, records, { diagnostic =
           bypassCustomAsync: requestOptions.bypassCustomAsync === true,
           bypassStepIds: requestOptions.bypassStepIds,
           systemParameters: requestOptions.systemParameters,
+          // A plug-in's bulk request is marked FromSandbox, and its UpdateMultiple carries the SDK's ConcurrencyBehavior
+          // (Default) at every stage (native sdkSurface CreateMultiple/UpdateMultiple at Depth 2).
+          sdkFromSandbox: requestOptions.sdkFromSandbox === true,
+          ...(operation === 'updatemultiple' ? { concurrencyBehavior: 0 } : {}),
           write,
           runPostEffect: (effect) => internal(operation === 'updatemultiple' ? 'update' : 'create', entity, effect),
           authorize: authorizeRow,

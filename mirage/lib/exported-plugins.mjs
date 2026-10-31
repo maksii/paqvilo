@@ -1148,15 +1148,13 @@ function matchingPluginSteps(
 
 /** The entries the platform puts in every pipeline's SharedVariables (native recordings of Web API and plug-in
  * SDK requests): IsAutoTransact (false for reads), the caller's Accept-Language ('' for a plug-in's SDK request)
- * and, on Create, DefaultsAddedFlag; CreateMultiple carries it when its steps run for a Create or a plug-in requested
- * it, not for a Web API CreateMultiple or UpsertMultiple request (native bulk). */
-function platformSharedVariables(operation, acceptLanguage = '', { nested = false, bulkOrigin = false } = {}) {
+ * and, on Create, DefaultsAddedFlag; CreateMultiple carries it when its steps run for a Create, not for a CreateMultiple
+ * request, from the Web API, an UpsertMultiple or a plug-in (native bulk; sdkSurface CreateMultiple at Depth 2). */
+function platformSharedVariables(operation, acceptLanguage = '', { bulkOrigin = false } = {}) {
   return {
     IsAutoTransact: !['retrieve', 'retrievemultiple'].includes(operation),
     AcceptLang: String(acceptLanguage ?? ''),
-    ...(operation === 'create' || (operation === 'createmultiple' && (nested || !bulkOrigin))
-      ? { DefaultsAddedFlag: true }
-      : {}),
+    ...(operation === 'create' || (operation === 'createmultiple' && !bulkOrigin) ? { DefaultsAddedFlag: true } : {}),
   };
 }
 
@@ -1401,8 +1399,9 @@ export function runPluginPhase({
       phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
       for (const [key, value] of Object.entries(systemParameters)) phaseFrame.inputParameters.values[key] ??= value;
     }
-    // A sandboxed plug-in's SDK request is marked FromSandbox in its PreValidation (and main operation) inputs.
-    if (sdkFromSandbox) {
+    // A sandboxed plug-in's SDK request is marked FromSandbox in its PreValidation (and main operation) inputs; the records
+    // a bulk request delegates are not (native sdkSurface).
+    if (sdkFromSandbox && !(bulkOrigin && !['createmultiple', 'updatemultiple'].includes(operation))) {
       phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
       phaseFrame.inputParameters.values.FromSandbox ??= true;
     }
