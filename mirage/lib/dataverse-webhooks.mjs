@@ -1,4 +1,4 @@
-import { asyncMultiplePluginParent } from './plugin-sdk-parent.mjs';
+import { asyncMultipleJobParent, asynchronousParentChain } from './plugin-sdk-parent.mjs';
 import { organizationRecord } from './organization-context.mjs';
 import { recordHttpError, statusFromHttp } from './trace-store.mjs';
 // Webhooks. A plug-in step whose eventhandler is a service endpoint with contract 8 (Webhook) POSTs the
@@ -26,7 +26,7 @@ import { syncIo } from './sync-io-bridge.mjs';
 import { systemClock, systemIds } from './runtime-clock.mjs';
 import { DataError } from './data-error.mjs';
 import { messageNameOf } from './exported-plugins.mjs';
-import { recordToSdkEntity } from './plugin-clr.mjs';
+import { clrContext, recordToSdkEntity } from './plugin-clr.mjs';
 import { imageAttributes } from './plugin-images.mjs';
 import { PLATFORM_TYPES } from './dataverse-operation-contracts.mjs';
 import { delegatedPluginParent } from './plugin-delegation.mjs';
@@ -349,6 +349,85 @@ function operationTimeEpoch(value) {
   return epoch;
 }
 
+// An asynchronous job's OperationCreatedOn is an Unspecified DateTime: DataContractJsonSerializer appends the zero
+// offset (native asynchronous web hook payloads: '/Date(1793373678000+0000)/').
+const operationCreatedOn = (value) => `/Date(${operationTimeEpoch(value)}+0000)/`;
+const guidOf = (value) => (value !== null && typeof value === 'object' ? (value.value ?? null) : (value ?? null));
+
+/** One RemoteExecutionContext frame (the 30 documented properties) from an SDK ExecutionContext's values. */
+function remoteFrame(values) {
+  if (!values) return null;
+  return {
+    BusinessUnitId: guidOf(values.BusinessUnitId),
+    CorrelationId: guidOf(values.CorrelationId),
+    Depth: values.Depth,
+    InitiatingUserAgent: values.InitiatingUserAgent ?? null,
+    InitiatingUserAzureActiveDirectoryObjectId: guidOf(values.InitiatingUserAzureActiveDirectoryObjectId),
+    InitiatingUserId: guidOf(values.InitiatingUserId),
+    InputParameters: pairs(values.InputParameters?.values),
+    IsExecutingOffline: false,
+    IsInTransaction: values.IsInTransaction === true,
+    IsOfflinePlayback: false,
+    IsolationMode: values.IsolationMode,
+    MessageName: values.MessageName,
+    Mode: values.Mode,
+    OperationCreatedOn: operationCreatedOn(values.OperationCreatedOn?.value ?? values.OperationCreatedOn),
+    OperationId: guidOf(values.OperationId),
+    OrganizationId: guidOf(values.OrganizationId),
+    OrganizationName: values.OrganizationName ?? null,
+    OutputParameters: pairs(values.OutputParameters?.values),
+    OwningExtension: dataContract(values.OwningExtension, false),
+    ParentContext: remoteFrame(values.ParentContext?.values),
+    PostEntityImages: dataContract(values.PostEntityImages ?? { $type: 'EntityImageCollection', values: {} }),
+    PreEntityImages: dataContract(values.PreEntityImages ?? { $type: 'EntityImageCollection', values: {} }),
+    PrimaryEntityId: guidOf(values.PrimaryEntityId),
+    PrimaryEntityName: values.PrimaryEntityName,
+    RequestId: guidOf(values.RequestId),
+    SecondaryEntityName: values.SecondaryEntityName ?? 'none',
+    SharedVariables: pairs(values.SharedVariables?.values),
+    Stage: values.Stage,
+    UserAzureActiveDirectoryObjectId: guidOf(values.UserAzureActiveDirectoryObjectId),
+    UserId: guidOf(values.UserId),
+  };
+}
+
+/** An asynchronous Create, Update or Delete web hook reports the context the CLR pipeline builds for the same job
+ * (plugin-clr.mjs clrContext): identities with their Entra object ids and user agent, SYSTEM for Delete, the
+ * organization's unique name, the asynchronous parent chain, the Create 'id' output and the platform's
+ * AsynchronousStepPrimaryName image (native crud, async, upsert, bulk, ownerAndState web hook payloads). Only the
+ * Update ConcurrencyBehavior input is absent from the remote contract. */
+function asyncRecordContext(store, facts, initiating) {
+  const { item, entity, operation, stage, target = {}, record, previous, identity, depth } = facts;
+  const frame = facts.initialFrame;
+  frame.callerIdentity ??= identity;
+  // The job runs under its request's correlation (x-ms-correlation-request-id), as the delivery does.
+  frame.correlationId ??= facts.correlationId;
+  const answer = clrContext({
+    runtime: { descriptor: { context: {}, serviceProfile: { userId: initiating } } },
+    store,
+    step: { ...item, isolationMode: 1, contract: { ...item.contract, mode: 1 } },
+    entity,
+    operation,
+    stage,
+    target,
+    record,
+    previous,
+    frame,
+    depth,
+    // A bridged multiple step runs the single operation under its multiple message (plugin-single-multiple.mjs).
+    bridged: facts.bridged === true,
+  });
+  const { ConcurrencyBehavior: _, ...inputs } = answer.inputParameters.values;
+  return remoteFrame({
+    ...answer.context,
+    InputParameters: { $type: 'ParameterCollection', values: inputs },
+    OutputParameters: answer.outputParameters,
+    SharedVariables: answer.sharedVariables,
+    PreEntityImages: { $type: 'EntityImageCollection', values: answer.preImages },
+    PostEntityImages: { $type: 'EntityImageCollection', values: answer.postImages },
+  });
+}
+
 /** The RemoteExecutionContext of one step run, with the documented sample
  * properties and typed message parameters. */
 export function remoteExecutionContext(store, facts) {
@@ -376,6 +455,8 @@ export function remoteExecutionContext(store, facts) {
       : null;
   const org = organizationRecord(store) ?? {};
   const initiating = identity?.systemUserId ?? identity?.id ?? null;
+  if (asyncExecution && facts.initialFrame && !facts.customApi && ['create', 'update', 'delete'].includes(operation))
+    return asyncRecordContext(store, facts, initiating);
   const user = store.tableRows('systemuser').find((row) => same(row.systemuserid, initiating));
   const entityOf = (row, spec) =>
     dataContract(
@@ -490,12 +571,16 @@ export function remoteExecutionContext(store, facts) {
     IsolationMode: 1, // as in the documented sample
     MessageName: facts.customApi?.name ?? messageNameOf(facts.bridged ? multipleMessage(operation) : operation),
     Mode: asyncExecution ? 1 : 0,
-    OperationCreatedOn: `/Date(${asyncExecution && frame.asyncOperation ? operationTimeEpoch(frame.asyncOperation.createdOn) : frame.createdOn == null ? (store.clock ?? systemClock).now() : operationTimeEpoch(frame.createdOn)})/`,
+    OperationCreatedOn:
+      asyncExecution && frame.asyncOperation
+        ? operationCreatedOn(frame.asyncOperation.createdOn)
+        : `/Date(${frame.createdOn == null ? (store.clock ?? systemClock).now() : operationTimeEpoch(frame.createdOn)})/`,
     OperationId:
       (asyncExecution && frame.asyncOperation ? frame.asyncOperation.id : frame.operationId) ??
       (store.ids ?? systemIds).uuid(),
     OrganizationId: org.organizationid ?? null,
-    OrganizationName: org.name ?? null,
+    // The unique name, as in every plug-in context (plugin-clr.mjs).
+    OrganizationName: store.state?.dataverse?.uniqueName ?? org.name ?? null,
     OutputParameters: pairs(outputs),
     OwningExtension: {
       Id: item.id,
@@ -534,8 +619,24 @@ export function remoteExecutionContext(store, facts) {
       ),
     );
   }
-  const asyncParent = asyncMultiplePluginParent(frame, facts.bridged ? multipleMessage(operation) : operation, entity);
-  if (asyncParent) context.ParentContext = dataContract(asyncParent);
+  // A bridged multiple reports the single operation's frames, another asynchronous message its synchronous caller chain,
+  // relabelled as the job (plugin-sdk-parent.mjs).
+  const guid = (value) => ({ $type: 'Guid', value });
+  const job = {
+    MessageName: context.MessageName,
+    Depth: context.Depth,
+    PrimaryEntityId: guid(context.PrimaryEntityId),
+    IsolationMode: context.IsolationMode,
+    OwningExtension: { $type: 'EntityReference', logicalName: 'sdkmessageprocessingstep', id: item.id, name: null },
+    OperationId: guid(context.OperationId),
+    OperationCreatedOn: frame.createdOnWire,
+  };
+  const chain =
+    asyncMultipleJobParent(frame, facts.bridged ? multipleMessage(operation) : operation, entity, job) ??
+    (asyncExecution && !context.ParentContext && frame.asyncOperation
+      ? asynchronousParentChain(frame.asyncCallerParent, job)
+      : null);
+  if (chain) context.ParentContext = remoteFrame(chain.values);
   return context;
 }
 

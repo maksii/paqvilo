@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo durable committed-job recovery (restart, Locked recovery, poison budget); the missing-step job outcome is the native asyncStepDeleted capture
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -330,7 +331,9 @@ test('a web hook job left Locked by an unfinished run is recovered once after a 
   const row = second.store.tableRows('asyncoperation').find((entry) => entry.asyncoperationid === id);
   // The registration is gone in this run, so the recovered job ends Failed with that reason instead of staying Locked.
   assert.deepEqual([row.statecode, row.statuscode], [3, 31]);
-  assert.match(row.message, /no longer available/);
+  // Native asyncStepDeleted (two captures): a job whose step is gone fails 0x8004418b "Could not find plugin step description.".
+  assert.equal(row.message, 'Could not find plugin step description.');
+  assert.equal(row.errorcode, 0x8004418b | 0);
   assert.deepEqual(
     second.notes.filter((note) => note.code === 'COMMITTED_JOB_RECOVERED').map((note) => note.count),
     [1],

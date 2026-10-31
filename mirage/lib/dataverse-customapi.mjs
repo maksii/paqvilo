@@ -42,7 +42,7 @@ import {
   pluginExecutionDepth,
   prepareClrRuntime,
   PLUGIN_MAX_DEPTH,
-  PLUGIN_DEPTH_MESSAGE,
+  pluginDepthFault,
 } from './plugin-clr.mjs';
 import { recordPluginTrace } from './plugin-trace.mjs';
 import { pluginStepBypassed, pluginBypassOwnership } from './plugin-bypass.mjs';
@@ -650,7 +650,7 @@ function mainPluginDepth(store) {
       pluginInvocationDepth(store),
       Number((store.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.Depth ?? 0),
     ) + 1;
-  if (depth > PLUGIN_MAX_DEPTH) throw new DataError(PLUGIN_DEPTH_MESSAGE, 400, 'LocalPluginDepth');
+  if (depth > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
   return depth;
 }
 

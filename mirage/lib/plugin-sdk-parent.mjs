@@ -240,24 +240,91 @@ export function mainOperationParent({ frame, context, parent, userId, objectId, 
   };
 }
 
-/** An asynchronous job's view of the committed synchronous parent chain: native keeps each level's stage, inputs,
- * shared variables and identities, but reports the job's mode, depth, message, row, step (unnamed), operation id
- * and creation time, outside a transaction. */
-export function asynchronousParentChain(node, context) {
-  if (!node?.values) return node ?? null;
+// Context facts a frame without its own value shares with the job (a bridged multiple's main frame keeps only its
+// operation's request): native parent frames report the job's identities.
+const SHARED_FACTS = [
+  'UserId',
+  'InitiatingUserId',
+  'BusinessUnitId',
+  'OrganizationId',
+  'OrganizationName',
+  'SecondaryEntityName',
+  'IsExecutingOffline',
+  'IsOfflinePlayback',
+  'UserAzureActiveDirectoryObjectId',
+  'InitiatingUserAzureActiveDirectoryObjectId',
+  'InitiatingUserApplicationId',
+  'PortalsContactId',
+  'IsPortalsClientCall',
+  'AuthenticatedUserId',
+  'InitiatingUserAgent',
+  'EnvironmentId',
+  'TenantId',
+  'IsApplicationUser',
+];
+/** Native async parents hold at most three frames (corpus depth.json: Depth 2-10 jobs all report X/30 < X/40 < X/30). */
+const ASYNC_PARENT_FRAMES = 3;
+
+/** An asynchronous job's ParentContext: the parent chain its message's synchronous PostOperation step sees, cut after
+ * three frames. Each frame keeps its stage, inputs, outputs, shared variables, entity name, identities and Context4
+ * image collections (native depth: the calling Create/40 frame keeps its AsynchronousStepPrimaryName post collection),
+ * but reports the job's mode, depth, message, operation row (a bridged multiple's single row), isolation, step
+ * (unnamed), operation id, correlation and creation time, outside a transaction, without step images (native corpus:
+ * depth, bulk, faults, ownerAndState, customApi asynchronous contexts and their web hook copies). */
+export function asynchronousParentChain(
+  node,
+  context,
+  { remaining = ASYNC_PARENT_FRAMES, primaryEntityId = context.PrimaryEntityId } = {},
+) {
+  if (!node?.values || remaining <= 0) return null;
+  const shared = Object.fromEntries(
+    SHARED_FACTS.filter((key) => node.values[key] === undefined && context[key] !== undefined).map((key) => [
+      key,
+      cloneStateData(context[key]),
+    ]),
+  );
   return {
     $type: 'ExecutionContext',
     values: {
       ...node.values,
+      ...shared,
       Mode: 1,
       Depth: context.Depth,
       MessageName: context.MessageName,
-      PrimaryEntityId: cloneStateData(context.PrimaryEntityId),
+      PrimaryEntityId: cloneStateData(primaryEntityId),
       IsInTransaction: false,
+      IsolationMode: context.IsolationMode,
       OwningExtension: cloneStateData(context.OwningExtension),
       OperationId: cloneStateData(context.OperationId),
       OperationCreatedOn: cloneStateData(context.OperationCreatedOn),
-      ParentContext: asynchronousParentChain(node.values.ParentContext, context),
+      CorrelationId: cloneStateData(context.CorrelationId ?? node.values.CorrelationId),
+      PreEntityImages: { $type: 'EntityImageCollection', values: {} },
+      PostEntityImages: { $type: 'EntityImageCollection', values: {} },
+      ParentContext: asynchronousParentChain(node.values.ParentContext, context, {
+        remaining: remaining - 1,
+        primaryEntityId,
+      }),
     },
   };
+}
+
+/** The caller chain a committed message event keeps for its asynchronous jobs: the synchronous step parent
+ * (store.pluginParentContext, else the invoking plug-in's SDK context), cut to the frames a job can report. */
+export function asyncCallerParent(parent, remaining = ASYNC_PARENT_FRAMES) {
+  if (!parent?.values || remaining <= 0) return null;
+  const { ParentContext: next, ...values } = parent.values;
+  return {
+    $type: 'ExecutionContext',
+    values: { ...cloneStateData(values), ParentContext: asyncCallerParent(next, remaining - 1) },
+  };
+}
+
+/** A bridged multiple job's ParentContext: the single operation's main frame over its synchronous caller chain, relabelled
+ * as the job but naming the single row (native depth, faults, pipelineEffects: CreateMultiple/30 < CreateMultiple/40 <
+ * CreateMultiple/30 for a nested Create, CreateMultiple/30 < CreateMultiple/10 under a PreValidation step). */
+export function asyncMultipleJobParent(frame, operation, entity, context) {
+  const main = asyncMultiplePluginParent(frame, operation, entity);
+  if (!main) return undefined;
+  main.values.ParentContext = frame.asyncCallerParent ?? null;
+  return asynchronousParentChain(main, context, { primaryEntityId: main.values.PrimaryEntityId });
 }

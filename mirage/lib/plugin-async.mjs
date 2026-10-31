@@ -5,10 +5,17 @@ import {
   pluginPhaseMatches,
   pluginStepMatchesAttributes,
 } from './exported-plugins.mjs';
-import { committedJobs, liveJob, stageCommittedJobs, retryCommittedJob, traceJob } from './committed-work.mjs';
+import {
+  committedJobs,
+  liveJob,
+  stageCommittedJobs,
+  retryCommittedJob,
+  traceJob,
+  wholeSecond,
+} from './committed-work.mjs';
 import { clockFunction, systemClock, systemIds } from './runtime-clock.mjs';
 import { createRequestContext, runWithRequest } from './request-context.mjs';
-import { recordToSdkEntity } from './plugin-clr.mjs';
+import { PLUGIN_MAX_DEPTH, recordToSdkEntity } from './plugin-clr.mjs';
 import { multipleMessage } from './plugin-single-multiple.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
 import { DataError } from './data-error.mjs';
@@ -36,7 +43,37 @@ const errorNumber = (error) => {
   return /^0x[0-9a-f]+$/i.test(code ?? '') ? Number.parseInt(code, 16) | 0 : 0;
 };
 const sameId = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
-const PLUGIN_ATTEMPTS = 4;
+// Native asyncRetry (two captures): a step that always throws OperationStatus.Retry executes five times and ends Failed
+// with retrycount 4.
+const PLUGIN_ATTEMPTS = 5;
+const ISV_ABORTED = 0x80040265 | 0;
+const ORGANIZATION_SERVICE_FAULT = 'System.ServiceModel.FaultException`1[Microsoft.Xrm.Sdk.OrganizationServiceFault]';
+/** The failure columns of a plug-in job. Native asyncRetry: every plug-in exception (Retry, coded, plain) ends with
+ * errorcode 0x80040265 (the authored code is not kept), the authored text as friendlymessage and the plug-in trace block
+ * as message; a platform fault the plug-in let through keeps its own code (native asyncLoop: 0x80044182). Local
+ * failures outside a plug-in run keep their own code and text. */
+function jobFailure(item, error, plugin = true) {
+  const text = String(error?.message ?? error),
+    code = error?.details?.innerCode,
+    isv = ['0x80040265', '0x80040224'].includes(code);
+  if (!plugin || !(isv || error?.pluginTraces))
+    return { message: text, friendlymessage: text, errorcode: errorNumber(error) };
+  const type = item?.typeName ?? '',
+    assembly = item?.assemblyName ?? (type.includes('.') ? type.slice(0, type.lastIndexOf('.')) : type),
+    lines = error.pluginTraces ?? [];
+  // The ordinary exception's native stack frames are the platform's own and are not reproduced.
+  const failure =
+    code === '0x80040224'
+      ? `Exception type: Microsoft.Crm.CrmException\r\nMessage: ${text}\r\n-- End stack trace --\r\n\r\n`
+      : `${ORGANIZATION_SERVICE_FAULT}: ${text}`;
+  // Native: without trace lines the block between the step and the error is empty (asyncLoop).
+  const block = lines.length ? `\t\r\n\t${lines.join('\r\n\t')}\r\n\t\r\n` : '';
+  return {
+    message: `Plugin Trace:\r\n\r\n[${assembly}: ${type}]\r\n[${item?.id}: ${item?.name}]\r\n\r\n${block}\r\n\r\nError Message:\r\n\r\n${failure}`,
+    friendlymessage: text,
+    errorcode: isv ? ISV_ABORTED : errorNumber(error),
+  };
+}
 
 /** The asyncoperation row of one async step run (operationtype 1, System Event), Ready when the committed event is
  * accepted (committed-work.mjs keeps the event in its `data`), so a restart runs it. Learn's states: Ready (0/0), Locked
@@ -67,6 +104,8 @@ function jobColumns(store, item, event, chain) {
     messagename: event.customApi?.name ?? messageNameOf(event.bridgedMessage ?? event.operation),
     correlationid: chain.id,
     depth: event.frame?.operationDepth ?? chain.depth + 1,
+    // Created when its operation's PostOperation began (data.mjs operationMark).
+    ...(Number.isFinite(event.operationMark?.at) ? { createdon: wholeSecond(event.operationMark.at) } : {}),
     ...(requestId == null ? {} : { requestid: requestId }),
   };
 }
@@ -117,14 +156,13 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
         store.removeRow('asyncoperation', rows, index);
         return null;
       }
+      const exhausted = 'The asynchronous plug-in exhausted its five execution attempts.';
       Object.assign(rows[index], {
         statecode: 3,
         statuscode: 31,
         completedon: now(),
-        message:
-          payload.pluginLastFailure?.message ?? 'The asynchronous plug-in exhausted its four execution attempts.',
-        friendlymessage:
-          payload.pluginLastFailure?.message ?? 'The asynchronous plug-in exhausted its four execution attempts.',
+        message: payload.pluginLastFailure?.message ?? exhausted,
+        friendlymessage: payload.pluginLastFailure?.friendlymessage ?? payload.pluginLastFailure?.message ?? exhausted,
         errorcode: payload.pluginLastFailure?.errorcode ?? 0,
       });
       diagnostic({ code: 'PLUGIN_ASYNC_RETRY_EXHAUSTED', stepId: item?.id, asyncoperationid: id, attempts: previous });
@@ -158,7 +196,7 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
         payload = JSON.parse(row.data);
       row.data = JSON.stringify({
         ...payload,
-        pluginLastFailure: { message: String(error.message ?? error), errorcode: errorNumber(error) },
+        pluginLastFailure: jobFailure(item, error),
       });
       Object.assign(row, { statecode: 0, statuscode: 0, message: null, friendlymessage: null, errorcode: null });
       delete row.startedon;
@@ -179,8 +217,6 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
         store.removeRow('asyncoperation', rows, index);
         return;
       }
-      // friendlymessage carries the plug-in's own message; the native user-facing text is not known.
-      const message = error ? String(error.message ?? error) : null;
       Object.assign(
         rows[index],
         error
@@ -188,15 +224,13 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
               statecode: 3,
               statuscode: 31,
               completedon: now(),
-              message,
-              friendlymessage: message,
-              errorcode: errorNumber(error),
+              ...jobFailure(item, error, pluginAttempt),
             }
           : { statecode: 3, statuscode: 30, completedon: now() },
       );
     },
     // A web hook the simulator cannot deliver in any form is Canceled (statuscode 32), with the message as its reason.
-    cancel(message) {
+    cancel(message, friendlymessage = message) {
       const { rows, index } = live();
       if (index < 0) return;
       if (!systemJobs()) {
@@ -208,7 +242,24 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
         statuscode: 32,
         completedon: now(),
         message,
-        friendlymessage: message,
+        friendlymessage,
+      });
+    },
+    // Native asyncStepDeleted (two captures): a job whose step was deleted after it was queued fails 0x8004418b.
+    stepMissing() {
+      const { rows, index } = live();
+      if (index < 0) return;
+      if (!systemJobs()) {
+        store.removeRow('asyncoperation', rows, index);
+        return;
+      }
+      Object.assign(rows[index], {
+        statecode: 3,
+        statuscode: 31,
+        completedon: now(),
+        message: 'Could not find plugin step description.',
+        friendlymessage: null,
+        errorcode: 0x8004418b | 0,
       });
     },
   };
@@ -230,6 +281,9 @@ export function createAsyncPluginRunner({
   limits = {},
   acceptedChains = new Set(),
   systemJobs = () => false,
+  // Calibration knob: milliseconds a staged job waits before it may start (asyncoperation.postponeuntil). Native jobs
+  // started 1.2-6 s after their operation; the default 0 starts them on the next scheduler turn.
+  startDelayMs = () => 0,
 }) {
   const runs = new Map(),
     own = new Set(),
@@ -240,13 +294,17 @@ export function createAsyncPluginRunner({
   const itemOf = (id) => items().find((item) => sameId(item.id, id)) ?? null;
   // The durable event is a snapshot; execution choices remain local/current.
   // This is a simulator admission contract, not a native queue snapshot policy.
-  const skippedRegistration = (item, event, kind) => {
+  const skippedRegistration = (item, event, kind, jobId) => {
     const skip = (message, code) => {
       if (code) diagnostic({ code, severity: 'warning', stepId: item.id, message });
       return message;
     };
-    if (!item.enabled || item.mode === 'disabled')
-      return skip('Simulator: this asynchronous step is disabled; nothing was executed.', 'PLUGIN_STEP_DISABLED');
+    // Native asyncStepDisabled: a step disabled before its queued job started cancels the job with no message and the
+    // platform's skip notice as friendly message.
+    if (!item.enabled || item.mode === 'disabled') {
+      skip('Simulator: this asynchronous step is disabled; nothing was executed.', 'PLUGIN_STEP_DISABLED');
+      return [null, `Skipping Async Operation '${jobId}' Sdk processing step '${item.id}' is in disabled state`];
+    }
     if (item.mode === 'placeholder')
       return skip(
         'Simulator: this asynchronous step has no local handler; nothing was executed.',
@@ -287,13 +345,13 @@ export function createAsyncPluginRunner({
       });
       if (!job) return;
       try {
-        if (!item)
-          throw Object.assign(new Error('The asynchronous step registration is no longer available.'), {
-            code: 'LocalPluginAsyncUnavailable',
-          });
-        const skipped = skippedRegistration(item, event, 'webhook');
+        if (!item) {
+          await store.transact(() => job.stepMissing());
+          return;
+        }
+        const skipped = skippedRegistration(item, event, 'webhook', id);
         if (skipped) {
-          await store.transact(() => job.cancel(skipped));
+          await store.transact(() => job.cancel(...[skipped].flat()));
           return;
         }
         if (!webhooks) {
@@ -375,13 +433,13 @@ export function createAsyncPluginRunner({
         store.pluginParentContext = null;
         store.pluginSdkTag = event.frame?.requestTag;
         try {
-          if (!item)
-            throw Object.assign(new Error('The asynchronous step registration is no longer available.'), {
-              code: 'LocalPluginAsyncUnavailable',
-            });
-          const skipped = skippedRegistration(item, event, 'plugin');
+          if (!item) {
+            job.stepMissing();
+            return;
+          }
+          const skipped = skippedRegistration(item, event, 'plugin', id);
           if (skipped) {
-            job.cancel(skipped);
+            job.cancel(...[skipped].flat());
             return;
           }
           let executed = false;
@@ -492,9 +550,11 @@ export function createAsyncPluginRunner({
     jobs.register('plugin', inContext(runStep), { diagnostic }),
     jobs.register('webhook', inContext(deliverWebhook), { concurrent: true, diagnostic }),
   ];
-  // Native corpus (async, crud, ownerAndState): an asynchronous Create/Update step whose row is deleted before its job
-  // runs never executes, also when a retry waits. Inside the deleting transaction, the row's waiting plug-in jobs fail
-  // with the row's absence (the native job's own error text is not recorded).
+  // Native corpus (async, crud, ownerAndState, sdkMessages, asyncDeletedRow): an asynchronous step or web hook whose row is
+  // deleted before its job starts never executes, for every message (Create, Update, the bridged multiples, Assign,
+  // SetStateDynamicEntity, sharing), also when a retry waits; jobs regarding other rows still run. Inside the deleting
+  // transaction, every waiting plug-in and web hook job regarding the row ends Canceled (3/32) without errorcode or
+  // message, with the platform's friendly message (native asyncDeletedRow, two captures).
   const failWaitingWrites = (event) => {
     let idColumn;
     try {
@@ -505,16 +565,13 @@ export function createAsyncPluginRunner({
     const rowId = idColumn && event.row?.[idColumn],
       rows = store.state.tables?.asyncoperation ?? [];
     if (!rowId) return;
-    const message = `${event.entity} With Id = ${rowId} Does Not Exist`;
     for (let index = rows.length - 1; index >= 0; index--) {
       const job = rows[index];
       if (
         job.statecode !== 0 ||
-        // UpdateMultiple and CreateMultiple jobs of a single write wait on the same row (native asyncDeletedRow).
-        !['Create', 'Update', 'CreateMultiple', 'UpdateMultiple'].includes(job.messagename) ||
         job.regardingobjectid?.logical_name !== event.entity ||
         !sameId(job.regardingobjectid?.id, rowId) ||
-        !String(job.data ?? '').includes('"kind":"plugin"')
+        !/"kind":"(?:plugin|webhook)"/.test(String(job.data ?? ''))
       )
         continue;
       own.delete(job.asyncoperationid);
@@ -522,11 +579,11 @@ export function createAsyncPluginRunner({
       else
         Object.assign(job, {
           statecode: 3,
-          statuscode: 31,
+          statuscode: 32,
           completedon: new Date(clockFunction(store.clock ?? systemClock)()).toISOString(),
-          message,
-          friendlymessage: message,
-          errorcode: 0x80040217 | 0,
+          message: null,
+          friendlymessage: 'This system job was canceled because a referenced record was deleted.',
+          errorcode: null,
         });
     }
   };
@@ -536,8 +593,14 @@ export function createAsyncPluginRunner({
     if (closed) return null;
     const entries = [],
       notes = [],
-      counts = new Map();
-    for (const event of events) {
+      counts = new Map(),
+      delay = Number(startDelayMs()) || 0,
+      postpone =
+        delay > 0 ? { postponeuntil: new Date(clockFunction(store.clock ?? systemClock)() + delay).toISOString() } : {};
+    // Jobs are created in operation order, so an outer operation's jobs precede those of the nested operations its
+    // PostOperation steps ran, although the nested ones committed their events first (native depth.json).
+    const ordered = [...events].sort((a, b) => (a.operationMark?.sequence ?? 0) - (b.operationMark?.sequence ?? 0));
+    for (const event of ordered) {
       if (event.operation === 'delete') failWaitingWrites(event);
       if (closing && sequence > stopSequence && !acceptedChains.has(event.chain?.id)) {
         notes.push({
@@ -608,7 +671,12 @@ export function createAsyncPluginRunner({
         // A root event (no chain) starts its own chain, so the rows of one bulk commit never share one chain budget.
         const chain = event.chain ?? { id: (store.ids ?? systemIds).uuid(), depth: 0 },
           count = (counts.get(chain.id) ?? runs.get(chain.id) ?? 0) + 1;
-        if (chain.depth >= Math.min(limits.maxDepth ?? 8, 16) || count > Math.min(limits.maxChainRuns ?? 100, 1000)) {
+        // Native asyncLoop: a chain of asynchronous hops runs to Depth 12 (the depth fault stops the next level); the
+        // per-chain run budget is a local guard.
+        if (
+          chain.depth >= Math.min(limits.maxDepth ?? PLUGIN_MAX_DEPTH, PLUGIN_MAX_DEPTH) ||
+          count > Math.min(limits.maxChainRuns ?? 100, 1000)
+        ) {
           notes.push({ code: 'PLUGIN_ASYNC_LIMIT', stepId: item.id, chainId: chain.id });
           continue;
         }
@@ -621,7 +689,7 @@ export function createAsyncPluginRunner({
         entries.push({
           id: (store.ids ?? systemIds).uuid(),
           kind: item.mode === 'webhook' ? 'webhook' : 'plugin',
-          columns: jobColumns(store, item, invocation, chain),
+          columns: { ...jobColumns(store, item, invocation, chain), ...postpone },
           itemId: item.id,
           chain,
           event: invocation,

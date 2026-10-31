@@ -20,7 +20,7 @@ import {
   pluginExecutionDepth,
   recordToSdkEntity,
   PLUGIN_MAX_DEPTH,
-  PLUGIN_DEPTH_MESSAGE,
+  pluginDepthFault,
 } from './plugin-clr.mjs';
 import { sdkValueToRecord } from './local-organization-service.mjs';
 import {
@@ -519,14 +519,25 @@ const handlerOf = (handlers, step) => handlers.get(step.id) ?? handlers.get(step
 // deeper (Depth). The counter is the one CLR steps use (plugin-clr.mjs pluginExecutionDepth), so a JS/CLR chain shares one
 // Depth. Handlers must return synchronously, so it is balanced within one call stack. Depth past PLUGIN_MAX_DEPTH fails.
 // A plug-in type handler's exception is the InvalidPluginExecutionException fault: 0x80040265 with the SubErrorCode native sends.
-const pluginFault = (cause, item, stage, depth) =>
+// A step-id handler's exception is one only when it says so ({ pluginFault: 'InvalidPluginExecutionException' }, as for custom
+// API handlers); any other throw is an ordinary exception: 400 0x80040224 with the authored message (native faults: a plug-in's
+// ordinary exception during Update PreOperation answered 400 0x80040224 'Scenario ordinary exception').
+const pluginFault = (cause, item, stage, depth, fault = true) =>
   pluginFailure(
     {
       message: cause?.message ?? String(cause),
       errorCode: cause?.errorCode,
-      pluginFault: 'InvalidPluginExecutionException',
+      ...(fault ? { pluginFault: 'InvalidPluginExecutionException' } : {}),
     },
-    { name: item.name, id: item.id, type: item.typeName, traces: [], stage, depth },
+    {
+      name: item.name,
+      id: item.id,
+      type: item.typeName ?? item.name ?? item.id,
+      traces: [],
+      label: item.name,
+      stage,
+      depth,
+    },
     0,
   );
 // The registered images of one type set (0 pre, 1 post, 2 both) from source, keyed by alias, limited to their attributes
@@ -1979,7 +1990,7 @@ export function runPluginPhase({
                 Number((store?.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.Depth ?? 0) + 1,
               );
           nested = true;
-          if (handlerDepth > PLUGIN_MAX_DEPTH) throw new DataError(PLUGIN_DEPTH_MESSAGE, 400, 'LocalPluginDepth');
+          if (handlerDepth > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
           executed = true;
           started = performance.now();
           startedAt = new Date((store?.clock ?? systemClock).now()).toISOString();
@@ -2424,8 +2435,14 @@ export function runPluginPhase({
       } catch (cause) {
         const depth = stepDepth();
         // A plug-in type handler's exception surfaces as the documented fault; the write rolls back with the throw.
-        const failure = typed && !(cause instanceof DataError) ? pluginFault(cause, item, stage, depth) : cause;
+        const failure =
+          cause instanceof DataError || item.mode !== 'handler'
+            ? cause
+            : pluginFault(cause, item, stage, depth, typed || cause?.pluginFault === 'InvalidPluginExecutionException');
         if (executed) journal(failure);
+        // The run's trace lines, for an asynchronous job's failure message (plugin-async.mjs jobFailure).
+        if (failure && typeof failure === 'object' && !Object.hasOwn(failure, 'pluginTraces'))
+          Object.defineProperty(failure, 'pluginTraces', { value: [...traces], configurable: true });
         store?.counters?.increment('plugins.failures');
         // The fault identity (type, code, OperationStatus, plug-in type, step, stage, depth) travels on the error to every
         // span it fails; this step's span records it.

@@ -8,10 +8,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { Worker, MessageChannel, receiveMessageOnPort } from 'node:worker_threads';
 import { DataError } from './data-error.mjs';
+import { pluginFailure } from './plugin-fault.mjs';
 import { bypassStepIds as parseBypassStepIds } from './plugin-bypass.mjs';
 import { pluginInvocationDepth, pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
 import {
-  asyncMultiplePluginParent,
+  asyncMultipleJobParent,
   asynchronousParentChain,
   clrSdkEntryContext,
   mainOperationParent,
@@ -58,13 +59,18 @@ const canon = (id) =>
     .toLowerCase();
 const hostSource = fileURLToPath(new URL('./plugin-clr-host.cs', import.meta.url));
 let executionDepth = 0;
-// The nested plug-in Depth cap. Native evidence: a synchronous Create chain reached Depth 10 and the request
-// succeeded (the documented on-premises default of 8 does not apply online); the native limit itself is not observed.
-export const PLUGIN_MAX_DEPTH = 16;
+// The nested plug-in Depth cap. Native depth39 and asyncLoop (two captures each): synchronous and asynchronous Create
+// chains run to Depth 12, and the operation that would start Depth 13 fails with 0x80044182 (the whole synchronous
+// chain rolls back).
+export const PLUGIN_MAX_DEPTH = 12;
 // An invocation's deadline includes its nested SDK calls (and their plug-ins). Native plug-in execution and the whole
 // message operation are limited to 2 minutes (Learn: Analyze plug-in performance), so a descriptor may ask up to that.
 const CLR_MAX_TIMEOUT_MS = 120_000;
-export const PLUGIN_DEPTH_MESSAGE = `Plug-in nested execution depth exceeds ${PLUGIN_MAX_DEPTH}.`;
+const PLUGIN_DEPTH_MESSAGE =
+  'This workflow job was canceled because the workflow that started it included an infinite loop. Correct the workflow logic and try again. For information about workflow logic, see Help.';
+/** The platform's infinite-loop fault for an execution past PLUGIN_MAX_DEPTH (code LocalPluginDepth for local callers). */
+export const pluginDepthFault = () =>
+  new DataError(PLUGIN_DEPTH_MESSAGE, 400, 'LocalPluginDepth', { innerCode: '0x80044182' });
 let parentStartTicks;
 function clrParentIdentity(executable) {
   if (!parentStartTicks) {
@@ -98,7 +104,7 @@ process.once('exit', () => {
       }
 });
 // One Depth per synchronous execution chain, shared by CLR steps and JavaScript handlers (exported-plugins.mjs), so an
-// alternating JS/CLR chain is capped at eight in total and each side reports the same contiguous Depth. Both paths run
+// alternating JS/CLR chain is capped at PLUGIN_MAX_DEPTH in total and each side reports the same contiguous Depth. Both paths run
 // synchronously (CLR waits with Atomics.wait), so the counter is balanced within one call stack.
 export const pluginExecutionDepth = () => executionDepth;
 export const enterPluginExecution = () => ++executionDepth;
@@ -109,7 +115,7 @@ function clrTimeout(descriptor) {
   const value = descriptor.timeoutMs;
   if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
     fail('CLR timeoutMs must be a positive safe integer in milliseconds.');
-  return Math.max(100, Math.min(value ?? 2000, CLR_MAX_TIMEOUT_MS));
+  return Math.max(100, Math.min(value ?? CLR_MAX_TIMEOUT_MS, CLR_MAX_TIMEOUT_MS));
 }
 export function validateClrDescriptor(value) {
   if (!value || typeof value !== 'object' || value.trust !== 'execute-local-assembly')
@@ -1775,7 +1781,7 @@ export function clrHostPoolStatus() {
 function executePooledClr(runtime, input, options, verified) {
   const depth = executionDepth + 1,
     key = runtime.directory + '\0' + runtime.descriptor.typeName + '\0' + depth;
-  if (depth > PLUGIN_MAX_DEPTH) fail(PLUGIN_DEPTH_MESSAGE, 'LocalPluginDepth', 400);
+  if (depth > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
   let session = pooledHosts.get(key);
   if (!session) {
     if (pooledHosts.size >= 32) {
@@ -1887,13 +1893,34 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
     port1.postMessage({ kind: 'invoke', invocationId, input: invocation, timeout });
   } else worker.on('error', () => {});
   const deadline = Date.now() + timeout + 1000;
+  // A step that outlives its deadline is the platform's unhandled timeout fault (400 0x80040224, the message names the type),
+  // as for a custom API (plugin-fault.mjs); the code stays LocalPluginTimeout for local callers.
+  const traces = [];
+  const timedOut = () => {
+    const owner = input.context?.OwningExtension;
+    const failure = pluginFailure(
+      { timedOut: true },
+      {
+        name: owner?.name,
+        id: owner?.id,
+        type: runtime.descriptor.typeName,
+        traces,
+        label: owner?.name ?? '',
+        stage: input.context?.Stage,
+        depth: input.context?.Depth,
+      },
+      timeout,
+    );
+    failure.code = 'LocalPluginTimeout';
+    return failure;
+  };
   let calls = 0,
     result,
     ownedPid = session?.pid,
     completed = false;
   executionDepth++;
   try {
-    if (executionDepth > PLUGIN_MAX_DEPTH) fail(PLUGIN_DEPTH_MESSAGE, 'LocalPluginDepth', 400);
+    if (executionDepth > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
     while (!result) {
       let packet;
       while ((packet = receiveMessageOnPort(port1))) {
@@ -1932,6 +1959,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
         } else if (message.kind === 'trace') {
           if (typeof message.message !== 'string' || message.message.length > 16384)
             fail('CLR trace exceeds the local limit.', 'LocalPluginOutputLimit', 413);
+          traces.push(message.message);
           diagnostic({ code: 'PLUGIN_CLR_TRACE', message: message.message });
           // ITracingService: an event on the current (plugin-step) span.
           store?.traces?.current()?.event('trace', { message: message.message });
@@ -1944,6 +1972,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
             ?.current()
             ?.event('telemetry', { level: String(message.level ?? ''), message: message.message });
         } else if (message.kind === 'failure') {
+          if (message.code === 'LocalPluginTimeout') throw timedOut();
           const details = {
             sourceException: {
               type: message.exceptionType ?? null,
@@ -1953,9 +1982,10 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
               exceptionDetails: message.exceptionDetails ?? null,
             },
           };
-          // An InvalidPluginExecutionException is 0x80040265 whatever code it authors (recorded native faults: a coded
-          // Delete step fault; catchCoded: a coded custom API fault, for its caller and a calling plug-in); the authored
-          // code stays in sourceException. A rethrown OrganizationServiceFault keeps its own code.
+          // An InvalidPluginExecutionException is 0x80040265 whatever code (12345, 0x80040216, a coded Delete step fault, a
+          // coded custom API fault for its caller and a calling plug-in) or OperationStatus it authors (native faults,
+          // catchCoded and traceFaults captures); the authored code stays in sourceException. A rethrown
+          // OrganizationServiceFault keeps its own code.
           if (Number.isInteger(message.errorCode))
             details.innerCode =
               message.pluginException === true ||
@@ -1981,7 +2011,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
           }
           throw new DataError(
             message.message,
-            message.code === 'LocalPluginTimeout' ? 504 : 400,
+            400,
             details.innerCode === '0x8009000c' ? 'PluginTransactionAborted' : (message.code ?? 'PluginValidation'),
             details,
           );
@@ -1991,8 +2021,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
         } else fail('Unknown CLR protocol result.', 'LocalPluginProtocol', 500);
       }
       if (result) break;
-      if (Date.now() > deadline)
-        fail('CLR host/worker did not complete within the configured deadline.', 'LocalPluginTimeout', 504);
+      if (Date.now() > deadline) throw timedOut();
       Atomics.wait(flags, 0, 0, 20);
       Atomics.store(flags, 0, 0);
     }
@@ -2086,7 +2115,7 @@ export function clrContext({
           frame.operationDepth ?? 0,
           parent ? Number(parent.values.Depth) + 1 : 0,
         );
-  if (contextDepth > PLUGIN_MAX_DEPTH) fail(PLUGIN_DEPTH_MESSAGE, 'LocalPluginDepth', 400);
+  if (contextDepth > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
   const preValidationParent =
     stage !== 10 &&
     (step.contract?.mode ?? 0) === 0 &&
@@ -2488,7 +2517,7 @@ export function clrContext({
       context: bridged
         ? { ...answer.context, MessageName: operation[0].toUpperCase() + operation.slice(1) }
         : answer.context,
-      parent: asynchronous ? (frame.mainOuterParent ?? null) : parent,
+      parent: asynchronous ? (frame.mainOuterParent ?? frame.asyncCallerParent ?? null) : parent,
       userId: executionUserId,
       objectId,
       inputs: () =>
@@ -2540,11 +2569,14 @@ export function clrContext({
       ...recordToSdkEntity(store, entity, { [primary]: record[primary] }).attributes,
     };
   if (!asynchronous && (crud || bulk) && stage !== 10) frame.mainOuterParent ??= parent ? cloneStateData(parent) : null;
-  // An asynchronous job sees the committed synchronous chain as its own operation: every level reports the job's
-  // mode, depth, message, row, step, operation id and time, outside a transaction.
+  // An asynchronous job sees the synchronous step parent chain as its own operation (plugin-sdk-parent.mjs).
   if (asynchronous)
-    answer.context.ParentContext = asynchronousParentChain(answer.context.ParentContext, answer.context);
-  answer.context.ParentContext = asyncMultiplePluginParent(frame, operation, entity) ?? answer.context.ParentContext;
+    answer.context.ParentContext = asynchronousParentChain(
+      answer.context.ParentContext ?? frame.asyncCallerParent,
+      answer.context,
+    );
+  answer.context.ParentContext =
+    asyncMultipleJobParent(frame, operation, entity, answer.context) ?? answer.context.ParentContext;
   // A named message's main operation reports the user its delegated record operation runs as (native sdkMessages:
   // Assign/30 carries the SYSTEM user of its owner Update, and an impersonating step's user, as Update/30 does).
   if (frame.namedMainOperation && !asynchronous && answer.context.ParentContext?.values)

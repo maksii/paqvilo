@@ -1277,6 +1277,7 @@ function hostLifecycle(c) {
         diagnostic,
         scheduler: c.scheduler,
         systemJobs: () => Boolean(c.organization),
+        asyncStartDelayMs: () => c.organization?.settings?.asyncStartDelayMs ?? 0,
         connectors: c.connectors,
         secrets: providers.secrets,
         // Queue and topic service endpoints (contracts 2, 5, 6) deliver through providers.messaging (= api.providers.messaging).

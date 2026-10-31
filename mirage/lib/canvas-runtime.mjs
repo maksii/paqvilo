@@ -18,6 +18,7 @@ import { COMMON_DEFAULTS, CONTROL_CATALOGUE, controlKind, unsupportedControls } 
 import { prepareCanvasSource } from './canvas-components.mjs';
 import { CANVAS_ASSETS, canvasAssetUrls } from './canvas-assets.mjs';
 import {
+  CAUSE,
   ErrorKind,
   FxDataSource,
   FxDate,
@@ -586,15 +587,21 @@ export function createCanvasApp({
     if (error.traceError) Object.defineProperty(entry, 'traceError', { value: error.traceError });
     return entry;
   };
+  // A data source refusal keeps its cause; a plug-in fault's trace identity rides along as for fromError.
   const fromFxError = (value, where) =>
-    value.errors.map((item) => ({
-      ...location(where),
-      code: 'PowerFxError',
-      kind: kindName(item.Kind),
-      message: item.Message ?? '',
-      source: where,
-      ...(item.Details?.HttpStatusCode ? { status: item.Details.HttpStatusCode } : {}),
-    }));
+    value.errors.map((item) => {
+      const entry = {
+        ...location(where),
+        code: 'PowerFxError',
+        kind: kindName(item.Kind),
+        message: item.Message ?? '',
+        source: where,
+        ...(item.Details?.HttpStatusCode ? { status: item.Details.HttpStatusCode } : {}),
+      };
+      const traceError = item[CAUSE]?.traceError;
+      if (traceError) Object.defineProperty(entry, 'traceError', { value: traceError });
+      return entry;
+    });
 
   const isBehaviour = (name, property) =>
     BEHAVIOUR_PROPERTY.test(property) ||

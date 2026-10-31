@@ -7,7 +7,7 @@ import { DataError } from './data-error.mjs';
 import { cloneStateData } from './state-clone.mjs';
 import { initializePluginOperation } from './plugin-operation-context.mjs';
 import { pluginInvocationDepth, pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
-import { PLUGIN_DEPTH_MESSAGE, PLUGIN_MAX_DEPTH, pluginExecutionDepth, recordToSdkEntity } from './plugin-clr.mjs';
+import { pluginDepthFault, PLUGIN_MAX_DEPTH, pluginExecutionDepth, recordToSdkEntity } from './plugin-clr.mjs';
 import { mainOperationParent, recordRequestRootChange, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
 import { internalStepReference, setInternalStageSource } from './plugin-internal-stage.mjs';
 import { pluginEntryStep } from './plugin-message-admission.mjs';
@@ -92,7 +92,7 @@ function messageDepth(store) {
       pluginInvocationDepth(store),
       Number((store.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.Depth ?? 0),
     ) + 1;
-  if (depth > PLUGIN_MAX_DEPTH) fail(PLUGIN_DEPTH_MESSAGE, 'LocalPluginDepth', 400);
+  if (depth > PLUGIN_MAX_DEPTH) throw pluginDepthFault();
   return depth;
 }
 

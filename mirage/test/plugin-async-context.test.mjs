@@ -358,7 +358,8 @@ test('an actual loopback webhook payload uses its queued System Job metadata rat
   await runner.drain();
   assert.equal(received.length, 1);
   assert.equal(received[0].OperationId, expectedId);
-  assert.equal(received[0].OperationCreatedOn, `/Date(${Date.parse(expectedCreated)})/`);
+  // Native asynchronous web hook payloads carry the Unspecified job time with the zero offset ('/Date(...+0000)/').
+  assert.equal(received[0].OperationCreatedOn, `/Date(${Date.parse(expectedCreated)}+0000)/`);
   assert.equal(received[0].RequestId, sourceFrame.requestId);
   assert.notEqual(received[0].OperationId, received[0].RequestId);
   assert.equal(store.tableRows('asyncoperation')[0].statuscode, 30);

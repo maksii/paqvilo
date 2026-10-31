@@ -451,8 +451,8 @@ test('well-known SDK message ids resolve without a project observation', () => {
   assert.equal(importSolutionPlugins(layers, observed).steps[0].message, 'Update');
 });
 
-// @test-kind unproven: local model of a shared JavaScript/CLR Depth counter faulting at combined seventeen; the cap is 16 (native corpus: a nested Create chain reached Depth 10 and succeeded), the native limit itself is not observed
-test('JavaScript handlers and CLR steps share one Depth: a chain entered under CLR frames reports contiguous Depth and faults at combined seventeen', async () => {
+// @test-kind unproven: local model of a shared JavaScript/CLR Depth counter faulting at combined thirteen; the cap of 12 is native depth39 and asyncLoop (two captures each): chains run to Depth 12 and the next level fails 0x80044182
+test('JavaScript handlers and CLR steps share one Depth: a chain entered under CLR frames reports contiguous Depth and faults at combined thirteen', async () => {
   const { enterPluginExecution, leavePluginExecution, pluginExecutionDepth } = await import('../lib/plugin-clr.mjs');
   const step = {
     id: '10000000-0000-4000-8000-000000000042',
@@ -499,11 +499,11 @@ test('JavaScript handlers and CLR steps share one Depth: a chain entered under C
   try {
     await assert.rejects(
       store.update('x_widget', row.x_widgetid, { x_count: 1 }, { admin: true }),
-      (error) => error.code === 'LocalPluginDepth' && error.status === 400,
+      (error) => error.code === 'LocalPluginDepth' && error.status === 400 && error.details?.innerCode === '0x80044182',
     );
     assert.deepEqual(
       depths,
-      Array.from({ length: 13 }, (_, i) => i + 4),
+      Array.from({ length: 9 }, (_, i) => i + 4),
     );
     assert.equal(pluginExecutionDepth(), 3);
   } finally {

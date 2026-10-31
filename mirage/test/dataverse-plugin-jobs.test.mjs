@@ -135,7 +135,7 @@ describe('async steps write asyncoperation system jobs when the Dataverse API is
     assert.ok(Date.parse(job.startedon) <= Date.parse(job.completedon), `${job.startedon} .. ${job.completedon}`);
   });
 
-  it('a failing run ends Completed/Failed with the message, the friendly message and error code 0 for an error without a Dataverse code', async () => {
+  it('a failing run ends Completed/Failed with the message, the friendly message and the ordinary plug-in exception code', async () => {
     const handlers = pluginHandlers([
       {
         id: 'invented',
@@ -152,9 +152,12 @@ describe('async steps write asyncoperation system jobs when the Dataverse API is
     const [job] = world_.store.tableRows('asyncoperation');
     assert.equal(job.statecode, 3);
     assert.equal(job.statuscode, 31);
-    assert.equal(job.message, 'Invented asynchronous rejection');
+    // Native asyncRetry (two captures): a failed plug-in job keeps the authored text as friendlymessage, the plug-in
+    // trace block as message and errorcode 0x80040265 for any plug-in exception (plain, coded or Retry).
     assert.equal(job.friendlymessage, 'Invented asynchronous rejection');
-    assert.equal(job.errorcode, 0);
+    assert.match(job.message, /^Plugin Trace:\r\n/);
+    assert.match(job.message, /Message: Invented asynchronous rejection/);
+    assert.equal(job.errorcode, 0x80040265 | 0);
   });
 
   it('asyncautodelete removes a succeeded job row only, and a failed one stays', async () => {

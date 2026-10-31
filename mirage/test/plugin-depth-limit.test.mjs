@@ -1,4 +1,5 @@
-// @test-kind unproven: local depth cap 16; the native recorder depth capture only showed a Depth 10 chain succeeding, not the online limit
+// @test-kind parity: native depth39 (two captures): a synchronous nested chain runs to Depth 12, then the request answers 400 0x80044182 (infinite loop) and nothing is kept
+// @parity-evidence: native and native-r2 depth39: Create Depth 1..12, POST 400 0x80044182 'This workflow job was canceled because the workflow that started it included an infinite loop...', all children rolled back
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -49,25 +50,29 @@ async function recursion(key) {
   store.setPluginPipeline((context) => runPluginPhase({ ...context, store, items, handlers }));
   await assert.rejects(
     store.update('x_widget', row.x_widgetid, { x_count: 1 }, { admin: true }),
-    (error) => error.code === 'LocalPluginDepth' && error.status === 400 && /depth exceeds 16/.test(error.message),
+    (error) =>
+      error.code === 'LocalPluginDepth' &&
+      error.status === 400 &&
+      error.details?.innerCode === '0x80044182' &&
+      /included an infinite loop/.test(error.message),
   );
   return { store, row, calls, depths, handlers, items };
 }
 
-// Native corpus (dataverse-recorder depth): a synchronous nested Create chain reached Depth 10 and the request
-// answered 204, so the documented on-premises cap of 8 is not the online limit. The local cap is 16.
-test('A step-id handler that updates its own row stops at depth 16 with the plug-in depth fault and rolls back', async () => {
+// Native depth39: a synchronous nested chain runs to Depth 12 and the next level fails the request with 0x80044182;
+// the chain rolls back.
+test('A step-id handler that updates its own row stops at depth 12 with the infinite-loop fault and rolls back', async () => {
   const { store, row, calls } = await recursion(id);
-  assert.equal(calls, 16);
+  assert.equal(calls, 12);
   assert.equal(store.snapshot().tables.x_widget.find((r) => r.x_widgetid === row.x_widgetid).x_count, 0);
 });
 
-test('A plug-in type handler sees Depth 1 to 16 before the depth fault, and the counter is balanced afterwards', async () => {
+test('A plug-in type handler sees Depth 1 to 12 before the depth fault, and the counter is balanced afterwards', async () => {
   const { store, row, calls, depths } = await recursion(step.typeName);
-  assert.equal(calls, 16);
+  assert.equal(calls, 12);
   assert.deepEqual(
     depths,
-    Array.from({ length: 16 }, (_, i) => i + 1),
+    Array.from({ length: 12 }, (_, i) => i + 1),
   );
   // The failed chain leaves no residue: a fresh non-recursive handler starts again at Depth 1.
   const seen = [],

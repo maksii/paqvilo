@@ -29,6 +29,8 @@ export async function createOrganizationBackend({
   connectors = null,
   secrets = null,
   messaging = null,
+  // Milliseconds an asynchronous plug-in or web hook job waits before it may start (dataverse asyncStartDelayMs).
+  asyncStartDelayMs = () => 0,
 }) {
   // The store's one scheduler (runtime-clock.mjs) runs the durable committed-event jobs and the dataverse-async jobs. The
   // backend owns its lifecycle (close() closes it), so a backend over a store whose previous backend closed opens a live
@@ -105,6 +107,7 @@ export async function createOrganizationBackend({
     diagnostic,
     acceptedChains,
     systemJobs,
+    startDelayMs: asyncStartDelayMs,
   });
   // Ready jobs saved before a restart run once the organization exists (createOrganizationRuntime resumes them too).
   const resume = () => committedJobs(store).resume();
