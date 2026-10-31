@@ -2657,6 +2657,7 @@ export class DataStore {
           : { concurrencyBehavior: options.pluginConcurrencyBehavior }),
       bypassStepIds: options.bypassStepIds,
       bypassCustomPlugins: options.bypassCustomPlugins,
+      systemParameters: options.systemParameters,
       ...(awaitIo ? { awaitIo: true } : {}),
     });
     if (typeof frame?.then === 'function')

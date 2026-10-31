@@ -1224,6 +1224,7 @@ export function runPluginPhase({
   asyncExecution = false,
   initialFrame,
   bypassStepIds,
+  systemParameters,
   bypassCustomPlugins = false,
   continuePhase = false,
   awaitIo = false,
@@ -1386,6 +1387,11 @@ export function runPluginPhase({
     !asyncExecution &&
     ['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation)
   ) {
+    // The MSCRM bypass headers a request sent are InputParameters of its contexts (dataverse-api.mjs systemParameters).
+    if (systemParameters && Object.keys(systemParameters).length) {
+      phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
+      for (const [key, value] of Object.entries(systemParameters)) phaseFrame.inputParameters.values[key] ??= value;
+    }
     // A sandboxed plug-in's SDK request is marked FromSandbox in its PreValidation (and main operation) inputs.
     if (sdkFromSandbox) {
       phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
