@@ -161,10 +161,12 @@ function runMessagePipeline(
     : null;
   const values = { ...inputs };
   if (requestTag !== undefined && inputTag) values.tag = requestTag;
-  if (Object.hasOwn(inputs, 'FromSandbox')) {
-    delete values.FromSandbox;
-    values.FromSandbox = inputs.FromSandbox;
-  }
+  // Native order after the tag: FromSandbox, and UpdateContent for Merge (native mergeAccount).
+  for (const name of ['FromSandbox', 'UpdateContent'])
+    if (Object.hasOwn(inputs, name)) {
+      delete values[name];
+      values[name] = inputs[name];
+    }
   const messageParameters = {
     inputParameters: { $type: 'ParameterCollection', values },
     outputParameters: { $type: 'ParameterCollection', values: { ...initialOutputs } },
@@ -175,7 +177,9 @@ function runMessagePipeline(
   const parentContext = platformParent ?? store.pluginParentContext ?? pluginInvocationSdkParent(store);
   let frame = {
     ...frameFacts,
-    ...(inputTag ? {} : { inputTagConsumed: true }),
+    // The tag stays where values placed it, after the message's own inputs (native named messages: Target, ..., tag),
+    // not prepended by the step layers.
+    inputTagConsumed: true,
     requestTag,
     operationDepth: depth,
     ...(platformParent ? { delegatedParentContext: platformParent, delegatedDepth: depth, exactDepth: true } : {}),

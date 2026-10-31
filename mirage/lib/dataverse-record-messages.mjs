@@ -151,9 +151,12 @@ async function merge(api, ctx) {
   if (typeof body.PerformParentingChecks !== 'boolean')
     throw invalid('The PerformParentingChecks parameter is required.');
   const { mapping } = target;
-  // Merge runs its own plug-in pipeline around the merge (Target, SubordinateId, UpdateContent, PerformParentingChecks),
+  // Merge runs its own plug-in pipeline around the merge (Target, SubordinateId, PerformParentingChecks, UpdateContent),
   // with the table as PrimaryEntityName; the writes below are its main operation's (recorded native mergeAccount).
   // One transaction holds the pipeline and the writes, so a failing step undoes the merge.
+  const updateColumns = Object.fromEntries(
+    Object.entries(body.UpdateContent ?? {}).filter(([name]) => !name.includes('@')),
+  );
   if (entryMessageActive(api.store, 'Merge', mapping.logicalName, ctx))
     return write(api, () =>
       runEntryMessage(api.store, {
@@ -163,12 +166,11 @@ async function merge(api, ctx) {
         inputs: {
           Target: { $type: 'EntityReference', logicalName: mapping.logicalName, id: target.id, name: null },
           SubordinateId: { $type: 'Guid', value: subordinate.id },
-          UpdateContent: recordToSdkEntity(
-            api.store,
-            mapping.logicalName,
-            Object.fromEntries(Object.entries(body.UpdateContent ?? {}).filter(([name]) => !name.includes('@'))),
-          ),
           PerformParentingChecks: body.PerformParentingChecks,
+          // Native mergeAccount: UpdateContent is null when the request's UpdateContent carries only '@odata.type'.
+          UpdateContent: Object.keys(updateColumns).length
+            ? recordToSdkEntity(api.store, mapping.logicalName, updateColumns)
+            : null,
         },
         context: ctx,
         // An image registered on SubordinateId holds the subordinate row (native mergeAccount).

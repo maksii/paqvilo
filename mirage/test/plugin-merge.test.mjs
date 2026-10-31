@@ -1,4 +1,5 @@
 // @test-kind parity: native recorder captures 2026-10-30 mergeAccount (native and native-r2): Web API Merge of two accounts as an original CLR observer sees it
+// @parity-evidence: native mergeAccount (native and native-r2) Merge InputParameters tag; the fixture's merge helper can send the request tag as ?tag= (no existing assertion changed)
 // An original CLR observer registered on Merge and the Updates it runs logs what each execution sees: images by
 // message property, the Updates' Targets and the parent chain. Invented loopback accounts and identities only.
 import test, { after } from 'node:test';
@@ -118,8 +119,8 @@ async function mergeFixture(t, steps, { fields = {} } = {}) {
     scheduler,
   });
   t.after(() => backend.close());
-  const merge = async (body = {}) => {
-    const answer = await f.request('POST', '/Merge', {
+  const merge = async (body = {}, { tag } = {}) => {
+    const answer = await f.request('POST', '/Merge' + (tag === undefined ? '' : `?tag=${encodeURIComponent(tag)}`), {
       Target: { '@odata.type': 'Microsoft.Dynamics.CRM.account', accountid: target },
       Subordinate: { '@odata.type': 'Microsoft.Dynamics.CRM.account', accountid: subordinate },
       UpdateContent: { '@odata.type': 'Microsoft.Dynamics.CRM.account' },
@@ -227,5 +228,26 @@ test(
     assert.equal(read.status, 200, await read.clone().text());
     const row = await read.json();
     assert.deepEqual([row.merged, row.statecode, row.statuscode, row._masterid_value], [true, 1, 2, target]);
+  },
+);
+
+// @test-kind parity: native recorder captures 2026-10-30 mergeAccount (native and native-r2): a Web API Merge with a type-only UpdateContent passes UpdateContent null, with the inputs in the native order Target, SubordinateId, PerformParentingChecks, tag, UpdateContent at stages 10, 20, 40 and in the asynchronous job
+test(
+  'Merge passes a null UpdateContent for a type-only request, with the inputs in the native order',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const f = await mergeFixture(t, [
+      step(1, 'Merge', 10),
+      step(2, 'Merge', 20),
+      step(3, 'Merge', 40),
+      step(4, 'Merge', 40, { mode: 1 }),
+    ]);
+    const seen = (await f.merge({}, { tag: 'invented-tag' })).filter((entry) => entry.message === 'Merge');
+    // native mergeAccount: Merge/10, /20, /40 and the async /40 job each see the same input order, UpdateContent null.
+    assert.equal(seen.length, 4);
+    for (const entry of seen) {
+      assert.equal(entry.inputs, 'Target,SubordinateId,PerformParentingChecks,tag,UpdateContent');
+      assert.equal(entry.updateContent, 'null');
+    }
   },
 );
