@@ -23,7 +23,7 @@ export const primaryNameAttributes = (row, nameColumn, idColumn) =>
 export const PRIMARY_NAME_IMAGE = 'AsynchronousStepPrimaryName',
   BUSINESS_ENTITY_IMAGE = 'PreBusinessEntity';
 // Messages whose queued asynchronous steps add the row's primary-name image (native corpus crud, bulk, ownerAndState,
-// sdkMessages, reads), and the ones that read it from the row before the operation (Delete, DeleteMultiple, Assign).
+// sdkMessages, reads, mergeAccount), and the ones that read it from the row before the operation (Delete, DeleteMultiple, Assign).
 const PRIMARY_NAME_MESSAGES = new Set([
   'create',
   'update',
@@ -40,6 +40,7 @@ const PRIMARY_NAME_MESSAGES = new Set([
   'retrieveprincipalaccess',
   'retrievesharedprincipalsandaccess',
   'retrieve',
+  'merge',
 ]);
 export const primaryNameSide = (operation) =>
   PRIMARY_NAME_MESSAGES.has(operation)

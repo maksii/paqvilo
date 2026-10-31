@@ -14,6 +14,7 @@ import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { dispatchSdkCall, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
+import { primaryNameSide } from '../lib/plugin-images.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 
@@ -448,3 +449,21 @@ test(
     assert.equal(seen[2][0].nameAttributes, 'title,gadgetid');
   },
 );
+
+// @test-kind parity: native recorder captures 2026-10-30/31 (native and native-r2): the primary-name image joins the pre side for Delete, DeleteMultiple and Assign (crud, sdkMessages, imagesOrder) and the post side for the other row messages, Merge included (mergeAccount); none for RetrieveMultiple, Associate, Disassociate, custom APIs
+test('the primary-name image side follows the message', () => {
+  for (const message of ['delete', 'deletemultiple', 'assign']) assert.equal(primaryNameSide(message), 'pre', message);
+  for (const message of [
+    'create',
+    'update',
+    'createmultiple',
+    'updatemultiple',
+    'setstatedynamicentity',
+    'grantaccess',
+    'retrieve',
+    'merge',
+  ])
+    assert.equal(primaryNameSide(message), 'post', message);
+  for (const message of ['retrievemultiple', 'associate', 'disassociate', 'new_inventedapi'])
+    assert.equal(primaryNameSide(message), null, message);
+});
