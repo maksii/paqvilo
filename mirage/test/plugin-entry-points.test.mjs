@@ -449,3 +449,109 @@ test('a Create with a duplicate primary key runs PreValidation and PreOperation 
     ['Create/10', 'Create/20'],
   );
 });
+
+// @test-kind parity: native recorder captures 2026-10-30/31 privilegeSecond (trial, both captures): for a caller without the table privileges a Create is refused after PreValidation, a Retrieve or RetrieveMultiple after PreOperation, an Update or Delete before any step, each 403 0x80040220
+test('a caller without the table privilege is refused at the stage native refuses each message', async (t) => {
+  const steps = ['Create', 'Retrieve', 'RetrieveMultiple', 'Update', 'Delete'].flatMap((message, m) =>
+    [10, 20].map((stage, s) => step(70 + m * 2 + s, message, stage, { entity: 'account' })),
+  );
+  const f = await messageFixture(t, steps);
+  const restricted = '10000000-0000-0000-0000-0000000000f1';
+  await f.store.transact(() =>
+    f.store
+      .tableRows('systemuser')
+      .push({ systemuserid: restricted, fullname: 'Invented restricted user', isdisabled: false }),
+  );
+  const as = { MSCRMCallerID: restricted };
+  const attempt = async (method, path, body, expected) => {
+    f.seen.length = 0;
+    const answer = await f.request(method, path, body, as);
+    const text = await answer.text();
+    assert.equal(answer.status, 403, `${method} ${path}: ${text}`);
+    assert.match(text, /0x80040220/);
+    assert.deepEqual(
+      f.seen.map((entry) => entry.at),
+      expected,
+      `${method} ${path}`,
+    );
+  };
+  await attempt('POST', '/accounts', { name: 'Refused' }, ['Create/10']);
+  await attempt('GET', `/accounts(${row})?$select=name`, undefined, ['Retrieve/10', 'Retrieve/20']);
+  await attempt('GET', '/accounts?$select=name', undefined, ['RetrieveMultiple/10', 'RetrieveMultiple/20']);
+  await attempt('PATCH', `/accounts(${row})`, { name: 'Refused' }, []);
+  await attempt('DELETE', `/accounts(${row})`, undefined, []);
+});
+
+// @parity-evidence: native recorder captures 2026-10-30/31 relationsReads (native and native-r2): the child Update runs at depth 2 under Associate/30 with Target as its only input; the assertion now checks that delegated write instead of only its presence
+// @test-kind parity: native recorder captures 2026-10-30/31 relationsReads (both captures): a $ref on a one-to-many collection navigation runs Associate with Relationship.PrimaryEntityRole Referenced and PrimaryEntityName none around the child's delegated Update at depth 2 without ConcurrencyBehavior
+test('a one-to-many collection $ref runs Associate (Referenced) around the child Update', async (t) => {
+  const parent = '20000000-0000-0000-0000-0000000000a7',
+    child = '20000000-0000-0000-0000-0000000000a8';
+  const f = await contractModuleFixture(t, {
+    mappings: {
+      x_root: {
+        logicalName: 'x_root',
+        entitySet: 'x_roots',
+        idColumn: 'x_rootid',
+        relationships: {
+          x_children: { schemaName: 'x_root_child', entity: 'x_child', from: 'x_rootid', to: 'x_parentid', many: true },
+        },
+      },
+      x_child: {
+        logicalName: 'x_child',
+        entitySet: 'x_childs',
+        idColumn: 'x_childid',
+        fields: { x_parentid: { dataverseType: 'lookup', targets: ['x_root'] } },
+        relationships: {
+          x_parentid: { schemaName: 'x_root_child', entity: 'x_root', from: 'x_parentid', to: 'x_rootid', many: false },
+        },
+      },
+    },
+    tables: { x_root: [{ x_rootid: parent }], x_child: [{ x_childid: child }] },
+    extension: { name: 'one-to-many-probe', install: () => {} },
+  });
+  const seen = [];
+  const handlers = new Map([
+    [
+      'Invented.Recorder',
+      ({ context }) => {
+        seen.push({
+          at: `${context.MessageName}/${context.Stage}`,
+          entity: context.PrimaryEntityName,
+          depth: context.Depth,
+          inputs: Object.keys(context.InputParameters).sort(),
+          role:
+            context.InputParameters.Relationship?.PrimaryEntityRole ??
+            context.InputParameters.Relationship?.primaryEntityRole ??
+            null,
+        });
+      },
+    ],
+  ]);
+  const items = pluginCatalogue({
+    plugins: {
+      steps: [
+        ...[10, 20, 40].map((stage, i) => step(90 + i, 'Associate', stage, { entity: null, unfiltered: true })),
+        step(93, 'Update', 20, { entity: 'x_child' }),
+      ],
+    },
+    handlers,
+  });
+  const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
+  t.after(() => backend.close());
+  const base = new URL(f.server.origin + '/api/data/v9.2/').href;
+  const linked = await f.request('POST', `/x_roots(${parent})/x_children/$ref`, {
+    '@odata.id': `${base}x_childs(${child})`,
+  });
+  assert(linked.status < 300, await linked.text());
+  const associates = seen.filter((entry) => entry.at.startsWith('Associate'));
+  assert.deepEqual(
+    associates.map((entry) => `${entry.at}:${entry.entity}:${entry.role}`),
+    ['Associate/10:none:Referenced', 'Associate/20:none:Referenced', 'Associate/40:none:Referenced'],
+  );
+  // The child's lookup Update is the association's delegated write: one level deeper, with no ConcurrencyBehavior.
+  const update = seen.find((entry) => entry.at === 'Update/20' && entry.entity === 'x_child');
+  assert.ok(update, JSON.stringify(seen));
+  assert.equal(update.depth, 2);
+  assert.ok(!update.inputs.includes('ConcurrencyBehavior'), update.inputs.join(','));
+});

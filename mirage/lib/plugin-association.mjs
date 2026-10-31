@@ -10,11 +10,13 @@ const scalar = (value) => (value && typeof value === 'object' && value.id ? valu
 /** SDK schema names are not navigation properties. Select one source-defined
  * direction, retaining explicit EntityRole for self-referential relationships. */
 /**
- * The SDK EntityRole a many-to-many navigation stands for. A self-referencing relationship's Entity1 navigation (named
+ * The SDK EntityRole a navigation stands for. A self-referencing many-to-many relationship's Entity1 navigation (named
  * as the relationship) is Referencing (recorded native associate: POST <set>(id)/<schema>/$ref), its partner Referenced;
- * any other navigation has no role. An explicit sdkEntityRole on the relationship wins.
+ * a non-reflexive many-to-many navigation has no role. An explicit sdkEntityRole on the relationship wins.
  */
 export function navigationRole(mapping, navigation, rel) {
+  // A one-to-many collection navigation (the referenced side) is Referenced (recorded native relationsReads).
+  if (rel && !rel.intersect) return rel.many === false ? null : 'Referenced';
   if (!rel?.intersect || rel.entity !== mapping.logicalName) return null;
   if (rel.sdkEntityRole) return rel.sdkEntityRole;
   const schema = String(rel.schemaName ?? '').toLowerCase();

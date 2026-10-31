@@ -3286,6 +3286,9 @@ export class DataStore {
           );
         if (typeof columns.allColumns !== 'boolean' || !Array.isArray(columns.columns ?? []))
           throw new DataError('Retrieve requires a valid ColumnSet.', 400, 'LocalPluginQueryUnsupported');
+        // A caller without the read privilege is refused here, after PreValidation and PreOperation (recorded native
+        // privilegeSecond; dataverse-records.mjs).
+        options.beforeMainRead?.();
         const row = read(options.resolveTarget ? options.resolveTarget(holder.target) : holder.target.id, columns);
         if (!row) return null;
         Object.assign(record, row, { [m.idColumn]: originalId });
@@ -4055,6 +4058,7 @@ export class DataStore {
         bypassStepIds: options.bypassStepIds,
         portalRequest: options.portalRequest === true,
       });
+      options.beforeMainRead?.();
       const answer = execute(query),
         collection =
           key === 'entities'
@@ -6023,6 +6027,8 @@ export class DataStore {
           bypassCustomPlugins: options.bypassCustomPlugins === true,
           bypassCustomAsync: options.bypassCustomAsync === true,
           bypassStepIds: options.bypassStepIds,
+          // The association's main-operation Update has no ConcurrencyBehavior input (recorded native relationsReads).
+          ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
         });
       }
     }
