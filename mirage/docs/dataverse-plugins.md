@@ -82,7 +82,12 @@ reads, which the official serializer reads from the SOAP service's answer.
 Update and Delete honour `ConcurrencyBehavior` (`0x80060882` for a stale
 `RowVersion`, `0x80060883` without one); Create carries `RelatedEntities` as
 a deep insert and Retrieve answers `RelatedEntitiesQuery`. A missing row faults `0x80040217` ("Entity '<table>' With Id = <id> Does Not
-Exist") and, caught, leaves the step's transaction usable. An organization
+Exist"), and a column the table's Solution schema does not declare faults
+`0x80041103`. Caught, these, a refused Update or Delete and a refused read leave the
+step's transaction usable; a caught refused Create still fails the operation with
+`0x8009000c`, as natively. A plug-in's `InvalidPluginExecutionException` answers
+`0x80040265` whatever code it authors (the authored code stays in the source
+exception details). An organization
 failure reaches the plug-in as `FaultException<OrganizationServiceFault>` with
 the code the Web API answers for the same failure; `NotSupportedException` means
 a local adapter gap. WhoAmI, RetrieveVersion, the response classes and the

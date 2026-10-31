@@ -12,6 +12,15 @@ const fail = (message, code = 'LocalOrganizationServiceUnsupported', status = 50
   throw new DataError(message, status, code);
 };
 // A missing row, in the words and code an SDK caller receives (recorded native sdkSurface: Update of a missing row).
+// A refusal raised before the write starts (plugin transaction semantics: data.mjs markPluginTransactionFailure).
+const beforeWrite = (check) => {
+  try {
+    return check();
+  } catch (error) {
+    if (error instanceof DataError) error.details = { ...error.details, refusedBeforeWrite: true };
+    throw error;
+  }
+};
 const notFound = (store, entity, id) => {
   throw new DataError(
     `Entity '${store.resolveMapping(entity).logicalName}' With Id = ${id?.id ?? id?.value ?? id} Does Not Exist`,
@@ -326,8 +335,10 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     const key = sdkRecordKey(store, entity, id, values.partitionid);
     const previous = store.get(entity, key, localIdentity, { skipPluginRead: true });
     if (!previous) notFound(store, entity, id);
-    authorize(entity, 'update', previous);
-    authorize(entity, 'update', { ...previous, ...values });
+    beforeWrite(() => {
+      authorize(entity, 'update', previous);
+      authorize(entity, 'update', { ...previous, ...values });
+    });
     writeGraph(values, entity);
     return key;
   };
@@ -335,7 +346,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     const key = sdkRecordKey(store, entity, id, partitionId);
     const previous = store.get(entity, key, localIdentity, { skipPluginRead: true });
     if (!previous) notFound(store, entity, id);
-    authorize(entity, 'delete', previous);
+    beforeWrite(() => authorize(entity, 'delete', previous));
     return key;
   };
   const association = (entity, id, relationship, related, associate, responseToken, awaitIo) => {
