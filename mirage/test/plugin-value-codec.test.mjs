@@ -388,7 +388,9 @@ test(
     assert.equal(store.tableRows('trigger').length, 1);
     assert.equal(store.tableRows('widget').length, 1);
     invalidEnumWire = false;
-    for (const invalid of ['payload', 'dictionary', 'request', 'response', 'enumerable', 'enum', 'arbitrary-enum']) {
+    // OrganizationRequest and OrganizationResponse subclasses encode from their name and parameters or results (a
+    // DataContract of RequestName + Parameters; generated early-bound requests are subclasses), so they are not refused.
+    for (const invalid of ['payload', 'dictionary', 'enumerable', 'enum', 'arbitrary-enum']) {
       await assert.rejects(store.create('trigger', { invalid }, { admin: true }), /Unsupported SDK/);
       assert.equal(store.tableRows('trigger').length, 1, 'unsupported classes roll back the parent');
       assert.equal(store.tableRows('widget').length, 1, 'unsupported classes roll back the child');
