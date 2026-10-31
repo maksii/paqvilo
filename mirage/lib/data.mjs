@@ -2239,9 +2239,11 @@ export class DataStore {
    * service fault into a successful outer operation. */
   markPluginTransactionFailure(cause) {
     if (cause?.code === 'LocalPluginExecutionExpired' || transactionFrameOf(this, { closed: true })?.closed) return;
-    // A request that fails because its row does not exist has written nothing: a plug-in that catches the fault keeps its
-    // transaction (recorded native sdkSurface: an Update of a missing row faults 0x80040217 and the operation succeeds).
-    if (cause?.code === 'NotFound' || cause?.details?.innerCode === '0x80040217') return;
+    // A request refused before it wrote anything leaves the transaction usable for a plug-in that catches the fault: a
+    // missing row (recorded native sdkSurface: Update of a missing id faults 0x80040217), an unknown column (0x80041103) and
+    // an Update or Delete privilege refusal, which natively comes before any step (runAsSecond); a refused Create does not.
+    if (cause?.code === 'NotFound' || cause?.details?.innerCode === '0x80040217' || cause?.details?.refusedBeforeWrite)
+      return;
     if (
       !this.pluginInTransaction ||
       !this.pluginRollbackBoundary ||

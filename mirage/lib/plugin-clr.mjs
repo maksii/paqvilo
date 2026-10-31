@@ -1294,6 +1294,30 @@ function relatedBinding(store, entity, relationship, rows, table) {
     );
   return { rel, relationship, entities: rows };
 }
+// An attribute the table's Solution schema does not declare: native refuses an SDK Create or Update with 0x80041103 before
+// anything is written (recorded native sdkSurface: Create with an unknown column, caught, the operation still succeeds).
+// Tables without Solution attributes (and platform columns) are not checked.
+function assertKnownAttributes(store, entity) {
+  const logical = store.resolveMapping(entity.logicalName).logicalName,
+    schema = store.recordPipeline?.organizationApi?.schema?.(),
+    attributes = schema?.tables?.[logical]?.attributes;
+  if (!attributes || !Object.keys(attributes).length) return;
+  const mapping = store.resolveMapping(logical),
+    platform = store.platformFields?.(logical) ?? {};
+  for (const key of Object.keys(entity.attributes ?? {}))
+    if (
+      !Object.hasOwn(attributes, key) &&
+      !Object.hasOwn(platform, key) &&
+      key !== mapping.idColumn &&
+      !store.fieldDefinition(logical, key)
+    )
+      throw new DataError(
+        `'${logical}' entity doesn't contain attribute with Name = '${key}' and NameMapping = 'Logical' (look up attribute by name is case-sensitive).`,
+        400,
+        'InvalidArgument',
+        { innerCode: '0x80041103', refusedBeforeWrite: true },
+      );
+}
 function invokeSdkMethod({ store, service, message }, namedResponse) {
   const args = message.arguments ?? [],
     method = message.method;
@@ -1377,6 +1401,7 @@ function executeSdkMethod({ store, service, message, responseToken }) {
         ),
         create = (child) =>
           executeSdkMethod({ store, service, message: { ...message, method: 'Create', arguments: [child] } }).value;
+      assertKnownAttributes(store, entity);
       const values = sdkValueToRecord(entity);
       for (const { rel, entities } of related.filter((binding) => binding.rel.many === false)) {
         if (entities.length !== 1)
@@ -1419,6 +1444,7 @@ function executeSdkMethod({ store, service, message, responseToken }) {
     case 'Update': {
       const entity = args[0];
       if (entity?.$type !== 'Entity') fail('SDK Update requires an Entity.');
+      assertKnownAttributes(store, entity);
       service.update(entity.logicalName, entity, sdkValueToRecord(entity), {
         responseToken,
         ifMatch: message.requestOptions?.ifMatch,
@@ -1900,11 +1926,13 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
               exceptionDetails: message.exceptionDetails ?? null,
             },
           };
+          // An InvalidPluginExecutionException is 0x80040265 whatever code it authors (recorded native faults: a coded
+          // Delete step fault; catchCoded: a coded custom API fault, for its caller and a calling plug-in); the authored
+          // code stays in sourceException. A rethrown OrganizationServiceFault keeps its own code.
           if (Number.isInteger(message.errorCode))
             details.innerCode =
-              (message.pluginException === true ||
-                message.exceptionType === 'Microsoft.Xrm.Sdk.InvalidPluginExecutionException') &&
-              message.errorCode >>> 0 === 0x80131500
+              message.pluginException === true ||
+              message.exceptionType === 'Microsoft.Xrm.Sdk.InvalidPluginExecutionException'
                 ? '0x80040265'
                 : '0x' + (message.errorCode >>> 0).toString(16).padStart(8, '0');
           else if (
