@@ -381,9 +381,9 @@ const sdkRef = (logicalName, id) => ({ $type: 'EntityReference', logicalName, id
 // sdkMessages). The caller's privileges still decide whether it may write.
 async function namedUpdate(s, logical, id, data, system = false) {
   const store = s.api.store,
-    previous = store.pluginExecutionUserId;
+    previous = store.pluginPlatformUserId;
   if (system)
-    store.pluginExecutionUserId =
+    store.pluginPlatformUserId =
       store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM')?.systemuserid ?? previous;
   try {
     await s.api.records.updateInternal(s, logical, id, data, {
@@ -391,7 +391,7 @@ async function namedUpdate(s, logical, id, data, system = false) {
     });
     return {};
   } finally {
-    store.pluginExecutionUserId = previous;
+    store.pluginPlatformUserId = previous;
   }
 }
 async function captureSoapResponse(s, operation, entity, execute) {

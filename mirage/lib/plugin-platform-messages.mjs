@@ -403,8 +403,8 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
       named({ Target: parameters.Target, Assignee: parameters.Assignee }, target, () => {
         // Natively the Assign main operation updates the owner as the organization's system user.
         const system = store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM');
-        const previous = store.pluginExecutionUserId;
-        if (system) store.pluginExecutionUserId = system.systemuserid;
+        const previous = store.pluginPlatformUserId;
+        if (system) store.pluginPlatformUserId = system.systemuserid;
         try {
           innerUpdate(
             target,
@@ -412,7 +412,7 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
             { assignOwner: true },
           );
         } finally {
-          store.pluginExecutionUserId = previous;
+          store.pluginPlatformUserId = previous;
         }
       });
       return respond();

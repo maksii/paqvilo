@@ -243,7 +243,8 @@ async function messageFixture(t, steps, { register } = {}) {
           parent: context.ParentContext ? `${context.ParentContext.MessageName}/${context.ParentContext.Stage}` : null,
           user: context.UserId,
           // The principal the platform runs the operation as (a CLR step reports it as UserId).
-          executing: f.store.pluginExecutionUserId ?? null,
+          // @parity-evidence: native and native-r2 sdkMessages and soapMessages: Update/20,40 under Assign/30 UserId SYSTEM, InitiatingUserId the caller; the SYSTEM user moved to the platform-user operation field
+          executing: f.store.pluginPlatformUserId ?? f.store.pluginExecutionUserId ?? null,
           inputs: structuredClone(context.InputParameters),
           outputs: structuredClone(context.OutputParameters),
         });

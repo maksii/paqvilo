@@ -710,7 +710,7 @@ function typedContext({
     Mode: item.contract?.mode ?? 0,
     Depth: depth,
     InitiatingUserId: initiating,
-    UserId: item.impersonatingUserId ?? executing,
+    UserId: item.impersonatingUserId ?? store?.pluginPlatformUserId ?? executing,
     ParentContext: pluginContextValues(parent, store),
     ...(frame?.requestId === undefined ? {} : { RequestId: frame.requestId }),
     ...(frame?.operationId === undefined ? {} : { OperationId: frame.operationId }),

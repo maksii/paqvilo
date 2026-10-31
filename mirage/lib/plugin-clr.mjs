@@ -2293,6 +2293,7 @@ export function clrContext({
       : null;
   const callerUserId =
       systemDelete ??
+      store.pluginPlatformUserId ??
       store.pluginExecutionUserId ??
       caller?.systemUserId ??
       context.executionUserId ??

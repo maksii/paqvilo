@@ -607,7 +607,7 @@ export function remoteExecutionContext(store, facts) {
     SecondaryEntityName: 'none',
     SharedVariables: pairs(frame.sharedVariables?.values),
     Stage: stage,
-    UserId: item.impersonatingUserId ?? initiating,
+    UserId: item.impersonatingUserId ?? store.pluginPlatformUserId ?? initiating,
   };
   if (frame.delegatedSourceOperation) {
     const source = frame.delegatedSourceOperation;
