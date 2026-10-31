@@ -1310,6 +1310,7 @@ export function runPluginPhase({
           ...(frameworkInputTarget ?? target),
           [store.resolveMapping(entity).idColumn]: record[store.resolveMapping(entity).idColumn],
         }),
+        tag: phaseFrame.requestTag ?? store.pluginSdkTag,
       };
   }
   // A bare Web API PATCH runs Create or Update inside an Upsert main operation: PreValidation's parent is that
@@ -1481,7 +1482,11 @@ export function runPluginPhase({
       const root = phaseFrame.sdkFrameworkSource
         ? (phaseFrame.sdkFrameworkSource.sharedVariables ??= {
             $type: 'ParameterCollection',
-            values: { AcceptLang: phaseFrame.sdkFrameworkSource.acceptLanguage ?? '', IsAutoTransact: false },
+            values: {
+              AcceptLang: phaseFrame.sdkFrameworkSource.acceptLanguage ?? '',
+              IsAutoTransact: false,
+              ...(phaseFrame.sdkFrameworkSource.tag === undefined ? {} : { tag: phaseFrame.sdkFrameworkSource.tag }),
+            },
           })
         : preValidationSourceOperation === 'upsert'
           ? null

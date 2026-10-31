@@ -1,4 +1,4 @@
-// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30 (crud, upsert, sdkMessages, ownerAndState, bulk, faults, depth, customApi): ParentContext levels a CLR step can reach
+// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30 (crud, upsert, nestedImages, sdkMessages, ownerAndState, bulk, faults, depth, customApi): ParentContext levels a CLR step can reach
 // Every ParentContext level a CLR step reads, against the native recorder corpus: no level leaves a property
 // unavailable, ancestors report the observing context's IsInTransaction and InitiatingUserAgent, an impersonating
 // step's main operation runs as its user, named messages are the direct parent of the record operations they
@@ -488,7 +488,8 @@ test('a plug-in request reports no user agent on its context and ancestors', () 
   const agents = (at) =>
     chain(seen.find((entry) => entry.label === at).context).map((level) => level.InitiatingUserAgent);
   assert.deepEqual(agents('update/40'), ['invented-agent/1', 'invented-agent/1', 'invented-agent/1']);
-  assert.deepEqual(agents('create/20'), ['', '', '', '', '']);
+  // @parity-evidence: native and native-r2 nestedImages: a Create issued by an Update/40 step inside a bare PATCH reports Create/20/d2 < Create/30/d2 < Upsert/30/d1, InitiatingUserAgent '' on all three levels (the Update/40 < Update/30 levels are not part of its chain)
+  assert.deepEqual(agents('create/20'), ['', '', '']);
 });
 
 // Native depth/faults/pipelineEffects: the ObjectModel Implementation step id differs per table for one message and is
@@ -696,4 +697,75 @@ test('queued asynchronous work adds the job attachment to the request root', () 
     rootAt([asyncStep('ledger', 'Create')], (store) => store.createRecord('ledger', { title: 'Org' }, { admin: true })),
     { fileattachment: 'Create' },
   );
+});
+
+// Native nestedImages and ownerAndState (two captures each): SDK and SetStateDynamicEntity parents under a bare
+// PATCH's Upsert/30 frame, which carries the request tag in InputParameters and SharedVariables.
+// A bare PATCH of the probe record, carrying the request tag the plug-in SDK forwards.
+const tag = 'invented-tag';
+const taggedPatch = (store, values) => {
+  store.pluginSdkTag = tag;
+  try {
+    store.updateRecord('widget', id, values, { admin: true }, { preValidationSourceOperation: 'upsert' });
+  } finally {
+    store.pluginSdkTag = undefined;
+  }
+};
+// The Upsert/30 frame of a bare PATCH: its InputParameters and SharedVariables both carry the request tag.
+const assertTaggedUpsert = (upsert) => {
+  assert.equal(upsert.MessageName, 'Upsert');
+  assert.deepEqual(Object.keys(upsert.InputParameters.values), ['Target', 'ReturnRowVersion', 'tag']);
+  assert.equal(upsert.InputParameters.values.tag, tag);
+  assert.equal(upsert.SharedVariables.values.tag, tag);
+};
+// Each nested Create issued by an Update step at stage `at` under a bare PATCH.
+const nestedCreateUnder = (at) => {
+  const store = storeOf();
+  const seen = probe(store, (name) => [at, 'create/10', 'create/20'].includes(name), {
+    act: (answer, name) => {
+      if (name === at && answer.context.Depth === 1)
+        sdk(store, answer, 'Create', [{ $type: 'Entity', logicalName: 'widget', attributes: { title: 'Nested' } }]);
+    },
+  });
+  taggedPatch(store, { title: 'Renamed' });
+  return seen;
+};
+
+// Native nestedImages: a Create issued by an Update step at stage 40 inside a bare PATCH reports the Upsert/30 frame as
+// its parent, like a stage-20 step: Create/10/d2 < Upsert/30/d1 and Create/20/d2 < Create/30/d2 < Upsert/30/d1.
+test('a stage-40 step request under a bare PATCH has the Upsert main operation as parent', () => {
+  const seen = nestedCreateUnder('update/40');
+  const create10 = seen.find((entry) => entry.label === 'create/10' && entry.context.Depth === 2).context,
+    create20 = seen.find((entry) => entry.label === 'create/20' && entry.context.Depth === 2).context;
+  assert.deepEqual(chain(create10).map(label), ['Create/10/d2', 'Upsert/30/d1']);
+  assert.deepEqual(chain(create20).map(label), ['Create/20/d2', 'Create/30/d2', 'Upsert/30/d1']);
+  assertTaggedUpsert(chain(create10).at(-1));
+});
+
+// Native nestedImages: the stage-20 step's nested Create keeps the Upsert/30 frame as its parent (unchanged), with the tag.
+test('a stage-20 step request under a bare PATCH has the tagged Upsert main operation as parent', () => {
+  const seen = nestedCreateUnder('update/20');
+  const create10 = seen.find((entry) => entry.label === 'create/10' && entry.context.Depth === 2).context;
+  assert.deepEqual(chain(create10).map(label), ['Create/10/d2', 'Upsert/30/d1']);
+  assertTaggedUpsert(chain(create10).at(-1));
+});
+
+// @test-kind unproven: native has no capture of an SDK request from a PreValidation step inside a bare PATCH
+test('a stage-10 step request keeps its own step as parent', () => {
+  const seen = nestedCreateUnder('update/10');
+  const create10 = seen.find((entry) => entry.label === 'create/10' && entry.context.Depth === 2).context;
+  assert.equal(chain(create10).map(label)[1], 'Update/10/d1');
+});
+
+// Native ownerAndState: a PATCH statecode's SetStateDynamicEntity at stage 10 and 20 runs under the Upsert/30 frame of
+// the request, which carries the request tag in InputParameters and SharedVariables.
+test('a PATCH statecode SetStateDynamicEntity parent carries the request tag', () => {
+  const store = storeOf();
+  const seen = probe(store, (name) => ['SetStateDynamicEntity/10', 'SetStateDynamicEntity/20'].includes(name));
+  taggedPatch(store, { statecode: 1, statuscode: 2 });
+  for (const at of ['SetStateDynamicEntity/10', 'SetStateDynamicEntity/20']) {
+    const state = seen.find((entry) => entry.label === at).context;
+    assert.equal(label(state.ParentContext.values), 'Upsert/30/d2');
+    assertTaggedUpsert(state.ParentContext.values);
+  }
 });

@@ -17,13 +17,25 @@ export function clrSdkEntryContext(input) {
   };
 }
 
-/** Bare HTTP PATCH delegates through an outer Upsert main operation. Its SDK
- * parent is that framework frame, rather than the currently executing Update
- * step. The hidden system step identity is unavailable from ordinary exports. */
+/** Bare HTTP PATCH delegates through an outer Upsert main operation. A PreOperation or PostOperation step (stage 20 or
+ * 40) of its Update has that framework frame as its SDK parent, rather than the currently executing Update step
+ * (native nestedImages). The hidden system step identity is unavailable from ordinary exports. */
 export function selectSdkEntryParent(entry, frameworkSource) {
   const snapshot = cloneStateData(entry);
-  if (frameworkSource?.operation !== 'upsert' || snapshot?.values?.Mode === 1 || snapshot?.values?.Stage !== 20)
+  if (
+    frameworkSource?.operation !== 'upsert' ||
+    snapshot?.values?.Mode === 1 ||
+    ![20, 40].includes(snapshot?.values?.Stage)
+  )
     return snapshot;
+  const shared = cloneStateData(
+    frameworkSource.sharedVariables ?? {
+      $type: 'ParameterCollection',
+      values: { AcceptLang: frameworkSource.acceptLanguage ?? '', IsAutoTransact: false },
+    },
+  );
+  if (frameworkSource.tag !== undefined && !Object.hasOwn(shared.values, 'tag'))
+    shared.values.tag = frameworkSource.tag;
   const values = {
     ...snapshot.values,
     MessageName: 'Upsert',
@@ -36,15 +48,14 @@ export function selectSdkEntryParent(entry, frameworkSource) {
     IsolationMode: 2,
     InputParameters: {
       $type: 'ParameterCollection',
-      values: { Target: cloneStateData(frameworkSource.target), ReturnRowVersion: null },
+      values: {
+        Target: cloneStateData(frameworkSource.target),
+        ReturnRowVersion: null,
+        ...(frameworkSource.tag === undefined ? {} : { tag: frameworkSource.tag }),
+      },
     },
     OutputParameters: { $type: 'ParameterCollection', values: {} },
-    SharedVariables: cloneStateData(
-      frameworkSource.sharedVariables ?? {
-        $type: 'ParameterCollection',
-        values: { AcceptLang: frameworkSource.acceptLanguage ?? '', IsAutoTransact: false },
-      },
-    ),
+    SharedVariables: shared,
     PreEntityImages: { $type: 'EntityImageCollection', values: {} },
     PostEntityImages: { $type: 'EntityImageCollection', values: {} },
     PreEntityImagesCollection: { $type: 'EntityImageCollectionArray', values: [] },
