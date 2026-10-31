@@ -1467,7 +1467,18 @@ async function applyOperationOverrides(c, next, commit) {
       if (runtime.uploaded) releaseUploadedRuntime(runtimes, item.id, diagnostic);
       else {
         runtimes.delete(item.id);
-        closeClrHostPool({ runtime, diagnostic });
+        // Steps of one assembly share a runtime and its hosts: stop them only when no remaining step uses it. The mode
+        // change is already committed; a host still running a queued job stops when the runtime closes.
+        if ([...runtimes.values()].some((other) => other.directory === runtime.directory)) continue;
+        try {
+          closeClrHostPool({ runtime, diagnostic });
+        } catch (error) {
+          if (error.code !== 'LocalPluginHostBusy') throw error;
+          diagnostic({
+            code: 'PLUGIN_CLR_HOST_BUSY',
+            message: 'A CLR host still runs a job; it stops when the runtime closes.',
+          });
+        }
       }
     }
   }
