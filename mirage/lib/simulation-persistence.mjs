@@ -58,6 +58,10 @@ const runtimeTables = new Set([
   'sdkmessagefilter',
   'plugintype',
   'pluginassembly',
+  // A plug-in package and a step's secure configuration: the secure text and up to 16 MB of package content are control-plane
+  // state, never pack DATA.
+  'pluginpackage',
+  'sdkmessageprocessingstepsecureconfig',
   'serviceendpoint',
   'fxexpression',
   'maskingrule',

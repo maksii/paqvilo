@@ -568,7 +568,7 @@ export function remoteExecutionContext(store, facts) {
     // it, asynchronous steps never do. store.pluginInTransaction is that pipeline state (data.mjs exportedPluginPhase keeps an inherited one at stage 10).
     IsInTransaction: !asyncExecution && store.pluginInTransaction === true,
     IsOfflinePlayback: false,
-    IsolationMode: 1, // as in the documented sample
+    IsolationMode: 1, // native crud: a web hook context has IsolationMode 1
     MessageName: facts.customApi?.name ?? messageNameOf(facts.bridged ? multipleMessage(operation) : operation),
     Mode: asyncExecution ? 1 : 0,
     OperationCreatedOn:
