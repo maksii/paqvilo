@@ -3878,25 +3878,19 @@ async function createPowerPagesSimulator({
         if (method === 'DELETE') delete next[key];
         else next[key] = value;
         // The host prepares a CLR runtime this choice selects before the choice is stored, and closes one it no longer selects.
-        // Reading the body and preparing a trusted runtime can complete pending
-        // SDK work. Apply this configuration delta to a fresh snapshot afterwards.
+        // The operation-key delta is a transaction on the live state: it queues with committed asynchronous jobs, so their
+        // writes are kept and neither side conflicts (a whole-state replacement lost that race to a job's several commits).
         await organizationHost.applyOperationOverrides(next, async () => {
-          for (let attempt = 0; ; attempt++) {
-            const state = store.snapshot(undefined, { forkTables: true });
-            state.simulator ??= config();
-            state.simulator.operations = { ...(state.simulator.operations ?? {}) };
-            if (method === 'DELETE') delete state.simulator.operations[key];
-            else state.simulator.operations[key] = value;
-            try {
-              await saveState(state);
-              break;
-            } catch (cause) {
-              // A committed asynchronous plug-in job may advance the store while
-              // this replacement queues. Retry only this operation-key delta on
-              // fresh state, retaining the job's writes and the revision guard.
-              if (cause.code !== 'StateConflict' || attempt >= 2) throw cause;
-            }
-          }
+          await store.transact(() => {
+            store.state.simulator ??= config();
+            const operations = { ...(store.state.simulator.operations ?? {}) };
+            if (method === 'DELETE') delete operations[key];
+            else operations[key] = value;
+            store.state.simulator.operations = operations;
+          });
+          revision++;
+          publishLog('reload', { revision, message: `Runtime configuration reloaded (revision ${revision}).` });
+          events.send(`event: reload\ndata: ${revision}\n\n`);
         });
         return json(res, 200, { items: operations() });
       });

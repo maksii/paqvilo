@@ -741,7 +741,6 @@
   "mirage/test/state-export-lease.test.mjs",
   "mirage/test/state-migration.test.mjs",
   "mirage/test/state-paged-writeback.test.mjs",
-  "mirage/test/state-replacement-revision.test.mjs",
   "mirage/test/state-storage-runtime.test.mjs",
   "mirage/test/state-storage-windows.test.mjs",
   "mirage/test/state-storage.test.mjs",
