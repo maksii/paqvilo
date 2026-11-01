@@ -1,12 +1,28 @@
+import { createJsonTextCoalescer } from './json-text.mjs';
 import { createReadStream } from 'node:fs';
 import { open, stat, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { DataError } from './data-error.mjs';
-import { jsonChunks, parseJsonStream, hashStateFile, writeJsonStream } from './state-stream.mjs';
+import {
+  createFragmentAssembler,
+  jsonChunks,
+  jsonFragmentRecords,
+  parseJsonStream,
+  hashStateFile,
+  writeJsonStream,
+} from './state-stream.mjs';
+import { pagedRecordsOf, recordTablesCreated } from './record-tables.mjs';
+import { hasRecordGraph } from './record-clone.mjs';
+import { encodeRecordReferences, decodeRecordReferences, restoreRecordReferences } from './record-state.mjs';
+import { cloneStateData } from './state-clone.mjs';
 
 const MAGIC = '{"$paqvilo":"mirage-state-journal-v1"}\n';
+const RECORD_MAGIC = '{"$paqvilo":"mirage-state-journal-v2"}\n';
 const DEFAULT_JOURNAL_THRESHOLD = 16 * 1024 * 1024;
+const REPLAY_BUFFER_ENTRIES = 4096;
+const REPLAY_BUFFER_BYTES = 8 * 1024 * 1024;
+const TABLE_OPERATION = /^\{"op":"(table|table-value|remove-table|insert|set|delete)","table":/;
 const conflict = () =>
   new DataError(
     'Local state changed outside this runtime; restart the simulator from the updated state file before writing',
@@ -25,10 +41,12 @@ const fileSignature = async (file) => signature(await stat(file, { bigint: true 
 const put = (object, key, value) =>
   Object.defineProperty(object, key, { value, writable: true, enumerable: true, configurable: true });
 
-function apply(state, entry) {
+function apply(state, entry, recordReferences = false) {
+  if (recordReferences) decodeRecordReferences(entry);
   if (entry.op === 'section') put(state, entry.key, entry.value);
   else if (entry.op === 'remove-section') delete state[entry.key];
   else if (entry.op === 'table') put(state.tables, entry.table, []);
+  else if (entry.op === 'table-value') put(state.tables, entry.table, entry.value);
   else if (entry.op === 'remove-table') delete state.tables[entry.table];
   else if (entry.op === 'insert') state.tables[entry.table].splice(entry.index, 0, entry.row);
   else if (entry.op === 'set') state.tables[entry.table][entry.index] = entry.row;
@@ -36,11 +54,60 @@ function apply(state, entry) {
   else throw new DataError('Unknown local state journal operation', 500, 'StateIntegrity');
 }
 
+// A large transaction is private until its checksum verifies. Copy only a
+// touched table's array, sharing unchanged rows and sections with the prefix.
+// Journal operations replace rows; they never mutate a shared row's fields.
+function journalCandidate(state, recordReferences) {
+  const next = { ...state };
+  if (Object.hasOwn(state, 'tables')) {
+    const tables = state.tables;
+    if (Array.isArray(tables)) {
+      next.tables = new Array(tables.length);
+      for (const name of Object.keys(tables)) put(next.tables, name, tables[name]);
+    } else if (tables && typeof tables === 'object') next.tables = { ...tables };
+  }
+  const owned = new Set();
+  return {
+    state: next,
+    apply(entry) {
+      const table = String(entry.table);
+      if ((entry.op === 'insert' || entry.op === 'set' || entry.op === 'delete') && !owned.has(table)) {
+        const rows = next.tables?.[table];
+        if (Array.isArray(rows)) {
+          put(next.tables, table, rows.slice());
+          owned.add(table);
+        }
+      }
+      apply(next, entry, recordReferences);
+      if (entry.op === 'table') owned.add(table);
+      else if (entry.op === 'remove-table') owned.delete(table);
+      else if (entry.op === 'section' && entry.key === 'tables') {
+        owned.clear();
+        for (const name of Object.keys(entry.value ?? {})) owned.add(name);
+      } else if (entry.op === 'remove-section' && entry.key === 'tables') owned.clear();
+    },
+  };
+}
+
+function applyJournalCandidate(pending, change) {
+  if (pending.failed) return;
+  try {
+    pending.candidate.apply(change);
+  } catch (error) {
+    pending.failed = true;
+    pending.error = error;
+  }
+}
+
 async function* checkpoint(state) {
   for (const [key, value] of Object.entries(state)) {
     if (key !== 'tables') yield { op: 'section', key, value };
   }
   for (const [table, rows] of Object.entries(state.tables ?? {})) {
+    if (pagedRecordsOf(rows)) {
+      yield { op: 'table-value', table, value: rows };
+      continue;
+    }
     yield { op: 'table', table };
     for (let index = 0; index < rows.length; index++) yield { op: 'insert', table, index, row: rows[index] };
   }
@@ -49,7 +116,7 @@ async function* checkpoint(state) {
 // A single append contains a begin marker, bounded JSON records and a commit
 // checksum. Only checksum-verified commits are visible after a restart. A torn
 // tail is retained until the next locked write truncates it to committedBytes.
-async function append(handle, entries, hash, start, { header = false } = {}) {
+async function append(handle, entries, hash, start, { header = false, recordReferences = false, recordStorage } = {}) {
   let bytes = start,
     buffer = '';
   const flush = async () => {
@@ -64,20 +131,20 @@ async function append(handle, entries, hash, start, { header = false } = {}) {
     buffer += value;
     if (buffer.length >= 65536) await flush();
   };
-  if (header) await write(MAGIC);
+  if (header) await write(recordReferences ? RECORD_MAGIC : MAGIC);
   await write('{"op":"begin"}\n');
-  for await (const entry of entries) {
+  for await (const source of entries) {
+    const entry = recordReferences ? encodeRecordReferences(source, recordStorage) : source;
     const chunks = jsonChunks(entry),
       first = chunks.next(),
       second = chunks.next();
     if (second.done) await write(first.value + '\n');
     else {
       // Large metadata sections, custom presets and large individual records
-      // need not fit in one line/string either.
-      await write('{"op":"fragments"}\n');
-      await write(JSON.stringify({ chunk: first.value }) + '\n');
-      await write(JSON.stringify({ chunk: second.value }) + '\n');
-      for (const chunk of chunks) await write(JSON.stringify({ chunk }) + '\n');
+      // need not fit in one line/string either. Fragment records embed bounded
+      // JSON values directly instead of escaping JSON text into strings.
+      await write('{"op":"fragments","encoding":"records"}\n');
+      for (const record of jsonFragmentRecords(entry)) await write(record + '\n');
       await write('{"op":"end-fragments"}\n');
     }
   }
@@ -99,8 +166,15 @@ export class StateStorage {
   }
   async load({ sections } = {}) {
     this.skippedFragmentEntries = 0;
+    this.skippedTableEntries = 0;
+    this.peakReplayBufferEntries = 0;
+    this.streamedReplayTransactions = 0;
+    const retainText = createJsonTextCoalescer();
     const selected = sections ? new Set(sections) : null;
     const wanted = (entry) => !selected || selected.has(entry.key ?? 'tables');
+    // The writer puts a table operation's name first. Without the tables section
+    // those lines are checksummed but not parsed.
+    const skipTables = selected && !selected.has('tables');
     const before = await fileSignature(this.file);
     const handle = await open(this.file, 'r');
     let prefix;
@@ -112,7 +186,8 @@ export class StateStorage {
       await handle.close();
     }
     let state;
-    if (prefix === MAGIC) {
+    this.recordReferences = prefix === RECORD_MAGIC;
+    if (prefix === MAGIC || this.recordReferences) {
       this.journal = true;
       state = { tables: {} };
       const hash = createHash('sha256');
@@ -148,7 +223,9 @@ export class StateStorage {
           if (next.done) break;
           const line = next.value;
           const raw = line + '\n';
-          if (bytes + Buffer.byteLength(raw) > size) {
+          const rawBytes = Buffer.byteLength(raw),
+            entryStart = bytes;
+          if (bytes + rawBytes > size) {
             tail = true;
             break;
           }
@@ -159,7 +236,11 @@ export class StateStorage {
           }
           let entry;
           try {
-            entry = JSON.parse(line);
+            const table = skipTables && TABLE_OPERATION.exec(line);
+            if (table) {
+              entry = { op: table[1] };
+              this.skippedTableEntries++;
+            } else entry = JSON.parse(line);
           } catch (cause) {
             if (!committed) throw cause;
             await verifyTornTail();
@@ -172,46 +253,76 @@ export class StateStorage {
             bytes += Buffer.byteLength(raw);
             alreadyHashed = true;
             let incomplete = false;
-            async function* fragments() {
+            if (entry.encoding !== undefined && entry.encoding !== 'records')
+              throw new DataError('Unknown state JSON fragment encoding', 500, 'StateIntegrity');
+            const records = entry.encoding === 'records';
+            // Every line up to the end marker is checksummed, parsed or not.
+            async function* lines() {
               while (true) {
                 const part = await iterator.next();
                 if (part.done || bytes + Buffer.byteLength(part.value + '\n') > size) {
                   incomplete = true;
                   return;
                 }
-                const item = JSON.parse(part.value);
                 hash.update(part.value + '\n');
                 bytes += Buffer.byteLength(part.value + '\n');
-                if (item.op === 'end-fragments') return;
-                if (typeof item.chunk !== 'string')
-                  throw new DataError('Invalid state JSON fragment', 500, 'StateIntegrity');
-                yield item.chunk;
+                if (part.value === '{"op":"end-fragments"}') return;
+                yield part.value;
               }
             }
+            const skip = async (parts, descriptor) => {
+              for await (const _part of parts) {
+                /* Integrity hashes advance in lines(). */
+              }
+              this.skippedFragmentEntries = (this.skippedFragmentEntries ?? 0) + 1;
+              return descriptor;
+            };
             try {
-              const chunks = fragments(),
-                first = await chunks.next();
-              // Our journal writer puts operation and section/table identity
-              // before the value. Inspect that bounded prefix, then still read
-              // and checksum every fragment of an unselected operation.
-              const header =
-                !first.done &&
-                /^\{"op":"(section|remove-section|table|remove-table|insert|set|delete)","(key|table)":("(?:[^"\\]|\\.)*")/.exec(
-                  first.value,
-                );
-              const descriptor = header && { op: header[1], [header[2]]: JSON.parse(header[3]) };
-              if (descriptor && !wanted(descriptor)) {
-                for await (const _chunk of chunks) {
-                  /* Integrity hashes advance in fragments(). */
+              const parts = lines();
+              if (records) {
+                // The writer emits an operation's identity members before its
+                // value, so an unselected operation is skipped without parsing.
+                const assembler = createFragmentAssembler(retainText);
+                entry = undefined;
+                for await (const line of parts) {
+                  await assembler.add(line);
+                  const { op, key, table } = assembler.root;
+                  if (assembler.rootOpen && typeof op === 'string' && (key !== undefined || table !== undefined)) {
+                    const descriptor = { op, ...(key !== undefined ? { key } : { table }) };
+                    if (!wanted(descriptor)) {
+                      entry = await skip(parts, descriptor);
+                      break;
+                    }
+                  }
                 }
-                entry = descriptor;
-                this.skippedFragmentEntries = (this.skippedFragmentEntries ?? 0) + 1;
+                if (!incomplete) entry ??= assembler.finish();
               } else {
-                async function* complete() {
-                  if (!first.done) yield first.value;
-                  yield* chunks;
+                async function* chunks() {
+                  for await (const line of parts) {
+                    const item = JSON.parse(line);
+                    if (typeof item.chunk !== 'string')
+                      throw new DataError('Invalid state JSON fragment', 500, 'StateIntegrity');
+                    yield item.chunk;
+                  }
                 }
-                entry = await parseJsonStream(complete());
+                const legacy = chunks(),
+                  first = await legacy.next();
+                // The earlier encoding escapes the entry's JSON text into chunk
+                // strings. Its bounded first chunk names the operation.
+                const header =
+                  !first.done &&
+                  /^\{"op":"(section|remove-section|table|table-value|remove-table|insert|set|delete)","(key|table)":("(?:[^"\\]|\\.)*")/.exec(
+                    first.value,
+                  );
+                const descriptor = header && { op: header[1], [header[2]]: JSON.parse(header[3]) };
+                if (descriptor && !wanted(descriptor)) entry = await skip(legacy, descriptor);
+                else {
+                  async function* complete() {
+                    if (!first.done) yield first.value;
+                    yield* legacy;
+                  }
+                  entry = await parseJsonStream(complete(), { onObject: retainText });
+                }
               }
             } catch (cause) {
               if (!incomplete || !committed) throw cause;
@@ -223,25 +334,43 @@ export class StateStorage {
               break;
             }
           }
+          if (entry.op === 'insert' || entry.op === 'set') retainText(entry.row);
           if (entry.op === 'commit') {
             if (!pending || entry.digest !== hash.copy().digest('hex'))
               throw new DataError('Local state journal checksum mismatch', 500, 'StateIntegrity');
-            if (committed) for (const change of pending) apply(state, change);
+            if (committed) {
+              if (pending.failed) throw pending.error;
+              if (pending.candidate) state = pending.candidate.state;
+              else for (const change of pending.entries) apply(state, change, this.recordReferences);
+            }
             pending = null;
             committed = true;
           } else if (entry.op === 'begin') {
             if (pending) throw new DataError('Invalid local state journal boundary', 500, 'StateIntegrity');
-            pending = [];
+            pending = { entries: [], bytes: 0, candidate: null, failed: false };
           } else {
             if (!pending) throw new DataError('Uncommitted local state journal operation', 500, 'StateIntegrity');
             if (wanted(entry)) {
-              if (committed) pending.push(entry);
-              else apply(state, entry);
+              if (!committed) apply(state, entry, this.recordReferences);
+              else {
+                if (pending.candidate) applyJournalCandidate(pending, entry);
+                else {
+                  pending.entries.push(entry);
+                  pending.bytes += alreadyHashed ? bytes - entryStart : rawBytes;
+                  this.peakReplayBufferEntries = Math.max(this.peakReplayBufferEntries, pending.entries.length);
+                  if (pending.entries.length >= REPLAY_BUFFER_ENTRIES || pending.bytes >= REPLAY_BUFFER_BYTES) {
+                    pending.candidate = journalCandidate(state, this.recordReferences);
+                    this.streamedReplayTransactions++;
+                    for (const change of pending.entries) applyJournalCandidate(pending, change);
+                    pending.entries = null;
+                  }
+                }
+              }
             }
           }
           if (!alreadyHashed) {
             hash.update(raw);
-            bytes += Buffer.byteLength(raw);
+            bytes += rawBytes;
           }
           if (entry.op === 'commit') {
             this.hash = hash.copy();
@@ -268,7 +397,7 @@ export class StateStorage {
         }
         yield decoder.end();
       }
-      state = await parseJsonStream(chunks(this.file));
+      state = await parseJsonStream(chunks(this.file), { onObject: retainText });
       this.digest = hash.digest('hex');
       // An explicit reload can switch a previously journaled file back to JSON.
       // Never append using offsets and a hash inherited from that previous file.
@@ -279,6 +408,18 @@ export class StateStorage {
     }
     this.signature = await fileSignature(this.file);
     if (before !== this.signature) throw conflict();
+    if (this.recordReferences) {
+      const restored = await restoreRecordReferences(state, this.file + '.records', { stateOwner: this.file });
+      state = restored.state;
+      this.recordSession = restored.session;
+      try {
+        await this.assertUnchanged();
+      } catch (error) {
+        this.recordSession?.close();
+        this.recordSession = null;
+        throw error;
+      }
+    }
     return selected ? Object.fromEntries(Object.entries(state).filter(([key]) => selected.has(key))) : state;
   }
   async assertUnchanged() {
@@ -309,6 +450,19 @@ export class StateStorage {
     }
   }
   async prepareCheckpoint(temp, state) {
+    if (recordTablesCreated && hasRecordGraph(state)) {
+      const handle = await open(temp, 'wx', 0o600);
+      try {
+        const result = await append(handle, checkpoint(state), createHash('sha256'), 0, {
+          header: true,
+          recordReferences: true,
+          recordStorage: { directory: this.file + '.records' },
+        });
+        return { ...result, digest: result.hash.copy().digest('hex'), journal: true, recordReferences: true };
+      } finally {
+        await handle.close();
+      }
+    }
     // Stop the JSON probe once the threshold is crossed; a 1 GiB checkpoint
     // must not be serialized/written twice merely to choose its format.
     let result = await writeJsonStream(temp, state, { stopAtBytes: this.threshold });
@@ -329,12 +483,16 @@ export class StateStorage {
   }
   async checkpointCommitted(result) {
     this.journal = result.journal === true;
+    this.recordReferences = result.recordReferences === true;
     this.hash = result.hash;
     this.committedBytes = result.committedBytes;
     this.digest = result.digest;
     this.signature = await fileSignature(this.file);
   }
-  async appendChanges(entries) {
+  canAppend(state) {
+    return this.recordReferences || !recordTablesCreated || !hasRecordGraph(state);
+  }
+  async appendChanges(entries, { state } = {}) {
     await this.assertUnchanged();
     const handle = await open(this.file, 'r+');
     const previousBytes = this.committedBytes,
@@ -363,7 +521,26 @@ export class StateStorage {
         },
         sync: () => handle.sync(),
       };
-      result = await append(positioned, entries, hash, previousBytes);
+      const recordReferences = this.recordReferences;
+      async function* collapsed() {
+        const seen = new Set();
+        for await (const entry of entries) {
+          if (
+            state &&
+            ['table', 'insert', 'set', 'delete'].includes(entry.op) &&
+            pagedRecordsOf(state.tables?.[entry.table])
+          ) {
+            if (!seen.has(entry.table)) {
+              seen.add(entry.table);
+              yield { op: 'table-value', table: entry.table, value: state.tables[entry.table] };
+            }
+          } else yield entry;
+        }
+      }
+      result = await append(positioned, collapsed(), hash, previousBytes, {
+        recordReferences,
+        recordStorage: recordReferences ? { directory: this.file + '.records' } : undefined,
+      });
       const written = await handle.stat({ bigint: true });
       if ((await fileSignature(this.file)) !== signature(written) || written.size !== BigInt(result.committedBytes))
         throw conflict();
@@ -407,8 +584,14 @@ export class StateStorage {
   }
 }
 
-/** Reads both legacy JSON and checkpoint/journal states. Never loads a whole
- * file into one Buffer/string. Copies/backups remain self-contained files. */
+/** Public file reads return ordinary detached data. Runtime owners use
+ * StateStorage.load() to retain bounded page storage and close its session. */
 export async function readStateFile(file, options) {
-  return new StateStorage(file).load(options);
+  const storage = new StateStorage(file);
+  try {
+    const state = await storage.load(options);
+    return storage.recordSession ? cloneStateData(state) : state;
+  } finally {
+    storage.recordSession?.close();
+  }
 }

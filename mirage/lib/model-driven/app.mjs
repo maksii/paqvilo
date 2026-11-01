@@ -6,6 +6,8 @@ import { createFormClientRuntime, evaluateRibbonRules, pageRequest, webResourceP
 import { renderPcfDataset } from './pcf-runtime.mjs';
 import { createModelDrivenProvenanceRegistry, modelDrivenKey, modelDrivenControlKey } from './provenance-registry.mjs';
 
+const totalLabel = (result) => `${result.total}${result.totalLimitExceeded ? '+' : ''}`;
+
 const provenance = createModelDrivenProvenanceRegistry(document);
 provenance.install();
 const modelBinding = (kind, id, extra = {}) => ({
@@ -66,6 +68,15 @@ const esc = (value) =>
     (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char],
   );
 const csrf = $('meta[name="mirage-csrf"]').content;
+// The shell's root (http.mjs fills the metas): every call of the app joins the page trace (docs/design/tracing.md).
+const traceHeaders = Object.fromEntries(
+  [
+    ['x-trace-id', 'mirage-trace-id'],
+    ['x-sim-parent-trace', 'mirage-trace-parent'],
+  ]
+    .map(([header, meta]) => [header, $(`meta[name="${meta}"]`)?.content])
+    .filter(([, value]) => value),
+);
 const storage = {
   get(key, fallback) {
     try {
@@ -223,6 +234,7 @@ async function api(path = '', options = {}) {
     ...options,
     headers: {
       'content-type': 'application/json',
+      ...traceHeaders,
       'x-sim-csrf': csrf,
       'x-mirage-provenance-format': '1',
       ...(app?.id ? { 'x-mirage-app': app.id } : {}),
@@ -789,6 +801,8 @@ function pickerButton(label, choices, options) {
 }
 function chooseApplication() {
   if (!catalogue?.apps?.length) return;
+  const ownerCatalogue = catalogue;
+  let availableCatalogue = catalogue;
   const body = document.createElement('div');
   body.className = 'app-picker-content';
   const toolbar = document.createElement('div');
@@ -811,7 +825,11 @@ function chooseApplication() {
     button(
       'Refresh',
       async () => {
-        catalogue = await api();
+        const refreshed = await api();
+        if (catalogue !== ownerCatalogue) return;
+        // The picker refreshes availability without invalidating the active route or its draft.
+        // Adopt this coherent index only when an explicit application navigation is accepted.
+        availableCatalogue = refreshed;
         render();
       },
       { iconName: 'refresh' },
@@ -832,7 +850,8 @@ function chooseApplication() {
   status.setAttribute('role', 'status');
   const render = () => {
     list.replaceChildren();
-    for (const application of catalogue.apps.filter((application) =>
+    const selectedCatalogue = availableCatalogue;
+    for (const application of selectedCatalogue.apps.filter((application) =>
       (application.name ?? application.uniqueName ?? application.id)
         .toLocaleLowerCase()
         .includes(search.value.toLocaleLowerCase()),
@@ -842,7 +861,12 @@ function chooseApplication() {
         async () => {
           closeDialog();
           const destination = firstPage(application);
-          await navigate(destination?.entity, { application, view: destination?.view });
+          await navigate(destination?.entity, {
+            application,
+            view: destination?.view,
+            nextCatalogue: selectedCatalogue,
+            ownerCatalogue,
+          });
         },
         { className: 'app-card' },
       );
@@ -953,10 +977,24 @@ async function returnToGrid() {
 }
 async function navigate(
   entity,
-  { id, view, application = app, replace = false, defaults, form, area, grid, navigation } = {},
+  {
+    id,
+    view,
+    application = app,
+    replace = false,
+    defaults,
+    form,
+    area,
+    grid,
+    navigation,
+    nextCatalogue,
+    ownerCatalogue,
+  } = {},
 ) {
   if (switchingStaff) return;
   if (!(await canLeave())) return;
+  if (switchingStaff || (nextCatalogue && catalogue !== ownerCatalogue)) return;
+  if (nextCatalogue) catalogue = nextCatalogue;
   if (area) storage.set(`area.${application.uniqueName}`, area);
   $('#sidebar').classList.remove('mobile-open');
   $('#mobile-navigation').setAttribute('aria-expanded', 'false');
@@ -964,7 +1002,7 @@ async function navigate(
   if (current) history.replaceState({ ...history.state, grid: origin }, '', location.href);
   const url = targetUrl(entity, { id, view, application, defaults, form });
   const selectedPage =
-    navigation ?? (application === app && entity === table.entity ? activeNavigationItem?.id : undefined);
+    navigation ?? (application === app && entity === table?.entity ? activeNavigationItem?.id : undefined);
   history[replace ? 'replaceState' : 'pushState'](
     { ...(id ? { returnGrid: origin } : grid ? { grid } : {}), ...(selectedPage ? { navigation: selectedPage } : {}) },
     '',
@@ -1694,7 +1732,7 @@ function renderGrid() {
   const footer = document.createElement('div');
   footer.className = 'grid-footer';
   const count = document.createElement('span');
-  count.textContent = current.total >= 0 ? `Rows: ${current.total}` : `Rows on this page: ${current.rows.length}`;
+  count.textContent = current.total >= 0 ? `Rows: ${totalLabel(current)}` : `Rows on this page: ${current.rows.length}`;
   const info = document.createElement('span');
   info.className = 'page-info';
   info.textContent = `Page ${current.page}`;
@@ -1713,7 +1751,7 @@ function renderGrid() {
   if (table.grid?.pagination === true) {
     const first = current.rows.length ? (current.page - 1) * (query.pageSize ?? 50) + 1 : 0,
       last = first ? first + current.rows.length - 1 : 0;
-    count.textContent = `Rows: ${first} - ${last}${current.total >= 0 ? ` of ${current.total}` : ''}`;
+    count.textContent = `Rows: ${first} - ${last}${current.total >= 0 ? ` of ${totalLabel(current)}` : ''}`;
     const pager = document.createElement('div');
     pager.className = 'native-grid-pager';
     pager.setAttribute('role', 'group');
@@ -1791,7 +1829,7 @@ function renderGrid() {
         renderRows();
         all.checked = selected.size === current.rows.length;
         all.indeterminate = selected.size > 0 && !all.checked;
-        count.textContent = current.total >= 0 ? `Rows: ${current.total}` : `Rows loaded: ${current.rows.length}`;
+        count.textContent = current.total >= 0 ? `Rows: ${totalLabel(current)}` : `Rows loaded: ${current.rows.length}`;
       } catch (error) {
         if (token !== generation || !scroll.isConnected) return;
         failed = true;
@@ -2459,17 +2497,30 @@ async function loadRecord(id) {
     const requestedForm = new URLSearchParams(location.search).get('formid')?.replace(/[{}]/g, '').toLowerCase();
     const availableForms = appForms(),
       preferredForm = requestedForm === undefined ? storage.get(preferredFormKey()) : requestedForm;
+    const matchesPreferredForm = (form) =>
+      String(form.id).replace(/[{}]/g, '').toLowerCase() ===
+      String(preferredForm ?? '')
+        .replace(/[{}]/g, '')
+        .toLowerCase();
+    const selectedForm = availableForms.find(matchesPreferredForm);
+    // Source availability and app eligibility differ: a known excluded form
+    // keeps the app's existing first-eligible fallback; a missing source cannot.
+    if (requestedForm && !selectedForm && !table.forms.some(matchesPreferredForm))
+      throw Object.assign(new Error('The requested form is unavailable in the selected exported app.'), {
+        code: 'FormUnavailable',
+      });
     etag = result.etag;
-    formId =
-      availableForms.find(
-        (form) =>
-          String(form.id).replace(/[{}]/g, '').toLowerCase() ===
-          String(preferredForm ?? '')
-            .replace(/[{}]/g, '')
-            .toLowerCase(),
-      )?.id ?? availableForms[0]?.id;
+    formId = selectedForm?.id ?? availableForms[0]?.id;
     if (formId) rememberForm(formId);
-    activeTab = null;
+    const requestedTab = new URLSearchParams(location.search).get('tabname');
+    if (
+      requestedTab &&
+      !availableForms
+        .find((form) => form.id === formId)
+        ?.tabs.some((tab) => tab.id === requestedTab && tab.visible !== false)
+    )
+      throw new Error('The requested form tab is unavailable in the selected exported form.');
+    activeTab = requestedTab;
     await renderRecord();
     if (token !== generation) return;
     if (id)
@@ -2479,6 +2530,7 @@ async function loadRecord(id) {
         app: app.uniqueName,
       });
     contentLoaded();
+    if (requestedTab) $('#content [role="tab"][aria-selected="true"]')?.focus();
   } catch (error) {
     if (token === generation)
       loadFailed(error, () => {
@@ -2576,12 +2628,14 @@ async function renderRecord() {
           className: 'form-chooser',
           menuClass: 'form-picker',
           choose: async (id) => {
+            const changingForm = id !== formId;
             captureDraft();
             disposeClient();
             formId = id;
             rememberForm(id);
             const url = new URL(location.href);
             url.searchParams.set('formid', id);
+            if (changingForm) url.searchParams.delete('tabname');
             history.replaceState(history.state, '', url);
             await renderRecord();
           },
@@ -2783,7 +2837,7 @@ async function renderRecord() {
       wrapper.className = 'field';
       bindModel(wrapper, controlBinding(cell));
       const label = document.createElement('label');
-      label.htmlFor = 'field-' + field.name;
+      label.htmlFor = 'field-' + (cell.sourceControl?.id ?? field.name);
       label.textContent = field.label;
       if (field.required) {
         const required = document.createElement('span');
@@ -2909,6 +2963,7 @@ function bindPcfState(
 function renderFieldControl(cell, field, disabled) {
   const lease = provenance.currentLease();
   return renderControl(field, record[field.name], {
+    controlId: cell.sourceControl?.id ?? field.name,
     provenance: (event) => bindPcfState(event, controlBinding(cell), lease),
     disabled,
     tables: catalogue.tables,
@@ -2940,6 +2995,8 @@ function applyControlState(name, key, value) {
   if (key === 'hidden') {
     entry.wrapper.hidden = value;
     reflowSectionFields(entry.wrapper.parentElement);
+  } else if (key === 'options') {
+    entry.control.setOptions(value.map((option) => ({ label: option.text, value: option.value })));
   } else if (key === 'label') {
     const locked = Boolean(entry.label.querySelector('.field-lock')),
       required = entry.label.querySelector('.required');
@@ -3003,6 +3060,7 @@ function applyControlState(name, key, value) {
   }
 }
 function createShellClient(selectedForm) {
+  const requiredLevels = new Map();
   const cells = selectedForm.tabs
     .flatMap((tab) => tab.sections.flatMap((section) => section.fields))
     .filter((cell) => cell.name && cell.supported);
@@ -3084,18 +3142,38 @@ function createShellClient(selectedForm) {
       if ($('#save-status')) $('#save-status').textContent = ' - Unsaved changes';
     },
     isDirty: (name) => (name ? touchedFields.has(name) : dirty),
-    required: (name, value) => {
-      const cell = cells.find((cell) => cell.name === name),
-        entry = controls.find((entry) => entry.name === name),
-        primary = entry?.control.primary ?? entry?.control.element;
-      if (value !== undefined && cell) {
-        const states = clientControlState.get(controlName(cell)) ?? new Map();
-        states.set('required', value);
-        clientControlState.set(controlName(cell), states);
-        applyControlState(controlName(cell), 'required', value);
+    isValid: (report) => {
+      let firstInvalid;
+      for (const entry of controls) {
+        if (entry.disabled || !entry.control.supported || !entry.wrapper.checkVisibility()) continue;
+        const element = entry.control.element,
+          inputs = [element, ...element.querySelectorAll('input,select,textarea')].filter((node) => node.willValidate);
+        for (const input of inputs) {
+          if (report) input.setAttribute('aria-invalid', String(!input.validity.valid));
+          if (!input.validity.valid) firstInvalid ??= input;
+        }
       }
-      const configured = cell && clientControlState.get(controlName(cell))?.get('required');
-      return configured !== undefined ? configured === 'required' : (primary?.required ?? table.fields[name]?.required);
+      if (report) firstInvalid?.reportValidity();
+      return !firstInvalid;
+    },
+    required: (name, value) => {
+      if (value !== undefined) {
+        requiredLevels.set(name, value);
+        for (const cell of cells.filter((cell) => cell.name === name)) {
+          const states = clientControlState.get(controlName(cell)) ?? new Map();
+          states.set('required', value);
+          clientControlState.set(controlName(cell), states);
+          applyControlState(controlName(cell), 'required', value);
+        }
+      }
+      return (
+        requiredLevels.get(name) ??
+        (table.fields[name]?.required
+          ? 'required'
+          : table.fields[name]?.requiredLevel === 'recommended'
+            ? 'recommended'
+            : 'none')
+      );
     },
     controlNames: (name) => [
       ...cells.filter((cell) => !name || cell.name === name).map(controlName),
@@ -3130,6 +3208,11 @@ function createShellClient(selectedForm) {
                 : key === 'label'
                   ? (cell?.label ?? table.fields[cell?.name]?.label)
                   : undefined));
+      }
+      if (key === 'options') {
+        const cell = cells.find((cell) => controlName(cell) === name);
+        if (cell?.pcf || cell?.readOnlyText || (entry && typeof entry.control.setOptions !== 'function'))
+          throw new Error(`Mirage client API does not support changing options for control ${name}.`);
       }
       const states = clientControlState.get(name) ?? new Map();
       states.set(key, value);
@@ -3546,7 +3629,9 @@ function renderSubgrid(cell) {
         grid.append(body);
         results.append(grid);
       }
-      footer.replaceChildren(document.createTextNode(`Rows: ${result.total >= 0 ? result.total : result.rows.length}`));
+      footer.replaceChildren(
+        document.createTextNode(`Rows: ${result.total >= 0 ? totalLabel(result) : result.rows.length}`),
+      );
       if (result.more || page > 1)
         footer.append(
           button(
@@ -3752,7 +3837,14 @@ function pageUrl(input) {
     params.set('etn', input.entityName);
     if (input.entityId) params.set('id', input.entityId);
     if (input.formId) params.set('formid', input.formId);
+    if (input.tabName !== undefined) params.set('tabname', input.tabName);
     if (input.viewId) params.set('viewid', input.viewId);
+    if (input.pageType === 'entitylist' && (input.viewId || input.viewType))
+      // main.aspx carries the view's object type code: 1039 savedquery, 4230 userquery.
+      params.set(
+        'viewtype',
+        { savedquery: '1039', userquery: '4230' }[input.viewType ?? 'savedquery'] ?? input.viewType,
+      );
     if (input.data && typeof input.data === 'object')
       params.set(
         'extraqs',
@@ -3942,7 +4034,7 @@ async function customPageExists(name) {
   const resolved = app.customPages?.[String(name).toLowerCase()];
   if (!resolved?.supported) throw customPageMissing(name, resolved?.reason);
   const response = await fetch('/_apps/canvas/api/' + encodeURIComponent(name), {
-    headers: { accept: 'application/json' },
+    headers: { accept: 'application/json', ...traceHeaders },
   });
   if (response.status === 404) {
     const body = await response.json().catch(() => ({}));
@@ -4065,6 +4157,7 @@ function renderWebResourcePage(name, data) {
 /** Xrm.App.sidePanes: panes beside the workspace that host the same page types. */
 const panes = [];
 let selectedPane;
+let nextPaneId = 0;
 const sidePanes = {
   get state() {
     const host = $('#side-panes');
@@ -4075,7 +4168,11 @@ const sidePanes = {
     if (host) host.classList.toggle('collapsed', value === 0);
   },
   createPane(options = {}) {
-    const paneId = options.paneId ?? `pane-${panes.length + 1}`;
+    let paneId = options.paneId;
+    if (paneId == null)
+      do {
+        paneId = `pane-${++nextPaneId}`;
+      } while (panes.some((pane) => pane.paneId === paneId));
     if (panes.some((pane) => pane.paneId === paneId))
       return Promise.reject(new Error(`A side pane with id ${paneId} already exists.`));
     let host = $('#side-panes');
@@ -4092,6 +4189,7 @@ const sidePanes = {
     element.setAttribute('aria-label', options.title ?? paneId);
     const heading = document.createElement('div');
     heading.className = 'page-dialog-heading';
+    heading.hidden = Boolean(options.hideHeader);
     const title = document.createElement('h2');
     title.textContent = options.title ?? '';
     heading.append(title);
@@ -4101,6 +4199,8 @@ const sidePanes = {
     host.append(element);
     host.hidden = false;
     if (options.width) element.style.width = `${Number(options.width)}px`;
+    const pendingNavigations = new Set();
+    const closedError = () => Object.assign(new Error(`Side pane ${paneId} is closed.`), { code: 'PaneClosed' });
     const pane = {
       paneId,
       get title() {
@@ -4108,9 +4208,12 @@ const sidePanes = {
       },
       set title(value) {
         title.textContent = String(value ?? '');
+        element.setAttribute('aria-label', title.textContent || paneId);
+        frame.title = title.textContent || paneId;
       },
       canClose: options.canClose !== false,
       badge: options.badge ?? null,
+      keepBadgeOnSelect: Boolean(options.keepBadgeOnSelect),
       get width() {
         return element.offsetWidth;
       },
@@ -4125,26 +4228,49 @@ const sidePanes = {
       },
       navigate(pageInput) {
         try {
+          if (!panes.includes(pane)) throw closedError();
           const [input] = pageRequest(pageInput, {}, catalogue.tables, app.dashboards);
+          let url;
           if (input.pageType === 'webresource') {
             const page = webResourcePage(catalogue.clientExtensions, input.webresourceName);
             if (!page.url) throw new Error(page.reason);
-            frame.src = page.url + (input.data !== undefined ? '?data=' + encodeURIComponent(input.data) : '');
-          } else frame.src = pageUrl(input);
-          return new Promise((resolve) => frame.addEventListener('load', () => resolve(), { once: true }));
+            url = page.url + (input.data !== undefined ? '?data=' + encodeURIComponent(input.data) : '');
+          } else url = pageUrl(input);
+          return new Promise((resolve, reject) => {
+            const loaded = () => {
+              pendingNavigations.delete(cancel);
+              resolve();
+            };
+            const cancel = () => {
+              frame.removeEventListener('load', loaded);
+              pendingNavigations.delete(cancel);
+              reject(closedError());
+            };
+            pendingNavigations.add(cancel);
+            frame.addEventListener('load', loaded, { once: true });
+            frame.src = url;
+          });
         } catch (error) {
           return Promise.reject(error);
         }
       },
       select() {
+        if (!panes.includes(pane)) return;
         selectedPane = pane;
         for (const entry of host.children) entry.classList.toggle('selected', entry === element);
+        host.classList.remove('collapsed');
+        if (!pane.keepBadgeOnSelect) pane.badge = null;
       },
       close() {
-        if (!pane.canClose) throw new Error(`Side pane ${paneId} cannot be closed.`);
+        const index = panes.indexOf(pane);
+        if (index < 0) return;
+        for (const cancel of pendingNavigations) cancel();
         element.remove();
-        panes.splice(panes.indexOf(pane), 1);
-        if (selectedPane === pane) selectedPane = panes.at(-1);
+        panes.splice(index, 1);
+        if (selectedPane === pane) {
+          selectedPane = undefined;
+          panes.findLast((entry) => !entry.hidden)?.select();
+        }
         if (!panes.length) host.hidden = true;
       },
     };
@@ -4250,6 +4376,14 @@ async function loadRoute({ identityChange = false, preserveContent = false } = {
   else {
     const availableViews = appViews(),
       requestedView = requestedViewId;
+    if (
+      params.has('viewtype') &&
+      (!['1039', 'savedquery'].includes(params.get('viewtype')) ||
+        (requestedView && !availableViews.some((view) => view.id === requestedView)))
+    ) {
+      loadFailed(new Error('The selected view is not available in the imported saved-view catalogue.'), loadRoute);
+      return;
+    }
     const view =
       availableViews.find((view) => view.id === requestedView)?.id ??
       availableViews.find((view) => view.isDefault)?.id ??
@@ -4314,7 +4448,17 @@ window.addEventListener('focus', () =>
       $('#content').replaceChildren();
       $('#navigation').replaceChildren();
       if (staffSession) {
-        catalogue = await api();
+        const refreshGeneration = generation;
+        let refreshed;
+        try {
+          refreshed = await api();
+        } catch (error) {
+          if (refreshGeneration === generation) loadFailed(error, initialize);
+          return;
+        }
+        // An explicit route may have started while the focus-triggered identity read was pending.
+        if (refreshGeneration !== generation) return;
+        catalogue = refreshed;
         await loadRoute();
       }
     } finally {

@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of web hook registration, payload and delivery; no native capture cited
 // Web hooks: a step whose eventhandler is a contract 8 service endpoint POSTs the RemoteExecutionContext to a loopback URL.
 // The shared receiver is a separate test process (one per file; each test posts under its own path prefix and reads only its
 // own entries); one test uses a receiver in the test's own process, which the asynchronous pipeline (store.create) awaits.
@@ -9,20 +10,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DataStore, emptyState } from '../lib/data.mjs';
-import { dataverseSettings } from '../lib/dataverse-settings.mjs';
-import { startDataverseApi } from '../lib/dataverse-api.mjs';
-import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
-import { install as installRegistration, overlayRegisteredSteps } from '../lib/dataverse-plugin-registration.mjs';
+import { install as installRegistration } from '../lib/dataverse-plugin-registration.mjs';
 import { isLoopbackUrl, loopbackFetch, serviceEndpointDelivery, webhookDelivery } from '../lib/dataverse-webhooks.mjs';
 import { createLocalMessageBus } from '../lib/message-bus.mjs';
-import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { createCounters } from '../lib/runtime-counters.mjs';
-import {
-  pluginCatalogue,
-  pluginPhaseRequiresCheckpoint,
-  pluginStepMatchesEntity,
-  runPluginPhase,
-} from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { widgetApi, wireRegisteredSteps } from './support/service-endpoint-pipeline.mjs';
 
 const WIDGET = 'bbbbbbbb-0000-4000-8000-000000000021';
 const ENDPOINT = 'cccccccc-0000-4000-8000-000000000021';
@@ -81,7 +74,7 @@ server.listen(0, '127.0.0.1', () => console.log('PORT ' + server.address().port)
 `;
 
 async function startReceiver() {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-webhook-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-webhook-'));
   const file = path.join(dir, 'receiver.mjs');
   await fs.writeFile(file, RECEIVER);
   const child = childProcess.spawn(process.execPath, [file], { stdio: ['ignore', 'pipe', 'inherit'] });
@@ -101,43 +94,23 @@ async function startReceiver() {
         entry.path.startsWith(`${prefix}/`),
       ),
     async stop() {
-      child.kill();
+      // The receiver has exited before its directory goes (a running process can hold it busy on Windows).
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = new Promise((resolve) => child.once('exit', resolve));
+        child.kill();
+        await exited;
+      }
       await fs.rm(dir, { recursive: true, force: true });
     },
   };
 }
 
-function fixtureState() {
-  const state = emptyState();
-  state.mappings.contoso_widget = {
-    logicalName: 'contoso_widget',
-    entitySet: 'contoso_widgets',
-    idColumn: 'contoso_widgetid',
-    nameColumn: 'contoso_name',
-    userConfigured: true,
-    fields: { contoso_name: { dataverseType: 'nvarchar' } },
-    relationships: {},
-  };
-  state.tables.contoso_widget = [];
-  return state;
-}
-
 // A store with the Dataverse API, the registration rows and the pipeline wired the way server.mjs wires it. The endpoint and the
 // step are rows, so each test writes them and can change the endpoint's URL and authentication by editing its row.
 async function world({ mode = 0, delivery = webhookDelivery } = {}) {
-  const store = await new DataStore({ state: fixtureState() }).init();
   const diagnostics = [];
   const diagnostic = (entry) => diagnostics.push(entry);
-  const api = await startDataverseApi({
-    store,
-    settings: dataverseSettings({ enabled: true }),
-    log: () => {},
-    extensions: [...EXTENSIONS],
-  });
-  const messageId = store.tableRows('sdkmessage').find((row) => row.name === 'Create').sdkmessageid;
-  const filterId = store
-    .tableRows('sdkmessagefilter')
-    .find((row) => row.sdkmessageid === messageId && row.primaryobjecttypecode === 'contoso_widget').sdkmessagefilterid;
+  const { store, api, messageId, filterId } = await widgetApi('contoso');
   await store.create(
     'serviceendpoint',
     {
@@ -167,29 +140,7 @@ async function world({ mode = 0, delivery = webhookDelivery } = {}) {
     { admin: true },
   );
   const webhooks = delivery(store);
-  const pluginSteps = () =>
-    pluginCatalogue({
-      plugins: overlayRegisteredSteps({ steps: [], types: [], assemblies: [] }, store),
-      handlers: new Map(),
-    });
-  store.setPluginPipeline(
-    (context) => runPluginPhase({ ...context, store, items: pluginSteps(), handlers: new Map(), webhooks, diagnostic }),
-    ({ entity, operation }) =>
-      pluginSteps().some(
-        (item) =>
-          item.enabled && pluginStepMatchesEntity(item, entity) && String(item.message).toLowerCase() === operation,
-      ),
-    (context) => pluginPhaseRequiresCheckpoint(pluginSteps(), context),
-  );
-  const runner = createAsyncPluginRunner({
-    store,
-    items: pluginSteps,
-    handlers: new Map(),
-    runtimes: new Map(),
-    webhooks,
-    diagnostic,
-    systemJobs: () => true,
-  });
+  const runner = wireRegisteredSteps(store, webhooks, diagnostic);
   // Points the endpoint row at a URL, and sets its authentication (authtype and the stored authvalue).
   const endpoint = (fields) =>
     store.transact(() =>
@@ -225,6 +176,7 @@ const create = (store, name = 'alpha') =>
 const rowsOf = (store) => store.tableRows('contoso_widget');
 
 describe('loopback guard (shared with TriggerServiceEndpointCheck)', () => {
+  // @test-kind contract+security: Paqvilo's loopback-only delivery guard
   it('accepts localhost, *.localhost, 127.0.0.0/8 and ::1 over http or https, and nothing else', () => {
     for (const url of ['http://localhost:1/x', 'https://api.localhost/x', 'http://127.0.0.2/x', 'http://[::1]:8080/x'])
       assert.equal(isLoopbackUrl(url), true, url);
@@ -247,6 +199,7 @@ describe('synchronous web hooks', () => {
     session = null;
   });
 
+  // @test-kind compatibility: Microsoft Learn "Use webhooks to create external handlers for server events" (request headers and RemoteExecutionContext body)
   it('posts the documented RemoteExecutionContext with the header authentication, and its 200 lets the create commit', async () => {
     const at = route();
     session = await world();
@@ -286,6 +239,7 @@ describe('synchronous web hooks', () => {
     });
   });
 
+  // @test-kind compatibility: Microsoft Learn "Register a webhook" (WebhookKey sends a code query string)
   it('sends a WebhookKey as the code query string', async () => {
     const at = route();
     session = await world();
@@ -308,6 +262,7 @@ describe('synchronous web hooks', () => {
     assert.equal((await receiver.log(at)).length, 1, 'the endpoint was called once');
   });
 
+  // @test-kind compatibility: Microsoft Learn "Use webhooks to create external handlers for server events" (one more attempt after 502, 503 or 504)
   it('retries a 503 once, as Learn documents, and the second answer decides', async () => {
     const at = route();
     session = await world();
@@ -317,6 +272,7 @@ describe('synchronous web hooks', () => {
     assert.equal((await receiver.log(at)).length, 2);
   });
 
+  // @test-kind compatibility: Microsoft Learn "Use webhooks to create external handlers for server events" (over 256 KB drops four properties and adds x-ms-dynamics-msg-size-exceeded)
   it('a payload over 256 KB drops ParentContext, InputParameters, PreEntityImages and PostEntityImages and says so in a header', async () => {
     const at = route();
     session = await world();
@@ -329,6 +285,7 @@ describe('synchronous web hooks', () => {
     assert.equal(entry.body.MessageName, 'Create');
   });
 
+  // @test-kind contract+security: a non-loopback endpoint is never contacted and diagnostics carry no authentication value
   it('a non-loopback URL is never contacted: the create succeeds, and a diagnostic names only the host', async () => {
     session = await world();
     const secret = 'invented-authvalue-9d2c';
@@ -358,6 +315,7 @@ describe('synchronous web hooks', () => {
     assert.equal(text.includes('invented-query-secret'), false, 'the URL path and query are in no diagnostic');
   });
 
+  // @test-kind contract: Paqvilo's asynchronous pipeline awaits an in-process receiver
   it("a receiver in Mirage's own process answers: the asynchronous pipeline awaits the POST instead of blocking the event loop", async () => {
     session = await world();
     const received = [];
@@ -384,6 +342,7 @@ describe('synchronous web hooks', () => {
     }
   });
 
+  // @test-kind contract: Paqvilo does not simulate contracts other than 8 and reports it
   it('a contract other than 8 is not simulated and never contacted, and the create succeeds', async () => {
     session = await world();
     await session.endpoint({ url: 'http://127.0.0.1:9/queue', contract: 2 });
@@ -441,6 +400,7 @@ describe('asynchronous web hooks', () => {
 
   // An uncontacted endpoint ends Canceled (32), as for an endpoint contract the simulator does not deliver; Succeeded (30)
   // would report a delivery that never happened.
+  // @test-kind contract+security: a non-loopback endpoint is never contacted
   it('a non-loopback URL is never contacted and its job is Canceled, with the not-contacted diagnostic', async () => {
     session = await world({ mode: 1 });
     await session.endpoint({ url: 'https://hooks.contoso.invalid/hook' });
@@ -479,6 +439,96 @@ describe('asynchronous web hooks', () => {
       ),
     );
   });
+
+  // @test-kind parity: native imagesOrder (native-r2, 'Webhook: Update async images'): two asynchronous Update web hook steps registered through the Web API on one endpoint each deliver per PATCH; the one with images POSTed after the step sends PreEntityImages [pre] and PostEntityImages [post, AsynchronousStepPrimaryName], the bare one [] and [AsynchronousStepPrimaryName]
+  it('an image-bearing web hook step registered through the API delivers its own images beside a bare step', async () => {
+    const at = route();
+    const { store, api } = await widgetApi('contoso');
+    const updateId = store.tableRows('sdkmessage').find((row) => row.name === 'Update').sdkmessageid;
+    const filterId = store
+      .tableRows('sdkmessagefilter')
+      .find(
+        (row) => row.sdkmessageid === updateId && row.primaryobjecttypecode === 'contoso_widget',
+      ).sdkmessagefilterid;
+    await store.create(
+      'serviceendpoint',
+      {
+        serviceendpointid: ENDPOINT,
+        name: 'Invented hook',
+        url: `${receiver.origin}${at}/status/200`,
+        authtype: 5,
+        contract: 8,
+        authvalue: '',
+      },
+      { admin: true },
+    );
+    const bare = 'dddddddd-0000-4000-8000-000000000031',
+      imaged = 'dddddddd-0000-4000-8000-000000000032';
+    for (const [id, name] of [
+      [bare, 'Invented bare hook'],
+      [imaged, 'Invented image hook'],
+    ])
+      await store.create(
+        'sdkmessageprocessingstep',
+        {
+          sdkmessageprocessingstepid: id,
+          name,
+          sdkmessageid: updateId,
+          sdkmessagefilterid: filterId,
+          eventhandler: { id: ENDPOINT, logical_name: 'serviceendpoint' },
+          stage: 40,
+          mode: 1,
+          rank: 1,
+          statecode: 0,
+          supporteddeployment: 0,
+        },
+        { admin: true },
+      );
+    // The images are registered after their step, as the recorder harness does.
+    for (const [type, alias] of [
+      [0, 'pre'],
+      [1, 'post'],
+    ])
+      await store.create(
+        'sdkmessageprocessingstepimage',
+        {
+          sdkmessageprocessingstepimageid: `eeeeeeee-0000-4000-8000-00000000003${type}`,
+          name: alias,
+          entityalias: alias,
+          imagetype: type,
+          messagepropertyname: 'Target',
+          sdkmessageprocessingstepid: { id: imaged, logical_name: 'sdkmessageprocessingstep' },
+        },
+        { admin: true },
+      );
+    const runner = wireRegisteredSteps(store, webhookDelivery(store));
+    session = { close: async () => (await runner.close(), await api.close()) };
+    await create(store, 'before');
+    await store.update('contoso_widget', WIDGET, { contoso_name: 'after' }, { admin: true });
+    await runner.drain();
+    const delivered = Object.fromEntries(
+      (await receiver.log(at)).map((entry) => [entry.body.OwningExtension.Id, entry.body]),
+    );
+    const keys = (images) => images.map((image) => image.key).sort();
+    const nameOf = (images, key) =>
+      images.find((image) => image.key === key).value.Attributes.find((pair) => pair.key === 'contoso_name')?.value;
+    assert.deepEqual(Object.keys(delivered).sort(), [bare, imaged]);
+    assert.deepEqual(
+      [keys(delivered[bare].PreEntityImages), keys(delivered[bare].PostEntityImages)],
+      [[], ['AsynchronousStepPrimaryName']],
+    );
+    assert.deepEqual(
+      [keys(delivered[imaged].PreEntityImages), keys(delivered[imaged].PostEntityImages)],
+      [['pre'], ['AsynchronousStepPrimaryName', 'post']],
+    );
+    assert.equal(nameOf(delivered[imaged].PreEntityImages, 'pre'), 'before');
+    assert.equal(nameOf(delivered[imaged].PostEntityImages, 'post'), 'after');
+    assert.equal(
+      store.tableRows('asyncoperation').filter((job) => job.statuscode === 30).length,
+      2,
+      'both jobs succeed',
+    );
+  });
 });
 
 describe('TriggerServiceEndpointCheck probes loopback endpoints only', () => {
@@ -495,6 +545,7 @@ describe('TriggerServiceEndpointCheck probes loopback endpoints only', () => {
   }
   const probe = (row) => action().handle({ target: { id: 'row', row }, body: {}, user: { systemuserid: 'x' } });
 
+  // @test-kind contract+security: TriggerServiceEndpointCheck probes loopback endpoints only
   it('answers 204 for a loopback contract 8 endpoint that accepts the probe, and refuses the others', async () => {
     const at = route();
     assert.deepEqual(await probe({ contract: 8, url: `${receiver.origin}${at}/status/200` }), { status: 204 });
@@ -513,6 +564,7 @@ describe('TriggerServiceEndpointCheck probes loopback endpoints only', () => {
 describe('loopback guard by resolved address', () => {
   afterEach(() => mock.restoreAll());
 
+  // @test-kind contract+security: the loopback guard checks the resolved address
   it('refuses a *.localhost name that resolves to a routable address, without a connection', async () => {
     const fetchSpy = mock.method(globalThis, 'fetch');
     const lookups = [];
@@ -556,5 +608,30 @@ describe('service endpoint bus steps', () => {
     await assert.rejects(create(session.store), /Endpoint unavailable/);
     assert.equal(rowsOf(session.store).length, 0, 'the create rolled back');
     assert.ok(session.diagnostics.some((entry) => entry.code === 'SERVICE_ENDPOINT_SEND_FAILED'));
+  });
+});
+
+describe('webhook DateTime wire format', () => {
+  // @test-kind parity: native nullSemantics webhook payloads (DateOnly and TimeZoneIndependent values /Date(ms+0000)/ at the UTC wall clock, Utc createdon /Date(ms)/)
+  it('serialises Unspecified values at the UTC wall clock with +0000 and Utc values without a suffix, in any host zone', () => {
+    const code = `
+      import { dataContract } from ${JSON.stringify(new URL('../lib/dataverse-webhooks.mjs', import.meta.url).href)};
+      const values = [
+        { $type: 'DateTime', value: '2026-10-30' },
+        { $type: 'DateTime', value: '2026-10-30T10:00:00', kind: 'Unspecified' },
+        { $type: 'DateTime', value: '2026-10-30T10:00:00Z' },
+      ];
+      console.log(JSON.stringify(values.map((value) => dataContract(value))));
+    `;
+    const run = childProcess.spawnSync(process.execPath, ['--input-type=module', '-e', code], {
+      encoding: 'utf8',
+      env: { ...process.env, TZ: 'Europe/Kyiv' },
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(JSON.parse(run.stdout), [
+      '/Date(1793318400000+0000)/',
+      '/Date(1793354400000+0000)/',
+      '/Date(1793354400000)/',
+    ]);
   });
 });

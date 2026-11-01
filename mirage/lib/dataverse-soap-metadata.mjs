@@ -40,10 +40,28 @@ const ITEM_ELEMENT = {
   Options: 'OptionMetadata',
 };
 
+// The Web API's RetrieveMetadataChanges types (ComplexEntityMetadata, ...) are the SDK's contracts without the prefix.
 const typeOf = (value) => {
   const type = value && typeof value === 'object' ? value['@odata.type'] : undefined;
-  return typeof type === 'string' ? type.replace(/^#?Microsoft\.Dynamics\.CRM\./, '') : null;
+  if (typeof type !== 'string') return null;
+  const name = type.replace(/^#?Microsoft\.Dynamics\.CRM\./, '');
+  return name.startsWith('Complex') && DATA_CONTRACTS[name.slice(7)] ? name.slice(7) : name;
 };
+// A number as xs:decimal and xs:double both read it: JavaScript's exponent form (1e-12, 1e+21) written out in full.
+function numberText(value) {
+  const match = /^(-?)(\d)(?:\.(\d+))?e([+-]\d+)$/.exec(String(value));
+  if (!match) return String(value);
+  const [, sign, lead, rest = '', exponent] = match;
+  const digits = lead + rest,
+    point = 1 + Number(exponent);
+  if (point <= 0) return `${sign}0.${'0'.repeat(-point)}${digits}`;
+  return (
+    sign +
+    (point >= digits.length
+      ? digits + '0'.repeat(point - digits.length)
+      : `${digits.slice(0, point)}.${digits.slice(point)}`)
+  );
+}
 // Base-first chain of contract types: MetadataBase, then the base classes, then the type itself.
 const chainOf = (type) => {
   const out = [];
@@ -119,7 +137,7 @@ function memberXml(name, value, prefix) {
   if (Array.isArray(value)) return `<${tag}>${value.map((item) => itemXml(name, item)).join('')}</${tag}>`;
   if (typeof value === 'object')
     return `<${tag}${typeAttribute(typeOf(value))}>${childrenXml(value, hintFor(name))}</${tag}>`;
-  return `<${tag}>${esc(value)}</${tag}>`;
+  return `<${tag}>${esc(typeof value === 'number' ? numberText(value) : value)}</${tag}>`;
 }
 
 function itemXml(name, item) {
@@ -147,6 +165,30 @@ const collectionXml = (items, type = 'EntityMetadataCollection') =>
     .map(
       (item) =>
         `<a:EntityMetadata${typeAttribute(typeOf(item))}>${childrenXml(item, 'EntityMetadata')}</a:EntityMetadata>`,
+    )
+    .join('') +
+  '</b:value>';
+// A metadata array (EntityMetadata[], OptionSetMetadataBase[]): ArrayOf<item> in xrm/2011/Metadata, the response getters
+// cast to the array type. Items are named after the declared item type, with xsi:type on derived ones.
+const arrayXml = (items, item) =>
+  `<b:value i:type="m:ArrayOf${item}"${NS_DECL}>` +
+  items
+    .map((value) => {
+      const type = typeOf(value);
+      return `<m:${item}${type && type !== item ? typeAttribute(type) : ''}>${childrenXml(value, item)}</m:${item}>`;
+    })
+    .join('') +
+  '</b:value>';
+// DeletedMetadataCollection (xrm/2011/Metadata/Query) from the Web API's { Keys, Values }: DeletedMetadataFilters names
+// to Guid arrays. The SDK writes the Default (1) key under its Entity alias.
+const deletedXml = (deleted) =>
+  `<b:value i:type="q:DeletedMetadataCollection" xmlns:q="${METADATA_NS}/Query">` +
+  (deleted?.Keys ?? [])
+    .map(
+      (key, index) =>
+        `<q:KeyValuePairOfDeletedMetadataFiltersArrayOfguidPlUv_PKtF><b:key>${key === 'Default' ? 'Entity' : esc(key)}</b:key>` +
+        `<b:value>${deleted.Values[index].map((id) => `<f:guid>${esc(id)}</f:guid>`).join('')}</b:value>` +
+        '</q:KeyValuePairOfDeletedMetadataFiltersArrayOfguidPlUv_PKtF>',
     )
     .join('') +
   '</b:value>';
@@ -591,9 +633,20 @@ export function metadataRequests(api) {
           name: 'RetrieveAllEntities',
           responseType: 'RetrieveAllEntitiesResponse',
           namespace: NS.a,
-          results: new Map([['EntityMetadata', pair('EntityMetadata', collectionXml(list))]]),
+          results: new Map([['EntityMetadata', pair('EntityMetadata', arrayXml(list, 'EntityMetadata'))]]),
         };
       },
+    ],
+    [
+      'RetrieveAllOptionSets',
+      () => ({
+        name: 'RetrieveAllOptionSets',
+        responseType: 'RetrieveAllOptionSetsResponse',
+        namespace: NS.a,
+        results: new Map([
+          ['OptionSetMetadata', pair('OptionSetMetadata', arrayXml(svc.globalOptionSets(), 'OptionSetMetadataBase'))],
+        ]),
+      }),
     ],
     [
       'RetrieveOptionSet',
@@ -636,7 +689,7 @@ export function metadataRequests(api) {
           namespace: NS.a,
           results: new Map([
             ['EntityMetadata', pair('EntityMetadata', collectionXml(changes.EntityMetadata))],
-            ['DeletedMetadata', pair('DeletedMetadata', valueXml(changes.DeletedMetadata, null))],
+            ['DeletedMetadata', pair('DeletedMetadata', deletedXml(changes.DeletedMetadata))],
             ['ServerVersionStamp', pair('ServerVersionStamp', encodeValue('b:value', changes.ServerVersionStamp))],
           ]),
         };

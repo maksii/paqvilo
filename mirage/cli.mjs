@@ -6,7 +6,14 @@ import { parseArgs } from 'node:util';
 import { importPortal } from './lib/importer.mjs';
 import { createPortalRenderer } from './lib/liquid.mjs';
 import { assertPortalSource } from './lib/source-dialect.mjs';
-import { createSimulator } from './server.mjs';
+// Loaded on first use: the server's module graph takes seconds to load, and data, verify and help never start it.
+const createSimulator = async (options) => {
+  const started = performance.now();
+  options.onStartup?.({ phase: 'runtime-module-load', elapsedMs: 0 });
+  const runtime = await import('./server.mjs');
+  options.onStartup?.({ phase: 'runtime-module-ready', elapsedMs: Math.round(performance.now() - started) });
+  return runtime.createSimulator(options);
+};
 const reportStartup = (event) => console.error(JSON.stringify({ type: 'runtime-startup', ...event }));
 import { builtinPresets, presetDescriptor } from './lib/presets.mjs';
 import { resolveSolutionRoots } from './lib/solution-roots.mjs';
@@ -30,10 +37,67 @@ import {
 import { MIRAGE_COMMANDS, MIRAGE_CORE_COMMANDS, unknownMirageCommand } from './tool-registry.mjs';
 import { runtimeOptions, configuredSettingKeys } from './lib/config-keys.mjs';
 
+const argv = process.argv.slice(2);
+const terminator = argv.indexOf('--');
+const jsonRequested = (terminator < 0 ? argv : argv.slice(0, terminator)).includes('--json');
+const valueOptions = new Set([
+  'source',
+  'runtime',
+  'simulation',
+  'repo',
+  'config',
+  'site',
+  'env',
+  'port',
+  'state',
+  'state-dir',
+  'origin',
+  'cdp',
+  'preset',
+  'preset-mode',
+  'path',
+  'managed-control-path',
+  'stylesheet',
+  'parent-snippet',
+  'child-snippet',
+  'output',
+  'local',
+  'solution-root',
+  'solution-order',
+  'project',
+  'portal',
+  'deployment-profile',
+  'pack',
+  'pack-module',
+  'profile',
+  'seed',
+  'rows',
+  'out',
+  'count',
+  'scenario',
+  'data-model',
+]);
+const invocationCommand = () => {
+  for (let i = 0; i < argv.length; i++) {
+    const word = argv[i];
+    if (word === '--') return argv[i + 1];
+    if (!word.startsWith('-')) return word;
+    const key = word.startsWith('--') && !word.includes('=') ? word.slice(2) : '';
+    if (valueOptions.has(key)) i++;
+  }
+};
+const invocationError = (error) => {
+  if (jsonRequested)
+    console.log(
+      JSON.stringify({ schemaVersion: 1, ok: false, error: { code: 'MIRAGE_FAILED', message: error.message } }),
+    );
+  else console.error(error.message);
+};
 let parsed;
 try {
   parsed = parseArgs({
     allowPositionals: true,
+    tokens: true,
     options: {
       source: { type: 'string' },
       runtime: { type: 'string' },
@@ -72,7 +136,7 @@ try {
       out: { type: 'string' },
       count: { type: 'string', multiple: true },
       'materialize-persona-memberships': { type: 'boolean' },
-      help: { type: 'boolean' },
+      help: { type: 'boolean', short: 'h' },
       json: { type: 'boolean' },
       // preflight: a scenario JSON file { id, requires: [...] } scopes blocking; --strict blocks on every unsatisfied requirement.
       scenario: { type: 'string' },
@@ -86,11 +150,11 @@ try {
     },
   });
 } catch (error) {
-  console.error(error.message);
+  invocationError(error);
   // preflight reports invocation errors with exit code 2.
-  process.exit(process.argv[2] === 'preflight' ? 2 : 1);
+  process.exit(invocationCommand() === 'preflight' ? 2 : 1);
 }
-const { values: args, positionals } = parsed;
+const { values: args, positionals, tokens } = parsed;
 const stateDir = path.resolve(
   args['state-dir'] ??
     path.join(
@@ -103,6 +167,10 @@ const stateDir = path.resolve(
     ),
 );
 const command = positionals[0] ?? 'serve';
+if (args.help && command !== 'help' && !MIRAGE_CORE_COMMANDS.includes(command)) {
+  invocationError(new Error(unknownMirageCommand(command)));
+  process.exit(1);
+}
 if (args.help || command === 'help') {
   console.log(`Power Pages local mirage
 
@@ -120,9 +188,9 @@ Commands: ${MIRAGE_COMMANDS.join(', ')}
   paqvilo mirage capture-stylesheets --site SITE --env ENV --cdp http://127.0.0.1:PORT --stylesheet /styles/theme.css
   paqvilo mirage capture-snippet-composition --site SITE --env ENV --cdp http://127.0.0.1:PORT --path /PAGE/ --parent-snippet NAME --child-snippet NAME
   paqvilo mirage data generate --pack PACK_ID --profile PROFILE --state FILE [--out FILE] [--seed S]
-  paqvilo mirage data scaffold --profile smoke|dev --state FILE [--rows N] [--seed S] [--out FILE]
-    portal: [--site SITE --env ENV --repo PATH] | --project FILE [--portal ID] | --source PORTAL_DIR [--solution-root DIR ...]
     [--count NAME=N ...] [--pack-module PATH] [--materialize-persona-memberships]
+  paqvilo mirage data scaffold --profile smoke|dev --state FILE [--rows N] [--seed S] [--out FILE]
+    portal for scaffold or membership materialization: [--site SITE --env ENV --repo PATH] | --project FILE [--portal ID] | --source PORTAL_DIR [--solution-root DIR ...]
 
 Options: --state FILE, --preset NAME, --preset-mode bootstrap|always, --apply-configuration (apply the selected data preset’s configuration), --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --runtime power-pages|model-driven|dataverse-api, --simulation dry-run|simulation|deep, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /__sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
 Solution roots (--solution-root, else the catalogue site's mirage solutionRoots, else unpacked solution repositories discovered next to the portal repository) are a set layered definition-before-extension; --solution-order explicit (or solutionOrder: explicit in the catalogue site or project file) keeps the listed order.
@@ -142,8 +210,128 @@ Live access uses the selected connected browser identity. Exact parity requires 
 }
 try {
   if (!MIRAGE_CORE_COMMANDS.includes(command)) throw new Error(unknownMirageCommand(command));
+  if (command !== 'data' && positionals.length > 1)
+    throw new Error(`Unexpected positional argument: ${positionals[1]}`);
+  // Defaults are not evidence that an option was supplied: inspect only parser tokens.
+  const sourceOptions = [
+    'source',
+    'config',
+    'site',
+    'env',
+    'repo',
+    'project',
+    'portal',
+    'solution-root',
+    'solution-order',
+    'data-model',
+  ];
+  const runtimeOptionNames = ['runtime', 'simulation'];
+  const matrix = {
+    inspect: [...sourceOptions, ...runtimeOptionNames, 'deployment-profile', 'json'],
+    preflight: [...sourceOptions, ...runtimeOptionNames, 'preset', 'pack-module', 'scenario', 'strict', 'json'],
+    serve: [
+      ...sourceOptions,
+      ...runtimeOptionNames,
+      'port',
+      'state',
+      'state-dir',
+      'origin',
+      'cdp',
+      'preset',
+      'preset-mode',
+      'apply-configuration',
+      'deployment-profile',
+      'pack-module',
+      'no-watch',
+      'allow-live-writes',
+      'json',
+    ],
+    render: [
+      ...sourceOptions,
+      ...runtimeOptionNames,
+      'state',
+      'state-dir',
+      'origin',
+      'cdp',
+      'preset',
+      'preset-mode',
+      'apply-configuration',
+      'deployment-profile',
+      'pack-module',
+      'path',
+      'output',
+    ],
+    'capture-shell': [
+      ...sourceOptions,
+      ...runtimeOptionNames,
+      'state',
+      'state-dir',
+      'origin',
+      'cdp',
+      'deployment-profile',
+      'pack-module',
+      'path',
+      'managed-control-path',
+    ],
+    'capture-stylesheets': [
+      ...sourceOptions,
+      ...runtimeOptionNames,
+      'state',
+      'state-dir',
+      'origin',
+      'cdp',
+      'deployment-profile',
+      'pack-module',
+      'stylesheet',
+    ],
+    'capture-snippet-composition': [
+      ...sourceOptions,
+      ...runtimeOptionNames,
+      'state',
+      'state-dir',
+      'origin',
+      'cdp',
+      'deployment-profile',
+      'pack-module',
+      'path',
+      'parent-snippet',
+      'child-snippet',
+    ],
+    verify: ['local', 'origin', 'cdp', 'path', 'output', 'state-dir', 'config', 'project', 'site'],
+    data: [
+      ...sourceOptions.filter((option) => option !== 'solution-order'),
+      'pack',
+      'pack-module',
+      'profile',
+      'seed',
+      'rows',
+      'state',
+      'out',
+      'count',
+      'materialize-persona-memberships',
+      'json',
+    ],
+  };
+  const isCapture = ['capture-shell', 'capture-stylesheets', 'capture-snippet-composition'].includes(command);
+  const allowed = new Set([...matrix[command], 'help', ...(isCapture ? ['preset'] : [])]);
+  for (const token of tokens) {
+    if (token.kind === 'option' && !allowed.has(token.name))
+      throw new Error(`--${token.name} is not supported by mirage ${command}`);
+    if (token.kind === 'option' && token.name === 'port') runtimePort(token.value);
+    if (token.kind === 'option' && token.value === '') throw new Error(`--${token.name} requires a nonempty value`);
+  }
+
+  if (args.portal && !args.project && command !== 'verify')
+    throw new Error('--portal selects a portal from --project.');
+  if (args.project && args.source && command !== 'verify')
+    throw new Error('Use either --project or --source, not both.');
+  if (isCapture && !args.cdp) throw new Error(`${command} requires --cdp for the intended connected browser.`);
+  if (isCapture && args.preset)
+    throw new Error(`${command} does not apply presets. Apply --preset when starting serve.`);
+
   if (command === 'data') {
-    const { runDataCommand } = await import('./lib/data-generation.mjs');
+    const { runDataCommand, validateDataCommand } = await import('./lib/data-generation.mjs');
+    validateDataCommand(positionals.slice(1), args);
     // data scaffold resolves its portal like serve: a project file and portal,
     // an explicit --source (solution roots discovered unless --solution-root),
     // or the toolkit catalogue site/environment (--site/--env/--repo).
@@ -581,6 +769,7 @@ try {
         origin = args.origin;
       let configuredPortal = null;
       let siteMirage = null;
+      let sourceConfigFile = args.config;
       if (project) {
         configuredPortal = project.portals.find((p) => p.id === (args.portal ?? project.defaultPortal));
         sourceDir = configuredPortal.sourceDir;
@@ -598,6 +787,7 @@ try {
           ...(args.config ? { config: args.config } : {}),
         });
         sourceDir = cfg.sourceDir;
+        sourceConfigFile = cfg.configFile;
         origin ??= /^https:\/\//i.test(cfg.origin ?? '') ? cfg.origin : null;
         args.site ??= cfg.siteName;
         siteMirage = cfg.mirageConfig ?? null;
@@ -605,15 +795,14 @@ try {
         // --source with a catalogued --site (as `mirage dev` launches serve): the site's
         // mirage settings (observed behaviour, catalogued roots) still apply.
         const { loadConfig } = await import('../lense/config.mjs');
-        siteMirage =
-          (
-            await loadConfig({
-              site: args.site,
-              env: args.env,
-              ...(args.repo ? { repo: args.repo } : {}),
-              ...(args.config ? { config: args.config } : {}),
-            })
-          ).mirageConfig ?? null;
+        const cfg = await loadConfig({
+          site: args.site,
+          env: args.env,
+          ...(args.repo ? { repo: args.repo } : {}),
+          ...(args.config ? { config: args.config } : {}),
+        });
+        sourceConfigFile = cfg.configFile;
+        siteMirage = cfg.mirageConfig ?? null;
       }
       if (command === 'serve') {
         args.preset ??= siteMirage?.preset;
@@ -711,6 +900,13 @@ try {
               cacheFile: path.join(path.dirname(stateFile), 'cache', 'solution-sources.json'),
             });
         const solutionRoots = resolvedRoots.roots;
+        if (command === 'render' && args.output) {
+          const { assertReportOutput } = await import('./lib/report-output.mjs');
+          await assertReportOutput(args.output, {
+            sourceRoots: [sourceDir, ...solutionRoots],
+            inputFiles: [sourceConfigFile, project?.configFile, stateFile],
+          });
+        }
         let stop;
         const simulator = await createSimulator({
           // Settings of every registered key (config-keys.mjs: project portal, project, catalogue site).
@@ -878,7 +1074,7 @@ try {
     }
   }
 } catch (error) {
-  console.error(error.message);
+  invocationError(error);
   process.exitCode = command === 'preflight' ? 2 : 1;
 }
 

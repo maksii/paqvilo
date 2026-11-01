@@ -1,0 +1,43 @@
+import { DataError } from './data-error.mjs';
+
+export function validateSdkTag(parameters, canonicalTag) {
+  if (Object.hasOwn(parameters, 'tag') && typeof parameters.tag !== 'string')
+    throw new DataError('SDK tag requires a string.', 501, 'LocalPluginSdkUnsupported');
+  if (Object.hasOwn(parameters, 'tag') && canonicalTag !== undefined)
+    throw new DataError('An item with the same key has already been added.', 400, 'LocalPluginTagDuplicate', {
+      innerCode: '0x80040224',
+    });
+}
+
+/** A transport request owns its tag across awaits. Separate requests and batch
+ * members never mutate the caller's operation frame or a global default. */
+export function withPluginRequestTag(store, parameters, invoke) {
+  // A transport boundary is a separate request, including each batch member.
+  // Only a nested SDK invocation joins its caller's canonical tag namespace.
+  validateSdkTag(parameters);
+  if (!Object.hasOwn(parameters, 'tag') && store?.pluginSdkTag === undefined) return invoke();
+  return store.withOperationContext(
+    () => {
+      store.pluginSdkTag = parameters.tag;
+      return invoke();
+    },
+    { fresh: true },
+  );
+}
+
+/** The platform's request tag is re-projected between steps; the in-flight
+ * SharedVariables dictionary remains writable inside a plug-in. */
+export function canonicalTagVariables(parameters, tag) {
+  if (tag === undefined) return parameters;
+  return { ...(parameters ?? {}), $type: 'ParameterCollection', values: { ...(parameters?.values ?? {}), tag } };
+}
+
+/** A child sees the canonical request tag in its immediate parent snapshot,
+ * independently of its caller's still-visible in-flight dictionary edit. */
+export function canonicalTagParent(parent, tag) {
+  if (!parent || tag === undefined) return parent;
+  return {
+    ...parent,
+    values: { ...parent.values, SharedVariables: canonicalTagVariables(parent.values?.SharedVariables, tag) },
+  };
+}

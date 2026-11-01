@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo capability registry design (describe() records, levels and seams)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -106,8 +107,8 @@ test('every describe() shape the modules declare normalises', () => {
   registry.fromExtensions([bpf, cascade, rollup, hierarchy, calculated, formula, virtualProviders, sharepoint]);
   assert.equal(registry.get('sharepoint-documents').level, 'contract', 'object operations with a stated level');
   assert.equal(registry.get('dataverse-bpf').level, 'inventory', 'BusinessProcessFlowInventory is inventory');
-  assert.equal(registry.get('dataverse-cascade').level, 'contract');
-  assert.ok(registry.get('dataverse-cascade').seams.CascadeShare);
+  // Every cascade action executes (Assign, Share, Unshare, Reparent, Merge).
+  assert.equal(registry.get('dataverse-cascade').level, 'behaviour');
   assert.equal(levels(registry.get('dataverse-rollup')).MassRecalculation, 'contract');
   assert.equal(registry.get('dataverse-rollup').level, 'contract');
   assert.ok(
@@ -130,7 +131,9 @@ test('every describe() shape the modules declare normalises', () => {
   assert.equal(registry.get('storage:azurite').providerKind, 'azurite');
   assert.equal(registry.get('message-bus:local').level, 'behaviour');
   assert.equal(registry.get('local-service:functions').level, 'contract');
-  assert.ok(registry.list({ kind: 'service' }).every((record) => record.kind === 'service'));
+  const services = registry.list({ kind: 'service' });
+  assert.ok(services.length > 0);
+  assert.ok(services.every((record) => record.kind === 'service'));
   assert.ok(registry.list({ level: 'contract' }).some((record) => record.name === 'storage:azurite'));
 });
 

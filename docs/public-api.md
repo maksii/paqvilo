@@ -20,6 +20,32 @@ The organization runtime (`createOrganizationRuntime`) accepts `clock` (epoch mi
 
 `createSimulator` accepts the same `clock`, `ids` and `scheduler` options for the Power Pages and the standalone host, and passes them to its state store, organization runtime and committed-work backend. `paqvilo/mirage/testing` exports `fixedClock`, `sequentialIds` and `createScheduler` for project acceptance tests.
 
+## Named deterministic recreation
+
+```js
+import { createFixtureRecipes } from 'paqvilo/mirage/testing';
+
+const recipes = createFixtureRecipes({
+  baseline: { state, epochMs: Date.UTC(2026, 0, 1), namespace },
+});
+const fixture = recipes.create('baseline');
+// Pass fixture.state/clock/ids/scheduler to a fresh local runtime.
+// Close that runtime and fixture.scheduler when the project test finishes.
+```
+
+Recipe definitions are captured as cloneable data. Every `create` supplies fresh
+state, a fixed clock, a fresh deterministic ID sequence and an idle manual
+scheduler. Mutating one fixture does not change the recipe or another fixture.
+At most 100 named definitions are accepted. Recreation starts from the captured
+definition; it does not rewind an active runtime, recover an
+advanced identity counter, restore arbitrary provider closures or resurrect
+in-flight timers. A project rebuilds its providers for the new fixture and owns
+teardown of the old runtime. Runtime callbacks in recipe state are rejected.
+Shared-memory buffers, views and WebAssembly memory are rejected, including when
+nested inside an Error cause, because cloning them does not isolate their bytes;
+ordinary array buffers are copied. Recipe graph inspection
+has a shared work limit.
+
 ## Inspect Solution sources
 
 ```js
@@ -51,7 +77,7 @@ report.summary.blocking; // 0 when nothing in the scenario's scope blocks
 
 A running simulator answers the same report for its live state: `simulator.preflight({ scenario, strict })` on the handle `createSimulator` returns (Power Pages and standalone hosts alike), and `GET /_sim/api/preflight` over HTTP. It reads the host's own capability registry and operation catalogue, including the operation modes saved in `/_sim/`. The runtime status (`simulator.state()`, standalone `status()`) carries the same registry as `capabilities` (the legacy summary) and `capabilityReport`. `simulator.settle()` on either handle resolves once every committed-event job (asynchronous plug-in steps, web hooks, row-triggered flows and due scheduled jobs) has run; tests await it instead of the store queue, because durable jobs run on the runtime scheduler. It then settles the instantiated pack providers: pending outbox observer calls and each provider's own `settle()`.
 
-Both hosts also answer `GET /_sim/api/dashboard`, a read-only, redacted topology and activity document for monitoring tools (see [simulation administration](../mirage/docs/sim-administration.md#infrastructure-feed)). Its activity numbers come from the organization runtime's counters, `store.counters` (`createCounters()` in `mirage/lib/runtime-counters.mjs`): `snapshot()` returns the named counts and `tick` moves on every change. Counts start at zero with the runtime and are not persisted.
+Both hosts also answer `GET /_sim/api/dashboard`, a read-only, redacted topology and activity document for monitoring tools (see [simulation administration](../mirage/docs/sim-administration.md#health-feed)). Its activity numbers come from the organization runtime's counters, `store.counters` (`createCounters()` in `mirage/lib/runtime-counters.mjs`): `snapshot()` returns the named counts and `tick` moves on every change. Counts start at zero with the runtime and are not persisted.
 
 ## Persona catalogues
 
@@ -122,7 +148,9 @@ Site/snippet values stay strings; a null value removes the effective entry and a
 restores its source. Overrides affect every visitor on that runtime. Apply configuration
 between completed matrix runs, or use separate runtime origins for simultaneous settings.
 
-`audit(filters)`, `exportAudit(filters)` and `diagnostics()` read the existing runtime's sanitized evidence. A visitor's `json()` response supplies `traceId`; use `audit({correlationId: traceId})` to inspect its nested request entries. Filters also support `contactId`, `afterSequence` (exclusive), `throughSequence` (inclusive), kind, path, entity, method, status and outcome. Capture `latestSequence` as the upper bound for stable pagination during concurrent traffic. `oldestSequence` and `dropped` disclose bounded retention loss. Sequences identify request starts; wait for the tested requests to complete before advancing a completion checkpoint. Exported entries retain sanitized queries and outcomes, without HTTP headers or row bodies.
+`audit(filters)`, `exportAudit(filters)`, `diagnostics(filters)` and `logs(filters)` read the existing runtime's sanitized evidence. A visitor's `json()` response supplies `traceId` (the audit id of its `X-Sim-Trace-Id` response header); use `audit({correlationId: traceId})` to inspect its nested request entries. `audit({ traceId })` and `exportAudit({ traceId })` select the entries of activities by trace id: one id, a comma list or an array of at most 200. `diagnostics({ traceId })` narrows the findings and the portal request ring to one trace. `logs({ since, limit, type, traceId })` reads the runtime log stream history (`GET /_sim/api/logs`, `mirage.logs.retain` lines): `{ items, latestSequence, oldestSequence, retained, dropped, retain, more }`, oldest first, the lines after the exclusive `since` or else the newest `limit` (default 500); `type` is a type or an array (`startup`, `request`, `liquid`, `data`, `plugin`, `diagnostic`, `reload`). `exportBundle(filters)` returns the documents of the activity bundle (`GET /_sim/api/activity/export?format=bundle`) in order, each with its `kind` (`bundle`, `activity` or `otlp`, `audit`, `log`, `finding`, `evidence`, `end`); it takes the trace filters, `traces: 'ndjson' | 'otlp'` and `limit`. See [the bundle](../mirage/docs/tracing.md#activity-bundle). Entries carry `visitorId` and `sessionKey` (`contact:<id>`, `visitor:<id>` or null) beside `identity`; the `visitorId` and `sessionKey` filters accept a prefix of at least 8 hexadecimal characters. Filters also support `contactId`, `afterSequence` (exclusive), `throughSequence` (inclusive), kind, path, entity, method, status and outcome. Capture `latestSequence` as the upper bound for stable pagination during concurrent traffic. `oldestSequence` and `dropped` disclose bounded retention loss. Sequences identify request starts; wait for the tested requests to complete before advancing a completion checkpoint. Exported entries retain sanitized queries and outcomes, without HTTP headers or row bodies.
+
+`trace` reads the runtime's causal traces: `trace.query(filters)`, `trace.spans(filters)`, `trace.tree(traceId)`, `trace.span(spanId)`, `trace.ancestry(spanId)`, `trace.stats(filters)`, `trace.export(filters)`, `trace.settings()`, `trace.status()`, `trace.configure(partial)`, `trace.clear()`, `trace.flush()` and `trace.subscribe(listener, { signal, events, traceId })`. Filters are plain objects (a `Date` keeps its milliseconds; `undefined` and `null` members are left out), such as `{ recordId, kind: 'plugin-step' }`: `recordId` finds every span that acted on one row, ignoring braces and case. `sort`, `order`, `format` and `limit` pass to the routes. `tree` and `span` return `null` for an id that is no longer retained and `ancestry` returns `[]`; `export({ format: 'ndjson' })` returns the lines as an array. `flush()` resolves with the store status once the runtime wrote its queued persisted lines and handed its live trace frames to the sockets. `subscribe` follows the live trace channel, narrowed by the runtime to the `events` types (`span-start`, `span-end`, `trace-end`) and the `traceId` when given, and returns an `unsubscribe()` function whose `closed` promise settles when the stream ends. Filters include `result` (a comma list of the activity's own result) and `auditId` (the activity whose step names that audit entry); a trace summary carries `auditId`. An invalid filter or setting rejects with `status: 400` and `code` `InvalidTraceFilter` (with `parameter` naming the filter) or `InvalidTraceSettings`; a runtime that does not answer rejects with `code: 'RuntimeUnreachable'`, and one that accepted the connection and closed it before the response completed with `code: 'RuntimeConnectionLost'` (both keep the fetch error as `cause`). The in-process handle of `createSimulator` exposes the store's reads as `simulator.trace`: `query`, `spans`, `tree`, `span`, `ancestry`, `stats`, `export`, `settings`, `status`, `configure` and `clear` synchronously, `flush()` as a promise, and `subscribe(listener, { payloads, events, traceId })`. The instrumentation members (`start`, `run`, `wrap`, `current`, `headers`, `fromHeaders`, `detached`, `remember`, `recall` and `link`, which adds a `triggered` or other link to a retained span) stay on the organization host's store (`host.traces`, `store.traces`); see [how tracing is built](design/tracing.md#store-contract). Filters, levels and the span model are in [request tracing](../mirage/docs/tracing.md#api).
 
 ## Test many visitors concurrently
 
@@ -218,6 +246,18 @@ prototype properties cannot count as matching response data.
 `paqvilo/mirage/fixtures` exports `formatMockRecord`, `mergeDataset`, `findDanglingLookups`,
 `schemaViolations`, `fieldIndexFromMappings`, `schemaFieldIndex`, `formatViolations`,
 `assertOfflineState`, `stateFileFingerprint`, `importPortal` and `createPortalRenderer`.
+It also exports `generateDataset`, `summarizeDataset`, `generateSchemaDeclarations`,
+`comparePluginRegistrations` and `comparePermissionModels`. The testing entry
+exports `createFixtureRecipes`. See [data packs](../mirage/docs/data-packs.md#schema-directed-pack-datasets),
+[registration comparison](../mirage/docs/dataverse-plugins.md#local-registration-comparison),
+[grant comparison](../mirage/docs/dataverse-parity.md#compare-compiled-portal-grants)
+and [named fixture recreation](#named-deterministic-recreation) for their
+project-owned inputs, bounded reports and compatibility limits.
+`buildPermissionModel`, `parsePluginDocument` and `importSolutionPlugins` expose
+the existing compilers for those offline reports. `remapDatasetIdentities`
+performs explicit metadata-backed row identity substitution. `inspectFlowExpression`
+and `evaluateFlowTriggerConditions` support project-owned preflight/scenario
+assertions without starting a flow or invoking providers.
 The acceptance entry point also exports `AssetCache`, `validateLivePath`, `decodePagingCookie`,
 `collectFetchXmlPages`, `escapeXmlAttribute`, `auditQuery`, `richTextBody`, `resolveRichTextMode`,
 `settleHostModal`, `editRichText` and `assertRichText`. These rich-text actions are the supported
@@ -240,6 +280,16 @@ editor resources. The equivalent client call is `captureShell(path, { richText: 
 An incomplete cached editor uses the compatibility control, including when a partial
 managed-control definition was captured. Native editing requires a qualified capture or a
 legacy core plus language resources; merely caching `ckeditor.js` is insufficient.
+
+The compatibility control is a local stand-in, labelled `Compatibility editor`, not the native
+CKEditor. It sanitizes content with DOMPurify's HTML profile when it loads the stored value, on
+`setData` and whenever it serializes the editor body into the hidden field. Scripts, event-handler
+attributes, `javascript:` URLs, embedded frames and objects, and SVG or MathML markup are removed;
+ordinary formatting, lists, links, images and tables remain. Its output wraps inline-only content
+in a paragraph and keeps paragraphs, tables and preformatted blocks stable across repeated
+save/reopen. Unchanged content writes neither the hidden value nor a change event, and read-only
+fields keep the editor body read-only and its formatting buttons disabled. A captured native editor uses
+CKEditor's own content filtering instead and does not run DOMPurify.
 
 Evidenced platform defaults are accepted in catalogue `defaults.mirage.platform` and
 `sites.<id>.mirage.platform`, or a Mirage project's root/portal `platform` object:
@@ -290,6 +340,9 @@ The acceptance surface also exports three read-only observation building blocks:
 
 Project observation tools can use these public exports instead of deep imports. Browser reads still require an authorised session and a guard blocking all non-GET requests.
 
+`runAcceptance({ timeout })` (default 15000 ms) is each step's action deadline. A step's own `timeout` replaces it for that step only, covering its waits, navigation commit reserve and settlement; the step records it as `timeout`. It must be a positive finite number larger than `navigationCommitReserveMs`. Use it to give one step a short deadline without shortening page loads.
+`verifyParity({ timeout, readinessTimeout })` bounds each page load by `timeout` (default 30000 ms) and the required-selector, font and network-idle readiness waits that follow by `readinessTimeout` (default the smaller of `timeout` and 5000 ms).
+
 `runAcceptance({ navigationCommitReserveMs })` reserves that many milliseconds of the triggering action for document/redirect commits. Without an override, a navigation allows at most 5 s for pending writes, reserving the remainder for the document and redirect chain. Its minimum reserve is 3 s, capped at half the remaining action time for short actions. Earlier successful response-header timings for the same initial method and exact URL (including query) can increase the reserve to the measured chain duration plus 1 s. An unrelated fast initial page cannot shrink the fallback. Timing excludes intercepted hold time; redirects share the first hop's hold budget and reserve. An unexpectedly slow navigation can still exceed the action timeout. `navigationWaits` records `commitReserveMs`, `commitReservePolicy` (`bounded-write-fallback`, `comparable-navigation-chain`, or `explicit`), `comparableNavigationMs` (null without comparable evidence), `writeHoldAllowanceMs` and `actionRemainingMs`. A document navigation answered 204 or 205 and ending with net::ERR_ABORTED is listed under noContentNavigations (method, sanitized URL, status); it preserves its document and is not a failed request. Pending reads/writes still have to settle; response-less aborts and other network failures remain failures.
 
 `observePageLifecycle(page, { origin, maxRecords: 10000 })` and
@@ -328,3 +381,9 @@ available lifecycle evidence; they omit query values, headers, cookies and bodie
 `maxRecords` sets `overflow` and prevents a successful settle rather than silently dropping
 coverage. This is a bounded observation report, not proof of Power Pages behavior or a saved
 record. Keep project-specific assertions and acceptance fixtures in the project package.
+
+## Code Apps development integration
+
+`paqvilo/mirage/code-apps/vite` exports `codeApps(options?)`, the development-only Vite plugin for a local Mirage workbench. `paqvilo/mirage/code-apps` exports `createCodeAppSdkExecutor(options?)` for applications that explicitly register the SDK data executor. Both ship TypeScript declarations. See [Code Apps](../mirage/docs/code-apps.md#develop-sdk-apps-with-vite-and-the-workbench) for project configuration, lifecycle and the boundary with Microsoft's native host.
+
+`paqvilo/mirage/code-apps/client` exports the typed lower-level `configure`, `getStatus`, `getContext`, `getToken` and `dataClient` APIs for application-owned service adapters.

@@ -1,13 +1,15 @@
+// @test-kind compatibility: Learn SDK message responses (Create/Retrieve/RetrieveMultiple/Update/Delete/CreateMultiple) returned to callers
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { DataStore } from '../lib/data.mjs';
 import { prepareClrRuntime, dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const guid = (n) => `20000000-0000-0000-0000-${String(n).padStart(12, '0')}`,
   user = guid(1),
@@ -90,16 +92,21 @@ test('Handler-only pre-operation mutations retain SDK main results with no match
     },
   });
   assert.equal(selected.entities.length, 2);
-  assert.ok(selected.entities.every((row) => row.id && !Object.hasOwn(row.attributes, 'secondaryid')));
+  for (const row of selected.entities) {
+    assert.ok(row.id);
+    assert.deepEqual(row.attributes.secondaryid, { $type: 'Guid', value: row.id });
+    assert.deepEqual(Object.keys(row.attributes).sort(), ['secondaryid', 'title']);
+  }
+  assert.deepEqual(selected.entities.map((row) => row.attributes.title).sort(), ['Handler persisted', 'Stored']);
 });
 
 test(
   'Original pre-only DLL callers receive actual main CRUD/read/bulk results and custom outputs without post registrations',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-main-response-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-main-response-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'MainResponse.cs'),
       assembly = path.join(root, 'MainResponse.dll');
     await fs.writeFile(
@@ -124,19 +131,7 @@ else if(mode=="bulk"){var r=(CreateMultipleResponse)s.Execute(new CreateMultiple
 else throw new Exception("Unknown invented case");target["status"]="passed:"+mode;((ITracingService)services.GetService(typeof(ITracingService))).Trace("Main response passed {0}",mode);}}
 }`,
     );
-    const build = spawnSync(
-      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      [
-        '/nologo',
-        '/target:library',
-        '/out:' + assembly,
-        '/reference:' + sdk,
-        '/reference:System.Runtime.Serialization.dll',
-        source,
-      ],
-      { encoding: 'utf8', windowsHide: true },
-    );
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk, 'System.Runtime.Serialization.dll'] });
     const descriptor = (typeName) => ({
       trust: 'execute-local-assembly',
       root,
@@ -204,7 +199,7 @@ else throw new Exception("Unknown invented case");target["status"]="passed:"+mod
     }
     const started = notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STARTED'),
       stopped = notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED');
-    assert.ok(started.length >= 20);
+    assert.equal(started.length, 23, 'one owned host per CLR step invocation of the scenarios above');
     assert.equal(started.length, stopped.length);
     assert.ok(stopped.every((note) => note.absenceVerified));
   },

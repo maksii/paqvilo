@@ -1065,7 +1065,7 @@ function panelBrowserImpl(data) {
           : 'Anonymous visitor';
       const roles = session ? session.roles : s.identity?.roles;
       return `<div class="card"><div class="path">Local Mirage <span class="dim">${esc(s.site ?? S.d.site)} · ${esc(s.format ?? 'portal source')}</span></div>
-        <div class="srcs"><span class="lbl2">Runtime</span><span class="dim" title="Source fingerprint ${esc(s.sourceFingerprint ?? 'unknown')}">revision ${esc(s.revision ?? '?')} · source ${esc(String(s.sourceFingerprint ?? '').slice(0, 8) || 'unknown')}</span>${s.reloading ? '<span class="c diff">reloading sources</span>' : ''}${s.pendingReload ? '<span class="c diff">another reload queued</span>' : ''}<button class="src" data-act="sim" data-hash="evidence">${esc(s.diagnostics ?? 0)} diagnostics</button></div>
+        <div class="srcs"><span class="lbl2">Runtime</span><span class="dim" title="Source fingerprint ${esc(s.sourceFingerprint ?? 'unknown')}">revision ${esc(s.revision ?? '?')} · source ${esc(String(s.sourceFingerprint ?? '').slice(0, 8) || 'unknown')}</span>${s.reloading ? '<span class="c diff">reloading sources</span>' : ''}${s.pendingReload ? '<span class="c diff">another reload queued</span>' : ''}<button class="src" data-act="sim" data-hash="activity?tab=findings">${esc(s.diagnostics ?? 0)} diagnostics</button></div>
         <div class="srcs"><span class="lbl2">${session ? 'Session' : 'Persona'}</span><span class="dim">${esc(who)} · ${esc((roles ?? []).join(', ') || 'no web roles')} · permissions ${esc(s.permissionMode ?? 'unknown')}${s.activeScenario ? ` · scenario ${esc(s.activeScenario.name ?? s.activeScenario.id)}` : ''}</span><button class="src" data-act="tab" data-v="tweaks">Change</button></div>
         <div class="srcs"><button class="src" data-act="admin">Open _sim administration</button><button class="src" data-act="sim" data-hash="${esc(`audit?path=${encodeURIComponent(location.pathname)}`)}">Requests for this page</button><button class="src" data-act="copypage">Copy local URL</button></div></div>`;
     };
@@ -1887,8 +1887,9 @@ function panelBrowserImpl(data) {
           runtime?.error ? esc(runtime.error) : 'Tweaks change the local Mirage runtime.',
         );
       const t = S.tweaks;
-      if (!t || S.tweaksLoading !== null)
-        return loadingState('Loading local setup…', 'Reading personas, permissions and scenarios.');
+      // A refresh keeps the current Tweaks (the body is aria-busy meanwhile), so an open
+      // confirmation and its keyboard focus survive a newer runtime version.
+      if (!t) return loadingState('Loading local setup…', 'Reading personas, permissions and scenarios.');
       if (!t.ok)
         return (
           emptyState('Tweaks unavailable', esc(t.error ?? '')) +
@@ -1946,7 +1947,7 @@ function panelBrowserImpl(data) {
         out += `<div class="card"><div class="path">Preset</div><div class="tw"><select data-pick="preset" aria-label="Preset">${t.presets.map((item) => option(item.id, item.name ?? item.id, pick === item.id)).join('')}</select><button class="btn" data-act="ask" data-kind="preset">Apply preset</button></div>${chosen?.description ? `<div class="dim">${esc(chosen.description)}</div>` : ''}</div>`;
       }
       const id = pageRecordId();
-      out += `<div class="card"><div class="path">Open in _sim</div><div class="srcs"><button class="src" data-act="admin">Administration</button><button class="src" data-act="sim" data-hash="${esc(`audit?path=${encodeURIComponent(location.pathname)}`)}">Requests for this page</button><button class="src" data-act="sim" data-hash="evidence">Diagnostics</button><button class="src" data-act="sim" data-hash="access">Personas &amp; permissions</button><button class="src" data-act="sim" data-hash="portal">Settings &amp; snippets</button></div>${t.tables.length ? `<div class="srcs"><span class="lbl2">Records${id ? ` (id ${esc(id)})` : ''}</span>${t.tables.map((table) => `<button class="src" data-act="sim" data-hash="${esc(recordsHash(table))}">${esc(table)}</button>`).join('')}</div>` : ''}<div class="srcs"><button class="src" data-act="copypage">Copy local URL</button><span class="dim">${esc(location.href)}</span></div></div>`;
+      out += `<div class="card"><div class="path">Open in _sim</div><div class="srcs"><button class="src" data-act="admin">Administration</button><button class="src" data-act="sim" data-hash="${esc(`audit?path=${encodeURIComponent(location.pathname)}`)}">Requests for this page</button><button class="src" data-act="sim" data-hash="activity?tab=findings">Diagnostics</button><button class="src" data-act="sim" data-hash="access">Personas &amp; permissions</button><button class="src" data-act="sim" data-hash="portal">Settings &amp; snippets</button></div>${t.tables.length ? `<div class="srcs"><span class="lbl2">Records${id ? ` (id ${esc(id)})` : ''}</span>${t.tables.map((table) => `<button class="src" data-act="sim" data-hash="${esc(recordsHash(table))}">${esc(table)}</button>`).join('')}</div>` : ''}<div class="srcs"><button class="src" data-act="copypage">Copy local URL</button><span class="dim">${esc(location.href)}</span></div></div>`;
       const s = t.status ?? {};
       // Loopback confinement of local pages (an opt-in Content-Security-Policy) and its exceptions.
       const policy =
@@ -2792,6 +2793,7 @@ function panelBrowserImpl(data) {
         case 'open': {
           if (!rel) break;
           const line = Number(t.dataset.line || row?.dataset.line) || undefined;
+          const feedbackSelection = document.getElementById('paqvilo-xray')?.__px?.feedbackState?.();
           const r = await api('open', {
             rel,
             line,
@@ -2810,7 +2812,10 @@ function panelBrowserImpl(data) {
           });
           document
             .getElementById('paqvilo-xray')
-            ?.__px?.status(r.ok ? `Opened ${baseName(rel)} in the editor` : (r.error ?? 'Could not open the editor'));
+            ?.__px?.status(
+              r.ok ? `Opened ${baseName(rel)} in the editor` : (r.error ?? 'Could not open the editor'),
+              feedbackSelection,
+            );
           if (r.ok) toast(`Opened ${baseName(rel)}${line ? ':' + line : ''} in the editor`);
           else if (r.url)
             location.href = r.url; // the editor's own link; the browser asks once

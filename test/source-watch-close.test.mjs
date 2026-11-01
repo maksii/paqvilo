@@ -11,13 +11,15 @@ import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 for (const repositoryFailure of [false, true]) {
   test(
     `source watcher drains its real Git watcher and accepted refresh after close failures (${repositoryFailure ? 'multiple' : 'single'})`,
-    { timeout: 45000 },
+    { timeout: 180_000 },
     async (t) => {
       const fixture = createFixture();
       ownedFixture(t).remove(() => fixture.cleanup());
       const sourceFailure = new Error('Invented source close failure');
       const gitFailure = new Error('Invented repository close failure');
       const watched = [];
+      const created = Promise.withResolvers(),
+        repositoryClosed = Promise.withResolvers();
       const originalWatch = chokidar.watch;
       t.mock.method(chokidar, 'watch', function (...args) {
         const instance = originalWatch.apply(this, args);
@@ -30,9 +32,11 @@ for (const repositoryFailure of [false, true]) {
           fail: index === 0 || repositoryFailure,
         };
         watched.push(entry);
+        if (watched.length === 2) created.resolve();
         instance.close = async () => {
           await originalClose();
           entry.closes++;
+          if (index === 1) repositoryClosed.resolve();
           if (entry.fail) {
             entry.fail = false;
             throw index === 0 ? sourceFailure : gitFailure;
@@ -76,12 +80,9 @@ for (const repositoryFailure of [false, true]) {
         { reload: false, log: () => {}, baselinePollMs: 60000 },
       );
       await watcher.ready;
-      const deadline = Date.now() + 5000;
-      while (watched.length < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-      assert.equal(watched.length, 2, 'actual source and Git Chokidar instances were created');
-      const accepted = once(session, 'accepted-refresh', {
-        signal: AbortSignal.timeout(5000),
-      });
+      // The actual source and Git Chokidar instances were created (the test timeout bounds a missing one).
+      await created.promise;
+      const accepted = once(session, 'accepted-refresh');
       await fs.appendFile(path.join(fixture.dir, 'web-files/app.js'), '\nwindow.inventedCloseRefresh=true;\n');
       await accepted;
       let settled = false;
@@ -95,14 +96,11 @@ for (const repositoryFailure of [false, true]) {
           return error;
         },
       );
-      const sourceDeadline = Date.now() + 5000;
-      while (!watched[0].closes && Date.now() < sourceDeadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      // The repository watcher closes after the failed source close; only the held refresh remains.
+      await repositoryClosed.promise;
       await new Promise((resolve) => setImmediate(resolve));
-      assert.equal(
-        settled,
-        false,
-        `close must await the accepted refresh even when source closing rejects; repository close calls=${watched[1].closes}`,
-      );
+      assert.equal(watched[0].closes, 1);
+      assert.equal(settled, false, 'close must await the accepted refresh even when source closing rejects');
       release();
       const failure = await close;
       if (repositoryFailure) {

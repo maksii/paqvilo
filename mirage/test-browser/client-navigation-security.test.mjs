@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import { once } from 'node:events';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { closeServer, sharedBrowser } from './shared-browser.mjs';
+
+const chrome = sharedBrowser({ headless: true });
 
 const source = await fs.readFile(new URL('../lib/pages-client-api.js', import.meta.url), 'utf8');
 const attribute = (value) =>
@@ -52,19 +54,12 @@ async function fixture(t) {
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  t.after(
-    () =>
-      new Promise((resolve) => {
-        server.closeAllConnections();
-        server.close(resolve);
-      }),
-  );
-  const origin = `http://127.0.0.1:${server.address().port}`,
-    browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
-  const context = await browser.newContext(),
+  ownedFixture(t).add(() => closeServer(server));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const context = await chrome.browser.newContext(),
     errors = [],
     external = [];
+  ownedFixture(t).add(() => context.close());
   context.on('page', (page) => page.on('pageerror', (error) => errors.push(error.message)));
   await context.route('**/*', (route) => {
     if (new URL(route.request().url()).origin !== origin) {

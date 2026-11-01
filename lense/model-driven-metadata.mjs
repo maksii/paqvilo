@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { racyStat } from './file-cache.mjs';
 import { compileForm, parseRibbonCommands } from '../mirage/lib/model-driven/solution.mjs';
 import { parseSolutionXml } from '../mirage/lib/solution-xml.mjs';
 import { modelDrivenKey, modelDrivenControlKey } from '../mirage/lib/model-driven/provenance-registry.mjs';
+import { createEventRegistrationReader } from './model-driven-event-registrations.mjs';
 
 const norm = (value) =>
   String(value ?? '')
@@ -215,7 +217,7 @@ export function createModelDrivenMetadataIndex(imported, { sourceRevision = '1' 
     for (const document of imported.ribbonDocuments ?? []) {
       if (typeof document.xml !== 'string' || Buffer.byteLength(document.xml) > 8 * 1024 * 1024) continue;
       try {
-        for (const command of parseRibbonCommands(document.xml))
+        for (const command of parseRibbonCommands(document.xml, { lcid: metadata.lcid }))
           addCommand(
             { ...command, entity: document.entity, sourceContentRevision: document.sourceContentRevision },
             document.source,
@@ -262,7 +264,34 @@ export function createModelDrivenMetadataIndex(imported, { sourceRevision = '1' 
       }),
     });
 
+  // One synchronous projection may name a form file hundreds of times (its
+  // controls, tabs and sections). Admit that file once for this projection,
+  // retaining the bounded byte cache. The next query, and especially Open
+  // source, must perform the filesystem checks again.
+  let sourceReads;
+  const withSourceReads = (fn) => {
+    const parent = sourceReads;
+    sourceReads = new Map();
+    try {
+      return fn();
+    } finally {
+      sourceReads = parent;
+    }
+  };
   const sourceFile = (file) => {
+    if (sourceReads?.has(file)) return sourceReads.get(file);
+    const result = readSourceFile(file);
+    if (sourceReads) {
+      sourceReads.set(file, result);
+      while (
+        sourceReads.size > 16 ||
+        [...sourceReads.values()].reduce((sum, item) => sum + (item?.size ?? 0), 0) > 16 * 1024 * 1024
+      )
+        sourceReads.delete(sourceReads.keys().next().value);
+    }
+    return result;
+  };
+  const readSourceFile = (file) => {
     if (typeof file !== 'string' || !path.isAbsolute(file)) return null;
     let fd;
     try {
@@ -310,7 +339,8 @@ export function createModelDrivenMetadataIndex(imported, { sourceRevision = '1' 
         dev: opened.dev,
         ino: opened.ino,
       };
-      files.set(canonical, result);
+      // A same-tick rewrite keeps every stat field: only a settled file's revision is reused.
+      if (!racyStat(opened)) files.set(canonical, result);
       while (files.size > 16 || [...files.values()].reduce((sum, item) => sum + item.size, 0) > 16 * 1024 * 1024)
         files.delete(files.keys().next().value);
       return result;
@@ -488,7 +518,7 @@ export function createModelDrivenMetadataIndex(imported, { sourceRevision = '1' 
     if (!definition || !form) return null;
     if (!definition.xml || Buffer.byteLength(definition.xml) > 8 * 1024 * 1024) return null;
     try {
-      const compiled = compileForm(definition, entities[definition.entity]?.fields ?? {});
+      const compiled = compileForm(definition, entities[definition.entity]?.fields ?? {}, metadata.lcid);
       if (!compiled) return null;
       const controls = [],
         structure = [];
@@ -926,15 +956,29 @@ export function createModelDrivenMetadataIndex(imported, { sourceRevision = '1' 
       ...(includeStructure ? form.structure.map((item) => item.key) : []),
     ]);
   };
+  let eventRegistrations;
   return Object.freeze({
-    query,
+    query: (request) => withSourceReads(() => query(request)),
     resolveOpen,
-    sourceRefsFor,
-    sourceRefsForForm,
+    sourceRefsFor: (keys, options) => withSourceReads(() => sourceRefsFor(keys, options)),
+    sourceRefsForForm: (key, options) => withSourceReads(() => sourceRefsForForm(key, options)),
     formControls,
     controlKeysForForm: (key) => formControls(key).map((control) => control.key),
     sourceRevision,
     component: (key) => components.get(key),
     counts: () => ({ components: components.size, forms: formDefinitions.size }),
+    eventRegistrations: (request) =>
+      withSourceReads(() => {
+        eventRegistrations ??= createEventRegistrationReader({
+          forms: formDefinitions,
+          compile,
+          component: (key) => components.get(key),
+          sourceRefs: (key) => refsFor(components.get(key), { locations: false }),
+          resources: imported.resources ?? [],
+          sourceRevision,
+          lcid: metadata.lcid,
+        });
+        return eventRegistrations(request);
+      }),
   });
 }

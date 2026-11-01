@@ -11,7 +11,7 @@ import { buildSiteTables } from '../lib/site-tables.mjs';
 import { loadProjectConfig, bootstrapProject } from '../lib/project-config.mjs';
 import { serverLogicName } from '../lib/server-logic.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // The short-key .powerpages-site dialect imports like any other export: the synthetic code site
 // test-browser/fixtures/code-site follows the layout of the MIT-licensed
@@ -127,7 +127,7 @@ test('the data model of a YAML source can be set: standard turns the short-key s
 });
 
 async function tree(t, files) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-component-types-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-component-types-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });
@@ -221,7 +221,7 @@ test('server logic paths are recognised by name', () => {
 });
 
 test('serve treats a code site like any export, and discovered server logic enforces roles and verification before simulation', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-code-site-serve-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-code-site-serve-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const calls = [];
   const liveBridge = {
@@ -322,25 +322,35 @@ test('inspect and project files carry the data model; --data-model is validated 
       (result) => ({ code: 0, ...result }),
       (error) => error,
     );
-  const inspected = await run(['inspect', '--source', PROJECT, '--json']);
-  assert.equal(inspected.code, 0, inspected.stderr);
-  const report = JSON.parse(inspected.stdout);
-  assert.deepEqual(
-    [report.layout, report.dataModel, report.dataModelSource, report.serverLogics, report.pages.length],
-    ['short-key-yaml', 'enhanced', 'assumed', ['order-summary'], 2],
-  );
-  const standard = JSON.parse((await run(['inspect', '--source', SITE, '--data-model', 'standard', '--json'])).stdout);
-  assert.deepEqual([standard.format, standard.dataModelSource], ['standard', 'configured']);
-  const invalid = await run(['inspect', '--source', SITE, '--data-model', 'classic', '--json']);
-  assert.notEqual(invalid.code, 0);
-  assert.match(invalid.stderr, /--data-model must be standard or enhanced/);
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-code-site-project-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-code-site-project-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'mirage.project.yml');
   await fs.writeFile(
     file,
     `version: 1\nportals:\n  - id: code\n    path: ${JSON.stringify(PROJECT)}\n    dataModel: standard\nsolutions: []\n`,
   );
+  // The four invocations only read the same inputs, so they run side by side.
+  const [inspected, standardRun, invalid, refused] = await Promise.all([
+    run(['inspect', '--source', PROJECT, '--json']),
+    run(['inspect', '--source', SITE, '--data-model', 'standard', '--json']),
+    run(['inspect', '--source', SITE, '--data-model', 'classic', '--json']),
+    run(['inspect', '--project', file, '--data-model', 'enhanced', '--json']),
+  ]);
+  assert.equal(inspected.code, 0, inspected.stderr);
+  const report = JSON.parse(inspected.stdout);
+  assert.deepEqual(
+    [report.layout, report.dataModel, report.dataModelSource, report.serverLogics, report.pages.length],
+    ['short-key-yaml', 'enhanced', 'assumed', ['order-summary'], 2],
+  );
+  assert.equal(standardRun.code, 0, standardRun.stderr);
+  const standard = JSON.parse(standardRun.stdout);
+  assert.deepEqual([standard.format, standard.dataModelSource], ['standard', 'configured']);
+  assert.notEqual(invalid.code, 0);
+  assert.match(JSON.parse(invalid.stdout).error.message, /--data-model must be standard or enhanced/);
+  assert.equal(invalid.stderr, '');
+  assert.notEqual(refused.code, 0);
+  assert.match(JSON.parse(refused.stdout).error.message, /--data-model is supplied by the project configuration/);
+  assert.equal(refused.stderr, '');
   const project = await loadProjectConfig(file);
   assert.equal(project.portals[0].dataModel, 'standard');
   const bootstrapped = await bootstrapProject(project);
@@ -348,8 +358,6 @@ test('inspect and project files carry the data model; --data-model is validated 
     [bootstrapped.portals[0].portal.dataModel, bootstrapped.portals[0].portal.dataModelSource],
     ['standard', 'configured'],
   );
-  const refused = await run(['inspect', '--project', file, '--data-model', 'enhanced', '--json']);
-  assert.match(refused.stderr, /--data-model is supplied by the project configuration/);
   await fs.writeFile(
     file,
     `version: 1\nportals:\n  - id: code\n    path: ${JSON.stringify(PROJECT)}\n    dataModel: classic\nsolutions: []\n`,
@@ -373,7 +381,7 @@ test('cloud flows import with their trigger, flow and roles; source operations d
     portal.cloudFlows.map((flow) => [flow.name, flow.path, flow.processId, flow.roleIds]),
     [['Request Callback', `/_api/cloudflow/v1.0/trigger/${g(82)}`, g(82), [ID.roleAuth]]],
   );
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-cloud-flow-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-cloud-flow-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const app = await createSimulator({
     sourceDir: PROJECT,

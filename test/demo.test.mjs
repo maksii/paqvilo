@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { prepareDemo } from '../lense/commands/demo.mjs';
+import { tempDir } from './fixture.mjs';
 
 test('demo copies an editable project, preserves source edits on repeat and refuses unrelated folders', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-demo-'));
+  const root = await tempDir('paqvilo-demo-');
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const directory = path.join(root, 'example');
   assert.equal((await prepareDemo(directory)).created, true);
@@ -17,11 +17,13 @@ test('demo copies an editable project, preserves source edits on repeat and refu
   assert.equal((await prepareDemo(directory)).created, false);
   assert.equal(await fs.readFile(template, 'utf8'), 'My local changes');
   const manifest = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
-  assert.ok(!manifest.devDependencies.paqvilo.startsWith('file:'));
+  const toolkit = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(manifest.devDependencies.paqvilo, toolkit.version, 'the copy depends on this published toolkit version');
   assert.match(manifest.devDependencies.yaml, /^\d/);
   assert.match(manifest.devDependencies['playwright-core'], /^\d/);
-  const toolkit = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const example = JSON.parse(await fs.readFile(new URL('../examples/project/package.json', import.meta.url), 'utf8'));
+  assert.equal(manifest.devDependencies['@microsoft/power-apps'], example.devDependencies['@microsoft/power-apps']);
+  for (const name of ['code-app:mirage', 'code-app:dev']) assert.equal(manifest.scripts[name], example.scripts[name]);
   for (const dependency of ['yaml', 'playwright-core']) {
     assert.equal(manifest.devDependencies[dependency], toolkit.dependencies[dependency]);
     assert.equal(example.devDependencies[dependency], toolkit.dependencies[dependency]);
@@ -63,13 +65,27 @@ test('demo copies an editable project, preserves source edits on repeat and refu
   assert.equal(await fs.readFile(path.join(directory, 'AGENTS.md'), 'utf8'), guidance);
   await fs.access(path.join(directory, '.vscode/launch.json'));
   await fs.access(path.join(directory, 'paqvilo-demo.code-workspace'));
+  const cliDirectory = path.join(root, 'cli-example');
   const scaffold = execFileSync(
     process.execPath,
-    [fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)), 'mirage', 'demo', '--scaffold', '--dir', directory],
-    { cwd: root, encoding: 'utf8', timeout: 15000, windowsHide: true },
+    [
+      fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)),
+      'mirage',
+      'demo',
+      '--scaffold',
+      '--dir',
+      cliDirectory,
+    ],
+    { cwd: root, encoding: 'utf8', timeout: 150_000, windowsHide: true },
   );
   assert.match(scaffold, /No runtime was started/);
   assert.match(scaffold, /paqvilo-demo\.code-workspace/);
+  const cliManifest = JSON.parse(await fs.readFile(path.join(cliDirectory, 'package.json'), 'utf8'));
+  assert.equal(cliManifest.devDependencies['@microsoft/power-apps'], example.devDependencies['@microsoft/power-apps']);
+  for (const name of ['code-app:mirage', 'code-app:dev'])
+    assert.equal(cliManifest.scripts[name], example.scripts[name]);
+  await fs.access(path.join(cliDirectory, 'code-app/server.mjs'));
+  await fs.access(path.join(cliDirectory, 'code-app/solution/Entities/x_item/Entity.xml'));
   assert.deepEqual(await fs.readdir(path.join(directory, '.paqvilo')), ['demo.json']);
   await fs.access(path.join(directory, 'solution/Entities/Account/Entity.xml'));
   await fs.access(path.join(directory, 'metadata/Other/Relationships.xml'));
@@ -88,6 +104,14 @@ test('demo copies an editable project, preserves source edits on repeat and refu
     'deployment/demo-data.zip',
     'deployment/configure.mjs',
     'code-solution/Other/Solution.xml',
+    'code-app/server.mjs',
+    'code-app/mirage.mjs',
+    'code-app/app.js',
+    'code-app/index.html',
+    'code-app/power.config.json',
+    'code-app/solution/Other/Solution.xml',
+    'code-app/solution/Entities/x_item/Entity.xml',
+    'test/baseline-code-app-sdk.test.mjs',
     'components/pcf-field-types/ExampleAccountFields/index.ts',
     'components/pcf-field-types/ExampleAccountFields/ControlManifest.Input.xml',
   ]) {

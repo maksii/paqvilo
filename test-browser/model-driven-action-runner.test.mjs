@@ -99,8 +99,8 @@ async function fixture(t) {
       };
       const blocked = waits.get('record');
       if (blocked) {
-        blocked.pending = true;
         blocked.release = () => send(body);
+        blocked.requested?.();
         return;
       }
       return send(body);
@@ -298,28 +298,48 @@ test('client overrides restore exact states and autosave guard blocks only 70 wi
   assert.equal(await page.locator('[data-paq-model-logical-name]').count(), 0);
 });
 
-test('late server results cancel after record navigation and retired, foreign or unowned sessions cannot execute', async (t) => {
-  const { page, origin, waits } = await fixture(t);
-  const blocked = {};
-  waits.set('record', blocked);
-  const pending = page.evaluate(runModelDrivenAction, {
-    origin,
-    token: 'invented-owned-session',
-    action: 'form:all-fields',
-    params: {},
-    requestId: 'slow',
-  });
-  await page.waitForFunction(() => window.nativeFixture.idReads > 1);
-  while (!blocked.pending) await new Promise((resolve) => setTimeout(resolve, 5));
-  await page.evaluate(() => (window.nativeFixture.id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'));
-  blocked.release();
-  assert.deepEqual(await pending, { accepted: true, requestId: 'slow' });
-  const outcome = await page.evaluate(
-    () => document.getElementById('paqvilo-model-inspector').__paqModelActions.results.at(-1).result,
-  );
-  assert.equal(outcome.status, 'cancelled');
-  assert.doesNotMatch(JSON.stringify(outcome), /PRIVATE_/);
-  for (const extra of [{ token: 'foreign' }, { origin: 'https://foreign.invalid' }])
+test(
+  'late server results cancel after record navigation and retired, foreign or unowned sessions cannot execute',
+  { timeout: 60_000 },
+  async (t) => {
+    const { page, origin, waits } = await fixture(t);
+    const blocked = {};
+    const requested = new Promise((resolve) => {
+      blocked.requested = resolve;
+    });
+    waits.set('record', blocked);
+    const pending = page.evaluate(runModelDrivenAction, {
+      origin,
+      token: 'invented-owned-session',
+      action: 'form:all-fields',
+      params: {},
+      requestId: 'slow',
+    });
+    await page.waitForFunction(() => window.nativeFixture.idReads > 1);
+    await requested;
+    await page.evaluate(() => (window.nativeFixture.id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'));
+    blocked.release();
+    assert.deepEqual(await pending, { accepted: true, requestId: 'slow' });
+    const outcome = await page.evaluate(
+      () => document.getElementById('paqvilo-model-inspector').__paqModelActions.results.at(-1).result,
+    );
+    assert.equal(outcome.status, 'cancelled');
+    assert.doesNotMatch(JSON.stringify(outcome), /PRIVATE_/);
+    for (const extra of [{ token: 'foreign' }, { origin: 'https://foreign.invalid' }])
+      assert.equal(
+        (
+          await page.evaluate(runModelDrivenAction, {
+            origin,
+            token: 'invented-owned-session',
+            action: 'form:record-id',
+            params: {},
+            requestId: 'denied',
+            ...extra,
+          })
+        ).accepted,
+        false,
+      );
+    await page.evaluate(() => (window.__paqviloRetiredModelInspectors = ['invented-owned-session']));
     assert.equal(
       (
         await page.evaluate(runModelDrivenAction, {
@@ -327,26 +347,13 @@ test('late server results cancel after record navigation and retired, foreign or
           token: 'invented-owned-session',
           action: 'form:record-id',
           params: {},
-          requestId: 'denied',
-          ...extra,
+          requestId: 'retired',
         })
       ).accepted,
       false,
     );
-  await page.evaluate(() => (window.__paqviloRetiredModelInspectors = ['invented-owned-session']));
-  assert.equal(
-    (
-      await page.evaluate(runModelDrivenAction, {
-        origin,
-        token: 'invented-owned-session',
-        action: 'form:record-id',
-        params: {},
-        requestId: 'retired',
-      })
-    ).accepted,
-    false,
-  );
-});
+  },
+);
 
 test('native identity reads use exact privilege names and bounded active-user queries with browser-only choices', async (t) => {
   const { page, run, requests } = await fixture(t);
@@ -481,7 +488,8 @@ test('native main-form requests acknowledge dispatch without waiting for quick-c
     window.nativeFixture.id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
     window.nativeFormRejects[0](Error('STALE_NATIVE_ERROR'));
   });
-  await page.waitForTimeout(30);
+  // The runner reports late native errors from a promise-microtask chain. This later evaluation
+  // is a separate task, so the stale rejection has been fully handled before it reads the count.
   assert.equal(await page.evaluate(() => window.nativeFormFollowups.length), 1);
 });
 

@@ -14,6 +14,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import http from 'node:http';
 import { DataError } from './data-error.mjs';
+import { compileDefinition, markConnectorDataverseSpan, validateDefinition } from './connector-definition.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
 import { DEAD_LETTER_SUFFIX } from './message-bus.mjs';
 import { localOrganizationService, validateServiceProfile } from './local-organization-service.mjs';
@@ -34,10 +35,12 @@ import { createScriptHost, SDK_MISSING, UNTRUSTED } from './custom-connector-scr
 import { flowVault } from './flow-vault.mjs';
 import { packFlowActions } from './flow-actions.mjs';
 import { effectiveEnvironmentVariables } from './secret-resolver.mjs';
+import { recordHttpError, statusFromHttp } from './trace-store.mjs';
 
 export const DATAVERSE_CONNECTOR = 'shared_commondataserviceforapps';
 const CODES = {
   ConnectorNotConfigured: 501,
+  ConnectorNotSimulated: 501,
   ConnectionNotBound: 409,
   ConnectionUnauthorized: 401,
   PermissionDenied: 403,
@@ -50,6 +53,29 @@ const connectorError = (code, message) => new DataError(message, CODES[code], co
 const fail = (code, message) => {
   throw connectorError(code, message);
 };
+// The span error of a provider's own exception (connector-runtime invoke): its code (else the mapped one), message and cause.
+const providerFailure = (error, mapped, secure) => ({
+  code: typeof error?.code === 'string' && error.code ? error.code : mapped.code,
+  message: (!secure && (typeof error === 'string' ? error : error?.message)) || mapped.message,
+  status: mapped.status,
+  ...(!secure && error?.cause && typeof error.cause === 'object'
+    ? { cause: { code: error.cause.code ?? error.cause.name ?? 'Error', message: String(error.cause.message ?? '') } }
+    : {}),
+});
+// The span error of a provider answer of 400 or more: its body's error code and message (an OData/ARM { error: { code,
+// message } } or a flat { code, message }); a sealed call (secure) keeps only the status.
+function answerError(answer, secure) {
+  const status = answer.statusCode,
+    body = answer.body,
+    inner =
+      body && typeof body === 'object' ? (body.error && typeof body.error === 'object' ? body.error : body) : null;
+  const generic = { code: 'Http' + status, message: `The connector answered status ${status}.` };
+  if (secure || !inner) return generic;
+  return {
+    code: typeof inner.code === 'string' && inner.code ? inner.code : generic.code,
+    message: typeof inner.message === 'string' && inner.message ? inner.message : generic.message,
+  };
+}
 const same = (a, b) => a != null && b != null && String(a).toLowerCase() === String(b).toLowerCase();
 const isMap = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const clone = (value) => (value === undefined ? null : structuredClone(value));
@@ -218,6 +244,60 @@ const selected = (store, logical, row, select, navigations) => {
 // and plug-in stages as its write (plugin-association.mjs executeAssociationAsync); without one, executeAssociationAsync alone,
 // so a synchronous service endpoint step's post is awaited in process. Files and bound/unbound actions need organization entries
 // (store.recordPipeline.fileContentInternal, executeMessageInternal); without them they answer OperationUnsupported (501).
+// The span operation of a Dataverse connector call (docs/design/tracing.md span model, D-R3-9): the canonical Dataverse
+// verb. UpdateRecord ("Update a row") is an update; when it created the missing row its span says so with created: true.
+const DATAVERSE_SPAN_OPERATION = Object.freeze({
+  CreateRecord: 'create',
+  UpdateRecord: 'update',
+  UpdateOnlyRecord: 'update',
+  DeleteRecord: 'delete',
+  GetItem: 'retrieve',
+  ListRecords: 'retrievemultiple',
+  AssociateEntities: 'associate',
+  DisassociateEntities: 'disassociate',
+  GetEntityFileImageFieldContent: 'retrieve',
+  UpdateEntityFileImageFieldContent: 'update',
+  ExecuteChangeset: 'changeset',
+});
+// The logical name of a connector entityName (an entity set name), or null when it names no table.
+function dataverseLogicalName(store, entityName) {
+  if (typeof entityName !== 'string') return null;
+  try {
+    return store.resolveMapping(entityName).logicalName ?? null;
+  } catch {
+    return null;
+  }
+}
+// The full-level input of a Dataverse connector span: the written values (item and item/<column> parameters) as item, the
+// other parameters (table, record id, query options, FetchXML, action name) as they are.
+function dataverseInput(p) {
+  const item = {},
+    rest = {};
+  for (const [key, value] of Object.entries(p))
+    if (key === 'item' && isMap(value)) Object.assign(item, value);
+    else if (key.startsWith('item/')) item[key.slice(5)] = value;
+    else rest[key] = value;
+  return Object.keys(item).length ? { ...rest, item } : rest;
+}
+// What a Dataverse connector answer says: its status, the written or read row's id, and the row count of a list.
+function dataverseFacts(store, entity, answer) {
+  const body = answer?.body,
+    rows = Array.isArray(body?.value) ? body.value : null;
+  let id = null;
+  if (!rows && isMap(body) && entity)
+    try {
+      const value = body[store.resolveMapping(entity).idColumn];
+      id = value == null ? null : String(value);
+    } catch {
+      id = null;
+    }
+  return {
+    statusCode: answer?.statusCode ?? null,
+    id,
+    rowCount: rows ? rows.length : Array.isArray(body?.responses) ? body.responses.length : null,
+    ...(rows ? { moreRecords: Boolean(answer?.nextLink ?? body?.['@odata.nextLink']) } : {}),
+  };
+}
 function dataverseProvider(store, diagnostic) {
   const notWired = (what) => {
     throw new DataError(
@@ -436,11 +516,49 @@ function dataverseProvider(store, diagnostic) {
       for (const key of Object.keys(p))
         if (!spec.allowed(key))
           throw new DataError(`Unsupported Dataverse parameter ${operationId}/${key}.`, 501, 'LocalFlowUnsupported');
-      return run(
-        localOrganizationService(store, context.principal, undefined, { diagnostic }),
-        operationId,
-        p,
-        context,
+      const call = () =>
+        run(localOrganizationService(store, context.principal, undefined, { diagnostic }), operationId, p, context);
+      const traces = store?.traces;
+      if (!traces?.enabled) return call();
+      // Tracing (docs/design/tracing.md): one dataverse span per call, under the connector span. Its store reads (pre-images,
+      // projections) and the organization's internal entries it drives open none of their own (data.mjs COVERED_READS,
+      // dataverse-records.mjs traced), so a changeset or an upsert is one span too.
+      // Module dataverse with the canonical operation (D-R3-9), so module/operation/entity filters find flow writes; the
+      // connector span above it stays module connectors. At level full the written values and the query are its input and
+      // { statusCode, id, rowCount, moreRecords } its output (none for a sealed run: context.secure).
+      const entity = dataverseLogicalName(store, p.entityName);
+      return traces.wrap(
+        {
+          kind: 'dataverse',
+          name: `${operationId}${entity ? ' ' + entity : ''}`,
+          module: 'dataverse',
+          operation: DATAVERSE_SPAN_OPERATION[operationId] ?? 'action',
+          entity,
+          recordId: p.recordId == null ? null : String(p.recordId),
+          attributes: {
+            operationId,
+            connector: 'commondataserviceforapps',
+            ...(p.fetchXml != null ? { query: 'fetchxml' } : {}),
+            ...(p.actionName ? { message: String(p.actionName) } : {}),
+          },
+          ...(context.secure ? {} : { input: () => dataverseInput(p) }),
+        },
+        (span) => {
+          markConnectorDataverseSpan(span);
+          const answered = (answer) => {
+            const facts = dataverseFacts(store, entity, answer);
+            if (facts.id && !span.recordId) span.setEntity(span.entity, facts.id);
+            span.set({
+              statusCode: facts.statusCode,
+              ...(facts.rowCount == null ? {} : { rowCount: facts.rowCount }),
+              ...(operationId === 'UpdateRecord' && facts.statusCode === 201 ? { created: true } : {}),
+            });
+            if (!context.secure) span.output(() => facts);
+            return answer;
+          };
+          const answer = call();
+          return typeof answer?.then === 'function' ? answer.then(answered) : answered(answer);
+        },
       );
     },
   };
@@ -498,7 +616,7 @@ async function sendLoopback({ method, url, headers, body }, context) {
   try {
     response = await loopbackFetch(url, {
       method,
-      headers,
+      headers: { ...headers, ...context.traceHeaders },
       ...(body === undefined || ['GET', 'HEAD'].includes(method) ? {} : { body }),
       signal,
     });
@@ -781,6 +899,9 @@ function customConnectorProvider(connector, fixtures, store, { tokens, scripts, 
     async invoke({ operationId, parameters, nextLink }, context) {
       const { req, connection } = await request(operationId, parameters, nextLink, context);
       // The script replaces the backend request; Context.SendAsync goes through the same rewrites, fixtures and loopback rule.
+      // Tracing: the script runs in a dotnet child process, which no span context crosses; the connector span (current here)
+      // is marked script: true, and the script's SendAsync requests carry its trace headers (sendLoopback).
+      if (scripted(operationId) && !nextLink) store?.traces?.current()?.set({ script: true });
       const answer =
         scripted(operationId) && !nextLink
           ? await scripts.run({
@@ -1289,6 +1410,17 @@ export function createConnectorRuntime({
     if (registry.has(provider.id)) throw new Error('Ambiguous connector provider: ' + provider.id);
     registry.set(provider.id, provider);
   };
+  const definitions = new Map();
+  for (const pack of packs)
+    for (const [id, document] of Object.entries(pack.connectorDefinitions ?? {})) {
+      if (definitions.has(id))
+        throw new Error(`Data pack ${pack.id}: connectorDefinitions.${id} is declared by more than one pack`);
+      definitions.set(id, compileDefinition(document));
+    }
+  const validateOperation = (connectorId, request) => {
+    const definition = definitions.get(connectorId);
+    return definition ? validateDefinition(definition, request) : null;
+  };
   const fixtures = packs.flatMap((pack) => pack.httpFixtures ?? []);
   // Connection OAuth tokens (authorization code flow) per connection id: sealed in state.simulator.connectionTokens (flow-vault.mjs),
   // or in this runtime's memory without a store.
@@ -1347,7 +1479,7 @@ export function createConnectorRuntime({
     });
   // Retries a provider call on ProviderUnavailable/ProviderTimeout or an HTTP 429/5xx answer; each attempt is reported
   // through context.onAttempt and the waits run on the scheduler (the store's one by default), never a bare timer.
-  async function retried(call, policy, ctx) {
+  async function retried(call, policy, ctx, span = null) {
     for (let attempt = 1; ; attempt++) {
       if (ctx.signal?.aborted) throw aborted(ctx.signal);
       let answer, error;
@@ -1360,10 +1492,17 @@ export function createConnectorRuntime({
         attempt,
         ...(error ? { code: error.code ?? 'ProviderFailed' } : { statusCode: answer?.statusCode ?? null }),
       });
+      span?.set({ attempts: attempt });
       if (!transient(answer, error) || attempt > policy.count) {
         if (error) throw error;
         return answer;
       }
+      span?.event('retry', {
+        attributes: {
+          attempt,
+          ...(error ? { code: error.code ?? 'ProviderFailed' } : { statusCode: answer?.statusCode ?? null }),
+        },
+      });
       await pause(
         policy.type === 'exponential' ? policy.intervalMs * 2 ** (attempt - 1) : policy.intervalMs,
         ctx.signal,
@@ -1511,7 +1650,10 @@ export function createConnectorRuntime({
       return result(
         connection.provider ??
           defaultProvider(connectorId)?.id ??
-          fail('ConnectorNotConfigured', 'No provider serves this connector.'),
+          fail(
+            definitions.has(connectorId) ? 'ConnectorNotSimulated' : 'ConnectorNotConfigured',
+            'No provider serves this connector.',
+          ),
         connection,
         connectionId,
       );
@@ -1531,7 +1673,14 @@ export function createConnectorRuntime({
   const unsupportedReason = (connectorId, operationId) => {
     syncCustom();
     const custom = customIds.map((id) => registry.get(id)).find((p) => p.connectors.includes(connectorId));
-    if (!custom) return null;
+    if (!custom) {
+      const definition = definitions.get(connectorId);
+      return definition
+        ? definition.operations.has(operationId)
+          ? 'ConnectorNotSimulated: the operation has no simulated behaviour.'
+          : 'CONNECTOR_OPERATION_UNKNOWN: the connector definition has no such operation.'
+        : null;
+    }
     if (custom.blocked) return `${custom.blocked.code}: ${custom.blocked.message}`;
     return custom.operations.includes(operationId)
       ? null
@@ -1544,6 +1693,8 @@ export function createConnectorRuntime({
   function invoke({
     connectorId,
     operationId,
+    method,
+    path,
     parameters = {},
     connection,
     context = {},
@@ -1553,9 +1704,38 @@ export function createConnectorRuntime({
     const started = now();
     syncCustom();
     let resolved;
+    // Tracing (docs/design/tracing.md): one connector span per call (never per page or attempt); the provider runs inside it, so
+    // Dataverse provider writes nest under it. context.secure (a sealed flow run) captures no parameters or result.
+    const traces = store?.traces?.enabled ? store.traces : null,
+      span =
+        traces?.start({
+          kind: 'connector',
+          name: connectorId + '/' + (operationId ?? [method, path].filter(Boolean).join(' ')),
+          module: 'connectors',
+          operation: 'invoke',
+          attributes: {
+            connectorId: connectorId ?? null,
+            operationId: operationId ?? null,
+            caller: context.caller ?? null,
+            runId: context.runId ?? null,
+            actionPath: context.actionPath ?? null,
+            ...(context.secure ? { secure: true } : {}),
+          },
+          ...(context.secure ? {} : { input: () => parameters }),
+        }) ?? null;
+    const facts = (status) => ({
+      operationId: operationId ?? null,
+      provider: resolved?.provider ?? null,
+      connectionId: resolved?.connectionId ?? null,
+      status,
+    });
     const note = (status, error) =>
       diagnostic({
         code: 'CONNECTOR_INVOKE',
+        // Human facts (D-M-2 Findings): the operation, the Dataverse table it names (entityName), a sentence.
+        name: operationId ?? connectorId,
+        entity: typeof parameters?.entityName === 'string' ? parameters.entityName : null,
+        message: `${operationId ?? 'An operation'} of ${connectorId} answered ${status}${error?.message ? `: ${error.message}` : ''}.`,
         connectorId,
         operationId,
         reference: resolved?.referenceLogicalName ?? null,
@@ -1568,6 +1748,9 @@ export function createConnectorRuntime({
         durationMs: now() - started,
         correlationId: context.correlationId ?? null,
       });
+    // A provider's own exception is answered as ProviderFailed (or ProviderTimeout) with the exception as its (non-enumerable)
+    // cause; the span keeps the provider's own code (else the mapped one), message and cause (D-R3-4) and names the mapped
+    // code. A sealed call (context.secure) keeps the mapped message, since the provider's may echo a sealed value.
     const failed = (error) => {
       const mapped =
         error instanceof DataError
@@ -1575,21 +1758,42 @@ export function createConnectorRuntime({
           : ['TimeoutError', 'AbortError'].includes(error?.name)
             ? connectorError('ProviderTimeout', 'The connector provider timed out.')
             : connectorError('ProviderFailed', 'The connector provider failed.');
+      if (mapped !== error)
+        Object.defineProperty(mapped, 'cause', { value: error, configurable: true, writable: true });
       note(mapped.status, mapped.code);
+      span
+        ?.set({ ...facts(mapped.status), ...(mapped === error ? {} : { mappedCode: mapped.code }) })
+        .fail(mapped === error ? error : providerFailure(error, mapped, context.secure));
       throw mapped;
     };
+    // An answer of 400 or more records the provider's own error (its body's error code and message) on the span.
     const finish = (answer) => {
       note(answer?.statusCode ?? null);
+      if (span) {
+        if (!context.secure) span.output(() => answer);
+        if (Number(answer?.statusCode) >= 400)
+          recordHttpError(span, answer.statusCode, answerError(answer, context.secure));
+        span.end({ status: statusFromHttp(answer?.statusCode), attributes: facts(answer?.statusCode ?? null) });
+      }
       return answer;
     };
     let answer;
     try {
+      const operation = validateOperation(connectorId, { operationId, method, path, parameters });
+      if (operation) operationId = operation.operationId;
+      if (
+        !connection &&
+        definitions.has(connectorId) &&
+        !Object.hasOwn(connections, connectorId) &&
+        !defaultProvider(connectorId)
+      )
+        fail('ConnectorNotSimulated', 'The connector operation has a definition but no simulated behaviour.');
       resolved = connection ?? resolve({ connectorId, principal: context.principal });
       const provider = registry.get(resolved.provider);
       if (!provider) fail('ConnectorNotConfigured', 'The connection names a provider that is not registered.');
       if (!supportsOperation(provider, connectorId, operationId))
         fail(
-          'OperationUnsupported',
+          definitions.has(connectorId) ? 'ConnectorNotSimulated' : 'OperationUnsupported',
           provider.reason?.(operationId) ?? 'The provider does not implement this connector operation.',
         );
       const ctx = {
@@ -1598,6 +1802,7 @@ export function createConnectorRuntime({
         settings: resolved.settings ?? {},
         clock: clock ?? { now },
         connectionId: resolved.connectionId ?? null,
+        ...(span ? { traceHeaders: traces.headers(span) } : {}),
       };
       const request = { connectorId, operationId, parameters };
       const once =
@@ -1605,12 +1810,14 @@ export function createConnectorRuntime({
           ? () =>
               Promise.resolve(provider.invoke(request, ctx)).then((first) => followAsync(provider, request, ctx, first))
           : () => provider.invoke(request, ctx);
-      answer = retry?.count ? retried(once, retry, ctx) : once();
-      if (pagination?.minimumItemCount)
-        answer =
-          typeof answer?.then === 'function'
-            ? answer.then((first) => paginate(provider, request, ctx, first, pagination))
-            : paginate(provider, request, ctx, answer, pagination);
+      const dispatch = () => {
+        const first = retry?.count ? retried(once, retry, ctx, span) : once();
+        if (!pagination?.minimumItemCount) return first;
+        return typeof first?.then === 'function'
+          ? first.then((value) => paginate(provider, request, ctx, value, pagination, span))
+          : paginate(provider, request, ctx, first, pagination, span);
+      };
+      answer = span ? traces.run(span, dispatch) : dispatch();
     } catch (error) {
       return failed(error);
     }
@@ -1618,7 +1825,7 @@ export function createConnectorRuntime({
   }
 
   // Follow nextLink until minimumItemCount items or maxPages pages; a first page without nextLink stays synchronous.
-  function paginate(provider, request, ctx, first, { minimumItemCount, maxPages = 10 }) {
+  function paginate(provider, request, ctx, first, { minimumItemCount, maxPages = 10 }, span = null) {
     if (!first?.nextLink || !Array.isArray(first.body?.value)) return first;
     return (async () => {
       const items = [...first.body.value];
@@ -1643,6 +1850,7 @@ export function createConnectorRuntime({
         if (!Array.isArray(last?.body?.value)) fail('ProviderFailed', 'A later page has no value array.');
         items.push(...last.body.value);
         pages++;
+        span?.event('page', { attributes: { page: pages, items: items.length } }).set({ pages });
       }
       const { nextLink, ...rest } = first;
       return { ...rest, body: linked(first.body, items, null) };
@@ -1684,6 +1892,8 @@ export function createConnectorRuntime({
   return {
     resolve,
     supports,
+    validateOperation,
+    hasDefinition: (connectorId) => definitions.has(connectorId),
     invoke,
     unsupportedReason,
     /** Pack flowActions handlers by action type (flow-actions.mjs). */
@@ -1864,6 +2074,19 @@ const packFail = (packId, message) => {
 };
 /** Per-export validators for the pack-export registry; each throws an Error naming the pack. */
 export const CONNECTOR_PACK_EXPORTS = {
+  connectorDefinitions: {
+    check(value, packId) {
+      if (!isMap(value)) packFail(packId, 'connectorDefinitions must map connector ids to Swagger 2.0 documents');
+      for (const [id, document] of Object.entries(value)) {
+        if (!/^[\w.-]{1,250}$/.test(id)) packFail(packId, `connectorDefinitions.${id} is not a connector id`);
+        try {
+          compileDefinition(document);
+        } catch (error) {
+          packFail(packId, `connectorDefinitions.${id}: ${error.message}`);
+        }
+      }
+    },
+  },
   connectors: {
     check(value, packId) {
       if (!isMap(value)) packFail(packId, 'connectors must map connector ids to { operations }');

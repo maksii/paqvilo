@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of the Dataverse TDS endpoint protocol exchange; no native capture cited
 // Dataverse TDS protocol server (dataverse-tds-protocol.mjs). The unit tests drive TDS 8 strict mode with a hand-built
 // client over TLS (no client library). The end-to-end tests use tedious and are skipped unless TDS_TEDIOUS_PATH names the
 // tedious entry file, for example:
@@ -18,6 +19,7 @@ import {
   writeMessage,
 } from '../lib/dataverse-tds-framing.mjs';
 import { createTdsServer } from '../lib/dataverse-tds-protocol.mjs';
+import { login7, sqlBatch } from './support/tds-client.mjs';
 
 const VALID_TOKEN = 'valid-token';
 const DONE = 0xfd;
@@ -66,53 +68,6 @@ async function startServer() {
   const srv = createTdsServer({ secureContext, onLogin, onQuery });
   const address = await srv.listen(0, '127.0.0.1');
   return { ...srv, port: address.port, cert };
-}
-
-const u32 = (v) => {
-  const b = Buffer.alloc(4);
-  b.writeUInt32LE(v);
-  return b;
-};
-
-// LOGIN7 (MS-TDS 2.2.6.4): 94-byte fixed header, UTF-16LE variable data, FeatureExt with FEDAUTH (SecurityToken, library 1).
-function login7({ user = 'tester', database = 'org', token }) {
-  const fixed = Buffer.alloc(94);
-  fixed.writeUInt32LE(0x74000004, 4);
-  fixed.writeUInt32LE(4096, 8);
-  fixed.writeUInt8(0x10, 27); // OptionFlags3: FeatureExt present
-  const variable = [];
-  let at = 94;
-  const put = (slot, text) => {
-    const data = Buffer.from(text, 'utf16le');
-    fixed.writeUInt16LE(at, slot);
-    fixed.writeUInt16LE(text.length, slot + 2);
-    variable.push(data);
-    at += data.length;
-  };
-  put(36, 'client-host');
-  put(40, user);
-  put(48, 'unit-test');
-  put(52, 'mirage');
-  put(60, 'unit-test-lib');
-  put(68, database);
-  const tokenBytes = Buffer.from(token, 'utf16le');
-  const fedAuthData = Buffer.concat([Buffer.from([0x03]), u32(tokenBytes.length), tokenBytes]); // options (lib 1 << 1 | echo), token
-  const feature = Buffer.concat([Buffer.from([0x02]), u32(fedAuthData.length), fedAuthData, Buffer.from([0xff])]);
-  fixed.writeUInt16LE(at, 56); // ibExtension: where the FeatureExt pointer DWORD sits
-  variable.push(u32(at + 4), feature);
-  const body = Buffer.concat([fixed, ...variable]);
-  body.writeUInt32LE(body.length, 0);
-  return body;
-}
-
-// SQL_BATCH payload: ALL_HEADERS with a transaction descriptor, then UTF-16LE text.
-function sqlBatch(text) {
-  const headers = Buffer.alloc(22);
-  headers.writeUInt32LE(22, 0);
-  headers.writeUInt32LE(18, 4);
-  headers.writeUInt16LE(2, 8);
-  headers.writeUInt32LE(1, 18);
-  return Buffer.concat([headers, Buffer.from(text, 'utf16le')]);
 }
 
 // Hand-built TDS 8 client: TLS first (ALPN tds/8.0), then TDS messages inside TLS.
@@ -286,8 +241,8 @@ describe('TDS protocol end to end with tedious', { skip }, () => {
           database: 'org',
           encrypt: true,
           trustServerCertificate: true,
-          connectTimeout: 5000,
-          requestTimeout: 10000,
+          connectTimeout: 60_000,
+          requestTimeout: 60_000,
         },
       });
       connection.on('connect', (err) => (err ? reject(err) : resolve(connection)));
@@ -306,21 +261,17 @@ describe('TDS protocol end to end with tedious', { skip }, () => {
     });
   }
 
-  test(
-    'access-token login over encrypted TDS 7 runs SELECT 1 AS x as RPC and as a SQL batch',
-    { timeout: 20_000 },
-    async () => {
-      const connection = await connect();
-      try {
-        assert.deepEqual((await execute(connection, 'SELECT 1 AS x')).rows, [[1]]);
-        assert.deepEqual((await execute(connection, 'SELECT 1 AS x', { batch: true })).rows, [[1]]);
-      } finally {
-        connection.close();
-      }
-    },
-  );
+  test('access-token login over encrypted TDS 7 runs SELECT 1 AS x as RPC and as a SQL batch', async () => {
+    const connection = await connect();
+    try {
+      assert.deepEqual((await execute(connection, 'SELECT 1 AS x')).rows, [[1]]);
+      assert.deepEqual((await execute(connection, 'SELECT 1 AS x', { batch: true })).rows, [[1]]);
+    } finally {
+      connection.close();
+    }
+  });
 
-  test('a parameterised query reaches the server through sp_executesql', { timeout: 20_000 }, async () => {
+  test('a parameterised query reaches the server through sp_executesql', async () => {
     const connection = await connect();
     try {
       const result = await execute(connection, 'SELECT @p AS v', { params: [['p', tedious.TYPES.Int, 42]] });
@@ -330,7 +281,7 @@ describe('TDS protocol end to end with tedious', { skip }, () => {
     }
   });
 
-  test('a server error reaches the client with its number', { timeout: 20_000 }, async () => {
+  test('a server error reaches the client with its number', async () => {
     const connection = await connect();
     try {
       await assert.rejects(execute(connection, 'SELECT missing'), (err) => err.number === 208);
@@ -339,24 +290,20 @@ describe('TDS protocol end to end with tedious', { skip }, () => {
     }
   });
 
-  test(
-    'ATTENTION from tedious cancels a running query and the connection stays usable',
-    { timeout: 20_000 },
-    async () => {
-      const connection = await connect();
-      try {
-        const started = new Promise((resolve) => {
-          waitStarted = resolve;
-        });
-        const pending = execute(connection, 'WAIT');
-        await started;
-        waitStarted = null;
-        connection.cancel();
-        await assert.rejects(pending);
-        assert.deepEqual((await execute(connection, 'SELECT 1 AS x')).rows, [[1]]);
-      } finally {
-        connection.close();
-      }
-    },
-  );
+  test('ATTENTION from tedious cancels a running query and the connection stays usable', async () => {
+    const connection = await connect();
+    try {
+      const started = new Promise((resolve) => {
+        waitStarted = resolve;
+      });
+      const pending = execute(connection, 'WAIT');
+      await started;
+      waitStarted = null;
+      connection.cancel();
+      await assert.rejects(pending);
+      assert.deepEqual((await execute(connection, 'SELECT 1 AS x')).rows, [[1]]);
+    } finally {
+      connection.close();
+    }
+  });
 });

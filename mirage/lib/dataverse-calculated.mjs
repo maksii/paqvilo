@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 import { validateDerivedColumns, derivedColumnsOf } from './derived-columns.mjs';
 // Calculated columns (SourceType 1) in the Dataverse API: computed on read, refused on write.
 //
@@ -360,11 +361,11 @@ function computeColumn(api, state, c, mapping, row, column, formula) {
     table,
     column,
     user: c.user ?? null,
-    related: (lookup) => structuredClone(relatedRow(api.store, mapping, row, lookup)),
+    related: (lookup) => cloneStateData(relatedRow(api.store, mapping, row, lookup)),
   };
   const override = state.overrides[`${table}.${column}`];
   if (override) {
-    const value = override(structuredClone(row), ctx);
+    const value = override(cloneStateData(row), ctx);
     if (!isThenable(value)) return value ?? null;
     report(state, {
       code: 'CALCULATED_UNSUPPORTED',
@@ -472,11 +473,13 @@ function reset(api) {
 /** Capability record: contract, or behaviour when the installed api's pack overrides cover every calculated column. */
 function describe(api = null) {
   const overrides = api ? (states.get(api)?.overrides ?? {}) : {};
-  const columns = api
-    ? Object.keys(api.store.state.mappings ?? {}).flatMap((table) =>
-        Object.keys(calculatedColumnsOf(api, table)).map((column) => `${table}.${column}`),
-      )
-    : [];
+  // Without overrides every possible column set has the contract level.
+  const columns =
+    api && Object.keys(overrides).length
+      ? Object.keys(api.store.state.mappings ?? {}).flatMap((table) =>
+          Object.keys(calculatedColumnsOf(api, table)).map((column) => `${table}.${column}`),
+        )
+      : [];
   return {
     name: 'dataverse-calculated',
     version: 1,

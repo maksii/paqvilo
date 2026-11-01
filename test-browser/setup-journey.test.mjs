@@ -1,4 +1,6 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+// @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -31,7 +33,7 @@ after(() => browser?.close());
 test('All settings saves Mirage sourceMaps at site and project scope independently of Lense source maps', async (t) => {
   for (const kind of ['catalogue', 'project'])
     await t.test(kind, async (t) => {
-      const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-source-maps-'));
+      const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-source-maps-'));
       const file = path.join(directory, kind === 'catalogue' ? 'paqvilo.config.yml' : 'mirage.project.yml');
       await fs.writeFile(
         file,
@@ -222,30 +224,34 @@ async function saved(page, click) {
     .filter({ hasText: /^Saved\./ })
     .waitFor();
 }
+// One owned context and page on the setup server, with every setting shown and page errors collected.
+async function openSetup(t, directory, server, viewport) {
+  const context = await browser.newContext();
+  ownedFixture(t).add(async () => {
+    await context.close();
+  });
+  ownedFixture(t).add(async () => {
+    await server.close();
+  });
+  ownedFixture(t).remove(async () => {
+    await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  });
+  const page = await context.newPage();
+  if (viewport) await page.setViewportSize(viewport);
+  await allSettings(page);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  return { page, errors };
+}
 const stageLink = (page, name) => page.getByRole('navigation', { name: 'Setup stages' }).getByRole('link', { name });
 
 test(
   'setup journey: template, stage rail, packs, setting editor, restart command and planned-to-live system map',
   { timeout: 120000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-journey-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-journey-'));
     const server = await journeyServer(directory);
-    const context = await browser.newContext();
-    ownedFixture(t).add(async () => {
-      await context.close();
-    });
-    ownedFixture(t).add(async () => {
-      await server.close();
-    });
-    ownedFixture(t).remove(async () => {
-      await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    });
-    const page = await context.newPage();
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await allSettings(page);
-    page.setDefaultTimeout(10_000);
-    const errors = [];
-    page.on('pageerror', (error) => errors.push(error.message));
+    const { page, errors } = await openSetup(t, directory, server, { width: 1280, height: 900 });
     const file = path.join(directory, 'paqvilo.config.yml'),
       read = async () => YAML.parse(await fs.readFile(file, 'utf8'));
 
@@ -350,7 +356,7 @@ test(
     await system.locator('.ui-dashboard[data-dashboard-mode=planned]').waitFor();
     assert.ok((await system.locator('[data-node]').count()) > 0);
     server.fake.live = true;
-    await system.locator('.ui-dashboard[data-dashboard-mode=live]').waitFor({ timeout: 20_000 });
+    await system.locator('.ui-dashboard[data-dashboard-mode=live]').waitFor();
     await system.locator('[data-node="host:portal"]').click();
     // The drawer names the product of the clicked node; the node's own label stays a fact.
     await system
@@ -365,7 +371,7 @@ test(
     );
     assert.match(
       await verify.getByRole('link', { name: /Open the live system map/ }).getAttribute('href'),
-      /\/_sim\/#dashboard$/,
+      /\/_sim\/#health$/,
     );
 
     // Narrow screens keep every opened section inside the viewport.
@@ -406,7 +412,7 @@ test(
   'identity and persona forms write only changed keys and leave declared users and app registrations alone',
   { timeout: 60000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-identity-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-identity-'));
     const file = path.join(directory, 'paqvilo.config.yml'),
       read = async () => YAML.parse(await fs.readFile(file, 'utf8'));
     const application = {
@@ -435,21 +441,7 @@ test(
       }),
     );
     const server = await startSetupServer({ directory, processEnv: {} });
-    const context = await browser.newContext();
-    ownedFixture(t).add(async () => {
-      await context.close();
-    });
-    ownedFixture(t).add(async () => {
-      await server.close();
-    });
-    ownedFixture(t).remove(async () => {
-      await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    });
-    const page = await context.newPage();
-    await allSettings(page);
-    page.setDefaultTimeout(10_000);
-    const errors = [];
-    page.on('pageerror', (error) => errors.push(error.message));
+    const { page, errors } = await openSetup(t, directory, server);
     await page.goto(server.url + '#identity');
     await page.locator('#identity summary').filter({ hasText: 'secure address and tenant' }).click();
     const identity = page.locator('form[data-form=identity][data-site=invented]');
@@ -487,11 +479,12 @@ test(
   },
 );
 
+// @test-kind contract+security: setup shows secret references only, never values
 test(
   'setting rows show current values, references only for secrets, and Settings reflect the file',
   { timeout: 60000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-values-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-values-'));
     const file = path.join(directory, 'paqvilo.config.yml'),
       projectFile = path.join(directory, 'alpha.project.yml');
     const secrets = { 'invented-vault/api-key': { source: 'environment', variable: 'INVENTED_PRIVATE_VARIABLE' } };
@@ -520,21 +513,7 @@ test(
       }),
     );
     const server = await startSetupServer({ directory, processEnv: {} });
-    const context = await browser.newContext();
-    ownedFixture(t).add(async () => {
-      await context.close();
-    });
-    ownedFixture(t).add(async () => {
-      await server.close();
-    });
-    ownedFixture(t).remove(async () => {
-      await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    });
-    const page = await context.newPage();
-    await allSettings(page);
-    page.setDefaultTimeout(10_000);
-    const errors = [];
-    page.on('pageerror', (error) => errors.push(error.message));
+    const { page, errors } = await openSetup(t, directory, server);
     await page.goto(server.url + '#settings');
     assert.equal(await page.locator('#settings-include-caution').isChecked(), true, 'includeCaution reflects the file');
     await page.locator('#settings summary').filter({ hasText: 'Browser profile' }).click();

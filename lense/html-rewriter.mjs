@@ -10,9 +10,10 @@ import { orderedMap } from './async-map.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { racyStat } from './file-cache.mjs';
 import { readLocalFile } from './local-file.mjs';
 import { diffLines } from './line-diff.mjs';
-import { urlKey, sourceText, createSourceReader, isSourceFile } from './portal-model.mjs';
+import { urlKey, sourceText, createSourceReader, isSourceFile, indexingPass } from './portal-model.mjs';
 import { applyRenderEdits, finalizePortalProvenance } from '../mirage/lib/render-provenance.mjs';
 
 /** URL prefix of everything the overlay answers itself; nothing under it exists on the portal. */
@@ -32,6 +33,8 @@ const sourceCacheKey = (file) => {
 };
 const sameStamp = (a, b) =>
   a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+// A stamp recorded while racy (racyStat) never proves later that its bytes are current.
+const stampOf = (file, real, info) => ({ file, real, info, racy: racyStat(info) });
 const MAX_CONTEXT = 8;
 // the longest text a {{ value }} is expected to render to
 const MAX_VALUE_LENGTH = 50_000;
@@ -711,26 +714,29 @@ export class HtmlRewriter {
     const raw = new Map();
     const valid = new Map();
     const stamps = new Map();
+    // The baseline blobs refresh() compares changed sources with load while the sources are read.
+    const baselines = baseline.preloadAsync?.(
+      model.inlineSources.filter((src) => changed.has(src.file)).map((src) => src.file),
+    );
     const root = model.sourceDir ? await fs.promises.realpath(model.sourceDir) : null;
+    // Each stat/realpath pair runs together: every sequential fs promise costs a thread-pool round trip.
     await orderedMap(files, 16, async (file) => {
       const key = sourceCacheKey(file);
       try {
-        const real = await fs.promises.realpath(file);
+        const [real, before] = await Promise.all([fs.promises.realpath(file), fs.promises.stat(file)]);
         const relative = root ? path.relative(root, real) : null;
         if (
           root &&
           (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
         )
           throw new Error('outside source root');
-        const before = await fs.promises.stat(file);
         if (!before.isFile()) throw new Error('not a regular source file');
         const text = await readLocalFile(file, { root, maxBytes: Number.MAX_SAFE_INTEGER, encoding: 'utf8' });
-        const after = await fs.promises.stat(file);
-        if (!sameStamp(before, after) || (await fs.promises.realpath(file)) !== real)
-          throw new Error('source changed during startup');
+        const [after, current] = await Promise.all([fs.promises.stat(file), fs.promises.realpath(file)]);
+        if (!sameStamp(before, after) || current !== real) throw new Error('source changed during startup');
         raw.set(key, text.replace(/^\uFEFF/, ''));
         valid.set(key, true);
-        stamps.set(key, { file, real, info: after });
+        stamps.set(key, stampOf(file, real, after));
       } catch {
         // Retry only unstable/unreadable entries through the constructor's normal guarded
         // read. A save finishing during startup must not leave a permanently cached miss.
@@ -740,11 +746,8 @@ export class HtmlRewriter {
     // prefetched snapshot once all reads finish; the constructor retries only stale entries.
     await orderedMap(stamps, 16, async ([key, stamp]) => {
       try {
-        if (
-          sameStamp(stamp.info, await fs.promises.stat(stamp.file)) &&
-          (await fs.promises.realpath(stamp.file)) === stamp.real
-        )
-          return;
+        const [info, real] = await Promise.all([fs.promises.stat(stamp.file), fs.promises.realpath(stamp.file)]);
+        if (sameStamp(stamp.info, info) && real === stamp.real) return;
       } catch {
         /* removed or replaced source */
       }
@@ -752,6 +755,7 @@ export class HtmlRewriter {
       valid.delete(key);
       stamps.delete(key);
     });
+    await baselines;
     return new HtmlRewriter(options, { raw, valid, changed, stamps });
   }
 
@@ -779,7 +783,12 @@ export class HtmlRewriter {
   }
 
   /** Re-reads changed sources, or all sources when no file list is supplied. */
-  refresh(files, { revalidate = false } = {}) {
+  refresh(files, options) {
+    // One synchronous index build: source checks resolve each directory once, not once per source.
+    indexingPass(() => this.#refresh(files, options));
+  }
+
+  #refresh(files, { revalidate = false } = {}) {
     const invalidate = (key) => {
       this.sourceCache.delete(key);
       this.sourceStamps.delete(key);
@@ -788,11 +797,18 @@ export class HtmlRewriter {
       this.sourceCache.clear();
       this.sourceStamps.clear();
     } else for (const file of files) invalidate(sourceCacheKey(file));
+    // Native realpath resolves like the startup prefetch (fs.promises.realpath), so stamps it took stay
+    // comparable (8.3 names, drive-letter case), without lstat-ing every path component.
     if (revalidate)
       for (const key of this.sourceCache.keys()) {
         const stamp = this.sourceStamps.get(key);
         try {
-          if (stamp && sameStamp(stamp.info, fs.statSync(stamp.file)) && fs.realpathSync(stamp.file) === stamp.real)
+          if (
+            stamp &&
+            !stamp.racy &&
+            sameStamp(stamp.info, fs.statSync(stamp.file)) &&
+            fs.realpathSync.native(stamp.file) === stamp.real
+          )
             continue;
         } catch {
           /* removed or replaced source */
@@ -968,12 +984,12 @@ export class HtmlRewriter {
       // never label old bytes with the new file's stamp and then retain them indefinitely.
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          const real = fs.realpathSync(src.file);
+          const real = fs.realpathSync.native(src.file);
           const before = fs.statSync(src.file);
           text = readText(src.file);
           const after = fs.statSync(src.file);
-          if (text != null && sameStamp(before, after) && fs.realpathSync(src.file) === real) {
-            this.sourceStamps.set(key, { file: src.file, real, info: after });
+          if (text != null && sameStamp(before, after) && fs.realpathSync.native(src.file) === real) {
+            this.sourceStamps.set(key, stampOf(src.file, real, after));
             break;
           }
         } catch {

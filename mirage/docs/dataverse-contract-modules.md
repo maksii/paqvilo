@@ -165,7 +165,7 @@ A table enforces transitions when the install option `transitions` names it, or 
 
 ## Cascade
 
-Module: `mirage/lib/dataverse-cascade.mjs`. Capability record: level `behaviour` (Assign executes), operation levels `CascadeAssign` behaviour, `CascadeShare`, `CascadeUnshare`, `CascadeReparent`, `CascadeMerge` contract. Requires `metadata:relationship cascade`.
+Module: `mirage/lib/dataverse-cascade.mjs`. Capability record: level `behaviour`, every operation (`CascadeAssign`, `CascadeShare`, `CascadeUnshare`, `CascadeReparent`, `CascadeMerge`) behaviour. Requires `metadata:relationship cascade`.
 
 **Behaviour.** When an update changes a row's `ownerid`, the afterWrite hook gives its one-to-many children the new owner inside the write's transaction. Before each child is written, the caller's Assign privilege on that child is checked (`api.principals.authorize`, operation `assign`); a refusal fails the whole write, the parent included. A host without `api.principals` (portal only) cascades without that check. The children are written through `store.updateRecord` with the caller's identity marked admin, which skips only the portal table-permission layer, and their row journal rolls back with the write. A child whose owner changed applies its own relationships the same way; a visited set bounds the depth. Children already owned by the new owner are not written. Only `ownerid` is written.
 
@@ -178,18 +178,17 @@ Module: `mirage/lib/dataverse-cascade.mjs`. Capability record: level `behaviour`
 
 `UserOwned` means "owned by the same user as the primary row". The primary row already has the new owner after the write, so the owner from before the write is compared.
 
-**Inventory / contract.** Share, Unshare, Reparent and Merge are not executed: no access is granted or revoked, no row is re-parented, no child is merged. Nothing answers success for them.
+**Share, Unshare, Reparent, Merge** (Microsoft Learn "Configure table relationship cascading behavior"). A share of a row (GrantAccess, ModifyAccess, RevokeAccess from any entry point, `dataverse-security.mjs` grantAccessNow and revokeAccessNow) reaches the rows that reference it through a relationship whose Share (Unshare for a revoke) is `Cascade`, `Active` (statecode 0) or `UserOwned` (owned by the parent's owner), recursively, as inherited access: `principalobjectaccess.inheritedaccessrightsmask` beside any direct share, counted in access checks and RetrievePrincipalAccess. When an update changes a row's lookup through a relationship whose Reparent cascades, the row's inherited access becomes its new parent's (the owner with every right but Create, and the parent's shares), and its own cascading children follow. Merge moves the subordinate's children of every relationship whose Merge is not `NoCascade` (`dataverse-record-messages.mjs`). The children's own GrantAccess/RevokeAccess pipelines do not run (native cascade pipelines are uncaptured).
 
 **Diagnostics.** Each is emitted once per key and again only after reset (every reseed):
 
 - `CASCADE_ASSIGN_DEFAULTED`: once per relationship (parent table, child table, lookup column) whose metadata has no Assign value, when an owner change reaches it. NoCascade is applied.
-- `CASCADE_SHARE_NOT_SIMULATED`, `CASCADE_UNSHARE_NOT_SIMULATED`, `CASCADE_REPARENT_NOT_SIMULATED`, `CASCADE_MERGE_NOT_SIMULATED`: once per table that declares that cascade with a value other than NoCascade. Checked at install and on every reseed. The default extensions seed standard metadata that declares Share cascades on many standard tables, so these fire for those tables too.
 
 The host reads diagnostics from `api.cascades.diagnostics()`.
 
 **Pack override.** None. The module has no pack export.
 
-**Limits.** Only `ownerid` is written, not `owninguser`, `owningteam` or `owningbusinessunit`. Active workflows and business rules on reassigned rows are not deactivated, which the platform does. `describe().seams` names the existing functions a Share or Merge cascade would call; none is wired.
+**Limits.** Only `ownerid` is written, not `owninguser`, `owningteam` or `owningbusinessunit`. Active workflows and business rules on reassigned rows are not deactivated, which the platform does.
 
 ## Rollup
 
@@ -269,7 +268,7 @@ A provider's write runs inside the operation's transaction (stage 30, the core t
 
 **Reads.** Before a Web API read answers, the records layer runs the `source` record hook. A collection, `$count` or navigation read calls the provider's `retrieveMultiple({ select, filter, orderby, top }, ctx)`: `select`, `filter` and `orderby` are the caller's `$select`, `$filter` and `$orderby` text, `top` is `$top` as a number, each `null` when absent. A single record, property or `$value` read calls `retrieve(id, ctx)`; `null` means the row does not exist (404). An alternate-key read asks `retrieveMultiple` and matches the key locally. The answer replaces the table's mirror rows (a returned row merges over its mirror row) without running write hooks, and the read then answers through the shared read path, so `$filter`, `$select`, `$orderby`, paging, `$expand`, column security and masking apply to the provider's rows as to any rows. `api.virtualProviders.query(table, { select, filter, orderby, top })` calls `retrieveMultiple` directly and resolves with its rows, or `null` when the table is not virtual, declares the local fallback, or its provider has no `retrieveMultiple`. Portal reads outside the Web API read the mirror as the last Web API read or write left it.
 
-**SDK reads.** SDK `Retrieve`, `RetrieveMultiple` and FetchXML (a CLR plug-in's `IOrganizationService`, the flow Dataverse connector) are synchronous and never read the mirror. A virtual table without a provider (and without the local fallback) answers them with 501 `VirtualProviderMissing`. A table with a provider is served only through the provider's optional synchronous operations; without them the read answers 501 `SdkVirtualReadUnsupported`, and a FetchXML read of a virtual table always does (no request shape carries FetchXML). `api.virtualProviders.status(table)` answers `{ virtual, provider, fallback }` synchronously.
+**SDK reads.** SDK `Retrieve`, `RetrieveMultiple` and FetchXML (a CLR plug-in's `IOrganizationService`, the flow Dataverse connector) are synchronous and never read the mirror. A virtual table without a provider (and without the local fallback) answers them with 501 `VirtualProviderMissing`. A table with a provider is served only through the provider's optional synchronous operations; without them the read answers 501 `SdkVirtualReadUnsupported`, and a FetchXML read of a virtual table always does (no request shape carries FetchXML). Provider-backed SDK reads execute the registered Retrieve/RetrieveMultiple pre/main/post pipeline over the provider result, including query/result changes and declared backend grants. `api.virtualProviders.status(table)` answers `{ virtual, provider, fallback }` synchronously.
 
 | Provider operation                | Called for                                                  | Arguments                                                                            | Answer                                                                      |
 | --------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |

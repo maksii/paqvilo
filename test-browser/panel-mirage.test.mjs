@@ -1,16 +1,20 @@
+// @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // The dev panel in Mirage mode with a portal export and Solution root.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { OverlaySession } from '../lense/session.mjs';
 import { attachSession } from '../lense/browser.mjs';
 import { enablePanel } from '../lense/panel.mjs';
 import { SITE } from '../test/fixture.mjs';
 import { createSimulator } from '../mirage/server.mjs';
+import { cachedImplementationSourceFingerprint } from '../mirage/lib/evidence.mjs';
 
 const PORTAL = {
   'website.yml': 'adx_websiteid: site\nadx_name: Panel fixture\nadx_headerwebtemplateid: header',
@@ -49,16 +53,48 @@ const write = (root, files) => {
     fs.writeFileSync(path.join(root, name), body);
   }
 };
-// Resolves once the panel has asked the editor to open one more source.
-const nextOpen = async (opened, click) => {
-  const before = opened.length;
-  await click();
-  for (const deadline = Date.now() + 5000; opened.length === before && Date.now() < deadline;)
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(opened.length, before + 1, 'the panel opened one source');
-  return opened.at(-1);
+// The editor-open requests of a panel; next(click) resolves once the click has asked for one more source.
+const editorOpens = () => {
+  const opened = [];
+  let arrived = () => {};
+  return {
+    open: async (...args) => {
+      opened.push(args);
+      arrived();
+      return null;
+    },
+    async next(click) {
+      const before = opened.length;
+      const next = new Promise((resolve) => (arrived = resolve));
+      await click();
+      await next;
+      assert.equal(opened.length, before + 1, 'the panel opened one source');
+      return opened.at(-1);
+    },
+  };
 };
 
+// Regression: server.mjs hashed its implementation at import without seeding the comparison
+// cache, so the first _sim state read hashed the whole tree again (about 10 s on a loaded
+// Windows runner) and the administration page timed out before it rendered.
+test('the first _sim state read reuses the implementation fingerprint taken when the Mirage loaded', async (t) => {
+  const mirageRoot = path.dirname(fileURLToPath(new URL('../mirage/server.mjs', import.meta.url)));
+  // Importing the server starts hashing the loaded implementation in the background; join that walk first.
+  await cachedImplementationSourceFingerprint(mirageRoot);
+  const reads = [];
+  const readFile = fsp.readFile;
+  fsp.readFile = (file, ...rest) => {
+    if (path.resolve(String(file)).startsWith(mirageRoot + path.sep)) reads.push(file);
+    return readFile(file, ...rest);
+  };
+  t.after(() => {
+    fsp.readFile = readFile;
+  });
+  await cachedImplementationSourceFingerprint(mirageRoot);
+  assert.deepEqual(reads, [], 'an unchanged implementation tree is not read again');
+});
+
+// @test-kind contract+security: hostile diagnostic text renders as text in the Mirage panel
 test(
   'Mirage panel inspects permissions, templates, forms and Solution sources, signs this browser in and out, and switches permissions and scenario',
   { timeout: 180_000 },
@@ -128,7 +164,6 @@ test(
       args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
     });
     const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1400, height: 1000 } });
-    context.setDefaultTimeout(12_000);
     await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: app.url });
     await context.route('**/*', async (route) =>
       new URL(route.request().url()).origin === app.url ? route.fallback() : route.abort(),
@@ -148,13 +183,8 @@ test(
     // The tab exists before interception attaches, so its first document is never reloaded as a late tab.
     const page = await context.newPage();
     detach = await attachSession(context, session);
-    const opened = [];
-    panel = enablePanel(context, session, {
-      open: async (...args) => {
-        opened.push(args);
-        return null;
-      },
-    });
+    const editor = editorOpens();
+    panel = enablePanel(context, session, { open: editor.open });
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     const panelLocator = (selector) => page.locator(`#paqvilo-panel ${selector}`);
@@ -165,7 +195,8 @@ test(
       await page.screenshot({ path: path.join(process.env.PAQVILO_EVIDENCE_DIR, `${name}.png`) });
     };
     const openTab = async (tab) => {
-      await panelLocator('.pill').waitFor({ state: 'attached' });
+      // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
+      await panelLocator('.pill:visible, .wrap.open').first().waitFor();
       if (await panelLocator('.pill').isVisible()) await panelLocator('.pill').click();
       await panelLocator(`.tabs [data-act="tab"][data-v="${tab}"]`).click();
     };
@@ -204,6 +235,8 @@ test(
         }),
       }),
     );
+    // The Issues row comes from the panel's response observer: a request before it is ready is not seen.
+    await panel.readyFor(page);
     await page.evaluate(() => fetch('/_api/broken'));
     await openTab('issues');
     await panelLocator('.body')
@@ -228,7 +261,7 @@ test(
     await evidence('panel-inspect-public-page');
     assert.equal(
       (
-        await nextOpen(opened, () =>
+        await editor.next(() =>
           panelLocator('[data-group="runtime-forms"] .row')
             .filter({ hasText: 'Solution FormXml' })
             .locator('button.main')
@@ -240,7 +273,7 @@ test(
     );
     assert.deepEqual(
       (
-        await nextOpen(opened, () =>
+        await editor.next(() =>
           panelLocator('[data-group="runtime-columns"] .row')
             .filter({ hasText: 'contact.fullname' })
             .locator('button.main')
@@ -252,7 +285,7 @@ test(
     );
     assert.deepEqual(
       (
-        await nextOpen(opened, () =>
+        await editor.next(() =>
           panelLocator('[data-group="runtime-settings"] .row')
             .filter({ hasText: 'Feature/Banner' })
             .locator('button.main')
@@ -323,13 +356,25 @@ test(
     const adminOpened = context.waitForEvent('page');
     await panelLocator('[data-act="sim"][data-hash^="audit?path="]').first().click();
     const admin = await adminOpened;
-    await admin.getByRole('heading', { name: 'Request audit', exact: true }).waitFor();
-    assert.equal(await admin.getByLabel('Filter audit by path', { exact: true }).inputValue(), '/secure/');
-    await admin.waitForFunction(() => document.querySelector('tbody')?.textContent.includes('/secure/'));
-    // The panel would be injected on load; a short quiet period proves it stays absent.
+    // The old #audit?path= address lands on Activity filtered by the page path.
+    await admin.getByRole('heading', { name: 'Activity', exact: true }).waitFor();
+    assert.equal(await admin.evaluate(() => location.hash), '#activity?path=%2Fsecure%2F');
+    await admin.getByRole('button', { name: 'Remove filter Path: /secure/' }).waitFor();
+    await admin.waitForFunction(() => document.querySelector('#content tbody')?.textContent.includes('/secure/'));
+    // No event marks a draw that never happens. Panel draws run 250 ms after a page event (schedule
+    // in lense/panel.mjs); a quiet period beyond that debounce proves the panel stays absent.
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.equal(await admin.locator('#paqvilo-panel').count(), 0);
     await admin.close();
+    // Diagnostics opens the Findings tab of Activity (DV-N4-1).
+    const findingsOpened = context.waitForEvent('page');
+    await panelLocator('[data-act="sim"][data-hash="activity?tab=findings"]').first().click();
+    const findings = await findingsOpened;
+    await findings.waitForFunction(
+      () => document.querySelector('#activity-tabs-tab-findings')?.getAttribute('aria-selected') === 'true',
+    );
+    assert.equal(await findings.evaluate(() => location.hash), '#activity?tab=findings');
+    await findings.close();
 
     // Permission enforcement and a saved scenario (after confirmation) apply through the Mirage.
     await openTab('tweaks');
@@ -353,6 +398,16 @@ test(
       'the confirmation is revealed inside the scrolled Tweaks panel',
     );
     await evidence('panel-tweaks-confirmation');
+    // Regression: the sign-out waited for the Mirage's reload for at most 4 s, then ran in the
+    // document that a slower reload destroyed, and this browser stayed signed in (hosted Edge).
+    // Holding the reload's document past that old fallback proves the sign-out waits for the reload itself.
+    const reloadHeld = async (route) => {
+      if (!route.request().isNavigationRequest()) return route.fallback();
+      await page.unroute(`${app.url}/secure/`, reloadHeld);
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      return route.fallback();
+    };
+    await page.route(`${app.url}/secure/`, reloadHeld);
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'load' }),
       panelLocator('[data-act="confirm-yes"]').click(),
@@ -454,7 +509,6 @@ test(
       args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
     });
     const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1400, height: 1000 } });
-    context.setDefaultTimeout(15_000);
     // Only the Mirage and its local identity provider (both on loopback) are reachable.
     await context.route('**/*', async (route) =>
       [app.url, idp.origin].includes(new URL(route.request().url()).origin) ? route.fallback() : route.abort(),
@@ -485,7 +539,8 @@ test(
       navigations.some((url) => new URL(url).origin === idp.origin && new URL(url).pathname.endsWith(route));
     const panelLocator = (selector) => page.locator(`#paqvilo-panel ${selector}`);
     const openTab = async (tab) => {
-      await panelLocator('.pill').waitFor({ state: 'attached' });
+      // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
+      await panelLocator('.pill:visible, .wrap.open').first().waitFor();
       if (await panelLocator('.pill').isVisible()) await panelLocator('.pill').click();
       await panelLocator(`.tabs [data-act="tab"][data-v="${tab}"]`).click();
     };

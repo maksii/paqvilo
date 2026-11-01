@@ -5,6 +5,7 @@ import { createMetadataService, objectTypeCode as typeCodeOf } from './dataverse
 import { createChangeLog } from './dataverse-changes.mjs';
 import { hashSecret, verifySecret } from './dataverse-auth.mjs';
 import { seedManagedIdentityRows } from './dataverse-managed-identity.mjs';
+import { pagedRecordsOf } from './record-tables.mjs';
 import { createOperationRegistry } from './dataverse-operations.mjs';
 import { createServiceProtection } from './dataverse-limits.mjs';
 import { standardGlobalOptionSets, fieldsWithStandard } from './dataverse-standard.mjs';
@@ -142,6 +143,11 @@ function extensionDiagnostics(forward) {
 function maxRowVersion(state) {
   let max = 0;
   for (const rows of Object.values(state.tables ?? {})) {
+    const stored = pagedRecordsOf(rows);
+    if (stored) {
+      max = Math.max(max, stored.maximumVersion());
+      continue;
+    }
     for (const row of Array.isArray(rows) ? rows : []) {
       const version = Number(row?.versionnumber);
       if (Number.isSafeInteger(version) && version > max) max = version;
@@ -157,7 +163,9 @@ export async function createOrganizationRuntime(options) {
     // transaction. Otherwise each installer clones and checkpoints the complete
     // business dataset, even during an unchanged-state restart. No listener is
     // published until this commits; failed composition restores the old state.
-    return await options.store.transact(async () => (organization = await composeOrganizationRuntime(options)), {
+    const compose = async () => (organization = await composeOrganizationRuntime(options));
+    if (options.initializing) return await options.store.initialize(compose);
+    return await options.store.transact(compose, {
       isolated: true,
       cloneResult: false,
       skipSaveIfUnchanged: true,
@@ -272,7 +280,7 @@ async function composeOrganizationRuntime({
 
   const principals = createPrincipals(store, { organizationId, tenantId, objectTypeCode: typeCodeOf, schema });
   // Extension operations (dataverse-operations.mjs) answer before the built-in functions and actions.
-  const operations = createOperationRegistry();
+  const operations = createOperationRegistry({ store });
   const metadata = createMetadataService({
     organizationId,
     lcid: settings.localeId,
@@ -285,6 +293,12 @@ async function composeOrganizationRuntime({
           ([name]) => !(Object.hasOwn(INTERNAL_TABLE_MAPPINGS, name) && INTERNAL_TABLE_MAPPINGS[name]),
         ),
       ),
+    mapping: (logical) =>
+      Object.hasOwn(INTERNAL_TABLE_MAPPINGS, logical) && INTERNAL_TABLE_MAPPINGS[logical]
+        ? null
+        : Object.hasOwn(store.state.mappings, logical)
+          ? store.state.mappings[logical]
+          : null,
     virtualTables: () => store.virtualTables?.() ?? {},
     globalOptionSets: () => ({ ...standardGlobalOptionSets(), ...(store.state.dataverse?.globalOptionSets ?? {}) }),
     changeLog: () => store.state.dataverse?.metadataLog ?? [],
@@ -340,7 +354,7 @@ async function composeOrganizationRuntime({
       routes.push({ match, handler, anonymous });
     },
     // A changeset or a SOAP transaction runs fn as one unit against this api's store and change log (see runAtomic).
-    runAtomic: (fn) => runAtomic(api, fn),
+    runAtomic: (fn, options) => runAtomic(api, fn, options),
     dataRevision: () => store.dataRevision?.(),
     // Host providers (organization-host.mjs) and the runtime's packs, set before any extension installs.
     // An explicit `secrets` resolver option wins over providers.secrets; api.secrets stays its alias for the message handlers.
@@ -350,6 +364,9 @@ async function composeOrganizationRuntime({
     diagnostic: extensionDiagnostics(diagnostic),
   };
   api.secrets = api.providers.secrets;
+  // The plug-in SDK bridge holds only the store; it reaches the organization's message services (metadata, version) through
+  // the store's record entries (plugin-sdk-messages.mjs organizationApiOf).
+  Object.defineProperty(recordHandlers, 'organizationApi', { value: api, configurable: true });
   // Metadata functions over the metadata service's response builders.
   const metadataFunction = (name, respond, csdl) =>
     operations.register({
@@ -454,6 +471,9 @@ async function composeOrganizationRuntime({
     store.hierarchyResolver = (table, id, mode) => api.hierarchy.resolve(table, id, mode);
     api.hierarchyQueryWired = true;
   }
+  // Plug-in SDK values type the platform columns a Solution export omits (createdon, transactioncurrencyid,
+  // exchangerate, <money>_base) from the organization's attribute metadata.
+  store.platformFields = (logical) => metadata.recordFields(logical, { includeNonOData: true });
   // The organization's row-version counter starts above every stored row version, so the first write through the pipeline
   // (nextRowVersion) never stamps a row with a version at or below the one it carries (a seeded or restored state).
   store.state.rowVersion = Math.max(Number(store.state.rowVersion ?? 0), maxRowVersion(store.state));
@@ -484,7 +504,7 @@ async function composeOrganizationRuntime({
     environmentId,
     requests: () => [],
     runOwned,
-    runAtomic: (fn) => runAtomic(api, fn),
+    runAtomic: (fn, options) => runAtomic(api, fn, options),
     read: (fn) =>
       store.transact(fn, { nested: true, skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true }),
     reseed: async () => {

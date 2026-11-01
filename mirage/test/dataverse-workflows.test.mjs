@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of classic workflows and ExecuteWorkflow runs; no native capture cited
 // Workflows in the Dataverse API: seeded workflow rows from Solution sources, activation on PATCH, ExecuteWorkflow (background
 // and real-time, classic and cloud), the documented refusals, and the trusted classic handler contract.
 import { describe, it, before, after } from 'node:test';
@@ -18,6 +19,10 @@ import {
   workflowsWithActivation,
 } from '../lib/dataverse-workflows.mjs';
 import { createSimulator } from '../server.mjs';
+import { settleCommittedWork } from '../lib/committed-work.mjs';
+import { createTraceStore } from '../lib/trace-store.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { bearerCall } from './support/web-api.mjs';
 
 const APP_ID = '22222222-2222-2222-2222-222222222222';
 const PUBLIC_APP_ID = '44444444-4444-4444-4444-444444444444';
@@ -219,31 +224,20 @@ describe('dataverse workflows: rows, activation and ExecuteWorkflow over HTTP', 
     return (await response.json()).access_token;
   }
 
-  // One request. A JSON body is serialised. The default token is the System Administrator application.
-  const call = (path, { token = appToken, method = 'GET', body } = {}) =>
-    fetch(`${origin}${path}`, {
-      method,
-      signal: AbortSignal.timeout(10_000),
-      headers: {
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+  // One request. The default token is the System Administrator application.
+  const call = (path, options) => bearerCall(origin, () => appToken)(path, options);
   const webApi = (suffix) => `/api/data/v9.2/${suffix}`;
   const executeOf = (id) => webApi(`workflows(${id})/${CRM}ExecuteWorkflow`);
   const widgetRef = { EntityId: WIDGET };
   const activationOf = (id) => uuidV5(organizationId, `workflow-activation:${id}`);
   const row = async (logical, id) => (await call(webApi(`${logical}(${id})`))).json();
 
-  // The job of an asynchronous run ends in a final state; poll its row until it does.
+  // An ExecuteWorkflow run is a system job on the store's scheduler (dataverse-async.mjs): settle it, then read its row once.
   async function finished(jobId) {
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      const job = await row('asyncoperations', jobId);
-      if (job.statecode === 3) return job;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    throw new Error(`job ${jobId} did not finish`);
+    await settleCommittedWork(store, []);
+    const job = await row('asyncoperations', jobId);
+    assert.equal(job.statecode, 3, `job ${jobId} finished`);
+    return job;
   }
 
   async function errorOf(response) {
@@ -333,13 +327,25 @@ describe('dataverse workflows: rows, activation and ExecuteWorkflow over HTTP', 
     assert.equal(store.tableRows('contoso_widget')[0].status, 88);
   });
 
-  it('runs an exported cloud flow as a background job that completes', async () => {
-    const { asyncoperationid } = await (await call(executeOf(WF(6)), { method: 'POST', body: widgetRef })).json();
-    const job = await finished(asyncoperationid);
-    assert.equal(job.operationtype, 10);
-    assert.equal(job.statuscode, 30);
+  it('runs an exported cloud flow as a background job that completes; its flow-run span carries the flow name', async () => {
+    // A trace store for this run only (data.mjs and the flow runtime read store.traces per call).
+    store.traces = createTraceStore();
+    try {
+      const { asyncoperationid } = await (await call(executeOf(WF(6)), { method: 'POST', body: widgetRef })).json();
+      const job = await finished(asyncoperationid);
+      assert.equal(job.operationtype, 10);
+      assert.equal(job.statuscode, 30);
+      const runs = store.traces.spans({ kind: 'flow-run' }).items;
+      assert.deepEqual(
+        runs.map((span) => [span.name, span.attributes.trigger]),
+        [['Invented 06', 'ExecuteWorkflow']],
+      );
+    } finally {
+      delete store.traces;
+    }
   });
 
+  // @test-kind unproven+security: local model of the workflow privilege check
   it('refuses a call from a user with no roles on the workflow privilege', async () => {
     const none = await errorOf(await call(executeOf(WF(1)), { method: 'POST', body: widgetRef, token: noneToken }));
     assert.equal(none.code, '0x80040220');
@@ -444,8 +450,9 @@ describe('dataverse workflows: rows, activation and ExecuteWorkflow over HTTP', 
 });
 
 describe('dataverse workflows: Solution sources and handler packs', () => {
+  // @test-kind contract: Paqvilo reads Solution workflow sources
   it('reads classic and cloud workflow data files with their XAML and JSON text', async (t) => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-workflows-'));
+    const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-workflows-'));
     t.after(() => fs.rm(dir, { recursive: true, force: true }));
     const folder = path.join(dir, 'Workflows');
     await fs.mkdir(folder, { recursive: true });
@@ -473,6 +480,7 @@ describe('dataverse workflows: Solution sources and handler packs', () => {
     assert.equal(byId[cloud].clientdata, '{"properties":{}}');
   });
 
+  // @test-kind contract: Paqvilo's trusted classic handler pack contract
   it('gives each handler one key, and refuses a duplicate across packs or a non-function', () => {
     const handler = () => ({});
     assert.equal(workflowHandlers([{ id: 'a', workflows: { [WF(40)]: handler } }]).get(WF(40)), handler);
@@ -540,16 +548,6 @@ function triggerState() {
   return state;
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-// Polls the store until the predicate holds or the time is up; returns whether it held.
-async function until(predicate, ms = 2000) {
-  for (let waited = 0; waited < ms; waited += 10) {
-    if (predicate()) return true;
-    await sleep(10);
-  }
-  return predicate();
-}
-
 describe('dataverse workflows: classic triggers on Dataverse writes', () => {
   let api;
   let store;
@@ -608,7 +606,6 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
   const call = (path, { method = 'GET', body } = {}) =>
     fetch(`${origin}${path}`, {
       method,
-      signal: AbortSignal.timeout(10_000),
       headers: {
         authorization: `Bearer ${appToken}`,
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
@@ -627,6 +624,10 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
           (regarding === undefined || job.regardingobjectid?.id === regarding),
       );
   const finishedJob = (name, regarding) => jobsFor(name, regarding).find((job) => job.statecode === 3);
+  // A background trigger's Ready row commits with the write and the store's committed-job runner runs it later
+  // (dataverse-workflows.mjs stageBackgroundRuns) on the store's scheduler: once settled, every job a write started has
+  // its final state.
+  const settled = () => settleCommittedWork(store, []);
 
   async function create(body) {
     const response = await call(webApi('contoso_widgets'), { method: 'POST', body });
@@ -636,8 +637,9 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
 
   it("a background create trigger starts one job on the new row, and its handler's result is the job's message", async () => {
     const id = await create({ name: 'alpha' });
-    assert.ok(await until(() => finishedJob('Invented 41', id)));
+    await settled();
     const job = finishedJob('Invented 41', id);
+    assert.ok(job, 'the create job finished');
     assert.equal(job.statuscode, 30);
     assert.equal(job.message, 'handled create');
     assert.equal(jobsFor('Invented 41').length, 1);
@@ -647,12 +649,13 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
     const id = await create({ name: 'beta' });
     const statusOnly = await call(webApi(`contoso_widgets(${id})`), { method: 'PATCH', body: { status: 2 } });
     assert.equal(statusOnly.status, 204, await statusOnly.clone().text());
-    await sleep(50);
+    await settled();
     assert.equal(jobsFor('Invented 42', id).length, 0);
     const named = await call(webApi(`contoso_widgets(${id})`), { method: 'PATCH', body: { name: 'beta 2' } });
     assert.equal(named.status, 204, await named.clone().text());
-    assert.ok(await until(() => finishedJob('Invented 42', id)));
+    await settled();
     const job = finishedJob('Invented 42', id);
+    assert.ok(job, 'the update job finished');
     assert.equal(job.statuscode, 32);
     assert.match(job.message, /classic workflow XAML is not executed/);
   });
@@ -661,14 +664,14 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
     const id = await create({ name: 'gamma' });
     const response = await call(webApi(`contoso_widgets(${id})`), { method: 'DELETE' });
     assert.equal(response.status, 204, await response.clone().text());
-    assert.ok(await until(() => finishedJob('Invented 43', id)));
-    assert.equal(finishedJob('Invented 43', id).statuscode, 32);
+    await settled();
+    assert.equal(finishedJob('Invented 43', id)?.statuscode, 32);
   });
 
   it('a real-time create trigger runs inside the request, so the row it writes is there when the create answers', async () => {
     const id = await create({ name: 'delta' });
     assert.equal(widgetRow(id).status, 88);
-    await sleep(20);
+    await settled();
     assert.equal(jobsFor('Invented 44').length, 0, 'a real-time run starts no job');
   });
 
@@ -702,6 +705,44 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
     });
   });
 
+  // The trigger looks the written row up through the table's primary-key index. A linear search per write made every
+  // PATCH on a 300k-row table cost a full pass even with no trigger firing (the storage volume gate's HTTP PATCHes).
+  it('a real-time trigger finds the written row by key, without reading the whole table', async () => {
+    const filler = 5000;
+    const rows = store.state.tables.contoso_widget;
+    const before = rows.length;
+    store.transact(() => {
+      for (let n = 0; n < filler; n++)
+        rows.push({ contoso_widgetid: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, name: `filler ${n}` });
+    });
+    // Written last, so a search from the start passes every filler row.
+    const id = await create({ name: 'kappa' });
+    let reads = 0;
+    // The index cache is keyed by the row array, so the counting proxy stays in place from before the warm-up write.
+    store.state.tables.contoso_widget = new Proxy(rows, {
+      get(target, key, receiver) {
+        if (typeof key === 'string' && /^(0|[1-9]\d*)$/.test(key)) reads++;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    try {
+      const patch = async (status) => {
+        const response = await call(webApi(`contoso_widgets(${id})`), { method: 'PATCH', body: { status } });
+        assert.equal(response.status, 204, await response.clone().text());
+      };
+      await patch(1);
+      reads = 0;
+      await patch(2);
+      assert.ok(reads < filler / 10, `${reads} row reads for one PATCH of a ${filler + 1}-row table`);
+      assert.equal(widgetRow(id).status, 2);
+    } finally {
+      store.state.tables.contoso_widget = rows;
+      store.transact(() => {
+        rows.splice(before, filler);
+      });
+    }
+  });
+
   it("a user-scoped trigger starts jobs only for rows the definition's owner owns", async () => {
     const who = await (await call(webApi('WhoAmI'))).json();
     const definition = () => store.tableRows('workflow').find((row) => row.workflowid === WF(46));
@@ -709,19 +750,21 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
       definition().owninguser = { id: '99999999-9999-4999-8999-999999999999', logical_name: 'systemuser' };
     });
     const other = await create({ name: 'zeta' });
-    await sleep(50);
+    await settled();
     assert.equal(jobsFor('Invented 46', other).length, 0);
     store.transact(() => {
       definition().owninguser = { id: who.UserId, logical_name: 'systemuser' };
     });
     const own = await create({ name: 'eta' });
-    assert.ok(await until(() => finishedJob('Invented 46', own)));
+    await settled();
+    assert.equal(finishedJob('Invented 46', own)?.statuscode, 32, 'the owner-scoped job ran its placeholder');
   });
 });
 
 describe('dataverse workflows: a portal write is unchanged by a background trigger on its table', () => {
+  // @test-kind contract: a background trigger leaves Paqvilo's portal output unchanged
   it('answers the same status, headers and bytes with and without an activated background trigger', async (t) => {
-    const source = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-workflows-portal-'));
+    const source = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-workflows-portal-'));
     t.after(() => fs.rm(source, { recursive: true, force: true }));
     await fs.writeFile(path.join(source, 'website.yml'), 'adx_websiteid: site\nadx_name: Workflow portal\n');
     await fs.writeFile(
@@ -784,16 +827,14 @@ describe('dataverse workflows: a portal write is unchanged by a background trigg
           body: JSON.stringify({ name: 'renamed' }),
         });
         const bytes = Buffer.from(await response.arrayBuffer());
-        // With no definitions nothing can start a job, so only the trigger run waits for one.
-        const started = await until(
-          () => app.store.tableRows('asyncoperation').some((job) => job.operationtype === 10),
-          workflow.length ? 2000 : 0,
-        );
-        // Per-run values only: the Date, the trace id and this run's origin (the port differs between the two runs).
+        // Every job the write started has finished once the simulator's committed work is settled.
+        await app.settle();
+        const started = app.store.tableRows('asyncoperation').some((job) => job.operationtype === 10);
+        // Per-run values only: the Date, the audit and trace ids and this run's origin (the port differs between the two runs).
         return {
           status: response.status,
           headers: [...response.headers]
-            .filter(([key]) => !['date', 'x-sim-trace-id'].includes(key))
+            .filter(([key]) => !['date', 'x-sim-trace-id', 'x-sim-span-id', 'x-trace-id'].includes(key))
             .map(([key, value]) => [key, value.replaceAll(app.url, '<origin>')])
             .sort(),
           body: bytes.toString('base64'),

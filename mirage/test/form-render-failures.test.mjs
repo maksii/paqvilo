@@ -8,6 +8,7 @@ import { decodeNativeViewState, nativeFormControlIds } from '../lib/native-postb
 import { RENDER_ABORT_MARKER } from '../lib/platform.mjs';
 import { webFormsForm } from '../lib/platform-manifest.mjs';
 import fs from 'node:fs';
+import { makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
 
 const HOLDER = 'a0000000-0000-4000-8000-000000000001';
 const FORM = 'f0000000-0000-4000-8000-000000000002';
@@ -296,7 +297,7 @@ test('the view state payload accepts only its own shape and string values', () =
 test('an inline HTML web resource embeds its body content and does not fail the form', async (t) => {
   const os = await import('node:os');
   const path = await import('node:path');
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mirage-webresource-'));
+  const root = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'mirage-webresource-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, 'WebResources'));
   fs.writeFileSync(

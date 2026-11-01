@@ -9,6 +9,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { interceptOrigin } from '../lense/intercept.mjs';
 
+const LATE_COMMIT_WINDOW_MS = 100;
+
 test(
   'real browser: agent API inspects DOM/styles/network, resizes, captures and isolates foreign tabs',
   { timeout: 60_000 },
@@ -39,9 +41,13 @@ test(
     );
     const methods = [];
     const documents = [];
-    let slowSettled;
+    let slowSettled, releaseSlow;
     const slowDone = new Promise((resolve) => {
       slowSettled = resolve;
+    });
+    // The slow document is answered only after the API has already reported its timeout.
+    const slowGate = new Promise((resolve) => {
+      releaseSlow = resolve;
     });
     const origin = await serve((request, response) => {
       methods.push(request.method);
@@ -50,11 +56,8 @@ test(
         return response.writeHead(200, { 'content-type': 'application/json' }).end('{"privateBody":"neverCaptured"}');
       if (request.url === '/redirect') return response.writeHead(302, { location: external }).end();
       if (request.url === '/slow') {
-        const timer = setTimeout(() => response.end('<p>Late document</p>'), 1000);
-        response.once('close', () => {
-          clearTimeout(timer);
-          slowSettled();
-        });
+        void slowGate.then(() => response.end('<p>Late document</p>'));
+        response.once('close', slowSettled);
         return;
       }
       if (request.url === '/never') return;
@@ -110,8 +113,10 @@ test(
     assert.equal(timeoutResponse.status, 504);
     assert.equal((await timeoutResponse.json()).error.code, 'action_timeout');
     // Either the browser abandons the slow document or it arrives late; neither may commit.
+    releaseSlow();
     await slowDone;
-    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 100)));
+    // No event marks a navigation that never commits; give a late commit one short window.
+    await page.evaluate((ms) => new Promise((resolve) => setTimeout(resolve, ms)), LATE_COMMIT_WINDOW_MS);
     assert.equal(page.url(), beforeTimeout, 'timed-out navigation must not commit later');
     const command = spawn(
       process.execPath,

@@ -1,3 +1,4 @@
+// @test-kind security: fail-closed Web API table/column permission enforcement; private simulator fields never exposed
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -6,7 +7,7 @@ import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { webApiPolicy, webApiFetchPolicy } from '../lib/webapi-policy.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // HTTP errors carry the documented Power Pages code in the body;
 // the simulator's own classification
@@ -195,7 +196,7 @@ test('Web API settings are failclosed and system-view columns require exact impo
 });
 
 test('complete local mapping distinguishes invalid columns from known but disabled columns', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-webapi-schema-complete-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-webapi-schema-complete-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_name: Complete schema\nadx_websiteid: site');
   await fs.writeFile(
@@ -499,7 +500,7 @@ test('FetchXML resolves forward-declared link aliases without skipping their col
 });
 
 test('HTTP optional profile default inherits table grants while explicit sensitive columns and denied updates remain restricted', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-profile-default-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-profile-default-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(directory, 'Home.webpage.yml'),
@@ -584,7 +585,7 @@ test('HTTP optional profile default inherits table grants while explicit sensiti
 });
 
 test('native lookup bindings do not publish target endpoints and enforce source append, target appendTo and source column writes', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-webapi-bind-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-webapi-bind-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(directory, 'Home.webpage.yml'),
@@ -690,6 +691,7 @@ test('native lookup bindings do not publish target endpoints and enforce source 
     '@odata.id': app.url + '/_api/accounts(company)',
   });
   assert.equal(response.status, 204);
+  assert.equal(app.store.snapshot().tables.account.find((row) => row.accountid === 'company').ownerid, 'person');
   await fs.writeFile(
     path.join(directory, 'Column.columnpermission.yml'),
     'adx_columnpermissionid: no-update\nadx_columnpermissionprofileid: profile\nadx_columnname: contactid\nadx_permissions:\n- 746610001\n',
@@ -703,10 +705,11 @@ test('native lookup bindings do not publish target endpoints and enforce source 
     code: '90040101',
     sim: 'WebApiColumnPermissionDenied',
   });
+  assert.equal(app.store.snapshot().tables.account.find((row) => row.accountid === 'company').ownerid, 'person');
 });
 
 test('HTTP Web API field gates cover projection, selects, filters, expands, FetchXML joins and all writes; Liquid remains table-scoped', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-webapi-policy-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-webapi-policy-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(directory, 'Home.webpage.yml'),
@@ -848,6 +851,7 @@ test('enabled OData lookup aliases authorize only metadata-equivalent read and e
   );
 });
 
+// @test-kind contract: per-site observed setting for explicit lookup wire fields, with evidence
 test('observed explicit lookup wire fields separate OData admission from logical FetchXML and writes', () => {
   const store = new DataStore({ state: fixture() });
   const portal = {
@@ -897,6 +901,7 @@ test('observed explicit lookup wire fields separate OData admission from logical
   webApiPolicy(portal, store, 'contact').assertQuery(new URLSearchParams({ $select: '_companyid_value' }));
 });
 
+// @test-kind unproven: local model of Dataverse immutable-value handling after portal permissions; no native capture cited
 test('Dataverse immutable values are ignored after portal permissions, including lookup bindings and operation-specific flags', () => {
   const state = fixture();
   state.mappings.contact.fields = {
@@ -935,7 +940,12 @@ test('Dataverse immutable values are ignored after portal permissions, including
 });
 
 test('HTTP public wildcard API preserves private backend snapshots across denied PATCH/PUT/DELETE and queries', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-private-api-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-private-api-'));
+  // Removed after the runtime closes, and also when startup fails.
+  ownedFixture(t).remove(async () => {
+    const resolved = await assertTemporaryDirectory(dir);
+    await fs.rm(resolved, { recursive: true, force: true });
+  });
   await fs.writeFile(path.join(dir, 'website.yml'), 'adx_name: Private API\nadx_websiteid: site');
   await fs.writeFile(
     path.join(dir, 'settings.sitesetting.yml'),
@@ -951,12 +961,7 @@ test('HTTP public wildcard API preserves private backend snapshots across denied
     watch: false,
     observed: { webApiWildcard: 'exempt', evidence: 'synthetic fixture with wildcard field lists' },
   });
-  t.after(async () => {
-    await app.close();
-    const resolved = await fs.realpath(dir);
-    assert.ok(resolved.startsWith((await fs.realpath(os.tmpdir())) + path.sep));
-    await fs.rm(resolved, { recursive: true, force: true });
-  });
+  ownedFixture(t).add(() => app.close());
   const config = await (await fetch(app.url + '/__sim/api/state')).json();
   for (const [suffix, method, body] of [
     ['', 'PATCH', { __simArtifact: { checksums: { pdf: 'forged' } } }],
@@ -985,8 +990,14 @@ test('HTTP public wildcard API preserves private backend snapshots across denied
   assert.equal(app.store.snapshot().tables.contact[0].__simArtifact.snapshot.application, 'explicit admin edit');
 });
 
+// @test-kind unproven: local model of immutable metadata columns on HTTP writes; no native capture cited
 test('HTTP PATCH/PUT/DELETE cannot change immutable metadata columns while permitted fields still save', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-immutable-api-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-immutable-api-'));
+  // Removed after the runtime closes, and also when startup fails.
+  ownedFixture(t).remove(async () => {
+    const resolved = await assertTemporaryDirectory(dir);
+    await fs.rm(resolved, { recursive: true, force: true });
+  });
   await fs.writeFile(path.join(dir, 'website.yml'), 'adx_name: Immutable API\nadx_websiteid: site');
   await fs.writeFile(
     path.join(dir, 'settings.sitesetting.yml'),
@@ -1004,12 +1015,7 @@ test('HTTP PATCH/PUT/DELETE cannot change immutable metadata columns while permi
     watch: false,
     observed: { webApiWildcard: 'exempt', evidence: 'synthetic fixture with a wildcard field list' },
   });
-  t.after(async () => {
-    await app.close();
-    const resolved = await fs.realpath(dir);
-    assert.ok(resolved.startsWith(await fs.realpath(os.tmpdir())));
-    await fs.rm(resolved, { recursive: true, force: true });
-  });
+  ownedFixture(t).add(() => app.close());
   const config = await (await fetch(app.url + '/__sim/api/state')).json();
   const call = (suffix, method, body) =>
     fetch(app.url + '/_api/contacts(person)' + suffix, {

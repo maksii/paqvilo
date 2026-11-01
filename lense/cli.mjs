@@ -66,6 +66,8 @@ Other
   --mirage          doctor: also gate Sources diagnostics and Mirage configuration
   --lint-profiles   doctor: lint all exported deployment-profiles as warnings
   --json            list/map/status/doctor/audit/resources/verify: machine readable output
+  --event-cursor <token> model-driven inspect: continue its source event registration report
+  --include-event-parameters model-driven inspect: explicitly include source parameter literals
 
 Offline resource discovery
   --page <urlpath>  resources: sources related by indexed metadata to this page
@@ -112,88 +114,100 @@ Agent session access
   --strict          verify: fail on new diagnostics; audit: fail on blocked or unmapped resources
 `;
 
+const options = {
+  site: { type: 'string' },
+  env: { type: 'string' },
+  pick: { type: 'boolean' },
+  url: { type: 'string' },
+  source: { type: 'string' },
+  repo: { type: 'string' },
+  config: { type: 'string' },
+  portals: { type: 'string' },
+  browser: { type: 'string' },
+  profile: { type: 'string' },
+  'user-data-dir': { type: 'string' },
+  'profile-directory': { type: 'string' },
+  'cdp-url': { type: 'string' },
+  scope: { type: 'string' },
+  baseline: { type: 'string' },
+  path: { type: 'string' },
+  headless: { type: 'boolean' },
+  headed: { type: 'boolean' },
+  'signed-in': { type: 'boolean' },
+  'no-reload': { type: 'boolean' },
+  'no-write': { type: 'boolean' },
+  'no-overrides': { type: 'boolean' },
+  'debug-port': { type: 'string' },
+  check: { type: 'boolean' },
+  settings: { type: 'boolean' },
+  all: { type: 'boolean' },
+  page: { type: 'string' },
+  kind: { type: 'string', multiple: true },
+  search: { type: 'string' },
+  changed: { type: 'boolean' },
+  limit: { type: 'string' },
+  offset: { type: 'string' },
+  session: { type: 'string' },
+  'page-id': { type: 'string' },
+  selector: { type: 'string' },
+  after: { type: 'string' },
+  output: { type: 'string' },
+  timeout: { type: 'string' },
+  'full-page': { type: 'boolean' },
+  'include-panel': { type: 'boolean' },
+  width: { type: 'string' },
+  height: { type: 'string' },
+  styles: { type: 'string' },
+  'sign-in-timeout': { type: 'string' },
+  project: { type: 'string' },
+  'resource-map': { type: 'string' },
+  'event-cursor': { type: 'string' },
+  'include-event-parameters': { type: 'boolean' },
+  runtime: { type: 'string' },
+  simulation: { type: 'string' },
+  portal: { type: 'string' },
+  port: { type: 'string' },
+  state: { type: 'string' },
+  preset: { type: 'string' },
+  'preset-mode': { type: 'string' },
+  'apply-configuration': { type: 'boolean' },
+  'solution-root': { type: 'string', multiple: true },
+  'startup-timeout': { type: 'string' },
+  'local-simulation': { type: 'boolean' },
+  'allow-live-writes': { type: 'boolean' },
+  out: { type: 'string' },
+  force: { type: 'boolean' },
+  strict: { type: 'boolean' },
+  mirage: { type: 'boolean' },
+  'lint-profiles': { type: 'boolean' },
+  json: { type: 'boolean' },
+  help: { type: 'boolean', short: 'h' },
+};
+
 let values, positionals;
 try {
   ({ values, positionals } = parseArgs({
     allowPositionals: true,
-    options: {
-      site: { type: 'string' },
-      env: { type: 'string' },
-      pick: { type: 'boolean' },
-      url: { type: 'string' },
-      source: { type: 'string' },
-      repo: { type: 'string' },
-      config: { type: 'string' },
-      portals: { type: 'string' },
-      browser: { type: 'string' },
-      profile: { type: 'string' },
-      'user-data-dir': { type: 'string' },
-      'profile-directory': { type: 'string' },
-      'cdp-url': { type: 'string' },
-      scope: { type: 'string' },
-      baseline: { type: 'string' },
-      path: { type: 'string' },
-      headless: { type: 'boolean' },
-      headed: { type: 'boolean' },
-      'signed-in': { type: 'boolean' },
-      'no-reload': { type: 'boolean' },
-      'no-write': { type: 'boolean' },
-      'no-overrides': { type: 'boolean' },
-      'debug-port': { type: 'string' },
-      check: { type: 'boolean' },
-      settings: { type: 'boolean' },
-      all: { type: 'boolean' },
-      page: { type: 'string' },
-      kind: { type: 'string', multiple: true },
-      search: { type: 'string' },
-      changed: { type: 'boolean' },
-      limit: { type: 'string' },
-      offset: { type: 'string' },
-      session: { type: 'string' },
-      'page-id': { type: 'string' },
-      selector: { type: 'string' },
-      after: { type: 'string' },
-      output: { type: 'string' },
-      timeout: { type: 'string' },
-      'full-page': { type: 'boolean' },
-      'include-panel': { type: 'boolean' },
-      width: { type: 'string' },
-      height: { type: 'string' },
-      styles: { type: 'string' },
-      'sign-in-timeout': { type: 'string' },
-      project: { type: 'string' },
-      'resource-map': { type: 'string' },
-      runtime: { type: 'string' },
-      simulation: { type: 'string' },
-      portal: { type: 'string' },
-      port: { type: 'string' },
-      state: { type: 'string' },
-      preset: { type: 'string' },
-      'preset-mode': { type: 'string' },
-      'apply-configuration': { type: 'boolean' },
-      'solution-root': { type: 'string', multiple: true },
-      'startup-timeout': { type: 'string' },
-      'local-simulation': { type: 'boolean' },
-      'allow-live-writes': { type: 'boolean' },
-      out: { type: 'string' },
-      force: { type: 'boolean' },
-      strict: { type: 'boolean' },
-      mirage: { type: 'boolean' },
-      'lint-profiles': { type: 'boolean' },
-      json: { type: 'boolean' },
-      help: { type: 'boolean', short: 'h' },
-    },
+    options,
   }));
 } catch (err) {
   const code = err.code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION' ? 'unsupported_option' : 'invalid_argument';
-  if (process.argv.includes('--json') || process.argv[2] === 'agent')
+  const parseArguments = process.argv.slice(2);
+  const separator = parseArguments.indexOf('--');
+  const jsonRequested = (separator < 0 ? parseArguments : parseArguments.slice(0, separator)).includes('--json');
+  const { positionals: parsedPositionals } = parseArgs({
+    args: parseArguments,
+    options,
+    allowPositionals: true,
+    strict: false,
+  });
+  const [parsedCommand, parsedAction] = parsedPositionals;
+  if (jsonRequested || parsedCommand === 'agent')
     console.log(
       JSON.stringify({
         schemaVersion: 1,
-        command: process.argv[2] ?? null,
-        ...(process.argv[2] === 'agent'
-          ? { action: process.argv[3]?.startsWith('--') ? 'sessions' : (process.argv[3] ?? 'sessions') }
-          : {}),
+        command: parsedCommand ?? null,
+        ...(parsedCommand === 'agent' ? { action: parsedAction ?? 'sessions' } : {}),
         ok: false,
         offline: true,
         writesFiles: [],
@@ -263,13 +277,18 @@ if (values.json || command === 'agent') {
     );
   };
 }
-if (values.help || !command) {
-  if (values.json || command === 'agent')
-    console.log(
-      JSON.stringify({ schemaVersion: 1, command: 'help', ok: Boolean(command || values.help), usage: HELP }),
-    );
+if (command === undefined) {
+  const suppliedOptions = Object.keys(values).filter((option) => !['json', 'help'].includes(option));
+  if (suppliedOptions.length && !values.help) {
+    const message = `A lense command is required when using --${suppliedOptions[0]}`;
+    if (values.json)
+      console.log(JSON.stringify({ command: null, ok: false, error: { code: 'invalid_argument', message } }));
+    else console.error(`paqvilo: ${message}. Run with --help to see supported commands.`);
+    process.exit(1);
+  }
+  if (values.json) console.log(JSON.stringify({ schemaVersion: 1, command: 'help', ok: true, usage: HELP }));
   else console.log(HELP);
-  process.exit(command || values.help ? 0 : 1);
+  process.exit(0);
 }
 
 // `needsSite: false` commands work on the catalogue and must run even when nothing is selectable yet
@@ -302,6 +321,13 @@ if (!Object.hasOwn(commands, command)) {
   process.exit(1);
 }
 
+if (values.help) {
+  if (values.json || command === 'agent')
+    console.log(JSON.stringify({ schemaVersion: 1, command: 'help', ok: true, usage: HELP }));
+  else console.log(HELP);
+  process.exit(0);
+}
+
 let phase = 'arguments';
 let startup;
 try {
@@ -310,7 +336,6 @@ try {
   if (command === 'model-driven' && positionals.length > 2)
     throw new Error('model-driven accepts one action: inspect or dev');
   if (command === 'use' && positionals.length > 3) throw new Error('use accepts only a site and an environment');
-  if (command === 'mirage') (await import('./commands/mirage.mjs')).validateMirageAction(positionals[1] ?? 'status');
   if (command === 'agent' && positionals.length > 2) throw new Error('agent accepts only one action');
   if (command === 'mirage' && positionals.length > 2)
     throw new Error('mirage accepts one action: init, start, dev, status, inspect or stop');
@@ -375,6 +400,8 @@ try {
       'url',
       'path',
       'resource-map',
+      'event-cursor',
+      'include-event-parameters',
       'local-simulation',
       'startup-timeout',
       'headless',
@@ -392,6 +419,7 @@ try {
       'portals',
       'project',
       'portal',
+      'path',
       'port',
       'state',
       'preset',
@@ -414,11 +442,56 @@ try {
   for (const option of Object.keys(values))
     if (!allowed[command].includes(option))
       throw Object.assign(new Error(`--${option} is not supported by ${command}`), { code: 'unsupported_option' });
+  for (const [option, value] of Object.entries(values)) {
+    if (
+      !['search', 'port'].includes(option) &&
+      (Array.isArray(value) ? value.some((item) => item === '') : value === '')
+    )
+      throw new Error(`--${option} must not be empty`);
+  }
+  if (values.portals !== undefined && !['selected', 'all'].includes(values.portals))
+    throw new Error('--portals must be selected or all');
+  if (values.scope !== undefined && !['all', 'changed'].includes(values.scope))
+    throw new Error('--scope must be all or changed');
+  if (
+    values['debug-port'] !== undefined &&
+    (!/^\d+$/.test(values['debug-port']) || Number(values['debug-port']) > 65535)
+  )
+    throw new Error('--debug-port must be an integer from 0 to 65535');
+  if (
+    values['sign-in-timeout'] !== undefined &&
+    (!/^\d+$/.test(values['sign-in-timeout']) ||
+      Number(values['sign-in-timeout']) < 1 ||
+      Number(values['sign-in-timeout']) > 900000)
+  )
+    throw new Error('--sign-in-timeout must be an integer between 1 and 900000 milliseconds');
+  if (command === 'use') {
+    if (positionals[1] !== undefined && values.site !== undefined)
+      throw new Error('use accepts the site either as a positional argument or --site, not both');
+    if (positionals[2] !== undefined && values.env !== undefined)
+      throw new Error('use accepts the environment either as a positional argument or --env, not both');
+  }
+  if (command === 'mirage' && values.path !== undefined) {
+    if (positionals[1] !== 'dev') throw new Error('--path is supported only by mirage dev');
+    if (
+      !values.path.startsWith('/') ||
+      values.path.startsWith('//') ||
+      values.path.includes('\\') ||
+      [...values.path].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
+    )
+      throw new Error('--path must be an origin-relative path');
+  }
+
   if (values.pick && values.json)
     throw new Error('--pick cannot be combined with --json; provide --site and --env explicitly');
   if (values.headless && values.headed) throw new Error('--headless and --headed cannot be used together');
   if (values.all && (values.site || values.env))
     throw new Error(`${command} --all cannot be combined with --site or --env`);
+  if (command === 'resources') (await import('./commands/resources.mjs')).resourceFilters(values);
+  if (command === 'model-driven')
+    (await import('./commands/model-driven.mjs')).validateModelDrivenArguments(values, positionals[1] ?? 'dev');
+  if (command === 'mirage')
+    (await import('./commands/mirage.mjs')).validateMirageArguments(values, positionals[1] ?? 'status');
   const { load, needsSite } = commands[command];
   if (
     command === 'dev' ||
@@ -431,7 +504,13 @@ try {
   phase = 'configuration';
   let cfg = null;
   let standaloneProject = null;
-  if (command === 'mirage' && values.project && !values.config && !values.site) {
+  if (
+    command === 'mirage' &&
+    (positionals[1] ?? 'status') !== 'status' &&
+    values.project &&
+    !values.config &&
+    !values.site
+  ) {
     const { loadProjectConfig } = await import('../mirage/lib/project-config.mjs');
     const candidate = await loadProjectConfig(values.project);
     if (candidate.runtime?.kind !== 'power-pages') standaloneProject = candidate;
@@ -439,7 +518,12 @@ try {
   const standalone =
     command === 'mirage' && (standaloneProject || (values.runtime && values.runtime !== 'power-pages'));
   let standaloneCatalogue;
-  if (command === 'mirage' && !values.project && (values.config || values.site)) {
+  if (
+    command === 'mirage' &&
+    (positionals[1] ?? 'status') !== 'status' &&
+    !values.project &&
+    (values.config || values.site)
+  ) {
     const catalogue = loadCatalogue(values),
       name = values.site ?? catalogue.root.defaultSite;
     if (catalogue.sites[name]?.mirage?.runtime?.kind && catalogue.sites[name].mirage.runtime.kind !== 'power-pages')

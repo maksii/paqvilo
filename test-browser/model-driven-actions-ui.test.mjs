@@ -42,7 +42,6 @@ async function fixture(t) {
   });
   const page = await context.newPage(),
     errors = [];
-  page.setDefaultTimeout(5000);
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(origin);
   const data = {

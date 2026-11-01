@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 // OData query parsing and evaluation for the local Dataverse store.
 // Dialect "dataverse" accepts only what the Dataverse Web API documents;
 // dialect "extended" keeps the simulator's internal convenience functions
@@ -1108,7 +1109,7 @@ export function evaluateApply(steps, rows, ctx) {
       const out = {};
       properties.forEach((segments, index) => {
         const value = bucket.values[index];
-        if (!isEmpty(scalar(value))) out[keyOf(segments)] = structuredClone(value);
+        if (!isEmpty(scalar(value))) out[keyOf(segments)] = cloneStateData(value);
       });
       for (const aggregate of step.aggregates ?? []) {
         if (aggregate.method === '$count') {
@@ -1141,7 +1142,7 @@ export function evaluateApply(steps, rows, ctx) {
             const keyed = values.map((value) => ({ value, key: makeSortKey(value, { definition, rawChoice: true }) }));
             keyed.sort((a, b) => compareSortKeys(a.key, b.key, ctx.settings?.collation));
             const chosen = aggregate.method === 'min' ? keyed[0].value : keyed.at(-1).value;
-            result = isExactNumeric(chosen) ? structuredClone(chosen) : scalar(chosen);
+            result = isExactNumeric(chosen) ? cloneStateData(chosen) : scalar(chosen);
             const date = typeof result === 'string' ? parseDateValue(result) : null;
             if (date && !date.dateOnly) result = new Date(date.ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
             break;

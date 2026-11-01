@@ -1,4 +1,6 @@
 import { liveDataverseSettings } from './live-dataverse-settings.mjs';
+import { createRecordCapabilitiesSummary } from './record-capabilities-summary.mjs';
+import { statusResponseChunks } from './status-response.mjs';
 // Solution-only composition. Power Pages imports, contact sessions and live bridges are absent.
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -18,10 +20,10 @@ import { solutionWatchFilter } from './solution-roots.mjs';
 import { dataverseSettings, dataverseStatus } from './dataverse-settings.mjs';
 import { createModelDrivenRecordService, createModelDrivenWebApi } from './dataverse-model-driven.mjs';
 import { createStaffSessions, createStaffSessionHandler } from './staff-session.mjs';
-import { createModelDrivenData } from './model-driven/data.mjs';
+import { createModelDrivenData, storeCatalogue } from './model-driven/data.mjs';
 import { createModelDrivenHandler, routes as MODEL_DRIVEN_ROUTES } from './model-driven/http.mjs';
 import { offlineSessionState } from './model-driven/offline.mjs';
-import { appCatalogue, appCatalogueAsync, canvasAppNames, solutionApps } from './model-driven/catalogue.mjs';
+import { canvasAppNames, solutionApps } from './model-driven/catalogue.mjs';
 import { createSolutionMetadataOverlay } from './dataverse-solution-metadata.mjs';
 import { createSourceSolutionComponentStorage } from './dataverse-source-components.mjs';
 import { applySolutionData } from './solution-data.mjs';
@@ -37,6 +39,7 @@ import { ensureCertificate } from './dataverse-tls.mjs';
 import { platformSettingEntries } from './platform-settings.mjs';
 import {
   composeOrganizationHost,
+  traceMethods,
   providerDescriptors,
   inventorySummary,
   codeAppDataverse,
@@ -47,6 +50,8 @@ import {
   activeDeploymentProfile,
   simApiRoutes,
   modelDrivenAppsOf,
+  appTraceSurface,
+  staffActor,
 } from './organization-host.mjs';
 import { deploymentProfilesSummary } from './deployment-profiles.mjs';
 import { createCanvasHandler } from './canvas-http.mjs';
@@ -56,6 +61,9 @@ import { codeAppSettings, loadCodeApps } from './code-apps-config.mjs';
 import { createRequestContext, runWithRequest, correlationOf } from './request-context.mjs';
 import { createMessagingRoutes, routes as MESSAGING_ROUTES } from './sim-messaging-routes.mjs';
 import { createFlowRoutes, routes as FLOW_ROUTES } from './sim-flow-routes.mjs';
+import { createTraceChannel, createTraceRoutes, routes as TRACE_ROUTES } from './sim-trace-routes.mjs';
+import { recordHttpError, statusFromHttp } from './trace-store.mjs';
+import { ANONYMOUS_ROOT, setTraceHeaders } from './trace-hosts.mjs';
 import { buildSourceGraph } from './source-graph.mjs';
 import { scenarioSettings } from './capability-report.mjs';
 import { ADMIN_CSP, adminAssetFile, adminAssetType, diagnosticsByCode as byCode } from './runtime-admin.mjs';
@@ -68,13 +76,21 @@ import {
   routes as ENVIRONMENT_ROUTES,
 } from './sim-environment-routes.mjs';
 import { docsLinks } from './docs-links.mjs';
+import { writeJsonChunks } from './json-response.mjs';
 
 const fail = (message, status = 400, code = 'RuntimeRequestInvalid') =>
   Object.assign(new Error(message), { status, code });
 const toolkitPackage = JSON.parse(await fs.readFile(new URL('../../package.json', import.meta.url), 'utf8'));
 const DOCS = docsLinks(toolkitPackage.version, toolkitPackage.repository?.url ?? toolkitPackage.repository);
-const json = (res, status, value, headers = {}) => {
+// A /_sim/api write traced as an administration action (D-R3-7): not a trace route (the store's own settings, clear and
+// flush) and not a run-starting flow route, whose root sim-flow-routes.mjs opens (POST /flow-runs, POST
+// /flow-triggers/<id>, the HTTP Request trigger invoke path).
+const SIM_ACTION =
+  /^\/(?:_sim|__sim)\/api\/(?!trace(?:\/|$)|flow-runs$|flow-triggers\/[^/]+$|flow-triggers\/[^/]+\/triggers\/[^/]+\/paths\/invoke$)/;
+const SIM_ACTOR = Object.freeze({ kind: 'system', id: null, name: 'simulator' });
+const writeJson = (res, status, value, headers = {}, { chunks } = {}) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
+  if (chunks && status !== 204) return writeJsonChunks(res, chunks);
   res.end(status === 204 ? undefined : stringifyExactJson(value));
 };
 async function readBody(req) {
@@ -179,6 +195,7 @@ export async function createStandaloneRuntime(options = {}) {
   // Host clock/ids/scheduler (runtime-clock.mjs) drive the store, the organization and its backend; defaults are wall time.
   const clock = typeof options.clock === 'function' ? { now: options.clock } : (options.clock ?? undefined);
   const store = new DataStore({
+    unpublished: true,
     file: stateFile,
     state: options.initial
       ? {
@@ -217,8 +234,12 @@ export async function createStandaloneRuntime(options = {}) {
     mutation = next.catch(() => {});
     return next;
   };
+  // A finding raised while a span is current names it (D-M-4); load and source findings name none. The trace store exists
+  // once the organization host is composed (diagnosticTraces below); findings before that have no span to name.
+  let diagnosticTraces = null;
   const diagnostic = (entry) => {
-    diagnostics.push(entry);
+    const span = entry.traceId || !diagnosticTraces?.enabled ? null : diagnosticTraces.current();
+    diagnostics.push(span?.traceId ? { ...entry, traceId: span.traceId, spanId: span.spanId } : entry);
     if (diagnostics.length > 500) diagnostics.shift();
   };
   sourceDiagnostic = diagnostic;
@@ -268,7 +289,7 @@ export async function createStandaloneRuntime(options = {}) {
     stateFile,
     simulation,
     sources: {
-      readMetadata: (fn) => overlay.withReadEpoch(fn),
+      readMetadata: (fn, options) => overlay.withReadEpoch(fn, options),
       plugins: () => sources.metadata.plugins,
       workflows: () => sources.workflows,
       layers: () => sources.solutionData.layers,
@@ -281,8 +302,16 @@ export async function createStandaloneRuntime(options = {}) {
     clock,
     ids: options.ids,
     scheduler: options.scheduler,
+    trace: options.trace,
   });
-  const { operations } = organizationHost;
+  const { operations, traces } = organizationHost;
+  diagnosticTraces = traces;
+  // Every JSON answer of 400 or more of this host's routers is its request root's error (recordHttpError, D-R3-4).
+  const json = (res, status, value, ...rest) => {
+    if (status >= 400)
+      recordHttpError(traces.current(), status, { code: value?.error?.code, message: value?.error?.message });
+    return writeJson(res, status, value, ...rest);
+  };
   const codeApps = codeAppSettings(options.codeApps);
   const links = () => ({
     administration: '/_sim/',
@@ -340,17 +369,11 @@ export async function createStandaloneRuntime(options = {}) {
     connectionReferences: profile?.connectionReferences ?? [],
     presetLibrary: boot.presetLibrary,
   });
-  const recordCapabilities = () =>
-    Object.fromEntries(
-      Object.keys(store.state.mappings).map((name) => [
-        name,
-        store.storageAdapter?.recordCapabilities(name) ?? { create: true, update: true, delete: true },
-      ]),
-    );
-  const status = () => ({
+  const recordCapabilities = createRecordCapabilitiesSummary(store);
+  const status = ({ reuseCapabilities = false } = {}) => ({
     csrf,
     runtime,
-    ...organizationHost.capabilityStatus(),
+    ...organizationHost.capabilityStatus({ reuse: reuseCapabilities }),
     links: links(),
     simulation: policy(),
     sourceDir: null,
@@ -360,7 +383,7 @@ export async function createStandaloneRuntime(options = {}) {
     services: organizationHost.providers.serviceFixtures?.describe() ?? [],
     startupPreset,
     bootstrap: { timings: { ...bootstrapTimings } },
-    recordCapabilities: recordCapabilities(),
+    recordCapabilities: recordCapabilities({ reuse: reuseCapabilities }),
     stateFile: simulation?.level === 'dry-run' ? null : (stateFile ?? null),
     revision: store.revision,
     mode: 'local',
@@ -375,6 +398,7 @@ export async function createStandaloneRuntime(options = {}) {
     routes: simApiRoutes(
       MESSAGING_ROUTES,
       FLOW_ROUTES,
+      TRACE_ROUTES,
       DASHBOARD_ROUTES,
       PACK_ROUTES,
       ENVIRONMENT_ROUTES,
@@ -383,6 +407,8 @@ export async function createStandaloneRuntime(options = {}) {
     ),
     // Admin-adjacent routes outside /_sim/api (model-driven/http.mjs routes): full paths, never probed by the admin app.
     adminAdjacentRoutes: MODEL_DRIVEN_ROUTES,
+    // The /_sim/events?channels=... channels this host streams.
+    eventChannels: ['trace'],
   });
   const exposed = () => ({
     csrf,
@@ -444,6 +470,7 @@ export async function createStandaloneRuntime(options = {}) {
     ['/model-driven/offline', () => ({ items: offlineSessions() })],
   ];
   let offlineSessions = () => [];
+  let model;
   const HOST_API_ROUTES = HOST_API.map(([prefix]) => prefix);
   const close = () =>
     (closing ??= (async () => {
@@ -465,8 +492,10 @@ export async function createStandaloneRuntime(options = {}) {
       await Promise.allSettled([...requests]);
       await cleanup(() => mutation);
       await cleanup(() => sourceComponents?.close());
+      await cleanup(() => model?.close());
       // One close order (organization-host.mjs): backend, organization, API, managed identity.
       await cleanup(() => organizationHost.close());
+      await cleanup(() => store.closeRecordStorage());
       server?.closeAllConnections();
       await stopped;
       if (errors.length) throw new AggregateError(errors, 'Standalone runtime cleanup failed.');
@@ -485,11 +514,19 @@ export async function createStandaloneRuntime(options = {}) {
     startupPhase('state-composition');
     profile = await loadProfile();
     await organizationHost.loadCanvas();
-    await store.replaceState(applySolutionData(store.state, sources.solutionData, solutionDataOptions(sources)), {
-      returnSnapshot: false,
-      cloneInput: false,
-      skipSaveIfUnchanged: true,
-    });
+    await store.initialize(() =>
+      store.replaceState(
+        applySolutionData(store.state, sources.solutionData, {
+          ...solutionDataOptions(sources),
+          owned: store.isInitializing(),
+        }),
+        {
+          returnSnapshot: false,
+          cloneInput: false,
+          skipSaveIfUnchanged: true,
+        },
+      ),
+    );
     bootstrapTimings.stateCompositionMs = Math.round(performance.now() - stageAt);
     stageAt = performance.now();
     startupPhase('preset');
@@ -498,6 +535,7 @@ export async function createStandaloneRuntime(options = {}) {
     stageAt = performance.now();
     startupPhase('organization');
     organization = await organizationHost.createOrganization({
+      initializing: true,
       settings: liveSettings,
       change,
       schema: () => sources.schema,
@@ -511,7 +549,7 @@ export async function createStandaloneRuntime(options = {}) {
       entityId: (logical, state) =>
         state.mappings[logical] ? uuidV5(organization.organizationId, `entity:${logical}`) : null,
     });
-    await store.transact(() => {
+    await store.initialize(() => {
       sourceComponents.materialize();
     });
     backend = await organizationHost.createBackend();
@@ -520,45 +558,20 @@ export async function createStandaloneRuntime(options = {}) {
       port: () => server?.address()?.port ?? port,
     });
     const sessionHandler = createStaffSessionHandler({ sessions, csrf: () => csrf, json, readBody });
-    let catalogueCache;
-    const catalogue = () => {
-      const current = metadata();
-      if (catalogueCache?.metadata !== current || catalogueCache?.revision !== store.revision)
-        catalogueCache = {
-          metadata: current,
-          revision: store.revision,
-          value: appCatalogue({
-            metadata: current,
-            mappings: store.state.mappings,
-            providers: [],
-            defaultApp: runtime.defaultApp,
-            settings: store.state.settings,
-            clientExtensions: clientExtensionCatalogue(sources.clientResources, modelDriven),
-            canvasApps: canvasAppNames(organizationHost),
-          }),
-        };
-      return catalogueCache.value;
-    };
-    catalogue.async = async ({ cancelled } = {}) => {
-      const current = metadata(),
-        revision = store.revision;
-      if (catalogueCache?.metadata !== current || catalogueCache?.revision !== revision) {
-        const value = await appCatalogueAsync(
-          {
-            metadata: current,
-            mappings: store.state.mappings,
-            providers: [],
-            defaultApp: runtime.defaultApp,
-            settings: store.state.settings,
-            clientExtensions: clientExtensionCatalogue(sources.clientResources, modelDriven),
-            canvasApps: canvasAppNames(organizationHost),
-          },
-          { cancelled },
-        );
-        catalogueCache = { metadata: current, revision, value };
-      }
-      return catalogueCache.value;
-    };
+    const catalogue = storeCatalogue({
+      store,
+      metadata,
+      options: (current) => ({
+        lazy: true,
+        metadata: current,
+        mappings: store.state.mappings,
+        providers: [],
+        defaultApp: runtime.defaultApp,
+        settings: store.state.settings,
+        clientExtensions: clientExtensionCatalogue(sources.clientResources, modelDriven),
+        canvasApps: canvasAppNames(organizationHost),
+      }),
+    });
     // Validate an explicitly selected app before opening any listener.
     if (caps.modelDriven && runtime.defaultApp) catalogue();
     const recordService = createModelDrivenRecordService({ organization, origin: () => localOrigin });
@@ -592,10 +605,13 @@ export async function createStandaloneRuntime(options = {}) {
         return principal.kind === 'staff' ? principal : null;
       },
       csrf: () => csrf,
+      traces,
+      traceActor: (principal) => staffActor(organization, principal),
     });
     codeAppRecords = loadCodeApps(codeApps, projectRoot, { bindings: options.connections ?? {} });
+    for (const app of codeAppRecords) for (const entry of app.diagnostics) diagnostic({ ...entry, app: app.name });
     const code = createCodeAppsHandler({
-      apps: () => codeAppRecords,
+      apps: () => (codeAppRecords = loadCodeApps(codeApps, projectRoot, { bindings: options.connections ?? {} })),
       sessions,
       user: (id) => organization.principals.byId(id),
       organization: {
@@ -617,9 +633,12 @@ export async function createStandaloneRuntime(options = {}) {
       dataverse: codeAppDataverse({ organization, change, origin: () => dataverse?.origin ?? localOrigin }),
       connectors: codeAppConnectors(organizationHost.connectors, options.connections ?? {}),
       csrf: () => csrf,
+      traces,
       diagnostic,
     });
-    const model = createModelDrivenHandler({
+    model = createModelDrivenHandler({
+      streamMetadata: true,
+      workerMetadata: true,
       sourceMaps: options.sourceMaps ?? true,
       diagnostic,
       catalogue,
@@ -630,6 +649,8 @@ export async function createStandaloneRuntime(options = {}) {
       change,
       read: (fn) => organization.read(() => overlay.withReadEpoch(fn)),
       principal: (req) => sessions.resolve(req),
+      traces,
+      traceActor: (principal) => staffActor(organization, principal),
       webApi: createModelDrivenWebApi({ organization: () => organization }),
       offlineState: offlineSessionState(store, change),
       clientAssets: () =>
@@ -663,7 +684,8 @@ export async function createStandaloneRuntime(options = {}) {
       jsonObjectBody: readBody,
       change,
       csrf: () => csrf,
-      status,
+      status: () => status({ reuseCapabilities: true }),
+      statusChunks: (value) => statusResponseChunks(value, recordCapabilities),
       state: exposed,
       configuration: config,
       simulation: policy,
@@ -695,7 +717,13 @@ export async function createStandaloneRuntime(options = {}) {
     adminRoutes = admin.routes;
     // /_sim/api/messages and /_sim/api/outbox (sim-messaging-routes.mjs) answer before the generic admin router.
     const messagingRoutes = createMessagingRoutes({ api: organization.api, csrf: () => csrf });
-    const flowRoutes = createFlowRoutes({ api: organization.api, csrf: () => csrf });
+    const flowRoutes = createFlowRoutes({
+      api: organization.api,
+      csrf: () => csrf,
+      origin: { host: 'standalone', portal: null, preset: null },
+    });
+    const traceRoutes = createTraceRoutes({ traces, csrf: () => csrf, json });
+    const traceChannel = createTraceChannel(traces);
     // GET /_sim/api/dashboard (sim-dashboard-routes.mjs): the shared topology plus this host's listener and request count.
     const dashboardRoutes = createDashboardRoutes({
       host: organizationHost,
@@ -825,9 +853,26 @@ export async function createStandaloneRuntime(options = {}) {
           throw fail('Cross-site writes are not allowed.', 403);
         const url = new URL(req.url, localOrigin);
         if (await setup(req, res)) return;
+        // GET /_sim/events?channels=trace: the trace channel, with the frames the Power Pages host streams.
+        if (/^\/(?:_sim|__sim)\/events$/.test(url.pathname)) {
+          if (req.method !== 'GET') throw fail('Method not allowed.', 405, 'MethodNotAllowed');
+          // The client may have gone while setup awaited: a closed response joins no channel.
+          if (res.destroyed) return;
+          if (!(url.searchParams.get('channels') ?? '').split(',').includes('trace'))
+            throw fail('This host streams the trace channel only (channels=trace).', 400, 'UnsupportedEventChannel');
+          res.writeHead(200, {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-cache',
+            connection: 'keep-alive',
+          });
+          res.write(`event: ready\ndata: ${store.revision}\n\n`);
+          traceChannel(res);
+          return;
+        }
         if (
           (await messagingRoutes(req, res, url)) ||
           (await flowRoutes(req, res, url)) ||
+          (await traceRoutes(req, res, url)) ||
           (await dashboardRoutes(req, res, url)) ||
           (await packRoutes(req, res, url))
         )
@@ -860,15 +905,56 @@ export async function createStandaloneRuntime(options = {}) {
         }
         throw fail('Resource not found.', 404);
       };
+      // The http root span of this host (docs/design/tracing.md). App surfaces name their host and module (model-driven,
+      // canvas, code-app; appTraceSurface), any other path the standalone host. The root starts explicitly anonymous with
+      // no session (this host has no visitor sign-in), so a header-named parent never lends it another visitor's actor or
+      // session; the app handlers name the staff user once they resolve the session. Administration actions (a /_sim/api
+      // write) are `sim` roots acting as the simulator; reads, setup, the trace routes and the run-starting flow routes
+      // (sim-flow-routes.mjs opens their roots) open none.
+      const pathname = String(req.url ?? '/').split('?')[0];
+      const adminPath = /^\/(?:_sim|__sim|_setup)(?:\/|$)/.test(pathname);
+      const simAction = adminPath && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && SIM_ACTION.test(pathname);
+      const surface = adminPath ? null : appTraceSurface(pathname);
+      const span =
+        traces.enabled && (!adminPath || simAction)
+          ? traces.start({
+              kind: 'http',
+              name: `${req.method} ${pathname}`,
+              module: simAction ? 'sim' : (surface?.module ?? null),
+              operation: req.method,
+              origin: { host: simAction ? 'sim' : (surface?.host ?? 'standalone'), portal: null, preset: null },
+              ...(simAction ? { actor: SIM_ACTOR, session: ANONYMOUS_ROOT.session } : ANONYMOUS_ROOT),
+              attributes: { routeFamily: pathname.split('/')[1] || 'root' },
+              ...traces.fromHeaders(req.headers),
+            })
+          : null;
+      setTraceHeaders(res, span);
+      let failure;
+      res.on('close', () => {
+        const status = res.writableFinished ? res.statusCode : 499;
+        span?.end({
+          status: statusFromHttp(status),
+          error: status >= 400 ? failure : undefined,
+          attributes: { statusCode: status },
+        });
+      });
       // One request context per call (x-ms-correlation-request-id when given) inside this runtime's pack registries.
       const context = createRequestContext({
         organization,
         correlationId: correlationOf(req.headers['x-ms-correlation-request-id']) ?? undefined,
+        traceId: span?.traceId ?? null,
+        spanId: span?.spanId ?? null,
       });
       const task = organizationHost
-        .run(() => runWithRequest(context, handle))
+        .run(() => traces.run(span, () => runWithRequest(context, handle)))
         .catch((error) => {
-          diagnostic({ code: error.code ?? 'RuntimeError', message: error.message });
+          failure = error;
+          // This handler runs after the request's span stack: the finding names the request's root explicitly.
+          diagnostic({
+            code: error.code ?? 'RuntimeError',
+            message: error.message,
+            ...(span?.traceId ? { traceId: span.traceId, spanId: span.spanId } : {}),
+          });
           if (!res.headersSent)
             json(res, error.status ?? 500, { error: { code: error.code ?? 'RuntimeError', message: error.message } });
           else res.destroy();
@@ -877,6 +963,7 @@ export async function createStandaloneRuntime(options = {}) {
       task.finally(() => requests.delete(task)).catch(() => {});
     });
     storageAdapter?.activate(store.state);
+    store.completeInitialization();
     startupPhase('listener');
     await new Promise((resolve, reject) => {
       server.once('error', reject);
@@ -1049,6 +1136,8 @@ export async function createStandaloneRuntime(options = {}) {
       close,
       preflight,
       settle: () => organizationHost.settle(),
+      // The trace store's read and settings methods (docs/design/tracing.md).
+      trace: traceMethods(traces),
       live: { status: () => ({ enabled: false, connected: false, liveWrites: 'disabled' }) },
       identityProvider: { available: false, origin: null, port: null },
     };

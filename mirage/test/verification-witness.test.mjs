@@ -6,7 +6,7 @@ import os from 'node:os';
 import { verificationWitness, compareVerificationWitnesses } from '../lib/verification-witness.mjs';
 import { createSimulator } from '../server.mjs';
 import { connectRuntime, createPortalSession } from '../testing.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const initial = () => ({
   version: 1,
@@ -126,7 +126,7 @@ test('pending visitor session inspections protect role changes and closing just 
 });
 
 async function fixture(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-witness-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-witness-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_name: Witness fixture\nadx_websiteid: source-site');
   await fs.writeFile(path.join(directory, 'webrole.yml'), '- adx_webroleid: reader\n  adx_name: Reader');
@@ -174,21 +174,29 @@ test('real witness route binds cookie-isolated visitors, remains anonymous witho
 test('witness waits for actual in-flight mutation and catches chosen row/settings drift while leaving excluded history unobserved', async (t) => {
   const { app, runtime } = await fixture(t),
     before = await runtime.witness({ tables: ['fixture'] });
-  let release, started;
+  let release, started, queued;
   const ready = new Promise((resolve) => (started = resolve)),
-    gate = new Promise((resolve) => (release = resolve));
+    gate = new Promise((resolve) => (release = resolve)),
+    requested = new Promise((resolve) => (queued = resolve));
+  // The row changes only after the gate opens: a witness that did not wait would hash the original row.
   const write = app.store.transact(async () => {
-    app.store.state.tables.fixture[0].name = 'Committed fixture';
     started();
     await gate;
+    app.store.state.tables.fixture[0].name = 'Committed fixture';
   });
   await ready;
+  const readOperation = app.store.readOperation.bind(app.store);
+  app.store.readOperation = (fn) => {
+    queued();
+    return readOperation(fn);
+  };
   let returned = false;
   const pending = runtime.witness({ tables: ['fixture'] }).then((value) => {
     returned = true;
     return value;
   });
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  await requested;
+  app.store.readOperation = readOperation;
   assert.equal(returned, false);
   release();
   await write;

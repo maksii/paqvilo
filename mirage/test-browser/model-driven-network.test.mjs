@@ -34,8 +34,7 @@ test('lazy metadata rejects inherited table identities before making a metadata 
 });
 
 test('form-only overlays retain the trusted Xrm CRUD/query round trip with bounded lazy metadata requests', async (t) => {
-  const fixture = await modelDrivenFixture(t, { stateFile: null });
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { stateFile: null, defer: true });
   await fs.unlink(path.join(fixture.solutionDir, 'Entities/x_item/Entity.xml'));
   const initial = {
     version: 1,
@@ -201,10 +200,9 @@ test('model-driven Xrm lookup writes use the local staff transport, CSRF and cur
 
 for (const kind of ['portal', 'model-driven'])
   test(`Xrm queries share canonical filtering, expansion, FetchXML and continuation in ${kind} with the public API disabled`, async (t) => {
-    const { sim, origin } = await modelDrivenFixture(
-      t,
-      kind === 'model-driven' ? { runtime: { kind }, sourceDir: undefined } : {},
-    );
+    const { sim, origin } = await (kind === 'model-driven'
+      ? modelDrivenFixture(t, { runtime: { kind }, sourceDir: undefined })
+      : readOnlyApp());
     assert.equal(sim.dataverse ?? null, null);
     const page = await chrome.page(t),
       external = [],

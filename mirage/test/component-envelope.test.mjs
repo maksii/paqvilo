@@ -5,9 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { importPortal } from '../lib/importer.mjs';
 import { buildSiteTables } from '../lib/site-tables.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('enhanced lifecycle status and redirect content remain separate, including unknown components', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-component-envelope-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-component-envelope-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const escape = (value) =>
     String(value).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);

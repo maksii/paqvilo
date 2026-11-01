@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { readLocalFile } from './local-file.mjs';
 import { importPortal, portalField, normalizePortalPath, effectiveSnippetRecords } from '../mirage/lib/importer.mjs';
-import { importSolutionMetadata } from '../mirage/lib/solution-metadata.mjs';
+import { importSolutionMetadata, portalMetadataEntities } from '../mirage/lib/solution-metadata.mjs';
 import { loadProjectConfig } from '../mirage/lib/project-config.mjs';
 import { inspectPage } from '../mirage/lib/page-resources.mjs';
 import { stripLiquidLiteralBlocks } from '../mirage/lib/liquid-source.mjs';
@@ -17,6 +17,12 @@ import { SolutionFileCache, fileStamp, mapLimit } from '../mirage/lib/solution-c
 import { resolvePluginSourcePath } from '../mirage/lib/exported-plugins.mjs';
 import { buildPortalSourceIndex, sourceEditorTarget } from '../mirage/lib/portal-source-index.mjs';
 import { loadDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
+import { definitionQuery } from './definition-query.mjs';
+
+// Keep the browser entry point serializable, with owned dependencies embedded.
+export const inspectRenderedPage = new Function(
+  `return function inspectRenderedPage(){const definitionQuery=(${definitionQuery.toString()}); return (${inspectRenderedPageImpl.toString()})();};`,
+)();
 
 const norm = (value) =>
   String(value?.id ?? value ?? '')
@@ -216,6 +222,19 @@ function exportIndex(portal, metadata, indexStore = null) {
   const forms = [...(portal.forms ?? []), ...(portal.advancedForms ?? [])].map((form) => {
     const schema = metadata.componentSchemas?.[form.id] ?? metadata.componentSchemas?.[form.name],
       advanced = form.metadata?.kind === 'advancedform';
+    const formLayouts = [];
+    const collectLayouts = (current, depth = 0) => {
+      if (!current || depth > 5) return;
+      if (current.formId && current.entity && !formLayouts.some((layout) => norm(layout.id) === norm(current.formId)))
+        formLayouts.push({
+          id: current.formId,
+          entity: current.entity.toLowerCase(),
+          name: current.formName,
+          sourceFile: current.sourceFile,
+        });
+      for (const step of current.steps ?? []) collectLayouts(step, depth + 1);
+    };
+    if (advanced) collectLayouts(schema);
     return {
       id: form.id,
       name: form.name,
@@ -223,6 +242,7 @@ function exportIndex(portal, metadata, indexStore = null) {
       entity: form.entityName ?? schema?.entity,
       ...(advanced
         ? {
+            formLayouts,
             configuredEntities: [
               ...new Set(
                 [form.entityName, schema?.entity, ...(schema?.steps ?? []).map((step) => step.entity)]
@@ -261,6 +281,7 @@ function exportIndex(portal, metadata, indexStore = null) {
     sourceFile: list.metadata?._file,
     pageReferenced: false,
     evidenceLabel: 'Exported list; not referenced by this page’s sources',
+    ...listInspectionBindings(list),
   }));
   index = {
     metadata,
@@ -283,6 +304,57 @@ function exportIndex(portal, metadata, indexStore = null) {
     for (const key of indexStore.keys()) if (!languages.has(key)) indexStore.delete(key);
   }
   return index;
+}
+
+function listInspectionBindings(list) {
+  let settings;
+  try {
+    settings = JSON.parse(portalField(list.metadata ?? {}, 'settings', '{}'));
+  } catch {
+    settings = {};
+  }
+  const actions = [
+    ...(Array.isArray(settings?.ViewActions) ? settings.ViewActions : []),
+    ...(Array.isArray(settings?.ItemActions) ? settings.ItemActions : []),
+  ].filter(
+    (action) =>
+      action &&
+      ['CrmEntityFormView-CreateAction', 'CrmEntityFormView-EditAction', 'CrmEntityFormView-DetailsAction'].includes(
+        action.Type,
+      ),
+  );
+  const viewIds = [];
+  for (let value of [portalField(list.metadata ?? {}, 'view'), portalField(list.metadata ?? {}, 'views')]) {
+    if (typeof value === 'string') {
+      try {
+        value = JSON.parse(value);
+      } catch {
+        value = value
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean);
+      }
+    }
+    const values = value?.Views ?? value?.views ?? value;
+    for (const view of Array.isArray(values) ? values : values ? [values] : []) {
+      const id = typeof view === 'object' ? (view.ViewId ?? view.viewId ?? view.id ?? view.value) : view;
+      if (id) viewIds.push(String(id));
+    }
+  }
+  return {
+    viewIds: [...new Set(viewIds)],
+    actions: actions.map((action) => ({
+      name: action.Type.replace('CrmEntityFormView-', ''),
+      formId:
+        action.EntityFormId &&
+        (action.TargetType == null || action.TargetType === '' || Number(action.TargetType) === 0)
+          ? norm(action.EntityFormId)
+          : null,
+      targetType: action.TargetType ?? null,
+      conditional: Boolean(action.FilterCriteria),
+      evidence: 'exported-action',
+    })),
+  };
 }
 const indexedMarkupHints = (body, source, index) => {
   const entry = index.hintsBySource.get(markupKey(source));
@@ -378,14 +450,15 @@ export async function inspectionSources(cfg) {
   };
 }
 
-/** Fixed, bounded DOM read. Do not collect text, values, credentials or query parameters. */
-export function inspectRenderedPage() {
+/** Fixed, bounded DOM read. Do not collect text, field values or credentials.
+ * Read only form/table definition hints from frame addresses, never row parameters. */
+function inspectRenderedPageImpl() {
   const own = (node) => !node.closest('#paqvilo-panel, #paqvilo-handle, #paqvilo-xray');
   const definitionContext = (address, base) => {
     try {
       const url = new URL(address, base);
       if (url.origin !== location.origin) return {};
-      const params = [...url.searchParams].map(([key, value]) => [key.toLowerCase(), value]);
+      const params = definitionQuery(url);
       const declarations = (keys) =>
         params.filter(([key, value]) => keys.includes(key) && value).map(([, value]) => value);
       const forms = declarations(['entityformid', 'formid']),
@@ -427,7 +500,7 @@ export function inspectRenderedPage() {
     controls = [];
   let controlsSeen = 0;
   const controlSelector =
-    'input:not([type=hidden]):not([type=password]),select,textarea,[data-entityname],[data-entity],[data-formid],[data-viewid],[data-listid],[data-form-layout],[data-pcf-schema],[id^=EntityList],.entity-grid[data-selected-view],iframe';
+    'input:not([type=hidden]):not([type=password]),select,textarea,[data-entityname],[data-entity],[data-formid],[data-viewid],[data-listid],[data-form-layout],[data-pcf-schema],table[data-paqvilo-table],[id^=EntityList],.entity-grid[data-selected-view],iframe';
   const addControl = (node) => {
     let layout = {};
     try {
@@ -468,6 +541,9 @@ export function inspectRenderedPage() {
         ''
       ).slice(0, 160),
       gridId: node.classList.contains('entity-grid') ? (node.closest('.subgrid[id]')?.id ?? '').slice(0, 160) : '',
+      ...(node.localName === 'table' && node.hasAttribute('data-paqvilo-table')
+        ? { gridTable: (node.getAttribute('data-paqvilo-table') ?? '').slice(0, 160) }
+        : {}),
       controlId: (node.getAttribute('data-controlid') ?? '').slice(0, 160),
       schemaName: (node.getAttribute('data-pcf-schema') ?? '').slice(0, 160),
       nativeField: (node.closest('[data-pcf-native-field]')?.getAttribute('data-pcf-native-field') ?? '').slice(0, 160),
@@ -507,13 +583,19 @@ export function inspectRenderedPage() {
       while (boundary?.ownerDocument === selected.ownerDocument) {
         if (
           boundary.matches?.(
-            '[data-formid],[data-form-layout],[data-viewid],[data-selected-view],[data-listid],[id^=EntityFormControl],[id^=WebFormControl]',
+            '[data-formid],[data-form-layout],[data-viewid],[data-selected-view],[data-listid],table[data-paqvilo-table],table[data-paqvilo-grid],[id^=EntityFormControl],[id^=WebFormControl]',
           )
         )
           break;
         boundary = boundary.assignedSlot ?? boundary.parentElement ?? boundary.getRootNode?.()?.host;
       }
       pending.push(boundary ?? selected.ownerDocument.documentElement);
+      if (boundary?.matches('table[data-paqvilo-grid]')) {
+        const id = boundary.getAttribute('data-paqvilo-grid');
+        const targets = id ? [...boundary.getRootNode().querySelectorAll('#' + CSS.escape(id))] : [];
+        if (targets.length === 1 && targets[0].matches('table[data-paqvilo-table]') && own(targets[0]))
+          pending.push(targets[0]);
+      }
     }
   } catch {
     /* An inaccessible or changing selection cannot widen the scan. */
@@ -851,6 +933,8 @@ function inspectFormDependencies(report, portal, metadata, rendered) {
         addEntity(component.entity);
         if (cell.type === 'quickform') {
           if (cell.schema) {
+            component.ownerFormXmlId = current.formId;
+            component.targetFormId = cell.schema.formId;
             component.formName = cell.schema.formName;
             component.sourceFile = cell.schema.sourceFile;
             walk(cell.schema, depth + 1);
@@ -1211,8 +1295,10 @@ export async function enrichInspection(
     solutions: (metadata.roots ?? []).length,
   };
   const page = portal.pages.find((entry) => norm(entry.id) === norm(report.page?.id));
+  // Build the shared source index with this catalogue first: the export index
+  // and the caller's final snapshot then reuse it instead of building it twice.
+  const provenance = provenanceIndex(portal, metadata, codeCatalogue);
   const whole = exportIndex(portal, metadata, sourceIndexStore);
-  const provenance = provenanceIndex(portal, metadata);
   report.componentIndex = {
     forms: whole.forms.map((form) => ({ ...form, formXml: form.formXml ? { ...form.formXml } : null })),
     lists: whole.lists.map((list) => ({ ...list })),
@@ -1337,28 +1423,7 @@ export async function enrichInspection(
         component.customization = { name: 'List custom JavaScript', sourceFile: component.sourceFile };
       component.sourceFile = definition.metadata?._file ?? component.sourceFile;
       component.fieldPath = null;
-      const viewIds = [];
-      for (let value of [
-        portalField(definition.metadata ?? {}, 'view'),
-        portalField(definition.metadata ?? {}, 'views'),
-      ]) {
-        if (typeof value === 'string') {
-          try {
-            value = JSON.parse(value);
-          } catch {
-            value = value
-              .split(',')
-              .map((item) => item.trim())
-              .filter(Boolean);
-          }
-        }
-        const values = value?.Views ?? value?.views ?? value;
-        for (const view of Array.isArray(values) ? values : values ? [values] : []) {
-          const id = typeof view === 'object' ? (view.ViewId ?? view.viewId ?? view.id ?? view.value) : view;
-          if (id) viewIds.push(String(id));
-        }
-      }
-      component.viewIds = [...new Set(viewIds)];
+      Object.assign(component, listInspectionBindings(definition));
       for (const viewId of component.viewIds) {
         const view = metadata.views?.find(
           (row) => norm(row.id) === norm(viewId) && (!component.entity || row.entity === component.entity),
@@ -1533,6 +1598,21 @@ export async function enrichInspection(
       .concat([...observedApiSets].map((name) => ({ name }))),
     (row) => row.name,
   );
+  const addTableColumns = (entity, evidence) => {
+    const table = metadata.entities?.[entity];
+    for (const [column, field] of Object.entries(table?.fields ?? {}))
+      if (!report.columns.some((row) => row.entity === entity && row.name === column))
+        report.columns.push({
+          entity,
+          name: column,
+          label: field.label,
+          type: field.dataverseType ?? field.type,
+          required: Boolean(field.required),
+          sourceFile: field.source ?? table.sources?.[0],
+          resolved: true,
+          evidence,
+        });
+  };
   report.apiReferences = apiSets.map(({ name }) => {
     const entity = Object.entries(metadata.entities ?? {}).find(
       ([, table]) => table.entitySet === name && table.entitySetSource !== 'pluralized',
@@ -1550,20 +1630,7 @@ export async function enrichInspection(
         evidence: 'web-api-source',
       });
     }
-    if (entity)
-      for (const [column, field] of Object.entries(entity[1].fields ?? {})) {
-        if (!report.columns.some((row) => row.entity === entity[0] && row.name === column))
-          report.columns.push({
-            entity: entity[0],
-            name: column,
-            label: field.label,
-            type: field.dataverseType ?? field.type,
-            required: Boolean(field.required),
-            sourceFile: field.source ?? entity[1].sources?.[0],
-            resolved: true,
-            evidence: 'web-api-table-candidate',
-          });
-      }
+    if (entity) addTableColumns(entity[0], 'web-api-table-candidate');
     return {
       name,
       entity: entity?.[0] ?? null,
@@ -1571,6 +1638,24 @@ export async function enrichInspection(
       evidence: observedApiSets.has(name) ? 'observed-api-request' : 'static-reference',
     };
   });
+  // A rendered custom grid may declare a table without issuing a Web API
+  // request or sharing its enclosing form's table. Load that table's exported
+  // definitions as context; the node observer separately verifies ownership.
+  for (const entity of new Set((rendered.controls ?? []).map((row) => row.gridTable?.toLowerCase()))) {
+    if (!/^[a-z][a-z0-9_]*$/.test(entity ?? '') || !metadata.entities?.[entity]) continue;
+    const table = metadata.entities[entity];
+    if (!(report.tables ?? []).some((row) => row.logicalName === entity))
+      (report.tables ??= []).push({
+        kind: 'table',
+        logicalName: entity,
+        name: entity,
+        sourceFile: table.sources?.[0],
+        sourceFiles: table.sources ?? [],
+        fieldCount: Object.keys(table.fields ?? {}).length,
+        evidence: 'rendered-grid-declaration',
+      });
+    addTableColumns(entity, 'declared-grid-table-candidate');
+  }
   inspectCodeComponents(report, body, metadata, observed, codeCatalogue);
   const permissionState = { tables: {}, mappings: {}, permissions: [], settings: {}, simulator: {} };
   const permissions = buildPermissionModel(portal, permissionState, {
@@ -1695,6 +1780,9 @@ export async function enrichInspection(
 
 export function createSourceInspector(cfg) {
   let loading = null;
+  // Exported tables admitted from rendered declared grids, by language. A source reload (an edit, or a stamp too
+  // recent to prove the sources unchanged) re-admits them, so an Open source check after it still finds them.
+  const admittedTables = new Map();
   const fileCache = new SolutionFileCache();
   // Retain only current exported source indexes, one per currently configured
   // language. Their already-indexed hints survive global LRU eviction and refresh.
@@ -1780,7 +1868,7 @@ export function createSourceInspector(cfg) {
       // never label an older parsed body with the newer file's stamp.
       const signature = await fingerprint(sources);
       const initial = await variant();
-      const select = async (route) => {
+      const select = async (route, rendered = {}) => {
         const pathname = String(route ?? '/').split(/[?#]/)[0];
         const prefix = pathname.split('/')[1];
         const direct = initial.portal.pages.some(
@@ -1788,8 +1876,53 @@ export function createSourceInspector(cfg) {
         );
         const language =
           !direct && initial.portal.websiteLanguages?.find((row) => row.code?.toLowerCase() === prefix?.toLowerCase());
+        const selected = language ? await variant(language) : initial;
+        const admitted = admittedTables.get(language?.id ?? '') ?? new Set();
+        const declared = [
+          ...new Set([
+            ...admitted,
+            ...(rendered.controls ?? []).slice(0, 300).map((row) => row.gridTable?.toLowerCase()),
+          ]),
+        ].filter((name) => typeof name === 'string' && /^[a-z][a-z0-9_]{0,127}$/.test(name));
+        if (sources.roots.length && declared.some((name) => !selected.metadata.entities?.[name])) {
+          // Serialize admissions so concurrent selections cannot replace each
+          // other's newly admitted definitions. Keep only exported tables, not
+          // arbitrary page declarations, in the language's current catalogue.
+          const admission = (selected.admission ?? Promise.resolve())
+            .catch(() => {})
+            .then(async () => {
+              const missing = declared.filter((name) => !selected.metadata.entities?.[name]);
+              if (!missing.length) return;
+              const metadata = await importSolutionMetadata(sources.roots, {
+                cache: fileCache,
+                portal: selected.portal,
+                entities: [
+                  ...new Set([
+                    ...portalMetadataEntities(selected.portal),
+                    ...Object.keys(selected.metadata.entities ?? {}),
+                    ...missing,
+                  ]),
+                ],
+                lcid: language?.lcid ?? sources.lcid,
+                order: sources.order,
+                observed: sources.observed,
+              });
+              if (!missing.some((name) => metadata.entities?.[name])) return;
+              for (const name of missing) if (metadata.entities?.[name] && admitted.size < 300) admitted.add(name);
+              admittedTables.set(language?.id ?? '', admitted);
+              selected.metadata = metadata;
+              reports = new Map();
+              reportBytes = 0;
+            });
+          selected.admission = admission;
+          try {
+            await admission;
+          } finally {
+            if (selected.admission === admission) selected.admission = null;
+          }
+        }
         return {
-          ...(language ? await variant(language) : initial),
+          ...selected,
           language,
           route: language ? pathname.slice(prefix.length + 1) || '/' : pathname,
           requestPath: pathname,
@@ -1954,9 +2087,9 @@ export function createSourceInspector(cfg) {
         throw new TypeError('Source inspection requires a page report object.');
       const { sources, select } = await load();
       const route = report.requestPath ?? report.path;
+      const { codeCatalogue } = await select(route, rendered);
       const index = await this.sourceIndexFor(route, report.portalProfile);
       const { portal, metadata } = index;
-      const { codeCatalogue } = await select(route);
       const enriched = await remember('enrich:' + JSON.stringify([report, rendered]), () => {
         counters.enrichments++;
         return enrichInspection(structuredClone(report), portal, {
@@ -1975,8 +2108,9 @@ export function createSourceInspector(cfg) {
     },
     async inspect(route, rendered = {}) {
       const { sources, select } = await load();
+      const selected = await select(route, rendered);
       return remember('inspect:' + JSON.stringify([route, rendered]), async () => {
-        const { portal, metadata, codeCatalogue, language, route: sourceRoute, requestPath } = await select(route);
+        const { portal, metadata, codeCatalogue, language, route: sourceRoute, requestPath } = selected;
         const report = inspectPage(portal, sourceRoute, { solutionMetadata: metadata });
         report.requestPath = requestPath;
         if (language) report.language = { id: language.id, code: language.code, lcid: language.lcid };

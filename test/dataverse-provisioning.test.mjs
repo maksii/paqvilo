@@ -1,11 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { DataverseClient } from '../lense/dataverse/client.mjs';
 import { compileManifest, validateManifest } from '../lense/dataverse/manifest.mjs';
@@ -25,6 +23,7 @@ import {
   privateJson,
   tokenProvider,
 } from '../lense/dataverse/connection.mjs';
+import { tempDir, loopbackServer } from './fixture.mjs';
 
 function fixtureManifest() {
   const manifest = {
@@ -126,7 +125,7 @@ async function serverFixture(t) {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(data));
   };
-  const server = http.createServer(async (req, res) => {
+  const handle = async (req, res) => {
     let text = '';
     for await (const chunk of req) text += chunk;
     const body = text ? JSON.parse(text) : null;
@@ -279,7 +278,7 @@ async function serverFixture(t) {
       } else if (route === 'PublishXml') return send(res, 200, {});
       else return send(res, 400, { error: { message: 'unsupported fixture route' } });
       res.writeHead(204, {
-        'OData-EntityId': `http://127.0.0.1:${server.address().port}/api/data/v9.2/${route}(${id})`,
+        'OData-EntityId': `http://${req.headers.host}/api/data/v9.2/${route}(${id})`,
       });
       return res.end();
     }
@@ -293,11 +292,9 @@ async function serverFixture(t) {
       return send(res, 200, {});
     }
     send(res, 405, {});
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  };
   const client = new DataverseClient({
-    environmentUrl: `http://127.0.0.1:${server.address().port}`,
+    environmentUrl: await loopbackServer(t, handle),
     allowLoopback: true,
     token: async () => 'invented-token',
   });
@@ -381,7 +378,11 @@ test('remote plan is read-only; apply creates, retains membership and has a muta
     manifest = fixtureManifest();
   const before = await planManifest(manifest, { client });
   assert.equal(before.summary.drift, 0);
-  assert.ok(before.summary.create > 0);
+  assert.equal(
+    before.summary.create,
+    compileManifest(manifest).actions.length,
+    'an empty organisation lacks every action',
+  );
   assert.ok(state.requests.every((r) => r.method === 'GET'));
   const result = await applyManifest(manifest, { client, expectedOrganisationId: state.organisationId });
   assert.equal(result.state, 'Created');
@@ -503,7 +504,13 @@ test('acknowledged table and lookup creates reconcile transient metadata read ab
   };
   const journal = await applyManifest(fixtureManifest(), { client, expectedOrganisationId: state.organisationId });
   assert.equal(journal.state, 'Created');
-  assert.ok(missed.size >= 3);
+  // Both new tables' primary name columns and the one-to-many lookup (plain and typed reads) were each read absent once.
+  assert.deepEqual([...missed].sort(), [
+    "EntityDefinitions(LogicalName='tst_leaf')/Attributes(LogicalName='tst_name')",
+    "EntityDefinitions(LogicalName='tst_leaf')/Attributes(LogicalName='tst_nodeid')",
+    "EntityDefinitions(LogicalName='tst_leaf')/Attributes(LogicalName='tst_nodeid')/Microsoft.Dynamics.CRM.LookupAttributeMetadata",
+    "EntityDefinitions(LogicalName='tst_node')/Attributes(LogicalName='tst_name')",
+  ]);
   assert.equal(state.requests.filter((r) => r.method === 'POST' && r.route === 'EntityDefinitions').length, 2);
   assert.equal(state.requests.filter((r) => r.method === 'POST' && r.route === 'RelationshipDefinitions').length, 2);
 });
@@ -535,39 +542,43 @@ test('datetime manifest format is independent of behavior and participates in dr
   }
 });
 
-test('schema mutations have a longer deadline while timeout outcomes still require reconciliation', async () => {
+test('schema mutations have a longer deadline while timeout outcomes still require reconciliation', async (t) => {
+  // docs/dataverse-provisioning.md: reads allow 30 seconds, schema mutations 180 seconds.
+  const defaults = new DataverseClient({ environmentUrl: 'https://fictional.crm.example', token: async () => '' });
+  assert.deepEqual([defaults.timeoutMs, defaults.mutationTimeoutMs], [30_000, 180_000]);
+  // Each request's deadline signal is recorded and expires as soon as the request is sent, so no real time passes.
+  const deadlines = [];
+  t.mock.method(AbortSignal, 'timeout', (ms) => {
+    const controller = new AbortController();
+    deadlines.push({ ms, expire: () => controller.abort(new DOMException('Invented deadline', 'TimeoutError')) });
+    return controller.signal;
+  });
   let requests = 0;
   const client = new DataverseClient({
     environmentUrl: 'https://fictional.crm.example',
     token: async () => 'invented-token',
-    timeoutMs: 10,
-    mutationTimeoutMs: 30,
-    fetchImpl: async (_url, { signal }) => {
+    timeoutMs: 1_000,
+    mutationTimeoutMs: 5_000,
+    fetchImpl: (_url, { signal }) => {
       requests++;
-      // Keep the fixture alive while AbortSignal's unreferenced deadline expires.
-      return new Promise((_resolve, reject) => {
-        const keepAlive = setTimeout(() => reject(new Error('deadline was not enforced')), 1000);
-        signal.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(keepAlive);
-            reject(signal.reason);
-          },
-          { once: true },
-        );
-      });
+      const settled = new Promise((_resolve, reject) =>
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true }),
+      );
+      deadlines.at(-1).expire();
+      return settled;
     },
   });
-  assert.equal(
-    new DataverseClient({ environmentUrl: 'https://fictional.crm.example', token: async () => '' }).mutationTimeoutMs,
-    180_000,
-  );
   await assert.rejects(client.get('EntityDefinitions'), (e) => e.code === 'READ_FAILED');
   await assert.rejects(
     client.request('EntityDefinitions', { method: 'POST', body: {} }),
     (e) => e.code === 'UNKNOWN_COMMIT',
   );
   assert.equal(requests, 2);
+  assert.deepEqual(
+    deadlines.map((deadline) => deadline.ms),
+    [1_000, 5_000],
+    'a read uses the read deadline and a mutation the longer mutation deadline',
+  );
 });
 
 test('API continuations cannot escape origin or path; connection output omits secrets', () => {
@@ -598,16 +609,15 @@ test('dataverse help lists its register, plan and export commands', () => {
   const result = spawnSync(
     process.execPath,
     [fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)), 'dataverse', '--help'],
-    { encoding: 'utf8', windowsHide: true },
+    { encoding: 'utf8', windowsHide: true, timeout: 30_000 },
   );
-  assert.equal(result.status, 0);
-  assert.match(result.stdout, /Register|register/);
-  assert.match(result.stdout, /plan/);
-  assert.match(result.stdout, /export/);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  for (const command of ['register', 'plan', 'export'])
+    assert.match(result.stdout, new RegExp(`^  ${command} +--`, 'm'));
 });
 
 test('journal replacement survives a transient filesystem lock without repeating remote work', async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-dataverse-journal-')),
+  const directory = await tempDir('invented-dataverse-journal-'),
     file = path.join(directory, 'journal.json'),
     originalRename = fs.rename;
   let replacements = 0;
@@ -729,7 +739,7 @@ test('response stream and JSON failures retain unknown mutation outcomes without
 test('interrupted schema journals identify the pending action before its remote mutation', async (t) => {
   const { client, state } = await serverFixture(t);
   state.failCreate = true;
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-schema-journal-')),
+  const directory = await tempDir('invented-schema-journal-'),
     journalFile = path.join(directory, 'journal.json');
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   await assert.rejects(applyManifest(fixtureManifest(), { client, journalFile }), (e) => e.status === 503);

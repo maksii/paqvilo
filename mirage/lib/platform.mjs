@@ -1,10 +1,13 @@
 import { debugScript, exportFieldFile } from './source-debug.mjs';
 import { decodeXml, portalField } from './importer.mjs';
+import { xmlAttributes } from './xml-text.mjs';
 import fs from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
 import { renderFormLabel } from './form-labels.mjs';
 import { clientManagedControlsRuntime, validateManagedControlDefinition } from './managed-controls.mjs';
+import { mountRichTextEditors } from './richtext-client.mjs';
 import { clientLocalSelfOriginRuntime } from './local-self-origin.mjs';
 import { clientDateControlsRuntime } from './date-controls.mjs';
 import {
@@ -244,14 +247,14 @@ export function schemaFromFormXml(xml, { entity, title, fieldTypes = {}, lcid = 
   if (!/<form\b/i.test(xml) || !/<\/form>/i.test(xml))
     throw new Error('A complete systemform form XML document is required');
   const attributes = (markup) =>
-    Object.fromEntries([...markup.matchAll(/([\w:-]+)\s*=\s*(["'])([\s\S]*?)\2/g)].map((m) => [m[1], decodeXml(m[3])]));
+    Object.fromEntries(xmlAttributes(markup).map(([name, value]) => [name, decodeXml(value)]));
   const label = (body) => {
-    const labels = [...body.matchAll(/<label\b([^>]*?)\/?\s*>/gi)].map((m) => attributes(m[1]));
+    const labels = [...body.matchAll(/<label\b([^>]*)>/gi)].map((m) => attributes(m[1]));
     return (labels.find((l) => Number(l.languagecode) === Number(lcid)) ?? labels[0])?.description;
   };
   const fields = [];
   for (const cell of xml.matchAll(/<cell\b([^>]*)>([\s\S]*?)<\/cell>/gi)) {
-    const control = /<control\b([^>]*?)\/?\s*>/i.exec(cell[2]);
+    const control = /<control\b([^>]*)>/i.exec(cell[2]);
     if (!control) continue;
     const attrs = attributes(control[1]);
     const name = attrs.datafieldname;
@@ -273,8 +276,11 @@ export function schemaFromFormXml(xml, { entity, title, fieldTypes = {}, lcid = 
 }
 
 /** Client shims only for portal-owned APIs, leaving the export's scripts and markup intact. */
+// traceId: the page's audit id (X-Sim-Parent-Trace); site.rootTraceId: its trace-store trace id (X-Trace-Id), so
+// same-origin follow-up requests join the page's trace (docs/design/tracing.md).
 export function clientRuntime(token, revision, identity = {}, traceId = null, site = {}) {
   identity ??= {};
+  const { rootTraceId = null, ...portalSite } = site ?? {};
   const scriptJson = (value) => JSON.stringify(value).replace(/</g, '\\u003c');
   return `(() => {
     const token = ${JSON.stringify(token)};
@@ -285,11 +291,11 @@ export function clientRuntime(token, revision, identity = {}, traceId = null, si
     if(simulation.runtimeInstalled)return;simulation.runtimeInstalled=true;
     ${clientLocalSelfOriginRuntime()}
     ${clientDateControlsRuntime()}
-    const parentTrace=${scriptJson(traceId)};
+    const parentTrace=${scriptJson(traceId)};const rootTrace=${scriptJson(rootTraceId)};
     if(parentTrace){
       const sameOrigin=value=>{try{return new URL(localSelfUrl(typeof value==='string'?value:value?.url||String(value)),location.href).origin===location.origin;}catch{return false;}};
-      if(typeof window.fetch==='function'){const fetch=window.fetch;window.fetch=function(input,options){if(!sameOrigin(input))return fetch.call(this,input,options);const headers=new Headers(options?.headers??input?.headers);if(!headers.has('X-Sim-Parent-Trace'))headers.set('X-Sim-Parent-Trace',parentTrace);return fetch.call(this,input,{...options,headers});};}
-      const xhr=window.XMLHttpRequest?.prototype;if(xhr){const open=xhr.open,set=xhr.setRequestHeader,send=xhr.send;xhr.open=function(method,url,...args){this.__ppSimSameOrigin=sameOrigin(url);this.__ppSimExplicitTrace=false;return open.call(this,method,url,...args);};xhr.setRequestHeader=function(name,value){if(String(name).toLowerCase()==='x-sim-parent-trace')this.__ppSimExplicitTrace=true;return set.call(this,name,value);};xhr.send=function(...args){if(this.__ppSimSameOrigin&&!this.__ppSimExplicitTrace)set.call(this,'X-Sim-Parent-Trace',parentTrace);return send.apply(this,args);};}
+      if(typeof window.fetch==='function'){const fetch=window.fetch;window.fetch=function(input,options){if(!sameOrigin(input))return fetch.call(this,input,options);const headers=new Headers(options?.headers??input?.headers);if(!headers.has('X-Sim-Parent-Trace')){headers.set('X-Sim-Parent-Trace',parentTrace);if(rootTrace&&!headers.has('X-Trace-Id'))headers.set('X-Trace-Id',rootTrace);}return fetch.call(this,input,{...options,headers});};}
+      const xhr=window.XMLHttpRequest?.prototype;if(xhr){const open=xhr.open,set=xhr.setRequestHeader,send=xhr.send;xhr.open=function(method,url,...args){this.__ppSimSameOrigin=sameOrigin(url);this.__ppSimExplicitTrace=false;return open.call(this,method,url,...args);};xhr.setRequestHeader=function(name,value){if(/^x-(?:sim-parent-trace|sim-trace-id|trace-id)$/i.test(String(name)))this.__ppSimExplicitTrace=true;return set.call(this,name,value);};xhr.send=function(...args){if(this.__ppSimSameOrigin&&!this.__ppSimExplicitTrace){set.call(this,'X-Sim-Parent-Trace',parentTrace);if(rootTrace)set.call(this,'X-Trace-Id',rootTrace);}return send.apply(this,args);};}
     }
     for (const prototype of [String.prototype, Array.prototype]) if (!prototype.contains) Object.defineProperty(prototype, 'contains', { value: function(value) { return this.includes(value); }, configurable: true, writable: true });
     // Native shell (postpreform.bundle antiforgerytoken): the platform renders
@@ -355,10 +361,24 @@ export function clientRuntime(token, revision, identity = {}, traceId = null, si
     };
     window.portal ||= {};window.portal.IsRequestedFromMaker ||= function(){return false;};
     const installLegacyJQueryEvents=()=>{const jq=window.jQuery;if(!jq?.fn||jq.fn.load?.__ppSimLegacy)return;const load=jq.fn.load;const handler=function(first,...rest){return typeof first==='function'?this.on('load',first):load.apply(this,[first,...rest]);};handler.__ppSimLegacy=true;jq.fn.load=handler;};installLegacyJQueryEvents();document.addEventListener('load',installLegacyJQueryEvents,true);
-    ${clientPortalObjectRuntime(identity, { ...site, traceId })}
+    ${clientPortalObjectRuntime(identity, { ...portalSite, traceId })}
     // One stream per portal tab. Parent navigation reloads its managed frames;
     // per-frame streams exhaust the browser's same-origin HTTP connection pool.
-    if(window.parent===window){const connect=()=>{if(simulation.reloadStream&&simulation.reloadStream.readyState!==2)return;const events=simulation.reloadStream=new EventSource('/__sim/events');events.addEventListener('reload',()=>location.reload());};const close=()=>{simulation.reloadStream?.close();simulation.reloadStream=null;};window.addEventListener('pagehide',close);window.addEventListener('pageshow',connect);connect();}
+    if(window.parent===window){
+      const connect=()=>{
+        if(simulation.reloadStream&&simulation.reloadStream.readyState!==2)return;
+        const events=simulation.reloadStream=new EventSource('/__sim/events');
+        // A source change can finish before the initial stream connects, or
+        // while a page is suspended. The ready revision closes that event gap.
+        events.addEventListener('ready',event=>{
+          const rendered=Number(simulation.revision),current=Number(event.data);
+          if(simulation.reloadStream===events&&Number.isSafeInteger(rendered)&&Number.isSafeInteger(current)&&rendered!==current)location.reload();
+        });
+        events.addEventListener('reload',()=>location.reload());
+      };
+      const close=()=>{simulation.reloadStream?.close();simulation.reloadStream=null;};
+      window.addEventListener('pagehide',close);window.addEventListener('pageshow',connect);connect();
+    }
   })();`;
 }
 
@@ -465,7 +485,15 @@ function pageSite(html) {
   return { websiteId: resources?.[1] ?? '', language };
 }
 
-export function injectRuntime(html, token, revision, identity = {}, traceId = null, languages = null) {
+export function injectRuntime(
+  html,
+  token,
+  revision,
+  identity = {},
+  traceId = null,
+  languages = null,
+  rootTraceId = null,
+) {
   // The trace id travels in the x-sim-trace-id header and the runtime script only: a meta
   // element would shift every head child the platform renders (charset, viewport, links).
   // The $pages client API (lib/pages-client-api.js) runs right after the runtime, before authored scripts.
@@ -473,6 +501,7 @@ export function injectRuntime(html, token, revision, identity = {}, traceId = nu
   const runtime = clientRuntime(token, revision, identity, traceId, {
     ...pageSite(html),
     ...(languages?.length ? { languages } : {}),
+    rootTraceId,
   });
   const script = hasPlatformBundles(html)
     ? `<script data-paqvilo-mirage-runtime>${runtime}\n${PAGES_CLIENT_API_SOURCE}</script>`
@@ -505,51 +534,32 @@ export function injectRuntime(html, token, revision, identity = {}, traceId = nu
   return /<head\b[^<>]*>/i.test(html) ? html.replace(/<head\b[^<>]*>/i, (head) => head + script) : script + html;
 }
 
-/** Use the observed managed CKEditor bytes, binding HTML as the native JSON input. */
+/**
+ * Use the observed managed CKEditor bytes, binding HTML as the native JSON input.
+ * The compatibility editor's DOMPurify factory runs with its own module/exports
+ * and no AMD define, so its instance is private to the editor: it neither
+ * replaces a page's DOMPurify global nor registers with a page's AMD loader.
+ */
+let compatibilitySanitizerSource;
 function clientRichTextRuntime(settings) {
   const data = JSON.stringify(settings).replace(/</g, '\\u003c');
-  return `(async()=>{
-    const settings=${data},base='/webresources/msdyn_/RichTextEditorControl/';
-    const state=window.__portalSimulation ||= {};
-    const loadJson=async url=>{const response=await fetch(url);if(!response.ok)throw new Error('Rich text configuration unavailable: '+url+' ('+response.status+')');return response.json();};
-    const loadEditor=()=>state.richTextLibrary ||= new Promise((resolve,reject)=>{if(window.CKEDITOR){resolve(window.CKEDITOR);return;}window.CKEDITOR_BASEPATH=base+'libs/ckeditor_latest/';const script=document.createElement('script');script.src=CKEDITOR_BASEPATH+'ckeditor.js';script.onload=()=>resolve(window.CKEDITOR);script.onerror=()=>reject(new Error('The managed rich text editor dependency is unavailable.'));document.head.append(script);});
-    const compatibilityEditor=async(id,input,container)=>{
-      const textarea=document.getElementById(id+'_editor'),initial=textarea?.value||'';
-      const toolbar=document.createElement('div');toolbar.className='sim-richtext-toolbar';toolbar.setAttribute('role','toolbar');toolbar.setAttribute('aria-label','Compatibility editor formatting');
-      const frame=document.createElement('iframe');frame.className='cke_wysiwyg_frame';frame.title='Compatibility rich text editor';frame.setAttribute('aria-label','Compatibility rich text editor');frame.style.cssText='width:100%;min-height:12rem;border:1px solid #8a8886;background:#fff';
-      const badge=document.createElement('span');badge.className='sim-compatibility-badge';badge.textContent='Compatibility editor';
-      const actions=[['Bold','bold'],['Italic','italic'],['Underline','underline'],['Bulleted list','insertUnorderedList'],['Numbered list','insertOrderedList']];
-      for(const [label,command] of actions){const button=document.createElement('button');button.type='button';button.textContent=label;button.setAttribute('aria-label',label);button.addEventListener('mousedown',event=>event.preventDefault());button.addEventListener('click',()=>{frame.contentDocument.execCommand(command,false,null);frame.contentWindow.focus();});toolbar.append(button);}
-      container.replaceChildren(badge,toolbar,frame);container.dataset.simEditorMode='compatibility';
-      const loaded=new Promise(resolve=>frame.addEventListener('load',resolve,{once:true}));
-      frame.srcdoc='<!doctype html><html><head><meta charset="utf-8"><style>body{font:inherit;margin:8px;min-height:10rem;outline:none}body:focus{outline:none}</style></head><body contenteditable="true" role="textbox" aria-label="Rich text content" aria-multiline="true"></body></html>';
-      await loaded;
-      let content=initial;const body=()=>frame.contentDocument?.body;
-      const listeners=new Map(),fire=(name,data={})=>{for(const callback of listeners.get(name)||[])callback({name,editor,...data});};
-      const getData=()=>{const html=body()?.innerHTML??content;if(!html||/<(?:p|div|ul|ol|blockquote|h[1-6])\b/i.test(html))return html;return '<p>'+html+'</p>';};
-      const sync=()=>{content=body()?.innerHTML??content;const encoded=JSON.stringify(getData());input.value=encoded;input.setAttribute('value',encoded);input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));fire('change');};
-      const editor={name:id+'_editor',config:{},on(name,callback){const rows=listeners.get(name)||[];rows.push(callback);listeners.set(name,rows);return editor;},fire(name,data){fire(name,data);return editor;},getData(){return getData();},setData(value,callback){content=String(value??'');const current=body();if(current)current.innerHTML=content;sync();if(callback)callback();return editor;},updateElement(){sync();return editor;},focus(){body()?.focus();return editor;},editable(){return frame.contentDocument.body;},destroy(){frame.remove();toolbar.remove();badge.remove();delete window.CKEDITOR.instances[editor.name];return editor;}};
-      window.CKEDITOR ||= {instances:{},replace(){throw new Error('Native CKEditor is unavailable in compatibility mode.');}};
-      window.CKEDITOR.instances ||= {};window.CKEDITOR.instances[editor.name]=editor;
-      // Moving the frame (authored layout scripts do) reloads its document: restore the content and rebind.
-      const bind=()=>{const current=body();if(!current||current.__ppSimBound)return;current.__ppSimBound=true;if(current.innerHTML!==content)current.innerHTML=content;current.addEventListener('input',sync);current.addEventListener('blur',sync);};
-      frame.addEventListener('load',bind);bind();
-      queueMicrotask(()=>{container.dataset.mounted='ready';container.dispatchEvent(new CustomEvent('sim:richtext-ready',{bubbles:true,detail:{field:id,mode:'compatibility'}}));fire('instanceReady');});
-      console.info('Local rich text compatibility editor active for '+id+'; native CKEditor assets were not captured.');
-    };
-    for(const [id,configuration] of Object.entries(settings)){
-      const input=document.getElementById(id),container=document.querySelector('[data-sim-richtext-editor][data-field="'+id+'"]');if(!input||!container||container.dataset.mounted)continue;container.dataset.mounted='loading';
-      try{
-        if(configuration.compatibility){await compatibilityEditor(id,input,container);continue;}
-        const [editorLibrary,globalConfiguration,fieldConfiguration]=await Promise.all([loadEditor(),state.richTextGlobalConfiguration ||= loadJson(base+'RTEGlobalConfiguration.json'),configuration.configUrl?loadJson(configuration.configUrl):configuration.configuration]);
-        editorLibrary.timestamp='';
-        const config={...globalConfiguration.defaultSupportedProps,...fieldConfiguration.defaultSupportedProps,stylesSet:false,contentsCss:[base+'libs/ckeditor_latest/contents.css'],language:document.documentElement.lang?.split('-')[0]||'en',readOnly:container.dataset.readOnly==='true'};
-        const editor=editorLibrary.replace(id+'_editor',config);
-        const sync=()=>{const encoded=JSON.stringify(editor.getData());input.value=encoded;input.setAttribute('value',encoded);input.dispatchEvent(new Event('change',{bubbles:true}));};
-        editor.on('change',sync);editor.on('instanceReady',()=>{container.dataset.mounted='ready';sync();container.dispatchEvent(new CustomEvent('sim:richtext-ready',{bubbles:true,detail:{field:id}}));});
-      }catch(error){container.dataset.mounted='failed';const alert=container.querySelector('[data-sim-richtext-error]');alert.hidden=false;alert.textContent=error.message;console.error(error);}
-    }
-  })();`;
+  const compatibility = Object.values(settings).some((setting) => setting.compatibility);
+  if (compatibility)
+    compatibilitySanitizerSource ??=
+      '(function(){var module={exports:{}},exports=module.exports,define;\n' +
+      readFileSync(createRequire(import.meta.url).resolve('dompurify/purify.min.js'), 'utf8').replace(
+        /<\/script/gi,
+        '<\\/script',
+      ) +
+      '\nreturn module.exports;})()';
+  return (
+    '(' +
+    mountRichTextEditors.toString() +
+    ')(' +
+    data +
+    (compatibility ? ',' + compatibilitySanitizerSource : '') +
+    ');'
+  );
 }
 
 // Native component rendering (basic forms, advanced forms, lists, subgrids,

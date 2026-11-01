@@ -6,6 +6,8 @@ import { organizationPrincipalContext } from './dataverse-principal-context.mjs'
 import { parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { createDataverseHandler } from './dataverse-api.mjs';
 import { isSecuredField } from './dataverse-fls.mjs';
+import { plainDataObject } from './state-clone.mjs';
+import { immutableFieldRights } from './field-rights.mjs';
 import { Readable } from 'node:stream';
 import { gunzipSync } from 'node:zlib';
 
@@ -101,9 +103,16 @@ export function createModelDrivenWebApi({ organization }) {
       });
       const out = { status: 200, headers: {}, chunks: [] };
       await new Promise((resolve, reject) => {
-        const listeners = [];
+        // finish and close listeners, as a Node response emits them: end fires finish then close; destroy fires close
+        // alone, so the handler's http span ends (499) on that path too.
+        const listeners = { finish: [], close: [] };
+        const emit = (event) => {
+          for (const listener of listeners[event].splice(0)) listener();
+        };
         const res = {
           headersSent: false,
+          writableFinished: false,
+          destroyed: false,
           setHeader: (name, value) => {
             out.headers[name.toLowerCase()] = value;
           },
@@ -114,16 +123,21 @@ export function createModelDrivenWebApi({ organization }) {
             return out.status;
           },
           on: (event, listener) => {
-            if (event === 'finish') listeners.push(listener);
+            listeners[event]?.push(listener);
             return res;
           },
           end: (payload) => {
             if (payload !== undefined) out.chunks.push(Buffer.from(payload));
-            res.headersSent = true;
-            for (const listener of listeners) listener();
+            res.headersSent = res.writableFinished = true;
+            emit('finish');
+            emit('close');
             resolve();
           },
-          destroy: () => reject(new DataError('The Web API request failed.', 500, 'WebApiExecuteFailed')),
+          destroy: () => {
+            res.destroyed = true;
+            emit('close');
+            reject(new DataError('The Web API request failed.', 500, 'WebApiExecuteFailed'));
+          },
         };
         handlerFor(runtime, hostname)(req, res).catch(reject);
       });
@@ -210,6 +224,9 @@ export function createModelDrivenRecordService({
       return {
         rows: (response.body?.value ?? []).map(rowOf),
         total: response.body?.['@odata.count'] ?? -1,
+        ...(response.body?.['@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded'] === true
+          ? { totalLimitExceeded: true }
+          : {}),
         more:
           response.body?.['@Microsoft.Dynamics.CRM.morerecords'] === true ||
           Boolean(response.body?.['@odata.nextLink']),
@@ -242,7 +259,7 @@ export function createModelDrivenRecordService({
         : null;
     return subset ? subset.find(same) : rows.find(same);
   };
-  const capabilities = (entity, options = {}, { id, fields = {} } = {}) => {
+  const capabilities = (entity, options = {}, { id, fields = {}, compact = false } = {}) => {
     const { user } = context(options),
       mapping = store.resolveMapping(entity);
     // Values remain internal to authorization. Only rights for the requested
@@ -270,35 +287,44 @@ export function createModelDrivenRecordService({
     const canDelete = permits('delete') && (!id || canRead) && storage.delete !== false;
     const fls = organization.api.fieldSecurity;
     const names = Object.keys(fields);
-    const fieldRights = names.length ? fls?.capabilities?.(user, entity, names, id) : {};
+    const fieldRights = names.length ? fls?.capabilities?.(user, entity, names, id, { compact: true }) : {};
+    // Field security and the secured marker share a synchronous table read.
+    // Resolving the whole imported definition again for every marker made a
+    // wide catalogue allocate O(fields²) metadata. Never cache across calls.
+    const metadataFields = typeof store.fieldDefinition === 'function' ? organization.api.metadataFields : undefined;
+    const definitions =
+      names.length && typeof metadataFields === 'function' ? metadataFields(mapping.logicalName ?? entity) : undefined;
+    const metadata = typeof metadataFields === 'function' ? () => definitions : undefined;
+    const projected = plainDataObject(),
+      property = { value: undefined, writable: true, enumerable: true, configurable: true };
+    for (const [name, field] of Object.entries(fields)) {
+      const secured = isSecuredField(store.fieldDefinition?.(entity, name, metadata) ?? field);
+      const read = canRead && (fieldRights ? fieldRights[name].read : fls?.canRead(user, entity, name, id) !== false);
+      const create =
+        canCreate &&
+        !field.isPrimaryId &&
+        (field.validForCreate ?? field.columnMetadata?.validForCreate) !== false &&
+        (fieldRights ? fieldRights[name].create : fls?.canWrite(user, entity, name, 'create') !== false);
+      const update =
+        canUpdate &&
+        !field.isPrimaryId &&
+        (field.validForUpdate ?? field.columnMetadata?.validForUpdate) !== false &&
+        (fieldRights ? fieldRights[name].update : fls?.canWrite(user, entity, name, 'update', id) !== false);
+      property.value = compact
+        ? immutableFieldRights(secured, read, create, update)
+        : { secured, read, create, update };
+      Object.defineProperty(projected, name, property);
+    }
     return {
       read: canRead,
       create: canCreate,
       update: canUpdate,
       delete: canDelete,
       ...(storage.reason ? { reason: storage.reason } : {}),
-      fields: Object.fromEntries(
-        Object.entries(fields).map(([name, field]) => [
-          name,
-          {
-            // A column under field-level security says so (PCF context.parameters.<p>.security.secured).
-            secured: isSecuredField(store.fieldDefinition?.(entity, name, organization?.api.metadataFields) ?? field),
-            read: canRead && (fieldRights ? fieldRights[name].read : fls?.canRead(user, entity, name, id) !== false),
-            create:
-              canCreate &&
-              !field.isPrimaryId &&
-              (field.validForCreate ?? field.columnMetadata?.validForCreate) !== false &&
-              (fieldRights ? fieldRights[name].create : fls?.canWrite(user, entity, name, 'create') !== false),
-            update:
-              canUpdate &&
-              !field.isPrimaryId &&
-              (field.validForUpdate ?? field.columnMetadata?.validForUpdate) !== false &&
-              (fieldRights ? fieldRights[name].update : fls?.canWrite(user, entity, name, 'update', id) !== false),
-          },
-        ]),
-      ),
+      fields: projected,
     };
   };
+
   const write = async ({ entity, id, values = {}, remove = false, etag, principalId, kind }) => {
     const mapping = store.resolveMapping(entity);
     const body = {};

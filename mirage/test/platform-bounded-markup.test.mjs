@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contextualViewFetchXml, renderComponent } from '../lib/platform.mjs';
 
+// A complexity bound, not a speed check: the linear scans below take tens of milliseconds, while quadratic scanning of
+// these 100,000-500,000 character inputs takes many seconds, so only a quadratic regression crosses it.
+const LINEAR_WORK_LIMIT_MS = 3000;
+
 test('contextual view substitution preserves unknown attributes and quoted tag delimiters', () => {
   const source =
     '<fetch><entity name="item"><filter><condition note="literal > and /> text" uitype="contact" value = \'old\' custom="kept"/><condition uitype="account" custom=\'a/>b\' /><condition uitype="adx_website" ><value>untouched child</value></condition></filter></entity></fetch>';
@@ -71,7 +75,10 @@ test('condition scanning remains bounded for repeated incomplete tags and long c
     contextualViewFetchXml(source, { user: { id: 'person' } }),
     '<condition uitype="contact" value="person"' + spaces + '>',
   );
-  assert.ok(performance.now() - started < 3000, 'Pathological source processing completes with bounded work');
+  assert.ok(
+    performance.now() - started < LINEAR_WORK_LIMIT_MS,
+    'Pathological source processing completes with bounded work',
+  );
 });
 
 async function renderSectionLabel(label) {
@@ -118,5 +125,8 @@ test('native labels with many unmatched opening delimiters remain authored witho
     started = performance.now(),
     html = await renderSectionLabel(label);
   assert.ok(html.includes('<fieldset aria-label="' + '&lt;'.repeat(100000) + 'tail">'));
-  assert.ok(performance.now() - started < 3000, 'An unterminated native label completes with bounded work');
+  assert.ok(
+    performance.now() - started < LINEAR_WORK_LIMIT_MS,
+    'An unterminated native label completes with bounded work',
+  );
 });

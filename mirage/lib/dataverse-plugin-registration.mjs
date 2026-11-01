@@ -5,43 +5,243 @@ import { organizationRecord } from './organization-context.mjs';
 // the documented errors. A row runs nothing by itself: overlayRegisteredSteps decides which steps join the pipeline. Seeding is insert-or-replace
 // by id, so reseeding is idempotent and the Solution's rows win on reseed.
 import { DataError } from './data-error.mjs';
-import { privilegeDeniedError, uuidV5 } from './dataverse-security.mjs';
+import { ownershipTypeName, privilegeDeniedError, uuidV5 } from './dataverse-security.mjs';
 import { standardTableDef } from './dataverse-standard.mjs';
 import { SDK_MESSAGES, pluginUnsupported } from './exported-plugins.mjs';
-import { InvalidAssembly, inspectAssembly, inspectSigningCertificate } from './clr-assembly-reader.mjs';
+import {
+  PLATFORM_MESSAGES_UNRECORDED,
+  PLATFORM_SDK_MESSAGES,
+  PRIVATE_PLATFORM_MESSAGES_UNRECORDED,
+  requestMessage,
+} from './dataverse-sdk-message-catalogue.mjs';
+import { InvalidAssembly, inspectAssembly, inspectPackage, inspectSigningCertificate } from './clr-assembly-reader.mjs';
 import { isLoopbackUrl, loopbackFetch, messagingOf, serviceEndpointTarget } from './dataverse-webhooks.mjs';
+import { tracedFetch } from './trace-hosts.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
+import { stepConstructorSettings, copyStepConstructorSettings } from './plugin-constructor-configuration.mjs';
 
 const NAMESPACE = uuidV5('6ba7b811-9dad-11d1-80b4-00c04fd430c8', 'paqvilo-dataverse'); // same as dataverse-api.mjs DATAVERSE_NAMESPACE
 const SIXTEEN_MB = 16 * 1024 * 1024;
-const PIPELINE = [
+// The platform SDK messages with their native sdkmessage ids and flags (dataverse-sdk-message-catalogue.mjs), and the
+// platform messages the native corpus names without recording their ids. Messages a Microsoft solution installs are
+// environment content, not platform constants.
+const PLATFORM_MESSAGES = PLATFORM_SDK_MESSAGES;
+const UNRECORDED_MESSAGES = [...PLATFORM_MESSAGES_UNRECORDED, ...PRIVATE_PLATFORM_MESSAGES_UNRECORDED];
+const PRIVATE_UNRECORDED = new Set(PRIVATE_PLATFORM_MESSAGES_UNRECORDED);
+// Native per-table filters of a custom table (proven for a user-owned and an organization-owned one) follow its
+// capabilities. Every table: data, state, retention and archive messages (IsValidStateTransition takes no custom step on
+// a custom table). Custom tables add DeleteMultiple and the legacy bulk messages. User- or team-owned tables add the
+// ownership and sharing messages. Standard tables whose native filters were recorded use STANDARD_TABLE_FILTERS instead;
+// other standard tables reuse this template (mergeable ones add Merge), which is not proven for them.
+const TABLE_MESSAGES = [
   'Create',
-  'Update',
+  'CreateMultiple',
   'Delete',
   'Retrieve',
   'RetrieveMultiple',
-  'Associate',
-  'Disassociate',
-  'CreateMultiple',
-  'UpdateMultiple',
-  'UpsertMultiple',
-  'DeleteMultiple',
-];
-const ROUTER = ['WhoAmI', 'RetrieveVersion', 'GrantAccess', 'ModifyAccess', 'RevokeAccess', 'Assign', 'SetState'];
-// One sdkmessagefilter per table for the CRUD, association and bulk messages.
-const FILTERED = [
-  'Create',
   'Update',
+  'UpdateMultiple',
+  'SetState',
+  'SetStateDynamicEntity',
+  'Retain',
+  'BulkRetain',
+  'PurgeRetainedContent',
+  'RollbackRetain',
+  'ValidateRetentionConfig',
+  'IsValidStateTransition',
+  'Archive',
+  'BulkArchive',
+  'PurgeArchivedContent',
+  'ValidateArchiveConfig',
+];
+const CUSTOM_TABLE_MESSAGES = ['DeleteMultiple', 'CreateMultipleLegacy', 'UpdateMultipleLegacy'];
+const OWNED_TABLE_MESSAGES = [
+  'Assign',
+  'GrantAccess',
+  'ModifyAccess',
+  'RevokeAccess',
+  'RetrievePrincipalAccess',
+  'RetrieveSharedPrincipalsAndAccess',
+];
+const MERGEABLE = new Set(['account', 'contact', 'lead', 'incident']);
+const NO_CUSTOM_STEP_MESSAGES = new Set(['IsValidStateTransition']);
+// Native filter sets of standard tables, as [message, iscustomprocessingstepallowed, availability] (native sdkmessagefilter
+// rows): account has the template's messages with every one allowed (IsValidStateTransition included) and server-only
+// ownership, sharing, IsValidStateTransition and Merge filters; transactioncurrency has eight filters and refuses
+// Retrieve/RetrieveMultiple steps.
+const ACCOUNT_SERVER_FILTERS = new Set([
+  'Assign',
+  'GrantAccess',
+  'ModifyAccess',
+  'RevokeAccess',
+  'IsValidStateTransition',
+  'Merge',
+]);
+const STANDARD_TABLE_FILTERS = {
+  account: [
+    'Archive',
+    'Assign',
+    'BulkArchive',
+    'BulkRetain',
+    'Create',
+    'CreateMultiple',
+    'Delete',
+    'GrantAccess',
+    'IsValidStateTransition',
+    'Merge',
+    'ModifyAccess',
+    'PurgeArchivedContent',
+    'PurgeRetainedContent',
+    'Retain',
+    'Retrieve',
+    'RetrieveMultiple',
+    'RetrievePrincipalAccess',
+    'RetrieveSharedPrincipalsAndAccess',
+    'RevokeAccess',
+    'RollbackRetain',
+    'SetState',
+    'SetStateDynamicEntity',
+    'Update',
+    'UpdateMultiple',
+    'ValidateArchiveConfig',
+    'ValidateRetentionConfig',
+  ].map((message) => [message, true, ACCOUNT_SERVER_FILTERS.has(message) ? 0 : 2]),
+  // Native filter catalogue round 2 (native-filters-2). The messages of task, systemuser and team whose sdkmessageid it does
+  // not record take local ids (UNRECORDED_MESSAGES); contact's three adx_ filters are Power Pages solution content.
+  contact: [
+    ['Assign', true, 0],
+    ['Create', true, 2],
+    ['CreateMultiple', true, 2],
+    ['Delete', true, 2],
+    ['GrantAccess', true, 0],
+    ['IsValidStateTransition', true, 0],
+    ['Merge', true, 0],
+    ['ModifyAccess', true, 0],
+    ['Retrieve', true, 2],
+    ['RetrieveMultiple', true, 2],
+    ['RetrievePrincipalAccess', true, 2],
+    ['RetrieveSharedPrincipalsAndAccess', true, 2],
+    ['RevokeAccess', true, 0],
+    ['SetState', true, 2],
+    ['SetStateDynamicEntity', true, 2],
+    ['Update', true, 2],
+    ['UpdateMultiple', true, 2],
+  ],
+  task: [
+    ['Assign', true, 0],
+    ['Create', true, 2],
+    ['CreateMultiple', true, 2],
+    ['Delete', true, 2],
+    ['GrantAccess', true, 0],
+    ['Handle', true, 2],
+    ['ModifyAccess', true, 0],
+    ['Retrieve', true, 2],
+    ['RetrieveMultiple', true, 2],
+    ['RetrievePrincipalAccess', true, 2],
+    ['RetrieveSharedPrincipalsAndAccess', true, 2],
+    ['RevokeAccess', true, 0],
+    ['Route', true, 2],
+    ['SetState', true, 2],
+    ['SetStateDynamicEntity', true, 2],
+    ['Update', true, 2],
+    ['UpdateMultiple', true, 2],
+  ],
+  systemuser: [
+    ['Create', true, 0],
+    ['Delete', true, 0],
+    ['InviteUser', false, 0],
+    ['PromoteToAdmin', false, 2],
+    ['ReassignObjects', false, 0],
+    ['RemoveParent', false, 0],
+    ['Retrieve', false, 2],
+    ['RetrieveAllChildUsers', false, 2],
+    ['RetrieveMultiple', false, 2],
+    ['RetrieveTeams', false, 2],
+    ['RetrieveUserSettings', false, 2],
+    ['SetBusiness', false, 0],
+    ['SetDevErrors', false, 0],
+    ['SetParent', false, 0],
+    ['SetState', true, 0],
+    ['SetStateDynamicEntity', true, 0],
+    ['Update', true, 0],
+    ['UpdateUserSettings', false, 2],
+  ],
+  team: [
+    ['AddMembers', true, 0],
+    ['Archive', true, 2],
+    ['ConvertOwnerTeamToAccessTeam', false, 0],
+    ['Create', true, 0],
+    ['Delete', true, 0],
+    ['RemoveMembers', true, 0],
+    ['Retrieve', true, 2],
+    ['RetrieveMembers', false, 2],
+    ['RetrieveMultiple', true, 2],
+    ['SetParent', false, 0],
+    ['SyncGroupMembersToTeam', false, 0],
+    ['Update', true, 0],
+  ],
+  transactioncurrency: [
+    ['Create', true, 0],
+    ['Delete', true, 0],
+    ['Retrieve', false, 2],
+    ['RetrieveExchangeRate', true, 2],
+    ['RetrieveMultiple', false, 2],
+    ['SetState', true, 0],
+    ['SetStateDynamicEntity', true, 0],
+    ['Update', true, 0],
+  ],
+};
+// Native filter sets of table kinds (native filter catalogue round 2): an N:N intersect table takes custom steps on
+// RetrieveMultiple only; an elastic table has data, bulk, Upsert, change-tracking, retention and archive filters (no state or
+// sharing messages; Assign and RetrievePrincipalAccess when owned); a virtual table has its data filters. All allow custom
+// steps with server-only availability.
+const INTERSECT_MESSAGES = ['RetrieveMultiple'];
+const ELASTIC_MESSAGES = [
+  'Archive',
+  'BulkArchive',
+  'BulkRetain',
+  'Create',
+  'CreateMultiple',
+  'CreateMultipleLegacy',
+  'Delete',
+  'DeleteMultiple',
+  'PurgeArchivedContent',
+  'PurgeRetainedContent',
+  'Retain',
+  'Retrieve',
+  'RetrieveEntityChanges',
+  'RetrieveMultiple',
+  'RollbackRetain',
+  'Update',
+  'UpdateMultiple',
+  'UpdateMultipleLegacy',
+  'Upsert',
+  'UpsertMultiple',
+  'UpsertMultipleLegacy',
+  'ValidateArchiveConfig',
+  'ValidateRetentionConfig',
+];
+const VIRTUAL_MESSAGES = [
+  'Create',
+  'CreateMultipleLegacy',
   'Delete',
   'Retrieve',
+  'RetrieveEntityChanges',
   'RetrieveMultiple',
-  'Associate',
-  'Disassociate',
-  'CreateMultiple',
-  'UpdateMultiple',
-  'UpsertMultiple',
-  'DeleteMultiple',
+  'Update',
+  'UpdateMultipleLegacy',
 ];
+// The 'none' (no table) filters native has for platform messages (the catalogue's none flags), as message:
+// [iscustomprocessingstepallowed, availability, unfiltered]. The allowed flag governs a step registered on that filter. A step
+// registered with no filter is accepted on any existing message (Upsert, Merge and RetrieveEntityChanges included, whose 'none'
+// filters refuse custom steps) except where unfiltered is false: native refuses a global WhoAmI or RetrieveVersion step
+// (0x80044187). Whether other messages whose 'none' filter refuses custom steps (ExecuteMultiple, ...) refuse a global step is
+// not captured; they accept it.
+const NONE_FILTERS = Object.fromEntries(
+  Object.entries(PLATFORM_MESSAGES)
+    .filter(([, message]) => message.none)
+    .map(([name, { none }]) => [name, ['WhoAmI', 'RetrieveVersion'].includes(name) ? [...none, false] : [...none]]),
+);
 const EXTERNAL_MESSAGES = ['OnExternalCreated', 'OnExternalUpdated', 'OnExternalDeleted'];
 const STAGE_NAME = { 10: 'PreValidation', 20: 'PreOperation', 40: 'PostOperation' };
 // Mirage's own system tables and intersect tables take no custom processing step.
@@ -49,18 +249,24 @@ const NO_CUSTOM_STEP = new Set(['organization', 'privilege', 'roleprivileges']);
 // Read-only from the API: only Retrieve, RetrieveMultiple, Associate and Disassociate are documented for these tables.
 const READ_ONLY = new Set(['sdkmessage', 'sdkmessagefilter']);
 const VERB = { create: 'Create', update: 'Update', delete: 'Delete' };
-// The documented request property each message's image may read.
+// The message property each image reads; Create uses its native response Id.
 const IMAGE_PROPERTIES = {
   Assign: ['Target'],
-  Create: ['Target'],
+  Create: ['Id'],
+  CreateMultiple: ['Targets'],
   Delete: ['Target'],
+  DeleteMultiple: ['Targets'],
   DeliverIncoming: ['EmailId'],
+  GrantAccess: ['Target'],
   DeliverPromote: ['EmailId'],
   Merge: ['Target', 'SubordinateId'],
+  Retrieve: ['Target'],
   Route: ['Target'],
   Send: ['FaxId', 'EmailId', 'TemplateId'],
   SetState: ['EntityMoniker'],
+  SetStateDynamicEntity: ['EntityMoniker'],
   Update: ['Target'],
+  UpdateMultiple: ['Targets'],
 };
 const ADMIN_ROLES = new Set(['System Administrator', 'System Customizer']);
 const IMPERSONATE = 'prvSetImpersonatingUserIdOnSdkMessageProcessingStep';
@@ -68,7 +274,8 @@ const STAGE_TEXT =
   'Invalid plug-in registration stage. Steps can only be modified in stages BeforeMainOperationOutsideTransaction, BeforeMainOperationInsideTransaction, AfterMainOperationInsideTransaction and AfterMainOperationOutsideTransaction.';
 const KNOWN_MESSAGE_IDS = new Map(Object.entries(SDK_MESSAGES).map(([id, name]) => [name, id]));
 
-const messageId = (name) => KNOWN_MESSAGE_IDS.get(name) ?? uuidV5(NAMESPACE, `sdkmessage:${name}`); // the id of a non-platform message is a guess
+const messageId = (name) =>
+  PLATFORM_MESSAGES[name]?.id ?? KNOWN_MESSAGE_IDS.get(name) ?? uuidV5(NAMESPACE, `sdkmessage:${name}`); // the id of a non-platform message is a guess
 const filterId = (org, message, table) => uuidV5(org, `sdkmessagefilter:${message}:${table}`);
 // A lookup is stored as its id (Solution rows) or as { id, logical_name, name } (rows the API wrote).
 const idOfValue = (value) => (value !== null && typeof value === 'object' ? value.id : value);
@@ -77,8 +284,10 @@ const same = (a, b) => {
   return x != null && y != null && String(x).toLowerCase() === String(y).toLowerCase();
 };
 const fail = (message, innerCode) => new DataError(message, 400, 'InvalidRequest', { innerCode });
-// Records do not check required columns; the 0x80040203 invalid-argument default is a guess.
+// Records do not check required columns; the 0x80040203 invalid-argument default is a guess. A step without a message or
+// handler answers native's 0x80040200 "<column> is missing." (registration round 2).
 const required = (column) => fail(`The '${column}' attribute is required.`, '0x80040203');
+const missing = (column) => fail(`${column} is missing.`, '0x80040200');
 const notFound = (logical, id) =>
   new DataError(`Entity '${logical}' With Id = ${id} Does Not Exist`, 404, 'NotFound', { innerCode: '0x80040217' });
 // ponytail: a linear scan per lookup; index the registration tables by id if their row counts grow.
@@ -109,11 +318,17 @@ function handlerOf(data, existing) {
   return { id: ref(data, existing, 'eventhandler') ?? ref(data, existing, 'plugintypeid'), table: null };
 }
 
+// The attribute logical names a table's steps may filter or image on: the standard and mapped columns, the metadata
+// service's columns (platform columns such as modifiedon and statecode, and the primary key), lower-cased.
 const columnsOf = (store, table) =>
-  new Set([
-    ...Object.keys(standardTableDef(table)?.attributes ?? {}),
-    ...Object.keys(store.state.mappings?.[table]?.fields ?? {}),
-  ]);
+  new Set(
+    [
+      ...Object.keys(standardTableDef(table)?.attributes ?? {}),
+      ...Object.keys(store.state.mappings?.[table]?.fields ?? {}),
+      ...Object.keys(store.platformFields?.(table) ?? {}),
+      ...(store.state.mappings?.[table]?.idColumn ? [store.state.mappings[table].idColumn] : []),
+    ].map((name) => name.toLowerCase()),
+  );
 
 // Assembly facts without the content: the major and minor from version, the culture and public key token from FullName.
 const versionParts = (version) => {
@@ -133,57 +348,132 @@ function assemblyFacts(assembly) {
   };
 }
 
-// The message rows: pipeline, router built-ins, every registered name and every custom API (private ones flagged).
-function messageRows(store, org, names) {
+// The message rows: the platform messages (catalogue flags), the platform messages without recorded ids, every registered
+// name and every custom API (private ones flagged). A name outside the catalogue takes server-only availability and the
+// default flags.
+function messageRows(store, org, names, availability) {
   const apis = store.state.tables.customapi ?? [];
   const privateApis = new Set(apis.filter((api) => api.isprivate === true).map((api) => api.uniquename));
-  const all = new Set([...PIPELINE, ...ROUTER, ...names, ...apis.map((api) => api.uniquename).filter(Boolean)]);
-  return [...all].map((name) => ({
-    sdkmessageid: messageId(name),
-    name,
-    availability: 0,
-    isactive: true,
-    isprivate: privateApis.has(name),
-    workflowsdkstepenabled: false,
-    autotransact: true,
-    organizationid: org,
-  }));
+  const all = new Set([
+    ...Object.keys(PLATFORM_MESSAGES),
+    ...UNRECORDED_MESSAGES,
+    ...names,
+    ...apis.map((api) => api.uniquename).filter(Boolean),
+  ]);
+  return [...all].map((name) => {
+    const platform = PLATFORM_MESSAGES[name];
+    return {
+      sdkmessageid: messageId(name),
+      name,
+      availability: availability[name.toLowerCase()]?.message ?? platform?.availability ?? 0,
+      isactive: true,
+      isprivate: privateApis.has(name) || platform?.isprivate === true || PRIVATE_UNRECORDED.has(name),
+      workflowsdkstepenabled: platform?.workflowsdkstepenabled === true,
+      autotransact: platform?.autotransact ?? true,
+      organizationid: org,
+    };
+  });
 }
 
-// The filter rows: one per (message, table) for every mapping, and one per custom API (its bound table, or none).
-function filterRows(store, org) {
+// The messages a table's filters cover (see TABLE_MESSAGES).
+function tableMessages(logical, mapping) {
+  const owned = ['UserOwned', 'TeamOwned'].includes(ownershipTypeName(logical, null, mapping));
+  const external = mapping.isVirtual || mapping.dataSourceId ? EXTERNAL_MESSAGES : [];
+  if (mapping.intersect) return INTERSECT_MESSAGES;
+  if (mapping.tableType === 'Elastic')
+    return [...ELASTIC_MESSAGES, ...(owned ? ['Assign', 'RetrievePrincipalAccess'] : [])];
+  if (mapping.isVirtual || mapping.dataSourceId) return [...VIRTUAL_MESSAGES, ...external];
+  return [
+    ...TABLE_MESSAGES,
+    ...(standardTableDef(logical) ? [] : CUSTOM_TABLE_MESSAGES),
+    ...(owned ? OWNED_TABLE_MESSAGES : []),
+    ...(MERGEABLE.has(logical) ? ['Merge'] : []),
+    ...(logical === 'transactioncurrency' ? ['RetrieveExchangeRate'] : []),
+  ];
+}
+
+// The filter rows: one per (message, table) for every mapping (STANDARD_TABLE_FILTERS, else tableMessages), the native
+// 'none' filters (NONE_FILTERS), and one per custom API (customApiFilterRow).
+function filterRows(store, org, availability) {
   const rows = [];
-  for (const [logical, mapping] of Object.entries(store.state.mappings ?? {}))
-    for (const message of [...FILTERED, ...(mapping.isVirtual || mapping.dataSourceId ? EXTERNAL_MESSAGES : [])])
-      rows.push({
-        sdkmessagefilterid: filterId(org, message, logical),
-        sdkmessageid: messageId(message),
-        primaryobjecttypecode: logical,
-        secondaryobjecttypecode: 'none',
-        iscustomprocessingstepallowed: !mapping.intersect && !NO_CUSTOM_STEP.has(logical),
-        isvisible: true,
-        availability: 0,
-        organizationid: org,
-      });
-  for (const api of store.state.tables.customapi ?? []) {
-    const table = api.boundentitylogicalname || 'none';
-    rows.push({
-      sdkmessagefilterid: filterId(org, api.uniquename, table),
-      sdkmessageid: messageId(api.uniquename),
-      primaryobjecttypecode: table,
-      secondaryobjecttypecode: 'none',
-      iscustomprocessingstepallowed: true,
-      isvisible: true,
-      availability: 0,
-      organizationid: org,
-    });
+  const filter = (message, logical, allowed, defaultAvailability = 0) => ({
+    sdkmessagefilterid: filterId(org, message, logical),
+    sdkmessageid: messageId(message),
+    primaryobjecttypecode: logical,
+    secondaryobjecttypecode: 'none',
+    iscustomprocessingstepallowed: allowed,
+    isvisible: true,
+    availability: availability[message.toLowerCase()]?.filters?.[logical] ?? defaultAvailability,
+    organizationid: org,
+  });
+  for (const [logical, mapping] of Object.entries(store.state.mappings ?? {})) {
+    const standard = STANDARD_TABLE_FILTERS[logical];
+    if (standard) {
+      for (const [message, allowed, available] of standard) rows.push(filter(message, logical, allowed, available));
+      continue;
+    }
+    for (const message of tableMessages(logical, mapping))
+      rows.push(
+        filter(
+          message,
+          logical,
+          !NO_CUSTOM_STEP.has(logical) &&
+            (mapping.intersect || mapping.tableType === 'Elastic' || !NO_CUSTOM_STEP_MESSAGES.has(message)),
+        ),
+      );
   }
+  for (const [message, [allowed, available]] of Object.entries(NONE_FILTERS))
+    rows.push(filter(message, 'none', allowed, available));
+  for (const api of store.state.tables.customapi ?? []) rows.push(customApiFilterRow(org, api));
   return rows;
 }
 
+// A custom API's one filter: its bound table, or none. Steps are allowed unless the API's policy is 0.
+function customApiFilterRow(org, api) {
+  const table = api.boundentitylogicalname || 'none';
+  return {
+    sdkmessagefilterid: filterId(org, api.uniquename, table),
+    sdkmessageid: messageId(api.uniquename),
+    primaryobjecttypecode: table,
+    secondaryobjecttypecode: 'none',
+    iscustomprocessingstepallowed: Number(api.allowedcustomprocessingsteptype ?? 0) !== 0,
+    isvisible: true,
+    availability: 0,
+    organizationid: org,
+  };
+}
+
+function sourceAvailability(plugins) {
+  const metadata = Object.create(null);
+  const add = (name) => (metadata[String(name).toLowerCase()] ??= { filters: Object.create(null) });
+  const messages = new Map((plugins.messages ?? []).map((message) => [String(message.id).toLowerCase(), message.name]));
+  for (const message of plugins.messages ?? []) {
+    const record = add(message.name);
+    if ([0, 1, 2].includes(message.availability)) record.message = message.availability;
+    Object.assign(record.filters, message.filterAvailability ?? {});
+  }
+  for (const filter of plugins.messageFilters ?? []) {
+    const name =
+      messages.get(String(filter.messageId).toLowerCase()) ?? SDK_MESSAGES[String(filter.messageId).toLowerCase()];
+    if (name && [0, 1, 2].includes(filter.availability)) add(name).filters[filter.entity] = filter.availability;
+  }
+  for (const step of plugins.steps ?? [])
+    if (step.message) {
+      const record = add(step.message);
+      if ([0, 1, 2].includes(step.messageAvailability)) record.message = step.messageAvailability;
+      if ([0, 1, 2].includes(step.filterAvailability)) record.filters[step.entity ?? 'none'] = step.filterAvailability;
+    }
+  return Object.fromEntries(
+    Object.entries(metadata).map(([name, record]) => [
+      name,
+      { ...record, filters: Object.fromEntries(Object.entries(record.filters)) },
+    ]),
+  );
+}
+
 /**
- * The Solution's registrations as rows (solution-metadata plugins, from importSolutionPlugins). Keyed by table; the
- * content is never read. Steps keep their facts even when unsupported: overlayRegisteredSteps decides what runs.
+ * The Solution's registrations as rows (solution-metadata plugins, from importSolutionPlugins). Keyed by table; an
+ * assembly carries the exported bytes solution-metadata read and checked. Steps keep their facts even when unsupported: overlayRegisteredSteps decides what runs.
  */
 export function solutionPluginRows(plugins, { organizationId } = {}) {
   const org = organizationId;
@@ -199,6 +489,8 @@ export function solutionPluginRows(plugins, { organizationId } = {}) {
       ...facts,
       isolationmode: assembly.isolationMode ?? 2,
       sourcetype: assembly.sourceType ?? 0,
+      // The exported .dll bytes (solution-metadata.mjs), so its steps run them like uploaded content.
+      ...(assembly.content ? { content: assembly.content } : {}),
       organizationid: org,
     });
   }
@@ -228,6 +520,12 @@ export function solutionPluginRows(plugins, { organizationId } = {}) {
       mode: step.mode ?? 0,
       rank: step.rank ?? 1,
       supporteddeployment: step.supportedDeployment ?? 0,
+      ...(Object.hasOwn(stepConstructorSettings(step), 'unsecureConfiguration')
+        ? { configuration: stepConstructorSettings(step).unsecureConfiguration }
+        : {}),
+      // An imported step has no secure configuration (N3 solution trial: sdkmessageprocessingstepsecureconfigid null after
+      // import, the plug-in constructed with secure null); a trusted descriptor may still supply local secure text.
+      ...(step.customizationLevel != null ? { customizationlevel: step.customizationLevel } : {}),
       filteringattributes: (step.filteringAttributes ?? []).join(',') || null,
       statecode: step.enabled === false ? 1 : 0,
       statuscode: step.enabled === false ? 2 : 1,
@@ -238,19 +536,25 @@ export function solutionPluginRows(plugins, { organizationId } = {}) {
       impersonatinguserid: step.impersonatingUserId ?? null,
       organizationid: org,
     });
+    const imageAliasOf = (image) => image.alias || image.name;
     for (const image of step.images ?? []) {
+      // A shared alias (pre and post image of one name) keys the id by the image type too; a unique alias keeps its id.
+      const shared = (step.images ?? []).filter((other) => imageAliasOf(other) === imageAliasOf(image)).length > 1;
       rows.sdkmessageprocessingstepimage.push({
         sdkmessageprocessingstepimageid: uuidV5(
           org,
-          `sdkmessageprocessingstepimage:${step.id}:${image.alias || image.name}`,
+          shared
+            ? `sdkmessageprocessingstepimage:${step.id}:${image.type ?? 0}:${imageAliasOf(image)}`
+            : `sdkmessageprocessingstepimage:${step.id}:${imageAliasOf(image)}`,
         ),
         sdkmessageprocessingstepid: step.id,
         name: image.name || image.alias,
         entityalias: image.alias || image.name,
         imagetype: image.type ?? 0,
         attributes: (image.attributes ?? []).join(',') || null,
-        // Only Target is documented; writing a Create post image with Id is assumed native behavior.
-        messagepropertyname: step.message === 'Create' && (image.type ?? 0) !== 0 ? 'Id' : 'Target',
+        // The exported MessagePropertyName; without it, Create images read the response Id property and others Target.
+        messagepropertyname:
+          image.messagePropertyName ?? (step.message === 'Create' && (image.type ?? 0) !== 0 ? 'Id' : 'Target'),
         organizationid: org,
       });
     }
@@ -271,6 +575,7 @@ function mutableOf(row, images) {
     mode: Number(row.mode ?? 0),
     rank: Number(row.rank),
     supportedDeployment: Number(row.supporteddeployment ?? 0),
+    ...(row.customizationlevel != null ? { customizationLevel: Number(row.customizationlevel) } : {}),
     filteringAttributes: lowerList(row.filteringattributes),
     impersonatingUserId: idOfValue(row.impersonatinguserid)
       ? String(idOfValue(row.impersonatinguserid)).toLowerCase()
@@ -279,6 +584,8 @@ function mutableOf(row, images) {
       name: image.name ?? '',
       alias: image.entityalias ?? '',
       type: Number(image.imagetype ?? 0),
+      // The message property whose record the image holds (Target, SubordinateId, Id, ...), read at run time.
+      ...(image.messagepropertyname ? { messagePropertyName: String(image.messagepropertyname) } : {}),
       attributes: lowerList(image.attributes),
     })),
   };
@@ -308,7 +615,11 @@ function stepFromRow(store, row, images) {
     messageSourceFile: null,
     messageObservation: null,
     entity,
-    messageFilterId: filter ? String(filter.sdkmessagefilterid).toLowerCase() : null,
+    ...(store.observed?.businessLogicOwnership?.[id]
+      ? { bypassOwnership: store.observed.businessLogicOwnership[id] }
+      : {}),
+    // A step on a 'none' filter is unfiltered, like one registered with no filter.
+    messageFilterId: entity ? String(filter.sdkmessagefilterid).toLowerCase() : null,
     unfiltered: entity === null,
     typeSourceFile: null,
     assemblyId: assembly?.pluginassemblyid ?? null,
@@ -317,8 +628,26 @@ function stepFromRow(store, row, images) {
     serviceEndpointId: endpoint ? String(endpoint.serviceendpointid).toLowerCase() : null,
     stageName: STAGE_NAME[Number(row.stage)] ?? `Stage ${row.stage ?? 'unknown'}`,
     ...mutableOf(row, images),
+    ...customApiContract(store, message?.name),
   };
   return { ...step, unsupported: pluginUnsupported(step) };
+}
+
+// The API's extension policy belongs to its message, including an unbound API.
+function customApiContract(store, name) {
+  const api = store
+    .tableRows('customapi')
+    .find((row) => String(row.uniquename).toLowerCase() === String(name).toLowerCase());
+  return api
+    ? {
+        customApi: {
+          name: api.uniquename,
+          bindingType: Number(api.bindingtype ?? 0),
+          allowedCustomProcessingStepType: Number(api.allowedcustomprocessingsteptype ?? 0),
+          isFunction: api.isfunction === true,
+        },
+      }
+    : {};
 }
 
 /**
@@ -342,7 +671,10 @@ export function overlayRegisteredSteps(plugins, store) {
     seeded.sdkmessageprocessingstep.map((row) => [String(row.sdkmessageprocessingstepid).toLowerCase(), row]),
   );
   const norm = (value) => (value == null ? '' : String(value).toLowerCase());
-  const sameFields = (row, expected) => Object.keys(expected).every((key) => norm(row[key]) === norm(expected[key]));
+  const sameFields = (row, expected) =>
+    Object.keys(expected).every((key) =>
+      key === 'configuration' ? row[key] === expected[key] : norm(row[key]) === norm(expected[key]),
+    );
   // A Solution step whose bare EventHandler named no exported plug-in type (eventHandlerId) resolves against the organization's
   // rows: a serviceendpoint row makes it a service endpoint step, a plugintype row of a registered assembly a plug-in step;
   // with neither it stays unsupported (handler unresolved).
@@ -361,12 +693,27 @@ export function overlayRegisteredSteps(plugins, store) {
           assemblyId: String(assembly.pluginassemblyid).toLowerCase(),
           assemblyName: assembly.name ?? null,
         };
-    return { ...next, unsupported: pluginUnsupported(next) };
+    return copyStepConstructorSettings(step, { ...next, unsupported: pluginUnsupported(next) });
+  };
+  // A step whose plug-in type lives in an assembly with uploaded content carries that assembly's id: the pipeline runs the
+  // stored bytes (plugin-uploaded.mjs). A Solution step without uploaded content is unchanged.
+  const uploaded = (step) => {
+    const type = rowById(store, 'plugintype', 'plugintypeid', step.typeId);
+    const assembly = rowById(store, 'pluginassembly', 'pluginassemblyid', type?.pluginassemblyid ?? step.assemblyId);
+    return typeof assembly?.content === 'string' && assembly.content !== '' && step.typeName && !step.serviceEndpointId
+      ? copyStepConstructorSettings(step, {
+          ...step,
+          uploadedAssemblyId: String(idOfValue(assembly.pluginassemblyid)).toLowerCase(),
+        })
+      : step;
   };
   const steps = [],
     solutionIds = new Set();
   for (const source of plugins?.steps ?? []) {
-    const step = resolved(source),
+    const step = copyStepConstructorSettings(source, {
+        ...resolved(source),
+        ...customApiContract(store, source.message),
+      }),
       id = String(step.id).toLowerCase();
     solutionIds.add(id);
     const row = rowOf(id);
@@ -395,17 +742,18 @@ export function overlayRegisteredSteps(plugins, store) {
     const id = String(row.sdkmessageprocessingstepid).toLowerCase();
     if (!solutionIds.has(id)) steps.push(stepFromRow(store, row, imagesOf(id)));
   }
-  return { ...plugins, steps };
+  return { ...plugins, steps: steps.map(uploaded) };
 }
 
 // Insert-or-replace by id: a row with the same id is removed first, so the seeded rows match the Solution on every reseed.
-function upsert(store, logical, idColumn, rows) {
+// Rows built here for the call (fresh) are stored as they are; others are copied.
+function upsert(store, logical, idColumn, rows, { fresh = false } = {}) {
   store.state.tables[logical] ??= [];
   const table = store.state.tables[logical];
   const ids = new Set(rows.map((row) => String(row[idColumn]).toLowerCase()));
   for (let i = table.length - 1; i >= 0; i--)
     if (ids.has(String(table[i][idColumn]).toLowerCase())) store.removeRow(logical, table, i);
-  for (const row of rows) store.insertRow(logical, table, structuredClone(row));
+  for (const row of rows) store.insertRow(logical, table, fresh ? row : structuredClone(row));
 }
 
 // Seeds sdkmessage and sdkmessagefilter, then the Solution rows when given. Runs inside a store transaction.
@@ -413,31 +761,80 @@ function seed(api, plugins = null) {
   const { store } = api;
   const org = organizationOf(store) || String(api.settings?.organizationId ?? '').toLowerCase(); // reset runs before the organization row is re-seeded
   const stepMessages = (plugins?.steps ?? []).map((step) => step.message).filter(Boolean);
-  const names = [...(api.registry?.names?.() ?? []), ...stepMessages];
-  upsert(store, 'sdkmessage', 'sdkmessageid', messageRows(store, org, names));
-  upsert(store, 'sdkmessagefilter', 'sdkmessagefilterid', filterRows(store, org));
+  const names = [...(api.registry?.names?.() ?? []).map(requestMessage), ...stepMessages];
+  const availability = plugins ? sourceAvailability(plugins) : (store.state.dataverse?.pluginSourceAvailability ?? {});
+  if (plugins) (store.state.dataverse ??= {}).pluginSourceAvailability = availability;
+  upsert(store, 'sdkmessage', 'sdkmessageid', messageRows(store, org, names, availability), { fresh: true });
+  // A table's derived filters go with the table (a dropped table keeps none); custom API filters re-added below stay.
+  const filters = store.state.tables.sdkmessagefilter ?? [];
+  for (let i = filters.length - 1; i >= 0; i--) {
+    const table = filters[i].primaryobjecttypecode;
+    if (table !== 'none' && !Object.hasOwn(store.state.mappings ?? {}, table))
+      store.removeRow('sdkmessagefilter', filters, i);
+  }
+  upsert(store, 'sdkmessagefilter', 'sdkmessagefilterid', filterRows(store, org, availability), { fresh: true });
+  (store.state.dataverse ??= {}).customApiMessages = store.tableRows('customapi').map((api) => api.uniquename);
   if (plugins)
     for (const [logical, rows] of Object.entries(solutionPluginRows(plugins, { organizationId: org })))
       upsert(store, logical, `${logical}id`, rows);
 }
 
-// Cascade (the documented restrict behavior is not followed): removing an assembly removes its types' steps, and a type
-// removes its steps, before the store's own cascade runs. The store then removes the steps' images and the types.
-function removeDependents(store, c, logical, existing) {
+// Re-derives the sdkmessage and sdkmessagefilter rows from the current tables (a table created or dropped at runtime gets or
+// loses its filters); the caller's store transaction holds the change.
+export function resyncMessageFilters(api) {
+  seed(api);
+}
+
+const typesOfAssembly = (store, assemblyId) =>
+  store.tableRows('plugintype').filter((type) => same(type.pluginassemblyid, assemblyId));
+const assembliesOfPackage = (store, packageId) =>
+  store.tableRows('pluginassembly').filter((assembly) => same(assembly.packageid, packageId));
+const stepsOfType = (store, typeId) =>
+  store
+    .tableRows('sdkmessageprocessingstep')
+    .filter((step) => same(step.eventhandler, typeId) || same(step.plugintypeid, typeId));
+// A component that steps reference is not deleted (native registration round 2: deleting a plug-in type with a step answers
+// 0x8004f01f and the step survives; Learn: no assembly or package is unregistered while steps depend on it). The assembly
+// and package refusals reuse the type's native form.
+const SCHEMA = { pluginpackage: 'PluginPackage', pluginassembly: 'PluginAssembly', plugintype: 'PluginType' };
+const dependentSteps = (logical, id, count) =>
+  fail(
+    `The ${SCHEMA[logical]}(${String(id).toLowerCase()}) component cannot be deleted because it is referenced by ${count} other components. For a list of referenced components, use the RetrieveDependenciesForDeleteRequest.`,
+    '0x8004f01f',
+  );
+
+// A plug-in type or assembly with steps is not deleted; a package-owned assembly is deleted only with its package
+// (0x80081117). The store's cascade then removes the types of a deleted assembly. A package removes its assemblies and
+// their types itself (they are platform rows of the package).
+function guardDelete(store, logical, existing) {
+  if (logical === 'pluginassembly' && ref({}, existing, 'packageid') != null)
+    throw fail('Unable to delete plug-in assembly as it is part of plugin package', '0x80081117');
   const types =
-    logical === 'pluginassembly'
-      ? store.tableRows('plugintype').filter((type) => same(type.pluginassemblyid, existing.pluginassemblyid))
-      : logical === 'plugintype'
-        ? [existing]
-        : [];
-  for (const type of types) {
-    const steps = store
-      .tableRows('sdkmessageprocessingstep')
-      .filter((step) => same(step.eventhandler, type.plugintypeid) || same(step.plugintypeid, type.plugintypeid))
-      .map((step) => step.sdkmessageprocessingstepid);
-    for (const id of steps)
-      if (rowById(store, 'sdkmessageprocessingstep', 'sdkmessageprocessingstepid', id))
-        store.removeRecord('sdkmessageprocessingstep', id, c.identity, {});
+    logical === 'pluginpackage'
+      ? assembliesOfPackage(store, existing.pluginpackageid).flatMap((assembly) =>
+          typesOfAssembly(store, assembly.pluginassemblyid),
+        )
+      : logical === 'pluginassembly'
+        ? typesOfAssembly(store, existing.pluginassemblyid)
+        : logical === 'plugintype'
+          ? [existing]
+          : [];
+  const steps = types.reduce((count, type) => count + stepsOfType(store, type.plugintypeid).length, 0);
+  if (steps) throw dependentSteps(logical, existing[`${logical}id`], steps);
+  if (logical === 'pluginpackage') removePackageRows(store, existing.pluginpackageid, () => true);
+}
+
+// Removes the package's assembly and type rows that drop(assembly | type) selects, without the record pipeline.
+function removePackageRows(store, packageId, drop) {
+  for (const assembly of assembliesOfPackage(store, packageId)) {
+    const gone = drop(assembly);
+    const types = store.state.tables.plugintype ?? [];
+    for (let i = types.length - 1; i >= 0; i--)
+      if (same(types[i].pluginassemblyid, assembly.pluginassemblyid) && (gone || drop(types[i])))
+        store.removeRow('plugintype', types, i);
+    if (!gone) continue;
+    const assemblies = store.state.tables.pluginassembly;
+    store.removeRow('pluginassembly', assemblies, assemblies.indexOf(assembly));
   }
 }
 
@@ -459,13 +856,44 @@ function assemblyContent(content) {
   return facts;
 }
 
+// An assembly's identity for uniqueness: name, culture, public key token, major and minor version.
+function assemblyKey(row) {
+  const [major, minor] = versionParts(row.version);
+  const token = String(row.publickeytoken ?? '').toLowerCase();
+  return [
+    String(row.name ?? '').toLowerCase(),
+    String(row.culture ?? 'neutral').toLowerCase(),
+    token === 'null' ? '' : token,
+    `${row.major ?? major}.${row.minor ?? minor}`,
+  ].join('|');
+}
+const base64Bytes = (content) =>
+  Math.floor((content.length * 3) / 4) - (content.endsWith('==') ? 2 : content.endsWith('=') ? 1 : 0);
+
 function validateAssembly({ store, data, existing }) {
   const val = (column) => valueOf(data, existing, column);
-  // The text and code of the size error are not documented; both are guesses.
+  // Codes and texts follow the documented error table (PluginAssemblyContentSizeExceeded, InvalidAssemblySourceType,
+  // InvalidPluginRegistrationConfiguration for an isolation mode other than Sandbox, the only mode online).
   if (typeof val('content') === 'string') {
-    const content = val('content');
-    const bytes = Math.floor((content.length * 3) / 4) - (content.endsWith('==') ? 2 : content.endsWith('=') ? 1 : 0);
-    if (bytes > SIXTEEN_MB) throw fail('Plug-in assembly content is larger than 16 MB.', '0x80040203');
+    const bytes = base64Bytes(val('content'));
+    if (bytes > SIXTEEN_MB)
+      throw fail(
+        `The assembly content size '${bytes} bytes' has exceeded the maximum value allowed for isolated plug-ins '${SIXTEEN_MB} bytes'.`,
+        '0x8004418f',
+      );
+  }
+  if (data.sourcetype !== undefined && data.sourcetype !== null && Number(data.sourcetype) !== 0)
+    throw fail('The given plugin assembly source type is not supported for isolated plugin assemblies.', '0x8004417D');
+  // Native (N3 package trial, a package-owned assembly) refuses an isolation mode other than sandbox with 403 0x80040256
+  // naming the assembly; other assemblies are assumed to answer the same.
+  if (data.isolationmode !== undefined && data.isolationmode !== null && Number(data.isolationmode) !== 2) {
+    const row = { ...existing, ...data };
+    throw new DataError(
+      `Action failed for assembly '${row.name}, Version=${row.version}, Culture=${row.culture ?? 'neutral'}, PublicKeyToken=${row.publickeytoken ?? 'null'}': No publisher is found, assembly must be registered in isolation.`,
+      403,
+      'Forbidden',
+      { innerCode: '0x80040256' },
+    );
   }
   // Supplied content sets the identity, so a content-only create works. Strong-name signing is required unless a package owns it.
   if (typeof data.content === 'string' && data.content !== '') {
@@ -482,15 +910,7 @@ function validateAssembly({ store, data, existing }) {
       throw fail('Plug-in assembly is not strong name signed.', '0x80081114');
   }
   for (const column of ['name', 'version']) if (val(column) == null || val(column) === '') throw required(column);
-  const keyOf = (row) => {
-    const [major, minor] = versionParts(row.version);
-    return [
-      String(row.name ?? '').toLowerCase(),
-      String(row.culture ?? 'neutral').toLowerCase(),
-      String(row.publickeytoken ?? '').toLowerCase(),
-      `${row.major ?? major}.${row.minor ?? minor}`,
-    ].join('|');
-  };
+  const keyOf = assemblyKey;
   const key = keyOf({ ...existing, ...data });
   const self = existing?.pluginassemblyid;
   if (store.tableRows('pluginassembly').some((row) => !same(row.pluginassemblyid, self) && keyOf(row) === key))
@@ -500,10 +920,209 @@ function validateAssembly({ store, data, existing }) {
     );
 }
 
+// Native's OData payload reader refuses a fractional rank with the inner conversion error and this stack (native registration
+// probes round 2, 'Reg2: rank 1.5'; one capture). A non-numeric rank keeps the short text, which is not captured.
+const RANK_PAYLOAD_FRAMES =
+  '\r\n' +
+  '   at Microsoft.OData.ODataPayloadValueConverter.ConvertFromPayloadValue(Object value, IEdmTypeReference edmTypeReference)\r\n' +
+  '   --- End of inner exception stack trace ---\r\n' +
+  '   at Microsoft.OData.ODataPayloadValueConverter.ConvertFromPayloadValue(Object value, IEdmTypeReference edmTypeReference)\r\n' +
+  '   at Microsoft.Crm.Extensibility.ODataV4.CrmPrimitivePayloadValueConverter.ConvertFromPayloadValue(Object value, IEdmTypeReference edmTypeReference)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightReaderUtils.ConvertValue(Object value, IEdmPrimitiveTypeReference primitiveTypeReference, ODataMessageReaderSettings messageReaderSettings, Boolean validateNullValue, String propertyName, ODataPayloadValueConverter converter)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightPropertyAndValueDeserializer.ReadPrimitiveValue(Boolean insideJsonObjectValue, IEdmPrimitiveTypeReference expectedValueTypeReference, Boolean validateNullValue, String propertyName)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightPropertyAndValueDeserializer.ReadNonEntityValueImplementation(String payloadTypeName, IEdmTypeReference expectedTypeReference, PropertyAndAnnotationCollector propertyAndAnnotationCollector, CollectionWithoutExpectedTypeValidator collectionValidator, Boolean validateNullValue, Boolean isTopLevelPropertyValue, Boolean insideResourceValue, String propertyName, Nullable`1 isDynamicProperty)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightResourceDeserializer.ReadEntryDataProperty(IODataJsonLightReaderResourceState resourceState, IEdmProperty edmProperty, String propertyTypeName)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightResourceDeserializer.ReadPropertyWithValue(IODataJsonLightReaderResourceState resourceState, String propertyName, Boolean isDeltaResourceSet)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightResourceDeserializer.<>c__DisplayClass9_0.<ReadResourceContent>b__0(PropertyParsingResult propertyParsingResult, String propertyName)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightDeserializer.ProcessProperty(PropertyAndAnnotationCollector propertyAndAnnotationCollector, Func`2 readPropertyAnnotationValue, Action`2 handleProperty)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightResourceDeserializer.ReadResourceContent(IODataJsonLightReaderResourceState resourceState)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightReader.StartReadingResource()\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightReader.ReadResourceSetItemStart(PropertyAndAnnotationCollector propertyAndAnnotationCollector, SelectedPropertiesNode selectedProperties)\r\n' +
+  '   at Microsoft.OData.JsonLight.ODataJsonLightReader.ReadAtStartImplementationSynchronously(PropertyAndAnnotationCollector propertyAndAnnotationCollector)\r\n' +
+  '   at Microsoft.OData.ODataReaderCore.ReadImplementation()\r\n' +
+  '   at Microsoft.OData.ODataReaderCore.InterceptException[T](Func`1 action)\r\n' +
+  '   at Microsoft.AspNet.OData.Formatter.Deserialization.ODataReaderExtensions.ReadResourceOrResourceSet(ODataReader reader)\r\n' +
+  '   at Microsoft.Crm.Extensibility.CrmODataEntityDeserializer.Read(ODataMessageReader messageReader, Type type, ODataDeserializerContext readContext)\r\n' +
+  '   at Microsoft.AspNet.OData.Formatter.ODataInputFormatterHelper.ReadFromStream(Type type, Object defaultValue, IEdmModel model, ODataVersion version, Uri baseAddress, IWebApiRequestMessage internalRequest, Func`1 getODataRequestMessage, Func`2 getEdmTypeDeserializer, Func`2 getODataPayloadDeserializer, Func`1 getODataDeserializerContext, Action`1 registerForDisposeAction, Action`1 logErrorAction).';
+const rankPayloadTail = (value) =>
+  Number.isNaN(Number(value))
+    ? ''
+    : ` ---> Microsoft.OData.ODataException: Cannot convert a value of type '${typeof value === 'number' ? 'Edm.Decimal' : 'Edm.String'}' to the expected target type 'Edm.Int32'.${RANK_PAYLOAD_FRAMES}`;
+// The SQL error native appends to the duplicate key sentence (native-trial and native-trial-r2 n3-package, byte-identical).
+// The per-request connection ids and the routing destination (an environment value) are composed by duplicateKeyTail.
+const SQL_INSERT_FRAMES =
+  '\r\n' +
+  'The statement has been terminated.\r\n' +
+  '   at Microsoft.Crm.CrmDbConnection.HandleExecutionException(Exception exception, String commandText, IDbConnection connection, IDbCommand command, IDbTransaction transaction, Boolean isOpen, Int32 commandTimeout, IConnectionRetryPolicy localRetryPolicy, Int32& retryCount)\r\n' +
+  '   at Microsoft.Crm.CrmDbConnection.InternalExecuteWithRetry[TResult,TArg](Func`2 executeMethod, IDbCommand command, TArg arg, IConnectionRetryPolicy retryPolicy)\r\n' +
+  '   at Microsoft.Crm.CrmDbConnection.InternalExecuteWithRetry[TResult](Func`1 executeMethod, IDbCommand command, IConnectionRetryPolicy retryPolicy)\r\n' +
+  '   at Microsoft.Crm.CrmDbConnection.<>c__238`1.<InternalExecuteNonQuery>b__238_0(ValueTuple`8 args)\r\n' +
+  '   at Microsoft.Xrm.Telemetry.XrmTelemetryExtensions.Execute[T,TArg](ILogger logger, XrmTelemetryActivityType activityType, Func`2 func, TArg arg)\r\n' +
+  '   at Microsoft.Crm.CrmDbConnection.InternalExecuteNonQuery[TArg](IDbCommand command, Action`1 actionForLoggingAdditionalCustomDimensions, TArg arg, ICrmTransaction crmTransaction, IConnectionRetryPolicy retryPolicy, Int32 sourceLineNumber, String memberName, String sourceFilePath)\r\n' +
+  '   at Microsoft.Crm.CrmDbConnection.ExecuteNonQueryInTransactionAbstract(IDbCommand command, ICrmTransaction crmTransaction, Int32 sourceLineNumber, String memberName, String sourceFilePath)\r\n' +
+  '   at Microsoft.Crm.Platform.Server.DataEngine.SqlDataAccessManager.ExecuteNonQuery(IDbCommand command, ISqlExecutionContext context, Int32 sourceLineNumber, String memberName, String sourceFilePath)\r\n' +
+  '   at Microsoft.Crm.BusinessEntities.BusinessProcessObject.ExecuteNonQueryAbstract(IDbCommand command, ISqlExecutionContext context)\r\n' +
+  '   at Microsoft.Crm.BusinessEntities.BusinessProcessObject.ExecuteNonQueryAbstract(IDbCommand command, ExecutionContext context)\r\n' +
+  '   at Microsoft.Crm.Platform.SolutionAwareComponents.CreateInstanceActionBase.ExecuteCreate(IDbCommand command, ExecutionContext context)\r\n';
+const duplicateKeyTail = (store) =>
+  `${SQL_INSERT_FRAMES}ClientConnectionId:${store.ids.uuid()}\r\nError Number:2627,State:1,Class:14\r\nClientConnectionId before routing:${store.ids.uuid()}\r\nRouting Destination:localhost,1433`;
+
+// A plug-in package (dependent assemblies, Microsoft Learn): the content is a NuGet package; each lib/ assembly that declares
+// an IPlugin type is registered as a pluginassembly row of the package (packageid, no strong name needed) with a plugintype row
+// per plug-in type (workflow activities are not supported in packages). Registration inspects the bytes; a registered step
+// runs them (plugin-uploaded.mjs, with the package's other lib/ assemblies as dependencies). Native (N3 package trial)
+// accepts a PATCH of the name or version, contrary to Microsoft Learn; registers package-owned assemblies with source type 4
+// (file store), sandbox isolation and the literal public key token 'null' when unsigned; refuses a second package whose
+// assembly duplicates a registered one (0x80040265, the database unique key); and drops plug-in types the new content no
+// longer declares. An update that drops an assembly or type that steps use is refused (Learn; 0x8004418b, the documented
+// "required types / content cannot be updated" error, is a guess).
+function validatePackage({ store, data, existing, operation }) {
+  const val = (column) => valueOf(data, existing, column);
+  const content = typeof data.content === 'string' && data.content !== '' ? data.content : null;
+  let facts = null;
+  if (content)
+    try {
+      facts = inspectPackage(Buffer.from(content, 'base64'));
+    } catch (error) {
+      if (!(error instanceof InvalidAssembly)) throw error;
+    }
+  const contentError = () =>
+    fail('Plug-in assembly does not contain the required types or assembly content cannot be updated.', '0x8004418b');
+  const plugins = facts?.assemblies.filter((assembly) => assembly.types.some((type) => type.isPlugin)) ?? [];
+  if (content && !plugins.length) throw contentError();
+  if (operation === 'create' && facts) {
+    if (val('name') == null || val('name') === '') data.name = facts.id;
+    if (val('version') == null || val('version') === '') data.version = facts.version;
+  }
+  for (const column of ['name', 'version']) if (val(column) == null || val(column) === '') throw required(column);
+  // Native (N3 package trial) reads package_name as the uniquename plus '.nupkg' on create, and a renaming PATCH sets both
+  // name and uniquename. The default copying name into a missing uniquename is unproven (NATIVE package-edge-cases); no
+  // update derives package_name, native was not observed changing it.
+  if (operation === 'create') {
+    if (data.uniquename == null || data.uniquename === '') data.uniquename = val('name');
+    data.package_name = `${data.uniquename}.nupkg`;
+  } else if (
+    operation === 'update' &&
+    data.name !== undefined &&
+    data.name !== existing?.name &&
+    data.uniquename === undefined
+  ) {
+    data.uniquename = data.name;
+  }
+  if (!facts) return;
+  const packageId = String(existing?.pluginpackageid ?? (data.pluginpackageid ??= store.ids.uuid())).toLowerCase();
+  const org = organizationOf(store);
+  const next = new Map(plugins.map((assembly) => [assembly.name.toLowerCase(), assembly]));
+  const pluginTypes = (assembly) => assembly.types.filter((type) => type.isPlugin).map((type) => type.fullName);
+  const dropped = new Set();
+  for (const assembly of assembliesOfPackage(store, packageId)) {
+    const kept = next.get(String(assembly.name).toLowerCase());
+    if (!kept) dropped.add(assembly);
+    for (const type of typesOfAssembly(store, assembly.pluginassemblyid))
+      if (!kept || !pluginTypes(kept).includes(type.typename)) {
+        if (stepsOfType(store, type.plugintypeid).length) throw contentError();
+        dropped.add(type);
+      }
+  }
+  removePackageRows(store, packageId, (row) => dropped.has(row));
+  for (const assembly of plugins) {
+    const current = assembliesOfPackage(store, packageId).find(
+      (row) => String(row.name).toLowerCase() === assembly.name.toLowerCase(),
+    );
+    const assemblyId = String(current?.pluginassemblyid ?? store.ids.uuid()).toLowerCase();
+    const identity = {
+      version: assembly.version,
+      culture: assembly.culture,
+      publickeytoken: assembly.publicKeyToken ?? 'null',
+    };
+    const duplicate = store
+      .tableRows('pluginassembly')
+      .find(
+        (row) =>
+          !same(row.pluginassemblyid, assemblyId) &&
+          assemblyKey(row) ===
+            assemblyKey({ name: assembly.name, ...identity, major: assembly.major, minor: assembly.minor }),
+      );
+    if (duplicate)
+      throw fail(
+        `Cannot insert duplicate key exception when executing non-query: System.Data.SqlClient.SqlCommand Exception: System.Data.SqlClient.SqlException (0x80131904): Violation of UNIQUE KEY constraint 'UQ_PluginAssemblyBase_AssemblyMetadata'. Cannot insert duplicate key in object 'dbo.PluginAssemblyBase'. The duplicate key value is (${assembly.name}, ${assembly.major}, ${assembly.minor}, ${assembly.culture}, ${identity.publickeytoken}, fd140aae-4df4-11dd-bd17-0019b9312238, 0, Jan  1 1900 12:00AM).${duplicateKeyTail(store)}`,
+        '0x80040265',
+      );
+    upsert(store, 'pluginassembly', 'pluginassemblyid', [
+      {
+        ...current,
+        pluginassemblyid: assemblyId,
+        name: assembly.name,
+        ...identity,
+        major: assembly.major,
+        minor: assembly.minor,
+        isolationmode: 2,
+        sourcetype: 4,
+        content: assembly.bytes.toString('base64'),
+        packageid: packageId,
+        organizationid: org,
+      },
+    ]);
+    const types = typesOfAssembly(store, assemblyId);
+    upsert(
+      store,
+      'plugintype',
+      'plugintypeid',
+      pluginTypes(assembly).map((typename) => {
+        const type = types.find((row) => row.typename === typename);
+        return {
+          ...type,
+          plugintypeid: String(type?.plugintypeid ?? store.ids.uuid()).toLowerCase(),
+          typename,
+          name: type?.name ?? typename,
+          friendlyname: type?.friendlyname ?? typename,
+          pluginassemblyid: assemblyId,
+          assemblyname: assembly.name,
+          ...identity,
+          isworkflowactivity: false,
+          organizationid: org,
+        };
+      }),
+    );
+  }
+}
+
 function validateType({ store, data, existing }) {
-  if (!valueOf(data, existing, 'typename')) throw required('typename');
+  const typename = valueOf(data, existing, 'typename');
+  if (!typename) throw required('typename');
+  const assemblyId = ref(data, existing, 'pluginassemblyid');
+  if (
+    assemblyId &&
+    store
+      .tableRows('plugintype')
+      .some(
+        (row) =>
+          !same(row.plugintypeid, existing?.plugintypeid) &&
+          same(row.pluginassemblyid, assemblyId) &&
+          row.typename === typename,
+      )
+  )
+    throw fail(
+      'Multiple plug-in types from the same assembly and with the same typename are not allowed.',
+      '0x8004417C',
+    );
+  const friendlyName = valueOf(data, existing, 'friendlyname');
+  if (
+    typeof friendlyName === 'string' &&
+    friendlyName &&
+    store
+      .tableRows('plugintype')
+      .some(
+        (row) =>
+          !same(row.plugintypeid, existing?.plugintypeid) &&
+          String(row.friendlyname ?? '').toLowerCase() === friendlyName.toLowerCase(),
+      )
+  )
+    throw new DataError('A record with matching key values already exists.', 412, 'DuplicateRecord', {
+      innerCode: '0x80040237',
+    });
   // The read-only columns come from the assembly (isworkflowactivity needs the content).
-  const assembly = rowById(store, 'pluginassembly', 'pluginassemblyid', ref(data, existing, 'pluginassemblyid'));
+  const assembly = rowById(store, 'pluginassembly', 'pluginassemblyid', assemblyId);
   if (assembly)
     Object.assign(data, {
       assemblyname: assembly.name,
@@ -511,13 +1130,19 @@ function validateType({ store, data, existing }) {
       culture: assembly.culture,
       publickeytoken: assembly.publickeytoken,
     });
-  // With content, the type must be declared in the assembly (a TypeDef), and isworkflowactivity comes from it.
-  if (assembly && typeof assembly.content === 'string' && assembly.content !== '') {
-    const typename = valueOf(data, existing, 'typename');
-    const type = assemblyContent(assembly.content).types.find((candidate) => candidate.fullName === typename);
-    // The code 0x8004418c is documented; the message is a guess.
+  // With content, the type must be one of the assembly's plug-in or workflow activity types (native registration round 2:
+  // a type that does not implement IPlugin is "not found" among them), and isworkflowactivity comes from it. A package-owned
+  // assembly takes any typename (native trial n3-package: 204); the next package content update drops a type its content
+  // does not declare (validatePackage).
+  if (assembly?.packageid != null) data.isworkflowactivity = false;
+  else if (assembly && typeof assembly.content === 'string' && assembly.content !== '') {
+    const types = assemblyContent(assembly.content).types.filter((type) => type.isPlugin || type.isWorkflowActivity);
+    const type = types.find((candidate) => candidate.fullName === typename);
     if (!type)
-      throw fail(`The plug-in type '${typename}' is not declared in assembly '${assembly.name}'.`, '0x8004418c');
+      throw fail(
+        `PluginType [${typename}] not found in PluginAssembly [${assembly.name}, Version=${assembly.version}, Culture=${assembly.culture ?? 'neutral'}, PublicKeyToken=${assembly.publickeytoken ?? 'null'}] which has a total of [${types.length}] plugin/workflow activity types.`,
+        '0x8004418b',
+      );
     data.isworkflowactivity = type.isWorkflowActivity;
   }
 }
@@ -537,60 +1162,137 @@ function validateImage({ store, data, existing }) {
     property = String(val('messagepropertyname'));
   const post = type === 1 || type === 2,
     pre = type === 0 || type === 2;
-  // Assumed native behavior: a Create post image is read as Id.
-  if (!properties.includes(property) && !(name === 'Create' && post && property === 'Id'))
+  // Native checks the image type before the property: a Create pre-image on Target is refused for its type.
+  if ((['Create', 'CreateMultiple'].includes(name) && pre) || (name === 'Delete' && post))
+    throw fail(`Message ${name} does not support this image type.`, '0x8004416d');
+  if (!properties.includes(property))
     throw fail(`Message property name '${property}' is not valid on message ${name}.`, '0x8004416b');
   if (post && [10, 20].includes(Number(step.stage)))
     throw fail('PreEvent step registration does not support Post Image.', '0x8004416e');
-  if ((name === 'Create' && pre) || (name === 'Delete' && post))
-    throw fail(`Message ${name} does not support this image type.`, '0x8004416d');
+  // The selected attributes must be columns of the step's table (native registration round 2).
+  const table = rowById(
+    store,
+    'sdkmessagefilter',
+    'sdkmessagefilterid',
+    step.sdkmessagefilterid,
+  )?.primaryobjecttypecode;
+  if (table && table !== 'none') {
+    const columns = columnsOf(store, table);
+    const unknown = String(val('attributes') ?? '')
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .find((attribute) => attribute && !columns.has(attribute));
+    if (unknown) {
+      const imageId = String(
+        existing?.sdkmessageprocessingstepimageid ?? (data.sdkmessageprocessingstepimageid ??= store.ids.uuid()),
+      ).toLowerCase();
+      throw fail(
+        `The step image '${val('entityalias')}' (id '${imageId}') references attribute '${unknown}', which does not exist on entity '${table}'. This step image is entity-specific, so a required solution dependency is likely missing or incomplete. Verify that all dependent solutions are installed and that the attribute exists on the entity.`,
+        '0x80081119',
+      );
+    }
+  }
 }
 
 function validateStep({ store, principals, c, data, existing, operation }) {
   const val = (column) => valueOf(data, existing, column);
-  // A Microsoft registered step is read-only. Seeded rows carry ismanaged and customizationlevel 0.
+  // A managed level-zero (Microsoft registered) step is read-only (documented 0x8004419a); a local reading of the row's
+  // flags, not publisher or ownership evidence.
   if (operation === 'update' && existing?.ismanaged === true && Number(existing.customizationlevel) === 0)
     throw fail('A Microsoft registered SDK message processing step cannot be modified.', '0x8004419a');
   const messageRefId = ref(data, existing, 'sdkmessageid');
   const filterRefId = ref(data, existing, 'sdkmessagefilterid');
+  // Native error texts name the step; a create without a supplied id gets the id its row would take.
+  const stepId = () =>
+    String(
+      existing?.sdkmessageprocessingstepid ?? (data.sdkmessageprocessingstepid ??= store.ids.uuid()),
+    ).toLowerCase();
   const handler = handlerOf(data, existing);
   if (operation === 'create' && data.rank === undefined) data.rank = 1; // the Plug-in Registration Tool sends rank; the default is 1
+  // Native accepts a step without a stage (registration round 2); when such a step runs is not captured.
   for (const [column, present] of [
     ['sdkmessageid', messageRefId],
-    ['stage', val('stage')],
-    ['eventhandler', handler.id],
+    ['plugintypeid', handler.id],
   ])
-    if (present == null || present === '') throw required(column);
+    if (present == null || present === '') throw missing(column);
+  const staged = val('stage') != null && val('stage') !== '';
   const stage = Number(val('stage')),
     mode = Number(val('mode') ?? 0),
     rank = Number(val('rank'));
-  const messageName = rowById(store, 'sdkmessage', 'sdkmessageid', messageRefId)?.name;
+  // A whole-number column: native's OData payload reader refuses a fractional rank before any rule runs.
+  if (!Number.isInteger(rank))
+    throw fail(
+      `Error identified in Payload provided by the user for Entity :'sdkmessageprocessingsteps', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal '${val('rank')}' to the expected type 'Edm.Int32'.${rankPayloadTail(val('rank'))}`,
+      '0x80048d19',
+    );
+  for (const [column, value, accepted] of [
+    ['mode', mode, [0, 1]],
+    ['supporteddeployment', Number(val('supporteddeployment') ?? 0), [0, 1, 2]],
+  ])
+    if (!accepted.includes(value))
+      throw fail(
+        `A validation error occurred. The value ${value} of '${column}' on record of type 'sdkmessageprocessingstep' is outside the valid range. Accepted Values: ${accepted.join(',')}`,
+        '0x8004431a',
+      );
+  const message = rowById(store, 'sdkmessage', 'sdkmessageid', messageRefId);
+  if (!message) throw notFound('sdkmessage', messageRefId);
+  const messageName = message.name;
+  const customApi = store.tableRows('customapi').find((row) => row.uniquename === messageName);
+  if (customApi) {
+    const policy = Number(customApi.allowedcustomprocessingsteptype ?? 0);
+    if (policy === 0) throw fail('Custom Sdkmessageprocessingsteps are not allowed for this message.', '0x80090307');
+    if (policy === 1 && mode !== 1)
+      throw fail('Synchronous mode Sdkmessageprocessingsteps are not allowed on this message.', '0x80090306');
+  }
   if (EXTERNAL_MESSAGES.includes(messageName) && (stage !== 40 || mode !== 1)) {
     throw fail('External virtual table events support only asynchronous PostOperation steps.', '0x80090303');
   }
-  // Assumed native behavior: only a whole number of at least 1 is accepted for rank.
-  if (!Number.isInteger(rank) || rank < 1) throw fail('The rank must be a whole number of at least 1.', '0x80040203');
-  if (![10, 20, 40].includes(stage)) throw fail(STAGE_TEXT, '0x80044184');
-  // The rule is documented; the error text and code are guesses.
+  // Native accepts any whole rank, a negative one included.
+  if (staged && ![10, 20, 40].includes(stage)) throw fail(STAGE_TEXT, '0x80044184');
   if (mode === 1 && stage !== 40)
-    throw fail('Asynchronous plug-ins can only be registered for the PostOperation stage.', '0x80040203');
+    throw fail(
+      `Asynchronous steps are only supported in AfterMainOperationInsideTransaction stages and AfterMainOperationOutsideTransaction stage. SdkMessageProcessingStep name '${val('name') ?? ''}', id '${stepId()}'.`,
+      '0x80040203',
+    );
+  // A filtered step needs an existing filter that allows custom steps (an unknown filter is 404); native does not check
+  // that the filter belongs to the step's message (a Merge step on an Update filter is accepted). A step with no filter is
+  // accepted on any existing message except those whose 'none' filter refuses unfiltered steps (NONE_FILTERS).
   const filter = rowById(store, 'sdkmessagefilter', 'sdkmessagefilterid', filterRefId);
-  if (filterRefId) {
-    if (!filter || !same(filter.sdkmessageid, messageRefId) || filter.iscustomprocessingstepallowed !== true)
-      throw fail('Custom SdkMessageProcessingStep is not allowed on the specified message and entity.', '0x80044187');
-  } else if (messageRefId && !store.tableRows('sdkmessagefilter').some((row) => same(row.sdkmessageid, messageRefId))) {
-    throw fail('Custom Sdkmessageprocessingsteps are not allowed for this message.', '0x80090307');
-  }
-  // Assumed native behavior: the attributes must be columns of the filter's table; any message is accepted.
+  if (filterRefId && !filter) throw notFound('sdkmessagefilter', filterRefId);
+  if (filter && filter.iscustomprocessingstepallowed !== true)
+    throw fail(
+      `Custom SdkMessageProcessingStep is not allowed on the specified message and entity. SdkMessageProcessingStepId: '${stepId()}', SdkMessageFilterId: '${filterRefId}'.`,
+      '0x80044187',
+    );
+  if (!filter && NONE_FILTERS[messageName]?.[2] === false)
+    throw fail(
+      `Custom SdkMessageProcessingStep with Id: '${stepId()}' is not allowed on the message with SdkMessageId: '${String(message.sdkmessageid).toLowerCase()}'.`,
+      '0x80044187',
+    );
+  // The supported deployment must agree with the availability of the step's filter (else its message): server-only (0)
+  // takes deployment 0, client-only (1) deployment 1, both (2) any. A Solution's recorded availability wins. Checked before
+  // the secure-configuration rule (native registration round 2 answers this error with secure configuration supplied).
+  const sourced = store.state.dataverse?.pluginSourceAvailability?.[String(messageName).toLowerCase()];
+  const availability = [
+    sourced?.filters?.[filter?.primaryobjecttypecode ?? 'none'] ?? (filter ? filter.availability : undefined),
+    sourced?.message ?? (filter ? undefined : message.availability),
+  ];
+  const deployment = Number(val('supporteddeployment') ?? 0);
+  if ((deployment !== 0 && availability.includes(0)) || (deployment !== 1 && availability.includes(1)))
+    throw fail('Supported deployment does not agree with message availability', '0x80040203');
+  // The attributes must be columns of the filter's table (a missing dependency natively); any message is accepted. A padded
+  // token is refused by its raw text (native: 'Id= PQWP_Integer ' answers 0x8004f036), so the tokens are not trimmed.
   const table = filter?.primaryobjecttypecode;
   if (table && table !== 'none') {
     const columns = columnsOf(store, table);
     for (const attribute of String(val('filteringattributes') ?? '')
       .split(',')
-      .map((item) => item.trim().toLowerCase())
-      .filter(Boolean))
-      if (!columns.has(attribute))
-        throw fail(`The filtering attribute '${attribute}' is not a column of ${table}.`, '0x80040203');
+      .filter((item) => item !== ''))
+      if (!columns.has(attribute.toLowerCase()) || attribute !== attribute.trim())
+        throw fail(
+          `The dependent component Attribute (Id=${attribute}) does not exist.  Failure trying to associate it with SdkMessageProcessingStep (Id=${stepId()}) as a dependency. Missing dependency lookup type = AttributeNameLookup.`,
+          '0x8004f036',
+        );
   }
   if (ref(data, existing, 'sdkmessageprocessingstepsecureconfigid') && Number(val('supporteddeployment') ?? 0) !== 0)
     throw fail(
@@ -628,6 +1330,7 @@ function validateEndpoint({ data, existing }) {
 }
 
 const VALIDATORS = {
+  pluginpackage: validatePackage,
   pluginassembly: validateAssembly,
   plugintype: validateType,
   sdkmessageprocessingstep: validateStep,
@@ -645,14 +1348,45 @@ function registrationWrite(api) {
         `The '${VERB[operation]}' method does not support entities of type '${logical}'. MessageProcessorCache returned MessageProcessor.Empty. `,
         '0x80040800',
       );
-    if (operation === 'delete') return removeDependents(store, c, logical, existing);
+    if (operation === 'delete') return guardDelete(store, logical, existing);
     VALIDATORS[logical]?.({ store, principals, c, data, existing, operation });
   };
+}
+
+// A custom API is a message: creating one (Web API, SOAP, the Plug-in Registration Tool) gives it its sdkmessage row and
+// its filter, so steps can be registered on it; renaming, rebinding or deleting it replaces or removes them. The rows of the
+// API's previous and current names are dropped, then the catalogue is reseeded (insert-or-replace by id).
+function syncCustomApiMessages(api) {
+  const { store } = api;
+  const current = new Set(
+    store
+      .tableRows('customapi')
+      .map((row) => row.uniquename)
+      .filter(Boolean),
+  );
+  const previous = (store.state.dataverse?.customApiMessages ?? []).filter(Boolean);
+  const registered = new Set(api.registry?.names?.() ?? []);
+  const gone = new Set(
+    previous.filter((name) => !current.has(name) && !PLATFORM_MESSAGES[name] && !registered.has(name)).map(messageId),
+  );
+  const touched = new Set([...previous, ...current].map(messageId));
+  for (const [logical, idColumn, drop] of [
+    ['sdkmessagefilter', 'sdkmessageid', touched],
+    ['sdkmessage', 'sdkmessageid', gone],
+  ]) {
+    const table = store.state.tables[logical] ?? [];
+    for (let i = table.length - 1; i >= 0; i--)
+      if (drop.has(String(idOfValue(table[i][idColumn])).toLowerCase())) store.removeRow(logical, table, i);
+  }
+  seed(api);
 }
 
 // Registered by dataverse-extensions.mjs. Seeds the messages and filters; the hooks validate the seven registration tables.
 export function install(api) {
   api.recordHooks.add('beforeWrite', registrationWrite(api));
+  api.recordHooks.add('afterWrite', (_c, mapping) => {
+    if (mapping.logicalName === 'customapi') syncCustomApiMessages(api);
+  });
   api.registry?.register?.(triggerServiceEndpointCheck(api));
   api.registry?.register?.({
     name: 'GetPluginCertificateInfo',
@@ -738,11 +1472,19 @@ const triggerServiceEndpointCheck = (api) => ({
     if (!isLoopbackUrl(row.url))
       throw fail('The endpoint check reaches only loopback URLs in the simulator.', '0x80040203');
     const url = new URL(String(row.url));
-    const response = await loopbackFetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-ms-dynamics-request-name': 'TriggerServiceEndpointCheck' },
-      body: JSON.stringify({ MessageName: 'TriggerServiceEndpointCheck' }),
-      signal: AbortSignal.timeout(60_000),
+    // The probe is an http-out span (the endpoint's answer, or the network failure, on it).
+    const response = await tracedFetch(api.store.traces, {
+      module: 'webhooks',
+      operation: 'check',
+      url,
+      fetch: loopbackFetch,
+      attributes: { serviceEndpointId: row.serviceendpointid ?? null, contract: WEBHOOK_CONTRACT },
+      init: {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-ms-dynamics-request-name': 'TriggerServiceEndpointCheck' },
+        body: JSON.stringify({ MessageName: 'TriggerServiceEndpointCheck' }),
+        signal: AbortSignal.timeout(60_000),
+      },
     }).catch(() => null);
     if (!response?.ok) throw fail('Endpoint unavailable', '0x80040265');
     return { status: 204 };

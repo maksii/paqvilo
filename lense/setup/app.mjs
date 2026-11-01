@@ -529,6 +529,64 @@ function profileRow(key, id = '', sources = {}, isDefault = false) {
     }).join('')}</div></div>`
   );
 }
+function codeAppRow(app = {}, index = '') {
+  const id = `code-app-${++newRows}`,
+    dev = app.devServer ?? {};
+  return `<div class="profile-editor" data-code-app data-index="${esc(index)}"><div class="inline-fields">${field('App name', 'code-name', app.name ?? '', 'Used in the local app URL.', 'text', { id: `${id}-name` })}${field('App folder', 'code-dir', app.dir ?? '', 'Relative to the project file.', 'text', { id: `${id}-dir` })}${field('Config file', 'code-config', app.config ?? '', 'Relative to the app folder; blank uses power.config.json.', 'text', { id: `${id}-config` })}${field('Local app URL', 'code-url', app.localAppUrl ?? '', 'Optional loopback URL.', 'text', { id: `${id}-url` })}</div><details><summary>Optional local dev server</summary>${area('Command argv (JSON array)', 'code-command', dev.command ? JSON.stringify(dev.command) : '', 'Explicit command and arguments; no shell.', `${id}-command`)}<div class="inline-fields">${field('Working folder', 'code-cwd', dev.cwd ?? '', 'Relative to the app folder.', 'text', { id: `${id}-cwd` })}${field('Startup timeout (ms)', 'code-timeout', dev.timeoutMs ?? '', '1000 to 300000 milliseconds.', 'number', { id: `${id}-timeout` })}</div>${area('Environment (JSON object)', 'code-env', dev.env ? JSON.stringify(dev.env) : '', 'Environment names and string values.', `${id}-env`)}</details><button type="button" class="button" data-remove-code-app>Remove app</button></div>`;
+}
+function codeAppsOf(form, originals) {
+  return [...form.querySelectorAll('[data-code-app]')].map((row) => {
+    const value = (name) => row.querySelector(`[name="${name}"]`).value.trim();
+    const previous = row.dataset.index === '' ? {} : (originals[Number(row.dataset.index)] ?? {});
+    const app = { ...previous, name: value('code-name'), dir: value('code-dir') };
+    for (const [key, name] of [
+      ['config', 'code-config'],
+      ['localAppUrl', 'code-url'],
+    ]) {
+      if (value(name)) app[key] = value(name);
+      else delete app[key];
+    }
+    const command = value('code-command'),
+      env = value('code-env'),
+      cwd = value('code-cwd'),
+      timeout = value('code-timeout');
+    if (command || env || cwd || timeout) {
+      let parsedCommand, parsedEnv;
+      try {
+        parsedCommand = JSON.parse(command);
+        if (env) parsedEnv = JSON.parse(env);
+      } catch {
+        throw new Error('Dev server command and environment must be valid JSON.');
+      }
+      if (
+        !Array.isArray(parsedCommand) ||
+        !parsedCommand.length ||
+        typeof parsedCommand[0] !== 'string' ||
+        !parsedCommand[0].trim() ||
+        parsedCommand.some((v) => typeof v !== 'string' || v.includes('\0'))
+      )
+        throw new Error('Dev server command must be a nonempty JSON array of strings.');
+      if (
+        env &&
+        (!parsedEnv ||
+          typeof parsedEnv !== 'object' ||
+          Array.isArray(parsedEnv) ||
+          Object.values(parsedEnv).some((v) => typeof v !== 'string'))
+      )
+        throw new Error('Dev server environment must be a JSON object of strings.');
+      if (timeout && (!/^\d+$/.test(timeout) || Number(timeout) < 1000 || Number(timeout) > 300000))
+        throw new Error('Dev server timeout must be 1000 to 300000 ms.');
+      app.devServer = { ...(previous.devServer ?? {}), command: parsedCommand };
+      if (cwd) app.devServer.cwd = cwd;
+      else delete app.devServer.cwd;
+      if (env) app.devServer.env = parsedEnv;
+      else delete app.devServer.env;
+      if (timeout) app.devServer.timeoutMs = Number(timeout);
+      else delete app.devServer.timeoutMs;
+    } else delete app.devServer;
+    return app;
+  });
+}
 function siteEditor(site) {
   const project = state.kind === 'project',
     key = slug(site.id),
@@ -607,14 +665,7 @@ function siteEditor(site) {
     `<div data-profiles data-key="${esc(key)}" data-source-dir="${esc(site.sourceStatus?.path ?? '')}">${profiles.map(([id, sources]) => profileRow(key, id, sources, id === current)).join('')}</div>` +
     `<div class="row"><button type="button" class="button" data-add-profile>Add profile</button><label class="checkbox-line"><input type="radio" name="profile-default" value="" ${current ? '' : 'checked'}>No default profile</label></div>` +
     (project
-      ? folderList(
-          'Code app folders (optional)',
-          'code-apps',
-          (state.settings.codeApps ?? []).map((item) => item.dir),
-          'Power Apps code apps (a folder with power.config.json) per line, relative to this project file; each is served at /_apps/code/<folder name>/.',
-          `files-${key}-code`,
-          'codeApp',
-        )
+      ? `<fieldset class="quick-group"><legend>Code apps</legend><p>Register each local app. Changes apply after restarting the preview.</p><div data-code-apps>${(state.layers.shared.values?.codeApps ?? []).map((app, index) => codeAppRow(app, index)).join('')}</div><button type="button" class="button" data-add-code-app>Add code app</button></fieldset>`
       : '<p class="muted small">Code apps run from a standalone project file (paqvilo setup --project), not from this settings file.</p>') +
     `<div class="toolbar"><button type="submit" class="button primary">Save</button><span class="muted">Writes the ${layer} settings file. Applies when the preview restarts.</span></div></form>`
   );
@@ -2189,7 +2240,7 @@ function guidanceBody() {
       : '';
   return (
     `<div class="title-row"><h3>Run your project</h3></div>${choose ? `<p class="run-site">${choose} <span class="muted small">Each website runs as a preview of its own.</span></p>` : ''}<div id="guidance-run" class="quick-run">${runHtml()}</div>` +
-    `<p class="row">${simLink('capabilities', 'Check what the project needs that the preview cannot provide')} ${simLink('dashboard', 'Open the live system map')}</p>` +
+    `<p class="row">${simLink('capabilities', 'Check what the project needs that the preview cannot provide')} ${simLink('health', 'Open the live system map')}</p>` +
     `<details class="disclosure" data-section-key="commands"><summary>For developers: terminal commands</summary><div class="title-row"><h3>Commands for this configuration</h3>${note(`Run these from ${state.directory}. Setup never deploys, synchronizes, installs, imports pack code or contacts a live portal. Lense browser actions can affect live data; follow the user's scope and let them handle sign-in and MFA. Paqvilo ${state.version}: guide links open this release's tag (main for prereleases); the installed CLI --help and bundled docs describe the installed version.`, 'About these commands')}</div>` +
     `<dl class="command-list">${steps.map(([title, text]) => `<dt>${esc(title)}</dt><dd>${text}</dd>`).join('')}</dl>` +
     `<div class="toolbar">${featured.map((item) => `<a href="${esc(item.href)}" target="_blank" rel="noreferrer">${esc(item.label)} ↗</a>`).join('')}</div></details>` +
@@ -2511,6 +2562,17 @@ $('#content').addEventListener('click', (event) => {
   const pickFile = target.closest('[data-pick-file]');
   if (pickFile)
     return openPicker(`${pickFile.dataset.pickFile}-file`, pickFile.closest('form'), pickFile.dataset.pickInto);
+  const codeApps = target.closest('form')?.querySelector('[data-code-apps]');
+  if (target.closest('[data-add-code-app]') && codeApps) {
+    codeApps.insertAdjacentHTML('beforeend', codeAppRow());
+    dirty = true;
+    return;
+  }
+  if (target.closest('[data-remove-code-app]')) {
+    target.closest('[data-code-app]').remove();
+    dirty = true;
+    return;
+  }
   const profiles = target.closest('form')?.querySelector('[data-profiles]');
   if (target.closest('[data-add-profile]') && profiles) {
     profiles.insertAdjacentHTML('beforeend', profileRow(profiles.dataset.key));
@@ -2976,19 +3038,11 @@ const SUBMIT = {
       listOf('client-sources').length ? listOf('client-sources') : undefined,
       before.modelDriven?.clientSources?.length ? before.modelDriven.clientSources : undefined,
     );
-    if (project)
-      update(
-        edits,
-        ['codeApps'],
-        listOf('code-apps').length
-          ? listOf('code-apps').map((dir) => ({
-              ...(state.settings.codeApps ?? []).find((item) => item.dir === dir),
-              name: quickUi.slugName(dir.split('/').filter(Boolean).pop()),
-              dir,
-            }))
-          : undefined,
-        state.settings.codeApps?.length ? state.settings.codeApps : undefined,
-      );
+    if (project) {
+      const originals = state.layers.shared.values?.codeApps ?? [];
+      const apps = codeAppsOf(form, originals);
+      update(edits, ['codeApps'], apps.length ? apps : undefined, originals.length ? originals : undefined);
+    }
     update(
       edits,
       [...prefix, 'deploymentProfiles'],
@@ -3091,7 +3145,7 @@ function profilesOf(form, before) {
   const profiles = {},
     kept = new Set([...form.querySelectorAll('[name=profile-keep]')].map((input) => input.value));
   for (const id of kept) profiles[id] = before?.profiles?.[id];
-  for (const row of form.querySelectorAll('.profile-editor:not([data-profile-locked])')) {
+  for (const row of form.querySelectorAll('[data-profiles] .profile-editor:not([data-profile-locked])')) {
     const id = row.querySelector('[name=profile-id]').value.trim();
     if (!id) continue;
     if (!identifier(id) || Object.hasOwn(profiles, id))

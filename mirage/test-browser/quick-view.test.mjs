@@ -6,13 +6,13 @@ import os from 'node:os';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const website = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const parent = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
 test('lookup changes reload quick views, clearing blanks them, and quick documents share modal styles', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-quick-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-quick-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [file, source] of Object.entries({
     'website.yml': `adx_websiteid: ${website}\nadx_name: Synthetic`,

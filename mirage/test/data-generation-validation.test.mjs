@@ -1,6 +1,97 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeDataset, findDanglingLookups, runDataCommand } from '../lib/data-generation.mjs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { DataStore } from '../lib/data.mjs';
+import { defineLazyPreset } from '../lib/preset-registry.mjs';
+import { pagedRecordsOf } from '../lib/record-tables.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
+
+test('offline generation preserves paged input, copies a standalone output and closes readers on success and failure', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'invented-paged-generation-')),
+    owner = ownedFixture(t),
+    file = path.join(root, 'state.json'),
+    out = path.join(root, 'copied.json'),
+    dataset = path.join(root, 'dataset.json'),
+    pack = path.join(root, 'pack.mjs'),
+    presets = {};
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
+  defineLazyPreset(presets, 'invented', {
+    name: 'Invented records',
+    createOwned({ records }) {
+      function* rows() {
+        for (let index = 0; index < 6000; index++) yield { itemid: 'row-' + index, name: 'Local ' + index };
+      }
+      return {
+        mappings: { item: { idColumn: 'itemid' } },
+        tables: { item: records.table(rows(), { primaryKey: 'itemid' }) },
+      };
+    },
+  });
+  const source = await new DataStore({ file, presetLibrary: presets }).init();
+  owner.add(() => source.closeRecordStorage());
+  await source.applyPreset('invented', { returnSnapshot: false });
+  source.closeRecordStorage();
+  await fs.writeFile(
+    pack,
+    `import fs from 'node:fs'; export default { id: 'fixture', name: 'Fixture', description: 'Invented rows', matches: () => true, presets: () => ({}), dataset: () => JSON.parse(fs.readFileSync(new URL('./dataset.json', import.meta.url), 'utf8')) };`,
+  );
+  await fs.writeFile(
+    dataset,
+    JSON.stringify({
+      tables: {
+        item: [
+          { itemid: 'row-3', name: 'Generated replacement' },
+          { itemid: 'new-row', name: 'Added', related: { logical_name: 'item', id: 'row-0' } },
+        ],
+      },
+    }),
+  );
+  const generate = (output) =>
+    runDataCommand(['generate'], {
+      pack: 'fixture',
+      'pack-module': [pack],
+      state: file,
+      ...(output ? { out: output } : {}),
+    });
+  const leases = async (state) => (await fs.readdir(state + '.records')).filter((name) => name.endsWith('.lease'));
+  assert.equal((await generate()).rows.item.added, 1);
+  assert.deepEqual(await leases(file), []);
+  assert.equal((await generate(out)).rows.item.alreadyPresent, 2);
+  assert.deepEqual(await leases(file), []);
+  assert.deepEqual(await leases(out), []);
+  const portal = path.join(root, 'portal'),
+    scaffolded = path.join(root, 'scaffolded.json');
+  await fs.mkdir(path.join(portal, 'web-pages'), { recursive: true });
+  await fs.writeFile(path.join(portal, 'website.yml'), 'adx_websiteid: site\nadx_name: Invented offline source\n');
+  await runDataCommand(['scaffold'], { state: file, out: scaffolded, source: portal, profile: 'smoke' });
+  assert.deepEqual(await leases(file), []);
+  assert.deepEqual(await leases(scaffolded), []);
+  for (const target of [file, out, scaffolded]) {
+    const restored = await new DataStore({ file: target }).init();
+    owner.add(() => restored.closeRecordStorage());
+    assert.ok(pagedRecordsOf(restored.state.tables.item));
+    assert.equal(restored.state.tables.item.length, 6001);
+    assert.equal(restored.state.tables.item[3].name, 'Local 3');
+    assert.equal(restored.state.tables.item.at(-1).name, 'Added');
+    const preview = mergeDataset(restored.state, { tables: { item: [] } });
+    assert.equal(
+      pagedRecordsOf(preview.state.tables.item),
+      undefined,
+      'The public merge still returns detached ordinary arrays.',
+    );
+    preview.state.tables.item[3].name = 'Preview edit';
+    assert.equal(restored.state.tables.item[3].name, 'Local 3');
+    restored.closeRecordStorage();
+  }
+  const before = await fs.readFile(file);
+  await fs.writeFile(dataset, JSON.stringify({ tables: { item: [null] } }));
+  await assert.rejects(generate(), /rows must be objects/);
+  assert.deepEqual(await fs.readFile(file), before);
+  assert.deepEqual(await leases(file), []);
+});
 
 const id = 'abcdef12-3456-4789-abcd-123456789abc';
 const state = () => ({
@@ -146,4 +237,47 @@ test('schema-complete fields use own metadata keys when validating prototype-nam
     mergeDataset(original, { tables: { sample: [{ id: 'one', toString: 'mapped' }] } }).state.tables.sample[0].toString,
     'mapped',
   );
+});
+
+test('scaffold rows without the mapped key are appended even when existing rows lack the key too', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'invented-scaffold-keys-')),
+    owner = ownedFixture(t);
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
+  const portal = path.join(root, 'portal'),
+    solution = path.join(root, 'solution'),
+    file = path.join(root, 'state.json');
+  await fs.mkdir(portal, { recursive: true });
+  await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
+  await fs.writeFile(path.join(portal, 'website.yml'), 'adx_websiteid: site\nadx_name: Invented scaffold keys\n');
+  await fs.writeFile(path.join(portal, 'sitesetting.yml'), '- adx_name: Webapi/x_item/enabled\n  adx_value: "true"\n');
+  await fs.writeFile(
+    path.join(solution, 'Other', 'Solution.xml'),
+    '<ImportExportXml><SolutionManifest><UniqueName>invented</UniqueName></SolutionManifest></ImportExportXml>',
+  );
+  const attribute = (name, type, extra = '') =>
+    `<attribute PhysicalName="${name}"><Type>${type}</Type><LogicalName>${name}</LogicalName>${extra}</attribute>`;
+  await fs.writeFile(
+    path.join(solution, 'Other', 'Customizations.xml'),
+    `<ImportExportXml><Entities><Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><attributes>${attribute('x_itemid', 'primarykey')}${attribute('x_name', 'nvarchar', '<DisplayMask>PrimaryName|ValidForForm</DisplayMask><MaxLength>100</MaxLength>')}</attributes><EntitySetName>x_items</EntitySetName></entity></EntityInfo></Entity></Entities></ImportExportXml>`,
+  );
+  // The configured mapping names a key that neither the existing row nor the generated rows carry.
+  const store = new DataStore({
+    file,
+    state: {
+      mappings: { x_item: { idColumn: 'x_customid', entitySet: 'x_items', userConfigured: true } },
+      tables: { x_item: [{ x_name: 'Existing without key' }] },
+    },
+  });
+  await store.init();
+  await store.save();
+  const result = await runDataCommand(['scaffold'], {
+    state: file,
+    source: portal,
+    'solution-root': [solution],
+    profile: 'smoke',
+  });
+  assert.deepEqual(result.rows.x_item, { added: 3, alreadyPresent: 0 });
+  const saved = await new DataStore({ file }).init();
+  owner.add(() => saved.closeRecordStorage());
+  assert.equal(saved.state.tables.x_item.length, 4);
 });

@@ -34,23 +34,33 @@ const MAX_PAGE_SOURCE_BYTES = 8 * 1024 * 1024;
 export class OverlaySession extends EventEmitter {
   /** Prepare disk-heavy indexes without serial synchronous reads blocking startup. */
   static async create(cfg) {
-    const model = await PortalModel.create(cfg.sourceDir);
-    const baseline = new GitBaseline(cfg.sourceDir, cfg.site.markup?.baseline ?? 'HEAD');
-    const changedFiles = baseline.changedFiles({ refreshRef: false });
+    // Git runs while the metadata is read; each phase keeps at most two Git processes.
+    const [model, { baseline, changedFiles }] = await Promise.all([
+      PortalModel.create(cfg.sourceDir),
+      GitBaseline.create(cfg.sourceDir, cfg.site.markup?.baseline ?? 'HEAD').then(async (baseline) => ({
+        baseline,
+        changedFiles: await baseline.changedFilesAsync({ refreshRef: false }),
+      })),
+    ]);
     const disabled = new Set();
-    const rewriter = await HtmlRewriter.create({
-      model,
-      site: cfg.site,
-      baseline,
-      changedFiles,
-      sourceMaps: Boolean(cfg.sourceMaps),
-      disabled,
-    });
+    const [rewriter, head] = await Promise.all([
+      HtmlRewriter.create({
+        model,
+        site: cfg.site,
+        baseline,
+        changedFiles,
+        sourceMaps: Boolean(cfg.sourceMaps),
+        disabled,
+      }),
+      gitHead(cfg.sourceDir),
+    ]);
     const session = new OverlaySession(cfg, { model, baseline, changedFiles, disabled, rewriter });
+    // Nothing can listen yet, so the first HEAD needs no 'head' event.
+    session.head = head;
     // Sources and HEAD can change while the bounded asynchronous reads are in flight.
     // Reconcile their final metadata/working-tree snapshot before exposing the session.
-    session.reconcile();
-    await session.refreshHead();
+    session.model.load();
+    session.#reconcileChanges(await baseline.changedFilesAsync());
     return session;
   }
 
@@ -121,12 +131,17 @@ export class OverlaySession extends EventEmitter {
   /** Reconcile saves made before the watcher was ready, reusing unchanged stamped source bytes. */
   reconcile() {
     this.model.load();
+    return this.#reconcileChanges(this.baseline.changedFiles());
+  }
+
+  /** The rest of reconcile() once the model is reloaded and Git has listed the changed files. */
+  #reconcileChanges(changed) {
     this.knownFiles = new Set(
       [...this.model.inlineSources, ...this.model.webFiles, ...(this.model.inactiveSources ?? [])]
         .map((s) => s.file)
         .filter(Boolean),
     );
-    const baselineChanged = this.#acceptChanges(this.baseline.changedFiles());
+    const baselineChanged = this.#acceptChanges(changed);
     this.fileBodies.clear();
     this.#buildResolver();
     this.rewriter.refresh([], { revalidate: true });

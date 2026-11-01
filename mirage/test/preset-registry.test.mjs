@@ -16,8 +16,151 @@ import {
 import { bootstrapPresetLibrary, compactBuiltinPresets, listPresets, resolvePreset } from '../lib/presets.mjs';
 import { expressionOperator, footerLogoClasses, packEndpoints, registerShellConventions } from '../lib/extensions.mjs';
 import { DataStore } from '../lib/data.mjs';
+import { seedPresetBody } from '../lib/solution-schema.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const otherPortal = { records: [], templates: {}, forms: [], lists: [], website: { id: 'other', name: 'Other' } };
+
+test('owned preset factories instantiate private bodies without hydrating a retained public baseline', () => {
+  let calls = 0,
+    rows;
+  const pack = {
+    id: 'invented-owned',
+    name: 'Invented owned',
+    description: 'Invented',
+    matches: () => true,
+    presets: () => ({
+      invented: {
+        name: 'Invented factory',
+        createOwned() {
+          calls++;
+          rows = [{ x_itemid: 'one', nested: { value: calls } }];
+          return { name: 'Invented factory', tables: { x_item: rows }, mappings: { x_item: { idColumn: 'x_itemid' } } };
+        },
+      },
+    }),
+  };
+  const library = bootstrapPresetLibrary({ portal: otherPortal, packs: [pack], tables: {}, mappings: {} });
+  const state = { presets: compactBuiltinPresets(library, library), mappings: {} };
+  assert.equal(listPresets({ state, library }).find((entry) => entry.id === 'invented').name, 'Invented factory');
+  assert.equal(calls, 0);
+  const first = resolvePreset(state, 'invented', library);
+  assert.equal(calls, 1);
+  assert.equal(first.tables.x_item, rows, 'The factory explicitly transferred this private row graph.');
+  const second = resolvePreset(state, 'invented', library);
+  assert.equal(calls, 2);
+  assert.notEqual(second.tables.x_item, first.tables.x_item);
+  assert.equal(first.tables.x_item[0].nested.value, 1);
+  assert.equal(second.tables.x_item[0].nested.value, 2);
+  const preview = library.invented;
+  assert.equal(library.invented, preview, 'Direct library reads still memoize their public preview.');
+  assert.equal(calls, 3);
+  preview.tables.x_item[0].nested.value = 99;
+  assert.equal(resolvePreset(state, 'invented', library).tables.x_item[0].nested.value, 4);
+  state.presets.invented = { builtin: true, userConfigured: true, tables: { x_item: [{ x_itemid: 'custom' }] } };
+  assert.equal(resolvePreset(state, 'invented', library).tables.x_item[0].x_itemid, 'custom');
+  assert.equal(calls, 4, 'User-authored saved presets remain authoritative.');
+});
+
+test('legacy load keeps precedence and copying when a descriptor also has an owned helper', () => {
+  const rows = [{ id: 'legacy', nested: { value: 1 } }];
+  let calls = 0;
+  const library = {};
+  defineLazyPreset(library, 'invented', {
+    name: 'Invented',
+    load() {
+      calls++;
+      return { tables: { item: rows } };
+    },
+    createOwned() {
+      assert.fail('Legacy load retains precedence.');
+    },
+  });
+  const state = { presets: { invented: { builtin: true } }, mappings: {} };
+  const first = resolvePreset(state, 'invented', library);
+  first.tables.item[0].nested.value = 2;
+  assert.equal(resolvePreset(state, 'invented', library).tables.item[0].nested.value, 1);
+  assert.equal(rows[0].nested.value, 1);
+  assert.equal(calls, 1);
+});
+
+test('owned preset factories retain descriptor validation and reject asynchronous/non-object results', () => {
+  for (const createOwned of [() => null, () => [], async () => ({ tables: {} })]) {
+    const library = {};
+    defineLazyPreset(library, 'invented', { name: 'Invented', createOwned });
+    assert.throws(() => resolvePreset({ presets: {}, mappings: {} }, 'invented', library), /did not load an object/);
+  }
+  const library = {};
+  defineLazyPreset(library, 'invented', {
+    name: 'Invented',
+    configurationPreset: 'source-defaults',
+    createOwned: () => ({ configurationPreset: 'expanded-query-budget' }),
+  });
+  assert.throws(() => resolvePreset({ presets: {}, mappings: {} }, 'invented', library), /does not match/);
+});
+
+test('owned preset seeding leaves unrelated payloads unread when defaults are already present', () => {
+  let payloadReads = 0;
+  const row = {
+    x_itemid: 'one',
+    createdon: '2025-01-02T00:00:00Z',
+    modifiedon: '2025-01-02T00:00:00Z',
+    get payload() {
+      payloadReads++;
+      return 'Large untouched value';
+    },
+  };
+  const body = { tables: { x_item: [row] } };
+  const schema = {
+    tables: {
+      x_item: {
+        attributes: {
+          createdon: { name: 'createdon', type: 'datetime' },
+          modifiedon: { name: 'modifiedon', type: 'datetime' },
+        },
+      },
+    },
+  };
+  const seeded = seedPresetBody(body, schema, { owned: true });
+  assert.equal(payloadReads, 0);
+  assert.equal(seeded.tables.x_item[0], row);
+  const missing = { tables: { x_item: [{ x_itemid: 'two' }] } };
+  const options = { now: Date.parse('2026-01-01T00:00:00Z') };
+  assert.deepEqual(
+    seedPresetBody(missing, schema, { ...options, owned: true }),
+    seedPresetBody(missing, schema, options),
+  );
+  assert.equal(missing.tables.x_item[0].createdon, undefined, 'Actual writes still detach the changed row');
+});
+
+test('bootstrap composition clones generated row graphs once and detaches every retained section', () => {
+  const body = {
+    tables: { x_item: [{ x_itemid: 'one', nested: { value: 'kept' } }] },
+    mappings: { x_item: { idColumn: 'x_itemid' } },
+    settings: { custom: { value: 'kept' } },
+  };
+  const original = globalThis.structuredClone;
+  let rowClones = 0;
+  globalThis.structuredClone = (value) => {
+    if (value === body || value === body.tables) rowClones++;
+    return original(value);
+  };
+  try {
+    const library = bootstrapPresetLibrary({
+      packs: [{ id: 'invented', matches: () => true, presets: () => ({ invented: { load: () => body } }) }],
+    });
+    const composed = library.invented;
+    assert.equal(rowClones, 1);
+    composed.tables.x_item[0].nested.value = 'changed';
+    composed.settings.custom.value = 'changed';
+    composed.mappings.x_item.idColumn = 'changed';
+    assert.equal(body.tables.x_item[0].nested.value, 'kept');
+    assert.equal(body.settings.custom.value, 'kept');
+    assert.equal(body.mappings.x_item.idColumn, 'x_itemid');
+  } finally {
+    globalThis.structuredClone = original;
+  }
+});
 
 /** A synthetic pack module in a temporary packs root; `loads` counts body generations. */
 async function writePack(
@@ -49,7 +192,7 @@ test('generic presets are project-agnostic and described', () => {
 });
 
 test('explicit and root packs load, validate, dedupe and reject conflicts', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-packs-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-packs-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const alpha = await writePack(root, 'alpha');
   await writePack(root, 'beta');
@@ -65,7 +208,7 @@ test('explicit and root packs load, validate, dedupe and reject conflicts', asyn
     ['alpha', 'beta'],
   );
   // Explicit project entries resolve relative to the project file.
-  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-project-packs-'));
+  const projectRoot = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-project-packs-'));
   t.after(() => fs.rm(projectRoot, { recursive: true, force: true }));
   await writePack(path.join(projectRoot, 'custom'), 'gamma');
   const project = {
@@ -99,7 +242,7 @@ test('explicit and root packs load, validate, dedupe and reject conflicts', asyn
 });
 
 test('preset library merges packs lazily; descriptors and compaction never generate bodies', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-packs-lazy-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-packs-lazy-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await writePack(root, 'lazy');
   const packs = await discoverPacks({ root });
@@ -160,7 +303,7 @@ test('defineLazyPreset validates ids and loaded bodies', () => {
 });
 
 test('discovery filters a packs root by portal and bootstraps only matching pack presets', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-packs-generic-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-packs-generic-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await writePack(root, 'alpha', { matchName: 'Alpha' });
   await writePack(root, 'beta', { matchName: 'Beta' });
@@ -184,7 +327,7 @@ test('discovery filters a packs root by portal and bootstraps only matching pack
 });
 
 test('packs contribute expression operators, /__sim/ endpoints and shell conventions through the registry', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-packs-ext-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-packs-ext-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const dir = path.join(root, 'gamma');
   await fs.mkdir(dir, { recursive: true });

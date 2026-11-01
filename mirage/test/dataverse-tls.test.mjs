@@ -2,18 +2,21 @@ import assert from 'node:assert/strict';
 import { spawnSync, execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import https from 'node:https';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { createSelfSignedCertificate, ensureCertificate } from '../lib/dataverse-tls.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { tlsTools } from './tls-tools-fixture.mjs';
 
 const DAY = 86_400_000;
+const HOUR = 3_600_000;
+// A fixed issue time (whole seconds, as X.509 times are) so validity bounds are exact, not wall-clock dependent.
+const ISSUED = Date.parse('2026-01-01T00:00:00.000Z');
 const execFileAsync = promisify(execFile);
-const python = spawnSync('python', ['--version']).status === 0 ? 'python' : null;
-const openssl = spawnSync('openssl', ['version']).status === 0;
+const { python, openssl } = tlsTools();
 // DER of the nameConstraints OID (2.5.29.30).
 const NAME_CONSTRAINTS_OID = Buffer.from('0603551d1e', 'hex');
 
@@ -36,8 +39,20 @@ function get(port, options = {}) {
   });
 }
 
+async function trustedHttpsFixture(t) {
+  const dir = await makeTemporaryDirectory(join(tmpdir(), 'paqvilo-tls-'));
+  ownedFixture(t).remove(() => rm(dir, { recursive: true, force: true }));
+  const { key, cert } = createSelfSignedCertificate();
+  const caFile = join(dir, 'ca.pem');
+  await writeFile(caFile, cert);
+  const server = https.createServer({ key, cert }, (req, res) => res.end('ok'));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
+  const port = await listen(server);
+  return { caFile, port };
+}
+
 test('generated certificate is a CA-flagged self-signed loopback certificate', () => {
-  const { key, cert, fingerprint256, notAfter } = createSelfSignedCertificate();
+  const { key, cert, fingerprint256, notAfter } = createSelfSignedCertificate({ clock: () => ISSUED });
   const x509 = new crypto.X509Certificate(cert);
 
   assert.match(x509.subject, /CN=Paqvilo Mirage Dataverse simulator/);
@@ -51,8 +66,9 @@ test('generated certificate is a CA-flagged self-signed loopback certificate', (
   assert.match(x509.fingerprint256, /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
   assert.equal(fingerprint256, x509.fingerprint256);
   assert.equal(new Date(notAfter).getTime(), new Date(x509.validTo).getTime());
-  const lifetimeDays = (new Date(x509.validTo).getTime() - Date.now()) / DAY;
-  assert.ok(Math.abs(lifetimeDays - 825) < 0.01, `validTo ${lifetimeDays} days ahead`);
+  // Valid for 825 days from issue, and from one hour before it (tolerates a client clock running behind).
+  assert.equal(new Date(x509.validTo).getTime(), ISSUED + 825 * DAY);
+  assert.equal(new Date(x509.validFrom).getTime(), ISSUED - HOUR);
 
   // Node does not expose keyUsage bits (its keyUsage is EKU), so check the DER: critical, BIT STRING 03 02 02 a4.
   const der = Buffer.from(cert.replace(/-----[^-]+-----|\s/g, ''), 'base64');
@@ -77,14 +93,7 @@ test('https server is trusted via ca option and rejected without it', async (t) 
 });
 
 test('global fetch trusts the certificate through NODE_EXTRA_CA_CERTS', async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), 'paqvilo-tls-'));
-  ownedFixture(t).remove(() => rm(dir, { recursive: true, force: true }));
-  const { key, cert } = createSelfSignedCertificate();
-  const caFile = join(dir, 'ca.pem');
-  await writeFile(caFile, cert);
-  const server = https.createServer({ key, cert }, (req, res) => res.end('ok'));
-  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
-  const port = await listen(server);
+  const { caFile, port } = await trustedHttpsFixture(t);
 
   const script = 'fetch(process.env.TEST_URL).then((r) => r.text()).then((text) => process.stdout.write(text))';
   const { stdout } = await execFileAsync(process.execPath, ['-e', script], {
@@ -97,14 +106,7 @@ test(
   'python ssl trusts the certificate as a CA bundle',
   { skip: python ? false : 'python is not installed' },
   async (t) => {
-    const dir = await mkdtemp(join(tmpdir(), 'paqvilo-tls-'));
-    ownedFixture(t).remove(() => rm(dir, { recursive: true, force: true }));
-    const { key, cert } = createSelfSignedCertificate();
-    const caFile = join(dir, 'ca.pem');
-    await writeFile(caFile, cert);
-    const server = https.createServer({ key, cert }, (req, res) => res.end('ok'));
-    ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
-    const port = await listen(server);
+    const { caFile, port } = await trustedHttpsFixture(t);
 
     const code = [
       'import ssl, sys, urllib.request',
@@ -117,18 +119,21 @@ test(
 );
 
 test('ensureCertificate reuses a valid file and regenerates one that expires within 7 days', async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), 'paqvilo-tls-'));
+  const dir = await makeTemporaryDirectory(join(tmpdir(), 'paqvilo-tls-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, 'nested', 'mirage.pem');
 
-  const first = await ensureCertificate(file);
+  const first = await ensureCertificate(file, { clock: () => ISSUED });
   assert.equal(first.file, file);
   assert.match(await readFile(file, 'utf8'), /-----BEGIN CERTIFICATE-----[\s\S]+-----BEGIN PRIVATE KEY-----/);
-  const second = await ensureCertificate(file);
+  const second = await ensureCertificate(file, { clock: () => ISSUED });
   assert.equal(second.fingerprint256, first.fingerprint256);
   assert.equal(second.key, first.key);
 
-  const nearExpiry = await ensureCertificate(file, { clock: () => Date.now() + 820 * DAY });
+  // 825 days of validity: one second more than 7 days left is reused, exactly 7 days left is renewed.
+  const renewAt = ISSUED + (825 - 7) * DAY;
+  assert.equal((await ensureCertificate(file, { clock: () => renewAt - 1000 })).fingerprint256, first.fingerprint256);
+  const nearExpiry = await ensureCertificate(file, { clock: () => renewAt });
   assert.notEqual(nearExpiry.fingerprint256, first.fingerprint256);
 });
 
@@ -136,7 +141,7 @@ test(
   'the CA is path-length 0 and name-constrained, and a leaf for another name fails verification',
   { skip: openssl ? false : 'openssl is not installed' },
   async (t) => {
-    const dir = await mkdtemp(join(tmpdir(), 'paqvilo-tls-'));
+    const dir = await makeTemporaryDirectory(join(tmpdir(), 'paqvilo-tls-'));
     t.after(() => rm(dir, { recursive: true, force: true }));
     const { key, cert } = createSelfSignedCertificate();
     const der = Buffer.from(cert.replace(/-----[^-]+-----|\s/g, ''), 'base64');
@@ -154,7 +159,7 @@ test(
     await writeFile(ca, cert + key);
     const leaf = async (name) => {
       const base = join(dir, name);
-      await execFileAsync('openssl', [
+      await execFileAsync(openssl, [
         'req',
         '-newkey',
         'rsa:2048',
@@ -167,7 +172,7 @@ test(
         `${base}.csr`,
       ]);
       await writeFile(`${base}.ext`, `subjectAltName=DNS:${name}\nbasicConstraints=CA:FALSE\n`);
-      await execFileAsync('openssl', [
+      await execFileAsync(openssl, [
         'x509',
         '-req',
         '-in',
@@ -187,7 +192,7 @@ test(
       ]);
       return `${base}.pem`;
     };
-    const verify = (file) => spawnSync('openssl', ['verify', '-CAfile', ca, file]).status;
+    const verify = (file) => spawnSync(openssl, ['verify', '-CAfile', ca, file]).status;
     assert.equal(verify(await leaf('localhost')), 0);
     assert.notEqual(verify(await leaf('login.microsoftonline.com')), 0);
   },
@@ -197,11 +202,11 @@ test(
   'a reused certificate without the name constraint is regenerated',
   { skip: openssl ? false : 'openssl is not installed' },
   async (t) => {
-    const dir = await mkdtemp(join(tmpdir(), 'paqvilo-tls-'));
+    const dir = await makeTemporaryDirectory(join(tmpdir(), 'paqvilo-tls-'));
     t.after(() => rm(dir, { recursive: true, force: true }));
     const keyFile = join(dir, 'old.key');
     const certFile = join(dir, 'old.crt');
-    await execFileAsync('openssl', [
+    await execFileAsync(openssl, [
       'req',
       '-x509',
       '-newkey',
@@ -231,13 +236,36 @@ test(
 );
 
 test('a reused file is regenerated when it does not cover the requested hosts', async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), 'paqvilo-tls-'));
+  const dir = await makeTemporaryDirectory(join(tmpdir(), 'paqvilo-tls-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, 'mirage.pem');
   const first = await ensureCertificate(file);
   const widened = await ensureCertificate(file, { hosts: ['127.0.0.1', 'localhost', 'mirage-extra.localhost'] });
   assert.notEqual(widened.fingerprint256, first.fingerprint256);
   assert.equal(new crypto.X509Certificate(widened.cert).checkHost('mirage-extra.localhost'), 'mirage-extra.localhost');
+});
+
+test('a reused file whose key does not match its certificate, or that does not parse, is regenerated', async (t) => {
+  const dir = await makeTemporaryDirectory(join(tmpdir(), 'paqvilo-tls-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'mirage.pem');
+  const one = createSelfSignedCertificate(),
+    other = createSelfSignedCertificate();
+  await writeFile(file, one.cert + other.key);
+  const mismatched = await ensureCertificate(file);
+  assert.notEqual(mismatched.fingerprint256, one.fingerprint256);
+  assert.equal(
+    new crypto.X509Certificate(mismatched.cert).checkPrivateKey(crypto.createPrivateKey(mismatched.key)),
+    true,
+  );
+  assert.equal((await ensureCertificate(file)).fingerprint256, mismatched.fingerprint256, 'the replacement is reused');
+  await writeFile(
+    file,
+    '-----BEGIN CERTIFICATE-----\nbm90IGEgY2VydGlmaWNhdGU=\n-----END CERTIFICATE-----\n' + other.key,
+  );
+  const unparsable = await ensureCertificate(file);
+  assert.notEqual(unparsable.fingerprint256, mismatched.fingerprint256);
+  assert.equal(await readFile(file, 'utf8'), unparsable.cert + unparsable.key, 'the replacement is written');
 });
 
 test('ensureCertificate(null) returns an in-memory CA with no file', async () => {

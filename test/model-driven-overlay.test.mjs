@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -68,7 +69,7 @@ test('local simulation overlays only declared hashed WebResources and PCF routes
 });
 
 test('acknowledged model-driven script responses carry proof of the exact raw and fulfilled bytes for every declared alias', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-model-script-proof-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-model-script-proof-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'fixture.js'),
     raw = Buffer.from('\ufeff// Unicode 🌿\r\ndocument.body.append(document.createElement("section"));\n');
@@ -109,7 +110,7 @@ test('acknowledged model-driven script responses carry proof of the exact raw an
 });
 
 test('script proof metadata is lazy, bounded across newline-heavy assets and released by LRU eviction/reload', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-model-proof-budget-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-model-proof-budget-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const data = { resources: [], assets: new Map(), diagnostics: [] };
   const add = async (name, text) => {
@@ -318,7 +319,7 @@ test('an in-flight old resource response never proves the replacement revision w
 });
 
 test('an oversized source save preserves the previous working overlay and resource revision', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lense-over-budget-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'lense-over-budget-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'WebResources'));
   await fs.writeFile(

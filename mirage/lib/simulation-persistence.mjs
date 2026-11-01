@@ -13,6 +13,7 @@ import { readStateFile } from './state-storage.mjs';
 import { INTERNAL_TABLES } from './dataverse-organization.mjs';
 import { WEBAPI_UNSUPPORTED_TABLES, POWER_PAGES_TABLES } from './webapi-policy.mjs';
 import { publishTransactionalFiles, recoverTransactionalFiles } from './transactional-files.mjs';
+import { cloneStateData } from './state-clone.mjs';
 
 // Platform infrastructure belongs to the private runtime, independently of the
 // business dataset. These are platform contracts, never project table prefixes.
@@ -51,8 +52,16 @@ const runtimeTables = new Set([
   // level, never pack DATA (a preset that carries them replaces the runtime rows; organization-presets keeps the seeded ones).
   'sdkmessageprocessingstep',
   'sdkmessageprocessingstepimage',
+  // The message catalogue: seeded from the platform, the registry and customapi rows at every start, and rewritten when a
+  // custom API is created, renamed, rebound or deleted. Derived from its sources, never pack DATA.
+  'sdkmessage',
+  'sdkmessagefilter',
   'plugintype',
   'pluginassembly',
+  // A plug-in package and a step's secure configuration: the secure text and up to 16 MB of package content are control-plane
+  // state, never pack DATA.
+  'pluginpackage',
+  'sdkmessageprocessingstepsecureconfig',
   'serviceendpoint',
   'fxexpression',
   'maskingrule',
@@ -269,7 +278,7 @@ export async function createSimulationPersistence({ settings, packs = [], stateF
           if (error.code !== 'ENOENT') throw error;
         }
       }
-      state = structuredClone(state);
+      state = cloneStateData(state);
       for (const entry of descriptors) {
         const raw = await io.readFile(entry.file);
         try {

@@ -7,9 +7,10 @@ import { importPortal } from '../lib/importer.mjs';
 import { PortalModel } from '../../lense/portal-model.mjs';
 
 // Optional public ecosystem checkouts. The synthetic code-site fixture always runs;
-// these additional checks run only when PAQVILO_ECOSYSTEM_FIXTURES is supplied.
-const R2 = process.env.PAQVILO_ECOSYSTEM_FIXTURES
-  ? path.resolve(process.env.PAQVILO_ECOSYSTEM_FIXTURES)
+// these additional checks run only when PAQ_TEST_ECOSYSTEM_FIXTURES is supplied (ci:prepare provides
+// pinned copies). PAQVILO_* names are reserved: the toolkit rejects unknown PAQVILO_ settings.
+const R2 = process.env.PAQ_TEST_ECOSYSTEM_FIXTURES
+  ? path.resolve(process.env.PAQ_TEST_ECOSYSTEM_FIXTURES)
   : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '.paqvilo', 'ecosystem');
 const SAMPLES = path.join(R2, 'microsoft__power-pages-samples');
 const CORE_PORTAL = path.join(R2, 'microsoft__gov-apptemplates', 'portals', 'core-portal');

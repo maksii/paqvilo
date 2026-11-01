@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo design: every write path (Web API, SDK, flow connector, portal) runs one organization mutation pipeline with the same stored row, errors and projection
 // One organization mutation pipeline: the same write through the Dataverse Web API, the SDK IOrganizationService
 // (the service a CLR plug-in's SDK calls reach), the flow Dataverse connector, the portal /_api and the portal form writes
 // stores the same row, refuses a calculated-column value and a duplicate alternate key with the same error, and reads back
@@ -12,7 +13,7 @@ import { localOrganizationService } from '../lib/local-organization-service.mjs'
 import { DATAVERSE_CONNECTOR, createConnectorRuntime } from '../lib/connector-runtime.mjs';
 import { portalRecordWrites } from '../lib/form-service.mjs';
 import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CLIENT = '77777777-7777-4777-8777-777777777777';
 const CONTACT = '77777777-7777-4777-8777-000000000011';
@@ -92,7 +93,7 @@ const state = () => ({
 });
 
 async function organization(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mutation-pipeline-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mutation-pipeline-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: Invented pipeline\n');
   await fs.writeFile(
@@ -456,27 +457,28 @@ test('associate and disassociate run the record hooks on the Web API, the SDK, t
   }
 });
 
-test('Merge writes the target and the subordinate through the pipeline (actor and row version stamps)', async (t) => {
+// @test-kind unproven: contact Merge has no native capture; it follows native mergeAccount (account), where a type-only Merge writes only the subordinate
+test('Merge writes the subordinate through the pipeline (actor and row version stamps)', async (t) => {
   const { webApi, sim, appUser } = await organization(t);
   const SUBORDINATE = '77777777-7777-4777-8777-000000000012';
   await sim.store.transact(() => {
     sim.store.state.tables.contact.push({ contactid: SUBORDINATE, fullname: 'Invented Duplicate', statecode: 0 });
   });
   const typed = (id) => ({ '@odata.type': 'Microsoft.Dynamics.CRM.contact', contactid: id });
+  const row = (id) => sim.store.tableRows('contact').find((item) => item.contactid === id);
+  const before = structuredClone(row(CONTACT));
   const merged = await webApi('POST', '/Merge', {
     Target: typed(CONTACT),
     Subordinate: typed(SUBORDINATE),
     PerformParentingChecks: false,
   });
   assert.equal(merged.status, 204, JSON.stringify(merged.body));
-  const row = (id) => sim.store.tableRows('contact').find((item) => item.contactid === id);
-  for (const id of [CONTACT, SUBORDINATE]) {
-    assert.equal(typeof row(id).versionnumber, 'number', 'the merge write takes an organization row version');
-    assert.equal(
-      String(row(id).modifiedby?.id).toLowerCase(),
-      String(appUser.systemuserid).toLowerCase(),
-      'modifiedby names the caller',
-    );
-  }
+  assert.equal(typeof row(SUBORDINATE).versionnumber, 'number', 'the merge write takes an organization row version');
+  assert.equal(
+    String(row(SUBORDINATE).modifiedby?.id).toLowerCase(),
+    String(appUser.systemuserid).toLowerCase(),
+    'modifiedby names the caller',
+  );
   assert.equal(row(SUBORDINATE).statecode, 1);
+  assert.deepEqual(row(CONTACT), before, 'a Merge without UpdateContent leaves the target unwritten');
 });

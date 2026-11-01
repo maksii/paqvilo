@@ -1,7 +1,9 @@
 import { DataStore } from '../data.mjs';
+import { pagedRecordsOf } from '../record-tables.mjs';
 import { parseSolutionXml, child, serializeXml } from '../solution-xml.mjs';
 import { managementOverlay } from './power-pages.mjs';
 import { controlDescriptor } from './control-descriptors.mjs';
+import { appCatalogue, appCatalogueAsync } from './catalogue.mjs';
 
 const invalid = (message, status = 400) =>
   Object.assign(new Error(message), { status, code: 'ModelDrivenRequestInvalid' });
@@ -105,6 +107,72 @@ function projectedStore(table) {
   });
 }
 
+// The rows the solution metadata overlay reads (dataverse-solution-metadata.mjs).
+const SOLUTION_COMPONENT_TABLES = Object.freeze(['systemform', 'savedquery', 'appmodule', 'sitemap']);
+/** A key of everything a store-backed catalogue reads besides its metadata object: it advances with metadata,
+ * mapping and settings commits (non-incremental), solution component row writes and a state replacement,
+ * and an incremental business-row write keeps it. */
+const catalogueRevision = (store) => store.tablesRevision(SOLUTION_COMPONENT_TABLES);
+
+// A detached copy of plain store data (objects, arrays and scalars). copyPlainGraph also
+// guards shared references and exotic objects, which mappings never hold; this copy of a
+// wide mapping set costs a fraction of it.
+const ownedCopy = (value) => {
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(ownedCopy);
+  const copy = {};
+  for (const key of Object.keys(value))
+    if (key === '__proto__')
+      Object.defineProperty(copy, key, {
+        value: ownedCopy(value[key]),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    else copy[key] = ownedCopy(value[key]);
+  return copy;
+};
+
+/** A host's cached lazy catalogue over a DataStore: catalogue() and catalogue.async({ cancelled })
+ * return one value until metadata() or source() returns another object or catalogue.revision()
+ * changes. The catalogue reads metadata, mappings and settings, never business rows. Its bodies
+ * compile lazily, after the host's read, so it owns a copy of the mappings: a later in-place
+ * mapping write never reaches a catalogue already handed out. options(metadata) builds the input. */
+export function storeCatalogue({ store, metadata, options, source = () => null }) {
+  let cache;
+  const revision = () => catalogueRevision(store);
+  const input = (current) => {
+    const value = options(current);
+    return { ...value, mappings: ownedCopy(value.mappings ?? {}) };
+  };
+  const lookup = () => {
+    const current = metadata(),
+      origin = source(),
+      key = revision();
+    return {
+      current,
+      origin,
+      key,
+      value: cache?.metadata === current && cache.origin === origin && cache.key === key ? cache.value : null,
+    };
+  };
+  const catalogue = () => {
+    const { current, origin, key, value } = lookup();
+    if (value) return value;
+    cache = { metadata: current, origin, key, value: appCatalogue(input(current)) };
+    return cache.value;
+  };
+  catalogue.async = async ({ cancelled } = {}) => {
+    const { current, origin, key, value } = lookup();
+    if (value) return value;
+    const built = await appCatalogueAsync(input(current), { cancelled });
+    cache = { metadata: current, origin, key, value: built };
+    return built;
+  };
+  catalogue.revision = revision;
+  return catalogue;
+}
+
 /** The shell consumes this interface, not HTTP OData or the live bridge. The
  * Dataverse HTTP host can use the same DataStore without coupling either UI to it. */
 export function createModelDrivenData({
@@ -129,15 +197,22 @@ export function createModelDrivenData({
   const backend = (table) =>
     table.projected && !store.state.mappings[table.entity]?.modelDrivenSource ? projectedStore(table) : store;
   const format = (table, rows) => {
-    const tables = catalogue().tables;
+    // Lookup targets need only their id, name and projection: the lazy catalogue index has them without a body compile.
+    const current = catalogue(),
+      tables = current.tableIndex ?? current.tables;
     // One id map per target table and call: lookup display names cost O(rows + target rows), not a scan per cell.
     const byId = new Map();
     const targetRow = (entity, target, id) => {
+      const source =
+        target.projected && !store.state.mappings[entity]?.modelDrivenSource ? target.rows : store.tableRows(entity);
+      const paged = pagedRecordsOf(source);
+      if (paged && !paged.looseBraceKeys) {
+        const positions = paged.primaryPositions(target.idColumn, id);
+        if (positions !== null) return positions.length ? source[positions[0]] : undefined;
+      }
       if (!byId.has(entity)) {
         const index = new Map();
-        for (const record of target.projected && !store.state.mappings[entity]?.modelDrivenSource
-          ? target.rows
-          : store.tableRows(entity)) {
+        for (const record of source) {
           const key = String(record[target.idColumn]).replace(/[{}]/g, '').toLowerCase();
           if (!index.has(key)) index.set(key, record);
         }
@@ -155,7 +230,7 @@ export function createModelDrivenData({
             .toLowerCase();
         let name = value?.name;
         for (const entity of field.targets ?? []) {
-          const target = tables[entity];
+          const target = Object.hasOwn(tables, entity) ? tables[entity] : undefined;
           if (!target) continue;
           const found = targetRow(entity, target, id);
           if (found) {
@@ -170,8 +245,8 @@ export function createModelDrivenData({
       return copy;
     });
   };
-  const capabilities = (entity, actor, id, fields = tableFor(entity).fields) => {
-    const rights = recordsOf(actor)?.capabilities?.(entity, actor, { id, fields });
+  const capabilities = (entity, actor, id, fields = tableFor(entity).fields, { compact = false } = {}) => {
+    const rights = recordsOf(actor)?.capabilities?.(entity, actor, { id, fields, ...(compact ? { compact } : {}) });
     return rights && id && tableFor(entity).protectedIds?.includes(id) ? { ...rights, delete: false } : rights;
   };
   return {
@@ -344,6 +419,9 @@ export function createModelDrivenData({
         return {
           rows: secured?.rows ?? format(table, result.entities),
           total: secured?.total ?? result.total_record_count,
+          ...(secured?.totalLimitExceeded || result?.total_record_count_limit_exceeded
+            ? { totalLimitExceeded: true }
+            : {}),
           more: secured?.more ?? result.more_records,
           ...(recordService?.capabilities
             ? {

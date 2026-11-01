@@ -2,7 +2,8 @@
 // (strict, TLS first). Login and queries are delegated to the caller. Protocol only: no SQL or store knowledge.
 //
 // createTdsServer({ secureContext, serverName, version, onLogin, onQuery, packetSize }) -> { listen(port, host), close() }
-//   secureContext  tls.SecureContext. Wrapped (TDS 7.x) TLS needs maxVersion 'TLSv1.2' on it (see framing.mjs).
+//   secureContext  tls.SecureContext, or a function returning one at each handshake. Wrapped (TDS 7.x) TLS needs
+//                  maxVersion 'TLSv1.2' on it (see framing.mjs).
 //   serverName     LOGINACK program name (default 'Microsoft SQL Server'). version: PRELOGIN/LOGINACK version (default '12.0.2000').
 //   onLogin({ token, fedAuth, login }) -> { ok: true, principal } | { ok: false, error?: { number, message, state, class } }
 //                                     | { fedAuthInfo: { stsUrl, spn } }
@@ -51,6 +52,7 @@ const INTERNAL_ERROR = 50000;
 const LOGIN_FAILED = { number: 18456, state: 1, class: 14, message: 'Login failed.' };
 const COLLATION = Buffer.from([0x09, 0x04, 0xd0, 0x00, 0x34]); // Latin1_General_CI_AS
 const EMPTY = Buffer.alloc(0);
+const contextOf = (context) => (typeof context === 'function' ? context() : context);
 
 export function createTdsServer({
   secureContext,
@@ -79,7 +81,7 @@ export function createTdsServer({
     const mode = detectTdsMode(first);
     if (mode === 'tds8')
       return session(
-        acceptTls(socket, { secureContext: strictSecureContext, initial: inbox.detach(), strict: true }),
+        acceptTls(socket, { secureContext: contextOf(strictSecureContext), initial: inbox.detach(), strict: true }),
         true,
       );
     if (mode !== 'tds7') throw new Error('connection does not start with PRELOGIN or TLS');
@@ -88,7 +90,7 @@ export function createTdsServer({
     const fields = decodePrelogin(request.payload);
     const encryption = fields.encryption?.[0] === ENCRYPT_OFF ? ENCRYPT_REQ : ENCRYPT_ON;
     writeMessage(socket, TDS.TABULAR, preloginReply(fields, encryption), packetSize);
-    return session(acceptTls(socket, { secureContext, initial: inbox.detach() }), false);
+    return session(acceptTls(socket, { secureContext: contextOf(secureContext), initial: inbox.detach() }), false);
   }
 
   function preloginReply(fields, encryption) {

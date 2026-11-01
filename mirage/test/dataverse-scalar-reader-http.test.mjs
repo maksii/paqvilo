@@ -270,12 +270,13 @@ test('custom API internal callers retain original diagnostics while the actual H
   Object.assign(state.tables, rows);
   const store = new DataStore({ state }),
     ops = [];
-  install({
+  // Awaited: install also queues its seeding transaction, which must not outlive the test.
+  await install({
     store,
     change: (fn) => fn(),
     registry: { register: (op) => ops.push(op), has: () => false },
     principals: { privileges: () => new Map() },
-  });
+  }).ready;
   const op = ops.find((op) => op.name === 'sample_Action');
   assert.ok(op);
   for (const [body, fragment] of [

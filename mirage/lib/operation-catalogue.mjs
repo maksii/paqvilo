@@ -405,16 +405,12 @@ function validatePluginMockBody(body, step) {
       pre = [10, 20].includes(step.stage);
     const allowed = [
       'error',
-      ...(['create', 'update'].includes(operation) && pre
+      ...(['create', 'update'].includes(operation) && (pre || step.stage === 40)
         ? ['target']
-        : ['createmultiple', 'updatemultiple'].includes(operation) && pre
+        : ['createmultiple', 'updatemultiple'].includes(operation) && (pre || step.stage === 40)
           ? ['targets']
           : operation === 'retrievemultiple'
-            ? step.stage === 20
-              ? ['query']
-              : step.stage === 40
-                ? ['collection']
-                : []
+            ? [...(pre || step.stage === 40 ? ['query'] : []), ...(step.stage === 40 ? ['collection'] : [])]
             : operation === 'retrieve' && step.stage === 40
               ? ['entityResult']
               : []),

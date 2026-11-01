@@ -20,7 +20,7 @@ import { portalResourceUrl } from './online.mjs';
 import { filesForPage } from './browser.mjs';
 import { browserProfileInfo } from './browser-profile.mjs';
 import { createSourceInspector, inspectRenderedPage } from './source-inspection.mjs';
-import { observeHttpErrors } from './http-errors.mjs';
+import { boundedJsonBody, observeHttpErrors } from './http-errors.mjs';
 import { consoleLocation } from './console-location.mjs';
 import { annotateRuntimeSources } from './runtime-sources.mjs';
 import { selectionEvidenceCurrent } from './inspection-source-open.mjs';
@@ -963,24 +963,21 @@ export function enablePanel(context, session, opts = {}) {
     });
     return { ok: true, navigating: true, via, returnUrl, contactId: contactId ?? null };
   };
-  /** The page's next load, or `ms` later when no reload comes; cancel() drops it. */
-  const nextLoad = (page, ms) => {
-    let timer, listener;
+  /**
+   * The page's next load; cancel() drops it. A Mirage write reloads every portal page through its
+   * reload event (or the ready revision when the stream reconnects), so no deadline stands in for
+   * it: a deadline that expired while a slow reload was still loading ran the session flow in the
+   * document that reload then destroyed.
+   */
+  const nextLoad = (page) => {
+    let listener;
     const promise = new Promise((resolve) => {
-      listener = () => {
-        clearTimeout(timer);
-        page.off?.('load', listener);
-        resolve();
-      };
-      timer = setTimeout(listener, ms);
+      listener = () => resolve();
       page.once?.('load', listener);
     });
     return {
       promise,
-      cancel: () => {
-        clearTimeout(timer);
-        page.off?.('load', listener);
-      },
+      cancel: () => page.off?.('load', listener),
     };
   };
   const lineOf = (file, find) => {
@@ -1214,33 +1211,35 @@ export function enablePanel(context, session, opts = {}) {
   const watch = (page) => {
     const removers = [];
     const listen = (event, handler) => removers.push(on(page, event, handler));
-    const errors = observeHttpErrors(context, page, {
-      origin: cfg.origin,
-      response: (entry) => {
-        const documentProblems = problems.get(page) ?? [];
-        problems.set(page, documentProblems);
-        return (body) => {
-          if (problems.get(page) !== documentProblems) return;
-          const detail = [body?.error?.message, body?.error?.innererror?.message]
-            .map((value) => (typeof value === 'object' ? value?.value : value))
-            .filter((value) => typeof value === 'string')
-            .map((value) => redactText(value, 2000).replace(/(\/[^\s?]+)\?[^\s]+/g, '$1?[redacted]'))
-            .join(' · ');
-          problem(page, { type: 'http', status: entry.status, text: `${entry.method} ${entry.path}`, where: detail });
-        };
-      },
-    });
+    // A failed same-origin response becomes one Issues row whose detail is its JSON error message and inner message
+    // (redacted). The row belongs to the document that received the response.
+    const httpProblem = (entry) => {
+      const documentProblems = problems.get(page) ?? [];
+      problems.set(page, documentProblems);
+      return (body) => {
+        if (problems.get(page) !== documentProblems) return;
+        const detail = [body?.error?.message, body?.error?.innererror?.message]
+          .map((value) => (typeof value === 'object' ? value?.value : value))
+          .filter((value) => typeof value === 'string')
+          .map((value) => redactText(value, 2000).replace(/(\/[^\s?]+)\?[^\s]+/g, '$1?[redacted]'))
+          .join(' · ');
+        problem(page, { type: 'http', status: entry.status, text: `${entry.method} ${entry.path}`, where: detail });
+      };
+    };
+    const errors = observeHttpErrors(context, page, { origin: cfg.origin, response: httpProblem });
     errorObservers.add(errors);
     errorsByPage.set(page, errors);
     errors.ready.catch(() => {});
+    // Without the DevTools observer (it could not attach or enable in time, as on a loaded CI runner) the row still
+    // keeps the message of a small JSON error body of declared size; any other body keeps only the HTTP metadata.
     listen('response', (res) => {
-      if (errors.failed && res.status() >= 400 && sameOrigin(res.url(), cfg.origin))
-        problem(page, {
-          type: 'http',
-          status: res.status(),
-          text: `${res.request().method()} ${new URL(res.url()).pathname}`,
-          where: '',
-        });
+      if (!errors.failed || res.status() < 400 || !sameOrigin(res.url(), cfg.origin)) return;
+      const finish = httpProblem({
+        status: res.status(),
+        method: res.request().method(),
+        path: new URL(res.url()).pathname,
+      });
+      void boundedJsonBody(res).then(finish);
     });
     listen('pageerror', (err) => {
       if (!sameOrigin(page.url(), cfg.origin)) return;
@@ -1883,7 +1882,7 @@ export function enablePanel(context, session, opts = {}) {
       const session = scenario && scenario.persona !== undefined ? await readSession(page) : null;
       const contactId = scenario?.persona?.contactId ?? null;
       const change = Boolean(session?.supported) && (session.signedIn ? session.contactId : null) !== contactId;
-      const reloaded = change ? nextLoad(page, 4000) : null;
+      const reloaded = change ? nextLoad(page) : null;
       const result = await mirageWrite(`/scenarios/${encodeURIComponent(body.id)}/apply`, 'POST', {});
       if (!result.ok) {
         reloaded?.cancel();
@@ -1892,9 +1891,9 @@ export function enablePanel(context, session, opts = {}) {
       afterTweak(`Scenario applied: ${body.id}`);
       if (!change) return { ok: true };
       reloaded.promise
-        .then(() => startSessionFlow(page, contactId))
+        .then(() => (disposed || page.isClosed() ? null : startSessionFlow(page, contactId)))
         .then((started) => {
-          if (!started.ok)
+          if (started && !started.ok)
             log({
               type: 'switch',
               text: `Scenario applied, but this browser's session did not change: ${started.error}`,

@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 // Exercises the real verify command against disposable fixtures.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -6,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { once } from 'node:events';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import verify, { diagnosticSnapshot } from '../lense/commands/verify.mjs';
 import { editSource } from '../lense/source-edit.mjs';
@@ -50,7 +51,7 @@ function component(dir, id, type, name, content, attachment) {
 }
 
 async function fixture(t, layout, uncommittedInline = false) {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-verify-acceptance-'));
+  const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-verify-acceptance-'));
   const classic = layout === 'classic' ? createFixture() : null;
   const sourceDir = classic?.dir ?? path.join(work, 'enhanced-source');
   const sourceFiles = [];
@@ -315,12 +316,21 @@ for (const layout of ['classic', 'enhanced'])
         const stdout = [];
         const log = console.log;
         if (layout === 'enhanced') console.log = (line) => stdout.push(line);
+        let result;
         try {
-          assert.equal(await verify(fx.cfg, { strict, json: layout === 'enhanced' }), strict ? 1 : 0);
+          result = await verify(fx.cfg, { strict, json: layout === 'enhanced' });
         } finally {
           chromium.launchPersistentContext = launch;
           console.log = log;
+          const evidenceDir = new URL('../.paqvilo/extended-round/', import.meta.url);
+          const report = reportFor(fx.cfg).report;
+          fs.mkdirSync(evidenceDir, { recursive: true });
+          fs.writeFileSync(
+            new URL(`verify-${layout}-${uncommittedInline ? 'working-copy' : 'baseline'}.json`, evidenceDir),
+            JSON.stringify(report, null, 2),
+          );
         }
+        assert.equal(result, strict ? 1 : 0);
         const { report, screenshot } = reportFor(fx.cfg);
         assert.equal(report.passed, !strict, 'strict mode fails the newly observed post-edit console error');
         assert.equal(report.inlineBaseline.available, layout === 'classic' || uncommittedInline);
@@ -398,46 +408,84 @@ for (const layout of ['classic', 'enhanced'])
         assert.ok(fx.requests.some((request) => request.pathname === IMAGE_URL));
         for (const [file, original] of fx.sourceFiles)
           assert.equal(fs.readFileSync(file, 'utf8'), original, 'the caller source stays unchanged');
-        const evidenceDir = new URL('../.paqvilo/extended-round/', import.meta.url);
-        fs.mkdirSync(evidenceDir, { recursive: true });
-        fs.writeFileSync(
-          new URL(`verify-${layout}-${uncommittedInline ? 'working-copy' : 'baseline'}.json`, evidenceDir),
-          JSON.stringify(report, null, 2),
-        );
       },
     );
   }
 
+test('verify writes failure evidence and removes its temporary copy when browser setup fails', async (t) => {
+  const fx = await fixture(t, 'classic');
+  const launch = chromium.launchPersistentContext;
+  let temporaryWork;
+  chromium.launchPersistentContext = async (profileDir) => {
+    temporaryWork = path.dirname(profileDir);
+    assertCopyIsolation(temporaryWork);
+    throw new Error('deliberate browser setup failure in loopback acceptance');
+  };
+  const stdout = [];
+  const log = console.log;
+  console.log = (line) => stdout.push(line);
+  try {
+    assert.equal(await verify(fx.cfg, { json: true }), 1);
+  } finally {
+    chromium.launchPersistentContext = launch;
+    console.log = log;
+  }
+  assert.equal(stdout.length, 1);
+  assert.deepEqual(JSON.parse(stdout[0]), reportFor(fx.cfg).report);
+  assert.equal(reportFor(fx.cfg).report.coverage, 'incomplete');
+  assert.equal(reportFor(fx.cfg).report.passed, false);
+  assert.match(reportFor(fx.cfg).report.error, /deliberate browser setup failure/);
+  assert.equal(reportFor(fx.cfg).report.diagnostics.baseline, null);
+  assert.equal(reportFor(fx.cfg).report.diagnostics.afterEdits, null);
+  assert.equal(fs.existsSync(temporaryWork), false);
+  assert.equal(fx.requests.length, 0);
+});
+
 test(
-  'verify writes failure evidence and removes its temporary copy when browser setup fails',
-  { timeout: 30_000 },
+  'verify keeps its event loop running while a busy profile file blocks temporary-copy removal',
+  {
+    timeout: 60_000,
+    // Exclusive (non-shared) file handles that block deletion are a Windows capability.
+    skip: process.platform !== 'win32' && 'mandatory file locks exist only on Windows',
+  },
   async (t) => {
     const fx = await fixture(t, 'classic');
     const launch = chromium.launchPersistentContext;
-    let temporaryWork;
+    let temporaryWork, holder;
+    t.after(() => holder?.kill());
     chromium.launchPersistentContext = async (profileDir) => {
       temporaryWork = path.dirname(profileDir);
-      assertCopyIsolation(temporaryWork);
-      throw new Error('deliberate browser setup failure in loopback acceptance');
+      const busy = path.join(profileDir, 'Default', 'chrome_debug.log');
+      fs.mkdirSync(path.dirname(busy), { recursive: true });
+      // Another process holds a profile file without sharing delete access, as an exiting browser
+      // or a scanner can. It lets go only when this process's event loop runs again.
+      holder = spawn(
+        'powershell',
+        [
+          '-NoProfile',
+          '-Command',
+          `$f=[IO.File]::Open('${busy}','OpenOrCreate','ReadWrite','None'); 'held'; [Console]::In.ReadLine() | Out-Null; $f.Close()`,
+        ],
+        { windowsHide: true, stdio: ['pipe', 'pipe', 'inherit'] },
+      );
+      await once(holder.stdout, 'data');
+      setImmediate(() => holder.stdin.end());
+      throw new Error('deliberate browser setup failure with a busy profile file');
     };
-    const stdout = [];
     const log = console.log;
-    console.log = (line) => stdout.push(line);
+    console.log = () => {};
     try {
       assert.equal(await verify(fx.cfg, { json: true }), 1);
     } finally {
       chromium.launchPersistentContext = launch;
       console.log = log;
     }
-    assert.equal(stdout.length, 1);
-    assert.deepEqual(JSON.parse(stdout[0]), reportFor(fx.cfg).report);
-    assert.equal(reportFor(fx.cfg).report.coverage, 'incomplete');
-    assert.equal(reportFor(fx.cfg).report.passed, false);
-    assert.match(reportFor(fx.cfg).report.error, /deliberate browser setup failure/);
-    assert.equal(reportFor(fx.cfg).report.diagnostics.baseline, null);
-    assert.equal(reportFor(fx.cfg).report.diagnostics.afterEdits, null);
+    const { report } = reportFor(fx.cfg);
+    assert.match(report.error, /deliberate browser setup failure/);
+    assert.doesNotMatch(report.error, /Cleanup incomplete/);
+    assert.deepEqual(report.cleanup.errors, []);
+    assert.equal(report.cleanup.temporarySourceRemoved, true);
     assert.equal(fs.existsSync(temporaryWork), false);
-    assert.equal(fx.requests.length, 0);
   },
 );
 
@@ -476,27 +524,23 @@ test('diagnostic snapshots copy bounded fields without panel secrets or source b
   assert.ok(!JSON.stringify(snapshot).includes('never-save'));
 });
 
-test(
-  'verify writes failure evidence and removes a partial copy when copying sources fails',
-  { timeout: 30_000 },
-  async (t) => {
-    const fx = await fixture(t, 'classic');
-    const copy = fs.cpSync;
-    let temporaryWork;
-    fs.cpSync = (_source, target) => {
-      temporaryWork = path.dirname(target);
-      fs.mkdirSync(target, { recursive: true });
-      fs.writeFileSync(path.join(target, 'partial.txt'), 'incomplete copy');
-      throw new Error('deliberate copy failure in loopback acceptance');
-    };
-    try {
-      await assert.rejects(verify(fx.cfg, {}), /deliberate copy failure.*\nVerification report:/);
-    } finally {
-      fs.cpSync = copy;
-    }
-    assert.equal(reportFor(fx.cfg).report.passed, false);
-    assert.match(reportFor(fx.cfg).report.error, /deliberate copy failure/);
-    assert.equal(fs.existsSync(temporaryWork), false);
-    assert.equal(fx.requests.length, 0);
-  },
-);
+test('verify writes failure evidence and removes a partial copy when copying sources fails', async (t) => {
+  const fx = await fixture(t, 'classic');
+  const copy = fs.cpSync;
+  let temporaryWork;
+  fs.cpSync = (_source, target) => {
+    temporaryWork = path.dirname(target);
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(target, 'partial.txt'), 'incomplete copy');
+    throw new Error('deliberate copy failure in loopback acceptance');
+  };
+  try {
+    await assert.rejects(verify(fx.cfg, {}), /deliberate copy failure.*\nVerification report:/);
+  } finally {
+    fs.cpSync = copy;
+  }
+  assert.equal(reportFor(fx.cfg).report.passed, false);
+  assert.match(reportFor(fx.cfg).report.error, /deliberate copy failure/);
+  assert.equal(fs.existsSync(temporaryWork), false);
+  assert.equal(fx.requests.length, 0);
+});

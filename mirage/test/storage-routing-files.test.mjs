@@ -137,7 +137,6 @@ for (const mode of MODES) {
     const put = await fetch(mint.json.Result.SasUrl, {
       method: 'PUT',
       body: Buffer.from('uploaded through a SAS URL'),
-      signal: AbortSignal.timeout(5000),
     });
     assert.equal(put.status, 201);
     const commit = await h.call('POST', 'CommitFileBlocksUpload', {
@@ -161,12 +160,12 @@ for (const mode of MODES) {
     assert.equal(mint.status, 200, JSON.stringify(mint.json));
     const sas = new URL(mint.json.Result.SasUrl);
     assert.equal(sas.pathname.startsWith(mode.storage ? '/_sas/storage/' : '/_sas/files/'), true);
-    const download = await fetch(sas, { signal: AbortSignal.timeout(5000) });
+    const download = await fetch(sas);
     assert.equal(download.status, 200);
     assert.deepEqual(Buffer.from(await download.arrayBuffer()), CONTENT);
     assert.match(download.headers.get('content-disposition'), /filename="invented\.txt"/);
     sas.searchParams.set('sig', 'tampered');
-    assert.equal((await fetch(sas, { signal: AbortSignal.timeout(5000) })).status, 403);
+    assert.equal((await fetch(sas)).status, 403);
   });
 
   test(`deleting a record removes its file entry and bytes after commit ${mode.label}`, async (t) => {

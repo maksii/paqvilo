@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { reportCliError } from './cli-output.mjs';
+import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
@@ -108,13 +110,12 @@ export async function inventoryPortalQueries(portalRoot) {
 }
 
 async function main(args) {
-  let portal,
-    json = false;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--portal') portal = args[++i];
-    else if (args[i] === '--json') json = true;
-    else throw new Error(`Unknown argument ${args[i]}`);
-  }
+  const {
+    values: { portal, json },
+  } = parseArgs({
+    args,
+    options: { portal: { type: 'string' }, json: { type: 'boolean' } },
+  });
   if (!portal) throw new Error('Usage: node mirage/query-inventory.mjs --portal <portal-source-dir> [--json]');
   const result = await inventoryPortalQueries(portal);
   if (json) console.log(JSON.stringify(result, null, 2));
@@ -133,7 +134,7 @@ async function main(args) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main(process.argv.slice(2)).catch((error) => {
-    console.error(error.message);
+    reportCliError(error);
     process.exitCode = 1;
   });
 }

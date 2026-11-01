@@ -4,9 +4,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { AssetCache, officeFontPath } from '../lib/asset-cache.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('observed public Office fonts are mirrored without credentials and remain source-origin confined', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-fonts-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-fonts-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const source =
     'https://res-1.cdn.office.net/files/fabric-cdn-prod_20230815.002/assets/fonts/segoeui-west-european/segoeui-regular.woff2';

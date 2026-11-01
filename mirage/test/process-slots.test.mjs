@@ -30,3 +30,28 @@ test('process slots never run more than the limit at once and run every call', a
     'a failed call releases its slot',
   );
 });
+
+test('process slots count each limit separately, so a stricter caller is never handed an extra slot', async () => {
+  const running = { wide: 0, narrow: 0 },
+    peak = { wide: 0, narrow: 0 };
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const job = (kind) => async () => {
+    running[kind]++;
+    peak[kind] = Math.max(peak[kind], running[kind]);
+    await gate;
+    running[kind]--;
+  };
+  const all = [
+    ...Array.from({ length: 3 }, () => withProcessSlot(job('wide'), 3)),
+    ...Array.from({ length: 2 }, () => withProcessSlot(job('narrow'), 1)),
+  ];
+  // Every admitted job has started once the pending promise reactions have run.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(running, { wide: 3, narrow: 1 }, 'a full wide pool does not hold back the narrow one');
+  release();
+  await Promise.all(all);
+  assert.deepEqual(peak, { wide: 3, narrow: 1 });
+});

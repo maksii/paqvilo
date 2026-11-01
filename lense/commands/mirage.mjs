@@ -195,6 +195,43 @@ export function processIdentity(pid) {
   return result.status === 0 ? result.stdout.trim() || null : null;
 }
 
+/**
+ * processIdentity() for several PIDs. On Windows one PowerShell start (about half a second) reads
+ * them all instead of one start per PID; a PID it does not answer falls back to processIdentity().
+ * @returns {Map<number, string|null>}
+ */
+export function processIdentities(pids) {
+  const unique = [...new Set(pids)].filter((pid) => Number.isInteger(pid) && pid > 0);
+  const identities = new Map();
+  if (process.platform === 'win32' && unique.length > 1) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = spawnSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          // Each PID is read on its own: a missing or inaccessible process yields an empty identity.
+          `$ErrorActionPreference = 'Stop'; foreach ($id in ${unique.join(',')}) { try { "$id=$((Get-Process -Id $id).StartTime.ToUniversalTime().Ticks)" } catch { "$id=" } }`,
+        ],
+        { encoding: 'utf8', windowsHide: true, timeout: 15_000 },
+      );
+      if (result.error || result.signal != null) {
+        // Three timed-out reads leave every identity unread, as processIdentity() does.
+        if (attempt === 2) for (const pid of unique) identities.set(pid, null);
+        continue;
+      }
+      for (const line of result.stdout.split(/\r?\n/)) {
+        const match = /^(\d+)=(\d*)$/.exec(line.trim());
+        if (match && unique.includes(Number(match[1]))) identities.set(Number(match[1]), match[2] || null);
+      }
+      break;
+    }
+  }
+  for (const pid of unique) if (!identities.has(pid)) identities.set(pid, processIdentity(pid));
+  return identities;
+}
+
 // Startup must keep its heartbeat and cancellation responsive while Windows
 // resolves process ownership. The synchronous public helper remains for callers.
 const executeFile = promisify(execFile);
@@ -460,9 +497,13 @@ export async function stopOwnedSessions({
   const stale = [],
     targets = [],
     unverified = [];
+  const known =
+    identityOf === processIdentity
+      ? processIdentities(owned.filter((entry) => isAlive(entry.pid)).map((entry) => entry.pid))
+      : null;
   for (const entry of owned) {
     const alive = isAlive(entry.pid);
-    const current = alive ? identityOf(entry.pid) : null;
+    const current = alive ? (known?.has(entry.pid) ? known.get(entry.pid) : identityOf(entry.pid)) : null;
     // A live process whose start identity was never recorded or cannot be read now is neither
     // proof of a reused process ID nor safe to signal: its record stays for a later stop.
     if (alive && (!entry.processIdentity || current == null)) {
@@ -572,7 +613,21 @@ export async function stopOwnedSessions({
 export async function mirageStatus(paths = DEFAULT_PATHS) {
   const owned = await ownedSessions(paths);
   const found = await discoveries(paths);
-  const identities = new Map();
+  // Read every identity this status can compare in one batch, not one PowerShell start per PID.
+  const identities = processIdentities([
+    ...found
+      .filter(
+        (session) =>
+          session.processAlive &&
+          owned.some(
+            (item) => item.pid === session.pid && item.discovery === session.discovery && item.processIdentity,
+          ),
+      )
+      .map((session) => session.pid),
+    ...owned
+      .filter((entry) => !found.some((session) => session.pid === entry.pid) && isAlive(entry.pid))
+      .map((entry) => entry.pid),
+  ]);
   const identity = (pid) => {
     if (!identities.has(pid)) identities.set(pid, processIdentity(pid));
     return identities.get(pid);
@@ -622,6 +677,21 @@ async function loadProject(file) {
   return loadProjectConfig(path.resolve(file));
 }
 
+async function startProjectCodeApps(cfg, launch, session, controller) {
+  const project = launch.project ? await loadProject(launch.project) : null;
+  const entries = project?.codeApps ?? cfg.mirageConfig?.codeApps ?? [];
+  const root = project ? path.dirname(project.configFile) : cfg.configDir;
+  const { loadCodeApps } = await import('../../mirage/lib/code-apps-config.mjs');
+  const apps = loadCodeApps(entries, root);
+  const { startCodeAppDevServers } = await import('../code-app-dev-servers.mjs');
+  const servers = await startCodeAppDevServers(apps, {
+    signal: controller.signal,
+    mirageUrl: session.url,
+    onFailure: (error) => controller.abort(error),
+  });
+  return { apps, servers };
+}
+
 /**
  * Applies catalogue Mirage settings (`cfg.mirageConfig`) to the command-line options: a
  * catalogued project, then catalogued Solution roots, port and preset. Explicit options always win.
@@ -653,17 +723,20 @@ export function catalogueArgs(cfg, args = {}, { requireProject = true } = {}) {
 export function cliArgs(cfg, action, args, project = null) {
   const cli = path.join(MIRAGE_ROOT, 'cli.mjs');
   const common = [
-    '--state-dir',
-    path.dirname(miragePaths(cfg, args).discoveryRoot),
-    ...(args.port !== undefined ? ['--port', String(runtimePort(args.port, DEFAULT_PORT))] : []),
-    ...(args.state ? ['--state', path.resolve(args.state)] : []),
-    ...(args.preset ? ['--preset', args.preset] : []),
-    ...(args['apply-configuration'] === true ? ['--apply-configuration'] : []),
-    ...(args['preset-mode'] ? ['--preset-mode', args['preset-mode']] : []),
+    ...(action === 'inspect'
+      ? []
+      : [
+          '--state-dir',
+          path.dirname(miragePaths(cfg, args).discoveryRoot),
+          ...(args.port !== undefined ? ['--port', String(runtimePort(args.port, DEFAULT_PORT))] : []),
+          ...(args.state ? ['--state', path.resolve(args.state)] : []),
+          ...(args.preset ? ['--preset', args.preset] : []),
+          ...(args['apply-configuration'] === true ? ['--apply-configuration'] : []),
+          ...(args['preset-mode'] ? ['--preset-mode', args['preset-mode']] : []),
+          ...(args['allow-live-writes'] === true ? ['--allow-live-writes'] : []),
+        ]),
     ...(args.runtime ? ['--runtime', args.runtime] : []),
     ...(args.simulation ? ['--simulation', args.simulation] : []),
-    // Live writes stay impossible unless this runtime is started with the flag (off by default).
-    ...(args['allow-live-writes'] === true ? ['--allow-live-writes'] : []),
   ];
   if (project) {
     const powerPages = (args.runtime ?? project.runtime?.kind ?? 'power-pages') === 'power-pages';
@@ -705,7 +778,7 @@ export function cliArgs(cfg, action, args, project = null) {
     cfg.envName,
     '--source',
     cfg.sourceDir,
-    ...(origin ? ['--origin', origin] : []),
+    ...(origin && action !== 'inspect' ? ['--origin', origin] : []),
     ...common,
   ];
   // The Mirage reads the site's mirage settings (such as observed behaviour) from the
@@ -2468,9 +2541,21 @@ function print(value, json) {
   console.log(value.message ?? JSON.stringify(value, null, 2));
 }
 
-export default async function mirage(cfg, args, positionals = []) {
-  const action = positionals[0] ?? 'status';
+export function validateMirageArguments(args, action = 'status') {
   validateMirageAction(action);
+  if (['start', 'dev'].includes(action)) {
+    runtimePort(args.port, DEFAULT_PORT);
+    if (args['startup-timeout'] !== undefined) {
+      const timeout = Number(args['startup-timeout']);
+      if (
+        !/^\d+$/.test(args['startup-timeout']) ||
+        !Number.isSafeInteger(timeout) ||
+        timeout < 1000 ||
+        timeout > 600000
+      )
+        throw new Error('--startup-timeout must be an integer from 1000 to 600000 milliseconds');
+    }
+  }
   if (action === 'dev' && args.json)
     throw new Error(
       'mirage dev is interactive; use mirage start --json and agent commands for structured session access',
@@ -2479,6 +2564,37 @@ export default async function mirage(cfg, args, positionals = []) {
     throw new Error('--out and --force apply only to mirage init');
   if (args['allow-live-writes'] && !['start', 'dev'].includes(action))
     throw new Error('--allow-live-writes applies only to mirage dev and start');
+  if (action === 'inspect') {
+    const allowed = new Set([
+      'config',
+      'repo',
+      'site',
+      'env',
+      'source',
+      'project',
+      'portal',
+      'solution-root',
+      'runtime',
+      'simulation',
+      'json',
+    ]);
+    for (const option of Object.keys(args))
+      if (!allowed.has(option))
+        throw Object.assign(new Error(`--${option} is not supported by mirage inspect`), {
+          code: 'unsupported_option',
+        });
+  }
+  if (action === 'status') {
+    const allowed = new Set(['config', 'project', 'repo', 'json']);
+    for (const option of Object.keys(args))
+      if (!allowed.has(option))
+        throw Object.assign(new Error(`--${option} is not supported by mirage status`), { code: 'unsupported_option' });
+  }
+}
+
+export default async function mirage(cfg, args, positionals = []) {
+  const action = positionals[0] ?? 'status';
+  validateMirageArguments(args, action);
   const paths = miragePaths(cfg, args);
   if (action === 'status') {
     const sessions = await mirageStatus(paths);
@@ -2565,13 +2681,50 @@ export default async function mirage(cfg, args, positionals = []) {
   const stop = await sessionStopHint([{ cfg, args: effective, session }], paths);
   if (action === 'dev') {
     if (launch.runtime?.kind && launch.runtime.kind !== 'power-pages') {
+      const controller = new AbortController();
+      const interrupt = () => controller.abort(new Error('Code App development stopped.'));
+      process.once('SIGINT', interrupt);
+      process.once('SIGTERM', interrupt);
+      let servers;
       try {
+        const started = await startProjectCodeApps(cfg, launch, session, controller);
+        const { apps } = started;
+        servers = started.servers;
         return await (
           await import('../standalone-mirage.mjs')
-        ).developStandalone({ ...cfg, runtime: launch.runtime }, effective, session);
+        ).developStandalone(
+          { ...cfg, runtime: launch.runtime },
+          { ...effective, path: effective.path ?? (apps.length ? '/_apps/code/' : undefined) },
+          session,
+          { signal: controller.signal },
+        );
+      } catch (error) {
+        if (controller.signal.aborted && controller.signal.reason?.message === 'Code App development stopped.')
+          return 0;
+        throw error;
       } finally {
-        if (session.started) await stopOwnedSessions({ paths, pids: [session.pid] });
+        process.off('SIGINT', interrupt);
+        process.off('SIGTERM', interrupt);
+        try {
+          await servers?.close();
+        } finally {
+          if (session.started) await stopOwnedSessions({ paths, pids: [session.pid] });
+        }
       }
+    }
+    const controller = new AbortController();
+    const interrupt = () => controller.abort(new Error('Code App development stopped.'));
+    process.once('SIGINT', interrupt);
+    process.once('SIGTERM', interrupt);
+    let codeAppServers;
+    let codeApps;
+    try {
+      ({ apps: codeApps, servers: codeAppServers } = await startProjectCodeApps(cfg, launch, session, controller));
+    } catch (error) {
+      process.off('SIGINT', interrupt);
+      process.off('SIGTERM', interrupt);
+      if (session.started) await stopOwnedSessions({ paths, pids: [session.pid] });
+      throw error;
     }
     const mirageSourceRoots = [
       ...new Set([session.sourceDir ?? launch.sourceDir, ...launch.solutionRoots].filter(Boolean).map(realpath)),
@@ -2604,6 +2757,7 @@ export default async function mirage(cfg, args, positionals = []) {
     );
     const localCfg = {
       ...cfg,
+      ...(codeApps.length && !effective.path ? { site: { ...cfg.site, startPath: '/_apps/code/' } } : {}),
       sourceDir: session.sourceDir,
       origin: session.url,
       envName: 'local',
@@ -2615,19 +2769,28 @@ export default async function mirage(cfg, args, positionals = []) {
     };
     const { default: runDev } = await import('./dev.mjs');
     try {
-      return await runDev(localCfg, { ...effective, mirageTarget: localCfg });
+      const result = await runDev(localCfg, { ...effective, mirageTarget: localCfg, codeAppSignal: controller.signal });
+      if (controller.signal.aborted && controller.signal.reason?.message !== 'Code App development stopped.')
+        throw controller.signal.reason;
+      return controller.signal.aborted ? 0 : result;
     } finally {
-      if (session.started) {
-        const report = await stopOwnedSessions({ paths, pids: [session.pid] }).catch((error) => ({
-          stopped: [],
-          remaining: [{ pid: session.pid }],
-          error,
-        }));
-        console.log(
-          report.stopped.length
-            ? `mirage   stopped ${session.url} (pid ${session.pid})`
-            : `mirage   could not stop pid ${session.pid}${report.error ? `: ${report.error.message}` : ''}; run: ${stop}`,
-        );
+      process.off('SIGINT', interrupt);
+      process.off('SIGTERM', interrupt);
+      try {
+        await codeAppServers.close();
+      } finally {
+        if (session.started) {
+          const report = await stopOwnedSessions({ paths, pids: [session.pid] }).catch((error) => ({
+            stopped: [],
+            remaining: [{ pid: session.pid }],
+            error,
+          }));
+          console.log(
+            report.stopped.length
+              ? `mirage   stopped ${session.url} (pid ${session.pid})`
+              : `mirage   could not stop pid ${session.pid}${report.error ? `: ${report.error.message}` : ''}; run: ${stop}`,
+          );
+        }
       }
     }
   }

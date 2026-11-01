@@ -83,7 +83,8 @@ test(
       .click();
     await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), root.locator('[data-act="signin"]').click()]);
     await page.waitForURL(app.url + '/');
-    await root.locator('.pill').waitFor({ state: 'attached' });
+    // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
+    await root.locator('.pill:visible, .wrap.open').first().waitFor();
     if (await root.locator('.pill').isVisible()) await root.locator('.pill').click();
     await root.locator('[data-act="tab"][data-v="tweaks"]').click();
     await root.locator('select[data-pick="scenario"]').selectOption('@catalogue/review-flow');

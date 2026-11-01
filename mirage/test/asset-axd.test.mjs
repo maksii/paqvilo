@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
+import { rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AssetCache, isAspNetResourcePath } from '../lib/asset-cache.mjs';
 import { capturePortalAspNetResources, capturePortalShell } from '../lib/shell-capture.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const origin = 'https://portal.example.test';
 const a = '/WebResource.axd?d=abcdefghijklmnop0123456789&t=638941941234567890';
@@ -50,7 +51,7 @@ function bridge(
   };
 }
 test('native HTML observed AXD scripts preserve exact opaque URLs, order, MIME and hash provenance', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'pp-axd-'));
+  const dir = await makeTemporaryDirectory(join(tmpdir(), 'pp-axd-'));
   try {
     const cache = await new AssetCache({ directory: dir, origin }).init(),
       live = bridge();
@@ -75,7 +76,7 @@ test('native HTML observed AXD scripts preserve exact opaque URLs, order, MIME a
   }
 });
 test('AXD capture rejects unobserved requests, query credentials/duplicates, redirects, signin/empty bytes and invalid script MIME', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'pp-axd-deny-'));
+  const dir = await makeTemporaryDirectory(join(tmpdir(), 'pp-axd-deny-'));
   try {
     const cache = await new AssetCache({ directory: dir, origin }).init(),
       live = bridge();
@@ -140,7 +141,7 @@ test('AXD capture rejects unobserved requests, query credentials/duplicates, red
   }
 });
 test('shell capture includes native AXD body ordering and never treats comments/templates as observed resources', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'pp-axd-shell-'));
+  const dir = await makeTemporaryDirectory(join(tmpdir(), 'pp-axd-shell-'));
   try {
     const cache = await new AssetCache({ directory: dir, origin }).init();
     const result = await capturePortalShell(cache, bridge(), {

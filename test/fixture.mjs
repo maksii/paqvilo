@@ -2,7 +2,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import { execFileSync } from 'node:child_process';
+
+// Git exports GIT_DIR, GIT_INDEX_FILE and similar variables to hooks, and the pre-push hook runs these suites. Git
+// commands that tests or the toolkit run in fixture repositories would otherwise read and write the toolkit repository.
+for (const key of Object.keys(process.env)) if (/^GIT_/i.test(key)) delete process.env[key];
 
 export const HOME_ID = '00000000-0000-0000-0000-000000000001';
 export const SCRIPTS_ID = '00000000-0000-0000-0000-000000000002';
@@ -92,17 +97,73 @@ function git(cwd, ...args) {
       'maintenance.auto=false',
       '-c',
       'gc.auto=0',
+      // A deep TEMP (self-hosted runners) plus the fixture's paths can exceed 260 characters on Windows.
+      '-c',
+      'core.longpaths=true',
       ...args,
     ],
     { cwd, env, stdio: 'ignore', windowsHide: true, timeout: 30_000 },
   );
 }
 
-export function createFixture() {
-  // realpath: os.tmpdir() can be an 8.3 short path on Windows. The repository gets a parent folder of its own:
-  // Solution root discovery scans the repository's siblings, which would otherwise be every other folder in the temp folder.
-  const container = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-test-')));
-  const dir = path.join(container, path.basename(container));
+/**
+ * A new temporary directory by its real path. os.tmpdir() can be an 8.3 short name on Windows
+ * (C:\Users\RUNNER~1\...) or reached through a link, while the toolkit resolves real paths before
+ * comparing them; whether short names exist depends on the runner, so always resolve.
+ */
+export function tempDirSync(prefix) {
+  return fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+}
+
+export async function tempDir(prefix) {
+  return fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix)));
+}
+
+/**
+ * Removes the developer's or runner's PAQVILO_* variables for one test. In-process APIs such as
+ * createMirageContext read the process environment as the CLI does, so a shell's PAQVILO_REPO or
+ * PAQVILO_PORTALS would otherwise change what a test resolves.
+ */
+export function withoutToolkitEnvironment(t) {
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!key.startsWith('PAQVILO_')) continue;
+    delete process.env[key];
+    t.after(() => {
+      process.env[key] = value;
+    });
+  }
+}
+
+/**
+ * Serves `handle` on loopback until the test ends and returns its origin. A failed assertion in the handler ends its
+ * request at once instead of after the client's deadline; the failure is reported with the test, which fails on the
+ * request or, if the client tolerates that, when the server closes.
+ */
+export async function loopbackServer(t, handle) {
+  const failures = [];
+  const server = http.createServer((req, res) =>
+    handle(req, res).catch((error) => {
+      failures.push(error);
+      t.diagnostic(`fixture server: ${error.stack}`);
+      res.destroy();
+    }),
+  );
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+    if (failures.length) throw failures[0];
+  });
+  return `http://127.0.0.1:${server.address().port}`;
+}
+
+let template;
+/** The committed fixture repository, built once per test process: creating it takes three Git processes. */
+function templateRepository() {
+  if (template) return template;
+  const container = tempDirSync('paqvilo-test-template-');
+  process.once('exit', () => fs.rmSync(container, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
+  const dir = path.join(container, 'repository');
   for (const [rel, content] of Object.entries(FILES)) {
     const file = path.join(dir, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -111,6 +172,16 @@ export function createFixture() {
   git(dir, 'init', '-q');
   git(dir, 'add', '-A');
   git(dir, '-c', 'user.name=test', '-c', 'user.email=test@localhost', 'commit', '-q', '-m', 'baseline');
+  return (template = dir);
+}
+
+export function createFixture() {
+  // The repository gets a parent folder of its own: Solution root discovery scans the repository's siblings,
+  // which would otherwise be every other folder in the temp folder. Each fixture is an independent copy of the
+  // committed template, including its .git directory.
+  const container = tempDirSync('paqvilo-test-');
+  const dir = path.join(container, path.basename(container));
+  fs.cpSync(templateRepository(), dir, { recursive: true });
   return {
     dir,
     file: (rel) => path.join(dir, rel),

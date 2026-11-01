@@ -5,9 +5,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { signInHeaders } from '../testing/session.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function fixture(t, { mode = 'local', liveBridge, allowLiveWrites = false } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-form-http-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-form-http-'));
   await fs.writeFile(
     path.join(directory, 'Home.webpage.yml'),
     'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
@@ -46,7 +47,6 @@ async function fixture(t, { mode = 'local', liveBridge, allowLiveWrites = false 
   };
   const app = await createSimulator({
     sourceDir: directory,
-    stateFile: path.join(directory, 'state.json'),
     initial,
     liveBridge,
     // Live saves need the runtime permission (cli --allow-live-writes).

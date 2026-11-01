@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { reportCliError } from './cli-output.mjs';
 /**
  * Render sweep: request every exported page of a portal from an isolated, local-only Mirage
  * simulator and report Liquid diagnostics.
@@ -33,6 +34,8 @@
  * injection (/__sim-static/, data-paqvilo-mirage-runtime, sim-trace-id), which would corrupt JSON or
  * fragment consumers. The static Liquid inventory of the same export is attached, so the
  * per-portal summary (--ci prints one JSON line per persona) also counts unsupported constructs.
+ * Optional retained body samples omit simulator-owned runtime scripts before the 20,000-character
+ * limit; bodyTruncated and bodyOmittedRuntimeScripts describe that sample. Classification uses the full response.
  */
 import { parseToolArgs, toolOptionsHelp } from './tool-options.mjs';
 import fs from 'node:fs/promises';
@@ -42,6 +45,7 @@ import { fileURLToPath } from 'node:url';
 import { createSimulator } from './server.mjs';
 import { portalField } from './lib/importer.mjs';
 import { isHtmlDocument } from './lib/source-dependencies.mjs';
+import { retainedResponseBody } from './lib/render-sweep-body.mjs';
 import { inventoryPortal } from './liquid-inventory.mjs';
 
 /** Diagnostics that mean Power Pages would also print an error into the page. */
@@ -64,6 +68,8 @@ function parseArgs(argv) {
     pathPrefix: args.path,
     limit: args.limit == null ? undefined : Number(args.limit),
   };
+  if (args.limit != null && (!/^\d+$/.test(args.limit) || !Number.isSafeInteger(options.limit) || options.limit < 1))
+    throw new Error('--limit must be a positive integer');
   const sources = [options.site, options.source, options.project].filter(Boolean).length;
   if (sources > 1) throw new Error('Use one of --site, --source or --project.');
   if (options.solutionRoots.length && !options.source) throw new Error('--solution-root applies to --source only.');
@@ -429,7 +435,7 @@ async function sweepPersona(target, persona, options) {
         pageId: request.page.id,
         derivedRecord: request.derived,
         ...(failure ? { failure } : {}),
-        ...(options.keepBodies ? { body: body.slice(0, 20_000) } : {}),
+        ...(options.keepBodies ? retainedResponseBody(body, contentType) : {}),
         ...classified,
         liquidErrors: classified.liquidErrors.map(compactDiagnostic),
         liquidNotices: classified.liquidNotices.map(compactDiagnostic),
@@ -572,10 +578,12 @@ function summarize(report) {
 
 async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
-  if (options.help || (!options.site && !options.source && !options.project)) {
-    console.log(`Usage: paqvilo mirage render-sweep ${toolOptionsHelp('render-sweep')}`);
-    return options.help ? 0 : 2;
+  const usage = `Usage: paqvilo mirage render-sweep ${toolOptionsHelp('render-sweep')}`;
+  if (options.help) {
+    console.log(usage);
+    return 0;
   }
+  if (!options.site && !options.source && !options.project) throw new Error(usage);
   const report = await renderSweep(options);
   const summary = summarize(report);
   if (options.out) {
@@ -599,7 +607,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       process.exitCode = code;
     },
     (error) => {
-      console.error(error.stack ?? String(error));
+      reportCliError(error);
       process.exitCode = 2;
     },
   );

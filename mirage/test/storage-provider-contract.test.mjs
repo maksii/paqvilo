@@ -8,10 +8,10 @@ import { ProviderError, assertProvider } from '../lib/storage-provider.mjs';
 import { createLocalDiskStorage } from '../lib/storage-local-disk.mjs';
 import { createMemoryStorage } from '../lib/storage-memory.mjs';
 import { fixedClock } from '../lib/runtime-clock.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function localDisk(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-local-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'storage-local-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const storage = createLocalDiskStorage({ root: path.join(root, 'blobs') });
   ownedFixture(t).add(() => storage.close());
@@ -35,7 +35,7 @@ const farClock = fixedClock(Date.parse('2030-01-01T00:00:00.000Z'));
 runStorageContract(
   test,
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-local-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'storage-local-'));
     ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
     const storage = createLocalDiskStorage({ root: path.join(root, 'blobs'), clock: farClock.now });
     ownedFixture(t).add(() => storage.close());
@@ -49,10 +49,12 @@ runStorageContract(test, () => createMemoryStorage({ clock: farClock }), {
 });
 
 test('local-disk keeps bytes content-addressed, survives reopen and compacts orphans', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-local-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'storage-local-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const blobs = path.join(root, 'blobs');
   const first = createLocalDiskStorage({ root: blobs });
+  // Closed explicitly below; also owned so a failed assertion cannot leave it open while the root is removed.
+  ownedFixture(t).add(() => first.close());
   const a = await first.put('x/one', Buffer.from('same'));
   const b = await first.put('x/two', Buffer.from('same'));
   assert.equal(a.sha256, b.sha256);
@@ -79,7 +81,7 @@ test('local-disk keeps bytes content-addressed, survives reopen and compacts orp
 });
 
 test('local-disk paths never leave the root and SAS uses a configurable base URL', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-local-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'storage-local-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const storage = createLocalDiskStorage({
     root,
@@ -98,7 +100,7 @@ test('local-disk paths never leave the root and SAS uses a configurable base URL
 });
 
 test('local-disk enforces maxBytes as TooLarge without publishing a partial object', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-local-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'storage-local-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const storage = createLocalDiskStorage({ root, maxBytes: 4 });
   ownedFixture(t).add(() => storage.close());

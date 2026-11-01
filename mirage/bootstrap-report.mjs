@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { reportCliError } from './cli-output.mjs';
+import { assertReportOutput } from './lib/report-output.mjs';
 /**
  * Read-only bootstrap quality report: what the Mirage derives from the portal
  * export and the selected solution layers (tables, columns, relationships, grants,
@@ -57,6 +59,7 @@ export async function resolveReportInputs(args) {
     if (!portal) throw new Error(`Portal '${args.portal}' is not configured in ${project.configFile}`);
     return {
       label: `${path.basename(project.configFile)}#${portal.id}`,
+      configFile: project.configFile,
       sourceDir: portal.sourceDir,
       solutionRoots: portal.solutionRoots,
       order: project.solutionOrder,
@@ -79,6 +82,7 @@ export async function resolveReportInputs(args) {
   }
   let sourceDir = args.source,
     origin = null,
+    configFile = args.config,
     label = args.source ? path.basename(args.source) : null,
     siteMirage = null,
     stateDir = path.join(process.cwd(), '.paqvilo'),
@@ -97,6 +101,7 @@ export async function resolveReportInputs(args) {
     siteMirage = cfg.mirageConfig ?? null;
     stateDir = cfg.stateDir;
     siteName = cfg.siteName;
+    configFile = cfg.configFile;
   } else if (args.site) {
     // --source with a catalogued --site: the site's mirage settings still apply.
     const { loadConfig } = await import('../lense/config.mjs');
@@ -109,6 +114,7 @@ export async function resolveReportInputs(args) {
     siteMirage = cfg.mirageConfig ?? null;
     stateDir = cfg.stateDir;
     siteName = cfg.siteName;
+    configFile = cfg.configFile;
   }
   // The same cache as `cli.mjs serve` for this site (next to its state; "default" without --site).
   const cacheFile = path.join(stateDir, 'simulator', siteName, 'cache', 'solution-sources.json');
@@ -123,6 +129,7 @@ export async function resolveReportInputs(args) {
   });
   return {
     label,
+    configFile,
     sourceDir,
     solutionRoots: resolved.roots,
     order: resolved.order,
@@ -579,6 +586,11 @@ if (isMain) {
     if (args.project && (args.source || args['solution-root']?.length))
       throw new Error('--project supplies the portal source and solution roots.');
     const inputs = await resolveReportInputs(args);
+    if (args.output)
+      await assertReportOutput(args.output, {
+        sourceRoots: [inputs.sourceDir, ...inputs.solutionRoots],
+        inputFiles: [inputs.configFile, args.config, args.project],
+      });
     const report = await bootstrapReport(inputs, { noCache: args['no-cache'], allFields: args['all-fields'] });
     if (args.output) {
       const output = path.resolve(args.output);
@@ -588,7 +600,7 @@ if (isMain) {
     }
     console.log(args.json ? JSON.stringify(report, null, 2) : formatReport(report));
   } catch (error) {
-    console.error(error.message);
+    reportCliError(error);
     process.exitCode = 1;
   }
 }

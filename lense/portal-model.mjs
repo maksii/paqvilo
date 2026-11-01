@@ -1,4 +1,5 @@
 import { orderedMap } from './async-map.mjs';
+import { recordedStamp } from './file-cache.mjs';
 // Reads a `pac paportal download` extract from disk and builds an index of everything that can be
 // overridden locally: web files (URL -> file) and inline sources (page/form/list JS & CSS, templates).
 import fs from 'node:fs';
@@ -41,7 +42,7 @@ export function isSourceFile(sourceDir, file) {
 }
 
 // Resolving every metadata file and the extract root through realpath dominated index reloads
-// (two realpath calls per file). Reuse directories only within one synchronous index load.
+// (two realpath calls per file). Reuse directories only within one synchronous index build.
 // Keeping them across loads/requests is unsafe: an ancestor can become a junction while a
 // descendant retains the same inode. Reads outside indexing always resolve fresh paths.
 const MAX_REAL_DIRECTORIES = 8192;
@@ -53,6 +54,17 @@ function realDirectory(dir) {
   const real = fs.realpathSync.native(dir);
   if (realDirectories && realDirectories.size < MAX_REAL_DIRECTORIES) realDirectories.set(dir, real);
   return real;
+}
+
+/** Runs one synchronous index build (a model load or a rewriter refresh) that reuses resolved directories. */
+export function indexingPass(build) {
+  const previous = realDirectories;
+  realDirectories = new Map();
+  try {
+    return build();
+  } finally {
+    realDirectories = previous;
+  }
 }
 
 /** Real path and stat of `file`; a symbolic link or junction is followed explicitly. */
@@ -96,9 +108,11 @@ function readYaml(file, allowSequence = false) {
   }
 }
 
-const fileStamp = (stat) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+const statKey = (stat) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+// Cached metadata is reused by stamp; a file changed within the racy window gets a stamp that matches nothing.
+const fileStamp = (stat) => recordedStamp(stat, statKey(stat));
 
-function walk(dir, out = []) {
+function walk(dir, out = [], real = null) {
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -106,10 +120,21 @@ function walk(dir, out = []) {
     if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return out;
     throw err;
   }
+  // During an index load, a directory entry (never a link or junction) of a resolved directory
+  // resolves to the same name inside it: one realpath per walk root instead of one per directory.
+  if (realDirectories && !real)
+    try {
+      real = realDirectory(dir);
+    } catch {
+      real = null;
+    }
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) walk(full, out);
-    else if (entry.isFile()) out.push(full);
+    if (entry.isDirectory()) {
+      const child = real && path.join(real, entry.name);
+      if (child && realDirectories.size < MAX_REAL_DIRECTORIES) realDirectories.set(full, child);
+      walk(full, out, child);
+    } else if (entry.isFile()) out.push(full);
   }
   return out;
 }
@@ -140,14 +165,12 @@ async function walkAsync(roots) {
   return files;
 }
 
-async function sourceFileStatAsync(sourceDir, file) {
+// `root` is the extract's realpath, resolved once per prefetch (null when unresolvable); the synchronous load
+// that follows every prefetch resolves it again.
+async function sourceFileStatAsync(realRoot, file) {
   try {
-    const [root, resolved, stat] = await Promise.all([
-      fs.promises.realpath(sourceDir),
-      fs.promises.realpath(file),
-      fs.promises.stat(file),
-    ]);
-    const relative = path.relative(root, resolved);
+    const [root, resolved, stat] = await Promise.all([realRoot, fs.promises.realpath(file), fs.promises.stat(file)]);
+    const relative = root && path.relative(root, resolved);
     return relative &&
       relative !== '..' &&
       !relative.startsWith(`..${path.sep}`) &&
@@ -811,8 +834,9 @@ export class PortalModel {
           ),
         ];
     const cache = new Map();
+    const realRoot = fs.promises.realpath(sourceDir).catch(() => null);
     await orderedMap(files, 16, async (file) => {
-      const before = await sourceFileStatAsync(sourceDir, file);
+      const before = await sourceFileStatAsync(realRoot, file);
       if (!before) return;
       let text;
       try {
@@ -820,8 +844,8 @@ export class PortalModel {
       } catch {
         return;
       }
-      const after = await sourceFileStatAsync(sourceDir, file);
-      if (!after || fileStamp(before) !== fileStamp(after)) return;
+      const after = await sourceFileStatAsync(realRoot, file);
+      if (!after || statKey(before) !== statKey(after)) return;
       cache.set(
         file,
         enhanced
@@ -842,13 +866,7 @@ export class PortalModel {
   }
 
   load() {
-    const previous = realDirectories;
-    realDirectories = new Map();
-    try {
-      this.#load();
-    } finally {
-      realDirectories = previous;
-    }
+    indexingPass(() => this.#load());
   }
 
   #load() {

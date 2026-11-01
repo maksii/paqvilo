@@ -8,9 +8,10 @@ import path from 'node:path';
 import { preflight, preflightExitCode } from '../lib/capability-report.mjs';
 import { buildSourceGraph } from '../lib/source-graph.mjs';
 import { zipOf } from '../lib/dataverse-solutions.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function tempDir(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'preflight-source-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'preflight-source-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }

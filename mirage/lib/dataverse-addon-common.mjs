@@ -19,6 +19,7 @@ export { argsOf, idOf } from './dataverse-message-context.mjs';
 import { DataError } from './data-error.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
+import { invokeTrustedHandler } from './trusted-handler-invocation.mjs';
 
 // A response with the native @odata.context for the <name>Response complex type.
 export function respond(c, name, payload) {
@@ -70,7 +71,7 @@ export function registerAddon(api, spec) {
       const packed = api.addonHandlers?.get(name);
       let result;
       if (packed) {
-        result = await packed.handler({
+        result = await invokeTrustedHandler(api, packed.handler, {
           name,
           args: argsOf(c),
           target: c.target
@@ -80,7 +81,6 @@ export function registerAddon(api, spec) {
           user: c.user,
           origin: c.origin,
           version: c.version,
-          api,
         });
       } else if (own) result = await own(c);
       else throw fallback();

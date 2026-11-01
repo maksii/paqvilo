@@ -1,7 +1,9 @@
 // Dataverse TDS SQL evaluator (read-only subset). Pure: no store, protocol or HTTP knowledge.
 // Runs parseBatch() statements against a catalog and a scan callback.
 //
-// executeBatch(sql, { catalog, scan, params, principal, signal, now })
+// executeBatch(sql, { catalog, scan, params, principal, signal, now, statement })
+//   statement  optional async (statement, run) wrapper per statement (a trace span): it must await run(), which resolves
+//              { rowCount, resultSets } (the result sets this statement added); statement.source is { text, redacted }.
 //   catalog    { tables: Map<lowercase logical name, { logicalName, columns: [{ name, sqlType, length, precision, scale, nullable }] }> }
 //              (the shape buildCatalog returns, see dataverse-tds-catalog.mjs)
 //   scan       async (logicalName, { columns, pushdown }) -> row objects keyed by catalog column names.
@@ -76,7 +78,16 @@ function tick(st) {
 
 export async function executeBatch(
   sql,
-  { catalog, scan, params = {}, principal: _principal, signal, now, collation = 'CI_AI' } = {},
+  {
+    catalog,
+    scan,
+    params = {},
+    principal: _principal,
+    signal,
+    now,
+    collation = 'CI_AI',
+    statement: around = null,
+  } = {},
 ) {
   const { statements } = parseBatch(sql);
   const batches = splitBatches(sql);
@@ -107,7 +118,18 @@ export async function executeBatch(
         const key = name.startsWith('@') ? name : `@${name}`;
         st.vars.set(lower(key), { name: key, value });
       }
-      for (const statement of groups[i]) await runStatement(statement, st, resultSets);
+      for (const statement of groups[i]) {
+        if (!around) {
+          await runStatement(statement, st, resultSets);
+          continue;
+        }
+        // The caller's wrapper (a trace span per statement) runs it and reads what it produced.
+        await around(statement, async () => {
+          const before = resultSets.length;
+          await runStatement(statement, st, resultSets);
+          return { rowCount: st.session.rowCount, resultSets: resultSets.slice(before) };
+        });
+      }
     }
   }
   return { resultSets, rowCount: st.session.rowCount };
@@ -1528,30 +1550,42 @@ function typeText(targetType) {
   return `${name.toLowerCase()}${size}`;
 }
 
-// Pattern to RegExp: % and _ wildcards, [set] and [^set], and an ESCAPE character. Case folds unless caseSensitive.
-function likeRegex(pattern, escape, ci) {
+// Tokenize before collation folding so an accented escape remains distinct from a literal.
+// A dangling escape produces an invalid pattern, which LIKE treats as a non-match.
+function likeRegex(pattern, escape, collation) {
+  const literal = (text) => escapeRe(foldText(text, collation));
   let out = '^';
   for (let i = 0; i < pattern.length; i += 1) {
     const c = pattern[i];
-    if (escape !== null && c === escape && i + 1 < pattern.length) {
+    if (escape !== null && c === escape) {
+      if (i + 1 === pattern.length) return null;
       i += 1;
-      out += escapeRe(pattern[i]);
+      out += literal(pattern[i]);
     } else if (c === '%') {
       out += '[\\s\\S]*';
     } else if (c === '_') {
       out += '[\\s\\S]';
     } else if (c === '[' && pattern.indexOf(']', i + 1) > i + 1) {
-      const close = pattern.indexOf(']', i + 1);
-      const body = pattern.slice(i + 1, close);
-      const negate = body[0] === '^';
-      const set = negate ? body.slice(1) : body;
-      out += `[${negate ? '^' : ''}${set.replace(/[\\[\]]/g, '\\$&')}]`;
-      i = close;
+      let end = i + 1;
+      const negate = pattern[end] === '^' && escape !== '^';
+      if (negate) end++;
+      let set = '';
+      for (; end < pattern.length && pattern[end] !== ']'; end++) {
+        const escaped = escape !== null && pattern[end] === escape;
+        if (escaped && ++end === pattern.length) return null;
+        const member = foldText(pattern[end], collation).replace(/[\\[\]^]/g, '\\$&');
+        set += escaped ? member.replace(/-/g, '\\-') : member;
+      }
+      if (end === pattern.length || !set) return null;
+      out += `[${negate ? '^' : ''}${set}]`;
+      i = end;
     } else {
-      out += escapeRe(c);
+      out += literal(c);
     }
   }
-  return new RegExp(`${out}$`, ci ? 'si' : 's');
+  // Keep insensitive matching after accent folding: whole strings and individual
+  // pattern tokens can lowercase differently (for example Greek final sigma).
+  return new RegExp(`${out}$`, 'si');
 }
 
 const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&');
@@ -1671,8 +1705,11 @@ async function evalExpr(node, env, st) {
       const pattern = await evalExpr(node.pattern, env, st);
       const escape = node.escape ? await evalExpr(node.escape, env, st) : null;
       if (isNull(value) || isNull(pattern) || (node.escape && isNull(escape))) return null;
-      const escapeChar = node.escape ? String(escape).charAt(0) || null : null;
-      const matched = likeRegex(String(pattern), escapeChar, !st.ctx.caseSensitive).test(String(value));
+      const escapeChar = node.escape ? String(escape) : null;
+      if (escapeChar !== null && escapeChar.length !== 1)
+        fail(506, `The invalid escape character "${escapeChar}" was specified in a LIKE predicate.`);
+      const compiled = likeRegex(String(pattern), escapeChar, st.collation);
+      const matched = compiled?.test(foldText(value, st.collation)) ?? false;
       return node.negated ? !matched : matched;
     }
     case 'Exists':

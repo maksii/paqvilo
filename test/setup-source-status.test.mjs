@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -9,7 +10,7 @@ import { sourceStatus } from '../lense/setup/store.mjs';
 
 const run = promisify(execFile);
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-source-status-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-source-status-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }
@@ -19,7 +20,10 @@ test('setup scopes changes to each site folder in a shared committed repository'
     await fs.mkdir(path.join(root, site));
     await fs.writeFile(path.join(root, site, 'page.txt'), 'original');
   }
-  const git = (args) => run('git', args, { cwd: root, windowsHide: true });
+  // The fixture repository must not depend on the caller's Git environment, hooks or signing configuration.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
+  const git = (args) =>
+    run('git', ['-c', 'core.hooksPath=', '-c', 'commit.gpgsign=false', ...args], { cwd: root, env, windowsHide: true });
   await git(['init']);
   await git(['add', '.']);
   await git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-m', 'fixture']);

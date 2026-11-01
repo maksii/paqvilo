@@ -6,9 +6,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 test('native archive verifies its exclusive file descriptor and refuses replacement', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-archive-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-archive-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'read.gz'),
     bytes = Buffer.alloc(260000, 73);

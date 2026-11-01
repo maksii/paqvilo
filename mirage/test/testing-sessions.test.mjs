@@ -5,11 +5,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { createPortalSession, runSessionMatrix, connectRuntime } from '../testing.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const guid = (index) => `10000000-0000-0000-0000-${String(index).padStart(12, '0')}`;
 async function fixture(t, { liveBridge, template } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-many-visitors-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-many-visitors-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const sources = {
     'website.yml': 'adx_name: Concurrent fixture\nadx_websiteid: site',
@@ -224,10 +224,12 @@ test('documented identity scopes preserve cookie precedence and configured fallb
 });
 
 test('runtime experiment controls change local policy and keep concurrent instances independent', async (t) => {
-  const left = await fixture(t),
-    right = await fixture(t),
-    runtime = await connectRuntime({ origin: left.app.url }),
-    other = await connectRuntime({ origin: right.app.url });
+  // The two independent runtimes start concurrently; each owns its directory and closes before it is removed.
+  const [left, right] = await Promise.all([fixture(t), fixture(t)]),
+    [runtime, other] = await Promise.all([
+      connectRuntime({ origin: left.app.url }),
+      connectRuntime({ origin: right.app.url }),
+    ]);
   const visitor = await runtime.createSession({ contactId: left.contacts[0].contactid }),
     otherVisitor = await other.createSession({ contactId: right.contacts[0].contactid });
   t.after(() => {

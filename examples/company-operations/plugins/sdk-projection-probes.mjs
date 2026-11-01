@@ -79,7 +79,7 @@ export async function executeSdkProjectionProbes({
   if (files[0].sha256 !== expectedDriverSha256)
     throw new Error('Native SDK driver does not match its compiled source receipt.');
   await fs.mkdir(outputRoot, { recursive: true });
-  const directory = await fs.mkdtemp(path.join(outputRoot, 'execution-')),
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(outputRoot, 'execution-'))),
     journalFile = path.join(directory, 'journal.json'),
     receipt = {
       schemaVersion: 1,

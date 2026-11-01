@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo solution plug-in import: facts from exports or evidence-backed observations only, admin inventory, no guessed filters
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -20,9 +21,11 @@ import { pluginFixture, pluginId, assemblyXml, pluginStepsXml } from './plugin-f
 import { observedConfig } from '../lib/project-config.mjs';
 import { resolveMirageConfig } from '../../lense/config.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
+// @test-kind security: path confinement: explicit C# plug-in sources stay within trusted roots
 test('explicit C# sources stay confined to trusted roots and survive generated-project root normalization', async (t) => {
-  const { dir, portal, solution } = await pluginFixture(t);
+  const { dir, portal, solution } = await pluginFixture(t, { simulator: false });
   const codeDir = path.join(dir, 'components/PluginRules');
   await fs.mkdir(codeDir, { recursive: true });
   const codeFile = path.join(codeDir, 'Rules.cs');
@@ -66,7 +69,7 @@ test('explicit C# sources stay confined to trusted roots and survive generated-p
       }),
     /relative/,
   );
-  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-plugin-outside-'));
+  const outside = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-plugin-outside-'));
   t.after(() => fs.rm(outside, { recursive: true, force: true }));
   await fs.writeFile(path.join(outside, 'Outside.cs'), 'Outside trusted root');
   await fs.symlink(outside, path.join(codeDir, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
@@ -119,7 +122,7 @@ test('PAC assembly attributes and GUID-only messages resolve only through export
 });
 
 test('solution plugin facts preserve assembly/type/step registrations and exact source dependencies', async (t) => {
-  const { solution } = await pluginFixture(t);
+  const { solution } = await pluginFixture(t, { simulator: false });
   const scan = await scanSolutionSources([solution]);
   const metadata = await importSolutionMetadata([solution], { scan });
   assert.equal(metadata.plugins.assemblies[0].name, 'Invented.WidgetRules');
@@ -153,20 +156,31 @@ test('solution plugin facts preserve assembly/type/step registrations and exact 
   assert.equal(unresolved.steps[0].message, null, 'message GUIDs are never guessed');
 });
 
+// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30, crud and reads scenarios: global (null-filter) Create and RetrieveMultiple steps run for the table
 test('explicit unfiltered RetrieveMultiple dispatch preserves the actual root and never guesses an unresolved filter', () => {
   const step = (id, binding, message = 'RetrieveMultiple') =>
     `<SdkMessageProcessingStep SdkMessageProcessingStepId="${pluginId(id)}"><PluginTypeId>${pluginId(2)}</PluginTypeId><SdkMessageName>${message}</SdkMessageName>${binding}<Stage>20</Stage><Rank>${id}</Rank><Mode>0</Mode><SupportedDeployment>0</SupportedDeployment></SdkMessageProcessingStep>`;
   const xml = `<ImportExportXml>${assemblyXml}${step(21, '<SdkMessageFilterId/>')}${step(22, '<PrimaryEntity>none</PrimaryEntity>')}${step(23, '')}${step(24, `<SdkMessageFilterId>${pluginId(99)}</SdkMessageFilterId>`)}${step(25, '<SdkMessageFilterId/>', 'Create')}</ImportExportXml>`;
   const parsed = parsePluginDocument(xml),
     plugins = importSolutionPlugins([{ documents: [{ file: '/invented/global.xml', facts: { plugins: parsed } }] }]);
-  for (const id of [21, 22]) {
+  // Native runs an unfiltered Create step for the table it fires on (recorded global Create registrations).
+  for (const id of [21, 22, 25]) {
     const declaration = plugins.steps.find((step) => step.id === pluginId(id));
     assert.equal(declaration.unfiltered, true);
     assert.equal(declaration.entity, null);
     assert.equal(declaration.unsupported, null);
     assert.equal(pluginStepMatchesEntity(declaration, 'fixture'), true);
   }
-  for (const id of [23, 24, 25])
+  // Native corpus (dataverse-recorder): a Create step registered without a message filter runs for every table
+  // (pqwp_probe and pqwp_child Creates both reached "Recorder: Create begin").
+  assert.equal(
+    pluginStepMatchesEntity(
+      plugins.steps.find((step) => step.id === pluginId(25)),
+      'other',
+    ),
+    true,
+  );
+  for (const id of [23, 24])
     assert.match(
       plugins.steps.find((step) => step.id === pluginId(id)).unsupported,
       /explicit logical table binding is required|Unfiltered execution requires an explicit null filter/,
@@ -225,15 +239,17 @@ test('explicit unfiltered RetrieveMultiple dispatch preserves the actual root an
     ),
     false,
   );
+  // Native runs an asynchronous global RetrieveMultiple step after the read (recorded reads scenario).
   assert.equal(
     pluginStepMatchesEntity(
       { entity: null, unfiltered: true, messageFilterId: null, message: 'RetrieveMultiple', mode: 1 },
       'fixture',
     ),
-    false,
+    true,
   );
 });
 
+// @test-kind compatibility: Microsoft Learn plug-in pipeline: rank order, filtering attributes and rollback of a failed synchronous phase
 test('synchronous trusted plugin phases sort rank, filter submitted columns, reject async handlers and roll back failures', async () => {
   const parsed = parseSchemaDocument(`<ImportExportXml>${assemblyXml}${pluginStepsXml.join('')}</ImportExportXml>`, {
     kind: 'customizations',
@@ -352,10 +368,17 @@ test('synchronous trusted plugin phases sort rank, filter submitted columns, rej
   store.setPluginPipeline((context) =>
     runPluginPhase({ ...context, items: pluginCatalogue({ plugins, handlers: lateHandlers }), handlers: lateHandlers }),
   );
-  await assert.rejects(store.create('fx_widgets', { fx_title: 'Post mutation' }, editor), /PostOperation/);
-  assert.deepEqual(store.snapshot(), targetBefore);
+  const postCreated = await store.create('fx_widgets', { fx_title: 'Post mutation' }, editor);
+  assert.equal(postCreated.fx_title, 'Post mutation');
+  const afterPost = store.snapshot().tables.fx_widget;
+  assert.equal(afterPost.find((record) => record.fx_widgetid === postCreated.fx_widgetid).fx_title, 'Post mutation');
+  assert.deepEqual(
+    afterPost.filter((record) => record.fx_widgetid !== postCreated.fx_widgetid),
+    targetBefore.tables.fx_widget,
+  );
 });
 
+// @test-kind contract+security: Paqvilo admin plug-in inventory and editable mocks; admin writes are CSRF protected
 test('automatic plugin placeholders and editable mocks are inventoried, CSRF protected, and prevent bad CRUD writes', async (t) => {
   const { app } = await pluginFixture(t);
   const csrf = app.csrf;
@@ -405,6 +428,7 @@ test('automatic plugin placeholders and editable mocks are inventoried, CSRF pro
   );
 });
 
+// @test-kind compatibility: platform well-known SDK message ids resolve messages without a project observation
 test('well-known SDK message ids resolve without a project observation', () => {
   const createId = '9ebdbb1b-ea3e-db11-86a7-000a3a5473e8';
   const xml = `<ImportExportXml><PluginAssembly FullName="Invented.WidgetRules, Version=2.0.0.0, Culture=neutral" PluginAssemblyId="${pluginId(1)}"><PluginTypes><PluginType Name="Invented.WidgetRules.Validate" AssemblyQualifiedName="Invented.WidgetRules.Validate, Invented.WidgetRules" PluginTypeId="${pluginId(2)}"/></PluginTypes><FileName>/PluginAssemblies/Rules.dll</FileName></PluginAssembly><SdkMessageProcessingStep Name="Step" SdkMessageProcessingStepId="${pluginId(3)}"><SdkMessageId>${createId}</SdkMessageId><PluginTypeId>${pluginId(2)}</PluginTypeId><PluginTypeName>Invented.WidgetRules.Validate, Invented.WidgetRules</PluginTypeName><PrimaryEntity>fx_widget</PrimaryEntity><Stage>10</Stage><Rank>3</Rank><Mode>0</Mode><SupportedDeployment>0</SupportedDeployment></SdkMessageProcessingStep></ImportExportXml>`;
@@ -427,7 +451,8 @@ test('well-known SDK message ids resolve without a project observation', () => {
   assert.equal(importSolutionPlugins(layers, observed).steps[0].message, 'Update');
 });
 
-test('JavaScript handlers and CLR steps share one Depth: a chain entered under CLR frames reports contiguous Depth and faults at combined nine', async () => {
+// @test-kind unproven: local model of a shared JavaScript/CLR Depth counter faulting at combined thirteen; the cap of 12 is native depth39 and asyncLoop (two captures each): chains run to Depth 12 and the next level fails 0x80044182
+test('JavaScript handlers and CLR steps share one Depth: a chain entered under CLR frames reports contiguous Depth and faults at combined thirteen', async () => {
   const { enterPluginExecution, leavePluginExecution, pluginExecutionDepth } = await import('../lib/plugin-clr.mjs');
   const step = {
     id: '10000000-0000-4000-8000-000000000042',
@@ -474,9 +499,12 @@ test('JavaScript handlers and CLR steps share one Depth: a chain entered under C
   try {
     await assert.rejects(
       store.update('x_widget', row.x_widgetid, { x_count: 1 }, { admin: true }),
-      (error) => error.code === 'LocalPluginDepth' && error.status === 400,
+      (error) => error.code === 'LocalPluginDepth' && error.status === 400 && error.details?.innerCode === '0x80044182',
     );
-    assert.deepEqual(depths, [4, 5, 6, 7, 8]);
+    assert.deepEqual(
+      depths,
+      Array.from({ length: 9 }, (_, i) => i + 4),
+    );
     assert.equal(pluginExecutionDepth(), 3);
   } finally {
     for (let i = 0; i < 3; i++) leavePluginExecution();

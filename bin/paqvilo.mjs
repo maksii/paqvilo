@@ -15,7 +15,7 @@ Usage: paqvilo lense <command> [options]
        paqvilo doctor --setup [--json] [--config FILE] [--browser CHANNEL]
 
   lense   Overlay local sources, inspect resources and browser sessions.
-          dev, list, use, doctor, map, status, audit, resources, verify, agent
+          dev, list, use, doctor, map, status, audit, resources, verify, agent, model-driven
   mirage  Render exported portals with Liquid and simulated Dataverse on loopback.
           demo, init, dev, start, status, stop, serve, inspect, data
           ${Object.keys(MIRAGE_TOOLS).join(', ')}
@@ -26,43 +26,46 @@ Usage: paqvilo lense <command> [options]
 
 Run paqvilo lense --help, paqvilo mirage --help or paqvilo dataverse --help for options.
 `;
-const [product, ...args] = process.argv.slice(2);
-if (['--version', '-v'].includes(product)) {
-  console.log(JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url))).version);
-} else if (!product || ['--help', '-h'].includes(product)) {
+const DOCTOR_HELP =
+  'Usage: paqvilo doctor --setup [--json] [--config FILE] [--browser CHANNEL]\n\n  --setup    Check installed dependencies and browser readiness.\n  --json     Print the readiness report as JSON.\n  --config   Resolve the catalogue browser without importing portal sources.\n  --browser  Explicit browser channel, overriding the catalogue.';
+const argv = process.argv.slice(2);
+const [product, ...args] = argv;
+// A flag after the option terminator is a positional value, never a request for help/JSON.
+const hasFlag = (items, ...flags) =>
+  items.slice(0, items.indexOf('--') < 0 ? items.length : items.indexOf('--')).some((arg) => flags.includes(arg));
+function failure(error, code, label = 'paqvilo', items = args) {
+  if (hasFlag(items, '--json'))
+    console.log(JSON.stringify({ schemaVersion: 1, ok: false, error: { code, message: error.message } }));
+  else console.error(`${label}: ${error.message.replace(/[\r\n]+/g, ' ')}`);
+  process.exitCode = 1;
+}
+const exitStatus = (code, signal) => code ?? (signal === 'SIGINT' ? 130 : signal === 'SIGTERM' ? 143 : 1);
+if (['--version', '-v', '--help', '-h'].includes(product)) {
+  try {
+    const { values } = parseArgs({
+      args: argv,
+      options: { version: { type: 'boolean', short: 'v' }, help: { type: 'boolean', short: 'h' } },
+    });
+    console.log(values.help ? HELP : JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url))).version);
+  } catch (error) {
+    failure(error, 'INVALID_ARGUMENT', 'paqvilo', argv);
+  }
+} else if (product === undefined) {
   console.log(HELP);
 } else if (product === 'setup' || (['lense', 'mirage'].includes(product) && args[0] === 'setup')) {
   const setupArgs = product === 'setup' ? args : args.slice(1);
   try {
     process.exitCode = await (await import('../lense/commands/setup.mjs')).runSetup(setupArgs);
   } catch (error) {
-    if (args.includes('--json'))
-      console.log(
-        JSON.stringify({ schemaVersion: 1, ok: false, error: { code: 'SETUP_FAILED', message: error.message } }),
-      );
-    else console.error(`paqvilo setup: ${error.message}`);
-    process.exitCode = 1;
+    failure(error, 'SETUP_FAILED', 'paqvilo setup', setupArgs);
   }
 } else if (product === 'init') {
   try {
     process.exitCode = await (await import('../lense/commands/init.mjs')).runInit(args);
   } catch (error) {
-    if (args.includes('--json'))
-      console.log(
-        JSON.stringify({
-          schemaVersion: 1,
-          ok: false,
-          error: { code: error.code ?? 'INIT_FAILED', message: error.message },
-        }),
-      );
-    else console.error(`paqvilo init: ${error.message.replace(/[\r\n]+/g, ' ')}`);
-    process.exitCode = 1;
+    failure(error, error.code ?? 'INIT_FAILED', 'paqvilo init');
   }
-} else if (product === 'doctor' && args.some((arg) => ['--help', '-h'].includes(arg))) {
-  console.log(
-    'Usage: paqvilo doctor --setup [--json] [--config FILE] [--browser CHANNEL]\n\n  --setup    Check installed dependencies and browser readiness.\n  --json     Print the readiness report as JSON.\n  --config   Resolve the catalogue browser without importing portal sources.\n  --browser  Explicit browser channel, overriding the catalogue.',
-  );
-} else if (product === 'doctor' && args.includes('--setup')) {
+} else if (product === 'doctor') {
   try {
     const { values } = parseArgs({
       args,
@@ -71,57 +74,61 @@ if (['--version', '-v'].includes(product)) {
         json: { type: 'boolean' },
         config: { type: 'string' },
         browser: { type: 'string' },
+        help: { type: 'boolean', short: 'h' },
       },
     });
-    let browser = values.browser;
-    if (values.config) {
-      const { loadCatalogue } = await import('../lense/api.mjs');
-      const catalogue = loadCatalogue({ config: values.config });
-      browser ??= catalogue.settings.values.PAQVILO_BROWSER ?? catalogue.root.browser.channel;
-    }
-    if (browser !== undefined && !['msedge', 'chrome', 'chromium'].includes(browser))
-      throw new Error('--browser must be msedge, chrome or chromium');
-    const child = spawn(
-      process.execPath,
-      [
-        fileURLToPath(new URL('../scripts/ensure-dependencies.mjs', import.meta.url)),
-        '--check',
-        ...(values.json ? ['--json'] : []),
-        ...(browser ? ['--browser', browser] : []),
-      ],
-      { stdio: 'inherit', windowsHide: true },
-    );
-    child.on('exit', (code) => {
-      process.exitCode = code ?? 1;
-    });
-    child.on('error', (error) => {
-      console.error(error.message);
-      process.exitCode = 1;
-    });
-  } catch (error) {
-    if (args.includes('--json'))
-      console.log(
-        JSON.stringify({ schemaVersion: 1, ok: false, error: { code: 'SETUP_CHECK_FAILED', message: error.message } }),
+    if (values.help) console.log(DOCTOR_HELP);
+    else {
+      if (!values.setup) throw new Error('doctor requires --setup. Run paqvilo doctor --help for options.');
+      if (values.config !== undefined && !values.config.trim()) throw new Error('--config requires a non-empty value');
+      let browser = values.browser;
+      if (browser !== undefined && !['msedge', 'chrome', 'chromium'].includes(browser))
+        throw new Error('--browser must be msedge, chrome or chromium');
+      if (values.config) {
+        const { loadCatalogue } = await import('../lense/config.mjs');
+        const catalogue = loadCatalogue({ config: values.config });
+        browser ??= catalogue.settings.values.PAQVILO_BROWSER ?? catalogue.root.browser.channel;
+      }
+      if (browser !== undefined && !['msedge', 'chrome', 'chromium'].includes(browser))
+        throw new Error('--browser must be msedge, chrome or chromium');
+      const child = spawn(
+        process.execPath,
+        [
+          fileURLToPath(new URL('../scripts/ensure-dependencies.mjs', import.meta.url)),
+          '--check',
+          ...(values.json ? ['--json'] : []),
+          ...(browser ? ['--browser', browser] : []),
+        ],
+        { stdio: 'inherit', windowsHide: true },
       );
-    else console.error(`paqvilo doctor: ${error.message.replace(/[\r\n]+/g, ' ')}`);
-    process.exitCode = 1;
+      child.on('exit', (code, signal) => {
+        process.exitCode = exitStatus(code, signal);
+      });
+      child.on('error', (error) => {
+        failure(error, 'SETUP_CHECK_FAILED', 'paqvilo doctor');
+      });
+    }
+  } catch (error) {
+    failure(error, 'SETUP_CHECK_FAILED', 'paqvilo doctor');
   }
-} else if (
-  product === 'mirage' &&
-  Object.hasOwn(MIRAGE_TOOLS, args[0]) &&
-  args.some((arg) => ['--help', '-h'].includes(arg))
-) {
-  console.log(mirageToolHelp(args[0]));
+} else if (product === 'mirage' && Object.hasOwn(MIRAGE_TOOLS, args[0]) && hasFlag(args, '--help', '-h')) {
+  try {
+    // This dispatcher serves standalone tool help; operational arguments belong to the tool's parser.
+    parseArgs({
+      args: args.slice(1),
+      options: { help: { type: 'boolean', short: 'h' }, json: { type: 'boolean' } },
+    });
+    console.log(mirageToolHelp(args[0]));
+  } catch (error) {
+    failure(error, 'INVALID_ARGUMENT', `paqvilo mirage ${args[0]}`);
+  }
 } else if (!['lense', 'mirage', 'dataverse'].includes(product)) {
-  const message = `Unknown product "${product}". Choose lense, mirage or dataverse.`;
-  if (args.includes('--json'))
-    console.log(JSON.stringify({ schemaVersion: 1, ok: false, error: { code: 'UNKNOWN_PRODUCT', message } }));
-  else console.error(`paqvilo: ${message}`);
-  process.exitCode = 1;
+  const message = `Unknown command ${JSON.stringify(product)}. Choose lense, mirage, dataverse, init, setup or doctor. Run paqvilo --help for options.`;
+  failure(new Error(message), 'UNKNOWN_PRODUCT', 'paqvilo', argv);
 } else {
   const lifecycle = new Set(MIRAGE_LIFECYCLE);
   const tools = new Set(Object.keys(MIRAGE_TOOLS));
-  let program, forwarded;
+  let program, forwarded, helpSupplement;
   if (product === 'dataverse') {
     program = '../lense/dataverse/cli.mjs';
     forwarded = args;
@@ -140,23 +147,23 @@ if (['--version', '-v'].includes(product)) {
   } else {
     program = '../mirage/cli.mjs';
     forwarded = args.length ? args : ['--help'];
-    if (!args.length || args.some((arg) => ['--help', '-h'].includes(arg)))
-      console.log(`Public Mirage tools:\n${Object.keys(MIRAGE_TOOLS).map(mirageToolHelp).join('')}`);
-    if (args.includes('--help') || args.includes('-h'))
-      console.log(
-        'Mirage demo: paqvilo mirage demo (editable sample and development browser).\nMirage lifecycle: init, dev, start, status, stop (catalogue and browser options: paqvilo lense --help).',
-      );
+    const overview = !args.length || ['--help', '-h', 'help'].includes(args[0]);
+    if (overview) helpSupplement = `Public Mirage tools:\n${Object.keys(MIRAGE_TOOLS).map(mirageToolHelp).join('')}`;
+    if (overview && hasFlag(args, '--help', '-h'))
+      helpSupplement +=
+        '\nMirage demo: paqvilo mirage demo (editable sample and development browser).\nMirage lifecycle: init, dev, start, status, stop (catalogue and browser options: paqvilo lense --help).';
   }
   const child = spawn(process.execPath, [fileURLToPath(new URL(program, import.meta.url)), ...forwarded], {
     stdio: 'inherit',
     windowsHide: true,
   });
   child.on('error', (error) => {
-    console.error(`paqvilo: ${error.message}`);
-    process.exitCode = 1;
+    failure(error, 'SPAWN_FAILED');
   });
-  child.on('exit', (code) => {
-    process.exitCode = code ?? 1;
+  child.on('exit', (code, signal) => {
+    process.exitCode = exitStatus(code, signal);
+    // A failed help parse must not prefix a JSON error with human-readable help.
+    if (code === 0 && helpSupplement) console.log(helpSupplement);
   });
   // A terminal interrupt is also sent to the child; allow its browser/runtime cleanup to finish.
   process.on('SIGINT', () => {

@@ -21,7 +21,9 @@ const initial = () => ({
   settings: { permissionMode: 'permissive' },
 });
 async function workspace(t, level, { io, files, seed = initial() } = {}) {
-  const directory = await fs.mkdtemp(path.join(tmpdir(), 'paqvilo-pack-data-'));
+  // Persistence refuses declared files below a symbolic link (lib/transactional-files.mjs), and a runner's temporary
+  // directory may be one (a symlinked TMPDIR, macOS /var): start from its real path.
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), 'paqvilo-pack-data-')));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const definition = files ?? [
     {

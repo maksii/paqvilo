@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { reportCliError } from './cli-output.mjs';
 import { observeProcessReadiness } from './lib/process-readiness.mjs';
 import { orderedMap as mapLimit } from '../lense/async-map.mjs';
 import {
@@ -2598,7 +2599,8 @@ export function parseArgs(argv) {
   };
   if (args.limit != null) {
     options.limit = Number(args.limit);
-    if (!Number.isInteger(options.limit) || options.limit < 1) throw new Error('--limit must be a positive integer');
+    if (!/^\d+$/.test(args.limit) || !Number.isSafeInteger(options.limit) || options.limit < 1)
+      throw new Error('--limit must be a positive integer');
   }
   if (options.config && !options.project && !options.samples && !options.sites) {
     // --config alone selects every site in that catalogue.
@@ -2613,10 +2615,12 @@ export function parseArgs(argv) {
 
 async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
-  if (options.help || (!options.project && !options.sites && !options.samples && !options.config)) {
-    console.log(`Usage: paqvilo mirage portal-matrix ${toolOptionsHelp('portal-matrix')}`);
-    return options.help ? 0 : 2;
+  const usage = `Usage: paqvilo mirage portal-matrix ${toolOptionsHelp('portal-matrix')}`;
+  if (options.help) {
+    console.log(usage);
+    return 0;
   }
+  if (!options.project && !options.sites && !options.samples && !options.config) throw new Error(usage);
   options.out ??= path.join(
     options.config || options.project ? path.dirname(path.resolve(options.config ?? options.project)) : process.cwd(),
     '.paqvilo',
@@ -2639,7 +2643,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       process.exitCode = code;
     },
     (error) => {
-      console.error(error.stack ?? String(error));
+      reportCliError(error);
       process.exitCode = 2;
     },
   );

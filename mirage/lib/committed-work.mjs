@@ -1,5 +1,6 @@
 import v8 from 'node:v8';
 import { clockFunction, storeScheduler, systemClock, systemIds } from './runtime-clock.mjs';
+import { runWithRequest } from './request-context.mjs';
 
 /** Drain all post-commit consumers to a common quiescent point. A consumer may
  * create work for another consumer, so a single sequential drain is insufficient.
@@ -29,6 +30,10 @@ const READY = 0,
   LOCKED = 2;
 // ponytail: a job whose transaction rolls back is tried 3 times, then finished Failed; a per-kind retry policy can replace the constant.
 const MAX_ATTEMPTS = 3;
+// An intentional per-kind retry already durably recorded its own attempt. It
+// must not consume the unrelated infrastructure/rollback poison budget.
+export const retryCommittedJob = Symbol('retry committed job');
+export const wholeSecond = (ms) => new Date(Math.floor(ms / 1000) * 1000).toISOString();
 export const encodeEvent = (event) => v8.serialize(event).toString('base64');
 const decodeEvent = (text) => v8.deserialize(Buffer.from(text, 'base64'));
 const jobOf = (row) => {
@@ -72,28 +77,40 @@ export function committedJobs(store) {
     running = new Set(),
     retry = new Set();
   let ticking = null,
-    kicked = false,
+    kicked = null,
     closed = false;
   const scheduler = () => storeScheduler(store);
-  const now = () => new Date(clockFunction(store.clock ?? systemClock)()).toISOString();
+  const nowMs = () => clockFunction(store.clock ?? systemClock)();
+  const now = () => new Date(nowMs()).toISOString();
+  // A Ready row waits until its start time: the job's internal start latency (data startAfter, plugin-async.mjs; its
+  // postponeuntil stays null as natively) or a postponeuntil; 0 when it is due.
+  const waitOf = (row) => {
+    const after = jobOf(row)?.startAfter,
+      until = Number.isFinite(after) ? after : row?.postponeuntil ? Date.parse(row.postponeuntil) : NaN;
+    return Number.isFinite(until) ? Math.max(0, until - nowMs()) : 0;
+  };
   const autoRuns = () => {
     const status = scheduler().status();
     return !status.manual && !status.closed;
   };
-  const kick = () => {
-    if (kicked || closed) return;
-    kicked = true;
+  // One scheduled tick at a time: an earlier one replaces a later one (that later one still runs, as a harmless no-op tick).
+  const kick = (delay = 0) => {
+    if (closed) return;
+    const due = nowMs() + delay;
+    if (kicked !== null && kicked <= due) return;
+    kicked = due;
     if (
       scheduler().schedule(
-        () => {
-          kicked = false;
-          return tick();
-        },
-        0,
+        () =>
+          detached(store, () => {
+            if (kicked === due) kicked = null;
+            return tick();
+          }),
+        delay,
         { name: 'committed-jobs' },
       ) === null
     )
-      kicked = false;
+      kicked = null;
   };
   // Diagnostics go to each distinct sink the registered kinds were given.
   const report = (note) => {
@@ -114,17 +131,30 @@ export function committedJobs(store) {
       payload = payloadOf(rows[index]);
     return payload && kinds.has(payload.kind) ? { id, payload, index } : null;
   };
-  // The queued ids not yet tried in this tick, in table order (FIFO).
+  // The queued ids not yet tried in this tick and due, in table order (FIFO).
   const scan = (seen) => {
     const rows = store.state.tables?.asyncoperation ?? [],
       jobs = [];
     for (const id of queued) {
       if (seen.has(id) || started.has(id)) continue;
       const job = readyJob(rows, id);
-      if (job) jobs.push(job);
+      if (job && !waitOf(rows[job.index])) jobs.push(job);
     }
     return jobs.sort((a, b) => a.index - b.index);
   };
+  // The start latency left of a row that waits only for it (data startAfter); null for a row without one.
+  const latencyOf = (row) => (Number.isFinite(jobOf(row)?.startAfter) ? waitOf(row) : null);
+  // The shortest wait of the queued Ready rows not started (0: one is due; null: none waits).
+  const nextWait = (rows = store.state.tables?.asyncoperation ?? [], of = waitOf) => {
+    let wait = null;
+    for (const id of queued) {
+      const job = started.has(id) ? null : readyJob(rows, id),
+        rowWait = job ? of(rows[job.index]) : null;
+      if (rowWait !== null) wait = Math.min(wait ?? Infinity, rowWait);
+    }
+    return wait;
+  };
+  const latencyWait = () => nextWait(undefined, latencyOf);
   // A row still Ready after its run means the run's transaction rolled back.
   const countAttempt = async (id, kind, failure) => {
     if (!readyJob(store.state.tables?.asyncoperation ?? [], id)) return;
@@ -148,15 +178,19 @@ export function committedJobs(store) {
   };
   const execute = async ({ id, payload }) => {
     started.add(id);
-    let failure = null;
+    let failure = null,
+      outcome;
     try {
-      await kinds.get(payload.kind)?.run({ id, payload, event: decodeEvent(payload.event) });
+      outcome = await kinds.get(payload.kind)?.run({ id, payload, event: decodeEvent(payload.event) });
     } catch (error) {
       failure = error;
       remember(id, payload.kind, error);
     }
     try {
-      if (kinds.has(payload.kind)) await countAttempt(id, payload.kind, failure);
+      if (kinds.has(payload.kind)) {
+        if (outcome === retryCommittedJob && readyJob(store.state.tables?.asyncoperation ?? [], id)) retry.add(id);
+        else await countAttempt(id, payload.kind, failure);
+      }
     } catch (error) {
       remember(id, payload.kind, error);
     } finally {
@@ -170,16 +204,17 @@ export function committedJobs(store) {
       }
     }
   };
+  // createdon is a Dataverse date-time: whole seconds. An entry may carry the time its operation created the job.
   const readyRows = (entries) => {
     const ids = store.ids ?? systemIds,
-      stamp = now();
-    return entries.map(({ id, kind, columns = {}, event, ...rest }) => ({
+      stamp = wholeSecond(clockFunction(store.clock ?? systemClock)());
+    return entries.map(({ id, kind, columns = {}, event, staging, ...rest }) => ({
       asyncoperationid: id ?? ids.uuid(),
       operationtype: SYSTEM_EVENT,
       statecode: READY,
       statuscode: 0,
       ...columns,
-      createdon: stamp,
+      createdon: columns.createdon ?? stamp,
       data: JSON.stringify({ kind, ...rest, event: encodeEvent(event) }),
     }));
   };
@@ -218,7 +253,11 @@ export function committedJobs(store) {
         for (const id of retry) queued.add(id);
         retry.clear();
         ticking = null;
-        if (queued.size) kick();
+        // A concurrent delivery remains queued until it finishes, but cannot
+        // run twice. Only new Ready work needs another tick; repeatedly kicking
+        // for an in-flight delivery starves I/O on a manual scheduler. A postponed row gets a tick when it is due.
+        const wait = nextWait(rows);
+        if (wait !== null) kick(wait);
       }
     })());
   const jobs = (store.committedJobs = {
@@ -233,10 +272,30 @@ export function committedJobs(store) {
      * it, and returns the function that starts the runner once that transaction committed (null without entries). */
     stage(entries) {
       if (!entries.length) return null;
+      // Tracing (docs/design/tracing.md): each job's parent is the span that recorded its committed event (data.mjs
+      // stagingSpan; an entry's own `staging`), else the current span. It is remembered in the trace store, never in the row,
+      // once the commit saved, together with the job-staged event on that same span.
+      const traces = store.traces?.enabled ? store.traces : null,
+        current = traces?.current() ?? null,
+        parents = traces ? entries.map((entry) => entry.staging ?? store.stagingSpan?.(entry.event) ?? current) : null;
       const rows = readyRows(entries),
         table = (store.state.tables.asyncoperation ??= []);
       for (const row of rows) store.insertRow('asyncoperation', table, row);
       return () => {
+        rows.forEach((row, index) => {
+          const parent = parents?.[index];
+          if (!parent?.traceId) return;
+          traces.remember?.('job:' + row.asyncoperationid, { traceId: parent.traceId, spanId: parent.spanId ?? null });
+          if (typeof parent.event === 'function')
+            parent.event('job-staged', {
+              attributes: {
+                kind: entries[index].kind,
+                asyncOperationId: row.asyncoperationid,
+                chainId: entries[index].chain?.id ?? null,
+                chainDepth: entries[index].chain?.depth ?? null,
+              },
+            });
+        });
         for (const row of rows) queued.add(row.asyncoperationid);
         kick();
       };
@@ -290,7 +349,13 @@ export function committedJobs(store) {
       return closed;
     },
     // A manual scheduler counts a running tick itself (status().pending), and leaves out a blocked one.
-    pending: () => enqueues.size + running.size + (ticking && !manual() ? 1 : 0) + (autoRuns() ? queued.size : 0),
+    // A postponed row is not pending: like a scheduler timer that is not due, settle does not wait for it. A row that
+    // waits only for its start latency is pending: settle waits for it, as a job the platform picks up on its own.
+    pending: () =>
+      enqueues.size +
+      running.size +
+      (ticking && !manual() ? 1 : 0) +
+      (autoRuns() && (nextWait() === 0 || latencyWait() !== null) ? queued.size : 0),
     async drain() {
       for (;;) {
         await store.flushCommittedEvents();
@@ -302,12 +367,14 @@ export function committedJobs(store) {
           const current = ticking;
           await scheduler().drain();
           if (ticking === current) return;
-        } else if (autoRuns() && queued.size) {
+        } else if (autoRuns() && nextWait() === 0) {
           kick();
           await scheduler().drain();
           if (!ticking && !running.size && !enqueues.size && queued.size)
             await new Promise((resolve) => setImmediate(resolve));
-        } else return;
+        } else if (autoRuns() && latencyWait() !== null)
+          await new Promise((resolve) => setTimeout(resolve, latencyWait()));
+        else return;
       }
     },
   });
@@ -341,6 +408,97 @@ export function stageCommittedJobs(
     for (const note of diagnostics) report(note);
     start?.();
   };
+}
+
+/** Runs fn outside every trace and request context (a scheduler tick, a timer), so nothing it starts inherits the span of
+ * the request that scheduled it; job runners build their own context. */
+export const detached = (store, fn) =>
+  runWithRequest(null, () => (typeof store?.traces?.detached === 'function' ? store.traces.detached(fn) : fn()));
+/** The { traceId, spanId } a staged job remembered (committed-work stage), or null: the job span is then a new root. */
+export const jobParent = (store, id) => (id ? (store?.traces?.recall?.('job:' + id) ?? null) : null);
+
+// Every job runs on the job runner (origin host 'job', as flow jobs); a staged job keeps the staging span's portal and preset.
+export const jobOrigin = (traces, parentSpanId) => {
+  const parent = parentSpanId ? traces.span(parentSpanId)?.origin : null;
+  return { host: 'job', portal: parent?.portal ?? null, preset: parent?.preset ?? null };
+};
+/**
+ * Runs one committed job under its `job` span (docs/design/tracing.md), parented explicitly by the staging span the trace
+ * store remembered for its id (jobParent), else a new root, never by the context the scheduler inherited; async: true marks
+ * the new execution segment. run(span) does the work (span is null without a trace store); a throw or rejection fails the
+ * span, and a second or later attempt records a retry event. The plug-in, web hook and classic workflow kinds use it.
+ * The span is named by the process it runs, its display name alone (D-R3-24 as amended: the kind `job` already says it is a
+ * job, so a tree line reads `job <process display name>`), with attributes processType (the job kind
+ * unless the runner names one), processId (the runner's, else the workflow definition or plug-in step of the payload) and
+ * processName (the runner's name, else the asyncoperation row's name); and the record of its triggering event (D-R3-1).
+ */
+export function traceJob(
+  store,
+  { id, payload, event },
+  run,
+  { name = null, processType = null, processId = null, attributes = {} } = {},
+) {
+  const traces = store.traces;
+  if (!traces?.enabled) return run(null);
+  const parent = jobParent(store, id),
+    traceId = parent?.traceId ?? null,
+    parentSpanId = parent?.spanId ?? null,
+    kind = payload?.kind ?? null,
+    attempt = (Number(payload?.attempts) || 0) + 1;
+  const job = id && store.state ? liveJob(store, id) : null;
+  const processName = name ?? job?.rows[job.index]?.name ?? kind ?? 'committed';
+  const entity = event?.entity || null;
+  let recordId = null;
+  try {
+    recordId = entity && event?.row ? (event.row[store.resolveMapping(entity).idColumn] ?? null) : null;
+  } catch {
+    // A table the organization no longer maps: the job names no record.
+  }
+  const span = traces.start({
+    kind: 'job',
+    name: processName,
+    module: 'jobs',
+    operation: 'run',
+    entity,
+    recordId: recordId?.id ?? recordId,
+    async: true,
+    traceId,
+    parentSpanId,
+    origin: jobOrigin(traces, parentSpanId),
+    links: parentSpanId ? [{ traceId, spanId: parentSpanId, relation: 'staged-by' }] : [],
+    attributes: {
+      kind,
+      processType: processType ?? kind,
+      processId: processId ?? payload?.definitionId ?? payload?.itemId ?? null,
+      processName,
+      jobId: id ?? null,
+      attempt,
+      chainId: payload?.chain?.id ?? null,
+      depth: payload?.chain?.depth ?? null,
+      ...attributes,
+    },
+  });
+  // The staging span names the job it triggered (D-R3-6): its triggered link, the reverse of the job's staged-by link.
+  if (parentSpanId && span.spanId)
+    traces.link(parentSpanId, { traceId: span.traceId, spanId: span.spanId, relation: 'triggered' });
+  if (attempt > 1) span.event('retry', { attributes: { attempt } });
+  let result;
+  try {
+    result = traces.run(span, () => run(span));
+  } catch (error) {
+    span.fail(error);
+    throw error;
+  }
+  return Promise.resolve(result).then(
+    (value) => {
+      span.end();
+      return value;
+    },
+    (error) => {
+      span.fail(error);
+      throw error;
+    },
+  );
 }
 
 /** The asyncoperation row of a durable job, found again by id: a commit in between may have replaced the state. */

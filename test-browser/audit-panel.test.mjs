@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
 import { chromium } from 'playwright-core';
+import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { createFixture, SITE } from '../test/fixture.mjs';
 import { OverlaySession } from '../lense/session.mjs';
 import { enablePanel } from '../lense/panel.mjs';
@@ -41,11 +42,10 @@ test(
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
     const origin = `http://127.0.0.1:${server.address().port}`;
-    browser = await chromium.launch({
-      channel: process.platform === 'win32' ? 'msedge' : undefined,
-      headless: true,
-      args: ['--disable-background-networking'],
-    });
+    // The lane's selected browser (PAQVILO_BROWSER), not always Edge on Windows.
+    browser = await chromium.launch(
+      browserLaunchOptions({ headless: true, args: ['--disable-background-networking'] }),
+    );
     const context = await browser.newContext();
     const page = await context.newPage();
     let tweaks;

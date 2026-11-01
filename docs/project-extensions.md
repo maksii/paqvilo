@@ -27,6 +27,10 @@ my-portal-project/
 
 Install Paqvilo as a dependency, register your pack, and run your own tests from this project. The [starter](../examples/project/README.md) is complete and uses invented data. Your test suite can consume the public modules without editing Paqvilo's core:
 
+Large generated presets may use the explicit [`createOwned()` factory](../mirage/docs/data-packs.md) to transfer
+a fresh private dataset instead of retaining a memoized baseline plus an application copy. Existing `load()`
+presets keep their copy semantics. Generators and their determinism/ownership tests stay in your project.
+
 ```js
 import { createSimulator, DataStore, discoverPacks, presetLibrary } from 'paqvilo/mirage';
 import { signInHeaders, signInContext } from 'paqvilo/mirage/testing';
@@ -65,6 +69,8 @@ Project scripts can run `node --test test/*.test.mjs` and `node --test test-brow
 
 Project management scripts can import `readPowerPagesSites`, `readPowerPagesSite` and `setPowerPagesSiteVisibility` from `paqvilo/dataverse`. These use the installed PAC `power-pages` management commands with an explicit environment and shell-free arguments. On Windows, configure the actual `pac.exe` path rather than its `pac.cmd` shim. Read APIs return site identity and visibility metadata; credentials, certificates and unknown response fields are withheld. The management site ID differs from the Dataverse website record ID, so verify both and the site URL before a change. The mutation API returns command completion only: the project must own authorization, a durable journal, propagation readback and restoration. Mirage session controls do not grant native site access.
 
+For model-driven Solution scripts, projects can also opt into [web-resource lint](../mirage/docs/model-driven-web-resource-lint.md) with their own ESLint configuration and dependencies.
+
 ## Project commands and editor workflows
 
 Own your daily npm shortcuts, `.vscode/launch.json` and `.vscode/tasks.json` in your portal project. Run tasks with that project's working directory and catalogue, invoking the installed `paqvilo` binary. This keeps portal/environment choices, scenario presets, browser profiles and project tests with their owners. The toolkit repository's launches and tasks provide generic defaults for working on Paqvilo.
@@ -87,11 +93,11 @@ A trusted pack can implement its Dataverse custom APIs. Export `customApis: { '<
 
 - Throw `{ pluginFault: 'InvalidPluginExecutionException', message, errorCode? }` for a plug-in fault: 400 `0x80040265` with its message. A named `errorCode` such as `0x8004F001` is not the top-level code: native carries it in `@Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode` as a signed decimal (`-2147160063`). Without one the SubErrorCode is `-2146233088`.
 - Any other throw is unhandled: 400 `0x80040224` with the thrown message.
-- A handler still running after `pluginTimeoutSeconds` (a simulator Dataverse setting, default `120`, the 2-minute sandbox limit) is a timeout: 400 `0x80040224`, with the message naming the plug-in type. Its writes roll back.
+- A handler still running after `pluginTimeoutSeconds` (a simulator Dataverse setting, default `120`, the 2-minute sandbox limit) is a timeout: 400 `0x80040224`, with the message naming the plug-in type. Its writes roll back, and its expired continuation cannot access the organization through the SDK/API after the response.
 
 A custom API with no `customApis` entry runs a `pluginTypes` handler (see "Plug-in type handlers") when its `plugintypeid` names a plug-in type whose `typename` has one. That handler is the API's main operation and receives the same `ctx`. A `customApis` entry for the API always wins over the type handler. The plug-in's name in messages is the type's `typename`.
 
-The plug-in annotations (`Prefer: odata.include-annotations`) follow the native bodies: `ErrorDetails.*`, `HelpLink`, `TraceText` and `InnerError.Message` for a plug-in fault, and the same without `ErrorDetails` for an unhandled or timed-out call. Without a handler, the custom API returns its defaults.
+The plug-in annotations (`Prefer: odata.include-annotations`) follow the native bodies: `ErrorDetails.*`, `HelpLink`, `TraceText` and `InnerError.Message` for a plug-in fault, and the same without `ErrorDetails` for an unhandled or timed-out call. An API without a named implementation returns its defaults. If plugintypeid names original logic without a trusted handler/runtime, execution fails explicitly and capability/preflight reports the missing implementation. Registered extension steps follow allowedcustomprocessingsteptype; synchronous SDK calls use the same main/stage driver and require synchronous local providers.
 
 ## Plug-in type handlers
 
@@ -99,19 +105,21 @@ A trusted pack can run the plug-in steps that a Dataverse client registered thro
 
 A step whose type has a handler runs it at its stage, mode and rank, when its message, table and filtering attributes match. A step on a type with no handler is stored and skipped (`PLUGIN_STEP_PLACEHOLDER`). A handler keyed by the exported step id (`pluginSteps`) takes precedence over a type handler for that step.
 
-The handler receives the arguments of a `pluginSteps` handler (`step`, `entity`, `operation`, `stage`, `target`, `record`, `previous`, `preImage`, `postImage`, `identity`, `changedAttributes`, `reject`) and also `context`, an IPluginExecutionContext-like object:
+The handler receives the arguments of a `pluginSteps` handler (`step`, `entity`, `operation`, `stage`, `target`, `record`, `previous`, `preImage`, `postImage`, `identity`, `changedAttributes`, `sharedVariables`, `reject`) and also `context`, an IPluginExecutionContext-like object:
 
 - `MessageName`, `PrimaryEntityName`, `PrimaryEntityId`, `Stage`, `Mode` (0 or 1), `Depth` (1 at the top, one more for each nested handler write) and `InitiatingUserId`.
 - `UserId`: the step's impersonated user when it names one, else the initiating user.
 - `InputParameters`: `Target` for Create, Update and Delete; `Targets` for bulk messages.
 - `OutputParameters`: `id` for a PostOperation Create.
 - `PreEntityImages` and `PostEntityImages`: the registered images, keyed by alias, limited to their attributes.
+- `SharedVariables`: the same object as the `sharedVariables` argument.
 
-`context` is a copy: changing it does not change the write. Return `{ target }` to change a PreOperation Create or Update, or throw.
+`context` is a copy, except `SharedVariables`: changing the rest does not change the write. Return `{ target }` to change a PreOperation Create or Update, or throw.
 
+- `sharedVariables` is the operation's shared variables collection as a plain object, the one argument that is not a copy. What a handler sets there is what later steps and stages of the same operation receive, JavaScript or CLR (`IPluginExecutionContext.SharedVariables`). The request `tag` value is read-only: changing it fails the step with 409 `LocalPluginTagImmutable`.
 - A thrown error is the plug-in fault: 400 `0x80040265` with its message. Its `SubErrorCode` annotation is `-2146233088`. The write rolls back.
 - An asynchronous (mode 1) step runs after commit through the same queue as the exported ones. While the Dataverse API is on, each run also writes an asyncoperation system job (operation type System Event): Completed with status Succeeded, or Failed with the handler's message. A succeeded job is removed when its step has `asyncautodelete`. The job is written in the run's own transaction, so the portal response does not change.
-- `trace(text)` on a plug-in handler's arguments (and `context.trace` for a `pluginTypes` handler) records a trace line. With `organization.plugintracelogsetting` 2 every handler or CLR run writes a plugintracelog row with its trace lines (`messageblock`), type, message, depth and duration; 1 writes only failed runs, with `exceptiondetails`; 0 writes none. The row rolls back with a rolled-back write (native keeps it; the simulator does not).
+- `trace(text)` on a plug-in handler's arguments (and `context.trace` for a `pluginTypes` handler) records a trace line. With `organization.plugintracelogsetting` 2 every handler or CLR run writes a plugintracelog row with its trace lines (`messageblock`), type, message, depth and duration; 1 writes only failed runs, with `exceptiondetails`; 0 writes none. The diagnostic row survives business rollback, including a failed Custom API main operation.
 
 ## Dataverse message handlers
 

@@ -5,10 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { createPortalSession, connectRuntime } from '../testing.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('membership visitors and persona reports use the explicit contact key with nonstandard entity-set and lookup mappings', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'complex-session-mappings-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'complex-session-mappings-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   for (const [file, body] of Object.entries({
     'website.yml': 'adx_websiteid: site\nadx_name: Mapping fixture',

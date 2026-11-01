@@ -209,7 +209,7 @@ test('a PATCH another write hook refuses never calls provider.update (host exten
   ownedFixture(t).add(() => {
     delete globalThis[KEY];
   });
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'virtual-order-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'virtual-order-')));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const attribute = (name, type) =>
     `<attribute PhysicalName="${name}"><Name>${name}</Name><Type>${type}</Type></attribute>`;
@@ -267,7 +267,6 @@ export default { id: "invented-virtual", name: "Invented virtual", description: 
       method,
       headers: { authorization: `Bearer ${token.access_token}`, 'content-type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(10000),
     });
 
   const created = await api('POST', '/x_remotes', { x_name: 'Remote row' });

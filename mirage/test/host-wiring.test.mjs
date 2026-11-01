@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 // Host wiring on both hosts (Power Pages simulator and standalone dataverse-api runtime): status `docs`, `routes` (from
 // the mounted routers' own `routes` lists) and `modelDrivenApps`; ISO request times on the dashboard; the in-process Web
 // API behind Xrm.WebApi.execute; the default /search/ page; the portal document control; Solution custom connectors and
@@ -10,6 +11,7 @@ import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { signInHeaders } from '../testing.mjs';
 import { DOC_PATHS } from '../lib/docs-links.mjs';
+import { ownedFixture, drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CASE = '77777777-7777-4777-8777-777777777760';
 const SITE = '77777777-7777-4777-8777-777777777761';
@@ -70,9 +72,10 @@ async function writeTree(root, files) {
     await fs.writeFile(path.join(root, relative), content);
   }
 }
-async function tempRoot(cleanup) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-wiring-'));
-  cleanup(() => fs.rm(root, { recursive: true, force: true }));
+// owner: { add(close), remove(removeDirectory) }; every close runs before any directory is removed.
+async function tempRoot(owner) {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-wiring-'));
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
   await writeTree(path.join(root, 'solution'), solutionFiles);
   return root;
 }
@@ -114,8 +117,8 @@ const portalInitial = () => ({
     endpoints: [],
   },
 });
-async function startPowerPages(cleanup, options = {}) {
-  const root = await tempRoot(cleanup);
+async function startPowerPages(owner, options = {}) {
+  const root = await tempRoot(owner);
   await writeTree(path.join(root, 'portal'), portalFiles);
   const sim = await createSimulator({
     sourceDir: path.join(root, 'portal'),
@@ -126,19 +129,26 @@ async function startPowerPages(cleanup, options = {}) {
     initial: portalInitial(),
     ...options,
   });
-  cleanup(() => sim.close());
+  owner.add(() => sim.close());
   return sim;
 }
-const powerPages = (t, options) => startPowerPages((fn) => t.after(fn), options);
-// Tests that only read share one Power Pages host; the cleanups run in reverse order after the file.
-const sharedCleanups = [];
-let sharedPortal;
+const powerPages = (t, options) => startPowerPages(ownedFixture(t), options);
+const DATAVERSE = { enabled: true, tls: false, tds: { enabled: false } };
+// Tests that do not reset, reload or shut a host down share one host of each kind (the Power Pages one with its Dataverse
+// endpoint), closed and removed after the file.
+const sharedClosers = [],
+  sharedRemovers = [];
+const shared = { add: (close) => sharedClosers.push(close), remove: (remove) => sharedRemovers.push(remove) };
+let sharedPortal, sharedDataverse;
 after(async () => {
-  for (const cleanup of sharedCleanups.reverse()) await cleanup();
+  await drainFixture(sharedClosers);
+  await drainFixture(sharedRemovers);
 });
-const sharedPowerPages = () => (sharedPortal ??= startPowerPages((fn) => sharedCleanups.push(fn)));
-async function standalone(t, kind = 'dataverse-api') {
-  const root = await tempRoot((fn) => t.after(fn));
+const sharedPowerPages = () => (sharedPortal ??= startPowerPages(shared, { dataverse: DATAVERSE }));
+const sharedStandalone = () => (sharedDataverse ??= startStandalone(shared));
+const standalone = (t, kind) => startStandalone(ownedFixture(t), kind);
+async function startStandalone(owner, kind = 'dataverse-api') {
+  const root = await tempRoot(owner);
   const sim = await createSimulator({
     runtime: { kind },
     solutionRoots: [path.join(root, 'solution')],
@@ -146,9 +156,9 @@ async function standalone(t, kind = 'dataverse-api') {
     port: 0,
     watch: false,
     simulation: { level: 'dry-run' },
-    dataverse: { enabled: true, tls: false, tds: { enabled: false } },
+    dataverse: DATAVERSE,
   });
-  t.after(() => sim.close());
+  owner.add(() => sim.close());
   return sim;
 }
 const body = async (response, status) => {
@@ -203,6 +213,7 @@ const SHARED = [
   '/flow-runs',
   '/flow-waits',
   '/flow-triggers',
+  '/trace',
   '/preflight',
   '/status',
   '/dataverse',
@@ -213,7 +224,7 @@ const docPaths = (docs) => Object.fromEntries(Object.entries(docs).map(([key, li
 
 for (const [name, start] of [
   ['Power Pages', sharedPowerPages],
-  ['standalone', standalone],
+  ['standalone', sharedStandalone],
 ]) {
   test(`${name}: status carries docs, router-derived routes and modelDrivenApps; Xrm.WebApi.execute runs an unbound function; the custom connector is a provider`, async (t) => {
     const sim = await start(t);
@@ -300,6 +311,7 @@ test('Power Pages: the portal document control answers 503 while its document st
 // a prefix the routers do not list answers 404. Prefixes not in PROBES are requested with GET; /shutdown runs last.
 const PROBES = {
   '/records': ['GET', '/records/contact'],
+  '/activity': ['GET', '/activity/export?format=bundle'],
   '/persona-catalog': ['PUT', '/persona-catalog', {}],
   '/reference': ['POST', '/reference/enrich/validate', { plan: [] }],
   '/config': ['PATCH', '/config', { operations: {} }],
@@ -355,11 +367,8 @@ for (const [name, start] of [
     }
   });
 
-  test(`${name}: an enabled Recurrence flow is hosted once the operation override applies; request times are ISO strings`, async (t) => {
-    const sim =
-      name === 'standalone'
-        ? await start(t)
-        : await start(t, { dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
+  test(`${name}: an enabled Recurrence flow is hosted once the operation override applies; request times are ISO strings`, async () => {
+    const sim = name === 'standalone' ? await sharedStandalone() : await sharedPowerPages();
     const key = `cloud-flow:${FLOW}`;
     const before = (await body(await simApi(sim, 'GET', '/flow-triggers'), 200)).find(
       (host) => host.processId === FLOW,
@@ -411,6 +420,7 @@ for (const [name, start] of [
   });
 }
 
+// @test-kind contract+security: the local search route keeps the site's CSP, framing and nosniff headers
 test('Power Pages: /search/ carries the same site HTTP/* headers, CSP and nosniff as every portal page', async () => {
   const sim = await sharedPowerPages();
   const page = await fetch(sim.url + '/'),

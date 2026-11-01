@@ -8,11 +8,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { signInHeaders } from '../testing.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const MEMBER = '77777777-7777-4777-8777-777777777701';
 test('enhanced site: /_sim counts the signed-in visitor through its mapping, before and after a portal request, without provisioning', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-visible-counts-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-visible-counts-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(dir, 'website.yml'),

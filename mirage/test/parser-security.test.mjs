@@ -32,6 +32,8 @@ test('whole-template Liquid shorthands retain whitespace, empty-body and final-n
 
 test('long malformed keys and shorthand templates finish within a bounded isolated process', () => {
   const script = `import {parseKeySegment} from ${JSON.stringify(new URL('../lib/data.mjs', import.meta.url).href)};import {tokenize} from ${JSON.stringify(new URL('../lib/liquid-engine.mjs', import.meta.url).href)};const tabs='\t'.repeat(200000);for(const source of ['a'+tabs+'=', 'a='+tabs+"'unclosed"]){try{parseKeySegment(source);}catch{}}for(const source of ['{{{'+tabs,'{#'+tabs]){try{tokenize(source);}catch{}}`;
+  // A separate process, so a regression into super-linear backtracking is killed instead of blocking the runner. The
+  // linear parse plus Node startup takes well under a second; quadratic scanning of 200,000 tabs takes minutes.
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
     timeout: 8000,
     windowsHide: true,

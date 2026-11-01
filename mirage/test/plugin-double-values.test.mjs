@@ -1,15 +1,17 @@
+// @test-kind compatibility: Learn column types: Float/Double columns are System.Double SDK values; finite-only checks are local; nativeQualified false
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { DataStore } from '../lib/data.mjs';
 import { prepareClrRuntime, recordToSdkEntity, dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { sdkValueToRecord } from '../lib/local-organization-service.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const user = '10000000-0000-0000-0000-000000000001',
   id = '20000000-0000-0000-0000-000000000001',
   rowid = '20000000-0000-0000-0000-000000000002';
@@ -64,29 +66,22 @@ test('Declared Double/Float source values retain SDK type including integral val
 });
 test(
   'Actual original DLL casts Double Targets/images/SDK reads and preserves integral shared/output values and SDK writes',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-double-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-double-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'DoubleValues.cs'),
       assembly = path.join(root, 'DoubleValues.dll');
     await fs.writeFile(
       source,
       `using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;using Microsoft.Xrm.Sdk.Messages;
-namespace Invented {public sealed class DoubleValues:IPlugin {static void Check(Entity e,double integral){if(!(e["fraction"] is Double)||e.GetAttributeValue<double>("fraction")!=0.1d||!(e["integral"] is Double)||e.GetAttributeValue<double>("integral")!=integral||!(e["negative"] is Double)||e.GetAttributeValue<double>("negative")!=-0.5d||e["empty"]!=null)throw new Exception("Declared Double SDK type lost");}
-public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var target=(Entity)c.InputParameters["Target"];Check(target,c.Stage==40?3d:2d);var s=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);
+namespace Invented {public sealed class DoubleValues:IPlugin {static void Check(Entity e,double integral,bool authoredNull=false){if(!(e["fraction"] is Double)||e.GetAttributeValue<double>("fraction")!=0.1d||!(e["integral"] is Double)||e.GetAttributeValue<double>("integral")!=integral||!(e["negative"] is Double)||e.GetAttributeValue<double>("negative")!=-0.5d)throw new Exception("Declared Double SDK type lost");if(authoredNull?(!e.Contains("empty")||e["empty"]!=null):e.Contains("empty"))throw new Exception("Authored null versus read/image omission lost");}
+public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var target=(Entity)c.InputParameters["Target"];Check(target,c.Stage==40?3d:2d,true);var s=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);
 if(c.Stage==20){c.SharedVariables["integralDouble"]=2d;c.OutputParameters["customDouble"]=2d;Check(s.Retrieve("reading",new Guid("${rowid}"),new ColumnSet("fraction","integral","negative","empty")),2d);target["integral"]=3d;var update=new Entity("reading",new Guid("${rowid}"));update["integral"]=3d;s.Update(update);Check(s.Retrieve("reading",update.Id,new ColumnSet("fraction","integral","negative","empty")),3d);var a=s.RetrieveMultiple(new FetchExpression("<fetch aggregate='true'><entity name='reading'><attribute name='fraction' aggregate='sum' alias='total'/></entity></fetch>"));if(!(((AliasedValue)a.Entities[0]["total"]).Value is Double)||(double)((AliasedValue)a.Entities[0]["total"]).Value!=0.1d)throw new Exception("Aggregate Double lost");}
 if(c.Stage==40){if(!(c.SharedVariables["integralDouble"] is Double)||(double)c.SharedVariables["integralDouble"]!=2d||!(c.OutputParameters["customDouble"] is Double))throw new Exception("Integral Double ranked context lost");Check(c.PostEntityImages["after"],3d);Check(s.Retrieve("widget",c.PrimaryEntityId,new ColumnSet("fraction","integral","negative","empty")),3d);c.OutputParameters["customDouble"]=3d;}((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original declared Double stage {0}",c.Stage);}}}`,
     );
-    const compiler = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      build = spawnSync(compiler, ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source], {
-        shell: false,
-        windowsHide: true,
-        encoding: 'utf8',
-        timeout: 20000,
-      });
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
         trust: 'execute-local-assembly',
         root,
@@ -155,7 +150,8 @@ if(c.Stage==40){if(!(c.SharedVariables["integralDouble"] is Double)||(double)c.S
             sdkAssemblySha256: await hash(sdk),
             ownedHosts: { stopped: stops.length, allAbsenceVerified: true },
             assertions: [
-              'Source-declared fractional/integral/negative/null Double Target, SDK Retrieve, aggregate AliasedValue and post image',
+              'Source-declared fractional/integral/negative Double Target, SDK Retrieve, aggregate AliasedValue and post image',
+              'Authored Target null retained; native SDK read and image Attributes omit null',
               'Integral Double SharedVariables and custom Outputs survive ranked original CLR context',
               'Original SDK Update and Target mutation retain Double type on readback',
             ],

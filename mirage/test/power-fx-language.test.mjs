@@ -217,9 +217,19 @@ const CASES = [
   ['Collect(c, {a: 1}); Patch(c, First(c), {a: 5}); First(c).a', 5],
   ['Collect(c, {a: 1}, {a: 2}); Remove(c, {a: 1}); Concat(c, a)', '2'],
   ['Collect(c, [1, 2, 3]); RemoveIf(c, Value > 1); CountRows(c)', 1],
+  ['Collect(c, {a: 1}, {a: 2}); UpdateIf(c, a > 1, {a: a + 3}); Sum(c, a)', 6],
   ['UpdateContext({n: 4}); n + 1', 5],
   ['JSON(Defaults([1]))', '{}'],
   ['Trace("invented")', true],
+  ['RandBetween(2,2)', 2],
+  ['EncodeUrl("a b")', 'a%20b'],
+  ['RGBA(255,0,128,0.5)', 'rgba(255, 0, 128, 0.502)'],
+  ['ColorValue("Red")', 'rgba(255, 0, 0, 1)'],
+  ['ColorFade(RGBA(100,150,200,1),0.5)', 'rgba(177, 202, 227, 1)'],
+  ['CountRows(Search([{Name:"Alpha"},{Name:"Beta"}],"PH",Name))', 1],
+  ['DataSourceInfo([], DataSourceInfo.Required, Name)', false],
+  ['IsError(Choices([{x:1}].x))', true],
+  ['IsError(Errors([1]))', true],
 ];
 
 for (const [formula, expected] of CASES) {
@@ -228,7 +238,7 @@ for (const [formula, expected] of CASES) {
 
 test('every function of the table has a conformance case', () => {
   const covered = new Set(CASES.flatMap(([formula]) => [...formula.matchAll(/([A-Za-z]+)\(/g)].map((m) => m[1])));
-  const hostCovered = ['Navigate', 'Back', 'Notify', 'User'];
+  const hostCovered = ['Navigate', 'Back', 'Notify', 'User', 'Rand'];
   const missing = functionNames().filter((name) => !covered.has(name) && !hostCovered.includes(name));
   assert.deepEqual(missing, []);
 });

@@ -4491,7 +4491,7 @@ export const PLATFORM_OPERATIONS = [
   ],
 ];
 
-const PLATFORM_TYPES = [
+export const PLATFORM_TYPES = [
   // Parameter entity used by BackgroundSendEmail. Scalar transport contract only; no standalone attachment entity set is seeded.
   [
     'EntityType',

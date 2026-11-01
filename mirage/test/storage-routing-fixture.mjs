@@ -1,5 +1,6 @@
 // A loopback Dataverse API over an fx_widget table (file column fx_doc, full-size image fx_photo), with the storage
 // routing extension installed right after dataverse-files, with a local-disk storage router or without one.
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,7 +15,6 @@ import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 export const APP_ID = '77777777-7777-4777-8777-7777777777b1';
 export const WIDGET = '77777777-7777-4777-8777-7777777777b2';
-const SECRET_VAR = 'PAQVILO_STORAGE_ROUTING_FIXTURE_SECRET';
 export const MODES = [
   { label: 'with a storage router', storage: true },
   { label: 'without a storage router', storage: false },
@@ -57,7 +57,7 @@ export function routedExtensions(storage, diagnostics = []) {
 }
 
 export async function tempRoot(t, prefix = 'storage-routing-') {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }
@@ -90,7 +90,12 @@ export async function routingApi(t, { storage = true, routes, root, file, state,
       throw error;
     }));
   ownedFixture(t).add(close);
+  // A variable per call, removed after the test, so later tests in this process never inherit the secret.
+  const SECRET_VAR = `PAQVILO_STORAGE_ROUTING_FIXTURE_SECRET_${randomUUID().replaceAll('-', '').toUpperCase()}`;
   process.env[SECRET_VAR] = 'storage-routing-fixture-secret';
+  ownedFixture(t).add(() => {
+    delete process.env[SECRET_VAR];
+  });
   const local = storage ? localRouter(root, routes) : { provider: null, router: null };
   provider = local.provider;
   const router = local.router;
@@ -130,7 +135,6 @@ export async function routingApi(t, { storage = true, routes, root, file, state,
     const raw = Buffer.isBuffer(body);
     const response = await fetch(`${server.origin}/api/data/v9.2/${suffix}`, {
       method,
-      signal: AbortSignal.timeout(20000),
       headers: {
         authorization,
         ...(body !== undefined && !raw ? { 'content-type': 'application/json' } : {}),

@@ -39,7 +39,10 @@ test('offline benchmark loads the current Lense implementation and measures refr
     ],
     {
       cwd: fixture.dir,
-      env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_'))),
+      // A hook's GIT_DIR would make the fixture's baseline the toolkit repository.
+      env: Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')),
+      ),
       encoding: 'utf8',
       windowsHide: true,
       timeout: 30_000,

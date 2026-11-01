@@ -1,5 +1,164 @@
 # Release notes
 
+## 0.9.8
+
+- Load model-driven apps with only the navigation index and the selected table's metadata. Forms, views and fields
+  of other tables arrive when a lookup or subgrid needs them. The complete catalogue at `/_apps/api` still returns
+  every table, form, view and field, and a large catalogue is gzip-compressed when the client accepts gzip. See [startup and responsiveness](../mirage/docs/runtime-performance.md#model-driven-catalogue).
+- Derive column metadata once per request for wide records and FetchXML pages instead of once per row and column.
+  Edited labels and field security appear on the next request.
+- Add `createOwned()` preset factories, which hand a freshly generated dataset to the runtime without a retained
+  copy. Inside a factory, `records.table()` streams rows into checksummed paged record storage beside the state
+  file, with bounded read caches and a primary-key index. Snapshots, exports and record results remain ordinary
+  data, and existing `load()` presets keep their memoized, detached copies. See [data packs](../mirage/docs/data-packs.md)
+  and [generated record storage](../mirage/docs/record-storage.md).
+- Reduce memory and copying on large datasets during startup, journal replay, checkpoint restore and status polling.
+  Unchanged restarts journal only changed sections and tables, and still detect edits made between restarts. A
+  failed startup initialization is discarded instead of persisted.
+- Show a count above the native 5,000-record limit as `5000+` in model-driven grids and subgrids. Next-page
+  navigation continues past the limit, and smaller filtered results keep their exact count.
+- Keep scripts and PCF controls in very large Solution trees: source discovery and client-asset discovery have
+  separate budgets. Source edits to column labels or security, component presence and same-name solution assets
+  reach the served metadata even when no record changed.
+- Capture observed same-origin `/_pcfwebresource/<guid>` stylesheets, which have no file extension, after verifying
+  that the response is CSS; origin, credential, path and size checks still apply. Duplicate observations fetch once
+  and keep their media and cascade order. Two origins that would share one local path fail explicitly. A failed
+  capture or refresh keeps the previous shell, including its valid stylesheets.
+- Sanitize the local rich-text compatibility editor's content with DOMPurify: scripts, event handlers, `javascript:`
+  URLs, frames, objects and SVG/MathML markup are removed. A captured native CKEditor keeps its own filtering. See
+  [public API](public-api.md). Both editors keep paragraphs, tables and preformatted blocks across save and reopen,
+  store native-style JSON hidden values, skip writes and change events for unchanged content (so authored mutation
+  observers cannot loop) and report ready only after the editor's own document loads. Read-only fields stay read-only.
+- Admit each shared model-driven source file once per synchronous metadata projection, retaining fresh filesystem
+  validation for subsequent queries and source-opening actions. Keep the source-byte cache bounded.
+- Use native Windows path resolution during source-index construction, preserving root confinement, file identity,
+  size limits and every before/after pathname and content-version check.
+- Stream complete model-driven metadata one table at a time with backpressure and disconnect handling, retaining
+  the same JSON bytes, exact numeric precision, forms, fields and security capabilities. Avoid cloning business
+  state to initialize the live-bridge configuration.
+- Resolve explicitly table-bound custom-grid column declarations through the direct-observation adapter, including
+  explicitly linked scroll-head clones. Load their exported table definitions on demand, including selected grids
+  beyond the bounded page scan, and keep those tables admitted when the sources reload, so Open source still finds
+  them after an edit. Unbound columns retain candidates; API requests and cell values supply no ownership.
+- Accept a verified native basic-form wrapper when its optional layout reports an all-zero form ID. Explicit
+  unknown form declarations remain unresolved. A generic native modal can join its same-origin `data-page`
+  placement, rendered list/subgrid, exported action type/form and layout table when the join is unique and consistent.
+  Definition URL hints can reject conflicts; unresolved joins retain table and declared-form context without field ownership.
+- Reject modal list/view contradictions and retain subgrid ownership when the grid is its own subgrid wrapper.
+  Join rendered advanced-form layouts only to matching configured steps, including subsequent step replacements.
+- Join native quick-view iframe declarations to a verified parent form and exported QuickForms target. Check
+  the current document path and conflicting navigation hints; retain unknown or conflicting boundaries.
+- Read only approved form/table query hints for definition context, leaving row and unrelated query values unread.
+- Carry verified attribute-host identity through accessible same-origin rich-text editor frames. Independent inner
+  forms, conflicting declarations, missing exports and inaccessible frames retain their evidence boundaries.
+- Retain original-table conflicts on linked grid clones, admit selected late clones within the scan bound, and
+  validate quick-view target declarations independently from the containing form across supported themes.
+- Preserve model-driven recommended requirement levels and PCF schema requirement values. Update every rendered
+  control bound to an attribute, retaining distinct control IDs and correct label associations across tabs.
+- Keep row-spanning baseline form controls within their declared section columns, including subsequent quick views.
+- Reuse the complete startup implementation fingerprint for the first state request while retaining source-change
+  invalidation and concurrent-file-removal handling. Defer unused runtime imports in scaffolded smoke tests and
+  declaration-only helpers; preserve strict content, authentication, denial and external-asset acceptance checks.
+- Remove verification's temporary copy asynchronously, so queued Windows directory-handle releases can finish, and retry
+  a profile file the exited browser still holds with a linear backoff of up to 11 s.
+- Run a code app's module scripts in document order under `codeApps()`, as the browser does without it, so an
+  application module never runs before an earlier inline script. The code apps workbench launches each app in a new
+  frame, so a dev-server reload of the previous document cannot drop applied query parameters.
+- Scan FetchXML and form XML markup in linear time, with the same results, on unterminated comments, tags and
+  attributes.
+- Extend regressions for crowded cards, frame shortcuts, dynamic modal/quick-view identities, nested editors and
+  owned-browser target isolation. The latter drops actual CDP requests in an independent loopback WebSocket proxy:
+  a tab or popup whose interception setup fails or is cancelled closes alone, healthy tabs keep their drafts, watchers
+  and agent endpoints continue, a retried tab applies current sources, and losing the shared browser connection ends
+  the session. See [Lense](lense.md).
+- Local validation reproduces the hosted checks that previously failed only on GitHub: the Security workflow's
+  CodeQL analysis with its pinned bundle, compared with GitHub's dismissed alerts; Windows browser lanes in both
+  Chromium and Edge; an 8.3 `TEMP` alias and an empty npm cache for the package smoke, as on hosted runners; and two
+  extra runs of each changed test file. See [CONTRIBUTING](../CONTRIBUTING.md).
+- Write the code app bootstrap specifier as an inert module string literal, as page script URLs already are.
+- Trace each local request as a tree of spans: the HTTP request, portal Web API call, form submission, Dataverse
+  operation, function, action, bulk message and `$batch` part, permission decisions, plug-in stages and steps with
+  their SDK calls and trace lines, secrets, outbound HTTP, web hook and Service Bus deliveries, asynchronous and
+  background jobs, classic workflows, server logic, cloud flow runs and actions, connector calls, canvas app actions
+  and page renders. Every host of a runtime shares one store: Power Pages, the standalone host with its model-driven,
+  canvas and code apps, the Dataverse Web API listener and its SOAP endpoint, TDS and the local identity provider, and
+  `/_sim/api` administration writes are traced too. Loopback calls, portal pages, the model-driven shell, the canvas player, the
+  code-app client and staged jobs join the trace of the request that caused them, with `staged-by` and `triggered`
+  links, and each audit entry links to its trace. `mirage.trace` sets the level (`off`, `summary` by default, or `full`
+  with redacted inputs and outputs), retention and optional persistence under the state folder; the level and the
+  retention limits also change at run time. Read traces in the `_sim` **Activity** view, through `/_sim/api/trace`, with
+  `paqvilo mirage trace list|show|spans|stats|settings|clear|flush|export|watch` or with `connectRuntime().trace`. See
+  [request tracing](../mirage/docs/tracing.md).
+- Every span that acts on a row names its table and record id, from the dispatch and the plug-in steps to the jobs,
+  web hooks and flows it starts; filter on `recordId` in the API, `--record-id` in the CLI or **Same record** in the
+  view. Plug-in step spans keep their registered images by alias, shared variables and execution context at `full`,
+  and a plug-in fault keeps one identity (type, code, status, plug-in type, step, stage, depth) on the step, the
+  dispatch and the request. Jobs are named by their process, a failed flow run names its failing action, a connector
+  error keeps the provider's own code and cause, sealed flow runs are marked `secure: true`, and spans can end
+  `cancelled`.
+- JavaScript plug-in handlers receive the operation's `sharedVariables` (and `context.SharedVariables` for a
+  `pluginTypes` handler), shared with later JavaScript and CLR steps of the operation. See
+  [project extensions](project-extensions.md#plug-in-type-handlers).
+- The `_sim` navigation has **Home** (Workspace) and **Monitor** with **Health** and **Activity**. Home holds the
+  first-run checklist, how this browser signs in and where to go next; Runtime state holds the runtime, persistence and
+  workspace configuration panels. Health starts with a banner (readiness, site, address, source version, uptime and a
+  strip of key numbers), then compact tiles with **Expand** for their graphs, the system map open by default, Blocking
+  and Configuration, and each counter opens the matching activity. Activity replaces the Live logs, Request audit,
+  Traces and Render & diagnostics views with one workspace: tabs Activities, Log stream, Findings, Pages & render and
+  Stats under one set of filters (time, result, who, table, record id, host, search) that is the page address, and an
+  activity detail with a **Why**
+  line, Steps, Log & findings, Rendered (template source file and line), Request and JSON. One vocabulary (activity,
+  step, finding, log line, who, result) and one time format (local `HH:MM:SS.mmm`, date and UTC on hover) are used in
+  Monitor and Flows & jobs. At level `off` Activities lists the request audit. The old addresses `#dashboard`,
+  `#overview`, `#logs`, `#audit`, `#trace` and `#evidence` redirect to their new place with their filters. Flows & jobs,
+  Backend operations, Data records, Portal identity and Organization identity & API link to the activity of what they
+  ran. With tracing off, Live follows the request audit. See
+  [`_sim` administration](../mirage/docs/sim-administration.md#monitor).
+- Every `_sim` view shares one page layout: the breadcrumb names the page (current item in the accent colour) with the
+  view's (i) after it, one toolbar row with the actions and **Filters · n**, a filter drawer on the right, chips under
+  the toolbar, and explanations behind (i) buttons and tooltips. Every table is one shared table with sortable
+  headings, row dividers, row actions pinned right, ↑/↓ and Enter, and a bottom bar with the count, rows per page and
+  paging; paged Data records sort on the runtime. At phone width the sidebar folds behind **Menu**, the top bar's links
+  move into **Apps & actions**, and Activity's tabs become a dropdown. See
+  [`_sim` administration](../mirage/docs/sim-administration.md#page-layout).
+- Table filters take a logical or an entity set name, and `recordId`, `actorId`, `sessionKey` and `visitorId` take a
+  prefix of at least 8 hexadecimal characters, in traces and the audit. Audit entries record `visitorId` and
+  `sessionKey`. `GET /_sim/api/dashboard` answers `runtime.startedAt` and `runtime.uptimeMs`. `trace list` and
+  `trace spans` print local times with the UTC offset in the header, or ISO UTC with `--utc`. `simulator.trace.subscribe`
+  takes `events` and `traceId` like `connectRuntime().trace.subscribe`.
+- Sort activities by time, duration, step count or errors; search the steps of an activity, keep only its errors and
+  denials, read it as JSON, copy its id or link, and compare two activities side by side with the duration delta of
+  each matched step. Stats compares the root p95 with the previous range of the same length and lists the slowest steps
+  and latest errors. The list sits beside the open activity on wide screens and names each activity's first error; the
+  step drawer shows the path from the root, Parent and Root, and links flow run, job and plug-in step ids to their
+  views. The `_sim` pages follow the browser's dark colour scheme.
+- Link the audit and the trace both ways: the root span of an audited request carries `auditId`, a Liquid read's audit
+  entry names its own `read` span, sign-in entries name their span, and trace summaries carry `auditId`. Filter traces
+  by `auditId` and by `result` (the activity's own result) in the routes, `connectRuntime().trace` and the CLI
+  (`--audit-id`, `--result`), and audit entries by `traceId` (up to 200 ids). Findings raised during a request, the
+  portal and Dataverse request rings and flow runs (`traceSpanId`) name their trace. Inbound `X-Sim-Trace-Id` is read
+  as an audit id only, and outbound calls send it only as the audit id of an audited ancestor.
+- Keep the runtime log stream on the server: `mirage.logs.retain` lines (default 2000), with startup and reload lines
+  and one `plugin` line per declarative plugin rule evaluated, read through `GET /_sim/api/logs` and
+  `connectRuntime().logs()`. A plugin rule evaluation is also a `rule` event on its span. The trace channel takes
+  `events=` and `traceId=`, `GET /_sim/api/render-sources` resolves template steps to their source file and line, and
+  `GET /_sim/api/activity/export?format=bundle` (`connectRuntime().exportBundle()`,
+  `paqvilo mirage trace export --format bundle`) streams one NDJSON bundle of activities, audit entries, log lines,
+  findings and the evidence reference. See [request tracing](../mirage/docs/tracing.md#activity-bundle).
+- Export traces as JSON, NDJSON or OTLP JSON (`resourceSpans`), streamed one trace at a time and bounded by `limit`
+  (200 by default, at most 2000). `trace watch` takes the list filters and `--trace-end`, and ends with exit 0 when the
+  runtime stops; every `trace --json` action prints one envelope, and failures name a code such as `TraceNotFound` or
+  `RuntimeUnreachable`. A filter outside its values answers 400 `InvalidTraceFilter` naming its `parameter`, and the
+  CLI exits 2 for it. `connectRuntime().trace` adds `ancestry`, `subscribe` and `flush`, and a runtime that closes the
+  connection before its response completed rejects with `RuntimeConnectionLost` (CLI exit 1).
+- A trace that reaches `spansPerTrace` stays one trace and counts the refused spans; trace ids from headers must be
+  UUIDs, and `/_sim/api/trace/id/<traceId>` reads any trace id. Persisted traces are written as delta lines after the
+  response, a runtime without a state folder reports `NoStateDirectory`, and trace ids stay out of the state file. File
+  and binary columns are captured as their size and SHA-256, never their bytes.
+
+Synthetic and native qualification are distinct. Loopback passes establish the exercised contracts; they do not
+establish native control coverage, a deployed source revision or production readiness.
+
 ## 0.9.7
 
 ### Improved

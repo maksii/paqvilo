@@ -8,6 +8,7 @@ import path from 'node:path';
 import { AssetCache } from '../lib/asset-cache.mjs';
 import { createSimulator } from '../server.mjs';
 import { renderComponent } from '../lib/platform.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const base = '/webresources/msdyn_/RichTextEditorControl/libs/ckeditor_latest/';
 const origin = 'https://invented.invalid';
@@ -65,7 +66,7 @@ test('compatibility mode excludes an incomplete captured managed RTE definition'
   assert.ok(managedControls[control], 'caller-owned captured definitions stay intact');
 });
 test('a runtime renders compatibility for a cached core alone and native when its language resource is captured', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-rte-readiness-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-rte-readiness-'));
   let app;
   t.after(async () => {
     await app?.close();

@@ -1,4 +1,3 @@
-import { chromium } from 'playwright-core';
 import { parseFetchXml, withLiquidEntityId } from './data.mjs';
 
 const fail = (message, status = 502) => Object.assign(new Error(message), { status, code: 'LIVE_BRIDGE' });
@@ -248,6 +247,8 @@ export class LiveBridge {
     )
       throw fail('Use a loopback browser debugging endpoint.', 400);
     await this.close();
+    // Loaded on first connection: every runtime imports this module, few attach a browser.
+    const { chromium } = await import('playwright-core');
     let browser;
     try {
       browser = await chromium.connectOverCDP(url.href, { timeout: 10000 });

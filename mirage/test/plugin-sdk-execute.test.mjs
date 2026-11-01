@@ -1,14 +1,16 @@
+// @test-kind unproven: local model of named SDK Execute parameter contracts and rollback; CLR scenario marked not natively qualified
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
 import { DataStore } from '../lib/data.mjs';
 import { dispatchSdkCall, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const user = '10000000-0000-0000-0000-000000000001',
   id = '20000000-0000-0000-0000-000000000001';
 const profile = {
@@ -39,7 +41,7 @@ const request = (requestName, values) => ({
 const invoke = (store, value) =>
   dispatchSdkCall({ store, profile, message: { method: 'Execute', userId: user, arguments: [value] } });
 
-test('Named SDK Execute validates parameter contracts before writes and retains typed responses', () => {
+test('Named SDK Execute validates parameter contracts before writes and retains typed responses', async () => {
   const store = storeOf(),
     before = store.snapshot();
   assert.throws(
@@ -48,10 +50,40 @@ test('Named SDK Execute validates parameter contracts before writes and retains 
         store,
         request('Create', { Target: entity({ title: 'Untrusted override' }), BypassCustomPluginExecution: true }),
       ),
-    /Unsupported SDK Execute/,
+    (error) => error.code === 'LocalBackendPermissionDenied' && error.status === 403,
   );
-  assert.throws(() => invoke(store, request('ExecuteTransaction', { Requests: [] })), /Unsupported SDK Execute/);
+  // ExecuteTransaction is answered now (plugin-sdk-messages.mjs); Requests must be an OrganizationRequestCollection.
+  assert.throws(
+    () => invoke(store, request('ExecuteTransaction', { Requests: [] })),
+    (error) => error.code === 'InvalidArgument' && error.details?.innerCode === '0x80040203',
+  );
+  assert.throws(() => invoke(store, request('NotAMessage', {})), /Unsupported SDK Execute/);
   assert.deepEqual(store.snapshot(), before);
+  const bypassStore = storeOf();
+  let observed = 0;
+  bypassStore.setPluginPipeline(
+    () => {
+      observed++;
+    },
+    (c) => c.operation === 'update',
+  );
+  const bypassed = dispatchSdkCall({
+    store: bypassStore,
+    profile: { ...profile, privileges: ['prvBypassCustomPlugins'] },
+    message: {
+      method: 'Execute',
+      userId: user,
+      arguments: [
+        request('Update', {
+          Target: entity({ title: 'Authorized bypass' }),
+          BypassCustomPluginExecution: true,
+        }),
+      ],
+    },
+  });
+  assert.equal(bypassed.responseName, 'Update');
+  assert.equal(bypassStore.tableRows('secondary')[0].title, 'Authorized bypass');
+  assert.equal(observed, 0);
   const retrieved = invoke(
     store,
     request('Retrieve', {
@@ -75,20 +107,23 @@ test('Named SDK Execute validates parameter contracts before writes and retains 
     ).results.Entity.id,
     id,
   );
-  assert.throws(
-    () => invoke(store, request('Delete', { Target: { $type: 'EntityReference', logicalName: 'secondary', id } })),
-    /serialized read-operation/,
-  );
+  // An independent read's step write commits in a transaction of its own (data.mjs openReadLane): the read sees it at
+  // once, the committed state after the lane closes and its commit settles.
+  invoke(store, request('Delete', { Target: { $type: 'EntityReference', logicalName: 'secondary', id } }));
+  assert.equal(store.tableRows('secondary').length, 0);
+  store.closeReadLane(null);
   assert.equal(store.snapshot().tables.secondary.length, 1);
+  await store.settleReadLanes();
+  assert.equal(store.snapshot().tables.secondary.length, 0);
 });
 
 test(
   'Original DLL casts named SDK Execute responses and secondary writes retain caller rollback',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-sdk-execute-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-sdk-execute-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'ExecuteOriginal.cs'),
       assembly = path.join(root, 'ExecuteOriginal.dll');
     await fs.writeFile(
@@ -105,14 +140,7 @@ var deleted=(DeleteResponse)s.Execute(new DeleteRequest{Target=new EntityReferen
 ((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original typed Execute completed");if(target.GetAttributeValue<string>("title")=="reject")throw new InvalidPluginExecutionException("Original Execute rejected after write");
 }}}`,
     );
-    const compiler = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
-    const build = spawnSync(compiler, ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source], {
-      shell: false,
-      windowsHide: true,
-      encoding: 'utf8',
-      timeout: 20000,
-    });
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
       trust: 'execute-local-assembly',
       root,

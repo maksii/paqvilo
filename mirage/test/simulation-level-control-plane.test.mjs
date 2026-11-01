@@ -8,6 +8,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { profileFixture } from './fixtures/deployment-profiles.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const FLOW = '77777777-7777-4777-8777-0000000000f1',
   PACK_API = '77777777-7777-4777-8777-0000000000f2';
@@ -32,7 +33,8 @@ test(
   'flow activation, a deployment-profile switch and a preset apply work at level simulation on the Power Pages host',
   { timeout: 120000 },
   async (t) => {
-    const fixture = await profileFixture(t);
+    // The profile fixture removes its directory only after the runtime below has closed.
+    const fixture = await profileFixture({ after: (fn) => ownedFixture(t).remove(fn) });
     const files = {
       'solution/Entities/x_item/Entity.xml': ENTITY,
       'solution/customapis/x_Notify/customapi.xml':
@@ -59,7 +61,7 @@ test(
       preset: 'seed',
       dataverse: { enabled: true, port: 0, tls: false, tds: { enabled: false } },
     });
-    t.after(() => sim.close());
+    ownedFixture(t).add(() => sim.close());
     const call = async (method, suffix, payload) => {
       const response = await fetch(sim.url + '/_sim/api' + suffix, {
         method,

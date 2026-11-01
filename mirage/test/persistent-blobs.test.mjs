@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { persistentLevel, stateDirectoryOf } from '../lib/organization-host.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CLIENT = '99999999-9999-4999-8999-999999999991';
 const NOTE = '77777777-7777-4777-8777-7777777777b1';
@@ -31,8 +32,8 @@ async function write(root, files) {
 }
 
 async function fixture(t, { level, portal = false, extra = {} }) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'persistent-blobs-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'persistent-blobs-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await write(root, {
     'solution/Other/Solution.xml':
       '<ImportExportXml><SolutionManifest><UniqueName>InventedBlobs</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
@@ -57,7 +58,13 @@ async function fixture(t, { level, portal = false, extra = {} }) {
     ...extra,
     ...(portal ? { sourceDir: path.join(root, 'portal') } : { runtime: { kind: 'dataverse-api' } }),
   };
-  return { root, stateFile, start: () => createSimulator(options) };
+  // Every started runtime closes, even after a failed assertion, before the directory is removed.
+  const start = async () => {
+    const sim = await createSimulator(options);
+    ownedFixture(t).add(() => sim.close());
+    return sim;
+  };
+  return { root, stateFile, start };
 }
 
 async function json(response, status) {
@@ -119,7 +126,6 @@ async function roundTrip(t, options, body = LARGE) {
   const report = sim.state().status?.simulation ?? sim.status?.().simulation;
   await sim.close();
   sim = await start();
-  t.after(() => sim.close());
   const second = await client(sim, first.secret);
   const read = await json(await second.api('GET', `/annotations(${NOTE})?$select=documentbody,subject`), 200);
   await sim.close();
@@ -147,7 +153,6 @@ test('a large note body lives in <stateDir>/blobs across a restart; a missing bl
   // Missing blob: reported once at start, reads as null, $value answers 404 STORAGE_OBJECT_MISSING.
   await fs.rm(path.join(root, 'state', 'blobs'), { recursive: true, force: true });
   const sim = await start();
-  t.after(() => sim.close());
   const { api } = await client(sim, secret);
   const summary = JSON.stringify(await diagnosticsOf(sim));
   assert.match(summary, /STORAGE_OBJECTS_MISSING/);
@@ -175,7 +180,6 @@ test('a small note body stays inline in the pack DATA file, so the committed fil
   assert.equal(row.__blobkey, undefined);
   await fs.rm(path.join(root, 'state'), { recursive: true, force: true });
   const sim = await start();
-  t.after(() => sim.close());
   const { api } = await client(sim); // the state directory (and its registered client) is gone
   assert.equal((await json(await api('GET', `/annotations(${NOTE})?$select=documentbody`), 200)).documentbody, BODY);
 });
@@ -221,7 +225,6 @@ test('a file column ($value) keeps its bytes across a restart at level simulatio
   assert.equal(upload.status, 204, await upload.text());
   await sim.close();
   sim = await start();
-  t.after(() => sim.close());
   const download = await fetch(sim.dataverse.origin + `/api/data/v9.2/x_items(${ITEM})/x_doc/$value`, {
     headers: { authorization: await tokenHeader(sim, first.secret) },
   });
@@ -253,7 +256,6 @@ test('the Power Pages host at level simulation keeps a note body across a restar
 test('dry-run keeps storage in memory and writes no blobs directory', async (t) => {
   const { stateFile, start } = await fixture(t, { level: 'dry-run' });
   const sim = await start();
-  t.after(() => sim.close());
   const { api } = await client(sim);
   await json(
     await api('POST', '/annotations', { annotationid: NOTE, subject: 'Invented note', documentbody: BODY }),

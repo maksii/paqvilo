@@ -4,6 +4,10 @@ const id = (value) =>
   String(value ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
+// FormXml flags are xs:boolean: both canonical words and numeric spellings are
+// valid. Missing flags retain their source defaults; invalid tokens stay off.
+const formBoolean = (value, fallback) =>
+  value === undefined ? fallback : ['true', '1'].includes(String(value).trim());
 const nodes = (root, name) => (root.name === name ? [root] : descendants(root, name));
 const title = (node, lcid) => {
   const titles = descendants(node, 'Title');
@@ -427,7 +431,7 @@ export function compileForm(form, fields, lcid = 1033) {
             column,
             colspan,
             ...(cell.attrs.rowspan ? { rowspan } : {}),
-            showLabel: cell.attrs.showlabel !== 'false',
+            showLabel: formBoolean(cell.attrs.showlabel, true),
           },
         });
         column += colspan;
@@ -439,7 +443,7 @@ export function compileForm(form, fields, lcid = 1033) {
     id: tab.attrs.name ?? tab.attrs.id,
     sourceStructure: sourceStructure(tab),
     label: label(child(tab, 'labels'), lcid) ?? tab.attrs.name ?? 'General',
-    visible: tab.attrs.visible !== 'false',
+    visible: formBoolean(tab.attrs.visible, true),
     columnWidths: (child(tab, 'columns')?.children ?? [])
       .filter((column) => column.name === 'column')
       .map((column) => Number.parseFloat(column.attrs.width) || 100),
@@ -447,8 +451,8 @@ export function compileForm(form, fields, lcid = 1033) {
       ...(section.attrs.name ? { name: section.attrs.name } : {}),
       sourceStructure: sourceStructure(section),
       label: label(child(section, 'labels'), lcid) ?? '',
-      showLabel: section.attrs.showlabel !== 'false',
-      visible: section.attrs.visible !== 'false',
+      showLabel: formBoolean(section.attrs.showlabel, true),
+      visible: formBoolean(section.attrs.visible, true),
       column: (child(tab, 'columns')?.children ?? []).findIndex((column) =>
         descendants(column, 'section').includes(section),
       ),
@@ -458,7 +462,8 @@ export function compileForm(form, fields, lcid = 1033) {
       ...(section.attrs.celllabelalignment ? { labelAlignment: section.attrs.celllabelalignment.toLowerCase() } : {}),
       fields: layoutCells(section).flatMap(({ cell, position }) => {
         const control = child(cell, 'control');
-        if (!control) return [{ ...position, spacer: true, supported: true, visible: cell.attrs.visible !== 'false' }];
+        if (!control)
+          return [{ ...position, spacer: true, supported: true, visible: formBoolean(cell.attrs.visible, true) }];
         const name = control.attrs.datafieldname;
         if (id(control.attrs.classid) === SUBGRID_CLASS) {
           const parameter = (name) => descendants(control, name)[0]?.text.trim();
@@ -471,7 +476,7 @@ export function compileForm(form, fields, lcid = 1033) {
               ...position,
               sourceControl: sourceControl(control),
               label: label(child(cell, 'labels'), lcid) ?? control.attrs.id,
-              visible: cell.attrs.visible !== 'false',
+              visible: formBoolean(cell.attrs.visible, true) && formBoolean(control.attrs.visible, true),
               ...(datasetPcf ? { pcf: datasetPcf } : {}),
               supported: true,
               subgrid: {
@@ -500,8 +505,8 @@ export function compileForm(form, fields, lcid = 1033) {
             sourceControl: sourceControl(control),
             name,
             label: label(child(cell, 'labels'), lcid) ?? fields[name]?.label ?? name ?? control.attrs.id,
-            visible: cell.attrs.visible !== 'false' && control.attrs.visible !== 'false',
-            disabled: control.attrs.disabled === 'true',
+            visible: formBoolean(cell.attrs.visible, true) && formBoolean(control.attrs.visible, true),
+            disabled: formBoolean(control.attrs.disabled, false),
             ...(pcf ? { pcf } : {}),
             supported,
             ...(!supported
@@ -555,12 +560,13 @@ export function compileForm(form, fields, lcid = 1033) {
     clientEvents: descendants(root, 'event').map((node) => ({
       name: String(node.attrs.name ?? '').toLowerCase(),
       attribute: node.attrs.attribute,
-      active: node.attrs.active !== 'false',
+      active: formBoolean(node.attrs.active, true),
       handlers: descendants(node, 'Handler').map((handler) => ({
+        ...(handler.attrs.handlerUniqueId !== undefined ? { handlerUniqueId: handler.attrs.handlerUniqueId } : {}),
         library: handler.attrs.libraryName,
         functionName: handler.attrs.functionName,
-        enabled: handler.attrs.enabled !== 'false',
-        passExecutionContext: handler.attrs.passExecutionContext === 'true',
+        enabled: formBoolean(handler.attrs.enabled, true),
+        passExecutionContext: formBoolean(handler.attrs.passExecutionContext, false),
         parameters: handler.attrs.parameters ?? '',
       })),
     })),
@@ -576,13 +582,13 @@ export function compileForm(form, fields, lcid = 1033) {
 }
 
 /** Exported classic ribbon commands. Unsupported actions/rules remain visible and disabled. */
-export function parseRibbonCommands(root) {
+export function parseRibbonCommands(root, { lcid = 1033 } = {}) {
   if (typeof root === 'string') root = parseSolutionXml(root);
   const definitions = new Map(nodes(root, 'CommandDefinition').map((node) => [node.attrs.Id, node]));
   const labels = new Map(
     nodes(root, 'LocLabel').map((node) => [
       node.attrs.Id,
-      descendants(node, 'Title').find((row) => row.attrs.languagecode === '1033')?.attrs.description ??
+      descendants(node, 'Title').find((row) => Number(row.attrs.languagecode) === Number(lcid))?.attrs.description ??
         descendants(node, 'Title')[0]?.attrs.description,
     ]),
   );

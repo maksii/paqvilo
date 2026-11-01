@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createCapabilityRegistry } from './lib/capability-registry.mjs';
 import { chromium } from 'playwright-core';
+import { windowsLaunchOptions } from './lib/browser-launch.mjs';
 import { editRichText, assertRichText } from './lib/richtext-actions.mjs';
 import { reconcileSupersededRead, correlateNetworkConsole } from './lib/request-evidence.mjs';
 import { auditQuery } from './lib/audit-log.mjs';
@@ -174,15 +175,17 @@ export async function runAcceptance({
     // synchronous requests (lib/navigation-settle.mjs).
     blockingProxy = net.createServer((socket) => socket.destroy());
     await new Promise((resolve) => blockingProxy.listen(0, '127.0.0.1', resolve));
-    ownedBrowser = await chromium.launch({
-      channel: channel === 'chromium' ? undefined : channel,
-      headless: true,
-      args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
-      proxy: {
-        server: `http://127.0.0.1:${blockingProxy.address().port}`,
-        bypass: LOOPBACK_HOSTS.join(','),
-      },
-    });
+    ownedBrowser = await chromium.launch(
+      windowsLaunchOptions({
+        channel: channel === 'chromium' ? undefined : channel,
+        headless: true,
+        args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
+        proxy: {
+          server: `http://127.0.0.1:${blockingProxy.address().port}`,
+          bypass: LOOPBACK_HOSTS.join(','),
+        },
+      }),
+    );
     const localContext = await ownedBrowser.newContext({
       viewport: result.viewport,
       serviceWorkers: 'block',
@@ -258,7 +261,9 @@ export async function runAcceptance({
         navigationHolds = new Set(),
         navigationBudgets = new Map();
       let settlementDeadline = Infinity,
-        actionDeadline = Infinity;
+        actionDeadline = Infinity,
+        // The current step's own deadline: a step's `timeout` overrides the flow's for that step only.
+        actionTimeout = timeout;
       const navigationTimings = new Map();
       const navigationKey = (method, value) => method + ' ' + new URL(value).href;
       const requestFrame = (request) => {
@@ -326,7 +331,7 @@ export async function runAcceptance({
           // Chromium reuses the network id across redirects; all hops share the first
           // hold's budget and leave time for the action's navigation to commit.
           const now = Date.now();
-          const remaining = Math.min(timeout, Math.max(0, actionDeadline - now));
+          const remaining = Math.min(actionTimeout, Math.max(0, actionDeadline - now));
           const key = navigationKey(event.request.method, event.request.url);
           const comparableMs = navigationTimings.get(key);
           const { reserveMs, policy: reservePolicy } = navigationCommitBudget(remaining, {
@@ -373,6 +378,14 @@ export async function runAcceptance({
         });
         await cdp.send('Fetch.enable', { patterns: [DOCUMENT_REQUEST_PATTERN] });
       }
+      // Edge isolates a cross-origin loopback child into its own renderer: this session sees its document
+      // request, then a "swap" detach, and the request's end reaches only the child's own target.
+      cdp.on('Page.frameDetached', ({ frameId, reason }) => {
+        if (reason !== 'swap') return;
+        for (const record of cdpRecords.values())
+          if (record.frameId === frameId && record.type === 'Document' && record.finishedTimestamp === undefined)
+            record.handedOff = true;
+      });
       for (const event of ['frameAttached', 'frameDetached', 'frameNavigated'])
         cdp.on('Page.' + event, (value) =>
           frameEvents.push({
@@ -619,7 +632,7 @@ export async function runAcceptance({
       const loadQuiet = async () => {
         const quiet = await awaitNetworkQuiet(() => [...cdpRecords.values()], {
           frames: () => frameState(frameEvents),
-          timeout,
+          timeout: actionTimeout,
           ignore: (row) => simulatorBackgroundRequest(row.url ?? row.path, origin),
         });
         (observation.loadWaits ??= []).push({ url: safeUrl(page.url()), ...quiet });
@@ -633,7 +646,7 @@ export async function runAcceptance({
           [...pending.values()].filter(
             (record) => record.type !== 'eventsource' && !simulatorBackgroundRequest(record.url, origin),
           );
-        const deadline = Date.now() + timeout;
+        const deadline = Date.now() + actionTimeout;
         settlementDeadline = deadline;
         try {
           let lastProofCheck = 0;
@@ -698,13 +711,23 @@ export async function runAcceptance({
             passed: false,
           };
           observation.steps.push(entry);
+          actionTimeout = step.timeout ?? timeout;
+          if (
+            !Number.isFinite(actionTimeout) ||
+            actionTimeout <= 0 ||
+            (navigationCommitReserveMs !== undefined && navigationCommitReserveMs >= actionTimeout)
+          )
+            throw new Error('A step timeout must be a positive finite number larger than navigationCommitReserveMs.');
+          if (step.timeout !== undefined) entry.timeout = actionTimeout;
+          page.setDefaultTimeout(actionTimeout);
+          page.setDefaultNavigationTimeout(actionTimeout);
           if (
             isLive &&
             (step.mutation ||
               ['identity', 'preset', 'record', 'rememberRecord', 'waitRecord', 'richtext'].includes(step.action))
           )
             throw new Error('A local mutation/state assertion cannot execute in a live observation flow.');
-          actionDeadline = Date.now() + timeout;
+          actionDeadline = Date.now() + actionTimeout;
           const surface = step.frame
             ? (Array.isArray(step.frame) ? step.frame : [step.frame]).reduce(
                 (surface, selector) => surface.frameLocator(selector),
@@ -718,7 +741,7 @@ export async function runAcceptance({
               throw new Error('Navigation must use a portal-relative path.');
             if (step.waitUntil && !['load', 'domcontentloaded'].includes(step.waitUntil))
               throw new Error('Navigation readiness must be load or domcontentloaded.');
-            actionDeadline = Date.now() + timeout;
+            actionDeadline = Date.now() + actionTimeout;
             const response = await page.goto(origin + step.path, {
               // Exported pages may leave asynchronous data requests open while
               // their document and controls are already usable. Navigation
@@ -738,7 +761,7 @@ export async function runAcceptance({
             await control.waitFor({ state: 'attached' });
             entry.alreadyVisible = await control.isVisible();
             if (!entry.alreadyVisible) {
-              actionDeadline = Date.now() + timeout;
+              actionDeadline = Date.now() + actionTimeout;
               await locate(surface, step.trigger).click();
             }
             await control.waitFor({ state: 'visible' });
@@ -766,7 +789,7 @@ export async function runAcceptance({
           } else if (step.action === 'value') {
             // Authored modal scripts can initialize defaults after the control
             // is attached. Assert the resulting value within the action deadline.
-            const deadline = Date.now() + timeout;
+            const deadline = Date.now() + actionTimeout;
             let matched = false;
             let observed = false;
             while (Date.now() < deadline) {
@@ -839,7 +862,7 @@ export async function runAcceptance({
             await page.locator('#confirm').waitFor({ state: 'hidden' });
           } else if (['record', 'rememberRecord', 'waitRecord'].includes(step.action)) {
             let current, matches;
-            const deadline = Date.now() + (step.action === 'waitRecord' ? timeout : 0);
+            const deadline = Date.now() + (step.action === 'waitRecord' ? actionTimeout : 0);
             for (;;) {
               current = await readState(true);
               requireLocal(current);
@@ -863,6 +886,9 @@ export async function runAcceptance({
           actionDeadline = Infinity;
           entry.passed = true;
         }
+        actionTimeout = timeout;
+        page.setDefaultTimeout(timeout);
+        page.setDefaultNavigationTimeout(timeout);
         await page.waitForTimeout(300);
         await settle();
         await capture('final');

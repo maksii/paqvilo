@@ -3,9 +3,13 @@
 // backend, the Dataverse API with managed identity, operation-mode selection (CLR prepared on demand), settle and close.
 // Host-specific parts (portal renderer, personas, live bridge, watcher, status payloads) stay in the hosts.
 import path from 'node:path';
+import { immutableStatus } from './immutable-status.mjs';
 import { pluginHandlers, pluginCatalogue } from './exported-plugins.mjs';
-import { pluginRuntimeDescriptors, prepareClrRuntime, closeClrHostPool } from './plugin-clr.mjs';
+import { pluginRuntimeDescriptors, sharedClrRuntimePreparer, closeClrHostPool } from './plugin-clr.mjs';
+import { releaseStaleUploadedRuntimes, releaseUploadedRuntime } from './plugin-uploaded.mjs';
 import { overlayRegisteredSteps } from './dataverse-plugin-registration.mjs';
+import { bulkMessageAvailabilityRecord } from './bulk-message-availability.mjs';
+import { pluginBypassOwnership } from './plugin-bypass.mjs';
 import { operationHandlers, describe as serverLogicDescribe } from './exported-operations.mjs';
 import { operationCatalogue } from './operation-catalogue.mjs';
 import { workflowHandlers, workflowsWithActivation } from './dataverse-workflows.mjs';
@@ -14,9 +18,9 @@ import { addonHandlers } from './dataverse-addon-common.mjs';
 import { sourceOrganizationExtensions } from './source-organization-extensions.mjs';
 import { createOrganizationRuntime } from './dataverse-organization.mjs';
 import { createOrganizationBackend } from './organization-backend.mjs';
-import { startDataverseApi } from './dataverse-api.mjs';
+import { startDataverseApi, metadataRead, operationCall, unboundFunction } from './dataverse-api.mjs';
 import { createManagedIdentityEndpoints } from './dataverse-managed-identity.mjs';
-import { createConnectorRuntime } from './connector-runtime.mjs';
+import { connectorOf, createConnectorRuntime } from './connector-runtime.mjs';
 import { createHostFlowRuns } from './flow-runs.mjs';
 import { assertProvider, createStorageRouter, preflightProvider, storageSettings } from './storage-provider.mjs';
 import { createLocalDiskStorage } from './storage-local-disk.mjs';
@@ -47,14 +51,17 @@ import { organizationRecord } from './organization-context.mjs';
 import { clockFunction, systemClock, systemIds } from './runtime-clock.mjs';
 import { packDirectory } from './preset-registry.mjs';
 import { DataError } from './data-error.mjs';
-import { dataverseSettings } from './dataverse-settings.mjs';
+import { ASYNC_START_DELAY_MS, dataverseSettings } from './dataverse-settings.mjs';
 import { runtimeSettings } from './runtime-config.mjs';
 import { resolveDeploymentProfiles, loadDeploymentProfiles } from './deployment-profiles.mjs';
-import { readCanvasSources } from './canvas-source.mjs';
+import { readCanvasSources, canvasSourceCoverageGaps } from './canvas-source.mjs';
+import { unsupportedControls } from './canvas-controls.mjs';
+import { CANVAS_ASSETS } from './canvas-assets.mjs';
 import { MODEL_DRIVEN_CAPABILITY_RECORDS } from './model-driven/catalogue.mjs';
 import { customConnectorsOf } from './custom-connector.mjs';
 import { describe as flowTriggersDescribe } from './flow-triggers.mjs';
 import { DataStore, emptyState } from './data.mjs';
+import { createTraceStore } from './trace-store.mjs';
 import { buildSourceGraph, canvasRequirementRows } from './source-graph.mjs';
 import { describeCanvasRuntime } from './canvas-runtime.mjs';
 import { hostnameOf, isLoopbackUrl } from './dataverse-webhooks.mjs';
@@ -247,7 +254,8 @@ function buildProviders(
     }
     // Core Blob REST transport (storage-azurite.mjs); its connection string is read from env here, never stored.
     if (entry.kind === 'azurite') {
-      instances[id] = createAzuriteStorage({ id, settings: entry, env, clock: now });
+      // Blob requests are http-out spans of the host trace store (set once the host composes, so read per request).
+      instances[id] = createAzuriteStorage({ id, settings: entry, env, clock: now, traces: () => store?.traces });
       created.push({ name: `storage/${id}`, item: instances[id] });
       continue;
     }
@@ -356,7 +364,10 @@ function buildProviders(
       stateDirectory,
       trustedScripts: config.connectorScripts ?? [],
     }),
-    secrets: config.secrets ? createSecretResolver({ secrets: config.secrets, clock: now, diagnostic }) : null,
+    // The secret spans go to the host's trace store (store.traces is set once the host composes, so read per call).
+    secrets: config.secrets
+      ? createSecretResolver({ secrets: config.secrets, clock: now, diagnostic, traces: () => store.traces })
+      : null,
     serviceFixtures: createServiceFixtureRegistry({ packs, diagnostic }),
     powerFx: createPowerFxEvaluator(powerFxAdapter === undefined ? {} : { adapter: powerFxAdapter }),
     localServices:
@@ -669,6 +680,47 @@ export async function activeDeploymentProfile({
 
 /** Status `routes`: the /_sim/api prefixes of the routers a host mounts (each router's `routes` export), in mounting order, unique. */
 export const simApiRoutes = (...lists) => [...new Set(lists.flat())];
+// The public trace-store methods an in-process runtime exposes as `simulator.trace` (docs/design/tracing.md).
+const TRACE_METHODS = [
+  'query',
+  'spans',
+  'tree',
+  'span',
+  'ancestry',
+  'stats',
+  'export',
+  'clear',
+  'settings',
+  'configure',
+  'status',
+  'subscribe',
+  'flush',
+];
+export const traceMethods = (traces) =>
+  Object.freeze(Object.fromEntries(TRACE_METHODS.map((name) => [name, traces[name]])));
+
+/**
+ * The trace host and module of an app surface path (D-R3-3): `/_apps/canvas*` and `/_apps/api/canvas/*` are canvas apps,
+ * `/_apps/code*` code apps, `/main.aspx` and every other `/_apps*` path the model-driven shell and its API; null otherwise.
+ */
+export function appTraceSurface(pathname) {
+  if (/^\/_apps\/(?:canvas(?:\/|$)|api\/canvas\/)/.test(pathname)) return { host: 'canvas', module: 'canvas' };
+  if (/^\/_apps\/code(?:\/|$)/.test(pathname)) return { host: 'code-app', module: 'code-apps' };
+  if (pathname === '/main.aspx' || /^\/_apps(?:\/|$)/.test(pathname))
+    return { host: 'model-driven', module: 'model-driven' };
+  return null;
+}
+
+/**
+ * The trace actor of a staff principal ({ kind: 'staff' | 'local-admin', principalId }, staff-session.mjs) with the
+ * user's display name; null for any other principal (a portal visitor keeps its root's contact actor).
+ */
+export function staffActor(organization, principal) {
+  if (!principal?.principalId || !['staff', 'local-admin'].includes(principal.kind)) return null;
+  const user = organization?.principals?.byId(principal.principalId);
+  const name = principal.kind === 'local-admin' ? 'Local administrator' : (user?.fullname ?? user?.domainname ?? null);
+  return { kind: 'staff', id: principal.principalId, name };
+}
 /** Status `modelDrivenApps`: the imported model-driven apps of the Solution metadata as { id, uniqueName, name }. */
 export const modelDrivenAppsOf = (metadata) =>
   (metadata?.modelDrivenApps ?? []).map(({ id, uniqueName, name }) => ({ id, uniqueName, name }));
@@ -692,8 +744,11 @@ function canvasAppsOf(records = []) {
         components: record.tree?.components ?? (record.canvas?.components ?? []).map((name) => ({ name })),
         tree: record.tree ?? null,
         dataSources: record.canvas?.dataSources ?? [],
+        ...(record.canvas?.enums ? { enums: record.canvas.enums } : {}),
         formulas: record.canvas?.formulas ?? [],
         diagnostics: record.canvas?.diagnostics ?? record.diagnostics ?? [],
+        ...(record.canvas?.assetDiagnostics?.length ? { assetDiagnostics: record.canvas.assetDiagnostics } : {}),
+        ...(record[CANVAS_ASSETS] ? { [CANVAS_ASSETS]: record[CANVAS_ASSETS] } : {}),
       },
     }));
 }
@@ -708,8 +763,11 @@ export function codeAppDataverse({ organization, change, origin }) {
     const route = parseDataverseRoute(url.pathname);
     if (!route) throw new DataError('Resource not found.', 404, 'NotFound');
     const user = organization.principals.byId(principal.principalId);
-    const call = () =>
-      organization.records.handle({
+    const principalContext = organizationPrincipalContext(organization.store, user);
+    const call = async () => {
+      if (route.kind === 'metadataEntity' && method === 'GET')
+        return metadataRead({ url, origin: url.origin }, organization.metadata, route);
+      const context = {
         method,
         url,
         origin: url.origin,
@@ -717,10 +775,49 @@ export function codeAppDataverse({ organization, change, origin }) {
         route,
         prefer: parsePrefer(headers.prefer),
         headers,
-        body,
-        ...organizationPrincipalContext(organization.store, user),
+        body: Buffer.isBuffer(body) ? undefined : body,
+        bodyBuffer: Buffer.isBuffer(body) ? body : Buffer.alloc(0),
+        ...principalContext,
         requestId: currentRequest()?.correlationId ?? organization.ids.uuid(),
-      });
+      };
+      // The SDK customapi request does not carry a verb. Use the registry only for an unambiguous,
+      // unbound function. Bound operations need source binding metadata and target identification.
+      const candidate = route.candidate?.name ?? (route.kind === 'function' ? route.name : null);
+      const noParameters =
+        body == null || (typeof body === 'object' && !Array.isArray(body) && !Object.keys(body).length);
+      if (
+        method === 'POST' &&
+        headers['x-sim-code-app-operation'] === 'customapi' &&
+        candidate &&
+        (noParameters || (body && typeof body === 'object' && !Array.isArray(body) && !Buffer.isBuffer(body)))
+      ) {
+        if (candidate === 'WhoAmI' && noParameters)
+          return unboundFunction(
+            { organizationId: organization.organizationId, store: organization.store },
+            { method: 'GET', origin: url.origin, url },
+            { kind: 'function', name: candidate, version: route.version ?? 'v9.2' },
+            context,
+          );
+        const fn = organization.registry.find({ name: candidate, kind: 'function', binding: 'unbound' });
+        const action = organization.registry.find({ name: candidate, kind: 'action', binding: 'unbound' });
+        if (fn && !action) {
+          const functionRoute = { kind: 'function', name: candidate, params: '', version: route.version ?? 'v9.2' };
+          return operationCall(
+            { operations: organization.registry, store: organization.store, api: organization.api },
+            functionRoute,
+            { ...context, method: 'GET', route: functionRoute, functionParameters: body ?? {}, req: { headers } },
+          );
+        }
+      }
+      const extension = organization.routes.find((entry) => !entry.anonymous && entry.match(url.pathname, method));
+      if (extension) return extension.handler({ ...context, req: { headers } });
+      const operated = await operationCall(
+        { operations: organization.registry, store: organization.store, api: organization.api },
+        route,
+        { ...context, req: { headers } },
+      );
+      return operated ?? organization.records.handle(context);
+    };
     return method === 'GET'
       ? organization.read(call)
       : change(() => organization.runOwned(() => organization.runAtomic(call)));
@@ -730,11 +827,20 @@ export function codeAppDataverse({ organization, change, origin }) {
 /**
  * The code-app connector call (code-apps-http.mjs `connectors`): the power.config.json reference key binds a project
  * connection of the same id, else the connector's built-in provider. undefined (answered 501) when nothing implements it.
+ * `caller` names the calling surface in the connector context (canvas-runtime.mjs passes 'canvas').
  */
 export function codeAppConnectors(connectors, connections = {}) {
-  return async ({ reference, operationId, body, principal }) => {
-    const connectorId = reference.apiId ?? reference.key;
+  return async ({ reference, operationId, body, principal, caller = 'code-app' }) => {
+    const connectorId = connectorOf(reference.apiId ?? reference.key);
     const connectionId = Object.hasOwn(connections, reference.key) ? reference.key : null;
+    connectors.validateOperation?.(connectorId, { operationId, parameters: body ?? {} });
+    // An undeclared connector with no default implementation is an unsupported operation, not a failed resolution.
+    if (
+      connectionId === null &&
+      !Object.hasOwn(connections, connectorId) &&
+      !connectors.supports(connectorId, operationId)
+    )
+      return undefined;
     const connection = connectors.resolve({ connectorId, connectionId });
     if (!connectors.supports(connectorId, operationId, connection.provider)) return undefined;
     return connectors.invoke({
@@ -743,7 +849,7 @@ export function codeAppConnectors(connectors, connections = {}) {
       parameters: body ?? {},
       connection,
       context: {
-        caller: 'code-app',
+        caller,
         initiatingUserId: principal?.principalId ?? null,
         correlationId: currentRequest()?.correlationId ?? null,
       },
@@ -757,10 +863,13 @@ export function codeAppConnectors(connectors, connections = {}) {
  *   sources: { plugins(), workflows(), layers() } closures over the current Solution sources; sourcesKey(): a value whose
  *   identity changes when sources reload (an array is compared item by item); overrides(): the operations overrides (a
  *   stable object between commits); portalOperations(): portal or null;
- *   workflowOverrides(), timeoutMs(), diagnostic, clock, ids, scheduler, prepareRuntime (default prepareClrRuntime);
+ *   workflowOverrides(), timeoutMs(), diagnostic, clock, ids, scheduler, prepareRuntime (default sharedClrRuntimePreparer());
  *   runtime (runtimeSettings output), surfaces(): the host surfaces as { legacyKey: enabled } (capability summary keys),
  *   inventory(): the Solution inventory records, localOrigin(): the host's own origin once it listens, codeApps(): the loaded
  *   code app records (code-apps-config.mjs loadCodeApps) that topology() counts; projectRoot: the base of the relative pack paths it reports.
+ *   trace: the mirage.trace settings (trace-settings.mjs) of the one trace store (docs/design/tracing.md) the host creates,
+ *   exposes as host.traces and sets as store.traces; every host of the runtime shares it. traces: an existing trace store to
+ *   share instead (a persona runtime records into its parent's store; trace is then ignored).
  * The host builds handler maps and providers at once; createBackend, createOrganization and startApi run when the host is
  * ready for them (the portal host creates its backend before its organization). The steps below share one context `c`:
  * hostContext (inputs, handler maps, providers, canvas, flow runs, lifecycle state), hostCatalogues, hostRegistry,
@@ -768,9 +877,22 @@ export function codeAppConnectors(connectors, connections = {}) {
  */
 export async function composeOrganizationHost(options) {
   const c = await hostContext(options);
+  // One trace store per organization host; deep layers reach it as store.traces. Persisted traces go under the state folder;
+  // a memory-only runtime (dry-run, no state file) passes null and the store reports why it writes nothing.
+  c.traces =
+    options.traces ??
+    createTraceStore({
+      settings: options.trace ?? {},
+      stateDirectory: () => c.stateDirectory ?? null,
+      // A table filter names the logical or the entity set name (DV-N4-2).
+      entityNames: (name) => options.store.entityNames?.(name) ?? [name],
+    });
+  options.store.traces = c.traces;
   hostCatalogues(c);
   c.registry = hostRegistry(c);
   const host = {
+    // When this organization runtime started (epoch milliseconds on its clock): the dashboard's runtime.startedAt/uptimeMs.
+    startedAt: (options.store.clock ?? systemClock).now(),
     packs: c.packs,
     handlers: c.handlers,
     descriptors: c.descriptors,
@@ -781,6 +903,7 @@ export async function composeOrganizationHost(options) {
     workflows: c.workflows,
     operations: c.operations,
     cloudFlow: c.cloudFlow,
+    traces: c.traces,
     /**
      * Runs fn with this runtime's pack registries (expression operators, shell conventions) and query resolvers in scope:
      * hierarchy operators of portal FetchXML, Liquid and Web API queries resolve through this store's hierarchy module.
@@ -794,7 +917,13 @@ export async function composeOrganizationHost(options) {
     /** Canvas apps for /_apps/canvas/: Solution inventory and project canvas.sources records. */
     canvasApps: () => canvasAppsOf(c.allInventory()),
     /** The host's capability registry (memoised with the catalogues). */
-    capabilities: c.registry,
+    capabilities: () => {
+      const current = c.registry();
+      // Once exposed, callers may add records or edit add()'s returned record.
+      // That registry must keep fresh reports even without a store revision.
+      (c.exposedRegistries ??= new WeakSet()).add(current);
+      return current;
+    },
     ...hostLifecycle(c),
     ...hostReports(c),
   };
@@ -821,7 +950,7 @@ async function hostContext({
   clock = null,
   ids = null,
   scheduler = null,
-  prepareRuntime = prepareClrRuntime,
+  prepareRuntime = sharedClrRuntimePreparer(),
   runtime,
   surfaces = () => ({}),
   inventory = () => [],
@@ -872,7 +1001,12 @@ async function hostContext({
     extensions: null,
     // Project canvas configuration (canvas-source.mjs canvasSettings): enabled (default true) and the records of canvas.sources,
     // read once by loadCanvas(); a missing path is CANVAS_SOURCE_MISSING and a missing preflight requirement.
-    canvas: { enabled: config.canvas?.enabled !== false, records: [], diagnostics: [] },
+    canvas: {
+      enabled: config.canvas?.enabled !== false,
+      codeComponents: config.canvas?.codeComponents === true,
+      records: [],
+      diagnostics: [],
+    },
   };
   c.providers = await composeProviders({
     store,
@@ -948,15 +1082,18 @@ function hostCatalogues(c) {
       return value;
     };
   };
-  c.pluginSteps = c.memo(() =>
-    pluginCatalogue({
+  c.pluginSteps = c.memo(() => {
+    const steps = pluginCatalogue({
       plugins: c.organization ? overlayRegisteredSteps(sources.plugins(), store) : sources.plugins(),
       handlers: handlers.plugins,
       runtimes: c.runtimes,
       descriptors: c.descriptors,
       overrides: overrides() ?? {},
-    }),
-  );
+    });
+    // A deleted step or assembly, or changed uploaded content, closes the uploaded runtime it prepared.
+    if (!store.isolatedCount) releaseStaleUploadedRuntimes(store, c.runtimes, steps, c.diagnostic);
+    return steps;
+  });
   c.workflows = () => workflowsWithActivation(sources.workflows(), c.organization ? store : null);
   c.operations = c.memo(() => [
     ...operationCatalogue({
@@ -976,6 +1113,8 @@ function hostCatalogues(c) {
       .operations()
       .find((entry) => entry.kind === 'cloud-flow' && canonical(entry.processId) === canonical(id));
     return {
+      // The flow's display name (the flow-run span name, docs/design/tracing.md).
+      name: workflow.name ?? null,
       definition: definitionOf(workflow),
       mode: item?.mode ?? 'placeholder',
       steps: item?.configuration?.steps,
@@ -1023,6 +1162,42 @@ function hostRegistry(c) {
     // Register the actual shared seams before modules and packs can claim their names.
     // The offline description installs the same organization over an in-memory store.
     if (c.store) add({ name: 'store', kind: 'provider', level: 'behaviour', stateOwner: 'DataStore', operations: [] });
+    if (c.store)
+      add(
+        bulkMessageAvailabilityRecord({
+          store: c.store,
+          plugins: c.sources.plugins?.(),
+          profiles: [...c.descriptors.values()].map((descriptor) => descriptor.serviceProfile),
+        }),
+      );
+    const ownership = c.pluginSteps().map((item) => {
+      const classified = pluginBypassOwnership(item);
+      return {
+        id: item.id,
+        kind: classified.kind,
+        qualification: classified.qualification,
+        customizationLevel: item.customizationLevel ?? null,
+        evidencePresent: Boolean(classified.evidence),
+      };
+    });
+    const unknownOwnership = ownership.filter((item) => item.kind === 'unknown').length;
+    add({
+      name: 'source-plugin-bypass-ownership',
+      kind: 'inventory',
+      level: 'contract',
+      operations: [],
+      reason: `${unknownOwnership}/${ownership.length} source plug-in ownership classifications are unqualified. Unknown source extensions retain the explicit local custom-adapter bypass contract; system/Microsoft ownership requires evidence.`,
+      seams: {
+        diagnostic: unknownOwnership ? 'PLUGIN_BYPASS_OWNERSHIP_UNKNOWN' : null,
+        steps: ownership,
+        managedBaseEditGuard: {
+          level: 'contract',
+          condition: 'ismanaged=true and customizationlevel=0',
+          nativeQualified: false,
+          ownershipProof: false,
+        },
+      },
+    });
     if (api?.scheduler)
       add({ name: 'scheduler', kind: 'provider', level: 'behaviour', operations: [], stateOwner: 'organization' });
     if (connectors.some((record) => record.name === 'http'))
@@ -1094,12 +1269,16 @@ function hostLifecycle(c) {
         handlers: handlers.plugins,
         runtimes,
         descriptors: c.descriptors,
+        prepareRuntime: c.prepareRuntime,
+        // Registered uploaded assemblies are prepared under the project's ignored .paqvilo cache (plugin-uploaded.mjs).
+        clrUploads: { cacheRoot: path.join(c.projectRoot ?? process.cwd(), '.paqvilo', 'plugin-assemblies') },
         operations: c.operations,
         workflows: c.workflows,
         identities: () => handlers.operations.flowIdentities,
         diagnostic,
         scheduler: c.scheduler,
         systemJobs: () => Boolean(c.organization),
+        asyncStartDelayMs: () => c.organization?.settings?.asyncStartDelayMs ?? ASYNC_START_DELAY_MS,
         connectors: c.connectors,
         secrets: providers.secrets,
         // Queue and topic service endpoints (contracts 2, 5, 6) deliver through providers.messaging (= api.providers.messaging).
@@ -1117,6 +1296,9 @@ function hostLifecycle(c) {
         plugins: () => c.sources.plugins?.(),
         customApis: handlers.customApis,
         pluginHandlers: handlers.plugins,
+        pluginRuntimes: c.descriptors,
+        pluginRuntimeCache: c.runtimes,
+        prepareRuntime: c.prepareRuntime,
         workflowHandlers: handlers.workflows,
         workflowOverrides: c.workflowOverrides,
         cloudFlow: c.cloudFlow,
@@ -1152,11 +1334,12 @@ function hostLifecycle(c) {
       c.epoch++;
       return result;
     },
-    async createOrganization({ settings, change, schema, metadataFields, log = () => {} }) {
+    async createOrganization({ settings, change, schema, metadataFields, log = () => {}, initializing = false }) {
       await lifecycle.loadExtensions();
       c.installed = c.extensions;
       c.organization = await createOrganizationRuntime({
         store,
+        initializing,
         settings,
         change,
         schema,
@@ -1187,6 +1370,7 @@ function hostLifecycle(c) {
     }) {
       c.dataverse = await startDataverseApi({
         organization: c.organization,
+        traces: c.traces,
         host: listenHost,
         tls,
         beforeListen,
@@ -1250,10 +1434,13 @@ function hostLifecycle(c) {
 async function applyOperationOverrides(c, next, commit) {
   const { runtimes, diagnostic } = c;
   const steps = c.pluginSteps().filter((item) => item.kind === 'plugin-step'),
-    prepared = new Map();
+    prepared = new Map(),
+    selected = (item) => next?.[item.key]?.mode ?? item.defaultMode;
   try {
     for (const item of steps) {
-      if (next?.[item.key]?.mode !== 'clr' || runtimes.has(item.id)) continue;
+      // An uploaded assembly without a trusted descriptor is prepared when its step first runs (plugin-uploaded.mjs).
+      if (selected(item) !== 'clr' || runtimes.has(item.id) || (item.uploadedAssemblyId && !c.descriptors.has(item.id)))
+        continue;
       if (!item.clrAvailable)
         throw new DataError(
           'No explicitly trusted CLR descriptor is registered for this exact exported plugin step/type.',
@@ -1276,9 +1463,23 @@ async function applyOperationOverrides(c, next, commit) {
   }
   for (const item of steps) {
     const runtime = runtimes.get(item.id);
-    if (runtime && next?.[item.key]?.mode !== 'clr') {
-      runtimes.delete(item.id);
-      closeClrHostPool({ runtime, diagnostic });
+    if (runtime && selected(item) !== 'clr') {
+      if (runtime.uploaded) releaseUploadedRuntime(runtimes, item.id, diagnostic);
+      else {
+        runtimes.delete(item.id);
+        // Steps of one assembly share a runtime and its hosts: stop them only when no remaining step uses it. The mode
+        // change is already committed; a host still running a queued job stops when the runtime closes.
+        if ([...runtimes.values()].some((other) => other.directory === runtime.directory)) continue;
+        try {
+          closeClrHostPool({ runtime, diagnostic });
+        } catch (error) {
+          if (error.code !== 'LocalPluginHostBusy') throw error;
+          diagnostic({
+            code: 'PLUGIN_CLR_HOST_BUSY',
+            message: 'A CLR host still runs a job; it stops when the runtime closes.',
+          });
+        }
+      }
     }
   }
   c.epoch++;
@@ -1289,6 +1490,7 @@ async function applyOperationOverrides(c, next, commit) {
 /** Step 5: the read-side reports: simulation report, dashboard topology, capability status, preflight and note bodies. */
 function hostReports(c) {
   const { store, providers, canvas } = c;
+  let statusRegistry, statusSnapshot;
   return {
     /**
      * A simulation report (simulation-persistence.mjs report) with the private blob directory listed as a target when an
@@ -1307,7 +1509,8 @@ function hostReports(c) {
     /**
      * The shared part of GET /_sim/api/dashboard (sim-dashboard-routes.mjs): { runtime, nodes, edges, activity } from the
      * registry, providers, configuration, the Dataverse listener and cheap table counts. Memoised on the store revision, the
-     * counters tick and a 5-second time bucket; never reads a secret value, connection settings or a service endpoint URL beyond its hostname.
+     * counters tick and a 5-second time bucket, except activity.trace, which is read per call; never reads a secret value,
+     * connection settings or a service endpoint URL beyond its hostname.
      */
     topology: () => {
       // A 5-second time bucket refreshes counts that change with time alone (message locks and schedules, overdue waits).
@@ -1341,20 +1544,34 @@ function hostReports(c) {
             projectRoot: c.projectRoot,
           }),
         };
-      return structuredClone(c.topologyMemo.value);
+      const value = structuredClone(c.topologyMemo.value);
+      // Every traced request moves the trace counters without a store write or counter tick, so they are read per call.
+      const trace = store.traces ? attempt(() => store.traces.status(), null) : null;
+      if (trace) {
+        const { retained, spans, running, dropped, droppedSpans, latestSequence } = trace;
+        value.activity.trace = { retained, spans, running, dropped, droppedSpans, latestSequence };
+      }
+      return value;
     },
     /** Status payload fields: the legacy boolean summary and the registry report. */
-    capabilityStatus: () =>
+    capabilityStatus: ({ reuse = false } = {}) =>
       (c.sources.readMetadata ?? ((fn) => fn()))(() => {
-        const current = c.registry(),
-          capabilities = current.summary();
+        const current = c.registry();
+        const exposed = c.exposedRegistries?.has(current);
+        if (current === statusRegistry && !exposed) return reuse ? statusSnapshot : structuredClone(statusSnapshot);
+        const capabilities = current.summary();
         // The app surfaces report their fidelity level under their legacy keys, not a boolean.
         // A surface switched off in the configuration (canvas.enabled false) reports 'disabled'.
         for (const name of Object.keys(APP_SURFACES)) {
           const record = current.get(name);
           capabilities[name] = record?.enabled === false ? 'disabled' : (record?.level ?? capabilities[name]);
         }
-        return { capabilities, capabilityReport: current.report() };
+        const result = { capabilities, capabilityReport: current.report() };
+        if (exposed) return result;
+        if (!immutableStatus(result.capabilities) || !immutableStatus(result.capabilityReport)) return result;
+        statusRegistry = current;
+        statusSnapshot = Object.freeze(result);
+        return reuse ? result : structuredClone(result);
       }),
     /**
      * The preflight report (capability-report.mjs) of this running host: its live operations (with /_sim/ overrides), packs,
@@ -1367,12 +1584,40 @@ function hostReports(c) {
       scenario = null,
       strict = false,
       diagnostics = [],
+      preparedCanvas = null,
       env = process.env,
     } = {}) {
       const localServices = c.config.localServices ? await preflightLocalServices(c.config.localServices, { env }) : [];
       // Missing project canvas sources are requirements of the source graph (kind canvas-source).
       // Project canvas apps get the canvas:app/<name> rows Solution apps get (source-graph.mjs canvasRequirementRows), once each.
-      const known = new Set((graph?.requirements?.() ?? []).map((row) => row.id));
+      const preparedRows = preparedCanvas
+        ? canvasRequirementRows(
+            preparedCanvas.map(({ uniqueName, source }) => ({
+              ...source,
+              component: 'canvasapp',
+              name: uniqueName,
+              level: source.screens?.length ? 'behaviour' : 'inventory',
+              sourceDiagnostics: canvasSourceCoverageGaps(source),
+              unsupported: [
+                ...unsupportedControls(source),
+                ...Object.entries(source.codeComponents ?? {})
+                  .filter(([, definition]) => !definition.admitted)
+                  .map(([name]) => ({ name, screen: '', control: 'CodeComponent' })),
+              ],
+            })),
+          )
+        : null;
+      const graphRows = (graph?.requirements?.() ?? []).map(
+        (row) => preparedRows?.find((prepared) => prepared.id === row.id) ?? row,
+      );
+      const known = new Set(graphRows.map((row) => row.id));
+      const projectCanvasRows = preparedRows ?? canvasRequirementRows(canvas.records);
+      const projectRendering = projectCanvasRows.find((row) => row.id === 'canvas:rendering');
+      // Rendering is a shared requirement across both Solution and project apps.
+      // A satisfied Solution row must not hide an unsupported project app.
+      const combinedGraphRows = graphRows.map((row) =>
+        row.id === 'canvas:rendering' && projectRendering?.status === 'unsupported' ? projectRendering : row,
+      );
       const missing = [
         ...canvas.diagnostics
           .filter((entry) => entry.code === 'CANVAS_SOURCE_MISSING')
@@ -1383,13 +1628,14 @@ function hostReports(c) {
             status: 'missing',
             reason: entry.code,
           })),
-        ...canvasRequirementRows(canvas.records).filter((row) => !known.has(row.id)),
+        ...projectCanvasRows.filter((row) => !known.has(row.id)),
       ];
-      const sourceGraph = missing.length
-        ? Object.create(graph ?? null, {
-            requirements: { value: () => [...(graph?.requirements?.() ?? []), ...missing] },
-          })
-        : graph;
+      const sourceGraph =
+        preparedRows || missing.length || combinedGraphRows.some((row, index) => row !== graphRows[index])
+          ? Object.create(graph ?? null, {
+              requirements: { value: () => [...combinedGraphRows, ...missing] },
+            })
+          : graph;
       return buildPreflightReport({
         runtime: c.runtime,
         simulation: level,
@@ -1815,6 +2061,22 @@ function orgNodes({
     },
     { link: '#flows' },
   );
+  // The trace store of this host (docs/design/tracing.md): its level and persistence, linking to the trace view. What it
+  // retains changes with every traced request, so those counters are activity.trace (topology()), not node detail.
+  const trace = store.traces ? attempt(() => store.traces.status(), null) : null;
+  if (trace)
+    node(
+      'org:trace',
+      'org',
+      'Tracing',
+      trace.enabled ? 'ready' : 'disabled',
+      {
+        level: trace.level,
+        persist: trace.persist?.enabled ?? false,
+        persistError: trace.persist?.lastError ?? null,
+      },
+      { link: '#activity' },
+    );
   edge('org:store', 'org:plugins', 'process', 'ready', 'pipeline');
   edge('org:plugins', 'org:store', 'process', 'ready', 'SDK calls');
   edge('org:plugins', 'org:jobs', 'process', 'ready', 'async steps');

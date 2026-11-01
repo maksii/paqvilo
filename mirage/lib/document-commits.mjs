@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
-/** Observe committed Chromium documents without treating hash/history changes as replacement. */
-export async function observeDocumentCommits(page, cdp, { document, commit }) {
+/** Observe committed Chromium documents without treating hash/history changes as replacement.
+ * `document` labels early requests; optional `ready` also requires the CDP identity and loader baseline. */
+export async function observeDocumentCommits(page, cdp, { document, commit, ready }) {
   const suffix = randomUUID().replaceAll('-', '');
   const browserBinding = '__paqviloDocumentCdp' + suffix;
   const frameBinding = '__paqviloDocumentFrame' + suffix;
@@ -20,22 +21,33 @@ export async function observeDocumentCommits(page, cdp, { document, commit }) {
     return pairs.get(token) ?? {};
   };
   const join = (token) => {
-    const pair = pairs.get(token);
-    if (!pair?.frame || !pair.frameId) return;
-    documents.set(pair.frameId, { frame: pair.frame, token });
+    const pair = pairs.get(token),
+      record = sessions.get(pair?.session);
+    if (!pair?.frame || !pair.frameId || !record?.initialized || !record.loaders.get(pair.frameId)) return;
+    const previous = documents.get(pair.frameId);
+    if (previous?.token !== token) documents.set(pair.frameId, { frame: pair.frame, token });
     pairs.delete(token);
+    if (previous?.token !== token) ready?.(pair.frame, token);
   };
-  const navigated = (frame) => {
+  const joinSession = (session, frameId) => {
+    for (const [token, pair] of pairs)
+      if (pair.session === session && (!frameId || pair.frameId === frameId)) join(token);
+  };
+  const navigated = (frame, session) => {
     if (disposed) return;
+    sessions.get(session)?.loaders.set(frame.id, frame.loaderId);
     const previous = loaders.get(frame.id);
     loaders.set(frame.id, frame.loaderId);
-    if (!previous || previous === frame.loaderId) return;
-    const replaced = documents.get(frame.id);
-    if (replaced) commit(replaced.frame, replaced.token);
+    if (previous && previous !== frame.loaderId) {
+      const replaced = documents.get(frame.id);
+      if (replaced) commit(replaced.frame, replaced.token);
+    }
+    joinSession(session, frame.id);
   };
   const forgetFrame = (frameId, frame) => {
     documents.delete(frameId);
     loaders.delete(frameId);
+    for (const record of sessions.values()) record.loaders.delete(frameId);
     for (const [token, pair] of pairs)
       if (pair.frameId === frameId || (frame && pair.frame === frame)) pairs.delete(token);
   };
@@ -43,6 +55,7 @@ export async function observeDocumentCommits(page, cdp, { document, commit }) {
     if (disposed) return;
     const pair = pairFor(token);
     if (!pair) return;
+    // Label early requests even while the independent CDP target is still attaching.
     document(frame, token);
     pairs.set(token, { ...pair, frame });
     join(token);
@@ -58,9 +71,13 @@ export async function observeDocumentCommits(page, cdp, { document, commit }) {
       session,
       owner,
       frameId: null,
+      initialized: false,
+      loaders: new Map(),
       cleanup: () => {
         for (const [name, handler] of listeners) session.off(name, handler);
         contexts.clear();
+        record.loaders.clear();
+        for (const [token, pair] of pairs) if (pair.session === session) pairs.delete(token);
         void session.send('Runtime.removeBinding', { name: browserBinding }).catch(() => {});
       },
     };
@@ -75,10 +92,10 @@ export async function observeDocumentCommits(page, cdp, { document, commit }) {
       const frameId = contexts.get(executionContextId),
         pair = pairFor(payload);
       if (!frameId || !pair) return;
-      pairs.set(payload, { ...pair, frameId });
+      pairs.set(payload, { ...pair, frameId, session });
       join(payload);
     });
-    on('Page.frameNavigated', ({ frame }) => navigated(frame));
+    on('Page.frameNavigated', ({ frame }) => navigated(frame, session));
     on('Page.frameDetached', ({ frameId, reason }) => {
       if (reason !== 'swap') forgetFrame(frameId);
     });
@@ -97,10 +114,14 @@ export async function observeDocumentCommits(page, cdp, { document, commit }) {
       const { frameTree } = await session.send('Page.getFrameTree');
       record.frameId = frameTree.frame.id;
       const remember = (node) => {
-        navigated(node.frame);
+        navigated(node.frame, session);
         for (const child of node.childFrames ?? []) remember(child);
       };
       remember(frameTree);
+      // Keep current tokens pending until this target's own snapshot has seeded its loader.
+      // A historical child entry in the parent target cannot establish OOPIF readiness.
+      record.initialized = true;
+      joinSession(session);
       // OOPIF attachment can follow its initialization script; repeat the identity handshake.
       if (owner) await owner.evaluate((name) => window[name]?.(), reportBinding).catch(() => {});
     } catch (cause) {

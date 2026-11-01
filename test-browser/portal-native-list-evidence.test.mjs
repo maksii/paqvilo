@@ -48,7 +48,6 @@ test('actual native list cells use the emitted exported view and column without 
   });
   browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   const page = await browser.newPage();
-  page.setDefaultTimeout(6000);
   await page.route('**/*', (route) =>
     new URL(route.request().url()).origin === app.url ? route.fallback() : route.abort(),
   );

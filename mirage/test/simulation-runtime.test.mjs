@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo simulation persistence design (declared pack DATA owners, normalized schema and schemaRecords, private runtime checkpoint)
 // Loopback fixtures exercise the same policy through actual HTTP hosts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -5,9 +6,20 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { modelDrivenFixture } from './model-driven-fixture.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { randomBytes } from 'node:crypto';
+import { zipOf } from '../lib/dataverse-solutions.mjs';
+import { assemblyBase64 } from './clr-assembly-fixture.mjs';
 
 const CLIENT = '99999999-9999-4999-8999-999999999998';
 const ITEM = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+// An invented plug-in assembly: one IPlugin type, so the package registers it.
+const UNSIGNED = assemblyBase64({
+  name: 'Contoso.Unsigned',
+  version: '1.0.0.0',
+  typeRefs: ['Microsoft.Xrm.Sdk.IPlugin'],
+  typeDefs: [{ full: 'Contoso.Plugins.Unsigned', interfaces: ['Microsoft.Xrm.Sdk.IPlugin'] }],
+});
 const label = (text) => ({ LocalizedLabels: [{ Label: text, LanguageCode: 1033 }] });
 const newTable = () => ({
   '@odata.type': '#Microsoft.Dynamics.CRM.EntityMetadata',
@@ -35,8 +47,10 @@ async function body(response, expected = 200) {
   return text ? JSON.parse(text) : null;
 }
 async function pack(t, level) {
-  const root = await fs.mkdtemp(path.join(tmpdir(), 'mirage-simulation-runtime-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  // Persistence refuses declared files below a symbolic link (lib/transactional-files.mjs), and a runner's temporary
+  // directory may be one (a symlinked TMPDIR, macOS /var): start from its real path.
+  const root = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), 'mirage-simulation-runtime-')));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'data.json'),
     module = path.join(root, 'pack.mjs');
   await fs.writeFile(
@@ -97,14 +111,12 @@ async function client(sim) {
           ...(value ? { 'content-type': 'application/json', prefer: 'return=representation' } : {}),
         },
         ...(value ? { body: JSON.stringify(value) } : {}),
-        signal: AbortSignal.timeout(15000),
       }),
     ui: (method, suffix, value, etag) =>
       fetch(sim.url + '/_apps/api' + suffix, {
         method,
         headers: { ...headers, ...(etag ? { 'if-match': etag } : {}) },
         ...(value ? { body: JSON.stringify(value) } : {}),
-        signal: AbortSignal.timeout(15000),
       }),
   };
 }
@@ -153,7 +165,6 @@ for (const level of ['dry-run', 'simulation', 'deep'])
     // private checkpoint to survive a restart.
     if (level !== 'dry-run') await fs.rm(fixture.stateFile);
     const restarted = await fixture.start();
-    t.after(() => restarted.close());
     assert.equal(
       restarted.store.tableRows('x_item')[0].x_name,
       level === 'dry-run' ? 'Pack source' : 'Changed in model app',
@@ -191,7 +202,6 @@ test('deep source-table columns survive source reload and checkpoint-free restar
   await sim.close();
   await fs.rm(fixture.stateFile);
   sim = await fixture.start();
-  t.after(() => sim.close());
   c = await client(sim);
   const metadata = await body(
     await c.org('GET', "/EntityDefinitions(LogicalName='x_item')/Attributes(LogicalName='new_extra')"),
@@ -207,9 +217,9 @@ test('deep source-table columns survive source reload and checkpoint-free restar
 });
 
 test('deep declared operation schema keeps source API edits and deletions after reload and checkpoint-free restart', async (t) => {
+  // The custom APIs are part of the sources from the first start, so the fixture starts no runtime of its own.
   const data = await pack(t, 'deep'),
-    fixture = await modelDrivenFixture(t, data.options);
-  await fixture.sim.close();
+    fixture = await modelDrivenFixture(t, { ...data.options, defer: true });
   const files = new Map();
   for (const name of ['new_Kept', 'new_Deleted']) {
     const file = path.join(fixture.solutionDir, 'customapis', name, 'customapi.xml');
@@ -219,7 +229,6 @@ test('deep declared operation schema keeps source API edits and deletions after 
     files.set(file, xml);
   }
   let sim = await fixture.start();
-  t.after(() => sim.close());
   let c = await client(sim);
   const keep = sim.store.tableRows('customapi').find((row) => row.uniquename === 'new_Kept');
   const remove = sim.store.tableRows('customapi').find((row) => row.uniquename === 'new_Deleted');
@@ -253,6 +262,17 @@ test('deep declared operation schema keeps source API edits and deletions after 
   const metadata = await (await c.org('GET', '/$metadata')).text();
   assert.match(metadata, /Name="new_Authored"/);
   assert.doesNotMatch(metadata, /Name="new_Kept"|Name="new_Deleted"/);
+  // The message catalogue a custom API edit rewrites is platform-derived runtime state, never pack DATA: the restart
+  // reseeds it from the authoritative schemaRecords, so steps can still register on the renamed API.
+  const messages = sim.store.tableRows('sdkmessage').map((row) => row.name);
+  assert.ok(messages.includes('new_Authored'));
+  assert.equal(messages.includes('new_Kept') || messages.includes('new_Deleted'), false);
+  assert.ok(sim.store.tableRows('sdkmessagefilter').some((row) => row.primaryobjecttypecode === 'none'));
+  const packData = JSON.parse(await fs.readFile(data.file, 'utf8'));
+  for (const table of ['sdkmessage', 'sdkmessagefilter']) {
+    assert.equal(Object.hasOwn(packData.newTables, table), false);
+    assert.equal(Object.hasOwn(packData.schema.schemaRecords ?? {}, table), false);
+  }
   await body(await c.org('DELETE', `/customapis(${keep.customapiid})`), 204);
   await sim.close();
   await fs.rm(fixture.stateFile);
@@ -264,3 +284,42 @@ test('deep declared operation schema keeps source API edits and deletions after 
   );
   for (const [file, xml] of files) assert.equal(await fs.readFile(file, 'utf8'), xml);
 });
+
+// The secure configuration text and the plug-in package content are control-plane runtime rows at every level that
+// persists pack DATA: they never land in the project's pack files (the secure text and up to 16 MB of package bytes).
+async function controlPlaneRowsStayOutOfPackData(t, level) {
+  const data = await pack(t, level),
+    fixture = await modelDrivenFixture(t, data.options),
+    { sim } = fixture,
+    c = await client(sim);
+  const secret = `invented-secure-text-${randomBytes(8).toString('hex')}`;
+  await body(await c.org('POST', '/sdkmessageprocessingstepsecureconfigs', { secureconfig: secret }), 201);
+  const content = zipOf([
+    {
+      name: 'Contoso.Package.nuspec',
+      data: Buffer.from(
+        '<?xml version="1.0"?><package><metadata><id>Contoso.Package</id><version>1.0.0</version></metadata></package>',
+      ),
+    },
+    { name: 'lib/net462/Contoso.Unsigned.dll', data: Buffer.from(UNSIGNED, 'base64') },
+  ]).toString('base64');
+  await body(await c.org('POST', '/pluginpackages', { content }), 201);
+  assert.ok(sim.store.tableRows('sdkmessageprocessingstepsecureconfig').some((row) => row.secureconfig === secret));
+  assert.ok(sim.store.tableRows('pluginpackage').some((row) => row.name === 'Contoso.Package'));
+  await sim.reload();
+  const text = await fs.readFile(data.file, 'utf8');
+  const packData = JSON.parse(text);
+  for (const table of ['sdkmessageprocessingstepsecureconfig', 'pluginpackage']) {
+    assert.equal(Object.hasOwn(packData.newTables, table), false);
+    assert.equal(Object.hasOwn(packData.schema.schemaRecords ?? {}, table), false);
+  }
+  assert.equal(text.includes(secret), false);
+  assert.equal(text.includes(content), false);
+}
+
+// @test-kind security: secure configuration text and plug-in package content never land in project pack DATA
+test('plug-in package content and secure configuration stay out of simulation pack DATA', (t) =>
+  controlPlaneRowsStayOutOfPackData(t, 'simulation'));
+// @test-kind security: secure configuration text and plug-in package content never land in project pack DATA
+test('plug-in package content and secure configuration stay out of deep pack DATA', (t) =>
+  controlPlaneRowsStayOutOfPackData(t, 'deep'));

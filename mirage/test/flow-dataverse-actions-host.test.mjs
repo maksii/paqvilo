@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const UNBOUND = '77777777-7777-4777-8777-0000000000d1',
   BOUND = '77777777-7777-4777-8777-0000000000d2';
@@ -59,7 +59,7 @@ const files = {
 };
 
 async function host(t, profile) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-dv-actions-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'flow-dv-actions-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const write = async (dir, entries) => {
     for (const [name, text] of Object.entries(entries)) {
@@ -87,7 +87,6 @@ async function host(t, profile) {
     sourceDir: path.join(root, 'portal'),
     solutionRoots: [path.join(root, 'solution')],
     projectRoot: root,
-    stateFile: path.join(root, 'state.json'),
     port: 0,
     watch: false,
     packs: [pack],
@@ -126,47 +125,39 @@ async function host(t, profile) {
 
 const owner = (grants) => ({ userId: USER, evidence: 'Invented flow owner', grants });
 
-test(
-  'PerformUnboundAction and PerformBoundAction run a pack custom API inside the flow run and answer its response',
-  { timeout: 30000 },
-  async (t) => {
-    const { run } = await host(
-      t,
-      owner([
-        { entity: 'x_widget', operations: ['read'] },
-        { message: 'x_Echo', operations: ['execute'] },
-        { message: 'x_Close', operations: ['execute'] },
-      ]),
-    );
-    const unbound = await run(UNBOUND);
-    assert.equal(unbound.status, 201, JSON.stringify(unbound.body));
-    assert.deepEqual(unbound.body.response.body, {
-      status: 'Succeeded',
-      outputs: { statusCode: 200, body: { Result: 'echo:hi' } },
-    });
-    const bound = await run(BOUND);
-    assert.equal(bound.status, 201, JSON.stringify(bound.body));
-    assert.deepEqual(bound.body.response.body, {
-      status: 'Succeeded',
-      outputs: { statusCode: 200, body: { Result: 'close:bye' } },
-    });
-  },
-);
+test('PerformUnboundAction and PerformBoundAction run a pack custom API inside the flow run and answer its response', async (t) => {
+  const { run } = await host(
+    t,
+    owner([
+      { entity: 'x_widget', operations: ['read'] },
+      { message: 'x_Echo', operations: ['execute'] },
+      { message: 'x_Close', operations: ['execute'] },
+    ]),
+  );
+  const unbound = await run(UNBOUND);
+  assert.equal(unbound.status, 201, JSON.stringify(unbound.body));
+  assert.deepEqual(unbound.body.response.body, {
+    status: 'Succeeded',
+    outputs: { statusCode: 200, body: { Result: 'echo:hi' } },
+  });
+  const bound = await run(BOUND);
+  assert.equal(bound.status, 201, JSON.stringify(bound.body));
+  assert.deepEqual(bound.body.response.body, {
+    status: 'Succeeded',
+    outputs: { statusCode: 200, body: { Result: 'close:bye' } },
+  });
+});
 
-test(
-  'without an execute grant, or with a profile user that is no systemuser, the action fails 403 and never runs as SYSTEM',
-  { timeout: 30000 },
-  async (t) => {
-    const { run } = await host(t, owner([{ entity: 'x_widget', operations: ['read'] }]));
-    const denied = await run(UNBOUND);
-    assert.equal(denied.body.response.body.status, 'Failed');
-    assert.equal(denied.body.response.body.outputs.error.code, 'LocalBackendPermissionDenied');
-    const { run: runAsNobody } = await host(t, {
-      userId: NOBODY,
-      evidence: 'Invented',
-      grants: [{ message: 'x_Echo', operations: ['execute'] }],
-    });
-    const nobody = await runAsNobody(UNBOUND);
-    assert.equal(nobody.body.response.body.outputs.error.code, 'LocalBackendIdentityRequired');
-  },
-);
+test('without an execute grant, or with a profile user that is no systemuser, the action fails 403 and never runs as SYSTEM', async (t) => {
+  const { run } = await host(t, owner([{ entity: 'x_widget', operations: ['read'] }]));
+  const denied = await run(UNBOUND);
+  assert.equal(denied.body.response.body.status, 'Failed');
+  assert.equal(denied.body.response.body.outputs.error.code, 'LocalBackendPermissionDenied');
+  const { run: runAsNobody } = await host(t, {
+    userId: NOBODY,
+    evidence: 'Invented',
+    grants: [{ message: 'x_Echo', operations: ['execute'] }],
+  });
+  const nobody = await runAsNobody(UNBOUND);
+  assert.equal(nobody.body.response.body.outputs.error.code, 'LocalBackendIdentityRequired');
+});

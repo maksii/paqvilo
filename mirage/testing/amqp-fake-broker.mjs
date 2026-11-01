@@ -248,8 +248,9 @@ function sectionsOf(payload) {
 /**
  * Starts the broker on 127.0.0.1 (ephemeral port). Options: keyName, key, queues (names), topics ({ topic: [subscriptions] }),
  * maxDeliveryCount, lockMs, maxFrameSize (its frames; small values exercise multi-frame transfers), idleTimeoutMs (announced
- * in open). Returns { port, count(entity), frames, stats, dropConnections(), close() }; frames lists every performative the
- * client sent as { code, fields } decoded by this broker's own codec.
+ * in open). Returns { port, count(entity), frames, payloads, stats, dropConnections(), close() }; frames lists every
+ * performative the client sent as { code, fields } decoded by this broker's own codec; payloads retains completed
+ * transfer bytes for independent wire assertions.
  */
 export async function startFakeBroker({
   keyName = 'RootManageSharedAccessKey',
@@ -272,7 +273,8 @@ export async function startFakeBroker({
   const sendable = (name) => queues.includes(name) || Object.hasOwn(topics, name);
   const receivers = new Set(),
     sockets = new Set(),
-    frames = [];
+    frames = [],
+    payloads = [];
   const stats = { connections: 0, heartbeats: 0, saslFailures: 0 };
   let sequence = 0;
 
@@ -557,7 +559,9 @@ export async function startFakeBroker({
           const { id, chunks } = link.partial;
           link.partial = null;
           link.deliveryCount += 1;
-          const message = sectionsOf(Buffer.concat(chunks)),
+          const completePayload = Buffer.concat(chunks);
+          payloads.push(Buffer.from(completePayload));
+          const message = sectionsOf(completePayload),
             now = Date.now();
           const scheduled = message.annotations['x-opt-scheduled-enqueue-time'];
           if (scheduled instanceof Date && scheduled.getTime() > now)
@@ -639,6 +643,8 @@ export async function startFakeBroker({
     port: server.address().port,
     stats,
     frames,
+    // Completed client transfers, including their actual encoded message bytes.
+    payloads,
     /** Messages an entity holds (available, scheduled and locked). */
     count: (entity) => entities.get(entity)?.length ?? 0,
     /** Drops every client connection (the broker keeps listening; locks stay until they expire, as without link recovery). */

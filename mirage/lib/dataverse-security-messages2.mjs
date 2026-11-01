@@ -325,8 +325,8 @@ export function install(api) {
         // The refusal for a query on another table is a guess.
         if (!/<entity\s+name=['"]principalobjectaccess['"]/i.test(fetchXml))
           throw invalid('The FetchXml query must select principalobjectaccess.');
-        // ponytail: every share row is reset and the FetchXml filter is not applied. Mirage never writes inherited rights (grantAccess
-        // stores 0), so the reset changes nothing observable. The refusal sentence and the privilege gate are guesses.
+        // ponytail: every share row's inherited rights (cascaded shares and reparenting, dataverse-security.mjs) are reset and the
+        // FetchXml filter is not applied. The refusal sentence and the privilege gate are guesses.
         await write(() => {
           for (const share of tableOf(store, 'principalobjectaccess')) share.inheritedaccessrightsmask = 0;
         });

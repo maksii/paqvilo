@@ -40,6 +40,8 @@ const rsa = () => generateKeyPairSync('rsa', { modulusLength: 2048 });
 const CLIENT_KEYS = rsa();
 const FEDERATED_KEYS = rsa();
 const STRANGER = rsa().privateKey;
+// One signing pair for the fixture authorities (createAuthority signingKey); the default per-authority key is tested apart.
+const AUTHORITY_KEYS = rsa();
 const SECRET_RECORD = hashSecret(SECRET);
 
 const TEST_USER = {
@@ -110,7 +112,13 @@ function fixture() {
       redirectUris: [REDIRECT],
     },
   ];
-  const auth = createAuthority({ tenantId: TENANT, applications: () => applications, users, clock: () => state.now });
+  const auth = createAuthority({
+    tenantId: TENANT,
+    applications: () => applications,
+    users,
+    clock: () => state.now,
+    signingKey: AUTHORITY_KEYS,
+  });
   return { applications, state, auth };
 }
 
@@ -185,6 +193,18 @@ test("JWKS publishes one RS256 key whose n and e verify the authority's tokens",
   const publicKey = createPublicKey({ key: { kty: keys[0].kty, n: keys[0].n, e: keys[0].e }, format: 'jwk' });
   assert.equal(verify('sha256', Buffer.from(`${head}.${body}`), publicKey, Buffer.from(signature, 'base64url')), true);
   assert.equal(JSON.parse(Buffer.from(head, 'base64url').toString('utf8')).kid, keys[0].kid);
+});
+
+test('every authority signs with its own key by default: another one refuses its tokens and publishes a different kid', () => {
+  const { applications } = fixture();
+  const authority = () =>
+    createAuthority({ tenantId: TENANT, applications: () => applications, users, clock: () => T0 });
+  const [first, second] = [authority(), authority()];
+  assert.notEqual(first.jwks().keys[0].kid, second.jwks().keys[0].kid);
+  const bearer = `Bearer ${call(first, ccForm()).body.access_token}`;
+  const opts = { origin: ORIGIN, tenantId: TENANT };
+  assert.equal(first.verifyBearer(bearer, opts).ok, true);
+  assert.deepEqual(second.verifyBearer(bearer, opts), { ok: false, reason: 'signature' });
 });
 
 test('OIDC v2 and v1 documents list the endpoints built from origin and tenant', () => {

@@ -4,6 +4,7 @@ import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { clientDateControlsRuntime } from '../lib/date-controls.mjs';
+import { closeServer } from './shared-browser.mjs';
 
 test('browser date fallback builds the native picker group from the bound box and preserves low calendar years in UserLocal hidden values', async (t) => {
   const server = http.createServer((_request, response) => {
@@ -17,7 +18,7 @@ test('browser date fallback builds the native picker group from the bound box an
     </body></html>`);
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => closeServer(server));
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   t.after(() => browser.close());
   const context = await browser.newContext({ timezoneId: 'UTC' });

@@ -1,10 +1,12 @@
+// @test-kind compatibility: Learn Power Pages Web API errors (9004010D, Webapi/error/innererror) and plug-in error codes 0x80040265/0x80040224
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { pluginFixture, pluginId } from './plugin-fixture.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { createSimulator } from '../server.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import {
@@ -16,7 +18,7 @@ import {
 
 test(
   'Original default plugin abort has the Dataverse platform code in actual Power Pages HTTP errors',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
     const fixture = await pluginFixture(t),
       initial = fixture.app.store.snapshot();
@@ -31,29 +33,16 @@ test(
       initial,
       watch: false,
     });
-    t.after(() => app.close());
+    ownedFixture(t).add(() => app.close());
     const source = path.join(fixture.dir, 'Abort.cs'),
       assembly = path.join(fixture.dir, 'Invented.WidgetRules.dll'),
-      sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK);
+      sdk = clrSdk();
     await fs.writeFile(
       source,
       `using System;using System.ServiceModel;using Microsoft.Xrm.Sdk;
 namespace Invented.WidgetRules {public sealed class Validate:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var target=(Entity)c.InputParameters["Target"];var mode=target.GetAttributeValue<string>("fx_title");((ITracingService)services.GetService(typeof(ITracingService))).Trace("Invented HTTP abort {0}",mode);if(mode=="nested"){var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var child=new Entity("fx_widget");child["fx_title"]="default";try{service.Create(child);throw new Exception("Nested fault absent");}catch(FaultException<OrganizationServiceFault> fault){if(fault.Detail.ErrorCode!=unchecked((int)0x80040265)||fault.Detail.Message!="Invented default abort")throw new Exception("Nested platform fault differs");target["fx_note"]="Nested platform fault passed";return;}}if(mode=="custom")throw new InvalidPluginExecutionException(OperationStatus.Failed,unchecked((int)0x8004f001),"Invented explicit custom abort");if(mode=="unrelated")throw new Exception("Invented unrelated exception");throw new InvalidPluginExecutionException("Invented default abort");}}}`,
     );
-    const compiled = spawnSync(
-      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      [
-        '/nologo',
-        '/target:library',
-        '/out:' + assembly,
-        '/reference:' + sdk,
-        '/reference:System.Runtime.Serialization.dll',
-        '/reference:System.ServiceModel.dll',
-        source,
-      ],
-      { encoding: 'utf8', windowsHide: true },
-    );
-    assert.equal(compiled.status, 0, compiled.stdout + compiled.stderr);
+    compileClr(source, assembly, { references: [sdk, 'System.Runtime.Serialization.dll', 'System.ServiceModel.dll'] });
     const runtime = await prepareClrRuntime({
       trust: 'execute-local-assembly',
       root: fixture.dir,
@@ -114,8 +103,9 @@ namespace Invented.WidgetRules {public sealed class Validate:IPlugin {public voi
     const before = app.store.snapshot();
     for (const [mode, expectedCode, message] of [
       ['default', '0x80040265', 'Invented default abort'],
-      ['custom', '0x8004f001', 'Invented explicit custom abort'],
-      ['unrelated', '0x80040265', 'Invented unrelated exception'],
+      // @parity-evidence: native dev-environment recorder corpus faults (Delete step with code -2147220891) and catchCoded (custom API code -2147220970), each in two captures: an InvalidPluginExecutionException answers 0x80040265 whatever code it authors
+      ['custom', '0x80040265', 'Invented explicit custom abort'],
+      ['unrelated', '0x80040224', 'Invented unrelated exception'],
     ]) {
       const response = await fetch(app.url + '/_api/fx_widgets', {
         method: 'POST',
@@ -141,8 +131,8 @@ namespace Invented.WidgetRules {public sealed class Validate:IPlugin {public voi
     assert.equal(failures[2].details.sourceException.errorCode, null);
     assert.equal(
       failures[2].details.innerCode,
-      undefined,
-      'Unrelated exception mapping is unchanged by the default SDK-code correction',
+      '0x80040224',
+      'An ordinary authored exception retains its distinct native unhandled-failure platform code',
     );
     const nested = await fetch(app.url + '/_api/fx_widgets', {
       method: 'POST',

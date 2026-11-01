@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -8,18 +9,18 @@ import verify, { diagnosticSnapshot, compareDiagnostics, assessVerification } fr
 import { createFixture, SITE } from './fixture.mjs';
 
 test('signed-in verification launches the selected external child profile without a credential export', async (t) => {
+  // The browser identity is under test, not the inline baseline: a plain export needs no Git repository.
   const fixture = createFixture();
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-verify-external-profile-'));
-  t.after(() => {
-    fixture.cleanup();
-    fs.rmSync(stateDir, { recursive: true, force: true });
-  });
+  t.after(fixture.cleanup);
+  const stateDir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-verify-external-profile-'));
+  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+  const sourceDir = fixture.dir;
   const userDataDir = path.join(stateDir, 'browser');
   fs.mkdirSync(path.join(userDataDir, 'Profile 2'), { recursive: true });
   const cfg = {
     configDir: stateDir,
     stateDir,
-    sourceDir: fixture.dir,
+    sourceDir,
     siteName: 'fixture',
     envName: 'local',
     origin: 'http://127.0.0.1:1',
@@ -82,19 +83,23 @@ test('strict mode treats truncated diagnostic text as incomplete even when prefi
 });
 
 test('JSON verification emits one final failure report when temporary cleanup also fails', async (t) => {
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-verify-cleanup-report-'));
+  const stateDir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-verify-cleanup-report-'));
   const remove = fs.rmSync;
+  const removeAsync = fs.promises.rm;
   let temporary;
+  let cleanupAttempts = 0;
   t.after(() => {
     if (temporary) remove(temporary, { recursive: true, force: true });
     remove(stateDir, { recursive: true, force: true });
   });
-  t.mock.method(fs, 'rmSync', (file, options) => {
+  t.mock.method(fs.promises, 'rm', async (file, options) => {
     if (path.basename(file).startsWith('paqvilo-verify-')) {
       temporary = file;
+      cleanupAttempts++;
+      assert.deepEqual(options, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
       throw new Error('fixture cleanup failure');
     }
-    return remove(file, options);
+    return removeAsync(file, options);
   });
   const output = [];
   t.mock.method(console, 'log', (line) => output.push(line));
@@ -108,6 +113,8 @@ test('JSON verification emits one final failure report when temporary cleanup al
     site: { startPath: '/' },
   };
   assert.equal(await verify(cfg, { json: true }), 1);
+  assert.equal(cleanupAttempts, 1);
+  assert.equal(fs.existsSync(temporary), true);
   assert.equal(output.length, 1);
   const report = JSON.parse(output[0]);
   assert.equal(report.passed, false);

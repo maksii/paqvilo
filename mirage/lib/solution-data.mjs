@@ -10,6 +10,7 @@ import {
 import { pluralizeEntitySetName, standardTable } from './solution-standard.mjs';
 import { resolveScopedRelationship } from './permissions.mjs';
 import { sourceRecordId } from './source-record-id.mjs';
+import { cloneStateData, copyPlainGraph } from './state-clone.mjs';
 export { sourceRecordId };
 
 export { readSolutionZip };
@@ -54,7 +55,7 @@ function mappingFor(schema, name) {
   }
   if (table.isIntersect) mapping.intersect = true;
   // The table's display name by language (Entity.xml LocalizedNames): services that show a table type use it.
-  if (table.labels && Object.keys(table.labels).length) mapping.labels = structuredClone(table.labels);
+  if (table.labels && Object.keys(table.labels).length) mapping.labels = copyPlainGraph(table.labels);
   // Alternate keys (Web API key addressing and uniqueness) with the defining file.
   const keys = Object.values(table.keys ?? {});
   if (keys.length)
@@ -299,7 +300,7 @@ export function applySolutionData(
     ...state,
     presets: compactBuiltinPresets(state.presets ?? {}, presetLibrary),
   };
-  const result = owned ? input : structuredClone(input);
+  const result = owned ? input : cloneStateData(input, { forkTables: true });
   result.mappings ??= {};
   result.tables ??= {};
   result.simulator ??= {};
@@ -318,20 +319,20 @@ export function applySolutionData(
     const existing = result.mappings[name];
     if (!existing || imported(existing) || dataverseSeeded(existing)) {
       const { fieldMetadata: _f, schemaComplete: _c, ...rest } = mapping;
-      result.mappings[name] = structuredClone(rest);
+      result.mappings[name] = copyPlainGraph(rest);
     } else {
       // A configured mapping keeps the Solution's relationships, primary name column, alternate keys
       // and create defaults (column defaults, state/status pairs) when it names none (as a preset
       // layered over the imported mappings does): a record created through it gets what Dataverse sets.
       for (const key of ['nameColumn', 'alternateKeys', 'recordDefaults', 'stateStatusDefaults', 'labels'])
-        if (existing[key] === undefined && mapping[key] !== undefined) existing[key] = structuredClone(mapping[key]);
+        if (existing[key] === undefined && mapping[key] !== undefined) existing[key] = copyPlainGraph(mapping[key]);
       // Relationships an earlier import gave this configured mapping follow the Solution (a relationship added to the
       // source since then declares its navigation too); relationships the mapping declared itself stay.
       if (
         mapping.relationships !== undefined &&
         (existing.relationships === undefined || solutionRelationships.has(name))
       ) {
-        existing.relationships = structuredClone(mapping.relationships);
+        existing.relationships = copyPlainGraph(mapping.relationships);
         relationshipsTaken.push(name);
       }
     }
@@ -455,7 +456,7 @@ export function applySolutionData(
       if (permission.scope === 'parent') {
         permission.relationship = resolution.descriptor;
         if (!permission.roles?.length) {
-          permission.roles = structuredClone(parent.roles ?? []);
+          permission.roles = copyPlainGraph(parent.roles ?? []);
           permission.inheritedRoles = true;
         }
       } else if (resolution.field) permission.field = resolution.field;
@@ -513,10 +514,10 @@ export function applySolutionData(
           const { fieldMetadata: _f, schemaComplete: _c, ...rest } = mapping;
           preset.mappings[name] = {
             ...preset.mappings[name],
-            ...structuredClone(rest),
+            ...copyPlainGraph(rest),
             relationships: {
               ...preset.mappings[name]?.relationships,
-              ...structuredClone(rest.relationships),
+              ...copyPlainGraph(rest.relationships),
             },
           };
         }
