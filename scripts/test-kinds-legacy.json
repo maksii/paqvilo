@@ -848,7 +848,6 @@
   "test-browser/xray-modal-hierarchy.test.mjs",
   "test-browser/xray-source-identity.test.mjs",
   "test-browser/xray-source-inspection.test.mjs",
-  "test-browser/xray.test.mjs",
   "test/agent-browser-fixture.test.mjs",
   "test/agent-client.test.mjs",
   "test/agent-server.test.mjs",
