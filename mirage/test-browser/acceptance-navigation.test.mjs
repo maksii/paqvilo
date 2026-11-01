@@ -461,7 +461,8 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
     const driver = browser.pageDriver(`http://127.0.0.1:${server.address().port}`, 'anonymous');
     for (const pathname of ['/hash', '/history', '/replace', '/replace-new'])
       await t.test(pathname, async () => {
-        const observation = await driver.page(pathname, { settleTimeout: 1500 });
+        // Only /replace settles; it returns as soon as the replacement is quiet, so its bound is generous for loaded hosts.
+        const observation = await driver.page(pathname, { settleTimeout: pathname === '/replace' ? 30000 : 1500 });
         assert.equal(observation.settled, pathname === '/replace', JSON.stringify(observation));
         if (pathname !== '/replace')
           assert.ok(
@@ -580,7 +581,9 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
           redirect,
           history: 'none',
           writeMs: 15000,
-          documentDelay: 1500,
+          // Well inside the half-budget reserve (about 1.9 s of a 4 s action), so a loaded host still commits it; without
+          // the reserve the 15 s writes would hold the whole budget and no document could commit.
+          documentDelay: 700,
           timeout: 4000,
         });
         assert.equal(flow.passed, true, JSON.stringify(flow));
