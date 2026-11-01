@@ -427,14 +427,18 @@ export async function verifyParity({
       const semanticText = JSON.stringify(semantic, null, 2);
       observation.semanticDomSha256 = sha(semanticText);
       observation.htmlSha256 = sha(await page.content());
-      const screenshot = await page.screenshot({
-        path: pathModule.join(outputDir, `${label}.png`),
-        fullPage: true,
-        animations: 'disabled',
-        caret: 'hide',
-        style: '#paqvilo-panel{visibility:hidden !important}',
-        timeout,
-      });
+      const shot = pathModule.join(outputDir, `${label}.png`);
+      const screenshot =
+        observation.fontsReady === false
+          ? await renderedScreenshot(page, shot)
+          : await page.screenshot({
+              path: shot,
+              fullPage: true,
+              animations: 'disabled',
+              caret: 'hide',
+              style: '#paqvilo-panel{visibility:hidden !important}',
+              timeout,
+            });
       await fs.writeFile(pathModule.join(outputDir, `${label}.dom.json`), semanticText);
       result.artifacts[`${label}Screenshot`] = pathModule.join(outputDir, `${label}.png`);
       result.artifacts[`${label}Dom`] = pathModule.join(outputDir, `${label}.dom.json`);
@@ -552,5 +556,28 @@ if (process.argv[1] && pathModule.resolve(process.argv[1]) === fileURLToPath(imp
   } catch (error) {
     console.error(safeMessage(error.message));
     process.exitCode = 1;
+  }
+}
+
+// Playwright's screenshot first waits for document.fonts.ready, bounded only by its own timeout: a web font that never
+// arrives costs the whole timeout (30 s by default) and yields no image. Once the bounded readiness wait has recorded
+// unsettled fonts, capture what the page rendered with its fallback fonts through CDP, which does not wait for them.
+async function renderedScreenshot(page, file) {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await page.evaluate(() =>
+      document.getElementById('paqvilo-panel')?.style.setProperty('visibility', 'hidden', 'important'),
+    );
+    const { cssContentSize } = await cdp.send('Page.getLayoutMetrics');
+    const { data } = await cdp.send('Page.captureScreenshot', {
+      format: 'png',
+      captureBeyondViewport: true,
+      clip: { x: 0, y: 0, width: Math.ceil(cssContentSize.width), height: Math.ceil(cssContentSize.height), scale: 1 },
+    });
+    const png = Buffer.from(data, 'base64');
+    await fs.writeFile(file, png);
+    return png;
+  } finally {
+    await cdp.detach().catch(() => {});
   }
 }
