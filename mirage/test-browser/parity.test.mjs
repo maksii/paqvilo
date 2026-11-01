@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own parity verifier and parity-suite drivers (mirage/verify.mjs, mirage/parity-suite.mjs)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -246,6 +247,13 @@ test(
     assert.equal(result.local.fontsReady, false);
     assert.ok(result.local.readinessFailures.some((item) => item.includes('Document fonts did not settle')));
     assert.ok(result.local.pendingRequests.some((item) => item.url.includes('slow-font.woff2')));
+    // The stalled font does not cost the screenshot its own timeout: what rendered (fallback font) is still captured.
+    assert.ok(await fs.stat(result.artifacts.localScreenshot));
+    // It fails on the readiness finding, reached through the full comparison, not on an aborted capture.
+    assert.ok(
+      result.differences.some((item) => /^local: \d+ readinessFailures\.$/.test(item)),
+      JSON.stringify(result.differences),
+    );
     mode = 'console';
     result = await verify('console');
     assert.equal(result.passed, false);

@@ -133,7 +133,6 @@
   "mirage/test-browser/navigation-settle.test.mjs",
   "mirage/test-browser/operations.test.mjs",
   "mirage/test-browser/pages-client-api-forms.test.mjs",
-  "mirage/test-browser/parity.test.mjs",
   "mirage/test-browser/pcf-dataset-resize.test.mjs",
   "mirage/test-browser/pcf-debug-date.test.mjs",
   "mirage/test-browser/pcf-example-field-types.test.mjs",
