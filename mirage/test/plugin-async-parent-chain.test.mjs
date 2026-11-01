@@ -87,13 +87,19 @@ async function organization(t, steps, handlers = new Map(), { runtimes = new Map
     descriptors,
     scheduler,
   });
-  t.after(async () => {
-    await backend.close();
-    store.close();
-    await new Promise((resolve) => {
-      receiver.close(resolve);
-      receiver.closeAllConnections();
-    });
+  // @parity-evidence: fixture teardown order only (Windows EPERM when the CLR cache was removed before the backend closed); no assertion changed
+  // A closer: it runs before the owned directory removers, so the CLR hosts release the runtime's files first, and the
+  // receiver closes even when the backend does not.
+  ownedFixture(t).add(async () => {
+    try {
+      await backend.close();
+      store.close();
+    } finally {
+      await new Promise((resolve) => {
+        receiver.close(resolve);
+        receiver.closeAllConnections();
+      });
+    }
   });
   const settle = async () => {
     await scheduler.runDue();
@@ -463,7 +469,7 @@ test('jobs of a Web API UpsertMultiple end in its relabelled main operation', { 
     descriptors,
     scheduler,
   });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   const target = (key) => ({ '@odata.type': 'Microsoft.Dynamics.CRM.x_item', x_itemid: key, x_name: 'Upserted' });
   const response = await f.request('POST', '/x_items/Microsoft.Dynamics.CRM.UpsertMultiple?tag=invented-upsert', {
     Targets: [target(fresh), target(existing)],
