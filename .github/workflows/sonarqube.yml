@@ -1,0 +1,60 @@
+name: SonarQube
+on:
+  push:
+    branches:
+      - main
+      # Release line: analysed so pull requests into it have a base to compare with.
+      - 0.9.8
+  pull_request:
+    branches:
+      - main
+      - 0.9.8
+    types:
+      - opened
+      - synchronize
+      - reopened
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sonarqube-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  analysis:
+    # Fork and Dependabot pull requests receive no repository secrets.
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
+    name: SonarQube analysis and quality gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # Full history: blame decides which lines are new code.
+          fetch-depth: 0
+          persist-credentials: false
+      # The community branch plugin needs explicit branch or pull request parameters.
+      - name: Select the analysed branch or pull request
+        id: target
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BRANCH: ${{ github.head_ref }}
+          PR_BASE: ${{ github.base_ref }}
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
+          BRANCH: ${{ github.ref_name }}
+        run: |-
+          if [ "$EVENT" = pull_request ]; then
+            args="-Dsonar.pullrequest.key=$PR_NUMBER -Dsonar.pullrequest.branch=$PR_BRANCH -Dsonar.pullrequest.base=$PR_BASE -Dsonar.scm.revision=$PR_SHA"
+          else
+            args="-Dsonar.branch.name=$BRANCH"
+          fi
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+      - uses: SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >-
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=600
+            ${{ steps.target.outputs.args }}
