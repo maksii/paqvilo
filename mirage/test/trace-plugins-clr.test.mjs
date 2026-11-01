@@ -80,7 +80,7 @@ test(
       settings: dataverseSettings({ enabled: true }),
       extensions: [...EXTENSIONS],
     });
-    t.after(() => organization.close());
+    ownedFixture(t).add(() => organization.close());
     store.traces = createTraceStore({ settings: { level: 'summary' } });
     const traces = store.traces;
     const step = {
@@ -194,7 +194,7 @@ test(
       settings: dataverseSettings({ enabled: true }),
       extensions: [...EXTENSIONS],
     });
-    t.after(() => organization.close());
+    ownedFixture(t).add(() => organization.close());
     const PRE = '30000000-0000-4000-8000-0000000000c2',
       POST = '30000000-0000-4000-8000-0000000000c3';
     const step = (id, stage, image) => ({

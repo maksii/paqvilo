@@ -624,6 +624,13 @@ test('every tab and the open activity start with content, keep prose short and n
     for (const [name, hash] of views) {
       await page.goto(`${sim.url}/_sim/${hash}`);
       await page.locator(ready[name]).first().waitFor();
+      // The view loads its parts separately: measure the finished layout, once no part still shows its loading line.
+      await page.waitForFunction(
+        () =>
+          ![...document.querySelectorAll('[role="status"]')].some((el) =>
+            /^(Loading|Resolving)\b/.test(el.textContent.trim()),
+          ),
+      );
       await page.evaluate(() => scrollTo(0, 0));
       const measured = await page.evaluate(measureView);
       const detailY = await page.evaluate(topOf, '#activity-why');

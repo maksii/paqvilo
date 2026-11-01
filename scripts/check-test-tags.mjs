@@ -5,7 +5,8 @@
 //   node scripts/check-test-tags.mjs --report          counts per kind over every test file (no failure)
 //   node scripts/check-test-tags.mjs <file...>         tag syntax of the named files only
 // A changed test file needs a valid kind for every test. Removing or rewriting a line inside a `parity` region
-// also needs a `// @parity-evidence: <proof>` line added by the same change.
+// also needs a `// @parity-evidence: <proof>` line added by the same change. Files listed in scripts/test-kinds-legacy.json
+// predate the rule: they are skipped while they carry no @test-kind line at all, and checked in full once one is added.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +21,16 @@ const TAG_BODY = /^\s+([a-z]+(?:\+[a-z]+)*)\s*:\s*(\S.*)$/;
 const DECLARATION = /^\s*(?:(?:test|it|describe|suite)(?:\.(?:only|skip|todo))?\s*\(|for\s*\(|\[.*\]\.forEach\()/;
 const TOP_LEVEL = /^(?:(?:test|it|describe|suite)(?:\.(?:only|skip|todo))?\s*\(|for\s*\(|\[.*\]\.forEach\()/;
 const FILE_TAG_LINES = 40;
+const ANY_TAG = /^\s*\/\/\s*@test-kind\b/m;
+
+function legacyFiles() {
+  try {
+    return new Set(JSON.parse(fs.readFileSync(path.join(root, 'scripts', 'test-kinds-legacy.json'), 'utf8')));
+  } catch (error) {
+    if (error.code === 'ENOENT') return new Set();
+    throw error;
+  }
+}
 
 function git(args, { allowFailure = false } = {}) {
   const result = spawnSync('git', ['--no-optional-locks', ...args], {
@@ -111,11 +122,11 @@ export function diffFacts(diff) {
   return { removed, evidence };
 }
 
-export function check({ files, newText, oldText, diffOf }) {
+export function check({ files, newText, oldText, diffOf, legacy = new Set() }) {
   const failures = [];
   for (const file of files.filter((file) => TEST_FILE.test(file))) {
     const text = newText(file);
-    if (text == null) continue;
+    if (text == null || (legacy.has(file) && !ANY_TAG.test(text))) continue;
     const parsed = parseTestKinds(text);
     for (const error of parsed.errors) failures.push(`${file}: ${error}`);
     const old = oldText?.(file);
@@ -181,7 +192,7 @@ function run(args) {
   } else {
     options = { files: args, newText: (file) => fs.readFileSync(path.resolve(root, file), 'utf8') };
   }
-  const failures = check(options);
+  const failures = check({ ...options, legacy: legacyFiles() });
   for (const failure of failures) console.error(failure);
   if (failures.length) {
     console.error(`${failures.length} test-kind problem(s); see docs/test-kinds.md.`);

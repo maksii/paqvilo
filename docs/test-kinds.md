@@ -2,7 +2,9 @@
 
 Every test file declares what kind of truth its assertions encode, so a reader knows whether a failing assertion
 means "the code regressed" or "the expectation may be refined". `scripts/check-test-tags.mjs` enforces the tags on
-every test file a change adds or modifies.
+every test file a change adds or modifies. Test files that predate the rule are listed in
+`scripts/test-kinds-legacy.json`: the checker skips a listed file while it has no `@test-kind` line at all and checks it
+in full once one is added, so tag the whole file when you start. New files are never added to the list.
 
 ## Tag syntax
 

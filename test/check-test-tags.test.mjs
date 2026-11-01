@@ -62,3 +62,15 @@ test('a parity line changes only together with a @parity-evidence line', () => {
     [],
   );
 });
+
+test('a listed legacy file is skipped while untagged and checked in full once it carries a tag', () => {
+  const untagged = "import test from 'node:test';\ntest('old', () => {});\ntest('older', () => {});";
+  const run = (files, text) =>
+    check({ files: Object.keys(files), newText: (file) => files[file] ?? text, legacy: new Set(['old.test.mjs']) });
+  assert.deepEqual(run({ 'old.test.mjs': untagged }), []);
+  assert.equal(run({ 'new.test.mjs': untagged }).length, 2, 'a file outside the list is checked');
+  assert.deepEqual(run({ 'old.test.mjs': `// @test-kind contract: tagged when touched\n${untagged}` }), []);
+  const perTest =
+    "import test from 'node:test';\n// @test-kind contract: one test tagged\ntest('old', () => {});\ntest('older', () => {});";
+  assert.match(run({ 'old.test.mjs': perTest })[0], /old\.test\.mjs: line 4: test has no @test-kind/);
+});

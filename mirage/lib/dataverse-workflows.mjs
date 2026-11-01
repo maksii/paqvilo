@@ -945,18 +945,15 @@ async function afterWriteTriggers(api, config, c, mapping, { operation, id }) {
   const { store } = api;
   const logical = mapping.logicalName;
   const rowId = bare(id);
+  const definitions = classicDefinitions(store, logical).filter((definition) => Number(definition.mode) === 1);
+  if (!definitions.length) return;
+  // Through the primary-key index: a search of the table would cost every write a full pass.
+  const rows = operation === 'delete' ? null : store.tableRows(logical);
   const record =
-    operation === 'delete'
-      ? entry.existing
-      : (store.tableRows(logical).find((row) => sameId(row[mapping.idColumn], rowId)) ?? null);
+    operation === 'delete' ? entry.existing : (rows[store.rowPositions(mapping, rows, rowId)?.[0]] ?? null);
   if (!record) return;
-  for (const definition of classicDefinitions(store, logical)) {
-    if (
-      Number(definition.mode) !== 1 ||
-      !triggerFires(definition, operation, entry.changed) ||
-      !inScope(store, definition, record)
-    )
-      continue;
+  for (const definition of definitions) {
+    if (!triggerFires(definition, operation, entry.changed) || !inScope(store, definition, record)) continue;
     if (
       pluginStepBypassed(
         workflowLogic(store, definition),

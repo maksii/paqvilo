@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own Lense X-ray inspector UI (lense/xray-ui.mjs) against an invented loopback portal
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -32,6 +33,35 @@ const waitField = async (page, qualified, status = 'exact') => {
     },
     { qualified, status },
   );
+};
+// Waits for the X-ray card title. A timeout alone does not say why the card shows something else, so the failure carries
+// the selected element, its identity and evidence states, and the card's visibility at that moment.
+const titled = async (page, title) => {
+  try {
+    await page.locator('#paqvilo-xray').locator('.title').getByText(title, { exact: true }).waitFor();
+  } catch (error) {
+    const state = await page
+      .evaluate(() => {
+        const host = document.getElementById('paqvilo-xray'),
+          ui = host.shadowRoot ?? host,
+          identity = host.__px.selection(),
+          node = host.__px.selectedNode();
+        return {
+          selected: node?.outerHTML.slice(0, 120) ?? null,
+          title: identity?.title,
+          kind: identity?.kind,
+          owner: identity?.evidence?.owner?.status,
+          source: identity?.evidence?.source?.status,
+          refs: (identity?.evidence?.source?.refs ?? []).map((ref) => `${ref.name ?? ref.id}:${ref.status}`),
+          cardHidden: ui.querySelector('.card')?.hidden,
+          cardTitle: ui.querySelector('.card .title')?.textContent ?? null,
+          details: ui.querySelector('[data-action=details]')?.getAttribute('aria-pressed'),
+          scope: host.__px.getSelectionScope(node ?? undefined),
+        };
+      })
+      .catch((reason) => ({ unavailable: String(reason?.message ?? reason) }));
+    throw new Error(`${error.message}\nX-ray state: ${JSON.stringify(state)}`, { cause: error });
+  }
 };
 let browser;
 before(async () => {
@@ -193,7 +223,7 @@ test(
     assert.equal(await page.evaluate(() => window.actions), 0);
     await xray.getByRole('button', { name: 'Details', exact: true }).click();
     await pick('.updates h2');
-    await xray.locator('.title').getByText('Partial', { exact: true }).waitFor();
+    await titled(page, 'Partial');
     await xray.getByText('web-templates/Partial.webtemplate.source.html', { exact: false }).first().waitFor();
     const template = await nextOpen(() =>
       xray
@@ -220,7 +250,7 @@ test(
       document.querySelector('.columns').prepend(node);
     });
     await pick('.updates h2');
-    await xray.locator('.title').getByText('Partial', { exact: true }).waitFor();
+    await titled(page, 'Partial');
     await xray.getByRole('button', { name: 'Details', exact: true }).click();
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.keyboard.down('Control');
