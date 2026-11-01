@@ -705,6 +705,44 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
     });
   });
 
+  // The trigger looks the written row up through the table's primary-key index. A linear search per write made every
+  // PATCH on a 300k-row table cost a full pass even with no trigger firing (the storage volume gate's HTTP PATCHes).
+  it('a real-time trigger finds the written row by key, without reading the whole table', async () => {
+    const filler = 5000;
+    const rows = store.state.tables.contoso_widget;
+    const before = rows.length;
+    store.transact(() => {
+      for (let n = 0; n < filler; n++)
+        rows.push({ contoso_widgetid: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`, name: `filler ${n}` });
+    });
+    // Written last, so a search from the start passes every filler row.
+    const id = await create({ name: 'kappa' });
+    let reads = 0;
+    // The index cache is keyed by the row array, so the counting proxy stays in place from before the warm-up write.
+    store.state.tables.contoso_widget = new Proxy(rows, {
+      get(target, key, receiver) {
+        if (typeof key === 'string' && /^(0|[1-9]\d*)$/.test(key)) reads++;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    try {
+      const patch = async (status) => {
+        const response = await call(webApi(`contoso_widgets(${id})`), { method: 'PATCH', body: { status } });
+        assert.equal(response.status, 204, await response.clone().text());
+      };
+      await patch(1);
+      reads = 0;
+      await patch(2);
+      assert.ok(reads < filler / 10, `${reads} row reads for one PATCH of a ${filler + 1}-row table`);
+      assert.equal(widgetRow(id).status, 2);
+    } finally {
+      store.state.tables.contoso_widget = rows;
+      store.transact(() => {
+        rows.splice(before, filler);
+      });
+    }
+  });
+
   it("a user-scoped trigger starts jobs only for rows the definition's owner owns", async () => {
     const who = await (await call(webApi('WhoAmI'))).json();
     const definition = () => store.tableRows('workflow').find((row) => row.workflowid === WF(46));
