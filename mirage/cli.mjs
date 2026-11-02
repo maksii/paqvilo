@@ -155,17 +155,15 @@ try {
   process.exit(invocationCommand() === 'preflight' ? 2 : 1);
 }
 const { values: args, positionals, tokens } = parsed;
-const stateDir = path.resolve(
-  args['state-dir'] ??
-    path.join(
-      args.config
-        ? path.dirname(path.resolve(args.config))
-        : args.project
-          ? path.dirname(path.resolve(args.project))
-          : process.cwd(),
-      '.paqvilo',
-    ),
-);
+let statePath = args['state-dir'];
+if (statePath == null) {
+  let base;
+  if (args.config) base = path.dirname(path.resolve(args.config));
+  else if (args.project) base = path.dirname(path.resolve(args.project));
+  else base = process.cwd();
+  statePath = path.join(base, '.paqvilo');
+}
+const stateDir = path.resolve(statePath);
 const command = positionals[0] ?? 'serve';
 if (args.help && command !== 'help' && !MIRAGE_CORE_COMMANDS.includes(command)) {
   invocationError(new Error(unknownMirageCommand(command)));
@@ -199,7 +197,8 @@ Default state and evidence paths are under .paqvilo. Map deploymentProfiles in c
 Presets (registry; a portal lists only packs that match it): ${Object.entries(
     Object.keys(builtinPresets).reduce((groups, id) => {
       const pack = presetDescriptor(builtinPresets, id)?.pack ?? 'generic';
-      (groups[pack] ??= []).push(id);
+      if (!groups[pack]) groups[pack] = [];
+      groups[pack].push(id);
       return groups;
     }, {}),
   )
@@ -453,7 +452,7 @@ try {
               .filter((row) => row.inScope && row.status !== 'satisfied')
               .map(
                 (row) =>
-                  `  ${row.blocking ? 'BLOCKING ' : ''}${row.status} ${row.id}${row.message ? ` - ${row.message}` : ''}`,
+                  `  ${row.blocking ? 'BLOCKING ' : ''}${row.status} ${row.id}${row.message ? ' - ' + row.message : ''}`,
               ),
           ].join('\n'),
         );
@@ -504,6 +503,25 @@ try {
               : path.join(stateDir, 'simulator', runtime.kind, 'state.json')),
         );
         let stop;
+        const standaloneProjectRoot = () => {
+          if (project) return path.dirname(project.configFile);
+          if (args.config) return path.dirname(path.resolve(args.config));
+          return process.cwd();
+        };
+        const standaloneSetup = () => {
+          if (args.config)
+            return {
+              config: path.resolve(args.config),
+              site: args.site,
+              ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }),
+            };
+          if (project)
+            return {
+              project: project.configFile,
+              ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }),
+            };
+          return undefined;
+        };
         // Settings of every registered key (config-keys.mjs); command-line choices follow.
         const simulator = await createSimulator({
           ...runtimeOptions({ project, catalogue: profileMirage }),
@@ -516,27 +534,12 @@ try {
           stateFile,
           port: runtimePort(args.port),
           project: project && projectSummary(project),
-          projectRoot: project
-            ? path.dirname(project.configFile)
-            : args.config
-              ? path.dirname(path.resolve(args.config))
-              : process.cwd(),
+          projectRoot: standaloneProjectRoot(),
           dataPacks: [
             ...(profileMirage?.dataPacks ?? []),
             ...(args['pack-module'] ?? []).map((module) => ({ module })),
           ],
-          setup: args.config
-            ? {
-                config: path.resolve(args.config),
-                site: args.site,
-                ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }),
-              }
-            : project
-              ? {
-                  project: project.configFile,
-                  ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }),
-                }
-              : undefined,
+          setup: standaloneSetup(),
           preset: args.preset,
           presetMode: args['preset-mode'],
           watch: !args['no-watch'] && project?.watch !== false,
@@ -908,32 +911,36 @@ try {
           });
         }
         let stop;
+        const powerPagesSetup = () => {
+          if (args.config)
+            return {
+              config: path.resolve(args.config),
+              site: args.site,
+              ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }),
+            };
+          if (project)
+            return {
+              project: project.configFile,
+              ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }),
+            };
+          return null;
+        };
+        const powerPagesProjectRoot = () => {
+          if (args.config) return path.dirname(path.resolve(args.config));
+          if (project?.configFile) return path.dirname(project.configFile);
+          return process.cwd();
+        };
         const simulator = await createSimulator({
           // Settings of every registered key (config-keys.mjs: project portal, project, catalogue site).
           ...runtimeOptions({ project, portal: configuredPortal, catalogue: siteMirage }),
           configuredSettings: configuredSettingKeys({ project, portal: configuredPortal, catalogue: siteMirage }),
           onStartup: reportStartup,
-          setup: args.config
-            ? {
-                config: path.resolve(args.config),
-                site: args.site,
-                ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }),
-              }
-            : project
-              ? {
-                  project: project.configFile,
-                  ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }),
-                }
-              : null,
+          setup: powerPagesSetup(),
           sourceDir,
           dataPacks: [...(siteMirage?.dataPacks ?? []), ...(args['pack-module'] ?? []).map((module) => ({ module }))],
           runtime,
           simulation,
-          projectRoot: args.config
-            ? path.dirname(path.resolve(args.config))
-            : project?.configFile
-              ? path.dirname(project.configFile)
-              : process.cwd(),
+          projectRoot: powerPagesProjectRoot(),
           ...(project ? { project: projectSummary(project, configuredPortal.id) } : {}),
           stateFile,
           preset: args.preset,
@@ -955,26 +962,26 @@ try {
           if (args.cdp) await simulator.live.connect(args.cdp);
           if (capturing) {
             const state = simulator.state();
+            const capturePayload = () => {
+              if (command === 'capture-stylesheets') return { paths: args.stylesheet };
+              if (command === 'capture-snippet-composition')
+                return {
+                  path: args.path,
+                  parentName: args['parent-snippet'],
+                  childName: args['child-snippet'],
+                };
+              return {
+                path: args.path,
+                managedControlPath: args['managed-control-path'],
+              };
+            };
             const response = await fetch(`${simulator.url}/__sim/api/assets/${command}`, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 'X-Sim-CSRF': state.csrf,
               },
-              body: JSON.stringify(
-                command === 'capture-stylesheets'
-                  ? { paths: args.stylesheet }
-                  : command === 'capture-snippet-composition'
-                    ? {
-                        path: args.path,
-                        parentName: args['parent-snippet'],
-                        childName: args['child-snippet'],
-                      }
-                    : {
-                        path: args.path,
-                        managedControlPath: args['managed-control-path'],
-                      },
-              ),
+              body: JSON.stringify(capturePayload()),
             });
             const report = await response.json();
             const capture = report.report ?? report;

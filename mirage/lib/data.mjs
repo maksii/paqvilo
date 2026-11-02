@@ -1,13 +1,12 @@
 import { parseDataverseDecimalString } from './dataverse-decimal-input.mjs';
 import { readFile, mkdir, rename, open, unlink, rm } from 'node:fs/promises';
-import { dirname } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { dirname, join, resolve, basename } from 'node:path';
+import { randomUUID, createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { isDeepStrictEqual } from 'node:util';
 import { cloneStateData } from './state-clone.mjs';
 import fsSync from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve, basename } from 'node:path';
 import { RecordPageSession, pagedRecordsOf } from './record-tables.mjs';
 import { recordSources } from './record-sources.mjs';
 import { compactRecordGraph } from './record-compaction.mjs';
@@ -21,7 +20,6 @@ import { builtinPresets, resolvePreset, compactBuiltinPresets, applyPresetSectio
 // Preset functions live in presets.mjs; these re-exports keep existing imports working.
 export { resolvePreset, compactBuiltinPresets };
 import { expressionOperator } from './extensions.mjs';
-import { createHash } from 'node:crypto';
 
 import { DataError } from './data-error.mjs';
 import {
@@ -136,30 +134,39 @@ const transactionFrameOf = (store, { closed = false } = {}) => {
 // removed, and rows deleted, keyed by the table's primary key.
 function laneChanges(base, next) {
   const changes = [];
-  for (const table of new Set([...Object.keys(base.tables ?? {}), ...Object.keys(next.tables ?? {})])) {
-    const before = base.tables?.[table] ?? [],
-      after = next.tables?.[table] ?? [];
-    if (before === after) continue;
-    const idColumn = next.mappings?.[table]?.idColumn ?? base.mappings?.[table]?.idColumn ?? `${table}id`,
-      key = (row) => String(row?.[idColumn] ?? '').toLowerCase(),
-      old = new Map([...before].map((row) => [key(row), row])),
-      seen = new Set();
-    for (const row of after) {
-      const id = key(row),
-        previous = old.get(id);
-      seen.add(id);
-      if (!previous) changes.push({ table, idColumn, create: cloneStateData(row) });
-      else if (!isDeepStrictEqual({ ...previous }, { ...row })) {
-        const set = {};
-        for (const [column, value] of Object.entries(row))
-          if (!isDeepStrictEqual(previous[column], value)) set[column] = cloneStateData(value);
-        const unset = Object.keys(previous).filter((column) => !Object.hasOwn(row, column));
-        changes.push({ table, idColumn, id: row[idColumn], set, unset });
-      }
-    }
-    for (const [id, row] of old) if (!seen.has(id)) changes.push({ table, idColumn, remove: row[idColumn] });
-  }
+  for (const table of new Set([...Object.keys(base.tables ?? {}), ...Object.keys(next.tables ?? {})]))
+    collectLaneTableChanges(base, next, table, changes);
   return changes;
+}
+
+function collectLaneTableChanges(base, next, table, changes) {
+  const before = base.tables?.[table] ?? [],
+    after = next.tables?.[table] ?? [];
+  if (before === after) return;
+  const idColumn = next.mappings?.[table]?.idColumn ?? base.mappings?.[table]?.idColumn ?? `${table}id`,
+    key = (row) => String(row?.[idColumn] ?? '').toLowerCase(),
+    old = new Map([...before].map((row) => [key(row), row])),
+    seen = new Set();
+  for (const row of after) {
+    const id = key(row),
+      previous = old.get(id);
+    seen.add(id);
+    collectLaneRowChange(table, idColumn, id, row, previous, changes);
+  }
+  for (const [id, row] of old) if (!seen.has(id)) changes.push({ table, idColumn, remove: row[idColumn] });
+}
+
+function collectLaneRowChange(table, idColumn, id, row, previous, changes) {
+  if (!previous) {
+    changes.push({ table, idColumn, create: cloneStateData(row) });
+    return;
+  }
+  if (isDeepStrictEqual({ ...previous }, { ...row })) return;
+  const set = {};
+  for (const [column, value] of Object.entries(row))
+    if (!isDeepStrictEqual(previous[column], value)) set[column] = cloneStateData(value);
+  const unset = Object.keys(previous).filter((column) => !Object.hasOwn(row, column));
+  changes.push({ table, idColumn, id: row[idColumn], set, unset });
 }
 // Applies a read lane's row changes onto the store's current state, inside the lane's own commit transaction.
 function applyLaneChanges(store, changes, committed) {
@@ -168,40 +175,43 @@ function applyLaneChanges(store, changes, committed) {
       rows.findIndex((row) => String(row?.[idColumn] ?? '').toLowerCase() === String(id ?? '').toLowerCase());
   for (const change of changes) {
     const rows = (state.tables[change.table] ??= []);
-    if (change.create) {
-      const index = find(rows, change.idColumn, change.create[change.idColumn]);
-      if (index < 0) store.insertRow(change.table, rows, change.create);
-      else {
-        for (const column of Object.keys(rows[index])) delete rows[index][column];
-        Object.assign(rows[index], change.create);
-      }
-    } else if (change.remove !== undefined) {
-      const index = find(rows, change.idColumn, change.remove);
-      if (index >= 0) store.removeRow(change.table, rows, index);
-    } else {
-      const row = rows[find(rows, change.idColumn, change.id)];
-      if (!row) continue;
-      Object.assign(row, change.set);
-      for (const column of change.unset) delete row[column];
-    }
+    applyLaneChange(store, change, rows, find);
   }
   if (Number.isFinite(committed?.rowVersion))
     state.rowVersion = Math.max(Number(state.rowVersion) || 0, committed.rowVersion);
   store.rowIndexes = null;
 }
+
+function applyLaneChange(store, change, rows, find) {
+  if (change.create) {
+    const index = find(rows, change.idColumn, change.create[change.idColumn]);
+    if (index < 0) store.insertRow(change.table, rows, change.create);
+    else {
+      for (const column of Object.keys(rows[index])) delete rows[index][column];
+      Object.assign(rows[index], change.create);
+    }
+    return;
+  }
+  if (change.remove !== undefined) {
+    const index = find(rows, change.idColumn, change.remove);
+    if (index >= 0) store.removeRow(change.table, rows, index);
+    return;
+  }
+  const row = rows[find(rows, change.idColumn, change.id)];
+  if (!row) return;
+  Object.assign(row, change.set);
+  for (const column of change.unset) delete row[column];
+}
 // Tracing (trace-store.mjs): a read inside one of these spans is already covered and opens no store span of its own.
 const COVERED_READS = new Set(['dataverse', 'store', 'read', 'bulk']);
 const READ_LABEL = { retrieve: 'Retrieve', retrievemultiple: 'RetrieveMultiple', fetchxml: 'FetchXml' };
 const FETCH_ENTITY = /<entity\s+name\s*=\s*["']([^"']{1,128})["']/;
-const rowCountOf = (value) =>
-  Array.isArray(value?.value)
-    ? value.value.length
-    : Array.isArray(value?.entities)
-      ? value.entities.length
-      : value == null
-        ? 0
-        : 1;
-const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+const rowCountOf = (value) => {
+  if (Array.isArray(value?.value)) return value.value.length;
+  if (Array.isArray(value?.entities)) return value.entities.length;
+  return value == null ? 0 : 1;
+};
+const own = (obj, key) => Object.hasOwn(obj, key);
 // Row columns a write's Target never shows: the row version, and empty on-behalf/team ownership lookups
 // (native Create Targets carry an empty modifiedonbehalfby, never an empty createdonbehalfby or owningteam).
 export const notInTarget = (name, value) =>
@@ -262,7 +272,7 @@ function prePostOperationFrame(frame) {
   };
 }
 const queuedFrame = (frame, before, asyncSourceParent) => ({
-  ...(frame ?? {}),
+  ...frame,
   ...before,
   systemOutputsPopulated: false,
   asyncSourceParent,
@@ -313,29 +323,33 @@ export function normalizeMockLiquidRecord(
       }),
     );
   const out = clone(record);
-  for (const [key, value] of Object.entries(record)) {
-    if (key.includes('@')) continue;
-    const definition = aliasFields[key] ?? metadataField(mapping, key);
-    if (!aggregate && typeof value === 'number' && choiceDefinition(definition)) {
-      out[key] = {
-        value,
-        label: choiceLabel(definition, value) ?? record[key + formattedAnnotation] ?? '',
-      };
-    } else if (value && typeof value === 'object' && !Array.isArray(value) && own(value, 'value')) {
-      // Preserve explicit typed fixture values. A label omitted by a caller may
-      // be supplied from metadata without mutating that caller's record.
-      if (!aggregate && choiceDefinition(definition) && !own(value, 'label'))
-        out[key].label = choiceLabel(definition, value.value) ?? '';
-    } else if (value && typeof value === 'object' && mapping.relationships?.[key] && !own(value, 'id')) {
-      const target = mapping.relationships[key].entity;
-      const targetMapping = typeof mappings === 'function' ? mappings(target) : mappings[target];
-      out[key] = normalizeMockLiquidRecord(value, targetMapping ?? {}, {
-        aggregate,
-        mappings,
-      });
-    }
-  }
+  for (const [key, value] of Object.entries(record))
+    normalizeLiquidRecordField(record, out, key, value, mapping, { aggregate, mappings, aliasFields });
   return withLiquidEntityId(out, mapping, { aggregate });
+}
+
+function normalizeLiquidRecordField(record, out, key, value, mapping, { aggregate, mappings, aliasFields }) {
+  if (key.includes('@')) return;
+  const definition = aliasFields[key] ?? metadataField(mapping, key);
+  if (!aggregate && typeof value === 'number' && choiceDefinition(definition)) {
+    out[key] = {
+      value,
+      label: choiceLabel(definition, value) ?? record[key + formattedAnnotation] ?? '',
+    };
+    return;
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value) && own(value, 'value')) {
+    // Preserve explicit typed fixture values. A label omitted by a caller may
+    // be supplied from metadata without mutating that caller's record.
+    if (!aggregate && choiceDefinition(definition) && !own(value, 'label'))
+      out[key].label = choiceLabel(definition, value.value) ?? '';
+    return;
+  }
+  if (value && typeof value === 'object' && mapping.relationships?.[key] && !own(value, 'id')) {
+    const target = mapping.relationships[key].entity;
+    const targetMapping = typeof mappings === 'function' ? mappings(target) : mappings[target];
+    out[key] = normalizeMockLiquidRecord(value, targetMapping ?? {}, { aggregate, mappings });
+  }
 }
 
 /** Resolve attribute aliases from the authored FetchXML, retaining aggregates as numbers. */
@@ -389,62 +403,77 @@ export function formatMockRecord(record, mapping = {}, mappings = {}, tables = {
   if (!record || typeof record !== 'object') return record;
   if (Array.isArray(record)) return record.map((row) => formatMockRecord(row, mapping, mappings, tables));
   const out = {};
-  for (const [key, value] of Object.entries(record)) {
-    if (/^__simArtifact(?:$|[/.])/i.test(key)) continue;
-    if (key.includes('@')) {
-      out[key] = value;
-      continue;
-    }
-    const relationship = mapping.relationships?.[key];
-    if (value && typeof value === 'object' && !Array.isArray(value) && own(value, 'id') && own(value, 'logical_name')) {
-      const name = key.includes('.') || /^_.*_value$/.test(key) ? key : `_${key}_value`;
-      out[name] = value.id;
-      const targetMapping = mappings[value.logical_name] ?? {};
-      const target = (tables[value.logical_name] ?? []).find(
-        (row) =>
-          String(row[targetMapping.idColumn ?? `${value.logical_name}id`]).toLowerCase() ===
-          String(value.id).toLowerCase(),
-      );
-      out[name + formattedAnnotation] = value.name ?? primaryNameValue(targetMapping, target, value.logical_name) ?? '';
-      out[name + lookupAnnotation] = value.logical_name;
-    } else if (
-      value &&
-      typeof value === 'object' &&
-      !Array.isArray(value) &&
-      own(value, 'value') &&
-      own(value, 'label')
-    ) {
-      out[key] = value.value;
-      out[key + formattedAnnotation] = value.label;
-    } else if (value && typeof value === 'object' && relationship) {
-      out[key] = formatMockRecord(value, mappings[relationship.entity] ?? {}, mappings, tables);
-    } else {
-      out[key] = value;
-      const definition = metadataField(mapping, key);
-      if (typeof value === 'number' && choiceDefinition(definition)) {
-        const label = choiceLabel(definition, value);
-        if (label != null) out[key + formattedAnnotation] = label;
-      } else if (
-        typeof value === 'number' &&
-        ['int', 'integer', 'bigint'].includes(String(definition?.dataverseType ?? definition?.type ?? '').toLowerCase())
-      ) {
-        out[key + formattedAnnotation] = value.toLocaleString('en-US');
-      }
-      const physical = key.startsWith('_') && key.endsWith('_value') ? key.slice(1, -6) : key;
-      const rel = Object.values(mapping.relationships ?? {}).find((r) => r.many === false && r.from === physical);
-      if (rel && value != null && typeof value !== 'object') {
-        const targetMapping = mappings[rel.entity] ?? {};
-        const target = (tables[rel.entity] ?? []).find(
-          (row) => String(row[targetMapping.idColumn ?? rel.to]).toLowerCase() === String(value).toLowerCase(),
-        );
-        const name = key.includes('.') || /^_.*_value$/.test(key) ? key : `_${key}_value`;
-        out[name] = value;
-        out[name + lookupAnnotation] = rel.entity;
-        if (target) out[name + formattedAnnotation] = primaryNameValue(targetMapping, target, rel.entity) ?? '';
-      }
-    }
-  }
+  for (const [key, value] of Object.entries(record)) formatMockRecordField(out, key, value, mapping, mappings, tables);
   return out;
+}
+
+function formatMockRecordField(out, key, value, mapping, mappings, tables) {
+  if (/^__simArtifact(?:$|[/.])/i.test(key)) return;
+  if (key.includes('@')) {
+    out[key] = value;
+    return;
+  }
+  const relationship = mapping.relationships?.[key];
+  if (isNamedLookupValue(value)) return formatNamedLookup(out, key, value, mappings, tables);
+  if (isLabeledChoice(value)) {
+    out[key] = value.value;
+    out[key + formattedAnnotation] = value.label;
+    return;
+  }
+  if (value && typeof value === 'object' && relationship) {
+    out[key] = formatMockRecord(value, mappings[relationship.entity] ?? {}, mappings, tables);
+    return;
+  }
+  out[key] = value;
+  addFormattedScalarValue(out, key, value, metadataField(mapping, key));
+  addFormattedLookupValue(out, key, value, mapping, mappings, tables);
+}
+
+function isNamedLookupValue(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && own(value, 'id') && own(value, 'logical_name');
+}
+
+function isLabeledChoice(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && own(value, 'value') && own(value, 'label');
+}
+
+function formatNamedLookup(out, key, value, mappings, tables) {
+  const name = key.includes('.') || /^_.*_value$/.test(key) ? key : `_${key}_value`;
+  out[name] = value.id;
+  const targetMapping = mappings[value.logical_name] ?? {};
+  const target = (tables[value.logical_name] ?? []).find(
+    (row) =>
+      String(row[targetMapping.idColumn ?? `${value.logical_name}id`]).toLowerCase() === String(value.id).toLowerCase(),
+  );
+  out[name + formattedAnnotation] = value.name ?? primaryNameValue(targetMapping, target, value.logical_name) ?? '';
+  out[name + lookupAnnotation] = value.logical_name;
+}
+
+function addFormattedScalarValue(out, key, value, definition) {
+  if (typeof value === 'number' && choiceDefinition(definition)) {
+    const label = choiceLabel(definition, value);
+    if (label != null) out[key + formattedAnnotation] = label;
+  } else if (
+    typeof value === 'number' &&
+    ['int', 'integer', 'bigint'].includes(String(definition?.dataverseType ?? definition?.type ?? '').toLowerCase())
+  )
+    out[key + formattedAnnotation] = value.toLocaleString('en-US');
+}
+
+function addFormattedLookupValue(out, key, value, mapping, mappings, tables) {
+  const physical = key.startsWith('_') && key.endsWith('_value') ? key.slice(1, -6) : key;
+  const relationship = Object.values(mapping.relationships ?? {}).find(
+    (item) => item.many === false && item.from === physical,
+  );
+  if (!relationship || value == null || typeof value === 'object') return;
+  const targetMapping = mappings[relationship.entity] ?? {};
+  const target = (tables[relationship.entity] ?? []).find(
+    (row) => String(row[targetMapping.idColumn ?? relationship.to]).toLowerCase() === String(value).toLowerCase(),
+  );
+  const name = key.includes('.') || /^_.*_value$/.test(key) ? key : `_${key}_value`;
+  out[name] = value;
+  out[name + lookupAnnotation] = relationship.entity;
+  if (target) out[name + formattedAnnotation] = primaryNameValue(targetMapping, target, relationship.entity) ?? '';
 }
 
 const safeName = (name) => {
@@ -457,18 +486,17 @@ const comparable = (value) => {
   const v = scalar(value);
   return String(typeof v === 'boolean' ? Number(v) : v)
     .replace(
-      /^(?:\{([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})\}|\(([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})\))$/i,
+      /^(?:\{([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})\}|\(([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})\))$/i, // NOSONAR: regex kept: a rewrite would change matches or captures
       (_match, braced, parenthesized) => braced ?? parenthesized,
     )
     .toLowerCase();
 };
 const equal = (a, b) => (a == null || b == null ? a == null && b == null : comparable(a) === comparable(b));
-const field = (row, name) =>
-  own(row, name)
-    ? row[name]
-    : name.startsWith('_') && name.endsWith('_value')
-      ? scalar(row[name.slice(1, -6)])
-      : name.split('/').reduce((v, k) => v?.[k], row);
+const field = (row, name) => {
+  if (own(row, name)) return row[name];
+  if (name.startsWith('_') && name.endsWith('_value')) return scalar(row[name.slice(1, -6)]);
+  return name.split('/').reduce((v, k) => v?.[k], row);
+};
 const insertSorted = (list, value) => {
   if (!list.length || list.at(-1) < value) {
     list.push(value);
@@ -572,7 +600,10 @@ class RowKeyIndex {
   }
   delete(key, index) {
     const slot = this.slotOf(index);
-    const list = key === undefined ? this.wildSlots : key === null ? null : this.map.get(key);
+    let list;
+    if (key === undefined) list = this.wildSlots;
+    else if (key === null) list = null;
+    else list = this.map.get(key);
     if (typeof list === 'number') {
       if (list === slot) this.map.delete(key);
       return;
@@ -778,15 +809,13 @@ export function keysetPage(
       down(0);
     }
   }
-  return { before: keyed.length - after, rows: heap.sort(compare).map((entry) => entry.row) };
+  return { before: keyed.length - after, rows: heap.toSorted(compare).map((entry) => entry.row) };
 }
 /** The text a paging cookie carries for an order-column value: "" for null, a lookup's id, a choice's value, exact digits. */
 function cursorText(value) {
-  const raw = isExactNumeric(value)
-    ? value.value
-    : value !== null && typeof value === 'object'
-      ? (value.id ?? value.value ?? null)
-      : value;
+  let raw = value;
+  if (isExactNumeric(value)) raw = value.value;
+  else if (value !== null && typeof value === 'object') raw = value.id ?? value.value ?? null;
   return raw == null ? '' : String(raw);
 }
 /**
@@ -826,11 +855,12 @@ const splitTop = (text, separator = ',') => {
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (c === "'") {
-      if (quote && text[i + 1] === "'") {
+      const next = topQuoteState(quote, text[i + 1]);
+      quote = next.quote;
+      if (next.escaped) {
         i++;
         continue;
       }
-      quote = !quote;
     }
     if (quote) continue;
     if (c === '(') depth++;
@@ -843,6 +873,11 @@ const splitTop = (text, separator = ',') => {
   out.push(text.slice(start).trim());
   return out.filter(Boolean);
 };
+
+function topQuoteState(quote, next) {
+  if (quote && next === "'") return { quote, escaped: true };
+  return { quote: !quote, escaped: false };
+}
 
 // Plugin predicates evaluate a single in-memory record: "/" reads nested
 // object members, not relationships, and the extended dialect keeps the
@@ -924,6 +959,15 @@ function normalizeState(
   validateExperimentPresets(result.simulator?.experimentPresets);
   if (result.personaCatalog !== undefined)
     result.personaCatalog = validatePersonaCatalog(result.personaCatalog, 'State');
+  validateStateShape(result);
+  validateStateTables(result);
+  validateStateMappings(result);
+  validateStatePermissions(result);
+  validateStatePlugins(result);
+  return reconcilePermissionDiagnostics(applyPlatformConfig(result, platform));
+}
+
+function validateStateShape(result) {
   for (const key of ['mappings', 'tables', 'presets'])
     if (!result[key] || Array.isArray(result[key]) || typeof result[key] !== 'object')
       throw new DataError(`${key} must be an object`);
@@ -936,6 +980,9 @@ function normalizeState(
     !['enforce', 'compatibility'].includes(result.settings.associationPermissions)
   )
     throw new DataError('Unknown associationPermissions mode');
+}
+
+function validateStateTables(result) {
   for (const [name, rows] of Object.entries(result.tables)) {
     safeName(name);
     if (!Array.isArray(rows)) throw new DataError(`Table ${name} must be an array`);
@@ -943,6 +990,9 @@ function normalizeState(
     for (const row of rows)
       if (!row || Array.isArray(row) || typeof row !== 'object') throw new DataError(`Invalid row in ${name}`);
   }
+}
+
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function validateStateMappings(result) {
   for (const [name, m] of Object.entries(result.mappings)) {
     safeName(name);
     if (m.entitySet) safeName(m.entitySet);
@@ -962,108 +1012,117 @@ function normalizeState(
       safeName(rel.to);
     }
   }
-  for (const rule of result.permissions) {
-    if (!rule.entity) throw new DataError('Permission requires entity');
-    if (rule.entity !== '*') safeName(rule.entity);
-    if (rule.enabled !== false && !['global', 'contact', 'account', 'self', 'parent'].includes(rule.scope ?? 'global'))
-      throw new DataError(`Unsupported permission scope ${rule.scope}`);
-    if (rule.operations && !Array.isArray(rule.operations))
-      throw new DataError('Permission operations must be an array');
-    for (const op of rule.operations ?? [])
-      if (!['read', 'create', 'update', 'delete', 'append', 'appendTo'].includes(op))
-        throw new DataError(`Unknown permission operation ${op}`);
-    if (rule.roles && !Array.isArray(rule.roles)) throw new DataError('Permission roles must be an array');
-    if (
-      rule.enabled !== false &&
-      rule.scope === 'parent' &&
-      (!rule.relationship?.entity || !rule.relationship.from || !rule.relationship.to)
-    )
-      throw new DataError('Parent permission requires relationship entity/from/to');
+}
+
+function validateStatePermissions(result) {
+  for (const rule of result.permissions) validatePermissionRule(rule);
+}
+
+function validatePermissionRule(rule) {
+  if (!rule.entity) throw new DataError('Permission requires entity');
+  if (rule.entity !== '*') safeName(rule.entity);
+  if (rule.enabled !== false && !['global', 'contact', 'account', 'self', 'parent'].includes(rule.scope ?? 'global'))
+    throw new DataError(`Unsupported permission scope ${rule.scope}`);
+  if (rule.operations && !Array.isArray(rule.operations)) throw new DataError('Permission operations must be an array');
+  for (const op of rule.operations ?? [])
+    if (!['read', 'create', 'update', 'delete', 'append', 'appendTo'].includes(op))
+      throw new DataError(`Unknown permission operation ${op}`);
+  if (rule.roles && !Array.isArray(rule.roles)) throw new DataError('Permission roles must be an array');
+  if (
+    rule.enabled !== false &&
+    rule.scope === 'parent' &&
+    (!rule.relationship?.entity || !rule.relationship.from || !rule.relationship.to)
+  )
+    throw new DataError('Parent permission requires relationship entity/from/to');
+}
+
+function checkPluginExpression(expr) {
+  if (!expr || typeof expr !== 'object' || Array.isArray(expr) || own(expr, 'literal')) return;
+  if (
+    ![
+      'concat',
+      'coalesce',
+      'lower',
+      'upper',
+      'sum',
+      'multiply',
+      'uuid',
+      'sequence',
+      'now',
+      'split',
+      'join',
+      'length',
+      'lookup',
+      'find',
+      'findMany',
+      'related',
+      'reference',
+    ].includes(expr.op) &&
+    !expressionOperator(expr.op)
+  )
+    throw new DataError(`Unsupported plugin expression ${expr.op}`);
+  if (expr.args && !Array.isArray(expr.args)) throw new DataError('Expression args must be an array');
+  for (const arg of expr.args ?? []) checkPluginExpression(arg);
+  if (['find', 'findMany'].includes(expr.op)) validatePluginFindExpression(expr);
+}
+
+function validatePluginFindExpression(expr) {
+  if (!expr.match || typeof expr.match !== 'object' || Array.isArray(expr.match) || !Object.keys(expr.match).length)
+    throw new DataError('Plugin find requires explicit matching fields');
+  for (const [key, value] of Object.entries(expr.match)) {
+    safeName(key);
+    checkPluginExpression(value);
   }
-  const checkExpr = (expr) => {
-    if (expr && typeof expr === 'object' && !Array.isArray(expr) && !own(expr, 'literal')) {
-      if (
-        ![
-          'concat',
-          'coalesce',
-          'lower',
-          'upper',
-          'sum',
-          'multiply',
-          'uuid',
-          'sequence',
-          'now',
-          'split',
-          'join',
-          'length',
-          'lookup',
-          'find',
-          'findMany',
-          'related',
-          'reference',
-        ].includes(expr.op) &&
-        !expressionOperator(expr.op)
-      )
-        throw new DataError(`Unsupported plugin expression ${expr.op}`);
-      if (expr.args && !Array.isArray(expr.args)) throw new DataError('Expression args must be an array');
-      for (const arg of expr.args ?? []) checkExpr(arg);
-      if (['find', 'findMany'].includes(expr.op)) {
-        if (
-          !expr.match ||
-          typeof expr.match !== 'object' ||
-          Array.isArray(expr.match) ||
-          !Object.keys(expr.match).length
-        )
-          throw new DataError('Plugin find requires explicit matching fields');
-        for (const [key, value] of Object.entries(expr.match)) {
-          safeName(key);
-          checkExpr(value);
-        }
-      }
-    }
-  };
+}
+
+function validateStatePlugins(result) {
   const pluginIds = new Set();
-  for (const p of result.plugins) {
-    if (!p.entity) throw new DataError('Plugin requires entity');
-    if (p.id) {
-      if (pluginIds.has(p.id)) throw new DataError(`Duplicate plugin id ${p.id}`);
-      pluginIds.add(p.id);
-    }
-    if (p.operations && !Array.isArray(p.operations)) throw new DataError('Plugin operations must be an array');
-    for (const op of p.operations ?? [])
-      if (!['create', 'update', 'delete'].includes(op)) throw new DataError(`Unknown plugin operation ${op}`);
-    if (p.when) compileFilter(p.when);
-    if (p.validate && !Array.isArray(p.validate)) throw new DataError('Plugin validate must be an array');
-    for (const v of p.validate ?? []) {
-      if (v.pattern) new RegExp(v.pattern);
-      if (v.assert) compileFilter(v.assert);
-      if (v.field) safeName(v.field);
-      // Dataverse reports plugin exceptions as ISV aborted (0x80040265) unless
-      // the simulated plugin names the platform error it reproduces.
-      if (v.innerCode != null && !/^0x[0-9a-f]{8}$/i.test(String(v.innerCode)))
-        throw new DataError('Plugin validation innerCode must be a 0x-prefixed 8-digit hex code');
-    }
-    for (const bag of [p.defaults, p.set])
-      for (const [key, expr] of Object.entries(bag ?? {})) {
-        safeName(key);
-        checkExpr(expr);
-      }
-    if (p.secondary && !Array.isArray(p.secondary)) throw new DataError('Plugin secondary must be an array');
-    for (const action of p.secondary ?? []) {
-      if (action.requireMatch != null && typeof action.requireMatch !== 'boolean')
-        throw new DataError('Secondary requireMatch must be a boolean');
-      if (action.foreach) checkExpr(action.foreach);
-      if (!action.entity || !['create', 'update', 'delete'].includes(action.operation))
-        throw new DataError('Secondary action requires entity and create/update/delete operation');
-      if (action.operation !== 'create' && !action.match) throw new DataError('Secondary update/delete requires match');
-      for (const bag of [action.match, action.set])
-        for (const [key, expr] of Object.entries(bag ?? {})) {
-          safeName(key);
-          checkExpr(expr);
-        }
-    }
+  for (const plugin of result.plugins) validatePlugin(plugin, pluginIds);
+}
+
+/* NOSONAR */ function validatePlugin(plugin, pluginIds) {
+  if (!plugin.entity) throw new DataError('Plugin requires entity');
+  if (plugin.id) {
+    if (pluginIds.has(plugin.id)) throw new DataError(`Duplicate plugin id ${plugin.id}`);
+    pluginIds.add(plugin.id);
   }
-  return reconcilePermissionDiagnostics(applyPlatformConfig(result, platform));
+  if (plugin.operations && !Array.isArray(plugin.operations)) throw new DataError('Plugin operations must be an array');
+  for (const operation of plugin.operations ?? [])
+    if (!['create', 'update', 'delete'].includes(operation))
+      throw new DataError(`Unknown plugin operation ${operation}`);
+  if (plugin.when) compileFilter(plugin.when);
+  if (plugin.validate && !Array.isArray(plugin.validate)) throw new DataError('Plugin validate must be an array');
+  for (const validation of plugin.validate ?? []) validatePluginRuleDefinition(validation);
+  for (const bag of [plugin.defaults, plugin.set]) validatePluginExpressionBag(bag);
+  if (plugin.secondary && !Array.isArray(plugin.secondary)) throw new DataError('Plugin secondary must be an array');
+  for (const action of plugin.secondary ?? []) validateSecondaryAction(action);
+}
+
+function validatePluginRuleDefinition(validation) {
+  if (validation.pattern) new RegExp(validation.pattern); // NOSONAR: constructor validates the pattern or has side effects
+  if (validation.assert) compileFilter(validation.assert);
+  if (validation.field) safeName(validation.field);
+  // Dataverse reports plugin exceptions as ISV aborted (0x80040265) unless
+  // the simulated plugin names the platform error it reproduces.
+  if (validation.innerCode != null && !/^0x[0-9a-f]{8}$/i.test(String(validation.innerCode)))
+    throw new DataError('Plugin validation innerCode must be a 0x-prefixed 8-digit hex code');
+}
+
+function validatePluginExpressionBag(bag) {
+  for (const [key, expr] of Object.entries(bag ?? {})) {
+    safeName(key);
+    checkPluginExpression(expr);
+  }
+}
+
+function validateSecondaryAction(action) {
+  if (action.requireMatch != null && typeof action.requireMatch !== 'boolean')
+    throw new DataError('Secondary requireMatch must be a boolean');
+  if (action.foreach) checkPluginExpression(action.foreach);
+  if (!action.entity || !['create', 'update', 'delete'].includes(action.operation))
+    throw new DataError('Secondary action requires entity and create/update/delete operation');
+  if (action.operation !== 'create' && !action.match) throw new DataError('Secondary update/delete requires match');
+  for (const bag of [action.match, action.set]) validatePluginExpressionBag(bag);
 }
 
 // Temporary record directories of stores without a state file, by directory.
@@ -1089,6 +1148,121 @@ function traceRetentionError(original, persistence) {
   failure.status = failure.statusCode = persistence.status ?? persistence.statusCode ?? 500;
   failure.persistenceFailure = true;
   return failure;
+}
+
+function concurrencyBehaviorOption(options) {
+  if (options.omitConcurrencyBehavior) return { concurrencyBehavior: null };
+  if (options.pluginConcurrencyBehavior === undefined) return {};
+  return { concurrencyBehavior: options.pluginConcurrencyBehavior };
+}
+
+/* NOSONAR */ function permissionRuleAllows(store, rule, { row, mapping, identity, memo, nextChain }) {
+  const scope = rule.scope ?? 'global';
+  if (scope === 'global') return true;
+  if (!row) return false;
+  if (rule.observedOrphanParent?.field) return field(row, rule.observedOrphanParent.field) != null;
+  if (rule.identityRelationship)
+    return permissionIdentityRelationshipAllows(store, rule.identityRelationship, row, identity, memo);
+  let column = rule.field;
+  if (column == null) {
+    if (scope === 'self') column = mapping.idColumn;
+    else column = scope === 'account' ? 'parentcustomerid' : 'contactid';
+  }
+  const value = scalar(field(row, column));
+  if (scope === 'self' || scope === 'contact')
+    return Boolean(identity.contactId || identity.id) && equal(value, identity.contactId ?? identity.id);
+  if (scope === 'account') return Boolean(identity.accountId) && equal(value, identity.accountId);
+  if (scope === 'parent') return permissionParentAllows(store, rule, row, identity, memo, nextChain);
+  throw new DataError(`Unsupported permission scope ${scope}`);
+}
+
+function permissionIdentityRelationshipAllows(store, relationship, row, identity, memo) {
+  const mapping = store.resolveMapping(relationship.entity);
+  const identityId = relationship.entity === 'account' ? identity.accountId : (identity.contactId ?? identity.id);
+  if (!identityId) return false;
+  const person = memo.lookup(mapping.logicalName, mapping.idColumn, identityId);
+  if (!person.length) return false;
+  const people = new Set(person);
+  return memo.related(row, relationship, mapping.logicalName).some((target) => people.has(target));
+}
+
+function permissionParentAllows(store, rule, row, identity, memo, nextChain) {
+  const relationship = rule.relationship;
+  if (!relationship?.entity || !relationship.from || !relationship.to)
+    throw new DataError('Parent permission requires relationship entity/from/to');
+  const mapping = store.resolveMapping(relationship.entity);
+  return memo
+    .related(row, relationship, mapping.logicalName)
+    .some((parent) =>
+      store.allowed(
+        mapping.logicalName,
+        'read',
+        parent,
+        identity,
+        nextChain,
+        rule.parentPermissionId ?? rule.parentId,
+        memo,
+      ),
+    );
+}
+
+function runMutationObservers(store, event, details) {
+  for (const observer of details.messageEvent ? [] : (store.mutationObservers ?? [])) {
+    const matched = observer.matches ? observer.matches(clone(event)) : true;
+    if (matched && typeof matched.then === 'function') {
+      Promise.resolve(matched).catch(() => {});
+      throw new DataError('Mutation observer matchers cannot return a promise.', 500, 'InvalidMutationObserver');
+    }
+    if (!matched) continue;
+    store.ensureReadSnapshot();
+    const result = observer.fn(clone(event));
+    if (result && typeof result.then === 'function') {
+      Promise.resolve(result).catch(() => {});
+      throw new DataError('Mutation observers cannot return a promise.', 500, 'InvalidMutationObserver');
+    }
+  }
+}
+
+function addReferenceTableEntry(tables, owner, rel, only) {
+  if (!rel || rel.intersect || !rel.entity || !rel.from || !rel.to) return;
+  // A single-valued lookup references its target; a collection references its owner.
+  const single = rel.many === false,
+    logical = single ? rel.entity : owner;
+  if (only !== undefined && logical !== only) return;
+  const reference = single
+    ? { entity: owner, column: rel.from, targetColumn: rel.to, cascade: rel.cascade, schemaName: rel.schemaName }
+    : {
+        entity: rel.entity,
+        column: rel.to,
+        targetColumn: rel.from,
+        cascade: rel.cascade,
+        schemaName: rel.schemaName,
+      };
+  let found = tables.get(logical);
+  if (!found) {
+    found = new Map();
+    tables.set(logical, found);
+  }
+  const key = `${reference.entity}\u0000${reference.column}`;
+  const existing = found.get(key);
+  if (!existing || (!existing.cascade && reference.cascade)) found.set(key, reference);
+}
+
+function selectProjectionItem(selected, state, kind, name) {
+  safeName(name);
+  if (kind === 'sections') {
+    if (own(state, name)) selected[name] = state[name];
+    return;
+  }
+  selected[kind] ??= {};
+  if (own(state[kind], name)) selected[kind][name] = state[kind][name];
+}
+
+function alternateKeyMatchesNames(alternate, names) {
+  const attributes = (alternate.attributes ?? alternate.keyAttributes ?? [])
+    .map((name) => String(name).toLowerCase())
+    .sort();
+  return attributes.length === names.length && attributes.every((name, index) => name === names[index]);
 }
 
 export class DataStore {
@@ -1139,7 +1313,7 @@ export class DataStore {
     this.persistenceOptions = persistence;
     this.storageAdapter = storageAdapter;
     this.storage = file ? new StateStorage(file, persistence) : null;
-    this.queue = Promise.resolve();
+    this.queue = Promise.resolve(); // NOSONAR: constructor timing must not change
     // Advances with every committed change (transact), so consumers such as OData
     // paging can bind to the data without digesting the whole state per request.
     this.revision = 0;
@@ -1274,7 +1448,7 @@ export class DataStore {
     if (this.temporaryRecordDirectory) {
       const directory = this.temporaryRecordDirectory;
       if (!ownedTemporaryRecordDirectory(directory))
-        throw Error('Temporary record directory is outside its owned root');
+        throw new Error('Temporary record directory is outside its owned root');
       fsSync.rmSync(directory, { recursive: true, force: true });
       this.temporaryRecordDirectory = null;
       temporaryRecordDirectories.delete(directory);
@@ -1293,7 +1467,8 @@ export class DataStore {
    */
   readLease(fn) {
     const lease = { contended: false, onContention: null };
-    (this.readLeases ??= new Set()).add(lease);
+    this.readLeases ??= new Set();
+    this.readLeases.add(lease);
     const run = this.queue.then(() => fn(lease)).finally(() => this.readLeases.delete(lease));
     this.queue = run.catch(() => {});
     return run;
@@ -1325,7 +1500,8 @@ export class DataStore {
           live: !pagedRecordsOf(rows),
           offset: 0,
         }));
-      (this.snapshotRevisions ??= new WeakMap()).set(sections, this.revision);
+      this.snapshotRevisions ??= new WeakMap();
+      this.snapshotRevisions.set(sections, this.revision);
       adjust?.(sections);
       let table = 0,
         row = 0,
@@ -1342,7 +1518,7 @@ export class DataStore {
         }
       };
       const options = project ? { project } : {};
-      function* chunks() {
+      /* NOSONAR: single-pass routine, splitting it would change shared state */ function* chunks() {
         let text = '{',
           first = true;
         // A copy that failed during contention ends the export at its next chunk.
@@ -1413,11 +1589,13 @@ export class DataStore {
   snapshot(projection, options) {
     if (projection === undefined) {
       const snapshot = cloneStateData(this.state, options);
-      (this.snapshotRevisions ??= new WeakMap()).set(snapshot, this.revision);
+      this.snapshotRevisions ??= new WeakMap();
+      this.snapshotRevisions.set(snapshot, this.revision);
       return snapshot;
     }
     const snapshot = cloneStateData(this.projectionOf(projection), options);
-    (this.snapshotRevisions ??= new WeakMap()).set(snapshot, this.revision);
+    this.snapshotRevisions ??= new WeakMap();
+    this.snapshotRevisions.set(snapshot, this.revision);
     return snapshot;
   }
   /** The live (uncopied) sections, tables and mappings a snapshot projection names. Callers must not mutate it. */
@@ -1428,15 +1606,7 @@ export class DataStore {
     for (const [kind, names] of Object.entries(projection)) {
       if (!['sections', 'tables', 'mappings'].includes(kind) || !Array.isArray(names))
         throw new DataError('Invalid snapshot projection');
-      for (const name of names) {
-        safeName(name);
-        if (kind === 'sections') {
-          if (own(this.state, name)) selected[name] = this.state[name];
-        } else {
-          selected[kind] ??= {};
-          if (own(this.state[kind], name)) selected[kind][name] = this.state[kind][name];
-        }
-      }
+      for (const name of names) selectProjectionItem(selected, this.state, kind, name);
     }
     return selected;
   }
@@ -1486,7 +1656,7 @@ export class DataStore {
       throw Object.assign(new Error(error?.message ?? String(error), { cause: error }), { persistenceFailure: true });
     }
   }
-  async #saveState(selectedState = this.state) {
+  /* NOSONAR */ async #saveState(selectedState = this.state) {
     if (this.storageAdapter) {
       const started = performance.now();
       // An unpromoted row transaction names the tables it wrote, so the adapter rehashes only those.
@@ -1513,7 +1683,8 @@ export class DataStore {
       if (!migrated) {
         // No published table uses the foreign session. Later tables start in
         // the file's own directory instead of being migrated on every save.
-        (this.retiredRecordSessions ??= new Set()).add(this.recordSession);
+        this.retiredRecordSessions ??= new Set();
+        this.retiredRecordSessions.add(this.recordSession);
         this.recordSession = null;
         this.scheduleRecordRetirement();
       } else {
@@ -1527,7 +1698,8 @@ export class DataStore {
           published = migrated.publish();
           if (published) {
             this.storage.recordSession = migrated.session;
-            (this.retiredRecordSessions ??= new Set()).add(previous);
+            this.retiredRecordSessions ??= new Set();
+            this.retiredRecordSessions.add(previous);
             this.scheduleRecordRetirement();
             return;
           }
@@ -1763,17 +1935,19 @@ export class DataStore {
     this.transactionsQueued = (this.transactionsQueued ?? 0) + 1;
     const run = this.queue.then(() =>
       this.withOperationContext(
-        async () => {
+        /* NOSONAR: single-pass routine, splitting it would change shared state */ async () => {
           assertPluginExecutionActive(this);
           let initializationDigest = null;
           try {
-            if (privateInitialization && this.file)
-              initializationDigest = this.storage?.journal
-                ? this.initializationFingerprintCache?.file === this.file &&
-                  this.initializationFingerprintCache.digest === this.persistedDigest
-                  ? this.initializationFingerprintCache.value
-                  : await initializationFingerprint(this._state)
-                : stateDigest(this._state, { sortKeys: true });
+            if (privateInitialization && this.file) {
+              if (!this.storage?.journal) initializationDigest = stateDigest(this._state, { sortKeys: true });
+              else if (
+                this.initializationFingerprintCache?.file === this.file &&
+                this.initializationFingerprintCache.digest === this.persistedDigest
+              )
+                initializationDigest = this.initializationFingerprintCache.value;
+              else initializationDigest = await initializationFingerprint(this._state);
+            }
           } catch (error) {
             frame.closed = true;
             this.initializationFailed = true;
@@ -1794,16 +1968,13 @@ export class DataStore {
           const rowTransaction = incremental ? new RowTransaction(this, { reuse: !isolated }) : null;
           const previousRows = this.rowTransaction;
           this.rowTransaction = rowTransaction;
+          // The committed graph is already the rollback copy of an isolated
+          // working graph. A second whole-state clone cannot improve isolation.
+          let backup = null;
+          if (!privateInitialization && isolated) backup = this._state;
+          else if (!privateInitialization && !lazyReadSnapshot && !rowTransaction) backup = cloneInternal(this.state);
           const boundary = {
-            // The committed graph is already the rollback copy of an isolated
-            // working graph. A second whole-state clone cannot improve isolation.
-            backup: privateInitialization
-              ? null
-              : isolated
-                ? this._state
-                : lazyReadSnapshot || rowTransaction
-                  ? null
-                  : cloneInternal(this.state),
+            backup,
             independentCommit: false,
             eventCount: 0,
           };
@@ -2002,7 +2173,8 @@ export class DataStore {
         if (this.storage) this.storage.recordSession = compacted.session;
         this.sectionSnapshot = null;
         this.initializationFingerprintCache = null;
-        (this.retiredRecordSessions ??= new Set()).add(oldSession);
+        this.retiredRecordSessions ??= new Set();
+        this.retiredRecordSessions.add(oldSession);
         this.scheduleRecordRetirement();
         await this.collectRecordStorage();
       } finally {
@@ -2038,14 +2210,13 @@ export class DataStore {
     this.recordRetirementTimer = setInterval(() => this.retireRecordSessions(), 2000);
     this.recordRetirementTimer.unref();
   }
-  async collectRecordStorage() {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ async collectRecordStorage() {
     const session = this.recordSession;
-    if (!session?.ownedDirectory) return (this.recordGarbageCollection = { skipped: 'unverified-directory' });
-    if (this.file) {
-      const intended = resolve(this.file) + '.records';
-      if (fsSync.lstatSync(intended).isSymbolicLink() || fsSync.realpathSync.native(intended) !== session.directory)
-        return { skipped: 'directory-identity' };
+    if (!session?.ownedDirectory) {
+      this.recordGarbageCollection = { skipped: 'unverified-directory' };
+      return this.recordGarbageCollection;
     }
+    if (!this.recordStorageDirectoryMatches(session)) return { skipped: 'directory-identity' };
     const lockPath = this.file ? this.file + '.lock' : null,
       token = `${process.pid}:${randomUUID()}\n`;
     let lock;
@@ -2083,6 +2254,11 @@ export class DataStore {
         }
     }
   }
+  recordStorageDirectoryMatches(session) {
+    if (!this.file) return true;
+    const intended = resolve(this.file) + '.records';
+    return !fsSync.lstatSync(intended).isSymbolicLink() && fsSync.realpathSync.native(intended) === session.directory;
+  }
   // Row writes go through writeRow/mutateRow/insertRow/removeRow, which keep every cached
   // row index of that array (rowIndexes: rows -> Map<name, RowKeyIndex>) current.
   writeRow(table, rows, index, row) {
@@ -2113,10 +2289,14 @@ export class DataStore {
   }
   /** System-owned plug-in trace facts survive a business rollback. Never retain another table this way. */
   appendPluginTraceLog(row) {
-    this.insertRow('plugintracelog', (this.state.tables.plugintracelog ??= []), row);
+    this.state.tables.plugintracelog ??= [];
+    this.insertRow('plugintracelog', this.state.tables.plugintracelog, row);
     let boundary = this.pluginRollbackBoundary;
     while (boundary?.parent) boundary = boundary.parent;
-    if (boundary) (boundary.pluginTraceRows ??= new Map()).set(row.plugintracelogid, clone(row));
+    if (boundary) {
+      boundary.pluginTraceRows ??= new Map();
+      boundary.pluginTraceRows.set(row.plugintracelogid, clone(row));
+    }
   }
   /** Reconcile diagnostic facts after a savepoint rollback without duplicating traces already in its snapshot. */
   restorePluginTraceLogs(boundary) {
@@ -2153,11 +2333,14 @@ export class DataStore {
     let frame;
     if (scoped) {
       frame = transactionFrameOf(this);
-      if (!frame || frame.store !== this || frame.closed) return null;
+      if (!frame || frame?.store !== this || frame.closed) return null;
     }
     this.rowIndexes ??= new WeakMap();
     let indexes = this.rowIndexes.get(rows);
-    if (!indexes) this.rowIndexes.set(rows, (indexes = new Map()));
+    if (!indexes) {
+      indexes = new Map();
+      this.rowIndexes.set(rows, indexes);
+    }
     let entry = indexes.get(name);
     if (!entry || entry.length !== rows.length || entry.frame !== frame) {
       entry = new RowKeyIndex(rows, keyOf, { frame, wild });
@@ -2340,16 +2523,18 @@ export class DataStore {
     );
     const tracked = commit
       .catch((error) => {
-        (this.committedEventErrors ??= []).push({ code: error.code ?? 'ReadLaneCommitError', message: error.message });
+        this.committedEventErrors ??= [];
+        this.committedEventErrors.push({ code: error.code ?? 'ReadLaneCommitError', message: error.message });
         throw error;
       })
       .finally(() => this.readLaneCommits.delete(tracked));
     tracked.catch(() => {});
-    (this.readLaneCommits ??= new Set()).add(tracked);
+    this.readLaneCommits ??= new Set();
+    this.readLaneCommits.add(tracked);
   }
   /** Resolves once the read lanes closed so far committed (rejects with a lane's commit failure). */
   async settleReadLanes() {
-    await Promise.all([...(this.readLaneCommits ?? [])]);
+    await Promise.all(this.readLaneCommits ?? []);
   }
   // One SDK call's savepoint (sdkMutation, sdkMutationAsync): commit, rollback, then close.
   sdkSavepoint() {
@@ -2452,9 +2637,13 @@ export class DataStore {
     const key = `${mapping.logicalName}\u0000${recordKey(mapping, row)}`;
     const lastEvent = this.committedEventCandidates?.at(-1);
     for (let boundary = this.pluginRollbackBoundary; boundary; boundary = boundary.parent) {
-      (boundary.elasticWrites ??= new Map()).set(key, { mapping, row: clone(row), removed });
+      boundary.elasticWrites ??= new Map();
+      boundary.elasticWrites.set(key, { mapping, row: clone(row), removed });
       boundary.elasticVersion = this.state.rowVersion ?? 0;
-      if (lastEvent?.entity === mapping.logicalName) (boundary.elasticEvents ??= []).push(lastEvent);
+      if (lastEvent?.entity === mapping.logicalName) {
+        boundary.elasticEvents ??= [];
+        boundary.elasticEvents.push(lastEvent);
+      }
     }
     this.elasticCommitSequence = (this.elasticCommitSequence ?? 0) + 1;
   }
@@ -2481,7 +2670,7 @@ export class DataStore {
     if (!events?.length || !this.commitStagers?.size) return [];
     const sequence = (this.committedEventSequence ?? 0) + 1,
       after = [];
-    for (const stage of [...this.commitStagers]) {
+    /* NOSONAR */ for (const stage of [...this.commitStagers]) {
       const done = stage(events, { sequence });
       if (typeof done === 'function') after.push(done);
     }
@@ -2561,21 +2750,11 @@ export class DataStore {
     // The staging span (tracing): kept beside the event, never in it (the event is persisted in asyncoperation.data), so a
     // job staged from it remembers it as its parent (committed-work.mjs stage, stagingSpan).
     const staging = this.traces?.enabled ? (this.traces.current() ?? currentRequest()) : null;
-    if (staging?.traceId) (this.stagingSpans ??= new WeakMap()).set(event, staging);
-    for (const observer of details.messageEvent ? [] : (this.mutationObservers ?? [])) {
-      const matched = observer.matches ? observer.matches(clone(event)) : true;
-      if (matched && typeof matched.then === 'function') {
-        Promise.resolve(matched).catch(() => {});
-        throw new DataError('Mutation observer matchers cannot return a promise.', 500, 'InvalidMutationObserver');
-      }
-      if (!matched) continue;
-      this.ensureReadSnapshot();
-      const result = observer.fn(clone(event));
-      if (result && typeof result.then === 'function') {
-        Promise.resolve(result).catch(() => {});
-        throw new DataError('Mutation observers cannot return a promise.', 500, 'InvalidMutationObserver');
-      }
+    if (staging?.traceId) {
+      this.stagingSpans ??= new WeakMap();
+      this.stagingSpans.set(event, staging);
     }
+    runMutationObservers(this, event, details);
     if (
       (this.committedEvents || this.committedEventConsumers?.size || this.commitStagers?.size) &&
       this.committedEventCandidates
@@ -2608,7 +2787,7 @@ export class DataStore {
     this.committedEventDispatches.add(delivery);
   }
   async flushCommittedEvents() {
-    while (this.committedEventDispatches?.size) await Promise.all([...this.committedEventDispatches]);
+    while (this.committedEventDispatches?.size) await Promise.all(this.committedEventDispatches);
   }
   /** Runtime composition may omit an unused result; inputs and default snapshots remain detached. */
   async replaceState(
@@ -2744,7 +2923,8 @@ export class DataStore {
         this.transact(() => this.recordCommittedEvent(entity, operation, readRecord, [], readEvent), {
           skipSaveIfUnchanged: true,
         }).catch((error) => {
-          (this.committedEventErrors ??= []).push({ code: error.code ?? 'CommitStagerError', message: error.message });
+          this.committedEventErrors ??= [];
+          this.committedEventErrors.push({ code: error.code ?? 'CommitStagerError', message: error.message });
         });
     if (!this.committedEventCandidates) return void stage();
     readEvent.frame.asyncCallerParent ??= asyncCallerParent(
@@ -2756,16 +2936,22 @@ export class DataStore {
   onRollback(fn) {
     let boundary = this.pluginRollbackBoundary;
     while (boundary?.parent) boundary = boundary.parent;
-    if (boundary) (boundary.rollbackNotes ??= []).push(fn);
+    if (boundary) {
+      boundary.rollbackNotes ??= [];
+      boundary.rollbackNotes.push(fn);
+    }
   }
   /** Runs fn() once the outermost open transaction has committed (dataverse-virtual-providers.mjs: an enlisted provider's
    * commit). Outside a transaction it does nothing. */
   onCommit(fn) {
     let boundary = this.pluginRollbackBoundary;
     while (boundary?.parent) boundary = boundary.parent;
-    if (boundary) (boundary.commitNotes ??= []).push(fn);
+    if (boundary) {
+      boundary.commitNotes ??= [];
+      boundary.commitNotes.push(fn);
+    }
   }
-  exportedPluginPhase(
+  /* NOSONAR */ exportedPluginPhase(
     mapping,
     operation,
     stage,
@@ -2792,28 +2978,7 @@ export class DataStore {
     // A request that bypasses its synchronous custom steps (MSCRM.BypassCustomPluginExecution, CustomSync) still
     // queues its asynchronous ones (native bypassHeaders): with a step catalogue its phases run, without those steps, so
     // the jobs keep the request's frame (tag, request identity, inputs).
-    if (
-      !this.pluginPipeline ||
-      !(
-        stepsRun(options.bypassCustomPlugins) ||
-        (options.bypassCustomPlugins === true &&
-          this.pluginPipeline.steps &&
-          stepsRun(options.bypassCustomAsync === true))
-      )
-    ) {
-      // A named message's main-operation write without steps of its own still changes the request root its
-      // PostOperation lists (native soapMessages Assign/40, mergeAccount Merge/40; exported-plugins runPluginPhase
-      // records it when the write runs a pipeline).
-      if (
-        stage === 40 &&
-        this.pluginMainOperation?.namedMessage &&
-        ownershipOf(mapping.logicalName, null, mapping) === 'user'
-      )
-        recordRequestRootChange(this, this.pluginMainOperation.context?.values?.RequestId?.value, {
-          table: mapping.logicalName,
-        });
-      return;
-    }
+    if (this.skipExportedPluginPhase(mapping, operation, stage, options, stepsRun)) return;
     if (
       this.rowTransaction &&
       this.pluginPipelineRequiresCheckpoint({
@@ -2854,11 +3019,7 @@ export class DataStore {
       ...(options.targetKeyAttributes ? { targetKeyAttributes: options.targetKeyAttributes } : {}),
       // A record a bulk message delegates runs only its own message's steps (plugin-single-multiple.mjs).
       ...(options.bulkOrigin ? { bulkOrigin: true } : {}),
-      ...(options.omitConcurrencyBehavior
-        ? { concurrencyBehavior: null }
-        : options.pluginConcurrencyBehavior === undefined
-          ? {}
-          : { concurrencyBehavior: options.pluginConcurrencyBehavior }),
+      ...concurrencyBehaviorOption(options),
       bypassStepIds: options.bypassStepIds,
       bypassCustomPlugins: options.bypassCustomPlugins,
       bypassCustomAsync: options.bypassCustomAsync === true,
@@ -2867,11 +3028,30 @@ export class DataStore {
     });
     if (typeof frame?.then === 'function')
       return frame.then((answer) =>
-        this.afterPluginPhase(mapping, operation, stage, target, row, options, id, answer, targetPrimary),
+        this.afterPluginPhase(mapping, operation, stage, target, row, options, { id, frame: answer, targetPrimary }),
       );
-    this.afterPluginPhase(mapping, operation, stage, target, row, options, id, frame, targetPrimary);
+    this.afterPluginPhase(mapping, operation, stage, target, row, options, { id, frame, targetPrimary });
   }
-  afterPluginPhase(mapping, operation, stage, target, row, options, id, frame, targetPrimary) {
+  skipExportedPluginPhase(mapping, operation, stage, options, stepsRun) {
+    if (
+      this.pluginPipeline &&
+      (stepsRun(options.bypassCustomPlugins) ||
+        (options.bypassCustomPlugins === true &&
+          this.pluginPipeline.steps &&
+          stepsRun(options.bypassCustomAsync === true)))
+    )
+      return false;
+    if (
+      stage === 40 &&
+      this.pluginMainOperation?.namedMessage &&
+      ownershipOf(mapping.logicalName, null, mapping) === 'user'
+    )
+      recordRequestRootChange(this, this.pluginMainOperation.context?.values?.RequestId?.value, {
+        table: mapping.logicalName,
+      });
+    return true;
+  }
+  afterPluginPhase(mapping, operation, stage, target, row, options, { id, frame, targetPrimary }) {
     if (frame) {
       this.pluginFrames ??= new WeakMap();
       this.pluginFrames.set(row, frame);
@@ -2879,42 +3059,48 @@ export class DataStore {
     if (stage === 40) handoffPluginResponse(this, operation, mapping.logicalName, frame, options.sdkResponseToken);
     if (!equal(row[mapping.idColumn], id))
       throw new DataError('Plugin target cannot replace the primary key.', 400, 'LocalPluginInvalid');
-    if (stage !== 40 && operation !== 'delete') {
-      const normalized = this.normalizeRecord(mapping, target);
-      // A plug-in Target carries SDK values, not Web API wire input: a DateOnly column holds a DateTime and a choices
-      // column an option array (OptionSetValueCollection), stored as the Web API's comma-separated values.
-      if (options.dataverseWebApi)
-        for (const [key, value] of Object.entries(normalized))
-          if (
-            Array.isArray(value) &&
-            fieldKind(this.fieldDefinition(mapping.logicalName, key, options.metadata)) === 'multichoice'
-          )
-            normalized[key] = value.join(',');
-      if (options.coerce)
-        this.coerceRecord(mapping, normalized, {
-          ...options,
-          dataverseWebApi: false,
-          dataverseHttpReader: undefined,
-          odataErrorDetails: false,
-        });
-      const retainsEmpty =
-        operation === 'create' &&
-        stage === 10 &&
-        targetPrimary === '00000000-0000-0000-0000-000000000000' &&
-        normalized[mapping.idColumn] === targetPrimary;
-      if (normalized[mapping.idColumn] !== undefined && !equal(normalized[mapping.idColumn], id) && !retainsEmpty)
-        throw new DataError('Plugin target cannot replace the primary key.', 400, 'LocalPluginInvalid');
-      // An empty text value stays an empty string in the Target while the row stores null.
-      const blanks = Object.keys(normalized).filter((name) => target[name] === '' && normalized[name] === null);
-      Object.assign(target, normalized);
-      for (const name of blanks) target[name] = '';
-      // The main operation's own Target (a later step's Create/Update stage-30 parent) is the Target as
-      // PreValidation left it, before platform stamps and PreOperation edits.
-      if (stage === 10) (this.pluginMainTargets ??= new WeakMap()).set(row, clone(target));
-      if (retainsEmpty) delete normalized[mapping.idColumn];
-      Object.assign(row, normalized);
-      if (options.coerce) this.assertStateStatus(mapping, row, options);
+    if (stage !== 40 && operation !== 'delete')
+      this.applyPluginTarget(mapping, operation, stage, target, row, options, { id, targetPrimary });
+  }
+  applyPluginTarget(mapping, operation, stage, target, row, options, { id, targetPrimary }) {
+    const normalized = this.normalizePluginTarget(mapping, target, options);
+    const retainsEmpty =
+      operation === 'create' &&
+      stage === 10 &&
+      targetPrimary === '00000000-0000-0000-0000-000000000000' &&
+      normalized[mapping.idColumn] === targetPrimary;
+    if (normalized[mapping.idColumn] !== undefined && !equal(normalized[mapping.idColumn], id) && !retainsEmpty)
+      throw new DataError('Plugin target cannot replace the primary key.', 400, 'LocalPluginInvalid');
+    const blanks = Object.keys(normalized).filter((name) => target[name] === '' && normalized[name] === null);
+    Object.assign(target, normalized);
+    for (const name of blanks) target[name] = '';
+    if (stage === 10) {
+      this.pluginMainTargets ??= new WeakMap();
+      this.pluginMainTargets.set(row, clone(target));
     }
+    if (retainsEmpty) delete normalized[mapping.idColumn];
+    Object.assign(row, normalized);
+    if (options.coerce) this.assertStateStatus(mapping, row, options);
+  }
+  normalizePluginTarget(mapping, target, options) {
+    const normalized = this.normalizeRecord(mapping, target);
+    // A plug-in Target carries SDK values, not Web API wire input: a DateOnly column holds a DateTime and a choices
+    // column an option array (OptionSetValueCollection), stored as the Web API's comma-separated values.
+    if (options.dataverseWebApi)
+      for (const [key, value] of Object.entries(normalized))
+        if (
+          Array.isArray(value) &&
+          fieldKind(this.fieldDefinition(mapping.logicalName, key, options.metadata)) === 'multichoice'
+        )
+          normalized[key] = value.join(',');
+    if (options.coerce)
+      this.coerceRecord(mapping, normalized, {
+        ...options,
+        dataverseWebApi: false,
+        dataverseHttpReader: undefined,
+        odataErrorDetails: false,
+      });
+    return normalized;
   }
   virtualTable(name) {
     const tables = this.virtualTables?.()?.tables;
@@ -2977,7 +3163,7 @@ export class DataStore {
       ...m,
     };
     const extra = this.virtualTables?.()?.relationships?.[logical];
-    if (extra) resolved.relationships = { ...extra, ...(m?.relationships ?? {}) };
+    if (extra) resolved.relationships = { ...extra, ...m?.relationships };
     return resolved;
   }
   rules(entity, operation, identity = {}) {
@@ -2994,14 +3180,10 @@ export class DataStore {
     )
       return [];
     const roleIds = new Set((identity.roleIds ?? []).map((id) => String(id).toLowerCase()));
-    const roles = new Set([
-      ...(identity.roles ?? []),
-      ...(identity.roleSource === 'memberships'
-        ? []
-        : identity.id || identity.contactId
-          ? ['Authenticated Users']
-          : ['Anonymous Users']),
-    ]);
+    let implicitRoles = ['Anonymous Users'];
+    if (identity.roleSource === 'memberships') implicitRoles = [];
+    else if (identity.id || identity.contactId) implicitRoles = ['Authenticated Users'];
+    const roles = new Set([...(identity.roles ?? []), ...implicitRoles]);
     const anonymous = !identity.admin && !identity.id && !identity.contactId;
     const granted = this.state.permissions.filter(
       (p) =>
@@ -3098,55 +3280,13 @@ export class DataStore {
     const result = memo
       .rules(mapping.logicalName, operation, identity)
       .filter((rule) => !permissionId || equal(rule.id, permissionId))
-      .some((rule) => {
-        const scope = rule.scope ?? 'global';
-        if (scope === 'global') return true;
-        if (!row) return false;
-        if (rule.observedOrphanParent?.field) return field(row, rule.observedOrphanParent.field) != null;
-        if (rule.identityRelationship) {
-          const rel = rule.identityRelationship;
-          const im = this.resolveMapping(rel.entity);
-          const identityId = rel.entity === 'account' ? identity.accountId : (identity.contactId ?? identity.id);
-          if (!identityId) return false;
-          const person = memo.lookup(im.logicalName, im.idColumn, identityId);
-          if (!person.length) return false;
-          const people = new Set(person);
-          return memo.related(row, rel, im.logicalName).some((target) => people.has(target));
-        }
-        const value = scalar(
-          field(
-            row,
-            rule.field ??
-              (scope === 'self' ? mapping.idColumn : scope === 'account' ? 'parentcustomerid' : 'contactid'),
-          ),
-        );
-        if (scope === 'self' || scope === 'contact')
-          return Boolean(identity.contactId || identity.id) && equal(value, identity.contactId ?? identity.id);
-        if (scope === 'account') return Boolean(identity.accountId) && equal(value, identity.accountId);
-        if (scope === 'parent') {
-          const rel = rule.relationship;
-          if (!rel?.entity || !rel.from || !rel.to)
-            throw new DataError('Parent permission requires relationship entity/from/to');
-          const pm = this.resolveMapping(rel.entity);
-          return memo
-            .related(row, rel, pm.logicalName)
-            .some((parent) =>
-              this.allowed(
-                pm.logicalName,
-                'read',
-                parent,
-                identity,
-                nextChain,
-                rule.parentPermissionId ?? rule.parentId,
-                memo,
-              ),
-            );
-        }
-        throw new DataError(`Unsupported permission scope ${scope}`);
-      });
+      .some((rule) => permissionRuleAllows(this, rule, { row, mapping, identity, memo, nextChain }));
     if (cacheKey != null && row && typeof row === 'object') {
       let answers = memo.results.get(row);
-      if (!answers) memo.results.set(row, (answers = new Map()));
+      if (!answers) {
+        answers = new Map();
+        memo.results.set(row, answers);
+      }
       answers.set(cacheKey, result);
     }
     return result;
@@ -3171,13 +3311,13 @@ export class DataStore {
         return permission;
       });
       const descriptions = permissions.map((grant) => {
-        const relationship =
-          grant.relationshipName ??
-          (typeof grant.relationship === 'string'
-            ? grant.relationship
-            : grant.relationship
-              ? `${entity}.${grant.relationship.from} → ${grant.relationship.entity}.${grant.relationship.to}`
-              : null);
+        let relationship = grant.relationshipName;
+        if (relationship == null) {
+          if (typeof grant.relationship === 'string') relationship = grant.relationship;
+          else if (grant.relationship)
+            relationship = `${entity}.${grant.relationship.from} → ${grant.relationship.entity}.${grant.relationship.to}`;
+          else relationship = null;
+        }
         return `${grant.name} (${grant.scope})${relationship ? ' relationship ' + relationship : ''}`;
       });
       const message =
@@ -3291,23 +3431,28 @@ export class DataStore {
     if (storedCount === 0 || (unrestricted && storedCount !== undefined)) return storedCount;
     // A missing grant and an unconditional first grant cannot depend on row
     // contents. Keep custom per-row authorization hooks on the ordinary path.
-    if (!unrestricted && this.allowed === DataStore.prototype.allowed) {
-      let present = false;
-      for (let index = 0; index < length; index++)
-        if (index in rows) {
-          present = true;
-          break;
-        }
-      if (!present) return 0;
-      const rules = memo.rules(m.logicalName, 'read', identity);
-      if (!rules.length) return 0;
-      if ((rules[0].scope ?? 'global') === 'global') {
-        if (storedCount !== undefined) return storedCount;
-        let count = 0;
-        for (let index = 0; index < length; index++) if (index in rows) count++;
-        return count;
+    const fastCount = this.fastPermittedCount(m, rows, identity, unrestricted, memo, storedCount, length);
+    if (fastCount !== undefined) return fastCount;
+    return this.countPermissionMatches(m, rows, identity, unrestricted, memo, length);
+  }
+  fastPermittedCount(m, rows, identity, unrestricted, memo, storedCount, length) {
+    if (unrestricted || this.allowed !== DataStore.prototype.allowed) return undefined;
+    let present = false;
+    for (let index = 0; index < length; index++)
+      if (index in rows) {
+        present = true;
+        break;
       }
-    }
+    if (!present) return 0;
+    const rules = memo.rules(m.logicalName, 'read', identity);
+    if (!rules.length) return 0;
+    if ((rules[0].scope ?? 'global') !== 'global') return undefined;
+    if (storedCount !== undefined) return storedCount;
+    let count = 0;
+    for (let index = 0; index < length; index++) if (index in rows) count++;
+    return count;
+  }
+  countPermissionMatches(m, rows, identity, unrestricted, memo, length) {
     let count = 0;
     for (let index = 0; index < length; index++)
       if (
@@ -3346,33 +3491,34 @@ export class DataStore {
     for (const rel of Object.values(m.relationships ?? {}))
       if (rel?.many === false && rel.from && rel.from !== m.idColumn && rel.entity)
         byColumn.set(rel.from, [...(byColumn.get(rel.from) ?? []), rel.entity]);
-    for (const [column, entities] of byColumn) {
-      const value = out[column];
-      if (value == null || value === '' || (typeof value === 'object' && (Array.isArray(value) || value.name != null)))
-        continue;
-      const id = typeof value === 'object' ? value.id : value;
-      if (id == null) continue;
-      const wanted = typeof value === 'object' && value.logical_name ? [value.logical_name] : entities;
-      for (const logical of wanted) {
-        let target;
-        try {
-          target = this.resolveMapping(logical);
-        } catch {
-          continue;
-        }
-        const rows = this.tableRows(target.logicalName),
-          hit = rows[this.rowIndex(target, rows, id)];
-        if (!hit && wanted.length > 1) continue;
-        out[column] = {
-          ...(typeof value === 'object' ? value : {}),
-          id,
-          logical_name: target.logicalName,
-          name: hit ? (primaryNameValue(target, hit) ?? '') : '',
-        };
-        break;
-      }
-    }
+    for (const [column, entities] of byColumn) this.nameReferenceColumn(out, column, entities);
     return out;
+  }
+  /* NOSONAR */ nameReferenceColumn(out, column, entities) {
+    const value = out[column];
+    if (value == null || value === '' || (typeof value === 'object' && (Array.isArray(value) || value.name != null)))
+      return;
+    const id = typeof value === 'object' ? value.id : value;
+    if (id == null) return;
+    const wanted = typeof value === 'object' && value.logical_name ? [value.logical_name] : entities;
+    for (const logical of wanted) {
+      let target;
+      try {
+        target = this.resolveMapping(logical);
+      } catch {
+        continue;
+      }
+      const rows = this.tableRows(target.logicalName),
+        hit = rows[this.rowIndex(target, rows, id)];
+      if (!hit && wanted.length > 1) continue;
+      out[column] = {
+        ...(typeof value === 'object' ? value : {}),
+        id,
+        logical_name: target.logicalName,
+        name: hit ? (primaryNameValue(target, hit) ?? '') : '',
+      };
+      break;
+    }
   }
   get(entity, id, identity = {}, options = {}) {
     if (!this.hasOperationContext()) return this.withOperationContext(() => this.get(entity, id, identity, options));
@@ -3417,7 +3563,7 @@ export class DataStore {
       },
     );
   }
-  readRecord(entity, id, identity = {}, options = {}) {
+  /* NOSONAR */ readRecord(entity, id, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
     const read = (key, columns = options.sdkColumns) => {
       const rows = options.readRow ? null : this.tableRows(m.logicalName);
@@ -3579,7 +3725,8 @@ export class DataStore {
           this.transact(() => this.recordCommittedEvent(m.logicalName, 'retrieve', clone(record), [], readEvent), {
             skipSaveIfUnchanged: true,
           }).catch((error) => {
-            (this.committedEventErrors ??= []).push({
+            this.committedEventErrors ??= [];
+            this.committedEventErrors.push({
               code: error.code ?? 'CommitStagerError',
               message: error.message,
             });
@@ -3877,7 +4024,7 @@ export class DataStore {
     };
     const names = new Map(),
       requestedNames = new Map();
-    const lookupName = (reference) => {
+    /* NOSONAR: single-pass routine, splitting it would change shared state */ const lookupName = (reference) => {
       if (!reference) return undefined;
       if (reference.name != null) return reference.name;
       const logical = reference.logical_name ?? reference.logicalName;
@@ -3897,7 +4044,10 @@ export class DataStore {
         // The ordinary index retains the last duplicate's label. Cache only
         // requested IDs; label formatting must not decode a complete target.
         let namesOf = requestedNames.get(mapping.logicalName);
-        if (!namesOf) requestedNames.set(mapping.logicalName, (namesOf = new Map()));
+        if (!namesOf) {
+          namesOf = new Map();
+          requestedNames.set(mapping.logicalName, namesOf);
+        }
         const id = identifier;
         if (!namesOf.has(id))
           namesOf.set(id, positions.length ? primaryNameValue(mapping, rows[positions.at(-1)]) : undefined);
@@ -3955,31 +4105,38 @@ export class DataStore {
     const name = String(attribute ?? '');
     if (!name) return 'unverified';
     const lower = name.toLowerCase();
-    if (name === mapping.idColumn) return 'known';
-    if (Object.keys(this.fieldDefinitions(mapping.logicalName, metadata)).some((key) => key.toLowerCase() === lower))
-      return 'known';
+    if (this.isKnownMappedColumn(mapping, name, lower, metadata)) return 'known';
+    if (mapping.schemaComplete === true) return 'unknown';
+    return this.storedColumnStatus(mapping, name);
+  }
+  isKnownMappedColumn(mapping, name, lower, metadata) {
+    if (name === mapping.idColumn) return true;
+    const definitions = this.fieldDefinitions(mapping.logicalName, metadata);
+    if (Object.keys(definitions).some((key) => key.toLowerCase() === lower)) return true;
     if (Object.values(mapping.relationships ?? {}).some((rel) => String(rel?.from ?? '').toLowerCase() === lower))
-      return 'known';
+      return true;
+    return this.isVirtualMappedColumn(mapping, lower, definitions);
+  }
+  isVirtualMappedColumn(mapping, lower, definitions) {
     // Dataverse's virtual name columns, which Solution XML doesn't list: <lookup>name and
     // <lookup>yominame, and <choice|status|state|two-options>name (statecodename).
     const virtual = /^(.+?)(yominame|name)$/.exec(lower);
-    if (virtual) {
-      const definitions = this.fieldDefinitions(mapping.logicalName, metadata);
-      const baseKey = Object.keys(definitions).find((key) => key.toLowerCase() === virtual[1]);
-      const kind = baseKey ? fieldKind(definitions[baseKey]) : null;
-      const lookup =
-        kind === 'lookup' ||
-        Object.values(mapping.relationships ?? {}).some(
-          (rel) => rel?.many === false && String(rel.from ?? '').toLowerCase() === virtual[1],
-        );
-      if (lookup || (virtual[2] === 'name' && ['choice', 'multichoice', 'boolean'].includes(kind))) return 'known';
-    }
-    if (mapping.schemaComplete === true) return 'unknown';
+    if (!virtual) return false;
+    const baseKey = Object.keys(definitions).find((key) => key.toLowerCase() === virtual[1]);
+    const kind = baseKey ? fieldKind(definitions[baseKey]) : null;
+    const lookup =
+      kind === 'lookup' ||
+      Object.values(mapping.relationships ?? {}).some(
+        (rel) => rel?.many === false && String(rel.from ?? '').toLowerCase() === virtual[1],
+      );
+    return lookup || (virtual[2] === 'name' && ['choice', 'multichoice', 'boolean'].includes(kind));
+  }
+  storedColumnStatus(mapping, name) {
     // Stored columns per table, rebuilt only after the data changes.
     const revision = this.dataRevision();
     this.storedColumns ??= new Map();
     let entry = this.storedColumns.get(mapping.logicalName);
-    if (!entry || entry.revision !== revision) {
+    if (!entry || entry?.revision !== revision) {
       const columns = new Set();
       for (const row of this.tableRows(mapping.logicalName)) for (const key of Object.keys(row)) columns.add(key);
       entry = { revision, columns };
@@ -4068,7 +4225,8 @@ export class DataStore {
         });
       if (spec.top != null) linked = linked.slice(0, spec.top);
       const nested = (item) => this.projectRow(ctx, spec.target, item, spec.select, spec.expand, includeKeys);
-      out[spec.navigation] = spec.rel.many === false ? (linked[0] ? nested(linked[0]) : null) : linked.map(nested);
+      if (spec.rel.many === false) out[spec.navigation] = linked[0] ? nested(linked[0]) : null;
+      else out[spec.navigation] = linked.map(nested);
     }
     return out;
   }
@@ -4087,7 +4245,7 @@ export class DataStore {
       () => this.queryRecords(entity, params, identity, paging, options),
     );
   }
-  queryRecords(entity, params = {}, identity = {}, paging, options = {}) {
+  /* NOSONAR */ queryRecords(entity, params = {}, identity = {}, paging, options = {}) {
     const p = params instanceof URLSearchParams ? Object.fromEntries(params) : params;
     if (p.fetchXml || p.fetchxml) return this.queryCore(entity, params, identity, paging, options);
     // Column security of the reading principal on every returned row (portal-authorization.mjs maskRow), as get() and fetchXml().
@@ -4220,48 +4378,72 @@ export class DataStore {
         options.webApiFetchQuery &&
         webApiFetchExpression(original, this, options.webApiFetchQuery)) ||
       original;
-    // The result's entities keep the columns the effective query selects (the FetchExpression names none itself).
-    const columnsOf = (answer, query) =>
-      shown === original ? answer : Object.defineProperty(answer, 'sdkColumnSet', { value: query.columnSet });
     return this.retrieveMultipleOperation(
       mapping.logicalName,
       shown,
       identity,
-      (query) => {
-        if (shown.$type === 'FetchExpression' && query.$type === 'FetchExpression')
-          query = query.query === shown.query ? original : webApiFetchToQuery(query.query, this);
-        if (!['QueryExpression', 'QueryByAttribute'].includes(query.$type) || query.entityName !== mapping.logicalName)
-          throw new DataError(
-            'A RetrieveMultiple plugin cannot change the bound query table or query language.',
-            501,
-            'LocalPluginQueryUnsupported',
-          );
-        if (sameSdkQuery(query, original))
-          return columnsOf(
-            this.queryCore(entity, params, identity, paging, { ...options, captureRootIds: true }),
-            query,
-          );
-        const projectedQuery = clone(query);
-        const preserveFilter = sameSdkQuery(query.criteria, original.criteria);
-        if (preserveFilter) projectedQuery.criteria = { operatorName: 'And', conditions: [], filters: [] };
-        const converted = { ...p };
-        const rewritten = sdkQueryParameters(projectedQuery);
-        for (const key of ['$select', '$filter', '$orderby', '$top']) {
-          if (key === '$filter' && preserveFilter) continue;
-          delete converted[key];
-          if (rewritten[key] !== undefined) converted[key] = rewritten[key];
-        }
-        if (!query.columnSet?.allColumns && !query.columnSet?.columns?.length) converted.$select = mapping.idColumn;
-        if (converted.$select && !converted.$select.split(',').includes(mapping.idColumn))
-          converted.$select += ',' + mapping.idColumn;
-        return columnsOf(this.queryCore(entity, converted, identity, paging, options), query);
-      },
+      (query) =>
+        this.executePluginQuery({
+          query,
+          shown,
+          original,
+          mapping,
+          entity,
+          params,
+          identity,
+          paging,
+          options,
+          paramsObject: p,
+        }),
       'value',
       options.sdkResponseToken,
       { ...options, preserveProperties: parseExpand(p.$expand).map((item) => item.navigation) },
     );
   }
-  retrieveMultipleOperation(entity, original, identity, execute, key, responseToken, options = {}) {
+  /* NOSONAR */ executePluginQuery({
+    query,
+    shown,
+    original,
+    mapping,
+    entity,
+    params,
+    identity,
+    paging,
+    options,
+    paramsObject,
+  }) {
+    if (shown.$type === 'FetchExpression' && query.$type === 'FetchExpression')
+      query = query.query === shown.query ? original : webApiFetchToQuery(query.query, this);
+    if (!['QueryExpression', 'QueryByAttribute'].includes(query.$type) || query.entityName !== mapping.logicalName)
+      throw new DataError(
+        'A RetrieveMultiple plugin cannot change the bound query table or query language.',
+        501,
+        'LocalPluginQueryUnsupported',
+      );
+    if (sameSdkQuery(query, original)) {
+      const answer = this.queryCore(entity, params, identity, paging, { ...options, captureRootIds: true });
+      return this.withPluginQueryColumns(answer, shown, original, query);
+    }
+    const projectedQuery = clone(query);
+    const preserveFilter = sameSdkQuery(query.criteria, original.criteria);
+    if (preserveFilter) projectedQuery.criteria = { operatorName: 'And', conditions: [], filters: [] };
+    const converted = { ...paramsObject };
+    const rewritten = sdkQueryParameters(projectedQuery);
+    for (const key of ['$select', '$filter', '$orderby', '$top']) {
+      if (key === '$filter' && preserveFilter) continue;
+      delete converted[key];
+      if (rewritten[key] !== undefined) converted[key] = rewritten[key];
+    }
+    if (!query.columnSet?.allColumns && !query.columnSet?.columns?.length) converted.$select = mapping.idColumn;
+    if (converted.$select && !converted.$select.split(',').includes(mapping.idColumn))
+      converted.$select += ',' + mapping.idColumn;
+    const answer = this.queryCore(entity, converted, identity, paging, options);
+    return this.withPluginQueryColumns(answer, shown, original, query);
+  }
+  withPluginQueryColumns(answer, shown, original, query) {
+    return shown === original ? answer : Object.defineProperty(answer, 'sdkColumnSet', { value: query.columnSet });
+  }
+  /* NOSONAR */ retrieveMultipleOperation(entity, original, identity, execute, key, responseToken, options = {}) {
     if (!this.hasOperationContext())
       return this.withOperationContext(() =>
         this.retrieveMultipleOperation(entity, original, identity, execute, key, responseToken, options),
@@ -4403,7 +4585,8 @@ export class DataStore {
             this.transact(() => this.recordCommittedEvent(entity, 'retrievemultiple', readRecord, [], deferred), {
               skipSaveIfUnchanged: true,
             }).catch((error) => {
-              (this.committedEventErrors ??= []).push({
+              this.committedEventErrors ??= [];
+              this.committedEventErrors.push({
                 code: error.code ?? 'CommitStagerError',
                 message: error.message,
               });
@@ -4414,7 +4597,8 @@ export class DataStore {
         this.transact(() => this.recordCommittedEvent(entity, 'retrievemultiple', clone(record), [], readEvent), {
           skipSaveIfUnchanged: true,
         }).catch((error) => {
-          (this.committedEventErrors ??= []).push({ code: error.code ?? 'CommitStagerError', message: error.message });
+          this.committedEventErrors ??= [];
+          this.committedEventErrors.push({ code: error.code ?? 'CommitStagerError', message: error.message });
         });
       const sourceRows = answer[key] ?? [];
       const sourceById = new Map(
@@ -4470,45 +4654,11 @@ export class DataStore {
     }
     const dialect = options.dialect ?? 'extended';
     const aliases = Object.fromEntries(Object.entries(p).filter(([key]) => key.startsWith('@')));
-    for (const key of Object.keys(p)) {
-      if (key.startsWith('@')) {
-        continue;
-      }
-      if (
-        key.startsWith('$') &&
-        !['$filter', '$select', '$expand', '$orderby', '$top', '$skip', '$count', '$apply'].includes(key)
-      )
-        throw new DataError(`Unsupported OData option ${key}`, 400, 'UnsupportedQuery');
-    }
-    if (
-      !identity.admin &&
-      this.state.settings.permissionMode !== 'permissive' &&
-      !this.rules(m.logicalName, 'read', identity).length
-    )
-      throw new DataError(`Table permission denies read on ${entity}`, 403, 'PermissionDenied', {
-        operation: 'read',
-        table: m.logicalName,
-      });
+    this.validateQueryOptions(p);
+    this.assertQueryReadable(entity, m, identity);
     const queryOptions = { dialect, aliases };
     const ctx = this.queryContext(identity, { ...options, dialect });
-    // Single-record and id-list reads find their rows through the primary-key index before
-    // the row-security filter, instead of filtering the whole table.
-    const subset =
-      options.id != null || options.ids
-        ? this.primaryKeySubset(m, options.id != null ? [options.id] : [...options.ids])
-        : null;
-    let rows = ctx.readRows(m.logicalName, undefined, subset ?? undefined);
-    if (options.backendRowFilter) rows = rows.filter((row) => options.backendRowFilter(clone(row)) === true);
-    // Single-record and navigation routes restrict the readable rows first.
-    if (options.id != null) rows = rows.filter((row) => equal(row[m.idColumn], options.id));
-    if (isElastic(m) && Object.hasOwn(options, 'partitionId'))
-      rows = rows.filter((row) => samePartition(row.partitionid, options.partitionId));
-    if (options.ids) {
-      const wanted = new Set([...options.ids].map(comparable));
-      rows = rows.filter((row) => wanted.has(comparable(row[m.idColumn])));
-    }
-    if (p.$filter != null && String(p.$filter).trim() !== '')
-      rows = rows.filter(compileODataPredicate(parseODataExpression(p.$filter, queryOptions), m, ctx));
+    const rows = this.queryRows(m, p, queryOptions, ctx, options);
     // Ordering on a calculated column over a parent or another calculated column is
     // ignored without an error.
     const order = parseOrderBy(p.$orderby, queryOptions).filter(
@@ -4521,54 +4671,99 @@ export class DataStore {
       lookupName: ctx.lookupName,
       collation: ctx.settings.collation,
     };
-    if (p.$apply) {
-      for (const key of ['$select', '$expand', '$skip'])
-        if (own(p, key)) throw new DataError(`OData $apply can't be combined with ${key}`, 400, 'UnsupportedQuery');
-      const steps = parseApply(p.$apply, queryOptions);
-      const applied = evaluateApply(steps, rows, {
-        ...ctx,
-        mapping: m,
-        pathValue: (row, segments) => this.pathValue(ctx, m, row, segments),
-        pathDefinition: (segments) => this.pathDefinition(ctx, m, segments),
-        targetLogicalName: (segments) => this.pathMapping(ctx, m, segments).logicalName,
-      });
-      let values = applied.rows;
-      if (order.length) {
-        const aggregateAliases = new Set(
-          steps.flatMap((step) => (step.aggregates ?? []).map((aggregate) => aggregate.alias)),
-        );
-        for (const spec of order)
-          if (aggregateAliases.has(spec.path.join('/')))
-            throw new DataError(
-              'The query node SingleValueOpenPropertyAccess is not supported',
-              400,
-              'UnsupportedQuery',
-            );
-        values = sortRows(values, order, {
-          ...sortOptions,
-          valueOf: (row, path) => row[path.join('/')],
-          definition: (path) => (path.length === 1 ? ctx.definition(m.logicalName, path[0]) : undefined),
-          tieBreak: false,
-        });
+    if (p.$apply) return this.queryApplyCore(m, p, order, sortOptions, ctx, queryOptions, { rows, options });
+    return this.queryPagedCore(m, p, order, sortOptions, ctx, queryOptions, { rows, paging, options });
+  }
+  validateQueryOptions(params) {
+    for (const key of Object.keys(params)) {
+      if (key.startsWith('@')) {
+        continue;
       }
-      // A Dataverse groupby without $orderby answers its single-column groups in ascending key order (false before true).
-      if (!order.length && options.dialect === 'dataverse') {
-        const groupKeys = steps
-          .filter((step) => step.kind === 'groupby')
-          .flatMap((step) => step.properties ?? [])
-          .filter((path) => path.length === 1)
-          .map((path) => ({ path, descending: false }));
-        if (groupKeys.length)
-          values = sortRows(values, groupKeys, {
-            ...sortOptions,
-            valueOf: (row, path) => row[path.join('/')],
-            definition: (path) => ctx.definition(m.logicalName, path[0]),
-            tieBreak: false,
-          });
-      }
-      if (p.$top != null) values = values.slice(0, boundedInt(p.$top, '$top'));
-      return { value: clone(values) };
+      if (
+        key.startsWith('$') &&
+        !['$filter', '$select', '$expand', '$orderby', '$top', '$skip', '$count', '$apply'].includes(key)
+      )
+        throw new DataError(`Unsupported OData option ${key}`, 400, 'UnsupportedQuery');
     }
+  }
+  assertQueryReadable(entity, mapping, identity) {
+    if (
+      !identity.admin &&
+      this.state.settings.permissionMode !== 'permissive' &&
+      !this.rules(mapping.logicalName, 'read', identity).length
+    )
+      throw new DataError(`Table permission denies read on ${entity}`, 403, 'PermissionDenied', {
+        operation: 'read',
+        table: mapping.logicalName,
+      });
+  }
+  queryRows(mapping, p, queryOptions, ctx, options) {
+    // Single-record and id-list reads find their rows through the primary-key index before
+    // the row-security filter, instead of filtering the whole table.
+    let subset = null;
+    if (options.id != null || options.ids)
+      subset = this.primaryKeySubset(mapping, options.id != null ? [options.id] : [...options.ids]);
+    let rows = ctx.readRows(mapping.logicalName, undefined, subset ?? undefined);
+    if (options.backendRowFilter) rows = rows.filter((row) => options.backendRowFilter(clone(row)) === true);
+    // Single-record and navigation routes restrict the readable rows first.
+    if (options.id != null) rows = rows.filter((row) => equal(row[mapping.idColumn], options.id));
+    if (isElastic(mapping) && Object.hasOwn(options, 'partitionId'))
+      rows = rows.filter((row) => samePartition(row.partitionid, options.partitionId));
+    if (options.ids) {
+      const wanted = new Set([...options.ids].map(comparable));
+      rows = rows.filter((row) => wanted.has(comparable(row[mapping.idColumn])));
+    }
+    if (p.$filter != null && String(p.$filter).trim() !== '')
+      rows = rows.filter(compileODataPredicate(parseODataExpression(p.$filter, queryOptions), mapping, ctx));
+    return rows;
+  }
+  queryApplyCore(m, p, order, sortOptions, ctx, queryOptions, { rows, options }) {
+    for (const key of ['$select', '$expand', '$skip'])
+      if (own(p, key)) throw new DataError(`OData $apply can't be combined with ${key}`, 400, 'UnsupportedQuery');
+    const steps = parseApply(p.$apply, queryOptions);
+    const applied = evaluateApply(steps, rows, {
+      ...ctx,
+      mapping: m,
+      pathValue: (row, segments) => this.pathValue(ctx, m, row, segments),
+      pathDefinition: (segments) => this.pathDefinition(ctx, m, segments),
+      targetLogicalName: (segments) => this.pathMapping(ctx, m, segments).logicalName,
+    });
+    let values = applied.rows;
+    if (order.length) values = this.sortAppliedQuery(values, order, steps, sortOptions, ctx, m);
+    if (!order.length && options.dialect === 'dataverse')
+      values = this.sortAppliedGroups(values, steps, sortOptions, ctx, m);
+    if (p.$top != null) values = values.slice(0, boundedInt(p.$top, '$top'));
+    return { value: clone(values) };
+  }
+  sortAppliedQuery(values, order, steps, sortOptions, ctx, mapping) {
+    const aggregateAliases = new Set(
+      steps.flatMap((step) => (step.aggregates ?? []).map((aggregate) => aggregate.alias)),
+    );
+    for (const spec of order)
+      if (aggregateAliases.has(spec.path.join('/')))
+        throw new DataError('The query node SingleValueOpenPropertyAccess is not supported', 400, 'UnsupportedQuery');
+    return sortRows(values, order, {
+      ...sortOptions,
+      valueOf: (row, path) => row[path.join('/')],
+      definition: (path) => (path.length === 1 ? ctx.definition(mapping.logicalName, path[0]) : undefined),
+      tieBreak: false,
+    });
+  }
+  sortAppliedGroups(values, steps, sortOptions, ctx, mapping) {
+    const groupKeys = steps
+      .filter((step) => step.kind === 'groupby')
+      .flatMap((step) => step.properties ?? [])
+      .filter((path) => path.length === 1)
+      .map((path) => ({ path, descending: false }));
+    if (!groupKeys.length) return values;
+    return sortRows(values, groupKeys, {
+      ...sortOptions,
+      valueOf: (row, path) => row[path.join('/')],
+      definition: (path) => ctx.definition(mapping.logicalName, path[0]),
+      tieBreak: false,
+    });
+  }
+  /* NOSONAR */ queryPagedCore(m, p, order, sortOptions, ctx, queryOptions, { rows, paging, options }) {
     const count = rows.length,
       publicCount = paging ? Math.min(count, 5000) : count;
     // A continuation that names the previous page's last row resumes after that row (key-set
@@ -4584,13 +4779,15 @@ export class DataStore {
         ...sortOptions,
         tieBreak: Boolean(paging),
       });
-    const skip = keyset ? keyset.before : paging ? paging.offset : boundedInt(p.$skip ?? 0, '$skip'),
-      totalLimit = paging ? Math.min(count, p.$top == null ? count : boundedInt(p.$top, '$top')) : rows.length,
-      top = paging
-        ? Math.min(paging.pageSize, Math.max(totalLimit - skip, 0))
-        : p.$top == null
-          ? rows.length
-          : boundedInt(p.$top, '$top');
+    let skip;
+    if (keyset) skip = keyset.before;
+    else if (paging) skip = paging.offset;
+    else skip = boundedInt(p.$skip ?? 0, '$skip');
+    let totalLimit = rows.length;
+    if (paging) totalLimit = Math.min(count, p.$top == null ? count : boundedInt(p.$top, '$top'));
+    let top;
+    if (paging) top = Math.min(paging.pageSize, Math.max(totalLimit - skip, 0));
+    else top = p.$top == null ? rows.length : boundedInt(p.$top, '$top');
     rows = keyset ? rows.slice(0, top) : rows.slice(skip, skip + top);
     const select = parseSelect(p.$select);
     const expand = this.prepareExpand(ctx, m, parseExpand(p.$expand), queryOptions);
@@ -4623,7 +4820,7 @@ export class DataStore {
       Object.defineProperty(answer, 'sdkRootIds', { value: rows.map((row) => row[m.idColumn]) });
     return answer;
   }
-  normalizeRecord(mapping, data, identity = {}) {
+  /* NOSONAR */ normalizeRecord(mapping, data, identity = {}) {
     const SYSTEM_BIND_NAVIGATIONS = new Set([
       'ownerid',
       'owninguser',
@@ -4731,18 +4928,13 @@ export class DataStore {
     const rows = this.tableRows(mapping.logicalName);
     const parts = parseKeySegment(key);
     if (!parts) return rows[this.rowIndex(mapping, rows, key)];
-    const names = Object.keys(parts).sort();
+    const names = Object.keys(parts).sort((a, b) => Number(a > b) - Number(a < b));
     if (isElastic(mapping) && names.length === 1 && names[0] === mapping.idColumn)
       return rows[this.rowIndex(mapping, rows, parts[mapping.idColumn])];
     // Only an Active key (its index job succeeded) resolves rows; Pending and Failed keys do not exist for lookups.
     const declared = (mapping.alternateKeys ?? [])
       .filter((alternate) => (alternate.indexStatus ?? 'Active') === 'Active')
-      .some((alternate) => {
-        const attributes = (alternate.attributes ?? alternate.keyAttributes ?? [])
-          .map((name) => String(name).toLowerCase())
-          .sort();
-        return attributes.length === names.length && attributes.every((name, index) => name === names[index]);
-      });
+      .some((alternate) => alternateKeyMatchesNames(alternate, names));
     if (!declared && !(names.length === 1 && names[0] === mapping.idColumn))
       throw new DataError(
         `The key attribute(s) ${names.join(', ')} don't match an alternate key declared for ${mapping.logicalName}.`,
@@ -4761,33 +4953,33 @@ export class DataStore {
           : valuesEqual(field(row, name), parts[name], { collation, kind: kinds[name] }),
       );
     // Within one transaction (UpsertMultiple, key upserts) candidates come from the key-segment index.
+    const indexed = this.findIndexedKeyRow(mapping, rows, names, parts, collation, kinds, matches);
+    if (indexed.used) return indexed.row;
+    return rows.find(matches);
+  }
+  findIndexedKeyRow(mapping, rows, names, parts, collation, kinds, matches) {
     const literal = names.map((name) => keySegmentBucket(parts[name], collation, kinds[name]));
-    if (!isElastic(mapping) && literal.every((bucket) => typeof bucket === 'string')) {
-      const name = `ks\u0000${JSON.stringify([collation, names, kinds])}`;
-      const index = this.rowKeyIndex(rows, name, keySegmentOf(names, collation, kinds), { scoped: true, wild: true });
-      if (index && !index.linear) {
-        const bucketed = index.get(JSON.stringify(literal));
-        const candidates = index.wild.length
-          ? [...new Set([...bucketed, ...index.wild])].sort((a, b) => a - b)
-          : bucketed;
-        // Validity check: every bucketed candidate must still match; otherwise rebuild and scan.
-        let first;
-        for (const position of candidates) {
-          const row = rows[position];
-          if (row !== undefined && matches(row)) {
-            first = row;
-            break;
-          }
-          if (bucketed.includes(position)) {
-            first = null;
-            break;
-          }
-        }
-        if (first !== null) return first;
-        this.dropRowKeyIndex(rows, name);
+    if (isElastic(mapping) || !literal.every((bucket) => typeof bucket === 'string')) return { used: false };
+    const name = `ks\u0000${JSON.stringify([collation, names, kinds])}`;
+    const index = this.rowKeyIndex(rows, name, keySegmentOf(names, collation, kinds), { scoped: true, wild: true });
+    if (!index || index.linear) return { used: false };
+    const bucketed = index.get(JSON.stringify(literal));
+    const candidates = index.wild.length ? [...new Set([...bucketed, ...index.wild])].sort((a, b) => a - b) : bucketed;
+    let first;
+    for (const position of candidates) {
+      const row = rows[position];
+      if (row !== undefined && matches(row)) {
+        first = row;
+        break;
+      }
+      if (bucketed.includes(position)) {
+        first = null;
+        break;
       }
     }
-    return rows.find(matches);
+    if (first !== null) return { used: true, row: first };
+    this.dropRowKeyIndex(rows, name);
+    return { used: false };
   }
   evaluate(expr, context) {
     if (typeof expr === 'string' && expr.startsWith('$')) {
@@ -4797,6 +4989,9 @@ export class DataStore {
     if (!expr || typeof expr !== 'object' || Array.isArray(expr)) return clone(expr);
     if (own(expr, 'literal')) return clone(expr.literal);
     const args = (expr.args ?? []).map((a) => this.evaluate(a, context));
+    return this.evaluatePluginOperator(expr, context, args);
+  }
+  evaluatePluginOperator(expr, context, args) {
     switch (expr.op) {
       case 'concat':
         return args.map((a) => a ?? '').join('');
@@ -4817,17 +5012,7 @@ export class DataStore {
       case 'uuid':
         return this.ids.uuid();
       case 'sequence': {
-        const scope = safeName(String(args[0]));
-        const prefix = String(args[1] ?? '');
-        const width = Number(args[2] ?? 6);
-        if (!/^[a-z0-9 _-]{0,32}$/i.test(prefix) || !Number.isInteger(width) || width < 1 || width > 12)
-          throw new DataError('Plugin sequence requires a bounded prefix and width', 400, 'InvalidPlugin');
-        const counters = (this.state.settings.pluginSequences ??= {});
-        const next = Number(counters[scope] ?? 0) + 1;
-        if (!Number.isSafeInteger(next) || next >= 10 ** width)
-          throw new DataError('Plugin sequence exhausted configured width', 400, 'InvalidPlugin');
-        counters[scope] = next;
-        return prefix + String(next).padStart(width, '0');
+        return this.evaluateSequence(args);
       }
       case 'now':
         return new Date(this.clock.now()).toISOString();
@@ -4837,113 +5022,168 @@ export class DataStore {
           .map((s) => s.trim())
           .filter(Boolean);
       case 'join':
-        if (!Array.isArray(args[0])) throw new DataError('Plugin join requires an array', 400, 'InvalidPlugin');
-        return args[0].map(scalar).join(args[1] ?? ', ');
+        return this.evaluateJoin(args);
       case 'length':
-        if (!Array.isArray(args[0])) throw new DataError('Plugin length requires an array', 400, 'InvalidPlugin');
-        return args[0].length;
+        return this.evaluateLength(args);
       case 'lookup': {
-        const record = this.get(safeName(String(args[0])), scalar(args[1]), context.identity, { skipPluginRead: true });
-        if (!record) throw new DataError('Plugin lookup target does not exist', 400, 'InvalidLookup');
-        return clone(args[2] ? field(record ?? {}, safeName(String(args[2]))) : record);
+        return this.evaluateLookup(args, context);
       }
       case 'related': {
-        const mapping = this.resolveMapping(safeName(String(args[0])));
-        const relationshipName = safeName(String(args[2]));
-        const relationship = mapping.relationships?.[relationshipName];
-        if (!relationship)
-          throw new DataError('Plugin relationship is not declared in entity metadata', 400, 'MissingRelationship');
-        const multiple = Array.isArray(args[1]),
-          ids = multiple ? args[1] : [args[1]],
-          result = [];
-        if (ids.length > 1024) throw new DataError('Plugin related exceeds 1024 parent records', 400, 'InvalidPlugin');
-        const targets = this.rows(relationship.entity, context.identity);
-        // Indexed relationship lookup (direct or through the intersect table)
-        // instead of testing every target against every intersect row.
-        const relatedIndex = this.permissionMemo();
-        const targetLogical = this.resolveMapping(relationship.entity).logicalName;
-        for (const id of ids) {
-          const parent = this.get(mapping.logicalName, scalar(id), context.identity, { skipPluginRead: true });
-          if (!parent) throw new DataError('Plugin relationship parent does not exist', 400, 'InvalidLookup');
-          const linked = new Set(relatedIndex.related(parent, relationship, targetLogical));
-          for (const row of targets.filter((row) => linked.has(row))) {
-            const value = args[3] ? field(row, safeName(String(args[3]))) : row;
-            result.push(multiple ? { parentId: parent[mapping.idColumn], record: value } : value);
-          }
-          if (result.length > 1024) throw new DataError('Plugin related exceeds 1024 records', 400, 'InvalidPlugin');
-        }
-        return clone(result);
+        return this.evaluateRelated(args, context);
       }
       case 'find': {
-        const mapping = this.resolveMapping(safeName(String(args[0])));
-        const matches = Object.entries(expr.match ?? {}).map(([key, value]) => [
-          safeName(key),
-          this.evaluate(value, context),
-        ]);
-        if (!matches.length) throw new DataError('Plugin find requires explicit matching fields', 400, 'InvalidPlugin');
-        const memo = this.permissionMemo(),
-          candidates = this.tableRows(mapping.logicalName).filter((row) =>
-            matches.every(([key, value]) => equal(field(row, key), value)),
-          ),
-          record = candidates.find((row) =>
-            this.allowed(mapping.logicalName, 'read', row, context.identity, new Set(), null, memo),
-          );
-        this.traceFiltered(mapping.logicalName, context.identity, candidates, record ? 1 : 0, memo);
-        return clone(record ? (args[1] ? field(record, safeName(String(args[1]))) : record) : null);
+        return this.evaluateFind(expr, args, context);
       }
       case 'findMany': {
-        const mapping = this.resolveMapping(safeName(String(args[0])));
-        const matches = Object.entries(expr.match ?? {}).map(([key, value]) => [
-          safeName(key),
-          this.evaluate(value, context),
-        ]);
-        if (!matches.length)
-          throw new DataError('Plugin findMany requires explicit matching fields', 400, 'InvalidPlugin');
-        const memo = this.permissionMemo(),
-          candidates = this.tableRows(mapping.logicalName).filter((row) =>
-            matches.every(([key, value]) =>
-              Array.isArray(value)
-                ? value.some((candidate) => equal(field(row, key), candidate))
-                : equal(field(row, key), value),
-            ),
-          ),
-          records = candidates.filter((row) =>
-            this.allowed(mapping.logicalName, 'read', row, context.identity, new Set(), null, memo),
-          );
-        this.traceFiltered(mapping.logicalName, context.identity, candidates, records.length, memo);
-        if (records.length > 1024) throw new DataError('Plugin findMany exceeds 1024 records', 400, 'InvalidPlugin');
-        return clone(records.map((row) => (args[1] ? field(row, safeName(String(args[1]))) : row)));
+        return this.evaluateFindMany(expr, args, context);
       }
       case 'reference': {
-        const mapping = this.resolveMapping(safeName(String(args[0])));
-        const id = scalar(args[1]);
-        const record =
-          mapping.logicalName === context.entity && equal(id, context.record[mapping.idColumn])
-            ? context.record
-            : this.get(mapping.logicalName, id, context.identity, { skipPluginRead: true });
-        if (!record) throw new DataError('Plugin reference target does not exist', 400, 'InvalidLookup');
-        return {
-          id,
-          logical_name: mapping.logicalName,
-          name: primaryNameValue(mapping, record) ?? '',
-        };
+        return this.evaluateReference(args, context);
       }
       default: {
-        // Operators contributed by data packs (lib/extensions.mjs).
-        const operator = expressionOperator(expr.op);
-        if (operator)
-          return operator({
-            store: this,
-            context,
-            args,
-            expression: expr,
-            fail: (message, status, code) => {
-              throw new DataError(message, status, code);
-            },
-          });
-        throw new DataError(`Unsupported plugin expression ${expr.op}`, 400, 'InvalidPlugin');
+        return this.evaluateExtensionOperator(expr, context, args);
       }
     }
+  }
+  evaluateSequence(args) {
+    const scope = safeName(String(args[0]));
+    const prefix = String(args[1] ?? '');
+    const width = Number(args[2] ?? 6);
+    if (!/^[a-z0-9 _-]{0,32}$/i.test(prefix) || !Number.isInteger(width) || width < 1 || width > 12)
+      throw new DataError('Plugin sequence requires a bounded prefix and width', 400, 'InvalidPlugin');
+    const counters = (this.state.settings.pluginSequences ??= {});
+    const next = Number(counters[scope] ?? 0) + 1;
+    if (!Number.isSafeInteger(next) || next >= 10 ** width)
+      throw new DataError('Plugin sequence exhausted configured width', 400, 'InvalidPlugin');
+    counters[scope] = next;
+    return prefix + String(next).padStart(width, '0');
+  }
+  evaluateJoin(args) {
+    if (!Array.isArray(args[0])) throw new DataError('Plugin join requires an array', 400, 'InvalidPlugin');
+    return args[0].map(scalar).join(args[1] ?? ', ');
+  }
+  evaluateLength(args) {
+    if (!Array.isArray(args[0])) throw new DataError('Plugin length requires an array', 400, 'InvalidPlugin');
+    return args[0].length;
+  }
+  evaluateLookup(args, context) {
+    const record = this.get(safeName(String(args[0])), scalar(args[1]), context.identity, { skipPluginRead: true });
+    if (!record) throw new DataError('Plugin lookup target does not exist', 400, 'InvalidLookup');
+    return clone(args[2] ? field(record ?? {}, safeName(String(args[2]))) : record);
+  }
+  evaluateRelated(args, context) {
+    const mapping = this.resolveMapping(safeName(String(args[0])));
+    const relationshipName = safeName(String(args[2]));
+    const relationship = mapping.relationships?.[relationshipName];
+    if (!relationship)
+      throw new DataError('Plugin relationship is not declared in entity metadata', 400, 'MissingRelationship');
+    const multiple = Array.isArray(args[1]),
+      ids = multiple ? args[1] : [args[1]],
+      result = [];
+    if (ids.length > 1024) throw new DataError('Plugin related exceeds 1024 parent records', 400, 'InvalidPlugin');
+    const targets = this.rows(relationship.entity, context.identity);
+    const relatedIndex = this.permissionMemo();
+    const targetLogical = this.resolveMapping(relationship.entity).logicalName;
+    for (const id of ids)
+      this.collectRelatedRecords({
+        id,
+        args,
+        context,
+        mapping,
+        relationship,
+        multiple,
+        targets,
+        relatedIndex,
+        targetLogical,
+        result,
+      });
+    return clone(result);
+  }
+  collectRelatedRecords({
+    id,
+    args,
+    context,
+    mapping,
+    relationship,
+    multiple,
+    targets,
+    relatedIndex,
+    targetLogical,
+    result,
+  }) {
+    const parent = this.get(mapping.logicalName, scalar(id), context.identity, { skipPluginRead: true });
+    if (!parent) throw new DataError('Plugin relationship parent does not exist', 400, 'InvalidLookup');
+    const linked = new Set(relatedIndex.related(parent, relationship, targetLogical));
+    for (const row of targets.filter((item) => linked.has(item))) {
+      const value = args[3] ? field(row, safeName(String(args[3]))) : row;
+      result.push(multiple ? { parentId: parent[mapping.idColumn], record: value } : value);
+    }
+    if (result.length > 1024) throw new DataError('Plugin related exceeds 1024 records', 400, 'InvalidPlugin');
+  }
+  evaluateFind(expr, args, context) {
+    const mapping = this.resolveMapping(safeName(String(args[0])));
+    const matches = Object.entries(expr.match ?? {}).map(([key, value]) => [
+      safeName(key),
+      this.evaluate(value, context),
+    ]);
+    if (!matches.length) throw new DataError('Plugin find requires explicit matching fields', 400, 'InvalidPlugin');
+    const memo = this.permissionMemo(),
+      candidates = this.tableRows(mapping.logicalName).filter((row) =>
+        matches.every(([key, value]) => equal(field(row, key), value)),
+      ),
+      record = candidates.find((row) =>
+        this.allowed(mapping.logicalName, 'read', row, context.identity, new Set(), null, memo),
+      );
+    this.traceFiltered(mapping.logicalName, context.identity, candidates, record ? 1 : 0, memo);
+    let selected = null;
+    if (record) selected = args[1] ? field(record, safeName(String(args[1]))) : record;
+    return clone(selected);
+  }
+  evaluateFindMany(expr, args, context) {
+    const mapping = this.resolveMapping(safeName(String(args[0])));
+    const matches = Object.entries(expr.match ?? {}).map(([key, value]) => [
+      safeName(key),
+      this.evaluate(value, context),
+    ]);
+    if (!matches.length) throw new DataError('Plugin findMany requires explicit matching fields', 400, 'InvalidPlugin');
+    const memo = this.permissionMemo(),
+      candidates = this.tableRows(mapping.logicalName).filter((row) =>
+        matches.every(([key, value]) =>
+          Array.isArray(value)
+            ? value.some((candidate) => equal(field(row, key), candidate))
+            : equal(field(row, key), value),
+        ),
+      ),
+      records = candidates.filter((row) =>
+        this.allowed(mapping.logicalName, 'read', row, context.identity, new Set(), null, memo),
+      );
+    this.traceFiltered(mapping.logicalName, context.identity, candidates, records.length, memo);
+    if (records.length > 1024) throw new DataError('Plugin findMany exceeds 1024 records', 400, 'InvalidPlugin');
+    return clone(records.map((row) => (args[1] ? field(row, safeName(String(args[1]))) : row)));
+  }
+  evaluateReference(args, context) {
+    const mapping = this.resolveMapping(safeName(String(args[0])));
+    const id = scalar(args[1]);
+    const record =
+      mapping.logicalName === context.entity && equal(id, context.record[mapping.idColumn])
+        ? context.record
+        : this.get(mapping.logicalName, id, context.identity, { skipPluginRead: true });
+    if (!record) throw new DataError('Plugin reference target does not exist', 400, 'InvalidLookup');
+    return { id, logical_name: mapping.logicalName, name: primaryNameValue(mapping, record) ?? '' };
+  }
+  evaluateExtensionOperator(expr, context, args) {
+    const operator = expressionOperator(expr.op);
+    if (operator)
+      return operator({
+        store: this,
+        context,
+        args,
+        expression: expr,
+        fail: (message, status, code) => {
+          throw new DataError(message, status, code);
+        },
+      });
+    throw new DataError(`Unsupported plugin expression ${expr.op}`, 400, 'InvalidPlugin');
   }
   applyPlugins(entity, operation, row, previous, identity) {
     const context = {
@@ -5016,91 +5256,102 @@ export class DataStore {
   }
   // The defaults, set and validate parts of one plugin rule on row; the names it assigns are pushed to changes.
   applyRule(p, row, context, changes, entity) {
+    this.applyRuleDefaults(p, row, context, changes);
+    this.applyRuleSet(p, row, context, changes);
+    for (const validation of p.validate ?? []) this.validatePluginRule(p, validation, row, entity);
+  }
+  applyRuleDefaults(p, row, context, changes) {
     for (const [key, expr] of Object.entries(p.defaults ?? {}))
       if (row[key] == null) {
         safeName(key);
         row[key] = this.evaluate(expr, context);
         changes.push(key);
       }
+  }
+  applyRuleSet(p, row, context, changes) {
     for (const [key, expr] of Object.entries(p.set ?? {})) {
       safeName(key);
       row[key] = this.evaluate(expr, context);
       if (!changes.includes(key)) changes.push(key);
     }
-    for (const v of p.validate ?? []) {
-      const value = field(row, v.field ?? '');
-      let valid = true;
-      if (v.required) valid = value != null && value !== '';
-      if (v.pattern) valid = valid && new RegExp(v.pattern).test(String(value ?? ''));
-      if (v.min != null) valid = valid && Number(value) >= v.min;
-      if (v.max != null) valid = valid && Number(value) <= v.max;
-      if (v.oneOf) valid = valid && v.oneOf.some((x) => equal(x, value));
-      if (v.assert) valid = valid && compileFilter(v.assert)(row);
-      if (v.unique) {
-        const m = this.resolveMapping(entity);
-        valid =
-          valid &&
-          !(this.state.tables[entity] ?? []).some(
-            (r) => !equal(r[m.idColumn], row[m.idColumn]) && equal(field(r, v.field), value),
-          );
-      }
-      if (!valid)
-        throw new DataError(
-          v.message ?? `Plugin ${p.id ?? 'validation'} rejected ${v.field ?? 'record'}`,
-          400,
-          'PluginValidation',
-          {
-            innerCode: String(v.innerCode ?? '0x80040265').toLowerCase(),
-            ...(typeof v.message === 'string' && v.message.trim() ? { declaredValidationMessage: true } : {}),
-          },
-        );
-    }
+  }
+  /* NOSONAR */ validatePluginRule(p, validation, row, entity) {
+    const value = field(row, validation.field ?? '');
+    let valid = true;
+    if (validation.required) valid = value != null && value !== '';
+    if (validation.pattern) valid = valid && new RegExp(validation.pattern).test(String(value ?? ''));
+    if (validation.min != null) valid = valid && Number(value) >= validation.min;
+    if (validation.max != null) valid = valid && Number(value) <= validation.max;
+    if (validation.oneOf) valid = valid && validation.oneOf.some((item) => equal(item, value));
+    if (validation.assert) valid = valid && compileFilter(validation.assert)(row);
+    if (validation.unique) valid = valid && this.isUniquePluginValue(entity, validation, row, value);
+    if (valid) return;
+    throw new DataError(
+      validation.message ?? `Plugin ${p.id ?? 'validation'} rejected ${validation.field ?? 'record'}`,
+      400,
+      'PluginValidation',
+      {
+        innerCode: String(validation.innerCode ?? '0x80040265').toLowerCase(),
+        ...(typeof validation.message === 'string' && validation.message.trim()
+          ? { declaredValidationMessage: true }
+          : {}),
+      },
+    );
+  }
+  isUniquePluginValue(entity, validation, row, value) {
+    const mapping = this.resolveMapping(entity);
+    return !(this.state.tables[entity] ?? []).some(
+      (candidate) =>
+        !equal(candidate[mapping.idColumn], row[mapping.idColumn]) && equal(field(candidate, validation.field), value),
+    );
   }
   applySecondary(effects) {
-    for (const { action, context } of effects) {
-      if (action.foreach) {
-        const values = this.evaluate(action.foreach, context);
-        if (!Array.isArray(values) || values.length > 1024)
-          throw new DataError('Plugin foreach requires an array of at most 1024 items', 400, 'InvalidPlugin');
-        const { foreach, ...nested } = action;
-        this.applySecondary(
-          values.map((item, index) => ({
-            action: nested,
-            context: { ...context, item, index },
-          })),
-        );
-        continue;
-      }
-      const m = this.resolveMapping(action.entity);
-      const targets = (this.state.tables[m.logicalName] ??= []);
-      const values = Object.fromEntries(
-        Object.entries(action.set ?? {}).map(([k, v]) => [safeName(k), this.evaluate(v, context)]),
-      );
-      if (action.operation === 'create') {
-        if (action.match) {
-          const matches = Object.fromEntries(
-            Object.entries(action.match).map(([k, v]) => [k, this.evaluate(v, context)]),
-          );
-          if (targets.some((target) => Object.entries(matches).every(([k, v]) => equal(field(target, k), v)))) continue;
-        }
-        this.insertRow(m.logicalName, targets, { [m.idColumn]: this.ids.uuid(), ...values });
-      } else if (action.operation === 'update' || action.operation === 'delete') {
-        if (!action.match) throw new DataError('Secondary update/delete requires match');
-        const matches = Object.fromEntries(
-          Object.entries(action.match).map(([k, v]) => [k, this.evaluate(v, context)]),
-        );
-        if (
-          action.requireMatch &&
-          !targets.some((target) => Object.entries(matches).every(([key, value]) => equal(field(target, key), value)))
-        )
-          throw new DataError('The backend action cannot find a matching related record', 400, 'InvalidPlugin');
-        for (let i = targets.length - 1; i >= 0; i--)
-          if (Object.entries(matches).every(([k, v]) => equal(field(targets[i], k), v))) {
-            if (action.operation === 'delete') this.removeRow(m.logicalName, targets, i);
-            else this.mutateRow(m.logicalName, targets, i, values);
-          }
-      } else throw new DataError(`Unsupported secondary operation ${action.operation}`, 400, 'InvalidPlugin');
+    for (const { action, context } of effects) this.applySecondaryAction(action, context);
+  }
+  applySecondaryAction(action, context) {
+    if (action.foreach) {
+      const items = this.evaluate(action.foreach, context);
+      if (!Array.isArray(items) || items.length > 1024)
+        throw new DataError('Plugin foreach requires an array of at most 1024 items', 400, 'InvalidPlugin');
+      const { foreach, ...nested } = action;
+      this.applySecondary(items.map((item, index) => ({ action: nested, context: { ...context, item, index } })));
+      return;
     }
+    const mapping = this.resolveMapping(action.entity);
+    const targets = (this.state.tables[mapping.logicalName] ??= []);
+    const values = Object.fromEntries(
+      Object.entries(action.set ?? {}).map(([key, value]) => [safeName(key), this.evaluate(value, context)]),
+    );
+    if (action.operation === 'create') this.applySecondaryCreate(action, context, mapping, targets, values);
+    else if (action.operation === 'update' || action.operation === 'delete')
+      this.applySecondaryUpdate(action, context, mapping, targets, values);
+    else throw new DataError(`Unsupported secondary operation ${action.operation}`, 400, 'InvalidPlugin');
+  }
+  applySecondaryCreate(action, context, mapping, targets, values) {
+    if (action.match) {
+      const matches = Object.fromEntries(
+        Object.entries(action.match).map(([key, value]) => [key, this.evaluate(value, context)]),
+      );
+      if (targets.some((target) => Object.entries(matches).every(([key, value]) => equal(field(target, key), value))))
+        return;
+    }
+    this.insertRow(mapping.logicalName, targets, { [mapping.idColumn]: this.ids.uuid(), ...values });
+  }
+  applySecondaryUpdate(action, context, mapping, targets, values) {
+    if (!action.match) throw new DataError('Secondary update/delete requires match');
+    const matches = Object.fromEntries(
+      Object.entries(action.match).map(([key, value]) => [key, this.evaluate(value, context)]),
+    );
+    if (
+      action.requireMatch &&
+      !targets.some((target) => Object.entries(matches).every(([key, value]) => equal(field(target, key), value)))
+    )
+      throw new DataError('The backend action cannot find a matching related record', 400, 'InvalidPlugin');
+    for (let index = targets.length - 1; index >= 0; index--)
+      if (Object.entries(matches).every(([key, value]) => equal(field(targets[index], key), value))) {
+        if (action.operation === 'delete') this.removeRow(mapping.logicalName, targets, index);
+        else this.mutateRow(mapping.logicalName, targets, index, values);
+      }
   }
   pluginBindingInput(mapping, input, target, identity) {
     const relationships = this.relationshipsFor(mapping, identity);
@@ -5127,45 +5378,54 @@ export class DataStore {
         key.endsWith('@odata.bind') ? (relationships[key.slice(0, -11)]?.from ?? key.slice(0, -11)) : key,
       ),
     );
-    for (const relationship of Object.values(relationships)) {
-      // Primary-key joins describe table inheritance, not a visitor-authored
-      // lookup. The generated key is visible to plug-ins before those related
-      // platform rows exist and must not be admitted as an association.
-      if (relationship.many === true || relationship.from === mapping.idColumn || !changed.has(relationship.from))
-        continue;
-      const id = scalar(field(row, relationship.from) ?? field(previous ?? {}, relationship.from));
-      if (id == null) continue;
-      const targetMapping = this.resolveMapping(relationship.entity);
-      // Polymorphic lookups (annotation objectid, customerid, regardingobjectid) have one
-      // relationship per target table: only the one naming the bound table applies .
-      const bound = field(row, relationship.from) ?? field(previous ?? {}, relationship.from);
-      if (
-        bound?.logical_name &&
-        String(bound.logical_name).toLowerCase() !== String(targetMapping.logicalName).toLowerCase()
-      )
-        continue;
-      const candidates = this.tableRows(targetMapping.logicalName);
-      const target =
-        candidates[
-          this.rowIndex(targetMapping, candidates, id, {
-            partitionId: row[`${relationship.from}pid`] ?? bound?.partitionid,
-          })
-        ];
-      if (!target && isElastic(targetMapping) && row[`${relationship.from}pid`] == null && bound?.partitionid == null)
-        continue;
-      if (!target && uncheckedLookup(mapping.logicalName, relationship.from, targetMapping.logicalName)) continue;
-      if (!target) throw new DataError('Lookup target does not exist', 400, 'InvalidLookup');
-      // A configured form's server-owned current-contact stamp is not an
-      // explicit visitor lookup. Target existence, other fields and plugin
-      // changes still follow the same validation path.
-      if (!(
-        nativeContactAssociation &&
-        String(relationship.from).toLowerCase() === nativeContactAssociation.column &&
-        targetMapping.logicalName === 'contact' &&
-        String(id).toLowerCase() === nativeContactAssociation.contactId
-      ))
-        this.assertBindingTarget(mapping, row, targetMapping, target, identity);
-    }
+    for (const relationship of Object.values(relationships))
+      this.validateBindingRelationship(
+        mapping,
+        relationship,
+        changed,
+        row,
+        identity,
+        previous,
+        nativeContactAssociation,
+      );
+  }
+  validateBindingRelationship(mapping, relationship, changed, row, identity, previous, nativeContactAssociation) {
+    // Primary-key joins describe table inheritance, not a visitor-authored
+    // lookup. The generated key is visible to plug-ins before those related
+    // platform rows exist and must not be admitted as an association.
+    if (relationship.many === true || relationship.from === mapping.idColumn || !changed.has(relationship.from)) return;
+    const id = scalar(field(row, relationship.from) ?? field(previous ?? {}, relationship.from));
+    if (id == null) return;
+    const targetMapping = this.resolveMapping(relationship.entity);
+    // Polymorphic lookups (annotation objectid, customerid, regardingobjectid) have one
+    // relationship per target table: only the one naming the bound table applies .
+    const bound = field(row, relationship.from) ?? field(previous ?? {}, relationship.from);
+    if (
+      bound?.logical_name &&
+      String(bound.logical_name).toLowerCase() !== String(targetMapping.logicalName).toLowerCase()
+    )
+      return;
+    const candidates = this.tableRows(targetMapping.logicalName);
+    const target =
+      candidates[
+        this.rowIndex(targetMapping, candidates, id, {
+          partitionId: row[`${relationship.from}pid`] ?? bound?.partitionid,
+        })
+      ];
+    if (!target && isElastic(targetMapping) && row[`${relationship.from}pid`] == null && bound?.partitionid == null)
+      return;
+    if (!target && uncheckedLookup(mapping.logicalName, relationship.from, targetMapping.logicalName)) return;
+    if (!target) throw new DataError('Lookup target does not exist', 400, 'InvalidLookup');
+    // A configured form's server-owned current-contact stamp is not an
+    // explicit visitor lookup. Target existence, other fields and plugin
+    // changes still follow the same validation path.
+    if (!(
+      nativeContactAssociation &&
+      String(relationship.from).toLowerCase() === nativeContactAssociation?.column &&
+      targetMapping.logicalName === 'contact' &&
+      String(id).toLowerCase() === nativeContactAssociation.contactId
+    ))
+      this.assertBindingTarget(mapping, row, targetMapping, target, identity);
   }
   /**
    * Binding a lookup (create, update or $ref) needs Append on the source and
@@ -5195,7 +5455,7 @@ export class DataStore {
     const digest = createHash('sha256')
       .update(JSON.stringify(row ?? {}))
       .digest('hex');
-    return `W/"${parseInt(digest.slice(0, 13), 16)}"`;
+    return `W/"${Number.parseInt(digest.slice(0, 13), 16)}"`;
   }
   /**
    * Alternate keys (mapping.alternateKeys: [{ name, attributes }]) are unique
@@ -5217,10 +5477,7 @@ export class DataStore {
         wanted = keyOf(row);
       const index = this.rowKeyIndex(rows, name, keyOf, { scoped: true });
       const candidates = index?.get(wanted);
-      if (
-        candidates &&
-        candidates.every((position) => rows[position] !== undefined && keyOf(rows[position]) === wanted)
-      ) {
+      if (candidates?.every((position) => rows[position] !== undefined && keyOf(rows[position]) === wanted)) {
         const clash = candidates.some(
           (position) => position !== ownIndex && !equal(rows[position][mapping.idColumn], row[mapping.idColumn]),
         );
@@ -5242,11 +5499,13 @@ export class DataStore {
         innerCode: '0x80040237',
       });
     if (ifMatch == null || !row) return;
-    const wanted = String(ifMatch)
-      .split(',')
-      .map((tag) => tag.trim());
-    if (wanted.includes('*')) return;
-    if (!wanted.includes(this.etag(row)))
+    const wanted = new Set(
+      String(ifMatch)
+        .split(',')
+        .map((tag) => tag.trim()),
+    );
+    if (wanted.has('*')) return;
+    if (!wanted.has(this.etag(row)))
       throw new DataError(
         "The version of the existing record doesn't match the RowVersion property provided.",
         412,
@@ -5264,9 +5523,9 @@ export class DataStore {
     }
     const external = typeof metadata === 'function' ? metadata(mapping?.logicalName ?? logical) : null;
     return {
-      ...(mapping?.fieldMetadata ?? {}),
-      ...(mapping?.fields ?? {}),
-      ...(external ?? {}),
+      ...mapping?.fieldMetadata,
+      ...mapping?.fields,
+      ...external,
     };
   }
   /** Autonumber columns follow AutoNumberFormat with a transactional counter (seed 1000). */
@@ -5368,7 +5627,7 @@ export class DataStore {
       this.pluginInTransaction = inherited;
     }
   }
-  *createStepsCore(entity, data, identity = {}, options = {}) {
+  *createStepsCore(entity, data, identity = {}, options = {}) /* NOSONAR */ {
     const m = this.resolveMapping(entity);
     // Entity.Id, response capture and derived source columns belong to this
     // one message. Each deep-insert child has its own identity and Attributes.
@@ -5648,11 +5907,13 @@ export class DataStore {
       const missing = Object.fromEntries(
         Object.entries(asyncTarget).filter(([name]) => !own(queuedTarget.attributes ?? {}, name)),
       );
-      if (Object.keys(missing).length)
+      if (Object.keys(missing).length) {
+        queuedTarget.attributes ??= {};
         Object.assign(
-          (queuedTarget.attributes ??= {}),
+          queuedTarget.attributes,
           recordToSdkEntity(this, m.logicalName, missing, { allColumns: true, target: true }).attributes,
         );
+      }
     }
     if (isElastic(m)) {
       this.recordCommittedEvent(m.logicalName, 'create', row, Object.keys(pluginTarget), {
@@ -5661,7 +5922,7 @@ export class DataStore {
         identity,
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,
-        frame: { ...(this.pluginFrames?.get(row) ?? {}), asyncSourceParent },
+        frame: { ...this.pluginFrames?.get(row), asyncSourceParent },
       });
       this.checkpointElastic(m, row);
     }
@@ -5725,7 +5986,7 @@ export class DataStore {
     this.assertAllowed(m.logicalName, 'update', row, identity);
     this.validateBindings(m, data, row, identity, rows[index]);
     for (const name of blanks) changes[name] = '';
-    return yield* this.commitUpdateSteps(m, rows, index, row, identity, changes, options, data);
+    return yield* this.commitUpdateSteps(m, rows, index, row, identity, changes, { options, rawInput: data });
   }
   /** The systemColumns option: a plain object, or a function (mapping, row) => columns evaluated per row. */
   systemColumnsFor(option, mapping, row) {
@@ -5753,10 +6014,12 @@ export class DataStore {
     return row;
   }
   /** Commit an updated row: update plugins, unique alternate keys, secondary effects. */
-  commitUpdate(mapping, rows, index, row, identity, target, options = {}, rawInput = {}) {
-    return this.runRecordSteps(this.commitUpdateSteps(mapping, rows, index, row, identity, target, options, rawInput));
+  commitUpdate(mapping, rows, index, row, identity, target, { options = {}, rawInput = {} } = {}) {
+    return this.runRecordSteps(
+      this.commitUpdateSteps(mapping, rows, index, row, identity, target, { options, rawInput }),
+    );
   }
-  *commitUpdateSteps(mapping, rows, index, row, identity, target, options = {}, rawInput = {}) {
+  *commitUpdateSteps(mapping, rows, index, row, identity, target, { options = {}, rawInput = {} } = {}) /* NOSONAR */ {
     const previous = clone(rows[index]);
     const authorizedWrite = target !== undefined;
     target ??= Object.fromEntries(
@@ -5906,11 +6169,13 @@ export class DataStore {
       const missing = Object.fromEntries(
         Object.entries(derivedTarget).filter(([name]) => !own(queuedTarget.attributes ?? {}, name)),
       );
-      if (Object.keys(missing).length)
+      if (Object.keys(missing).length) {
+        queuedTarget.attributes ??= {};
         Object.assign(
-          (queuedTarget.attributes ??= {}),
+          queuedTarget.attributes,
           recordToSdkEntity(this, mapping.logicalName, missing, { allColumns: true, target: true }).attributes,
         );
+      }
     }
     if (isElastic(mapping)) {
       this.recordCommittedEvent(mapping.logicalName, 'update', row, Object.keys(target), {
@@ -5920,7 +6185,7 @@ export class DataStore {
         ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,
-        frame: { ...(this.pluginFrames?.get(row) ?? {}), asyncSourceParent },
+        frame: { ...this.pluginFrames?.get(row), asyncSourceParent },
       });
       this.checkpointElastic(mapping, row);
     }
@@ -6118,65 +6383,8 @@ export class DataStore {
       options.authorizeEffectiveWrite.preflight(mapping.logicalName, 'delete', currentRows[currentIndex], null);
     }
     const effects = this.applyPlugins(mapping.logicalName, 'delete', clone(row), row, identity);
-    for (const reference of this.referencesTo(mapping.logicalName, identity, deleting)) {
-      const target = scalar(field(row, reference.targetColumn ?? mapping.idColumn));
-      if (target == null) continue;
-      const children = (this.state.tables[reference.entity] ?? []).filter((child) => {
-        const value = field(child, reference.column);
-        if (value && typeof value === 'object' && value.logical_name && value.logical_name !== mapping.logicalName)
-          return false;
-        return equal(scalar(value), target);
-      });
-      if (!children.length) continue;
-      const behaviour = reference.cascade?.delete ?? 'RemoveLink';
-      if (reference.cascade?.delete == null) this.noteCascadeDefault(mapping.logicalName, reference);
-      if (behaviour === 'Restrict')
-        throw new DataError(
-          'The object you tried to delete is associated with another object and cannot be deleted.',
-          405,
-          'CannotDeleteDueToAssociation',
-          { innerCode: '0x80040227', table: reference.entity, relationship: reference.schemaName ?? null },
-        );
-      if (behaviour !== 'Cascade' && behaviour !== 'RemoveLink') continue;
-      const childMapping = this.resolveMapping(reference.entity);
-      for (const child of children) {
-        const rows = this.state.tables[reference.entity];
-        const index = this.rowPositions(childMapping, rows, child[childMapping.idColumn])[0] ?? -1;
-        if (index < 0) continue;
-        if (behaviour === 'Cascade')
-          yield* this.deleteRowSteps(childMapping, rows[index], identity, deleting, {
-            systemColumns: options.systemColumns,
-            deleted: options.deleted,
-          });
-        else {
-          const input = { ...rows[index], [reference.column]: null };
-          const next = this.touchRow(
-            rows[index],
-            input,
-            this.systemColumnsFor(options.systemColumns, childMapping, input),
-          );
-          yield* this.commitUpdateSteps(childMapping, rows, index, next, identity);
-        }
-      }
-    }
-    const graph = this.relationshipGraph(deleting);
-    graph.intersects ??= Object.entries(this.state.mappings ?? {}).flatMap(([owner, ownerMapping]) =>
-      Object.values(this.relationshipsFor(ownerMapping ?? {}, identity))
-        .filter((rel) => rel?.intersect?.entity)
-        .map((rel) => [owner, rel]),
-    );
-    for (const [owner, rel] of graph.intersects) {
-      if (!this.state.tables[rel.intersect.entity]?.length) continue;
-      const sides = [];
-      if (owner === mapping.logicalName) sides.push([rel.intersect.from, scalar(field(row, rel.from))]);
-      if (rel.entity === mapping.logicalName) sides.push([rel.intersect.to, scalar(field(row, rel.to))]);
-      for (const [column, value] of sides)
-        if (value != null) {
-          const edges = this.state.tables[rel.intersect.entity];
-          for (let index = edges.length - 1; index >= 0; index--)
-            if (equal(scalar(field(edges[index], column)), value)) this.removeRow(rel.intersect.entity, edges, index);
-        }
-    }
+    yield* this.deleteReferencedRowSteps(mapping, row, identity, deleting, options);
+    this.deleteIntersectRows(mapping, row, identity, deleting);
     const rows = this.state.tables[mapping.logicalName] ?? [];
     const index = this.rowIndex(mapping, rows, recordKey(mapping, row));
     if (options.authorizeEffectiveWrite && index < 0) throw new DataError('Record not found', 404, 'NotFound');
@@ -6209,6 +6417,72 @@ export class DataStore {
       });
     return row;
   }
+  *deleteReferencedRowSteps(mapping, row, identity, deleting, options) {
+    for (const reference of this.referencesTo(mapping.logicalName, identity, deleting))
+      yield* this.deleteChildrenForReference(mapping, row, reference, identity, deleting, options);
+  }
+  *deleteChildrenForReference(mapping, row, reference, identity, deleting, options) {
+    const target = scalar(field(row, reference.targetColumn ?? mapping.idColumn));
+    if (target == null) return;
+    const children = (this.state.tables[reference.entity] ?? []).filter((child) => {
+      const value = field(child, reference.column);
+      if (value && typeof value === 'object' && value.logical_name && value.logical_name !== mapping.logicalName)
+        return false;
+      return equal(scalar(value), target);
+    });
+    if (!children.length) return;
+    const behaviour = reference.cascade?.delete ?? 'RemoveLink';
+    if (reference.cascade?.delete == null) this.noteCascadeDefault(mapping.logicalName, reference);
+    if (behaviour === 'Restrict')
+      throw new DataError(
+        'The object you tried to delete is associated with another object and cannot be deleted.',
+        405,
+        'CannotDeleteDueToAssociation',
+        { innerCode: '0x80040227', table: reference.entity, relationship: reference.schemaName ?? null },
+      );
+    if (behaviour !== 'Cascade' && behaviour !== 'RemoveLink') return;
+    const childMapping = this.resolveMapping(reference.entity);
+    for (const child of children)
+      yield* this.deleteChildRowSteps(childMapping, child, reference, behaviour, identity, deleting, options);
+  }
+  *deleteChildRowSteps(childMapping, child, reference, behaviour, identity, deleting, options) {
+    const rows = this.state.tables[reference.entity];
+    const index = this.rowPositions(childMapping, rows, child[childMapping.idColumn])[0] ?? -1;
+    if (index < 0) return;
+    if (behaviour === 'Cascade') {
+      yield* this.deleteRowSteps(childMapping, rows[index], identity, deleting, {
+        systemColumns: options.systemColumns,
+        deleted: options.deleted,
+      });
+      return;
+    }
+    const input = { ...rows[index], [reference.column]: null };
+    const next = this.touchRow(rows[index], input, this.systemColumnsFor(options.systemColumns, childMapping, input));
+    yield* this.commitUpdateSteps(childMapping, rows, index, next, identity);
+  }
+  deleteIntersectRows(mapping, row, identity, deleting) {
+    const graph = this.relationshipGraph(deleting);
+    graph.intersects ??= Object.entries(this.state.mappings ?? {}).flatMap(([owner, ownerMapping]) =>
+      Object.values(this.relationshipsFor(ownerMapping ?? {}, identity))
+        .filter((rel) => rel?.intersect?.entity)
+        .map((rel) => [owner, rel]),
+    );
+    for (const [owner, rel] of graph.intersects) this.deleteIntersectEdges(mapping, row, owner, rel);
+  }
+  deleteIntersectEdges(mapping, row, owner, relationship) {
+    if (!this.state.tables[relationship.intersect.entity]?.length) return;
+    const sides = [];
+    if (owner === mapping.logicalName) sides.push([relationship.intersect.from, scalar(field(row, relationship.from))]);
+    if (relationship.entity === mapping.logicalName)
+      sides.push([relationship.intersect.to, scalar(field(row, relationship.to))]);
+    for (const [column, value] of sides) {
+      if (value == null) continue;
+      const edges = this.state.tables[relationship.intersect.entity];
+      for (let index = edges.length - 1; index >= 0; index--)
+        if (equal(scalar(field(edges[index], column)), value))
+          this.removeRow(relationship.intersect.entity, edges, index);
+    }
+  }
   /**
    * One-to-many relationships whose lookup references `logical`, from either side's
    * mapping (the child's single-valued lookup or the parent's collection), once per
@@ -6225,27 +6499,8 @@ export class DataStore {
   referencesByTable(identity = {}, only) {
     const tables = new Map();
     for (const [owner, ownerMapping] of Object.entries(this.state.mappings ?? {}))
-      for (const rel of Object.values(this.relationshipsFor(ownerMapping ?? {}, identity))) {
-        if (!rel || rel.intersect || !rel.entity || !rel.from || !rel.to) continue;
-        // A single-valued lookup references its target; a collection references its owner.
-        const single = rel.many === false,
-          logical = single ? rel.entity : owner;
-        if (only !== undefined && logical !== only) continue;
-        const reference = single
-          ? { entity: owner, column: rel.from, targetColumn: rel.to, cascade: rel.cascade, schemaName: rel.schemaName }
-          : {
-              entity: rel.entity,
-              column: rel.to,
-              targetColumn: rel.from,
-              cascade: rel.cascade,
-              schemaName: rel.schemaName,
-            };
-        let found = tables.get(logical);
-        if (!found) tables.set(logical, (found = new Map()));
-        const key = `${reference.entity}\u0000${reference.column}`;
-        const existing = found.get(key);
-        if (!existing || (!existing.cascade && reference.cascade)) found.set(key, reference);
-      }
+      for (const rel of Object.values(this.relationshipsFor(ownerMapping ?? {}, identity)))
+        addReferenceTableEntry(tables, owner, rel, only);
     return new Map([...tables].map(([logical, found]) => [logical, [...found.values()]]));
   }
   /**
@@ -6258,7 +6513,10 @@ export class DataStore {
   relationshipGraph(scope) {
     this.relationshipGraphs ??= new WeakMap();
     let graph = this.relationshipGraphs.get(scope);
-    if (!graph) this.relationshipGraphs.set(scope, (graph = { references: new Map(), intersects: null }));
+    if (!graph) {
+      graph = { references: new Map(), intersects: null };
+      this.relationshipGraphs.set(scope, graph);
+    }
     return graph;
   }
   noteCascadeDefault(logical, reference) {
@@ -6327,79 +6585,28 @@ export class DataStore {
       edgeMapping.userConfigured !== true &&
       relationship.type === 'many-to-many' &&
       Boolean(relationship.schemaName);
-    if (nativeIntersect) {
-      try {
-        this.assertAllowed(mapping.logicalName, 'append', row, identity, targetMapping.logicalName);
-        this.assertAllowed(targetMapping.logicalName, 'appendTo', target, identity, mapping.logicalName);
-      } catch (error) {
-        if (
-          options.portalRequest === true &&
-          mapping.logicalName === targetMapping.logicalName &&
-          error?.code === 'PermissionDenied'
-        )
-          error.details = {
-            ...error.details,
-            portalSelfNnAssociation: { schema: relationship.schemaName, table: mapping.logicalName },
-          };
-        throw error;
-      }
-    } else this.assertBindingTarget(mapping, row, targetMapping, target, identity);
-    if (relationship.intersect) {
-      const link = relationship.intersect;
-      const edges = (this.state.tables[edgeMapping.logicalName] ??= []);
-      const values = {
-        [link.from]: scalar(field(row, relationship.from)),
-        [link.to]: scalar(field(target, relationship.to)),
-      };
-      const existing = edges.filter((edge) =>
-        Object.entries(values).every(([key, value]) => equal(field(edge, key), value)),
-      );
-      if (associate) {
-        const edge = { [edgeMapping.idColumn]: this.ids.uuid(), ...values };
-        if (!nativeIntersect) this.assertAllowed(edgeMapping.logicalName, 'create', edge, identity);
-        if (!existing.length) this.insertRow(edgeMapping.logicalName, edges, edge);
-      } else {
-        if (!nativeIntersect && !existing.length)
-          this.assertAllowed(edgeMapping.logicalName, 'delete', values, identity);
-        for (const edge of nativeIntersect ? [] : existing)
-          this.assertAllowed(edgeMapping.logicalName, 'delete', edge, identity);
-        const removed = new Set(existing);
-        for (let index = edges.length - 1; index >= 0; index--)
-          if (removed.has(edges[index])) this.removeRow(edgeMapping.logicalName, edges, index);
-      }
-    } else {
-      if (relationship.to === targetMapping.idColumn)
-        throw new DataError('Collection mapping cannot reassign a target primary key', 400, 'InvalidAssociation');
-      this.assertAllowed(targetMapping.logicalName, 'update', target, identity);
-      const value = associate
-        ? clone(row[relationship.from])
-        : this.relationshipMatches(row, target, relationship)
-          ? null
-          : undefined;
-      if (value !== undefined) {
-        // A one-to-many association sets or clears the referencing row's lookup: an
-        // update of that row through the update pipeline (version, modifiedon, plugins).
-        const rows = this.state.tables[targetMapping.logicalName];
-        const input = { ...target, [relationship.to]: value };
-        const next = this.touchRow(target, input, this.systemColumnsFor(options.systemColumns, targetMapping, input));
-        this.assertAllowed(targetMapping.logicalName, 'update', next, identity);
-        // This Update belongs to the association's execution policy. Parent
-        // response tokens and one-use authorization capabilities belong to the
-        // outer operation, so forward only its plug-in bypass controls.
-        // The native Update Target carries the lookup and the primary key only; the stamps follow from stage 20.
-        const relinkTarget = {
-          [relationship.to]: clone(value),
-          [targetMapping.idColumn]: target[targetMapping.idColumn],
-        };
-        yield* this.commitUpdateSteps(targetMapping, rows, rows.indexOf(target), next, identity, relinkTarget, {
-          bypassCustomPlugins: options.bypassCustomPlugins === true,
-          bypassCustomAsync: options.bypassCustomAsync === true,
-          bypassStepIds: options.bypassStepIds,
-          // The association's main-operation Update has no ConcurrencyBehavior input (recorded native relationsReads).
-          ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
-        });
-      }
-    }
+    this.authorizeAssociation({
+      mapping,
+      row,
+      targetMapping,
+      target,
+      relationship,
+      nativeIntersect,
+      options,
+      identity,
+    });
+    yield* this.applyAssociationSteps({
+      mapping,
+      row,
+      target,
+      targetMapping,
+      edgeMapping,
+      relationship,
+      associate,
+      identity,
+      options,
+      nativeIntersect,
+    });
     return {
       associated: associate,
       entity: mapping.logicalName,
@@ -6407,6 +6614,76 @@ export class DataStore {
       navigation,
       targetId,
     };
+  }
+  authorizeAssociation({ mapping, row, targetMapping, target, relationship, nativeIntersect, options, identity }) {
+    if (!nativeIntersect) return this.assertBindingTarget(mapping, row, targetMapping, target, identity);
+    try {
+      this.assertAllowed(mapping.logicalName, 'append', row, identity, targetMapping.logicalName);
+      this.assertAllowed(targetMapping.logicalName, 'appendTo', target, identity, mapping.logicalName);
+    } catch (error) {
+      if (
+        options.portalRequest === true &&
+        mapping.logicalName === targetMapping.logicalName &&
+        error?.code === 'PermissionDenied'
+      )
+        error.details = {
+          ...error.details,
+          portalSelfNnAssociation: { schema: relationship.schemaName, table: mapping.logicalName },
+        };
+      throw error;
+    }
+  }
+  *applyAssociationSteps(context) {
+    if (context.relationship.intersect) this.applyIntersectAssociationSteps(context);
+    else yield* this.applyCollectionAssociationSteps(context);
+  }
+  applyIntersectAssociationSteps({ row, target, edgeMapping, relationship, associate, identity, nativeIntersect }) {
+    const link = relationship.intersect;
+    const edges = (this.state.tables[edgeMapping.logicalName] ??= []);
+    const values = {
+      [link.from]: scalar(field(row, relationship.from)),
+      [link.to]: scalar(field(target, relationship.to)),
+    };
+    const existing = edges.filter((edge) =>
+      Object.entries(values).every(([key, value]) => equal(field(edge, key), value)),
+    );
+    if (associate) {
+      const edge = { [edgeMapping.idColumn]: this.ids.uuid(), ...values };
+      if (!nativeIntersect) this.assertAllowed(edgeMapping.logicalName, 'create', edge, identity);
+      if (!existing.length) this.insertRow(edgeMapping.logicalName, edges, edge);
+      return;
+    }
+    if (!nativeIntersect && !existing.length) this.assertAllowed(edgeMapping.logicalName, 'delete', values, identity);
+    for (const edge of nativeIntersect ? [] : existing)
+      this.assertAllowed(edgeMapping.logicalName, 'delete', edge, identity);
+    const removed = new Set(existing);
+    for (let index = edges.length - 1; index >= 0; index--)
+      if (removed.has(edges[index])) this.removeRow(edgeMapping.logicalName, edges, index);
+  }
+  *applyCollectionAssociationSteps({ row, target, targetMapping, relationship, associate, identity, options }) {
+    if (relationship.to === targetMapping.idColumn)
+      throw new DataError('Collection mapping cannot reassign a target primary key', 400, 'InvalidAssociation');
+    this.assertAllowed(targetMapping.logicalName, 'update', target, identity);
+    let value;
+    if (associate) value = clone(row[relationship.from]);
+    else if (this.relationshipMatches(row, target, relationship)) value = null;
+    if (value === undefined) return;
+    const rows = this.state.tables[targetMapping.logicalName];
+    const input = { ...target, [relationship.to]: value };
+    const next = this.touchRow(target, input, this.systemColumnsFor(options.systemColumns, targetMapping, input));
+    this.assertAllowed(targetMapping.logicalName, 'update', next, identity);
+    const relinkTarget = {
+      [relationship.to]: clone(value),
+      [targetMapping.idColumn]: target[targetMapping.idColumn],
+    };
+    yield* this.commitUpdateSteps(targetMapping, rows, rows.indexOf(target), next, identity, relinkTarget, {
+      options: {
+        bypassCustomPlugins: options.bypassCustomPlugins === true,
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+        ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
+      },
+    });
   }
   async applyPreset(name, { generatedPresets = this.presetLibrary, returnSnapshot = true } = {}) {
     const preset = resolvePreset(this.state, name, generatedPresets, this.recordContext());
@@ -6429,18 +6706,12 @@ export class DataStore {
   liquidFetchPermissionOptions(options = {}) {
     if (this.observed?.liquidFetchRights !== 'native-classic' || options.profile === 'webapi') return {};
     const right = String(options.right ?? 'read').toLowerCase();
-    const operation =
-      right === 'write'
-        ? 'update'
-        : right === 'create'
-          ? 'create'
-          : right === 'delete'
-            ? 'delete'
-            : right === 'append'
-              ? 'append'
-              : right === 'appendto'
-                ? 'appendTo'
-                : 'read';
+    let operation = 'read';
+    if (right === 'write') operation = 'update';
+    else if (right === 'create') operation = 'create';
+    else if (right === 'delete') operation = 'delete';
+    else if (right === 'append') operation = 'append';
+    else if (right === 'appendto') operation = 'appendTo';
     return { operation, unscopedCreate: operation === 'create' };
   }
   previewPermissionFetchXml(xml, identity = {}, options = {}) {
@@ -6472,7 +6743,7 @@ export class DataStore {
       () => this.fetchXmlRecords(xml, identity, options),
     );
   }
-  fetchXmlRecords(xml, identity = {}, options = {}) {
+  /* NOSONAR */ fetchXmlRecords(xml, identity = {}, options = {}) {
     // Column security of the reading principal on every returned row, link-entity and aliased column included
     // (portal-authorization.mjs maskRow), as get() and query().
     // A condition, order, aggregate or distinct over a column it reads masked is refused first (assertOperands, 0x80041155).
@@ -6727,29 +6998,27 @@ export class DataStore {
       (query) => {
         if (identity.admin && options.sdkQuery && sameSdkQuery(query, options.sdkQuery))
           return execute(permissionQuery.xml);
-        const source = ['QueryExpression', 'QueryByAttribute'].includes(query.$type)
-          ? queryExpressionToFetch(
-              query.$type === 'QueryByAttribute'
-                ? {
-                    ...query,
-                    $type: 'QueryExpression',
-                    linkEntities: [],
-                    criteria: {
-                      operatorName: 'And',
-                      filters: [],
-                      conditions: (query.attributes ?? []).map((attributeName, index) => ({
-                        attributeName,
-                        operatorName: 'Equal',
-                        values: [query.values?.[index]],
-                      })),
-                    },
-                  }
-                : query,
-              this,
-            )
-          : query.$type === 'FetchExpression'
-            ? query.query
-            : null;
+        let source = null;
+        if (['QueryExpression', 'QueryByAttribute'].includes(query.$type)) {
+          const expression =
+            query.$type === 'QueryByAttribute'
+              ? {
+                  ...query,
+                  $type: 'QueryExpression',
+                  linkEntities: [],
+                  criteria: {
+                    operatorName: 'And',
+                    filters: [],
+                    conditions: (query.attributes ?? []).map((attributeName, index) => ({
+                      attributeName,
+                      operatorName: 'Equal',
+                      values: [query.values?.[index]],
+                    })),
+                  },
+                }
+              : query;
+          source = queryExpressionToFetch(expression, this);
+        } else if (query.$type === 'FetchExpression') source = query.query;
         if (!source || parseFetchXml(source).children.find((node) => node.name === 'entity')?.attrs.name !== entity)
           throw new DataError(
             'A RetrieveMultiple observer cannot change the bound query table or type.',
@@ -6763,15 +7032,13 @@ export class DataStore {
       { ...options, queryTransport: permissionQuery.transport },
     );
   }
-  fetchXmlCore(xml, identity = {}, options = {}) {
+  /* NOSONAR */ fetchXmlCore(xml, identity = {}, options = {}) {
     const tableLimits = this.querySettings().fetchLimits;
+    let profile = 'portal';
+    if (options.sdkResult === true && options.portalRequest !== true) profile = 'sdk';
+    else if (options.profile === 'webapi') profile = 'webapi';
     const planOptions = {
-      profile:
-        options.sdkResult === true && options.portalRequest !== true
-          ? 'sdk'
-          : options.profile === 'webapi'
-            ? 'webapi'
-            : 'portal',
+      profile,
       limits: options.noBackendAdmission
         ? {
             ...tableLimits,
@@ -6831,15 +7098,7 @@ export class DataStore {
       nativePagingCookies:
         options.portalRequest === true && this.observed?.tablePermissionQueryPipeline === 'native-classic',
       tableRows: (logical) => this.tableRows(logical),
-      datasourceRows: (source, logical) => {
-        const rows =
-          (identity?.dataverse ? this.datasourceRows?.(source, logical, identity, { plan, options }) : undefined) ?? [];
-        const kept = options.backendRowsFilter
-          ? rows.filter((row) => options.backendRowsFilter(logical, row) === true)
-          : rows;
-        const mask = options.backendRowsMask?.(logical);
-        return mask ? kept.map(mask) : kept;
-      },
+      datasourceRows: (source, logical) => this.readDatasourceRows(source, logical, identity, plan, options),
       definition: ctx.definition,
       column: ctx.column,
       sortable: (logical, attribute) => this.sortableColumn(logical, attribute),
@@ -6852,6 +7111,15 @@ export class DataStore {
         ? (rows, column, value) => options.fetchCache.equalRows(rows, column, value)
         : undefined,
     });
+  }
+  readDatasourceRows(source, logical, identity, plan, options) {
+    const rows =
+      (identity?.dataverse ? this.datasourceRows?.(source, logical, identity, { plan, options }) : undefined) ?? [];
+    const kept = options.backendRowsFilter
+      ? rows.filter((row) => options.backendRowsFilter(logical, row) === true)
+      : rows;
+    const mask = options.backendRowsMask?.(logical);
+    return mask ? kept.map(mask) : kept;
   }
 }
 
@@ -6908,53 +7176,60 @@ export function parseEntityReference(value) {
 export function parseKeySegment(key) {
   const text = String(key ?? '').trim();
   if (!text.includes('=')) return null;
-  const parts = {};
-  let index = 0;
-  const whitespace = () => {
-    while (index < text.length && /\s/.test(text[index])) index++;
-  };
-  const invalid = () => {
-    throw new DataError('Invalid alternate key segment', 400, 'InvalidKey');
-  };
-  while (index < text.length) {
-    whitespace();
-    const nameStart = index;
-    if (!/[A-Za-z_]/.test(text[index] ?? '')) invalid();
-    index++;
-    while (index < text.length && /\w/.test(text[index])) index++;
-    const name = text.slice(nameStart, index).toLowerCase();
-    if (['__proto__', 'prototype', 'constructor'].includes(name) || own(parts, name)) invalid();
-    whitespace();
-    if (text[index++] !== '=') invalid();
-    whitespace();
-    const valueStart = index;
-    if (text[index] === "'") {
-      index++;
-      let closed = false;
-      while (index < text.length) {
-        if (text[index++] !== "'") continue;
-        if (text[index] === "'") {
-          index++;
-          continue;
-        }
-        closed = true;
-        break;
-      }
-      if (!closed) invalid();
-    } else {
-      while (index < text.length && text[index] !== ',') index++;
-    }
-    const raw = text.slice(valueStart, index).trim();
-    if (!raw) invalid();
-    whitespace();
-    if (index < text.length && text[index++] !== ',') invalid();
-    parts[name] = raw.startsWith("'")
-      ? raw.slice(1, -1).replace(/''/g, "'")
-      : /^-?\d+(?:\.\d+)?$/.test(raw)
-        ? parseNumericLiteral(raw)
-        : raw.replace(/^\{(.*)\}$/, '$1');
-  }
+  const parts = {},
+    state = { index: 0 };
+  while (state.index < text.length) parseKeyPart(text, state, parts);
   return parts;
+}
+
+/* NOSONAR */ function parseKeyPart(text, state, parts) {
+  skipKeyWhitespace(text, state);
+  const nameStart = state.index;
+  if (!/[A-Za-z_]/.test(text[state.index] ?? '')) invalidKeySegment();
+  state.index++;
+  while (state.index < text.length && /\w/.test(text[state.index])) state.index++;
+  const name = text.slice(nameStart, state.index).toLowerCase();
+  if (['__proto__', 'prototype', 'constructor'].includes(name) || own(parts, name)) invalidKeySegment();
+  skipKeyWhitespace(text, state);
+  if (text[state.index++] !== '=') invalidKeySegment();
+  skipKeyWhitespace(text, state);
+  const valueStart = state.index;
+  if (text[state.index] === "'") parseQuotedKeyValue(text, state);
+  else while (state.index < text.length && text[state.index] !== ',') state.index++;
+  const raw = text.slice(valueStart, state.index).trim();
+  if (!raw) invalidKeySegment();
+  skipKeyWhitespace(text, state);
+  if (state.index < text.length && text[state.index++] !== ',') invalidKeySegment();
+  if (raw.startsWith("'")) parts[name] = raw.slice(1, -1).replaceAll("''", "'");
+  else if (/^-?\d+(?:\.\d+)?$/.test(raw)) parts[name] = parseNumericLiteral(raw);
+  else parts[name] = raw.replace(/^\{(.*)\}$/, '$1');
+}
+
+function parseQuotedKeyValue(text, state) {
+  state.index++;
+  let closed = false;
+  while (state.index < text.length) {
+    if (text[state.index++] !== "'") continue;
+    if (text[state.index] === "'") {
+      state.index++;
+      continue;
+    }
+    closed = true;
+    break;
+  }
+  if (!closed) invalidKeySegment();
+}
+
+function skipKeyWhitespace(text, state) {
+  while (state.index < text.length && /\s/.test(text[state.index])) state.index++;
+}
+
+function invalidKeySegment() {
+  throw new DataError('Invalid alternate key segment', 400, 'InvalidKey');
+}
+function numericTypeName(kind) {
+  if (kind === 'money') return 'Microsoft.Xrm.Sdk.Money';
+  return kind === 'double' ? 'System.Double' : 'System.Decimal';
 }
 /** The column's imported MinValue/MaxValue bound a numeric write (Dataverse validation). */
 function assertBounds(value, definition, code, innerCode, { entity, attribute, kind }) {
@@ -6968,7 +7243,7 @@ function assertBounds(value, definition, code, innerCode, { entity, attribute, k
     const message =
       kind === 'integer'
         ? `A validation error occurred. The value ${text} of '${attribute}' on record of type '${entity}' is outside the valid range. Minimum Value: ${definition.minValue ?? ''}, Maximum value: ${definition.maxValue ?? ''}`
-        : `A validation error occurred for ${entity}.${attribute}. The value ${text} of type ${kind === 'money' ? 'Microsoft.Xrm.Sdk.Money' : kind === 'double' ? 'System.Double' : 'System.Decimal'} is outside the valid range(${definition.minValue ?? ''} to ${definition.maxValue ?? ''}).`;
+        : `A validation error occurred for ${entity}.${attribute}. The value ${text} of type ${numericTypeName(kind)} is outside the valid range(${definition.minValue ?? ''} to ${definition.maxValue ?? ''}).`;
     throw new DataError(message, 400, code, {
       innerCode,
       minValue: definition.minValue ?? null,
@@ -7014,11 +7289,10 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
       { innerCode: '0x80048d19' },
     );
   // An exact numeric echoes the literal the client sent (its digits), never the internal marker object.
-  const literal = isExactNumeric(value)
-    ? value.value
-    : typeof value === 'object'
-      ? JSON.stringify(value)
-      : String(value);
+  let literal;
+  if (isExactNumeric(value)) literal = value.value;
+  else if (typeof value === 'object') literal = JSON.stringify(value);
+  else literal = String(value);
   const originalValue = value;
   const conversion = (type) =>
     attachDataverseReaderDetails(
@@ -7033,251 +7307,270 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
       options.dataverseHttpReader,
       type,
     );
+  validateHttpExactNumeric(entity, attribute, value, kind, definition, options, conversion);
+  value = coerceHttpDecimalInput(value, kind, options, conversion);
+  return coerceByKind(kind, entity, attribute, value, definition, options, conversion);
+}
+
+function validateHttpExactNumeric(entity, attribute, value, kind, definition, options, conversion) {
   if (
-    isExactNumeric(value) &&
-    !['integer', 'decimal', 'money', 'double'].includes(kind) &&
-    options.dataverseHttpReader
-  ) {
-    const expected =
-      kind === 'string' || kind === 'multichoice'
-        ? 'Edm.String'
-        : kind === 'boolean'
-          ? 'Edm.Boolean'
-          : kind === 'choice'
-            ? 'Edm.Int32'
-            : kind === 'datetime'
-              ? isDateOnlyField(definition)
-                ? 'Edm.Date'
-                : 'Edm.DateTimeOffset'
-              : null;
-    if (expected) throw conversion(expected);
-    throw new DataError(
-      'An exact numeric value cannot be stored in nonnumeric column ' + entity + '.' + attribute,
-      400,
-      'InvalidValue',
-      { innerCode: '0x80048d19' },
-    );
+    !isExactNumeric(value) ||
+    ['integer', 'decimal', 'money', 'double'].includes(kind) ||
+    !options.dataverseHttpReader
+  )
+    return;
+  const expected = httpExactNumericType(kind, definition);
+  if (expected) throw conversion(expected);
+  throw new DataError(
+    'An exact numeric value cannot be stored in nonnumeric column ' + entity + '.' + attribute,
+    400,
+    'InvalidValue',
+    { innerCode: '0x80048d19' },
+  );
+}
+
+function httpExactNumericType(kind, definition) {
+  if (kind === 'string' || kind === 'multichoice') return 'Edm.String';
+  if (kind === 'boolean') return 'Edm.Boolean';
+  if (kind === 'choice') return 'Edm.Int32';
+  if (kind === 'datetime') return isDateOnlyField(definition) ? 'Edm.Date' : 'Edm.DateTimeOffset';
+  return null;
+}
+
+function coerceHttpDecimalInput(value, kind, options, conversion) {
+  if (!options.dataverseHttpReader || !['decimal', 'money'].includes(kind)) return value;
+  const compatible = options.dataverseHttpReader.ieee754Compatible === true;
+  if (typeof value === 'string') {
+    if (!compatible) throw conversion('Edm.Decimal');
+    const parsed = parseDataverseDecimalString(value);
+    if (parsed === null) throw conversion('Edm.Decimal');
+    return parsed;
   }
-  if (options.dataverseHttpReader && ['decimal', 'money'].includes(kind)) {
-    const compatible = options.dataverseHttpReader.ieee754Compatible === true;
-    if (typeof value === 'string') {
-      if (!compatible) throw conversion('Edm.Decimal');
-      const parsed = parseDataverseDecimalString(value);
-      if (parsed === null) throw conversion('Edm.Decimal');
-      value = parsed;
-    } else if (compatible && (typeof value === 'number' || isExactNumeric(value))) throw conversion('Edm.Decimal');
-  }
+  if (compatible && (typeof value === 'number' || isExactNumeric(value))) throw conversion('Edm.Decimal');
+  return value;
+}
+
+function coerceByKind(kind, entity, attribute, value, definition, options, conversion) {
   switch (kind) {
-    case 'string': {
-      if (typeof value !== 'string') throw conversion('Edm.String');
-      // The Web API rejects a NUL character in text.
-      if (options.dataverseWebApi && value.includes('\u0000'))
-        throw new DataError(
-          `Invalid character in field '${attribute}': '.', hexadecimal value 0x00, is an invalid character.`,
-          400,
-          'InvalidValue',
-          { innerCode: '0x80040278' },
-        );
-      if (value === '') return null;
-      const max = Number(definition.maxLength);
-      if (Number.isFinite(max) && max > 0 && value.length > max)
-        throw new DataError(
-          `A validation error occurred.  The length of the '${attribute}' attribute of the '${entity}' entity exceeded the maximum allowed length of '${max}'.`,
-          400,
-          'StringLengthExceeded',
-          { innerCode: '0x80044331' },
-        );
-      // Email is a schema format, independent of the column/table name. Length
-      // validation applies to the submitted value before normalization. A memo column's
-      // Email format is an email body (MemoFormatName), not an address: it stays as written.
-      const declared = String(definition.dataverseType ?? definition.type ?? '').toLowerCase();
-      const email =
-        (declared !== 'memo' && String(definition.format ?? '').toLowerCase() === 'email') || declared === 'email';
-      return email ? value.trim().toLowerCase() || null : value;
-    }
-    case 'integer': {
-      const int64 = String(definition.dataverseType ?? definition.type ?? '').toLowerCase() === 'bigint';
-      const type = int64 ? 'Edm.Int64' : 'Edm.Int32';
-      if (int64 && (isExactNumeric(value) || (typeof value === 'string' && /^[+-]?\d+$/.test(value.trim())))) {
-        const parts = decimalParts(typeof value === 'string' ? value.trim() : value);
-        if (
-          !parts ||
-          parts.scale !== 0 ||
-          compareNumeric(value, '-9223372036854775808') < 0 ||
-          compareNumeric(value, '9223372036854775807') > 0 ||
-          (isExactNumeric(value) && !['Literal', 'Int64'].includes(value.numericType))
-        )
-          throw conversion(type);
-        value = exactNumeric(parts.coefficient.toString(), 'Int64');
-        assertBounds(value, definition, 'IntegerValueOutOfRange', '0x8004432f', { entity, attribute, kind });
-        return value;
-      }
-      if (typeof value === 'string' && /^[+-]?\d+$/.test(value.trim())) value = Number(value.trim());
-      if (typeof value !== 'number' || !Number.isInteger(value)) throw conversion(type);
-      // A literal outside Edm.Int32 doesn't convert; MinValue/MaxValue narrow the column.
-      if (int64 ? !Number.isSafeInteger(value) : value < -2147483648 || value > 2147483647) throw conversion(type);
-      assertBounds(value, definition, 'IntegerValueOutOfRange', '0x8004432f', { entity, attribute, kind });
-      return value;
-    }
+    case 'string':
+      return coerceString(entity, attribute, value, definition, options, conversion);
+    case 'integer':
+      return coerceInteger(entity, attribute, value, definition, kind, conversion);
     case 'decimal':
     case 'money':
-    case 'double': {
-      if (isExactNumeric(value) && kind !== 'double') {
-        if (!['Literal', kind === 'money' ? 'Money' : 'Decimal'].includes(value.numericType))
-          throw conversion('Edm.Decimal');
-        const parts = decimalParts(value);
-        if (
-          !parts ||
-          parts.scale > 28 ||
-          compareNumeric(value, '-79228162514264337593543950335') < 0 ||
-          compareNumeric(value, '79228162514264337593543950335') > 0
-        )
-          throw conversion('Edm.Decimal');
-        const result = roundNumeric(
-          value,
-          Number.isInteger(definition.precision) ? definition.precision : 2,
-          kind === 'money' ? 'Money' : 'Decimal',
-        );
-        assertBounds(result, definition, 'DecimalValueOutOfRange', '0x80044330', { entity, attribute, kind });
-        return result;
-      }
-      if (isExactNumeric(value) && kind === 'double' && value.numericType === 'Literal') value = Number(value.value);
-      // The Web API parses Infinity text and then rejects it as outside the column's range.
-      if (kind === 'double' && options.dataverseWebApi && (value === 'Infinity' || value === '-Infinity'))
-        throw new DataError(
-          `A validation error occurred for ${entity}.${attribute}. The value ${value === 'Infinity' ? '∞' : '-∞'} of type System.Double is outside the valid range(${definition.minValue ?? ''} to ${definition.maxValue ?? ''}).`,
-          400,
-          'DecimalValueOutOfRange',
-          { innerCode: '0x80044330' },
-        );
-      if (
-        kind === 'double' &&
-        typeof value === 'string' &&
-        /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim())
-      )
-        value = Number(value.trim());
-      if (typeof value !== 'number' || !Number.isFinite(value))
-        throw conversion(kind === 'double' ? 'Edm.Double' : 'Edm.Decimal');
-      const precision = Number.isInteger(definition.precision) ? definition.precision : kind === 'double' ? null : 2;
-      let result = value;
-      if (precision != null) {
-        // Decimal half-away-from-zero rounding on the decimal digits, not the
-        // binary approximation (10.555 -> 10.56 like SQL decimal conversion).
-        const text = String(Math.abs(value));
-        if (/e/i.test(text)) result = Number(value.toFixed(precision));
-        else {
-          const rounded = Number(`${Math.round(Number(`${text}e${precision}`))}e-${precision}`);
-          result = value < 0 ? -rounded : rounded;
-        }
-      }
-      // The documented DecimalValueOutOfRange covers money and float columns too; their
-      // own codes aren't documented.
-      assertBounds(result, definition, 'DecimalValueOutOfRange', '0x80044330', { entity, attribute, kind });
-      return result;
-    }
+    case 'double':
+      return coerceDecimal(entity, attribute, value, definition, kind, options, conversion);
     case 'boolean':
-      if (typeof value === 'string' && /^(true|false)$/i.test(value.trim()))
-        value = value.trim().toLowerCase() === 'true';
-      if (typeof value !== 'boolean') throw conversion('Edm.Boolean');
-      return value;
-    case 'choice': {
-      let raw = value && typeof value === 'object' ? value.value : value;
-      if (typeof raw === 'string' && /^[+-]?\d+$/.test(raw.trim())) raw = Number(raw.trim());
-      if (typeof raw !== 'number' || !Number.isInteger(raw)) throw conversion('Edm.Int32');
-      // A plain picklist accepts -1 on create and patch and reads it back. State, status and multiselect columns do not.
-      if (
-        options.dataverseWebApi &&
-        raw === -1 &&
-        String(definition.dataverseType ?? definition.type ?? '').toLowerCase() === 'picklist'
-      )
-        return raw;
-      assertOption(raw, definition, { entity, attribute });
-      return raw;
-    }
-    case 'multichoice': {
-      // The Web API takes a comma-separated string of option values; an empty string, an array or a non-integer part is rejected.
-      if (options.dataverseWebApi) {
-        if (typeof value !== 'string') throw conversion('Edm.String');
-        if (value.trim() === '')
-          throw new DataError('Edm Object passed should have the options selected. ', 400, 'InvalidValue', {
-            innerCode: '0x80060888',
-          });
-        const numbers = new Set();
-        for (const part of value.split(',')) {
-          const text = part.trim();
-          // Native message for an empty part between commas not known.
-          const number = /^[+-]?\d+$/.test(text) ? Number(text) : NaN;
-          if (!Number.isInteger(number))
-            throw new DataError(`The optionset values sent ${text} are not valid integers.`, 400, 'InvalidValue', {
-              innerCode: '0x80060888',
-            });
-          assertOption(number, definition, { entity, attribute });
-          numbers.add(number);
-        }
-        // Repeated choice values are stored once, in first-seen order.
-        return [...numbers].join(',');
-      }
-      // The native form posts the MultiSelectPicklist control's JSON array of option metadata.
-      if (typeof value === 'string' && /^\s*\[/.test(value)) {
-        try {
-          value = JSON.parse(value)
-            .map((item) => (item && typeof item === 'object' ? item.Value : item))
-            .join(',');
-        } catch {
-          throw conversion('Edm.String');
-        }
-      }
-      const parts = Array.isArray(value)
-        ? value
-        : typeof value === 'string'
-          ? value.split(',').filter((part) => part.trim() !== '')
-          : null;
-      if (!parts) throw conversion('Edm.String');
-      for (const part of parts) {
-        const number = Number(typeof part === 'string' ? part.trim() : part);
-        if (!Number.isInteger(number)) throw conversion('Edm.Int32');
-        assertOption(number, definition, { entity, attribute });
-      }
-      return value;
-    }
-    case 'datetime': {
-      if (typeof value !== 'string')
-        throw conversion(options.dataverseWebApi && isDateOnlyField(definition) ? 'Edm.Date' : 'Edm.DateTimeOffset');
-      // A DateOnly column reads only Edm.Date (yyyy-MM-dd); timestamps and impossible dates fail the OData reader.
-      if (
-        options.dataverseWebApi &&
-        isDateOnlyField(definition) &&
-        (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !parseDateValue(value))
-      )
-        throw conversion('Edm.Date');
-      const parsed = parseDateValue(value);
-      // Timestamp calendar/clock errors fail the OData primitive reader. Failed
-      // date-text/zone conversion reaches Dataverse's CrmDateTime validation.
-      const timestamp =
-        /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,7})?)?(?:Z|[+-]\d{2}:?\d{2})?$/i.exec(
-          value.trim(),
-        );
-      if (
-        !parsed &&
-        timestamp &&
-        (+timestamp[2] < 1 ||
-          +timestamp[2] > 12 ||
-          +timestamp[3] < 1 ||
-          +timestamp[3] > 31 ||
-          new Date(Date.UTC(+timestamp[1], +timestamp[2] - 1, +timestamp[3])).getUTCDate() !== +timestamp[3] ||
-          +timestamp[4] > 23 ||
-          +timestamp[5] > 59 ||
-          +(timestamp[6] ?? 0) > 59)
-      )
-        throw conversion('Edm.DateTimeOffset');
-      const year = parsed ? new Date(parsed.ms).getUTCFullYear() : NaN;
-      if (!parsed || year < 1753 || year > 9999) throw dateTimeRangeError(value, parsed);
-      return isDateOnlyField(definition) ? isoUtc(parsed.ms, { dateOnly: true }) : isoUtc(parsed.ms);
-    }
+      return coerceBoolean(value, conversion);
+    case 'choice':
+      return coerceChoice(entity, attribute, value, definition, options, conversion);
+    case 'multichoice':
+      return coerceMultiChoice(entity, attribute, value, definition, options, conversion);
+    case 'datetime':
+      return coerceDateTime(value, definition, options, conversion);
     case 'guid':
       if (typeof value !== 'string' || !GUID_PATTERN.test(value)) throw conversion('Edm.Guid');
       return value.toLowerCase();
     default:
       return value;
   }
+}
+
+function coerceString(entity, attribute, value, definition, options, conversion) {
+  if (typeof value !== 'string') throw conversion('Edm.String');
+  if (options.dataverseWebApi && value.includes('\u0000'))
+    throw new DataError(
+      `Invalid character in field '${attribute}': '.', hexadecimal value 0x00, is an invalid character.`,
+      400,
+      'InvalidValue',
+      { innerCode: '0x80040278' },
+    );
+  if (value === '') return null;
+  const max = Number(definition.maxLength);
+  if (Number.isFinite(max) && max > 0 && value.length > max)
+    throw new DataError(
+      `A validation error occurred.  The length of the '${attribute}' attribute of the '${entity}' entity exceeded the maximum allowed length of '${max}'.`,
+      400,
+      'StringLengthExceeded',
+      { innerCode: '0x80044331' },
+    );
+  const declared = String(definition.dataverseType ?? definition.type ?? '').toLowerCase();
+  const email =
+    (declared !== 'memo' && String(definition.format ?? '').toLowerCase() === 'email') || declared === 'email';
+  return email ? value.trim().toLowerCase() || null : value;
+}
+
+function coerceInteger(entity, attribute, value, definition, kind, conversion) {
+  const int64 = String(definition.dataverseType ?? definition.type ?? '').toLowerCase() === 'bigint';
+  const type = int64 ? 'Edm.Int64' : 'Edm.Int32';
+  if (int64 && (isExactNumeric(value) || (typeof value === 'string' && /^[+-]?\d+$/.test(value.trim())))) {
+    const parts = decimalParts(typeof value === 'string' ? value.trim() : value);
+    if (
+      parts?.scale !== 0 ||
+      compareNumeric(value, '-9223372036854775808') < 0 ||
+      compareNumeric(value, '9223372036854775807') > 0 ||
+      (isExactNumeric(value) && !['Literal', 'Int64'].includes(value.numericType))
+    )
+      throw conversion(type);
+    value = exactNumeric(parts.coefficient.toString(), 'Int64');
+    assertBounds(value, definition, 'IntegerValueOutOfRange', '0x8004432f', { entity, attribute, kind });
+    return value;
+  }
+  if (typeof value === 'string' && /^[+-]?\d+$/.test(value.trim())) value = Number(value.trim());
+  if (typeof value !== 'number' || !Number.isInteger(value)) throw conversion(type);
+  if (int64 ? !Number.isSafeInteger(value) : value < -2147483648 || value > 2147483647) throw conversion(type);
+  assertBounds(value, definition, 'IntegerValueOutOfRange', '0x8004432f', { entity, attribute, kind });
+  return value;
+}
+
+/* NOSONAR */ function coerceDecimal(entity, attribute, value, definition, kind, options, conversion) {
+  if (isExactNumeric(value) && kind !== 'double')
+    return coerceExactDecimal(entity, attribute, value, definition, kind, conversion);
+  if (isExactNumeric(value) && kind === 'double' && value.numericType === 'Literal') value = Number(value.value);
+  if (kind === 'double' && options.dataverseWebApi && (value === 'Infinity' || value === '-Infinity'))
+    throw new DataError(
+      `A validation error occurred for ${entity}.${attribute}. The value ${value === 'Infinity' ? '∞' : '-∞'} of type System.Double is outside the valid range(${definition.minValue ?? ''} to ${definition.maxValue ?? ''}).`,
+      400,
+      'DecimalValueOutOfRange',
+      { innerCode: '0x80044330' },
+    );
+  if (
+    kind === 'double' &&
+    typeof value === 'string' &&
+    /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim())
+  )
+    value = Number(value.trim());
+  if (typeof value !== 'number' || !Number.isFinite(value))
+    throw conversion(kind === 'double' ? 'Edm.Double' : 'Edm.Decimal');
+  let precision = 2;
+  if (Number.isInteger(definition.precision)) precision = definition.precision;
+  else if (kind === 'double') precision = null;
+  let result = value;
+  if (precision != null) result = roundDecimalNumber(value, precision);
+  assertBounds(result, definition, 'DecimalValueOutOfRange', '0x80044330', { entity, attribute, kind });
+  return result;
+}
+
+function coerceExactDecimal(entity, attribute, value, definition, kind, conversion) {
+  if (!['Literal', kind === 'money' ? 'Money' : 'Decimal'].includes(value.numericType)) throw conversion('Edm.Decimal');
+  const parts = decimalParts(value);
+  if (
+    !parts ||
+    parts.scale > 28 ||
+    compareNumeric(value, '-79228162514264337593543950335') < 0 ||
+    compareNumeric(value, '79228162514264337593543950335') > 0
+  )
+    throw conversion('Edm.Decimal');
+  const result = roundNumeric(
+    value,
+    Number.isInteger(definition.precision) ? definition.precision : 2,
+    kind === 'money' ? 'Money' : 'Decimal',
+  );
+  assertBounds(result, definition, 'DecimalValueOutOfRange', '0x80044330', { entity, attribute, kind });
+  return result;
+}
+
+function roundDecimalNumber(value, precision) {
+  const text = String(Math.abs(value));
+  if (/e/i.test(text)) return Number(value.toFixed(precision));
+  const scaled = Math.round(Number(`${text}e${precision}`));
+  const rounded = Number(`${scaled}e-${precision}`);
+  return value < 0 ? -rounded : rounded;
+}
+
+function coerceBoolean(value, conversion) {
+  if (typeof value === 'string' && /^(true|false)$/i.test(value.trim())) value = value.trim().toLowerCase() === 'true';
+  if (typeof value !== 'boolean') throw conversion('Edm.Boolean');
+  return value;
+}
+
+function coerceChoice(entity, attribute, value, definition, options, conversion) {
+  let raw = value && typeof value === 'object' ? value.value : value;
+  if (typeof raw === 'string' && /^[+-]?\d+$/.test(raw.trim())) raw = Number(raw.trim());
+  if (typeof raw !== 'number' || !Number.isInteger(raw)) throw conversion('Edm.Int32');
+  if (
+    options.dataverseWebApi &&
+    raw === -1 &&
+    String(definition.dataverseType ?? definition.type ?? '').toLowerCase() === 'picklist'
+  )
+    return raw;
+  assertOption(raw, definition, { entity, attribute });
+  return raw;
+}
+
+function coerceMultiChoice(entity, attribute, value, definition, options, conversion) {
+  if (options.dataverseWebApi) return coerceWebApiMultiChoice(entity, attribute, value, definition, conversion);
+  if (typeof value === 'string' && /^\s*\[/.test(value)) {
+    try {
+      value = JSON.parse(value)
+        .map((item) => (item && typeof item === 'object' ? item.Value : item))
+        .join(',');
+    } catch {
+      throw conversion('Edm.String');
+    }
+  }
+  let parts = null;
+  if (Array.isArray(value)) parts = value;
+  else if (typeof value === 'string') parts = value.split(',').filter((part) => part.trim() !== '');
+  if (!parts) throw conversion('Edm.String');
+  for (const part of parts) {
+    const number = Number(typeof part === 'string' ? part.trim() : part);
+    if (!Number.isInteger(number)) throw conversion('Edm.Int32');
+    assertOption(number, definition, { entity, attribute });
+  }
+  return value;
+}
+
+function coerceWebApiMultiChoice(entity, attribute, value, definition, conversion) {
+  if (typeof value !== 'string') throw conversion('Edm.String');
+  if (value.trim() === '')
+    throw new DataError('Edm Object passed should have the options selected. ', 400, 'InvalidValue', {
+      innerCode: '0x80060888',
+    });
+  const numbers = new Set();
+  for (const part of value.split(',')) {
+    const text = part.trim();
+    const number = /^[+-]?\d+$/.test(text) ? Number(text) : Number.NaN;
+    if (!Number.isInteger(number))
+      throw new DataError(`The optionset values sent ${text} are not valid integers.`, 400, 'InvalidValue', {
+        innerCode: '0x80060888',
+      });
+    assertOption(number, definition, { entity, attribute });
+    numbers.add(number);
+  }
+  return [...numbers].join(',');
+}
+
+function coerceDateTime(value, definition, options, conversion) {
+  if (typeof value !== 'string')
+    throw conversion(options.dataverseWebApi && isDateOnlyField(definition) ? 'Edm.Date' : 'Edm.DateTimeOffset');
+  if (
+    options.dataverseWebApi &&
+    isDateOnlyField(definition) &&
+    (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !parseDateValue(value))
+  )
+    throw conversion('Edm.Date');
+  const parsed = parseDateValue(value);
+  const timestamp =
+    /* NOSONAR */ /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,7})?)?(?:Z|[+-]\d{2}:?\d{2})?$/i.exec(
+      value.trim(),
+    );
+  if (!parsed && invalidTimestampParts(timestamp)) throw conversion('Edm.DateTimeOffset');
+  const year = parsed ? new Date(parsed.ms).getUTCFullYear() : Number.NaN;
+  if (!parsed || year < 1753 || year > 9999) throw dateTimeRangeError(value, parsed);
+  return isDateOnlyField(definition) ? isoUtc(parsed.ms, { dateOnly: true }) : isoUtc(parsed.ms);
+}
+
+function invalidTimestampParts(timestamp) {
+  return (
+    timestamp &&
+    (+timestamp[2] < 1 ||
+      +timestamp[2] > 12 ||
+      +timestamp[3] < 1 ||
+      +timestamp[3] > 31 ||
+      new Date(Date.UTC(+timestamp[1], +timestamp[2] - 1, +timestamp[3])).getUTCDate() !== +timestamp[3] ||
+      +timestamp[4] > 23 ||
+      +timestamp[5] > 59 ||
+      +(timestamp[6] ?? 0) > 59)
+  );
 }

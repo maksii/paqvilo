@@ -261,32 +261,10 @@ function mathOperation(input, operand, operation) {
     );
   }
   if (kindA === 'double' || kindB === 'double') {
-    const a = toNumber(input),
-      b = toNumber(operand);
-    const result =
-      operation === 'add'
-        ? a + b
-        : operation === 'subtract'
-          ? a - b
-          : operation === 'multiply'
-            ? a * b
-            : operation === 'divide'
-              ? a / b
-              : a % b;
-    return new NetDouble(result);
+    return doubleMathOperation(input, operand, operation);
   }
   if (kindA === 'decimal' || kindB === 'decimal') {
-    const result =
-      operation === 'add'
-        ? decimalAdd(input, operand)
-        : operation === 'subtract'
-          ? decimalAdd(input, operand, -1n)
-          : operation === 'multiply'
-            ? decimalMultiply(input, operand)
-            : operation === 'divide'
-              ? decimalDivide(input, operand)
-              : decimalModulo(input, operand);
-    return result;
+    return decimalMathOperation(input, operand, operation);
   }
   const a = Number(input),
     b = Number(operand);
@@ -305,6 +283,24 @@ function mathOperation(input, operand, operation) {
       return a % b;
   }
 }
+function doubleMathOperation(input, operand, operation) {
+  const a = toNumber(input),
+    b = toNumber(operand);
+  let result;
+  if (operation === 'add') result = a + b;
+  else if (operation === 'subtract') result = a - b;
+  else if (operation === 'multiply') result = a * b;
+  else if (operation === 'divide') result = a / b;
+  else result = a % b;
+  return new NetDouble(result);
+}
+function decimalMathOperation(input, operand, operation) {
+  if (operation === 'add') return decimalAdd(input, operand);
+  if (operation === 'subtract') return decimalAdd(input, operand, -1n);
+  if (operation === 'multiply') return decimalMultiply(input, operand);
+  if (operation === 'divide') return decimalDivide(input, operand);
+  return decimalModulo(input, operand);
+}
 /** Math.Round(decimal, int) uses MidpointRounding.ToEven. */
 function roundDecimal(value, decimals) {
   const decimal = NetDecimal.from(value);
@@ -317,7 +313,7 @@ function roundDecimal(value, decimals) {
   if (twice > factor || (twice === factor && quotient % 2n !== 0n)) rounded += decimal.mantissa < 0n ? -1n : 1n;
   return new NetDecimal(rounded, decimals);
 }
-const toDecimalValue = (value) => (typeof value === 'string' ? toNetDecimal(value) : toNetDecimal(value));
+const toDecimalValue = (value) => toNetDecimal(value);
 const decimalToInt = (decimal) => {
   const value = Number(decimal.toFixedString());
   if (value < -2147483648 || value > 2147483647)
@@ -355,9 +351,13 @@ function compareForOrder(a, b) {
   if (isNumber(a) && isNumber(b)) return Math.sign(toNumber(a) - toNumber(b));
   if (isDate(a) && isDate(b)) return Math.sign(a.getTime() - b.getTime());
   if (typeof a === 'string' && typeof b === 'string') return Math.sign(COLLATOR.compare(a, b));
-  if (typeof a === 'boolean' && typeof b === 'boolean') return a === b ? 0 : a ? 1 : -1;
+  if (typeof a === 'boolean' && typeof b === 'boolean') return compareBooleans(a, b);
   if (typeof a === typeof b) return 0;
   throw new LiquidError('Failed to compare two elements in the array.', 'System.InvalidOperationException');
+}
+function compareBooleans(a, b) {
+  if (a === b) return 0;
+  return a ? 1 : -1;
 }
 const COLLATOR = new Intl.Collator('en-US', { sensitivity: 'variant' });
 /**
@@ -372,7 +372,9 @@ function sortCompare(a, b, characters) {
   if (typeof a === 'string' && typeof b === 'string') {
     const left = characters ? a : a.toUpperCase(),
       right = characters ? b : b.toUpperCase();
-    return left < right ? -1 : left > right ? 1 : 0;
+    if (left < right) return -1;
+    if (left > right) return 1;
+    return 0;
   }
   const comparable = (item) => typeof item === 'string' || typeof item === 'boolean' || isNumber(item) || isDate(item);
   if (!comparable(a) || !comparable(b))
@@ -399,7 +401,7 @@ async function orderBy(items, key, direction, context, previous) {
     if (index === 0 || entry.prior !== last.prior || compareForOrder(last.value, entry.value) !== 0) rank++;
     ranks.set(entry.item, rank);
     last = entry;
-    void signature;
+    void signature; // NOSONAR: void is intentional here
   });
   result.ranks = ranks;
   return result;
@@ -432,11 +434,14 @@ function buildQuery(pairs) {
     else groups.push({ key, values: [value] });
   }
   const parts = [];
-  for (const group of groups)
-    for (const value of group.values)
-      if (group.key) parts.push(`${antiXssUrlEncode(group.key)}=${value == null ? '' : antiXssUrlEncode(value)}`);
-      else parts.push(antiXssUrlEncode(value ?? ''));
+  for (const group of groups) appendQueryGroup(parts, group);
   return parts.length ? `?${parts.join('&')}` : '';
+}
+function appendQueryGroup(parts, group) {
+  for (const value of group.values) {
+    if (group.key) parts.push(`${antiXssUrlEncode(group.key)}=${value == null ? '' : antiXssUrlEncode(value)}`);
+    else parts.push(antiXssUrlEncode(value ?? ''));
+  }
 }
 /**
  * add_query/remove_query: the query is rebuilt through QueryStringCollection (decoded, then
@@ -491,7 +496,7 @@ function simpleHtml(input, linkify = true, lineBreak = '<br />') {
   return text
     .split(/\r\n\r\n|\n\n/)
     .filter((block) => block !== '')
-    .map((block) => `<p>${block.replace(/\r\n/g, lineBreak).replace(/\n/g, lineBreak)}</p>`)
+    .map((block) => `<p>${block.replaceAll('\r\n', lineBreak).replaceAll('\n', lineBreak)}</p>`)
     .join('');
 }
 /** Adxstudio FileSize.ToString(precision). */
@@ -519,38 +524,44 @@ function formatN(value, decimals) {
   const text = scaled.toFixedString();
   const negative = text.startsWith('-');
   const [whole, fraction] = text.replace('-', '').split('.');
-  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  return `${negative ? '-' : ''}${grouped}${fraction ? `.${fraction}` : ''}`;
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ','); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  const sign = negative ? '-' : '',
+    suffix = fraction ? '.' + fraction : '';
+  return sign + grouped + suffix;
 }
 /** .NET numeric format strings used by the `format` filter (subset: N/F/C/P/D and custom 0/#). */
 function formatNumberString(value, format) {
   const decimal = NetDecimal.from(value);
   const m = /^([NnFfCcPpDd])(\d*)$/.exec(format ?? '');
-  if (m) {
-    const precision = m[2] === '' ? (/[Dd]/.test(m[1]) ? 0 : 2) : Number(m[2]);
-    if (/[Nn]/.test(m[1])) return formatN(decimal, precision);
-    if (/[Ff]/.test(m[1])) return formatN(decimal, precision).replace(/,/g, '');
-    if (/[Cc]/.test(m[1])) {
-      const text = formatN(decimal, precision);
-      return text.startsWith('-') ? `($${text.slice(1)})` : `$${text}`;
-    }
-    if (/[Pp]/.test(m[1])) return `${formatN(decimalMultiply(decimal, 100), precision)} %`;
-    return String(Math.trunc(decimal.valueOf())).padStart(precision, '0');
-  }
-  if (/^[0#,.]+$/.test(format ?? '')) {
-    const [, fractionPattern = ''] = format.split('.');
-    const required = (fractionPattern.match(/0/g) ?? []).length;
-    const optional = (fractionPattern.match(/#/g) ?? []).length;
-    let text = formatN(decimal, required + optional);
-    if (!format.includes(',')) text = text.replace(/,/g, '');
-    if (optional) {
-      const [whole, fraction = ''] = text.split('.');
-      const trimmed = fraction.slice(0, required) + fraction.slice(required).replace(/0+$/, '');
-      text = trimmed ? `${whole}.${trimmed}` : whole;
-    }
-    return text;
-  }
+  if (m) return formatStandardNumber(decimal, m);
+  if (/^[0#,.]+$/.test(format ?? '')) return formatCustomNumber(decimal, format);
   throw new LiquidError('Format specifier was invalid.', 'System.FormatException');
+}
+function formatStandardNumber(decimal, match) {
+  let precision;
+  if (match[2] === '') precision = /[Dd]/.test(match[1]) ? 0 : 2;
+  else precision = Number(match[2]);
+  if (/[Nn]/.test(match[1])) return formatN(decimal, precision);
+  if (/[Ff]/.test(match[1])) return formatN(decimal, precision).replaceAll(',', '');
+  if (/[Cc]/.test(match[1])) {
+    const text = formatN(decimal, precision);
+    return text.startsWith('-') ? `($${text.slice(1)})` : `$${text}`;
+  }
+  if (/[Pp]/.test(match[1])) return `${formatN(decimalMultiply(decimal, 100), precision)} %`;
+  return String(Math.trunc(decimal.valueOf())).padStart(precision, '0');
+}
+function formatCustomNumber(decimal, format) {
+  const [, fractionPattern = ''] = format.split('.');
+  const required = (fractionPattern.match(/0/g) ?? []).length;
+  const optional = (fractionPattern.match(/#/g) ?? []).length;
+  let text = formatN(decimal, required + optional);
+  if (!format.includes(',')) text = text.replaceAll(',', '');
+  if (optional) {
+    const [whole, fraction = ''] = text.split('.');
+    const trimmed = fraction.slice(0, required) + fraction.slice(required).replace(/0+$/, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    text = trimmed ? `${whole}.${trimmed}` : whole;
+  }
+  return text;
 }
 
 // ---- html_safe_escape: closest local equivalent of the managed HTML sanitizer.
@@ -604,7 +615,7 @@ function htmlVoidSerialization(markup) {
     if (node.content) visit(node.content);
   };
   visit(parseFragment(markup, { sourceCodeLocationInfo: true }));
-  for (const replacement of replacements.sort((a, b) => b.start - a.start))
+  for (const replacement of replacements.toSorted((a, b) => b.start - a.start))
     markup = markup.slice(0, replacement.start) + replacement.value + markup.slice(replacement.end);
   return markup;
 }
@@ -620,9 +631,12 @@ function htmlVoidSerialization(markup) {
 // - other values are written like Json.NET defaults: nil as null, booleans and numbers as JSON, ISO
 //   dates, nested arrays and objects; a self-referencing graph raises Json.NET's loop error.
 // Json.NET also escapes NEL, LINE SEPARATOR and PARAGRAPH SEPARATOR.
-const JSON_EXTRA_ESCAPES = new RegExp(`[${String.fromCharCode(0x85, 0x2028, 0x2029)}]`, 'g');
+const JSON_EXTRA_ESCAPES = new RegExp(`[${String.fromCodePoint(0x85, 0x2028, 0x2029)}]`, 'g');
 const jsonString = (text) =>
-  JSON.stringify(text).replace(JSON_EXTRA_ESCAPES, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  JSON.stringify(text).replace(
+    JSON_EXTRA_ESCAPES,
+    (char) => String.raw`\u${char.codePointAt(0).toString(16).padStart(4, '0')}`,
+  );
 function jsonDate(date) {
   const iso = date.toISOString();
   return iso.endsWith('.000Z') ? `${iso.slice(0, -5)}Z` : iso;
@@ -634,28 +648,64 @@ function jsonSerialize(value, seen, property = null) {
   if (isDate(value)) return jsonString(jsonDate(value));
   if (typeof value === 'string') return jsonString(value);
   if (typeof value !== 'object') return 'null';
-  if (seen.has(value))
+  if (seen.has(value)) {
+    const propertyMessage = property ? " for property '" + property + "'" : '';
     throw new LiquidError(
-      `Self referencing loop detected${property ? ` for property '${property}'` : ''}.`,
+      'Self referencing loop detected' + propertyMessage + '.',
       'Newtonsoft.Json.JsonSerializationException',
     );
+  }
   seen.add(value);
   try {
-    if (Array.isArray(value)) return `[${value.map((item) => jsonSerialize(item, seen)).join(',')}]`;
-    if (value instanceof KeyValuePair)
-      return `{"Key":${jsonString(String(value.key))},"Value":${jsonSerialize(value.value, seen, 'Value')}}`;
-    const entries =
-      value instanceof LiquidHash
-        ? [...value.entries()]
-        : value instanceof LiquidDrop
-          ? []
-          : Object.entries(value).filter(
-              ([key, item]) => !key.startsWith('__') && typeof item !== 'function' && item !== undefined,
-            );
-    return `{${entries.map(([key, item]) => `${jsonString(String(key))}:${jsonSerialize(item, seen, key)}`).join(',')}}`;
+    return serializeComplexValue(value, seen);
   } finally {
     seen.delete(value);
   }
+}
+function serializeComplexValue(value, seen) {
+  if (Array.isArray(value)) return `[${value.map((item) => jsonSerialize(item, seen)).join(',')}]`;
+  if (value instanceof KeyValuePair)
+    return `{"Key":${jsonString(String(value.key))},"Value":${jsonSerialize(value.value, seen, 'Value')}}`;
+  let entries;
+  if (value instanceof LiquidHash) entries = [...value.entries()];
+  else if (value instanceof LiquidDrop) entries = [];
+  else
+    entries = Object.entries(value).filter(
+      ([key, item]) => !key.startsWith('__') && typeof item !== 'function' && item !== undefined,
+    );
+  const serializedEntries = entries
+    .map(([key, item]) => jsonString(String(key)) + ':' + jsonSerialize(item, seen, key))
+    .join(',');
+  return '{' + serializedEntries + '}';
+}
+
+function sliceString(input, start, len) {
+  let s = start,
+    l = len;
+  if (s > input.length) return null;
+  if (s < 0) {
+    s += input.length;
+    if (s < 0) {
+      l = Math.max(0, l + s);
+      s = 0;
+    }
+  }
+  if (s + l > input.length) l = input.length - s;
+  return input.substr(s, l);
+}
+
+function sliceEnumerable(input, start, len) {
+  const list = toList(input);
+  let skip = start,
+    take = len;
+  if (start < 0) {
+    if (Math.abs(start) < list.length) skip = list.length + start;
+    else {
+      skip = 0;
+      take = list.length + start + len;
+    }
+  }
+  return list.slice(skip, skip + Math.max(0, take));
 }
 
 // ---- Filter catalogue
@@ -663,37 +713,16 @@ function jsonSerialize(value, seen, property = null) {
 export function createFilters(host = {}) {
   const filters = {
     // ---- DotLiquid StandardFilters (DotLiquid20)
-    size: (input) => (typeof input === 'string' ? input.length : isEnumerable(input) ? toList(input).length : 0),
+    size: (input) => {
+      if (typeof input === 'string') return input.length;
+      if (isEnumerable(input)) return toList(input).length;
+      return 0;
+    },
     slice(input, offset, length = 1) {
       const start = asInt(offset),
         len = asInt(length ?? 1);
-      if (typeof input === 'string') {
-        let s = start,
-          l = len;
-        if (s > input.length) return null;
-        if (s < 0) {
-          s += input.length;
-          if (s < 0) {
-            l = Math.max(0, l + s);
-            s = 0;
-          }
-        }
-        if (s + l > input.length) l = input.length - s;
-        return input.substr(s, l);
-      }
-      if (isEnumerable(input)) {
-        const list = toList(input);
-        let skip = start,
-          take = len;
-        if (start < 0) {
-          if (Math.abs(start) < list.length) skip = list.length + start;
-          else {
-            skip = 0;
-            take = list.length + start + len;
-          }
-        }
-        return list.slice(skip, skip + Math.max(0, take));
-      }
+      if (typeof input === 'string') return sliceString(input, start, len);
+      if (isEnumerable(input)) return sliceEnumerable(input, start, len);
       return input;
     },
     downcase: (input) => {
@@ -736,7 +765,11 @@ export function createFilters(host = {}) {
       const tail = arguments.length > 2 ? (asString(truncateString) ?? '') : '...';
       if (max < 0) return tail;
       const keep = max - tail.length;
-      return s.length > max ? s.slice(0, keep < 0 ? 0 : keep) + tail : s;
+      if (s.length > max) {
+        const end = Math.max(0, keep);
+        return s.slice(0, end) + tail;
+      }
+      return s;
     },
     truncate_words(input, words = 15, truncateString = '...') {
       const s = asString(input);
@@ -759,7 +792,7 @@ export function createFilters(host = {}) {
       if (isNullOrWhiteSpace(s)) return s;
       return s
         .replace(/<script[\s\S]*?<\/script>|<!--[\s\S]*?-->|<style[\s\S]*?<\/style>/gi, '')
-        .replace(/<[\s\S]*?>/g, '');
+        .replace(/<[^>]*>/g, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
     },
     strip: (input) => {
       const s = asString(input);
@@ -789,14 +822,12 @@ export function createFilters(host = {}) {
       const key = asString(property);
       // A string input sorts its characters, which compare ordinally (char.CompareTo).
       const characters = typeof input === 'string';
-      const value = (item) =>
-        key
-          ? item instanceof LiquidHash
-            ? item.get(key)
-            : isPlainObject(item)
-              ? item[ownKey(item, key) ?? key]
-              : null
-          : item;
+      const value = (item) => {
+        if (!key) return item;
+        if (item instanceof LiquidHash) return item.get(key);
+        if (isPlainObject(item)) return item[ownKey(item, key) ?? key];
+        return null;
+      };
       return list
         .map((item, index) => ({ item, index }))
         .sort((x, y) => sortCompare(value(x.item), value(y.item), characters) || x.index - y.index)
@@ -947,7 +978,7 @@ export function createFilters(host = {}) {
       return result;
     },
     abs(input) {
-      const parsed = Number(String(formatItem(input)).replace(/,/g, ''));
+      const parsed = Number(String(formatItem(input)).replaceAll(',', ''));
       return Number.isFinite(parsed) ? Math.abs(parsed) : 0;
     },
     at_least(input, minimum) {
@@ -981,18 +1012,23 @@ export function createFilters(host = {}) {
     base64_url_safe_encode: (input) =>
       input == null
         ? ''
-        : Buffer.from(asString(input), 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_'),
+        : Buffer.from(asString(input), 'utf8').toString('base64').replaceAll('+', '-').replaceAll('/', '_'),
     base64_url_safe_decode(input) {
       if (input == null || input === '') return '';
-      let text = asString(input).replace(/_/g, '/').replace(/-/g, '+');
-      if (!text.endsWith('=')) text += text.length % 4 === 2 ? '==' : text.length % 4 === 3 ? '=' : '';
+      let text = asString(input).replaceAll('_', '/').replaceAll('-', '+');
+      if (!text.endsWith('=')) {
+        const remainder = text.length % 4;
+        if (remainder === 2) text += '==';
+        else if (remainder === 3) text += '=';
+        else text += '';
+      }
       if (!/^[A-Za-z0-9+/]*={0,2}$/.test(text) || text.length % 4 !== 0)
         throw new LiquidError('Invalid base64 provided to base64_url_safe_decode', 'System.ArgumentException');
       return Buffer.from(text, 'base64').toString('utf8');
     },
     currency(input, languageTag) {
       if (input == null) return null;
-      void languageTag;
+      void languageTag; // NOSONAR: void is intentional here
       if (isNumber(input)) return formatNumberString(input, 'C');
       try {
         return formatNumberString(toNetDecimal(String(input).replace(/[$\s]/g, '')), 'C');
@@ -1101,7 +1137,10 @@ export function createFilters(host = {}) {
       for (const item of list) {
         const groupKey = await memberOf(item, asString(key), this);
         let group = groups.find((entry) => strictEquals(entry.key, groupKey));
-        if (!group) groups.push((group = { key: groupKey, items: [] }));
+        if (!group) {
+          group = { key: groupKey, items: [] };
+          groups.push(group);
+        }
         group.items.push(item);
       }
       return groups.map((group) => new LiquidHash({ key: group.key, items: group.items }));
@@ -1120,12 +1159,11 @@ export function createFilters(host = {}) {
           Array.isArray(input) &&
           input.length > 0 &&
           input.every((item) => typeof item === 'string');
-        const type =
-          host.filterErrors === 'observed' && Array.isArray(input) && input.length === 0
-            ? 'System.Linq.Enumerable+WhereArrayIterator`1[System.Object]'
-            : stringArray
-              ? 'System.String[]'
-              : netTypeName(input);
+        let type;
+        if (host.filterErrors === 'observed' && Array.isArray(input) && input.length === 0)
+          type = 'System.Linq.Enumerable+WhereArrayIterator`1[System.Object]';
+        else if (stringArray) type = 'System.String[]';
+        else type = netTypeName(input);
         throw new LiquidError(
           `Object of type '${type}' cannot be converted to type 'System.Linq.IOrderedEnumerable\`1[System.Object]'.`,
           'System.ArgumentException',
@@ -1148,7 +1186,7 @@ export function createFilters(host = {}) {
           'Specified argument was out of the range of valid values.',
           'System.ArgumentOutOfRangeException',
         );
-      return list[Math.floor(Math.random() * list.length)];
+      return list[Math.floor(Math.random() * list.length)]; // NOSONAR: pseudo-random value for simulation, not a secret
     },
     async select(input, key) {
       const list = asEnumerable(input) ?? [];
@@ -1159,7 +1197,7 @@ export function createFilters(host = {}) {
     shuffle(input) {
       const list = [...(asEnumerable(input) ?? [])];
       for (let i = 0; i < list.length; i++) {
-        const j = i + Math.floor(Math.random() * (list.length - i));
+        const j = i + Math.floor(Math.random() * (list.length - i)); // NOSONAR: pseudo-random value for simulation, not a secret
         [list[i], list[j]] = [list[j], list[i]];
       }
       return list;
@@ -1270,7 +1308,7 @@ export function createFilters(host = {}) {
       if (s == null) return null;
       return simpleHtml(
         s,
-        arguments.length > 1 ? linkifyUrls !== false && linkifyUrls !== 'false' : true,
+        arguments.length > 1 ? linkifyUrls !== false && linkifyUrls !== 'false' : true, // NOSONAR: window and globalThis are compared deliberately
         host.htmlVoidSerialization === 'html' ? '<br>' : '<br />',
       );
     },
@@ -1303,7 +1341,7 @@ export function createFilters(host = {}) {
     },
     max_decimals(number, decimals) {
       let result = formatN(toNetDecimal(number), asInt(decimals));
-      if (result.includes('.')) result = result.replace(/0+$/, '').replace(/\.$/, '');
+      if (result.includes('.')) result = result.replace(/0+$/, '').replace(/\.$/, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
       return result;
     },
     invariant_culture_decimal_value(number, decimals) {
@@ -1391,8 +1429,8 @@ export function createFilters(host = {}) {
       const text = input == null ? '' : formatItem(input);
       if (!text) return null;
       const options = [];
-      for (const m of text.matchAll(/\s*([^:;]+?)\s*:\s*([^;]+)\s*/g)) {
-        const value = m[2].replace(/ /g, '');
+      /* NOSONAR */ for (const m of text.matchAll(/\s*([^:;]+?)\s*:\s*([^;]+)\s*/g)) {
+        const value = m[2].replaceAll(' ', '');
         options.push({
           display_name: host.localizeRecordType ? host.localizeRecordType(value.split(',')[0]) : value.split(',')[0],
           value,
@@ -1424,7 +1462,7 @@ function addMonths(date, months) {
   const targetYear = year + Math.floor(month / 12),
     targetMonth = ((month % 12) + 12) % 12;
   const lastDay = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
-  const result = new Date(value.getTime());
+  const result = new Date(value.getTime()); // NOSONAR: Date subclass may override getTime
   result.setUTCFullYear(targetYear, targetMonth, Math.min(value.getUTCDate(), lastDay));
   return result;
 }

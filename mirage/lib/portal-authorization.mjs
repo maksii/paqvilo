@@ -53,6 +53,143 @@ const RIGHT = {
 const SCOPE_DEPTH = { global: DEPTH.Global, account: DEPTH.Local, contact: DEPTH.Basic, self: DEPTH.Basic };
 const COLUMN_PERMISSION_KINDS = new Set(['columnpermissionprofile', 'columnpermission']);
 
+function permissionDepth(rule, byRule, seen = new Set()) {
+  if (rule.scope !== 'parent') return SCOPE_DEPTH[rule.scope ?? 'global'] ?? DEPTH.Basic;
+  const parent = byRule.get(key(rule.parentPermissionId ?? rule.parentId));
+  return parent && !seen.has(parent) ? permissionDepth(parent, byRule, seen.add(rule)) : DEPTH.Basic;
+}
+
+function addDerivedOperations(context, logical, grants, depth) {
+  const { rule, noun } = context;
+  for (const operation of rule.operations ?? ['read']) {
+    if (!RIGHT[operation]) continue;
+    const name = privilegeName(RIGHT[operation], noun(logical));
+    grants.set(name, {
+      logical,
+      wildcard: rule.entity === '*' && grants.get(name)?.wildcard !== false,
+      mask: Math.max(grants.get(name)?.mask ?? 0, depth),
+    });
+  }
+}
+
+function addDerivedRoleRule(context, roleId) {
+  const { out, securityRoleId, rule, everyTable, byRule } = context;
+  const grants = out.get(securityRoleId(roleId)).grants,
+    depth = permissionDepth(rule, byRule);
+  for (const logical of rule.entity === '*' ? everyTable() : [rule.entity])
+    addDerivedOperations(context, logical, grants, depth);
+}
+
+function addDerivedRule(context) {
+  const { roles, byId, rule, ruleRoles } = context;
+  for (const roleId of ruleRoles(rule, roles)) {
+    if (!byId.has(roleId)) continue;
+    addDerivedRoleRule(context, roleId);
+  }
+}
+
+function ensureKnownPrivilege(context, id, logical) {
+  const { known, store, organizationId } = context;
+  if (known.has(id)) return;
+  try {
+    for (const added of grantTablePrivileges(store, organizationId, logical))
+      known.add(privilegeId(organizationId, added));
+  } catch {
+    /* reported by the caller when the required privilege is still unknown */
+  }
+}
+
+function syncDerivedRole(context) {
+  const {
+    tables,
+    roleId,
+    role,
+    marks,
+    businessUnitRef,
+    organizationRef,
+    known,
+    store,
+    organizationId,
+    signatureOf,
+    markOf,
+    storedGrants,
+    diagnostic,
+  } = context;
+  const roles = (tables.role ??= []);
+  const existing = roles.find((row) => key(row.roleid) === roleId);
+  if (existing) existing.name = role.name;
+  else
+    roles.push({
+      roleid: roleId,
+      name: role.name,
+      businessunitid: businessUnitRef,
+      organizationid: organizationRef,
+      isinherited: 1,
+    });
+  const signature = signatureOf(role.grants),
+    mark = markOf(marks[roleId]);
+  if (mark?.derived === signature) return;
+  if (mark?.applied != null && storedGrants(roleId) !== mark.applied)
+    diagnostic({
+      code: 'PORTAL_AUTHORIZATION_ROLE_RESYNCED',
+      severity: 'warning',
+      model: 'enhanced',
+      role: role.name,
+      message: `The security role mapped to web role '${role.name}' was changed in Dataverse; the table permissions changed and rewrote it, which replaced that change.`,
+    });
+  const grants = [];
+  for (const [name, { logical, mask, wildcard }] of role.grants) {
+    const id = privilegeId(organizationId, name);
+    ensureKnownPrivilege({ known, store, organizationId }, id, logical);
+    if (known.has(id)) grants.push({ privilegeid: id, mask });
+    else if (!wildcard)
+      diagnostic({
+        code: 'PORTAL_AUTHORIZATION_PRIVILEGE_UNKNOWN',
+        severity: 'warning',
+        privilege: name,
+        role: role.name,
+        message: `Web role '${role.name}' grants ${name}, which the organization does not define; the grant is not mapped.`,
+      });
+  }
+  applyRoleGrants(store, roleId, grants);
+  marks[roleId] = { derived: signature, applied: storedGrants(roleId) };
+}
+
+function syncMappedUser(context) {
+  const { tables, identity, userId, wanted, derived, businessUnitRef, organizationRef, contactOf, ref } = context;
+  const users = (tables.systemuser ??= []);
+  const name = String(
+    identity.fullname || identity.name || (contactOf(identity) ? contactOf(identity) : 'Anonymous users'),
+  );
+  const user = users.find((row) => key(row.systemuserid) === userId);
+  if (user) user.fullname = name;
+  else
+    users.push({
+      systemuserid: userId,
+      fullname: name,
+      systemmanagedusertype: 1,
+      accessmode: ACCESS_MODE.NonInteractive,
+      isdisabled: false,
+      businessunitid: businessUnitRef,
+      organizationid: organizationRef,
+    });
+  const links = (tables.systemuserroles ??= []);
+  for (let index = links.length - 1; index >= 0; index--)
+    if (
+      key(links[index].systemuserid) === userId &&
+      derived.has(key(links[index].roleid)) &&
+      !wanted.has(key(links[index].roleid))
+    )
+      links.splice(index, 1);
+  for (const roleId of wanted)
+    if (!links.some((row) => key(row.systemuserid) === userId && key(row.roleid) === roleId))
+      links.push({
+        systemuserroleid: uuidV5(userId, roleId),
+        systemuserid: ref('systemuser', userId, name),
+        roleid: ref('role', roleId, derived.get(roleId).name),
+      });
+}
+
 /**
  * The model a site record selects: { state, label, model: 'standard' | 'enhanced' }.
  * Learn lists the labels of states 1 (Migration in progress) and 2 (Migration Failed) without saying which model
@@ -63,7 +200,10 @@ export function portalAuthorizationModel(website) {
   const state = Number(field(website, 'enhancedauthorization') ?? 0) || 0;
   const enhanced = Object.hasOwn(ENHANCED_AUTHORIZATION_STATES, state);
   // An undocumented value reads as the standard model; the host records PORTAL_AUTHORIZATION_STATE_UNKNOWN for it.
-  const label = enhanced ? ENHANCED_AUTHORIZATION_STATES[state] : state === 0 ? 'Disabled' : `Unknown (${state})`;
+  let label;
+  if (enhanced) label = ENHANCED_AUTHORIZATION_STATES[state];
+  else if (state === 0) label = 'Disabled';
+  else label = `Unknown (${state})`;
   return {
     state,
     label,
@@ -134,35 +274,16 @@ export function createPortalAuthorization({
         (logical) => store.state.mappings[logical]?.dataverseOnly !== true,
       );
     const byRule = new Map(permissions.map((rule) => [key(rule.id), rule]));
-    const depthOf = (rule, seen = new Set()) => {
-      if (rule.scope !== 'parent') return SCOPE_DEPTH[rule.scope ?? 'global'] ?? DEPTH.Basic;
-      const parent = byRule.get(key(rule.parentPermissionId ?? rule.parentId));
-      return parent && !seen.has(parent) ? depthOf(parent, seen.add(rule)) : DEPTH.Basic;
-    };
     const out = new Map();
     for (const role of roles) out.set(securityRoleId(role.id), { name: role.name, grants: new Map() });
     for (const rule of permissions)
-      for (const roleId of ruleRoles(rule, roles)) {
-        if (!byId.has(roleId)) continue;
-        const grants = out.get(securityRoleId(roleId)).grants,
-          depth = depthOf(rule);
-        for (const logical of rule.entity === '*' ? everyTable() : [rule.entity])
-          for (const operation of rule.operations ?? ['read']) {
-            if (!RIGHT[operation]) continue;
-            const name = privilegeName(RIGHT[operation], noun(logical));
-            grants.set(name, {
-              logical,
-              wildcard: rule.entity === '*' && grants.get(name)?.wildcard !== false,
-              mask: Math.max(grants.get(name)?.mask ?? 0, depth),
-            });
-          }
-      }
+      addDerivedRule({ out, roles, byId, rule, everyTable, byRule, ruleRoles, securityRoleId, noun });
     return out;
   }
   const signatureOf = (grants) =>
     [...grants]
       .map(([name, grant]) => `${name}:${grant.mask}`)
-      .sort()
+      .sort((a, b) => Number(a > b) - Number(a < b))
       .join('|');
   // The role's grants as stored in Dataverse, to see whether an administrator changed them since the last rewrite.
   const storedGrants = (roleId) =>
@@ -225,93 +346,35 @@ export function createPortalAuthorization({
     if (!businessUnit)
       throw new DataError('The organization has no root business unit.', 503, 'OrganizationUnavailable');
     const ref = (logical, id, name = '') => ({ id, logical_name: logical, name });
-    const bu = ref('businessunit', businessUnit.businessunitid, businessUnit.name ?? '');
-    const org = ref('organization', organizationId);
+    const businessUnitRef = ref('businessunit', businessUnit.businessunitid, businessUnit.name ?? '');
+    const organizationRef = ref('organization', organizationId);
     const known = new Set((tables.privilege ?? []).map((row) => key(row.privilegeid)));
-    const marks = ((store.state.dataverse ??= {}).portalAuthorization ??= { roles: {} }).roles;
+    store.state.dataverse ??= {};
+    store.state.dataverse.portalAuthorization ??= { roles: {} };
+    const marks = store.state.dataverse.portalAuthorization.roles;
     // The derived roles mirror the current web roles: the role of a web role that is gone loses its grants and user links.
     for (const roleId of Object.keys(marks))
       if (!derived.has(roleId)) {
         removeRoleGrants(store, roleId);
         delete marks[roleId];
       }
-    for (const [roleId, role] of derived) {
-      const roles = (tables.role ??= []);
-      const existing = roles.find((row) => key(row.roleid) === roleId);
-      if (existing) existing.name = role.name;
-      else roles.push({ roleid: roleId, name: role.name, businessunitid: bu, organizationid: org, isinherited: 1 });
-      const signature = signatureOf(role.grants),
-        mark = markOf(marks[roleId]);
-      if (mark?.derived === signature) continue;
-      // Learn says the permissions defined in web roles "are reflected in these security roles" and that these
-      // constructs are mapped "so that access can be enforced directly at Dataverse"; how the platform treats a manual change
-      // to a mapped role is not documented. The role is platform-managed here: a table-permission change rewrites it, and a
-      // manual change the rewrite overwrites is reported once.
-      if (mark?.applied != null && storedGrants(roleId) !== mark.applied)
-        diagnostic({
-          code: 'PORTAL_AUTHORIZATION_ROLE_RESYNCED',
-          severity: 'warning',
-          model: 'enhanced',
-          role: role.name,
-          message: `The security role mapped to web role '${role.name}' was changed in Dataverse; the table permissions changed and rewrote it, which replaced that change.`,
-        });
-      const grants = [];
-      for (const [name, { logical, mask, wildcard }] of role.grants) {
-        const id = privilegeId(organizationId, name);
-        // A table mapped after the security seed gets its standard privileges first; an unknown table is reported below.
-        if (!known.has(id))
-          try {
-            for (const added of grantTablePrivileges(store, organizationId, logical))
-              known.add(privilegeId(organizationId, added));
-          } catch {
-            /* reported below */
-          }
-        if (known.has(id)) grants.push({ privilegeid: id, mask });
-        else if (!wildcard)
-          diagnostic({
-            code: 'PORTAL_AUTHORIZATION_PRIVILEGE_UNKNOWN',
-            severity: 'warning',
-            privilege: name,
-            role: role.name,
-            message: `Web role '${role.name}' grants ${name}, which the organization does not define; the grant is not mapped.`,
-          });
-      }
-      applyRoleGrants(store, roleId, grants);
-      marks[roleId] = { derived: signature, applied: storedGrants(roleId) };
-    }
-    const users = (tables.systemuser ??= []);
-    const name = String(
-      identity.fullname || identity.name || (contactOf(identity) ? contactOf(identity) : 'Anonymous users'),
-    );
-    // Learn says these users "are managed internally, don't provide direct access to Dataverse"; systemmanagedusertype
-    // 1 (C2 User, systemuser table reference) and the non-interactive access mode are the closest documented values.
-    const user = users.find((row) => key(row.systemuserid) === userId);
-    if (user) user.fullname = name;
-    else
-      users.push({
-        systemuserid: userId,
-        fullname: name,
-        systemmanagedusertype: 1,
-        accessmode: ACCESS_MODE.NonInteractive,
-        isdisabled: false,
-        businessunitid: bu,
-        organizationid: org,
+    for (const [roleId, role] of derived)
+      syncDerivedRole({
+        tables,
+        roleId,
+        role,
+        marks,
+        businessUnitRef,
+        organizationRef,
+        known,
+        store,
+        organizationId,
+        signatureOf,
+        markOf,
+        storedGrants,
+        diagnostic,
       });
-    const links = (tables.systemuserroles ??= []);
-    for (let index = links.length - 1; index >= 0; index--)
-      if (
-        key(links[index].systemuserid) === userId &&
-        derived.has(key(links[index].roleid)) &&
-        !wanted.has(key(links[index].roleid))
-      )
-        links.splice(index, 1);
-    for (const roleId of wanted)
-      if (!links.some((row) => key(row.systemuserid) === userId && key(row.roleid) === roleId))
-        links.push({
-          systemuserroleid: uuidV5(userId, roleId),
-          systemuserid: ref('systemuser', userId, name),
-          roleid: ref('role', roleId, derived.get(roleId).name),
-        });
+    syncMappedUser({ tables, identity, userId, wanted, derived, businessUnitRef, organizationRef, contactOf, ref });
   }
 
   // Security role id -> Set(privilege id) of its grants, rebuilt when roleprivileges change.
@@ -321,7 +384,7 @@ export function createPortalAuthorization({
     if (held.revision !== revision) {
       const map = new Map();
       for (const row of store.tableRows('roleprivileges')) {
-        if (!(Number(row.privilegedepthmask) > 0)) continue;
+        if (!(Number(row.privilegedepthmask) > 0)) continue; // NOSONAR: operand can be NaN or undefined, the negated test differs
         const id = key(row.roleid);
         if (!map.has(id)) map.set(id, new Set());
         map.get(id).add(key(row.privilegeid));

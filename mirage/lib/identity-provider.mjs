@@ -68,12 +68,16 @@ const CLIENT_ASSERTION_TYPE = 'urn:ietf:params:oauth:client-assertion-type:jwt-b
 const CODE_LIFETIME_MS = 5 * 60 * 1000;
 const TOKEN_LIFETIME_S = 3600;
 const LIMIT = 500;
+const extraIdAttribute = (key) => {
+  if (key === 'acr_values') return ' id="paqvilo-mirage-idp-acr"';
+  return key === 'prompt' ? ' id="paqvilo-mirage-idp-prompt"' : '';
+};
 const normalizeResponseType = (value) =>
   String(value ?? '')
     .trim()
     .split(/\s+/)
     .filter(Boolean)
-    .sort()
+    .sort((a, b) => Number(a > b) - Number(a < b))
     .join(' ');
 const remember = (map, key, value) => {
   map.set(key, value);
@@ -113,6 +117,19 @@ function decodeJwt(token) {
   }
 }
 
+function verifyAssertion(jwt, key) {
+  try {
+    return verify(
+      'sha256',
+      Buffer.from(`${jwt.parts[0]}.${jwt.parts[1]}`),
+      createPublicKey({ key, format: 'jwk' }),
+      Buffer.from(jwt.parts[2], 'base64url'),
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Start the identity provider.
  * - providers(): the portal's providers ({ slug, key, caption, clientId, redirectUri,
@@ -125,6 +142,14 @@ function decodeJwt(token) {
  *   portal's data records that contact's identity at the provider (async).
  * - allowRedirect(url): whether a post_logout_redirect_uri is on the portal's origin.
  */
+function verifyPkce(entry, verifier) {
+  if (!entry.challenge) return null;
+  if (!/^[A-Za-z0-9._~-]{43,128}$/.test(String(verifier ?? '')))
+    return 'The code_verifier is missing or malformed (PKCE).';
+  const derived = entry.method === 'S256' ? createHash('sha256').update(verifier).digest('base64url') : verifier;
+  return derived === entry.challenge ? null : 'The code_verifier does not match the code_challenge (PKCE).';
+}
+
 export async function startIdentityProvider({
   host = '127.0.0.1',
   port = 0,
@@ -173,7 +198,8 @@ export async function startIdentityProvider({
     const { privateKey, kid } = signingKeys();
     const header = base64url(JSON.stringify({ typ: 'JWT', alg: 'RS256', kid }));
     const body = base64url(JSON.stringify(payload));
-    return `${header}.${body}.${sign('sha256', Buffer.from(`${header}.${body}`), privateKey).toString('base64url')}`;
+    const signingInput = `${header}.${body}`;
+    return `${signingInput}.${sign('sha256', Buffer.from(signingInput), privateKey).toString('base64url')}`;
   };
   const headers = (extra = {}) => ({
     'content-type': 'text/html; charset=utf-8',
@@ -305,7 +331,7 @@ export async function startIdentityProvider({
   const idTokenClaims = (provider, params, user, { code = null, accessToken = null } = {}) => {
     const { name, given, family } = nameParts(user);
     const now = Math.floor(clock() / 1000);
-    const acr = params.acr_values.split(/\s+/).filter(Boolean)[0];
+    const acr = params.acr_values.split(/\s+/).find(Boolean);
     return {
       aud: params.client_id,
       iss: authority(provider),
@@ -349,8 +375,8 @@ export async function startIdentityProvider({
   };
   /** The authorization response for `user`, as the response type asks. */
   const answer = (res, provider, params, user) => {
-    const type = normalizeResponseType(params.response_type).split(' ');
-    const code = type.includes('code') ? randomBytes(24).toString('base64url') : null;
+    const type = new Set(normalizeResponseType(params.response_type).split(' '));
+    const code = type.has('code') ? randomBytes(24).toString('base64url') : null;
     if (code)
       remember(codes, code, {
         slug: provider.slug,
@@ -364,11 +390,11 @@ export async function startIdentityProvider({
         method: params.code_challenge ? params.code_challenge_method || 'plain' : null,
         expires: clock() + CODE_LIFETIME_MS,
       });
-    const accessToken = type.includes('token') ? issueAccessToken(provider, params, user) : null;
+    const accessToken = type.has('token') ? issueAccessToken(provider, params, user) : null;
     const fields = {
       ...(code ? { code } : {}),
       ...(accessToken ? { access_token: accessToken, token_type: 'Bearer', expires_in: String(TOKEN_LIFETIME_S) } : {}),
-      ...(type.includes('id_token')
+      ...(type.has('id_token')
         ? { id_token: signToken(idTokenClaims(provider, params, user, { code, accessToken })) }
         : {}),
       state: params.state,
@@ -396,14 +422,17 @@ export async function startIdentityProvider({
       ]
         .map(
           ([key, value]) =>
-            `<dt>${escapeHtml(key)}</dt><dd class="paqvilo-mirage-idp-extra" data-name="${escapeHtml(key)}"${['prompt', 'acr_values'].includes(key) ? ` id="paqvilo-mirage-idp-${key === 'acr_values' ? 'acr' : 'prompt'}"` : ''}>${escapeHtml(value)}</dd>`,
+            `<dt>${escapeHtml(key)}</dt><dd class="paqvilo-mirage-idp-extra" data-name="${escapeHtml(key)}"${extraIdAttribute(key)}>${escapeHtml(value)}</dd>`,
         )
         .join('') +
       (params.prompt.split(/\s+/).includes('consent')
         ? `<dt>consent</dt><dd>The portal asks for consent to the scope ${escapeHtml(params.scope)}.</dd>`
         : '');
+    const forcedNotice = policy.forced
+      ? `<p class="chooser-warning">Forced registration test. The portal disables registration with: ${escapeHtml(policy.disabled.join(', '))}. The portal may reject the callback.</p>`
+      : '';
     const create = policy.allowed
-      ? `<section class="chooser-registration paqvilo-mirage-idp-new-user" id="paqvilo-mirage-idp-create"><form method="post" action="${action}" id="idp-register">${hidden}</form><h2>New user</h2><p>Create an external identity for the portal’s first-time registration flow.</p>${policy.forced ? `<p class="chooser-warning">Forced registration test. The portal disables registration with: ${escapeHtml(policy.disabled.join(', '))}. The portal may reject the callback.</p>` : ''}<div class="chooser-registration-fields">${[
+      ? `<section class="chooser-registration paqvilo-mirage-idp-new-user" id="paqvilo-mirage-idp-create"><form method="post" action="${action}" id="idp-register">${hidden}</form><h2>New user</h2><p>Create an external identity for the portal’s first-time registration flow.</p>${forcedNotice}<div class="chooser-registration-fields">${[
           ['given_name', 'Given name', 'text', 100],
           ['family_name', 'Family name', 'text', 100],
           ['email', 'Email', 'email', 200],
@@ -430,8 +459,14 @@ export async function startIdentityProvider({
             : `<link data-sim-local-only="identity-provider" rel="stylesheet" href="${escapeHtml(asset.url)}">`,
         )
         .join('');
+    const fullPickerLink = fullPicker
+      ? `<a href="${escapeHtml(fullPicker)}" target="_blank" rel="noopener">Open full persona picker and isolated setups</a>`
+      : '';
+    const requestedDetails = requested
+      ? `<details class="chooser-request"><summary>Authorization request details</summary><dl aria-label="Request">${requested}</dl></details>`
+      : '';
     return page(
-      `<div data-persona-chooser data-scope="${escapeHtml(report.scope ?? 'local')}" data-presentation="${presentation}" role="${presentation === 'dialog' ? 'dialog' : 'main'}" aria-labelledby="chooser-title" style="--persona-accent:${settings.accentColor}"><header class="chooser-header"><div class="chooser-toolbar"><span class="chooser-kicker">Local identity provider · simulation</span><button type="button" data-chooser-display>${presentation === 'dialog' ? 'Use full page' : 'Open as dialog'}</button></div><h1 id="chooser-title">${escapeHtml(settings.title)}</h1><p>${escapeHtml(settings.description)}</p><p class="chooser-meta">Signing in to ${escapeHtml(requester)} with ${escapeHtml(heading)} · local simulation, no credentials are used</p>${fullPicker ? `<a href="${escapeHtml(fullPicker)}" target="_blank" rel="noopener">Open full persona picker and isolated setups</a>` : ''}</header>${chooserSearch(report, parameters, action, hidden)}<p class="chooser-error" data-chooser-error role="alert"></p><form method="post" action="${action}" id="idp-choose">${hidden}</form>${params.prompt.split(/\s+/).includes('create') ? create + content : content + create}${requested ? `<details class="chooser-request"><summary>Authorization request details</summary><dl aria-label="Request">${requested}</dl></details>` : ''}</div>`,
+      `<div data-persona-chooser data-scope="${escapeHtml(report.scope ?? 'local')}" data-presentation="${presentation}" role="${presentation === 'dialog' ? 'dialog' : 'main'}" aria-labelledby="chooser-title" style="--persona-accent:${settings.accentColor}"><header class="chooser-header"><div class="chooser-toolbar"><span class="chooser-kicker">Local identity provider · simulation</span><button type="button" data-chooser-display>${presentation === 'dialog' ? 'Use full page' : 'Open as dialog'}</button></div><h1 id="chooser-title">${escapeHtml(settings.title)}</h1><p>${escapeHtml(settings.description)}</p><p class="chooser-meta">Signing in to ${escapeHtml(requester)} with ${escapeHtml(heading)} · local simulation, no credentials are used</p>${fullPickerLink}</header>${chooserSearch(report, parameters, action, hidden)}<p class="chooser-error" data-chooser-error role="alert"></p><form method="post" action="${action}" id="idp-choose">${hidden}</form>${params.prompt.split(/\s+/).includes('create') ? create + content : content + create}${requestedDetails}</div>`,
       { head },
     );
   };
@@ -466,6 +501,10 @@ export async function startIdentityProvider({
       if (form.client_secret !== provider.clientSecret) return 'The client secret is wrong.';
       return null;
     }
+    return authenticatePrivateKeyClient(provider, form);
+  }
+
+  function authenticatePrivateKeyClient(provider, form) {
     if (form.client_assertion_type !== CLIENT_ASSERTION_TYPE || !form.client_assertion)
       return `This client is registered for private_key_jwt: send a client_assertion of type ${CLIENT_ASSERTION_TYPE}.`;
     const jwt = decodeJwt(form.client_assertion);
@@ -473,17 +512,7 @@ export async function startIdentityProvider({
     const key = (provider.clientKeys ?? []).find((item) => item.kid === jwt.header.kid);
     if (jwt.header.alg !== 'RS256' || !key)
       return `The client assertion is not signed with a registered key (kid "${jwt.header.kid ?? ''}").`;
-    let signed;
-    try {
-      signed = verify(
-        'sha256',
-        Buffer.from(`${jwt.parts[0]}.${jwt.parts[1]}`),
-        createPublicKey({ key, format: 'jwk' }),
-        Buffer.from(jwt.parts[2], 'base64url'),
-      );
-    } catch {
-      signed = false;
-    }
+    const signed = verifyAssertion(jwt, key);
     if (!signed) return 'The client assertion signature is invalid.';
     const { iss, sub, aud, exp, jti } = jwt.claims;
     if (iss !== provider.clientId || sub !== provider.clientId)
@@ -494,19 +523,11 @@ export async function startIdentityProvider({
     if (!audiences.includes(tokenEndpoint(provider)) && !audiences.includes(authority(provider)))
       return "The client assertion's audience is not this token endpoint.";
     const now = clock() / 1000;
-    if (!(Number(exp) > now - 60)) return 'The client assertion has expired.';
+    if (!(Number(exp) > now - 60)) return 'The client assertion has expired.'; // NOSONAR: operand can be NaN or undefined, the negated test differs
     if (typeof jti !== 'string' || !jti) return 'The client assertion has no jti.';
     if (assertions.has(`${provider.slug}|${jti}`)) return 'The client assertion was already used (jti replay).';
     remember(assertions, `${provider.slug}|${jti}`, clock());
     return null;
-  }
-  /** PKCE (RFC 7636): the code_verifier for the code's challenge; an error message or null. */
-  function verifyPkce(entry, verifier) {
-    if (!entry.challenge) return null;
-    if (!/^[A-Za-z0-9._~-]{43,128}$/.test(String(verifier ?? '')))
-      return 'The code_verifier is missing or malformed (PKCE).';
-    const derived = entry.method === 'S256' ? createHash('sha256').update(verifier).digest('base64url') : verifier;
-    return derived === entry.challenge ? null : 'The code_verifier does not match the code_challenge (PKCE).';
   }
   async function token(req, res, provider) {
     const form = await readForm(req);
@@ -561,6 +582,174 @@ export async function startIdentityProvider({
     return json(res, 200, userInfoClaims(entry.user));
   }
 
+  function serveProviderIndex(res) {
+    const items = providers()
+      .map(
+        (provider) =>
+          `<li><span><strong>${escapeHtml(provider.caption ?? provider.key)}</strong> <small>${escapeHtml(provider.key)}</small><br><code>${escapeHtml(authority(provider))}</code></span><a href="/${escapeHtml(provider.slug)}/.well-known/openid-configuration">Discovery document</a></li>`,
+      )
+      .join('');
+    return respond(
+      res,
+      200,
+      page(
+        `<h1>${TITLE}</h1><p class="note">Serves the portal's external sign-in on this machine only.</p><ul aria-label="Providers">${items || '<li>No external identity provider is configured in the site settings.</li>'}</ul>`,
+      ),
+    );
+  }
+
+  async function handleAuthorize(req, res, url, provider) {
+    const form = req.method === 'POST' ? await readForm(req) : Object.fromEntries(url.searchParams);
+    const params = authorizeParams(form);
+    const extras = extrasOf(form);
+    const problem = validateAuthorize(provider, params);
+    if (problem) return fail(res, 400, problem);
+    const list = await presetUsers(provider);
+    if (req.method === 'GET') return await handleAuthorizeGet(req, res, url, provider, params, extras, list);
+    return handleAuthorizePost(res, provider, params, form, list);
+  }
+
+  async function handleAuthorizeGet(req, res, url, provider, params, extras, list) {
+    const prompts = params.prompt.split(/\s+/).filter(Boolean);
+    if (prompts.includes('none')) {
+      // No page: the hinted user or this browser's provider session, else login_required.
+      const silent = hinted(list, params.login_hint) ?? sessionUser(req, provider);
+      if (!silent)
+        return deny(
+          res,
+          params,
+          'login_required',
+          'prompt=none: no user is signed in to the local identity provider in this browser and login_hint names no preset user.',
+        );
+      if (silent.contactId) await provision(provider, silent);
+      return answer(res, provider, params, silent);
+    }
+    const match = prompts.length ? null : hinted(list, params.login_hint);
+    if (!match) return respond(res, 200, chooser(provider, params, extras, list, url.searchParams));
+    await provision(provider, match);
+    return answer(res, provider, params, match);
+  }
+
+  async function handleAuthorizePost(res, provider, params, form, list) {
+    if (form.subject === 'new') return registerNewUser(res, provider, params, form);
+    const user = list.find((item) => item.subject === form.subject);
+    if (!user) return fail(res, 400, 'Choose one of the preset users.');
+    await provision(provider, user);
+    return answer(res, provider, params, user);
+  }
+
+  function registerNewUser(res, provider, params, form) {
+    const policy = newUserPolicy(settings, registration(), provider, params);
+    if (!policy.allowed)
+      return fail(
+        res,
+        403,
+        'Registration is disabled by ' + (policy.disabled.join(', ') || 'mirage.identityProvider.newUser=never'),
+      );
+    const email = String(form.email ?? '').trim();
+    const given = String(form.given_name ?? '').trim();
+    const family = String(form.family_name ?? '').trim();
+    const phone = String(form.phone_number ?? '').trim();
+    if (
+      !email.includes('@') ||
+      !given ||
+      !family ||
+      email.length > 200 ||
+      given.length > 100 ||
+      family.length > 100 ||
+      phone.length > 50
+    )
+      return fail(res, 400, 'A new user needs a given name, a family name and an email address.');
+    return answer(res, provider, params, {
+      subject: randomUUID(),
+      email,
+      givenName: given,
+      familyName: family,
+      name: `${given} ${family}`,
+      ...(phone ? { phone } : {}),
+    });
+  }
+
+  function handleLogout(req, res, url) {
+    const current = sessionCookie(req);
+    if (current) sessions.delete(current);
+    const cleared = { 'set-cookie': `${cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0` };
+    const target = url.searchParams.get('post_logout_redirect_uri');
+    if (target && allowRedirect(target)) {
+      const next = new URL(target);
+      const state = url.searchParams.get('state');
+      if (state) next.searchParams.set('state', state);
+      res.writeHead(302, { ...cleared, location: next.href, 'cache-control': 'no-store' });
+      return res.end();
+    }
+    const targetNotice = target
+      ? `<p role="alert">The post_logout_redirect_uri is not on the portal's origin and was not followed.</p>`
+      : '';
+    return respond(
+      res,
+      200,
+      page(`<h1>${TITLE}</h1><p class="note">Signed out of the local identity provider.</p>${targetNotice}`),
+      cleared,
+    );
+  }
+
+  async function handleProviderRoute(req, res, url, provider, route) {
+    if (req.method === 'GET' && route === '.well-known/openid-configuration') return serveDiscovery(res, provider);
+    if (req.method === 'GET' && route === 'discovery/keys') return serveSigningKeys(res);
+    if (req.method === 'POST' && route === 'oauth2/token') return token(req, res, provider);
+    if (['GET', 'POST'].includes(req.method) && route === 'openid/userinfo') return userinfo(req, res, provider);
+    if (route === 'oauth2/authorize' && ['GET', 'POST'].includes(req.method))
+      return await handleAuthorize(req, res, url, provider);
+    if (req.method === 'GET' && route === 'oauth2/logout') return handleLogout(req, res, url);
+    return fail(res, 404, 'Unknown identity provider endpoint.');
+  }
+
+  function serveDiscovery(res, provider) {
+    return json(res, 200, {
+      issuer: authority(provider),
+      authorization_endpoint: `${authority(provider)}oauth2/authorize`,
+      token_endpoint: tokenEndpoint(provider),
+      userinfo_endpoint: `${authority(provider)}openid/userinfo`,
+      end_session_endpoint: `${authority(provider)}oauth2/logout`,
+      jwks_uri: `${authority(provider)}discovery/keys`,
+      response_types_supported: RESPONSE_TYPES,
+      response_modes_supported: ['form_post', 'query'],
+      grant_types_supported: ['authorization_code', 'implicit'],
+      subject_types_supported: ['public'],
+      id_token_signing_alg_values_supported: ['RS256'],
+      token_endpoint_auth_methods_supported: ['client_secret_post', 'private_key_jwt'],
+      token_endpoint_auth_signing_alg_values_supported: ['RS256'],
+      code_challenge_methods_supported: ['S256', 'plain'],
+      prompt_values_supported: PROMPTS,
+      scopes_supported: ['openid', 'profile', 'email', 'phone'],
+      claims_supported: [
+        'aud',
+        'iss',
+        'iat',
+        'nbf',
+        'exp',
+        'acr',
+        'at_hash',
+        'c_hash',
+        'email',
+        'email_verified',
+        'preferred_username',
+        'family_name',
+        'given_name',
+        'name',
+        'nonce',
+        'oid',
+        'phone_number',
+        'sub',
+      ],
+    });
+  }
+
+  function serveSigningKeys(res) {
+    const { jwk, kid } = signingKeys();
+    return json(res, 200, { keys: [{ kty: jwk.kty, use: 'sig', kid, alg: 'RS256', n: jwk.n, e: jwk.e }] });
+  }
+
   async function handle(req, res) {
     const url = new URL(req.url, origin);
     if (
@@ -583,155 +772,12 @@ export async function startIdentityProvider({
       });
       return res.end(bytes);
     }
-    if (req.method === 'GET' && url.pathname === '/') {
-      const items = providers()
-        .map(
-          (provider) =>
-            `<li><span><strong>${escapeHtml(provider.caption ?? provider.key)}</strong> <small>${escapeHtml(provider.key)}</small><br><code>${escapeHtml(authority(provider))}</code></span><a href="/${escapeHtml(provider.slug)}/.well-known/openid-configuration">Discovery document</a></li>`,
-        )
-        .join('');
-      return respond(
-        res,
-        200,
-        page(
-          `<h1>${TITLE}</h1><p class="note">Serves the portal's external sign-in on this machine only.</p><ul aria-label="Providers">${items || '<li>No external identity provider is configured in the site settings.</li>'}</ul>`,
-        ),
-      );
-    }
+    if (req.method === 'GET' && url.pathname === '/') return serveProviderIndex(res);
     const [, slug, ...rest] = url.pathname.split('/');
     const route = rest.join('/');
     const provider = SLUG.test(slug ?? '') ? (providers().find((item) => item.slug === slug) ?? null) : null;
     if (!provider) return fail(res, 404, 'Unknown provider.');
-    if (req.method === 'GET' && route === '.well-known/openid-configuration')
-      return json(res, 200, {
-        issuer: authority(provider),
-        authorization_endpoint: `${authority(provider)}oauth2/authorize`,
-        token_endpoint: tokenEndpoint(provider),
-        userinfo_endpoint: `${authority(provider)}openid/userinfo`,
-        end_session_endpoint: `${authority(provider)}oauth2/logout`,
-        jwks_uri: `${authority(provider)}discovery/keys`,
-        response_types_supported: RESPONSE_TYPES,
-        response_modes_supported: ['form_post', 'query'],
-        grant_types_supported: ['authorization_code', 'implicit'],
-        subject_types_supported: ['public'],
-        id_token_signing_alg_values_supported: ['RS256'],
-        token_endpoint_auth_methods_supported: ['client_secret_post', 'private_key_jwt'],
-        token_endpoint_auth_signing_alg_values_supported: ['RS256'],
-        code_challenge_methods_supported: ['S256', 'plain'],
-        prompt_values_supported: PROMPTS,
-        scopes_supported: ['openid', 'profile', 'email', 'phone'],
-        claims_supported: [
-          'aud',
-          'iss',
-          'iat',
-          'nbf',
-          'exp',
-          'acr',
-          'at_hash',
-          'c_hash',
-          'email',
-          'email_verified',
-          'preferred_username',
-          'family_name',
-          'given_name',
-          'name',
-          'nonce',
-          'oid',
-          'phone_number',
-          'sub',
-        ],
-      });
-    if (req.method === 'GET' && route === 'discovery/keys') {
-      const { jwk, kid } = signingKeys();
-      return json(res, 200, { keys: [{ kty: jwk.kty, use: 'sig', kid, alg: 'RS256', n: jwk.n, e: jwk.e }] });
-    }
-    if (req.method === 'POST' && route === 'oauth2/token') return token(req, res, provider);
-    if (['GET', 'POST'].includes(req.method) && route === 'openid/userinfo') return userinfo(req, res, provider);
-    if (route === 'oauth2/authorize' && ['GET', 'POST'].includes(req.method)) {
-      const form = req.method === 'POST' ? await readForm(req) : Object.fromEntries(url.searchParams);
-      const params = authorizeParams(form);
-      const extras = extrasOf(form);
-      const problem = validateAuthorize(provider, params);
-      if (problem) return fail(res, 400, problem);
-      const list = await presetUsers(provider);
-      if (req.method === 'GET') {
-        const prompts = params.prompt.split(/\s+/).filter(Boolean);
-        if (prompts.includes('none')) {
-          // No page: the hinted user or this browser's provider session, else login_required.
-          const silent = hinted(list, params.login_hint) ?? sessionUser(req, provider);
-          if (!silent)
-            return deny(
-              res,
-              params,
-              'login_required',
-              'prompt=none: no user is signed in to the local identity provider in this browser and login_hint names no preset user.',
-            );
-          if (silent.contactId) await provision(provider, silent);
-          return answer(res, provider, params, silent);
-        }
-        const match = prompts.length ? null : hinted(list, params.login_hint);
-        if (!match) return respond(res, 200, chooser(provider, params, extras, list, url.searchParams));
-        await provision(provider, match);
-        return answer(res, provider, params, match);
-      }
-      if (form.subject === 'new') {
-        const policy = newUserPolicy(settings, registration(), provider, params);
-        if (!policy.allowed)
-          return fail(
-            res,
-            403,
-            'Registration is disabled by ' + (policy.disabled.join(', ') || 'mirage.identityProvider.newUser=never'),
-          );
-        const email = String(form.email ?? '').trim();
-        const given = String(form.given_name ?? '').trim();
-        const family = String(form.family_name ?? '').trim();
-        const phone = String(form.phone_number ?? '').trim();
-        if (
-          !email.includes('@') ||
-          !given ||
-          !family ||
-          email.length > 200 ||
-          given.length > 100 ||
-          family.length > 100 ||
-          phone.length > 50
-        )
-          return fail(res, 400, 'A new user needs a given name, a family name and an email address.');
-        return answer(res, provider, params, {
-          subject: randomUUID(),
-          email,
-          givenName: given,
-          familyName: family,
-          name: `${given} ${family}`,
-          ...(phone ? { phone } : {}),
-        });
-      }
-      const user = list.find((item) => item.subject === form.subject);
-      if (!user) return fail(res, 400, 'Choose one of the preset users.');
-      await provision(provider, user);
-      return answer(res, provider, params, user);
-    }
-    if (req.method === 'GET' && route === 'oauth2/logout') {
-      const current = sessionCookie(req);
-      if (current) sessions.delete(current);
-      const cleared = { 'set-cookie': `${cookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0` };
-      const target = url.searchParams.get('post_logout_redirect_uri');
-      if (target && allowRedirect(target)) {
-        const next = new URL(target);
-        const state = url.searchParams.get('state');
-        if (state) next.searchParams.set('state', state);
-        res.writeHead(302, { ...cleared, location: next.href, 'cache-control': 'no-store' });
-        return res.end();
-      }
-      return respond(
-        res,
-        200,
-        page(
-          `<h1>${TITLE}</h1><p class="note">Signed out of the local identity provider.</p>${target ? `<p role="alert">The post_logout_redirect_uri is not on the portal's origin and was not followed.</p>` : ''}`,
-        ),
-        cleared,
-      );
-    }
-    return fail(res, 404, 'Unknown identity provider endpoint.');
+    return await handleProviderRoute(req, res, url, provider, route);
   }
   const serve = (req, res) =>
     handle(req, res).catch((error) => {

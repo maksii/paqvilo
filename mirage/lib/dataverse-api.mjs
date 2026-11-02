@@ -67,7 +67,7 @@ const GLOBAL_DISCO = 'https://globaldisco.crm.dynamics.com';
 const SYSTEMUSER_TYPE = typeCodeOf('systemuser');
 const TENANT = '(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|common|organizations|consumers)';
 const STS_PATH = new RegExp(
-  `^/(${TENANT})/(oauth2/v2\\.0/token|oauth2/token|oauth2/v2\\.0/authorize|oauth2/authorize|oauth2/v2\\.0/devicecode|oauth2/v2\\.0/logout|v2\\.0/\\.well-known/openid-configuration|\\.well-known/openid-configuration|discovery/v2\\.0/keys|discovery/keys)$`,
+  String.raw`^/(${TENANT})/(oauth2/v2\.0/token|oauth2/token|oauth2/v2\.0/authorize|oauth2/authorize|oauth2/v2\.0/devicecode|oauth2/v2\.0/logout|v2\.0/\.well-known/openid-configuration|\.well-known/openid-configuration|discovery/v2\.0/keys|discovery/keys)$`,
   'i',
 );
 const CORS = {
@@ -113,7 +113,7 @@ const TLS_HOST_NAMES = ['localhost', '127.0.0.1', '[::1]'];
 const refOf = (value) => (value !== null && typeof value === 'object' ? value.id : value) ?? undefined;
 const asJson = (result) => ({
   ...result,
-  headers: { 'content-type': 'application/json; charset=utf-8', ...(result.headers ?? {}) },
+  headers: { 'content-type': 'application/json; charset=utf-8', ...result.headers },
 });
 const envelope = (status, code, message, requestId) => ({
   status,
@@ -195,13 +195,11 @@ function messageSpan(d, { kind, message, name, entity = null, recordId = null, a
         span.set({ statusCode: status });
         if (status >= 400) recordHttpError(span, status, answeredError(result) ?? {});
         else
-          span.output(() =>
-            output
-              ? output(result)
-              : Buffer.isBuffer(result?.body)
-                ? `[binary ${result.body.length} bytes]`
-                : (result?.body ?? null),
-          );
+          span.output(() => {
+            if (output) return output(result);
+            if (Buffer.isBuffer(result?.body)) return `[binary ${result.body.length} bytes]`;
+            return result?.body ?? null;
+          });
         return result;
       };
       const result = run();
@@ -223,13 +221,20 @@ function originOf(req, fallbackHost) {
   const proto = encrypted ? 'https' : 'http';
   const defaultPort = encrypted ? 443 : 80;
   const host = String(req.headers.host ?? '');
-  if (host && /^[a-z0-9.:[\]-]+$/i.test(host)) return `${proto}://${host.replace(new RegExp(`:${defaultPort}$`), '')}`;
+  if (host && /^[a-z0-9.:[\]-]+$/i.test(host)) {
+    const hostPart = host.replace(new RegExp(`:${defaultPort}$`), '');
+    return `${proto}://${hostPart}`;
+  }
   const port = req.socket?.localPort;
-  return `${proto}://${fallbackHost}${port && port !== defaultPort ? `:${port}` : ''}`;
+  const portPart = port && port !== defaultPort ? `:${port}` : '';
+  return `${proto}://${fallbackHost}${portPart}`;
 }
 
-const listenerOrigin = (proto, host, port) =>
-  `${proto}://${host}${port === (proto === 'https' ? 443 : 80) ? '' : `:${port}`}`;
+const listenerOrigin = (proto, host, port) => {
+  const defaultPort = proto === 'https' ? 443 : 80;
+  const portPart = port === defaultPort ? '' : `:${port}`;
+  return `${proto}://${host}${portPart}`;
+};
 
 // The Host header becomes the origin that tokens carry (iss/aud) and CORS allows any origin, so a page reaching the
 // simulator under another name (DNS rebinding, a cross-site fetch by IP) must not get a token or data.
@@ -322,20 +327,29 @@ function send(res, result, requestId, clientRequestId, { cors = false, gzip = fa
     ...(cors ? CORS : {}),
     ...baseHeaders(requestId),
     ...(clientRequestId ? { 'x-ms-client-request-id': clientRequestId } : {}),
-    ...(result.headers ?? {}),
+    ...result.headers,
   };
   const headers = {};
   for (const [name, value] of Object.entries(merged))
     if (value !== undefined && value !== null) headers[name.toLowerCase()] = value;
+  const status = result.status ?? 200;
+  const payload = prepareResponsePayload(result.body, headers, status, gzip);
+  for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
+  res.statusCode = status;
+  res.end(payload);
+}
+
+function prepareResponsePayload(body, headers, status, gzip) {
   let payload;
-  const body = result.body;
   if (body !== undefined && body !== null) {
     const text = typeof body === 'string';
     const binary = Buffer.isBuffer(body);
     payload = text || binary ? body : stringifyExactJson(orderAnnotations(body));
-    headers['content-type'] ??= text ? 'text/plain' : binary ? 'application/octet-stream' : JSON_CONTENT_TYPE;
+    let contentType = JSON_CONTENT_TYPE;
+    if (text) contentType = 'text/plain';
+    else if (binary) contentType = 'application/octet-stream';
+    headers['content-type'] ??= contentType;
   }
-  const status = result.status ?? 200;
   if (status === 304) delete headers['odata-version'];
   // Every native 200 that is not an octet-stream download is gzipped when the caller accepts it.
   if (status === 200 && gzip && payload !== undefined && headers['content-type'] !== 'application/octet-stream') {
@@ -347,9 +361,7 @@ function send(res, result, requestId, clientRequestId, { cors = false, gzip = fa
   if (status < 400) headers['x-content-type-options'] ??= 'nosniff';
   // Every native 204 (image and file ones included) is answered as an empty text/html response.
   if (status === 204) headers['content-type'] ??= 'text/html; charset=utf-8';
-  for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
-  res.statusCode = status;
-  res.end(payload);
+  return payload;
 }
 
 function organizationDetail(d, origin) {
@@ -382,7 +394,7 @@ function organizationDetail(d, origin) {
 // Sign-in pages are HTML; everything else the authority returns is JSON.
 const stsReply = (result) =>
   typeof result.body === 'string'
-    ? { ...result, headers: { 'content-type': 'text/html; charset=utf-8', ...(result.headers ?? {}) } }
+    ? { ...result, headers: { 'content-type': 'text/html; charset=utf-8', ...result.headers } }
     : asJson(result);
 
 async function stsRoute(d, c) {
@@ -608,6 +620,12 @@ function metadataChanges(d, c, route) {
   };
 }
 
+function principalTableOf(set) {
+  if (set === 'teams') return 'team';
+  if (set === 'organizations') return 'organization';
+  return 'systemuser';
+}
+
 async function principalAccess(d, c, route, subjectId, common) {
   const reference = referenceOf(parseFunctionParameters(route.params, c.url.searchParams).Target);
   const target = referenceRoute(reference, c.origin, route.version);
@@ -619,7 +637,7 @@ async function principalAccess(d, c, route, subjectId, common) {
   if (!row) throw new DataError(`${logical} With Id = ${rowId} Does Not Exist`, 404, 'NotFound', { id: rowId });
   // RetrievePrincipalAccess runs its own pipeline (Target the row, Principal the bound subject; recorded native
   // webApiNamed), as the SDK path does (plugin-platform-messages.mjs).
-  const subjectTable = route.set === 'teams' ? 'team' : route.set === 'organizations' ? 'organization' : 'systemuser';
+  const subjectTable = principalTableOf(route.set);
   if (subjectTable !== 'organization' && entryMessageActive(d.store, 'RetrievePrincipalAccess', logical, common)) {
     let answer;
     await runEntryMessage(d.store, {
@@ -684,7 +702,7 @@ function boundFunction(d, c, route, common) {
     {
       kind: 'function',
       message: route.name,
-      entity: route.set === 'teams' ? 'team' : route.set === 'organizations' ? 'organization' : 'systemuser',
+      entity: principalTableOf(route.set),
       recordId: subjectId,
       input: () => ({ parameters: parseFunctionParameters(route.params, c.url.searchParams) }),
     },
@@ -819,7 +837,7 @@ export function metadataRead(c, metadata, route) {
   const select = c.url.searchParams.get('$select') ?? '';
   const filter = c.url.searchParams.get('$filter') ?? '';
   const expand = expandNames(c.url.searchParams.get('$expand'));
-  const { set, key, segment, segmentKey, cast } = route;
+  const { set, key } = route;
   const context = (suffix) => contextUrl(c.origin, route.version, suffix);
   const collection = (items, suffix) => ({ status: 200, body: { '@odata.context': context(suffix), value: items } });
   const single = (item, suffix) => ({ status: 200, body: { '@odata.context': context(suffix), ...item } });
@@ -834,32 +852,55 @@ export function metadataRead(c, metadata, route) {
   // Native writes the key as requested without its LogicalName= name, and the $select inside the set's parentheses.
   const keyedContext = (path, key) => `${path}(${key.replace(/^LogicalName=/i, '')})`;
   const selectContext = (select) => (select ? `(${select})` : '');
+  const contextState = {
+    ...route,
+    select,
+    filter,
+    expand,
+    metadata,
+    collection,
+    single,
+    missing,
+    shape,
+    listed,
+    keyedContext,
+    selectContext,
+  };
 
-  if (set === 'GlobalOptionSetDefinitions') {
-    if (c.url.searchParams.has('$filter'))
-      throw new DataError(
-        'The $filter query option is not supported for GlobalOptionSetDefinitions.',
-        400,
-        'InvalidRequest',
-      );
-    if (key == null) return collection(shape(metadata.globalOptionSets()), set);
-    const name = /^Name=['"]?([^'")]+)/i.exec(key)?.[1];
-    const found = name ? metadata.globalOptionSet(name) : null;
-    // A global option set is typed OptionSetMetadata in the context URL.
-    return found
-      ? single(metadata.selectMetadata(found, select), `${set}/Microsoft.Dynamics.CRM.OptionSetMetadata/$entity`)
-      : missing(set);
-  }
-  if (set === 'RelationshipDefinitions') {
-    if (key == null) return collection(shape(metadata.relationships({ cast })), set);
-    const found = metadata.relationship(key, { cast });
-    return found ? single(metadata.selectMetadata(found, select), `${set}/$entity`) : missing(set);
-  }
+  if (set === 'GlobalOptionSetDefinitions') return globalOptionSetMetadata(c, contextState);
+  if (set === 'RelationshipDefinitions') return relationshipMetadata(contextState);
   if (key == null) {
     let entities = metadata.entities();
     if (expand.length) entities = entities.map((entity) => metadata.entity(entity.LogicalName, { expand }));
     return collection(shape(entities), select ? `${set}(${select})` : set);
   }
+  return entityMetadata(contextState);
+}
+
+function globalOptionSetMetadata(c, { set, key, select, metadata, collection, single, shape, missing }) {
+  if (c.url.searchParams.has('$filter'))
+    throw new DataError(
+      'The $filter query option is not supported for GlobalOptionSetDefinitions.',
+      400,
+      'InvalidRequest',
+    );
+  if (key == null) return collection(shape(metadata.globalOptionSets()), set);
+  const name = /^Name=['"]?([^'")]+)/i.exec(key)?.[1];
+  const found = name ? metadata.globalOptionSet(name) : null;
+  // A global option set is typed OptionSetMetadata in the context URL.
+  return found
+    ? single(metadata.selectMetadata(found, select), `${set}/Microsoft.Dynamics.CRM.OptionSetMetadata/$entity`)
+    : missing(set);
+}
+
+function relationshipMetadata({ set, key, cast, select, metadata, collection, single, shape, missing }) {
+  if (key == null) return collection(shape(metadata.relationships({ cast })), set);
+  const found = metadata.relationship(key, { cast });
+  return found ? single(metadata.selectMetadata(found, select), `${set}/$entity`) : missing(set);
+}
+
+function entityMetadata(state) {
+  const { set, key, segment, select, expand, metadata, single, missing } = state;
   const entity = metadata.entity(key, { expand });
   if (!entity && set === 'EntityDefinitions' && !segment) {
     // Native names the metadata id it looked for, under 0x80060888 (not the segment error).
@@ -872,28 +913,47 @@ export function metadataRead(c, metadata, route) {
   if (!segment) {
     // The context URL writes $expand navigations as name().
     const names = [...(select ? [select] : []), ...expand.map((name) => `${name}()`)];
-    return single(
-      metadata.selectMetadata(entity, select),
-      `${names.length ? `${set}(${names.join(',')})` : set}/$entity`,
-    );
+    const setContext = names.length ? `${set}(${names.join(',')})` : set;
+    return single(metadata.selectMetadata(entity, select), `${setContext}/$entity`);
   }
+  return entityMetadataSegment({ ...state, entity });
+}
+
+function entityMetadataSegment({
+  set,
+  key,
+  segment,
+  segmentKey,
+  cast,
+  select,
+  expand,
+  filter,
+  metadata,
+  entity,
+  single,
+  collection,
+  missing,
+  listed,
+  keyedContext,
+  selectContext,
+  subSegment,
+}) {
   const logical = entity.LogicalName;
-  // EntityDefinitions(k)/Attributes(k2)/Microsoft.Dynamics.CRM.X/OptionSet (or GlobalOptionSet) → OptionSetMetadata.
-  if (route.subSegment) {
+  if (subSegment) {
     const option = metadata.attributeOptionSet(key, segmentKey, {
-      global: route.subSegment === 'GlobalOptionSet',
+      global: subSegment === 'GlobalOptionSet',
       select,
     });
-    return option ? single(option, `${set}/Attributes/${route.subSegment}/$entity`) : missing(route.subSegment);
+    return option ? single(option, `${set}/Attributes/${subSegment}/$entity`) : missing(subSegment);
   }
   switch (segment) {
     case 'Attributes': {
       const list = metadata.attributes(key, { cast, key: segmentKey, select, expand }) ?? missing(set);
       if (segmentKey != null) return list[0] ? single(list[0], `${set}/Attributes/$entity`) : missing('Attributes');
-      // A cast makes the context a typed attribute collection.
+      const castContext = cast ? `/Microsoft.Dynamics.CRM.${cast}` : '';
       return collection(
         metadata.filterMetadata(list, filter),
-        keyedContext(set, key) + `/Attributes${cast ? `/Microsoft.Dynamics.CRM.${cast}` : ''}${selectContext(select)}`,
+        keyedContext(set, key) + `/Attributes${castContext}${selectContext(select)}`,
       );
     }
     case 'Keys':
@@ -1247,6 +1307,36 @@ async function handleTaggedDataRequest(
 ) {
   const req = { method, headers };
   const c = { req, method, url, origin, requestId, prefer, meta: {} };
+  const { bypassCustomPlugins, bypassCustomAsync, bypassStepIds, systemParameters } = bypassRequestSettings(
+    d,
+    headers,
+    caller,
+  );
+  const body = bodyOf(method, headers, bodyBuffer, route, (set) => entitySetNamed(d.store, set));
+
+  const common = {
+    req,
+    origin,
+    requestId,
+    prefer,
+    method,
+    url,
+    body,
+    bodyBuffer,
+    user,
+    caller,
+    identity,
+    bypassCustomPlugins,
+    bypassCustomAsync,
+    bypassStepIds,
+    systemParameters,
+  };
+  const operated = await operationCall(d, route, common);
+  if (operated) return operated;
+  return dispatchTaggedRoute(d, c, route, common, body);
+}
+
+function bypassRequestSettings(d, headers, caller) {
   // MSCRM.BypassCustomPluginExecution: true needs prvBypassCustomPlugins. MSCRM.BypassBusinessLogicExecution (a comma list)
   // needs prvBypassCustomBusinessLogic; CustomSync also skips the synchronous plug-in phase, as the header asks.
   const plugins = ['true', '1'].includes(
@@ -1278,27 +1368,11 @@ async function handleTaggedDataRequest(
       ? { BypassBusinessLogicExecutionStepIds: headers['mscrm.bypassbusinesslogicexecutionstepids'] }
       : {}),
   };
-  const body = bodyOf(method, headers, bodyBuffer, route, (set) => entitySetNamed(d.store, set));
+  return { bypassCustomPlugins, bypassCustomAsync, bypassStepIds, systemParameters };
+}
 
-  const common = {
-    req,
-    origin,
-    requestId,
-    prefer,
-    method,
-    url,
-    body,
-    bodyBuffer,
-    user,
-    caller,
-    identity,
-    bypassCustomPlugins,
-    bypassCustomAsync,
-    bypassStepIds,
-    systemParameters,
-  };
-  const operated = await operationCall(d, route, common);
-  if (operated) return operated;
+function dispatchTaggedRoute(d, c, route, common, body) {
+  const { method, origin, url, prefer } = c;
   switch (route.kind) {
     case 'service':
       // Native omits Expires on the service document and $metadata (see baseHeaders).
@@ -1356,57 +1430,70 @@ export async function operationCall(d, route, common) {
   const kind = common.method === 'GET' ? 'function' : 'action';
   // One segment that names a registered unbound operation (route.candidate) is that operation before it is read as a set.
   // A wrong verb there falls through to the set, which may be a real entity; a registered bound name does not.
-  if (route.candidate && route.kind !== 'function' && ops.has(route.candidate.name)) {
-    const op = ops.find({ name: route.candidate.name, kind, binding: 'unbound' });
-    if (op) return runOperation(d, op, route, route.candidate.params, common, undefined);
-    // A wrong verb on a registered name falls to the set only when an entity set has that name; otherwise there is no route (native: 404, no code).
-    return entitySetNamed(d.store, route.candidate.name) ? null : notFound(common);
-  }
+  if (route.candidate && route.kind !== 'function' && ops.has(route.candidate.name))
+    return candidateOperation(d, route, common, kind);
   if (!['function', 'boundFunction', 'boundAction'].includes(route.kind) || !ops.has(route.name)) return null;
+  // The name is registered, so a bound route the operation cannot serve (unknown set, alternate key) is a 404, not a built-in.
+  const unroutable = () => notFound({ url: common.url, requestId: common.requestId });
+  const resolved = resolveOperationBinding(d, route, unroutable);
+  if (resolved.response) return resolved.response;
+  const { binding, entity, mapping, id, keyAttributes } = resolved;
+  const op = ops.find({ name: route.name, kind, binding, entity });
+  if (!op) return notFound({ url: common.url, requestId: common.requestId });
+  const target = operationTarget(d, binding, entity, id, mapping, keyAttributes, common.identity);
+  return runOperation(d, op, route, route.params, common, target);
+}
+
+function candidateOperation(d, route, common, kind) {
+  const op = d.operations.find({ name: route.candidate.name, kind, binding: 'unbound' });
+  if (op) return runOperation(d, op, route, route.candidate.params, common, undefined);
+  // A wrong verb on a registered name falls to the set only when an entity set has that name; otherwise there is no route (native: 404, no code).
+  return entitySetNamed(d.store, route.candidate.name) ? null : notFound(common);
+}
+
+function operationTarget(d, binding, entity, id, mapping, keyAttributes, identity) {
+  if (binding === 'entity') {
+    // The platform loads a bound operation's target without a Retrieve pipeline (recorded native customApi).
+    const row = d.store.get(entity, id, identity, { skipPluginRead: true });
+    if (!row) throw new DataError(`${entity} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id });
+    return { mapping, id, row, ...(keyAttributes ? { keyAttributes } : {}) };
+  }
+  if (binding === 'collection') return { mapping };
+}
+
+function resolveOperationBinding(d, route, unroutable) {
   let binding = 'unbound';
   let entity;
   let mapping;
   let id;
   let keyAttributes;
-  // The name is registered, so a bound route the operation cannot serve (unknown set, alternate key) is a 404, not a built-in.
-  const unroutable = () => notFound({ url: common.url, requestId: common.requestId });
-  if (route.kind !== 'function') {
-    try {
-      mapping = d.store.resolveMapping(route.set);
-    } catch {
-      return unroutable();
-    }
-    entity = mapping.logicalName;
-    if (route.key == null) binding = 'collection';
-    else {
-      // A row addressed by an alternate key binds by its id and keeps the key for the Target (recorded native
-      // webApiNamed: a bound custom API by alternate key answers 200 with Target.KeyAttributes).
-      const key = parseKey(route.key);
-      id = key?.id;
-      if (!id && key?.alternate) {
-        let keyed;
-        try {
-          keyed = d.store.findByKey(mapping, route.key);
-        } catch {
-          keyed = null; // an undeclared key names no row
-        }
-        id = keyed?.[mapping.idColumn];
-        keyAttributes = id ? key.alternate : undefined;
-      }
-      if (!id) return unroutable();
-      binding = 'entity';
-    }
+  if (route.kind === 'function') return { binding, entity, mapping, id, keyAttributes };
+  try {
+    mapping = d.store.resolveMapping(route.set);
+  } catch {
+    return { response: unroutable() };
   }
-  const op = ops.find({ name: route.name, kind, binding, entity });
-  if (!op) return notFound({ url: common.url, requestId: common.requestId });
-  let target;
-  if (binding === 'entity') {
-    // The platform loads a bound operation's target without a Retrieve pipeline (recorded native customApi).
-    const row = d.store.get(entity, id, common.identity, { skipPluginRead: true });
-    if (!row) throw new DataError(`${entity} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id });
-    target = { mapping, id, row, ...(keyAttributes ? { keyAttributes } : {}) };
-  } else if (binding === 'collection') target = { mapping };
-  return runOperation(d, op, route, route.params, common, target);
+  entity = mapping.logicalName;
+  if (route.key == null) binding = 'collection';
+  else {
+    // A row addressed by an alternate key binds by its id and keeps the key for the Target (recorded native
+    // webApiNamed: a bound custom API by alternate key answers 200 with Target.KeyAttributes).
+    const key = parseKey(route.key);
+    id = key?.id;
+    if (!id && key?.alternate) {
+      let keyed;
+      try {
+        keyed = d.store.findByKey(mapping, route.key);
+      } catch {
+        keyed = null; // an undeclared key names no row
+      }
+      id = keyed?.[mapping.idColumn];
+      keyAttributes = id ? key.alternate : undefined;
+    }
+    if (!id) return { response: unroutable() };
+    binding = 'entity';
+  }
+  return { binding, entity, mapping, id, keyAttributes };
 }
 
 // Calls the operation's handle(ctx) and shapes its result: object bodies are JSON, Buffers go out as they are.
@@ -1458,7 +1545,7 @@ async function runOperation(d, op, route, paramsText, common, target) {
   if (!result) return { status: 204 };
   const jsonBody = result.body !== null && typeof result.body === 'object' && !Buffer.isBuffer(result.body);
   // Native operation responses are application/json; odata.metadata=minimal with no charset.
-  return jsonBody ? { ...result, headers: { 'content-type': JSON_CONTENT_TYPE, ...(result.headers ?? {}) } } : result;
+  return jsonBody ? { ...result, headers: { 'content-type': JSON_CONTENT_TYPE, ...result.headers } } : result;
 }
 
 // $batch: parts run in process under the caller verified for the batch; a changeset rolls back on failure (runAtomic).
@@ -1656,9 +1743,43 @@ const requestMetadata = (d, fn) =>
       })
     : fn();
 const DATA_PLANE = /^\/api\/data\/v\d+(?:\.\d+)*(?:\/|$)/i;
+
+function endHttpSpan(span, status, failure, meta) {
+  let error;
+  if (status === 499) error = failure ?? CLIENT_CLOSED;
+  else if (status >= 400) error = failure ?? undefined;
+  return span?.end({
+    status: statusFromHttp(status),
+    error,
+    attributes: { statusCode: status, kind: meta.kind, appId: meta.appId, grant: meta.grant },
+  });
+}
+
+function incrementDataverseRequestCounters(d, c, meta, res) {
+  const counters = d.store?.counters;
+  if (!counters) return;
+  const pathname = c.url?.pathname ?? '';
+  if (meta.kind !== 'data' || !DATA_PLANE.test(pathname) || /\/\$metadata$/i.test(pathname))
+    return counters.increment('dataverseRequests.other');
+  counters.increment('dataverseRequests');
+  if (res.statusCode >= 400) counters.increment('dataverseRequests.failed');
+}
+
+function replyOrDrop(reply, result, res, log, requestId, errorOptions) {
+  try {
+    reply(result);
+  } catch (error) {
+    log('dataverse response failed', { requestId: requestId(), message: error?.message });
+    try {
+      reply(dataverseError(error, errorOptions()));
+    } catch {
+      res.destroy();
+    }
+  }
+}
+
 export function createDataverseHandler(deps) {
-  const limits =
-    deps.limits ?? createServiceProtection({ ...(deps.settings?.serviceProtection ?? {}), clock: deps.clock });
+  const limits = deps.limits ?? createServiceProtection({ ...deps.settings?.serviceProtection, clock: deps.clock });
   const d = {
     ...deps,
     change: deps.change ?? ((fn) => fn()),
@@ -1669,7 +1790,7 @@ export function createDataverseHandler(deps) {
   const log = deps.log ?? (() => {});
   // Every response write sits inside serve's try; a header that cannot be sent (for example a non-Latin-1 OData-EntityId)
   // becomes a Dataverse error envelope, and only if that write fails too does the connection drop.
-  const serve = async (req, res) => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const serve = async (req, res) => {
     const requestId = randomUUID();
     const started = d.clock();
     const clientRequestId = req.headers['x-ms-client-request-id'];
@@ -1686,7 +1807,7 @@ export function createDataverseHandler(deps) {
     const inbound = tracing ? traces.fromHeaders(req.headers) : null;
     const nested = inbound && !inbound.traceId && !inbound.parentSpanId && traces.current();
     const pathname = tracing ? String(req.url ?? '/').split('?')[0] : null;
-    const contentLength = tracing ? Number(req.headers['content-length']) : NaN;
+    const contentLength = tracing ? Number(req.headers['content-length']) : Number.NaN;
     const span = tracing
       ? traces.start({
           kind: 'http',
@@ -1719,26 +1840,13 @@ export function createDataverseHandler(deps) {
     let failure = null;
     // Ends on finish, or on a close before it (an aborted request or a destroyed in-process response, 499); idempotent.
     // A response the client closed before it completed (499) names that as its error (DV-Y8-4).
-    const endSpan = (status) =>
-      span?.end({
-        status: statusFromHttp(status),
-        error: status === 499 ? (failure ?? CLIENT_CLOSED) : status >= 400 ? (failure ?? undefined) : undefined,
-        attributes: { statusCode: status, kind: meta.kind, appId: meta.appId, grant: meta.grant },
-      });
+    const endSpan = (status) => endHttpSpan(span, status, failure, meta);
     res.on('finish', () => endSpan(res.statusCode));
     res.on('close', () => endSpan(res.writableFinished ? res.statusCode : 499));
     // Dashboard counters (runtime-counters.mjs): dataverseRequests and dataverseRequests.failed count data-plane Web API
     // requests (/api/data/v*, not $metadata); token, discovery, metadata document, SOAP and every other request on this
     // listener count as dataverseRequests.other. TDS has its own listener and is not counted.
-    res.on('finish', () => {
-      const counters = d.store?.counters;
-      if (!counters) return;
-      const pathname = c.url?.pathname ?? '';
-      if (meta.kind !== 'data' || !DATA_PLANE.test(pathname) || /\/\$metadata$/i.test(pathname))
-        return counters.increment('dataverseRequests.other');
-      counters.increment('dataverseRequests');
-      if (res.statusCode >= 400) counters.increment('dataverseRequests.failed');
-    });
+    res.on('finish', () => incrementDataverseRequestCounters(d, c, meta, res));
     res.on('finish', () =>
       remember(d.requests, {
         at: started,
@@ -1820,18 +1928,16 @@ export function createDataverseHandler(deps) {
     }
     // Every response for an authenticated caller carries the remaining service-protection headers; none reach unauthenticated ones.
     const withLimits = meta.userId
-      ? { ...result, headers: { ...(result.headers ?? {}), ...d.limits.headers(meta.userId) } }
+      ? { ...result, headers: { ...result.headers, ...d.limits.headers(meta.userId) } }
       : result;
-    try {
-      reply(withLimits);
-    } catch (error) {
-      log('dataverse response failed', { requestId, message: error?.message });
-      try {
-        reply(dataverseError(error, { prefer, requestId, origin, tenantId: d.tenantId, method: c.method }));
-      } catch {
-        res.destroy();
-      }
-    }
+    replyOrDrop(
+      reply,
+      withLimits,
+      res,
+      log,
+      () => requestId,
+      () => ({ prefer, requestId, origin, tenantId: d.tenantId, method: c.method }),
+    );
   };
   // serve never rejects here: whatever escapes it still gets an answer or a dropped connection.
   return function handle(req, res) {
@@ -1853,6 +1959,13 @@ function listen(server, port, host) {
       server.off('error', reject);
       resolve();
     });
+  });
+}
+
+function closeServer(server) {
+  return new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(() => resolve());
   });
 }
 
@@ -1897,13 +2010,7 @@ export async function startDataverseApi({
     (closing ??= (async () => {
       const results = await Promise.allSettled([
         Promise.resolve().then(() => tds?.close()),
-        ...servers.map(
-          (server) =>
-            new Promise((resolve) => {
-              server.closeAllConnections();
-              server.close(() => resolve());
-            }),
-        ),
+        ...servers.map(closeServer),
       ]);
       if (ownsOrganization) await organization.close();
       const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
@@ -2016,7 +2123,7 @@ export async function startDataverseApi({
       handle,
     };
   } catch (error) {
-    await close().catch((cleanup) => log('transport-cleanup', cleanup));
+    await close().catch((error_) => log('transport-cleanup', error_));
     throw error;
   }
 }

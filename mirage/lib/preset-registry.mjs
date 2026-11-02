@@ -128,58 +128,44 @@ const dataProperty = (object, key) => {
   return property && 'value' in property ? property : null;
 };
 
-/** Validate a pack object without evaluating lazy personas/plugins getters. */
-export function validatePack(pack, source = 'data pack') {
-  const fail = (message) => {
-    throw new Error(`Data pack ${source}: ${message}`);
-  };
-  if (!pack || typeof pack !== 'object' || Array.isArray(pack)) fail('must default-export an object');
-  if (typeof pack.id !== 'string' || !packIdPattern.test(pack.id)) fail('id must match /^[a-z0-9][a-z0-9._-]*$/');
-  for (const key of ['name', 'description'])
-    if (typeof pack[key] !== 'string' || !pack[key].trim()) fail(`${key} must be a nonempty string`);
-  if (typeof pack.matches !== 'function') fail('matches({ portal }) must be a function');
-  if (typeof pack.presets !== 'function' && !(pack.presets === undefined && dataProperty(pack, 'configurationPresets')))
-    fail('presets({ portal, metadata, options }) must be a function');
+function validatePackGenerators(pack, fail) {
   const generators = dataProperty(pack, 'generators')?.value;
-  if (generators !== undefined) {
-    if (!generators || typeof generators !== 'object' || Array.isArray(generators))
-      fail('generators must be an object of functions');
-    for (const [name, generator] of Object.entries(generators))
-      if (typeof generator !== 'function') fail(`generators.${name} must be a function`);
-  }
+  if (generators === undefined) return;
+  if (!generators || typeof generators !== 'object' || Array.isArray(generators))
+    fail('generators must be an object of functions');
+  for (const [name, generator] of Object.entries(generators))
+    if (typeof generator !== 'function') fail(`generators.${name} must be a function`);
+}
+
+function validatePackPersonas(pack, fail) {
   for (const key of ['personas', 'plugins']) {
     const property = dataProperty(pack, key);
-    if (property && property.value !== undefined && !Array.isArray(property.value)) fail(`${key} must be an array`);
+    if (property?.value !== undefined && !Array.isArray(property.value)) fail(`${key} must be an array`);
   }
   const catalogProperty = Object.getOwnPropertyDescriptor(pack, 'personaCatalog');
   if (catalogProperty && !('value' in catalogProperty)) fail('personaCatalog must be a data property');
   if (catalogProperty?.value !== undefined) validatePersonaCatalog(catalogProperty.value, `Data pack ${pack.id}`);
-  configurationPresetReport([pack]);
+}
+
+function validatePackDataFileExport(pack, fail) {
   const dataFiles = Object.getOwnPropertyDescriptor(pack, 'dataFiles');
   if (dataFiles && !('value' in dataFiles)) fail('dataFiles must be an explicit data property');
   validatePackDataFiles(dataFiles?.value, `Data pack ${pack.id}.dataFiles`);
-  // Extension points (lib/extensions.mjs): plugin expression operators and
-  // HTTP endpoints under /__sim/ served while the pack matches the portal.
-  const operators = dataProperty(pack, 'expressionOperators')?.value;
+}
+
+function validateNamedFunctionMap(pack, kind, fail) {
+  const entries = dataProperty(pack, kind)?.value;
   if (
-    operators !== undefined &&
-    (!operators ||
-      typeof operators !== 'object' ||
-      Array.isArray(operators) ||
-      Object.values(operators).some((value) => typeof value !== 'function'))
+    entries !== undefined &&
+    (!entries ||
+      typeof entries !== 'object' ||
+      Array.isArray(entries) ||
+      Object.entries(entries).some(([name, handler]) => !name.trim() || typeof handler !== 'function'))
   )
-    fail('expressionOperators must be an object of functions');
-  for (const kind of ['serverLogics', 'cloudFlows']) {
-    const entries = dataProperty(pack, kind)?.value;
-    if (
-      entries !== undefined &&
-      (!entries ||
-        typeof entries !== 'object' ||
-        Array.isArray(entries) ||
-        Object.entries(entries).some(([name, handler]) => !name.trim() || typeof handler !== 'function'))
-    )
-      fail(`${kind} must map exported names to functions`);
-  }
+    fail(`${kind} must map exported names to functions`);
+}
+
+function validatePackPluginSteps(pack, fail) {
   const pluginSteps = dataProperty(pack, 'pluginSteps')?.value;
   if (
     pluginSteps !== undefined &&
@@ -194,23 +180,42 @@ export function validatePack(pack, source = 'data pack') {
       ))
   )
     fail('pluginSteps must map exported step IDs to synchronous functions');
-  for (const kind of ['pluginRuntimes']) {
-    const entries = dataProperty(pack, kind)?.value;
-    if (
-      entries !== undefined &&
-      (!entries ||
-        typeof entries !== 'object' ||
-        Array.isArray(entries) ||
-        Object.entries(entries).some(
-          ([id, value]) =>
-            !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id.replace(/[{}]/g, '')) ||
-            !value ||
-            typeof value !== 'object' ||
-            Array.isArray(value),
-        ))
-    )
-      fail(`${kind} must map exact exported IDs to explicit trusted descriptors`);
-  }
+}
+
+function validatePackPluginRuntimes(pack, fail) {
+  const entries = dataProperty(pack, 'pluginRuntimes')?.value;
+  if (
+    entries !== undefined &&
+    (!entries ||
+      typeof entries !== 'object' ||
+      Array.isArray(entries) ||
+      Object.entries(entries).some(
+        ([id, value]) =>
+          !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id.replace(/[{}]/g, '')) ||
+          !value ||
+          typeof value !== 'object' ||
+          Array.isArray(value),
+      ))
+  )
+    fail('pluginRuntimes must map exact exported IDs to explicit trusted descriptors');
+}
+
+function validatePackExtensions(pack, fail) {
+  const operators = dataProperty(pack, 'expressionOperators')?.value;
+  if (
+    operators !== undefined &&
+    (!operators ||
+      typeof operators !== 'object' ||
+      Array.isArray(operators) ||
+      Object.values(operators).some((value) => typeof value !== 'function'))
+  )
+    fail('expressionOperators must be an object of functions');
+  for (const kind of ['serverLogics', 'cloudFlows']) validateNamedFunctionMap(pack, kind, fail);
+  validatePackPluginSteps(pack, fail);
+  validatePackPluginRuntimes(pack, fail);
+}
+
+function validatePackTemplates(pack, fail) {
   const templates = Object.getOwnPropertyDescriptor(pack, 'webApiErrorTemplates');
   if (templates && !('value' in templates)) fail('webApiErrorTemplates must be an explicit data property');
   try {
@@ -219,6 +224,50 @@ export function validatePack(pack, source = 'data pack') {
   } catch (error) {
     fail(error.message);
   }
+}
+
+function hydrateConfigurationPreset(value, entry, id, pack) {
+  experimentId(entry.configurationPreset);
+  if (value.configurationPreset !== undefined && value.configurationPreset !== entry.configurationPreset) {
+    const message = `Preset ${id} configurationPreset does not match its lazy descriptor`;
+    const diagnostic = {
+      code: 'PACK_CONFIGURATION_PRESET_LINK_INVALID',
+      severity: 'error',
+      pack: pack ?? null,
+      preset: id,
+      descriptorConfigurationPreset: entry.configurationPreset,
+      bodyConfigurationPreset: typeof value.configurationPreset === 'string' ? value.configurationPreset : null,
+      message,
+    };
+    throw Object.assign(new Error(message), {
+      status: 400,
+      code: diagnostic.code,
+      details: { configurationPresetDiagnostic: diagnostic },
+    });
+  }
+  return value.configurationPreset === undefined ? { ...value, configurationPreset: entry.configurationPreset } : value;
+}
+
+/** Validate a pack object without evaluating lazy personas/plugins getters. */
+export function validatePack(pack, source = 'data pack') {
+  const fail = (message) => {
+    throw new Error(`Data pack ${source}: ${message}`);
+  };
+  if (!pack || typeof pack !== 'object' || Array.isArray(pack)) fail('must default-export an object');
+  if (typeof pack.id !== 'string' || !packIdPattern.test(pack.id)) fail('id must match /^[a-z0-9][a-z0-9._-]*$/');
+  for (const key of ['name', 'description'])
+    if (typeof pack[key] !== 'string' || !pack[key].trim()) fail(`${key} must be a nonempty string`);
+  if (typeof pack.matches !== 'function') fail('matches({ portal }) must be a function');
+  if (typeof pack.presets !== 'function' && !(pack.presets === undefined && dataProperty(pack, 'configurationPresets')))
+    fail('presets({ portal, metadata, options }) must be a function');
+  validatePackGenerators(pack, fail);
+  validatePackPersonas(pack, fail);
+  configurationPresetReport([pack]);
+  validatePackDataFileExport(pack, fail);
+  // Extension points (lib/extensions.mjs): plugin expression operators and
+  // HTTP endpoints under /__sim/ served while the pack matches the portal.
+  validatePackExtensions(pack, fail);
+  validatePackTemplates(pack, fail);
   // Recognised exports (lib/pack-exports.mjs): invalid values throw, unknown keys are diagnostics.
   // The validated pack is a frozen snapshot of its own data exports, so a getter or Proxy cannot answer differently later.
   const validated = snapshotPacks.has(pack) ? pack : (packSnapshots.get(pack) ?? snapshotPackExports(pack));
@@ -377,13 +426,16 @@ export function presetDescriptor(library, id) {
  */
 export function defineLazyPreset(library, id, entry, { pack, finish } = {}) {
   if (!presetIdPattern.test(id) || reserved.has(id))
-    throw new Error(`Invalid preset id '${id}'${pack ? ` in data pack ${pack}` : ''}`);
+    throw new Error(`Invalid preset id '${id}'${pack ? ' in data pack ' + pack : ''}`);
   if (!entry || typeof entry !== 'object')
-    throw new Error(`Preset ${id}${pack ? ` in data pack ${pack}` : ''} must be an object`);
+    throw new Error(`Preset ${id}${pack ? ' in data pack ' + pack : ''} must be an object`);
   const legacyLoad = typeof entry.load === 'function';
   const factory = legacyLoad ? undefined : Object.getOwnPropertyDescriptor(entry, 'createOwned')?.value;
   const owned = typeof factory === 'function';
-  const load = legacyLoad ? entry.load : owned ? factory : () => entry;
+  let load;
+  if (legacyLoad) load = entry.load;
+  else if (owned) load = factory;
+  else load = () => entry;
   let body;
   let loaded = false;
   const build = (context) => {
@@ -394,33 +446,20 @@ export function defineLazyPreset(library, id, entry, { pack, finish } = {}) {
       Array.isArray(value) ||
       (owned && ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
     )
-      throw new Error(`Preset ${id}${pack ? ` in data pack ${pack}` : ''} did not load an object`);
+      throw new Error(`Preset ${id}${pack ? ' in data pack ' + pack : ''} did not load an object`);
     // A lazy descriptor's configuration link is also part of its hydrated preset.
     // Reject contradictory metadata rather than listing one scenario and applying another.
     if (entry.configurationPreset !== undefined) {
-      experimentId(entry.configurationPreset);
-      if (value.configurationPreset !== undefined && value.configurationPreset !== entry.configurationPreset) {
-        const message = `Preset ${id} configurationPreset does not match its lazy descriptor`;
-        const diagnostic = {
-          code: 'PACK_CONFIGURATION_PRESET_LINK_INVALID',
-          severity: 'error',
-          pack: pack ?? null,
-          preset: id,
-          descriptorConfigurationPreset: entry.configurationPreset,
-          bodyConfigurationPreset: typeof value.configurationPreset === 'string' ? value.configurationPreset : null,
-          message,
-        };
-        throw Object.assign(new Error(message), {
-          status: 400,
-          code: diagnostic.code,
-          details: { configurationPresetDiagnostic: diagnostic },
-        });
-      }
-      if (value.configurationPreset === undefined) value = { ...value, configurationPreset: entry.configurationPreset };
+      value = hydrateConfigurationPreset(value, entry, id, pack);
     }
     if (value.personaCatalog !== undefined) validatePersonaCatalog(value.personaCatalog, `Preset ${id}`);
     if (value.configurationPreset !== undefined) experimentId(value.configurationPreset);
-    return finishRecordSources(finish ? (owned ? finish(value, { owned: true }) : finish(value)) : value);
+    let finished = value;
+    if (finish) {
+      if (owned) finished = finish(value, { owned: true });
+      else finished = finish(value);
+    }
+    return finishRecordSources(finished);
   };
   const get = () => {
     if (!loaded) {

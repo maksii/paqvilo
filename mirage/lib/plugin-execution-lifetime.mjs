@@ -25,8 +25,8 @@ function expired() {
     { innerCode: '0x80040224' },
   );
 }
-const closedExecution = (frame, current) =>
-  frame.closed && !(frame !== current && frame.recordHook && frame.closeReason === 'completed');
+const closedExecution = (candidate, invocation) =>
+  candidate.closed && !(candidate !== invocation && candidate.recordHook && candidate.closeReason === 'completed');
 function assertFrameActive(frame) {
   for (let current = frame; current; current = current.parent) if (closedExecution(current, frame)) expired();
 }
@@ -50,12 +50,10 @@ function guardedScope(store, frame) {
     if (memo.has(value)) return memo.get(value);
     // A separate proxy target lets frozen runtime clocks/IDs expose guarded
     // methods without violating non-configurable property invariants.
-    const shadow =
-      typeof value === 'function'
-        ? (...args) => args
-        : Array.isArray(value)
-          ? []
-          : Object.create(Object.getPrototypeOf(value));
+    let shadow;
+    if (typeof value === 'function') shadow = (...args) => args;
+    else if (Array.isArray(value)) shadow = [];
+    else shadow = Object.create(Object.getPrototypeOf(value));
     const proxy = new Proxy(shadow, {
       apply(_target, receiver, args) {
         assertActive();

@@ -147,6 +147,31 @@ function formRecordTarget(portal, store, page) {
   return table ? pick(table, 'id') : null;
 }
 
+function targetsForPages(portal, store, pages) {
+  const targets = [];
+  for (const page of pages) {
+    targets.push({ page, url: page.url, derived: null });
+    const record = formRecordTarget(portal, store, page);
+    if (record)
+      targets.push({
+        page,
+        url: `${page.url}?${encodeURIComponent(record.parameter)}=${encodeURIComponent(record.id)}`,
+        derived: record,
+      });
+  }
+  return targets;
+}
+
+function resultCounts(results) {
+  const byStatus = {};
+  for (const result of results) byStatus[result.status] = (byStatus[result.status] ?? 0) + 1;
+  const codeCounts = {};
+  for (const result of results)
+    for (const diagnostic of [...result.liquidErrors, ...result.liquidNotices])
+      codeCounts[diagnostic.code] = (codeCounts[diagnostic.code] ?? 0) + 1;
+  return { byStatus, codeCounts };
+}
+
 const STATIC_INCLUDE = /\{%-?\s*include\s+(['"])([^'"]+)\1/g;
 const ID_PARAMETER = String.raw`(?:request\s*\.\s*params|params)\s*(?:\.\s*id\b|\[\s*['"]id['"]\s*\])`;
 const ENTITIES_BY_ID = new RegExp(
@@ -187,7 +212,7 @@ export function idParameterTable(sources) {
     const direct = ENTITIES_BY_ID.exec(source);
     if (direct) return direct[1] ?? direct[2];
     const fetch = FETCH_BY_ID.exec(source);
-    if (fetch && fetch[2].toLowerCase() === `${fetch[1].toLowerCase()}id`) return fetch[1];
+    if (fetch && fetch[2].toLowerCase() === `${fetch[1].toLowerCase()}id`) return fetch[1]; // NOSONAR: optional chaining would change the false/null result
   }
   return null;
 }
@@ -325,11 +350,12 @@ function personaRoleNames(portal, { allRoles = false } = {}) {
       .trim()
       .toLowerCase();
   const flagged = roles.filter((role) => truthy(portalField(role, 'authenticatedusersrole')));
-  const selected = allRoles
-    ? roles.filter((role) => !truthy(portalField(role, 'anonymoususersrole')) && named(role) !== 'anonymous users')
-    : flagged.length
-      ? flagged
-      : roles.filter((role) => named(role) === 'authenticated users');
+  let selected = flagged;
+  if (allRoles)
+    selected = roles.filter(
+      (role) => !truthy(portalField(role, 'anonymoususersrole')) && named(role) !== 'anonymous users',
+    );
+  else if (!flagged.length) selected = roles.filter((role) => named(role) === 'authenticated users');
   return [...new Set(selected.map((role) => String(role.name)))];
 }
 
@@ -381,7 +407,7 @@ async function sweepPersona(target, persona, options) {
     // Personas change identity only; a preset is applied when --preset (or the site) asks for it.
     const preset = target.preset ?? null;
     if (preset) await simulator.applyPreset(preset);
-    const session = await personaSession(simulator, persona);
+    const session = await personaSession(simulator, persona); // NOSONAR: await kept: the value may be a thenable and timing matters
     const requestHeaders = session.headers;
     const identity = session.identity;
     const personaNote = session.note;
@@ -392,17 +418,7 @@ async function sweepPersona(target, persona, options) {
           page.url && (!options.pathPrefix || page.url.toLowerCase().startsWith(options.pathPrefix.toLowerCase())),
       )
       .sort((a, b) => a.url.localeCompare(b.url));
-    const targets = [];
-    for (const page of pages) {
-      targets.push({ page, url: page.url, derived: null });
-      const record = formRecordTarget(portal, simulator.store, page);
-      if (record)
-        targets.push({
-          page,
-          url: `${page.url}?${encodeURIComponent(record.parameter)}=${encodeURIComponent(record.id)}`,
-          derived: record,
-        });
-    }
+    const targets = targetsForPages(portal, simulator.store, pages);
     const limited = Number.isInteger(options.limit) && options.limit > 0 ? targets.slice(0, options.limit) : targets;
     const results = [];
     for (const request of limited) {
@@ -423,7 +439,7 @@ async function sweepPersona(target, persona, options) {
       } catch (error) {
         failure = error.message;
       }
-      const pathname = new URL(request.url, 'http://local.invalid').pathname;
+      const pathname = new URL(request.url, 'http://local.invalid').pathname; // NOSONAR: reserved or loopback placeholder host, not a real transport
       const recorded = await (await fetch(`${simulator.url}/__sim/api/diagnostics`)).json();
       const diagnostics = (recorded.diagnostics ?? []).filter(
         (diagnostic) => diagnostic.path === pathname && diagnostic.time >= requestStarted,
@@ -441,12 +457,7 @@ async function sweepPersona(target, persona, options) {
         liquidNotices: classified.liquidNotices.map(compactDiagnostic),
       });
     }
-    const byStatus = {};
-    for (const result of results) byStatus[result.status] = (byStatus[result.status] ?? 0) + 1;
-    const codeCounts = {};
-    for (const result of results)
-      for (const diagnostic of [...result.liquidErrors, ...result.liquidNotices])
-        codeCounts[diagnostic.code] = (codeCounts[diagnostic.code] ?? 0) + 1;
+    const { byStatus, codeCounts } = resultCounts(results);
     return {
       persona,
       personaNote,
@@ -480,12 +491,11 @@ async function sweepPersona(target, persona, options) {
   }
 }
 
-const personasToRun = (options) =>
-  options.persona === 'both'
-    ? PERSONAS
-    : options.persona === 'all'
-      ? [...PERSONAS, COVERAGE_PERSONA]
-      : [options.persona ?? 'anonymous'];
+const personasToRun = (options) => {
+  if (options.persona === 'both') return PERSONAS;
+  if (options.persona === 'all') return [...PERSONAS, COVERAGE_PERSONA];
+  return [options.persona ?? 'anonymous'];
+};
 
 export async function renderSweep(options) {
   const target = await resolveTarget(options);
@@ -538,42 +548,49 @@ export function ciSummary(report, run) {
 
 function summarize(report) {
   const lines = [];
-  lines.push(`Render sweep: ${report.portal}${report.env ? `/${report.env}` : ''} (${report.sourceDir})`);
+  const envSuffix = report.env ? `/${report.env}` : '';
+  lines.push(`Render sweep: ${report.portal}${envSuffix} (${report.sourceDir})`);
   if (report.inventory)
     lines.push(
       `Inventory: ${report.inventory.sources.total} Liquid sources, unsupported ${report.inventory.unsupported.length}, unknown filters ${report.inventory.unknownFilters.join(', ') || 'none'}, missing includes ${report.inventory.missingIncludes.length}, authored syntax errors ${report.inventory.syntaxErrors.length}`,
     );
-  for (const run of report.runs) {
-    lines.push(`-- persona ${run.persona}${run.personaNote ? ` (${run.personaNote})` : ''}`);
-    lines.push(
-      `State: ${run.state.copied ? `copy of ${run.state.source}` : 'fresh'}${run.state.preset ? `, preset ${run.state.preset}` : ''}; identity ${run.identity?.authenticated ? `contact with roles ${run.identity.roles.join(', ') || 'from memberships'}` : 'anonymous'}`,
-    );
-    lines.push(`Pages: ${run.pages}, requests: ${run.requests}, ${(run.durationMs / 1000).toFixed(1)} s`);
-    lines.push(
-      `Status: ${Object.entries(run.byStatus)
-        .map(([status, count]) => `${status} x${count}`)
-        .join(', ')}`,
-    );
-    lines.push(
-      `Liquid diagnostics: ${
-        Object.entries(run.liquidDiagnosticCounts)
-          .map(([code, count]) => `${code} x${count}`)
-          .join(', ') || 'none'
-      }`,
-    );
-    lines.push(`Pages with Liquid errors: ${run.liquidErrorPages.length}`);
-    for (const url of run.liquidErrorPages.slice(0, 40)) {
-      const result = run.results.find((entry) => entry.url === url);
-      const messages = [...result.liquidErrors.map((diagnostic) => diagnostic.message), ...result.inlineErrors];
-      lines.push(`  ${url}: ${[...new Set(messages)].slice(0, 3).join(' | ')}`);
-    }
-    lines.push(`Non-document responses with local injection: ${run.injectedNonDocuments.length}`);
-    for (const entry of run.injectedNonDocuments) lines.push(`  ${entry.url}: ${entry.markers.join(', ')}`);
-    lines.push(`Failures (5xx or request errors): ${run.failures.length}`);
-    for (const entry of run.failures.slice(0, 40))
-      lines.push(`  ${entry.url}: ${entry.failure ?? `HTTP ${entry.status}`}`);
-  }
+  for (const run of report.runs) appendRunSummary(lines, run);
   return lines.join('\n');
+}
+
+function appendRunSummary(lines, run) {
+  const personaNote = run.personaNote ? ` (${run.personaNote})` : '';
+  lines.push(`-- persona ${run.persona}${personaNote}`);
+  const stateSource = run.state.copied ? `copy of ${run.state.source}` : 'fresh';
+  const presetText = run.state.preset ? `, preset ${run.state.preset}` : '';
+  const identityText = run.identity?.authenticated
+    ? `contact with roles ${run.identity.roles.join(', ') || 'from memberships'}`
+    : 'anonymous';
+  lines.push(
+    `State: ${stateSource}${presetText}; identity ${identityText}`,
+    `Pages: ${run.pages}, requests: ${run.requests}, ${(run.durationMs / 1000).toFixed(1)} s`,
+    `Status: ${Object.entries(run.byStatus)
+      .map(([status, count]) => `${status} x${count}`)
+      .join(', ')}`,
+    `Liquid diagnostics: ${
+      Object.entries(run.liquidDiagnosticCounts)
+        .map(([code, count]) => `${code} x${count}`)
+        .join(', ') || 'none'
+    }`,
+    `Pages with Liquid errors: ${run.liquidErrorPages.length}`,
+  );
+  for (const url of run.liquidErrorPages.slice(0, 40)) {
+    const result = run.results.find((entry) => entry.url === url);
+    const messages = [...result.liquidErrors.map((diagnostic) => diagnostic.message), ...result.inlineErrors];
+    lines.push(`  ${url}: ${[...new Set(messages)].slice(0, 3).join(' | ')}`);
+  }
+  lines.push(`Non-document responses with local injection: ${run.injectedNonDocuments.length}`);
+  for (const entry of run.injectedNonDocuments) lines.push(`  ${entry.url}: ${entry.markers.join(', ')}`);
+  lines.push(`Failures (5xx or request errors): ${run.failures.length}`);
+  for (const entry of run.failures.slice(0, 40)) {
+    const failureText = entry.failure ?? `HTTP ${entry.status}`;
+    lines.push(`  ${entry.url}: ${failureText}`);
+  }
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -602,7 +619,7 @@ async function main(argv = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  main().then(
+  /* NOSONAR: module-level promise chain must not block evaluation */ main().then(
     (code) => {
       process.exitCode = code;
     },

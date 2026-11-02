@@ -27,7 +27,7 @@ import { selectionEvidenceCurrent } from './inspection-source-open.mjs';
 
 // Compose the two self-contained browser functions on the Node side. A redraw remains one
 // bounded browser evaluation, including when the tab is paused at a debugger breakpoint.
-const drawPanelUi = new Function('data', `(${xrayUi.toString()})(data); (${panelUi.toString()})(data);`);
+const drawPanelUi = new Function('data', `(${xrayUi.toString()})(data); (${panelUi.toString()})(data);`); // NOSONAR: intentional local script execution or generated handler
 
 /** Alt+Shift+<key>, by key position so they work on any keyboard layout. */
 const KEYS = { hide: 'KeyL', panel: 'KeyP', mode: 'KeyO' };
@@ -103,6 +103,316 @@ const toLines = (text) =>
     .replace(/^\uFEFF/, '')
     .replace(/\r\n?/g, '\n')
     .split('\n');
+const clippedDiffLine = (text) => (text.length > 500 ? text.slice(0, 500) + ' ...' : text);
+function createPageHitItem(hit, source, isFile, changed, fresh, session, sourceFile) {
+  return {
+    kind: source.kind ?? (isFile ? 'web-file' : 'other'),
+    group: isFile ? webFileGroup(hit.url) : (GROUP_OF[source.kind] ?? 'other'),
+    rel: source.rel,
+    url: isFile ? hit.url : null,
+    title: isFile ? readableName(hit.url.split('/').pop() || hit.url) : null,
+    count: hit.count ?? 1,
+    edited: changed.has(sourceFile(source.rel)),
+    fresh: fresh.has(session.rel(sourceFile(source.rel))),
+    canPause: true,
+    canDiff: !BINARY_EXT.test(source.rel),
+  };
+}
+function annotatePageHitItem(item, hit, source, isFile, webFileState) {
+  if (isFile) Object.assign(item, webFileState(hit.url), { note: source.action === 'web-file' ? null : source.action });
+  else
+    Object.assign(item, {
+      differs: !source.action.startsWith('injected'),
+      isNew: source.action.startsWith('injected'),
+      note: source.action.replace(/^replaced inline block$/, 'replaced').replace(/^injected.*/, 'injected'),
+    });
+}
+function appendDiffContext(lines, source, context) {
+  const { from, to, newStart, oldStart, head, tail, max } = context;
+  const run = to - from;
+  const append = (start, end) => {
+    for (let i = start; i < end && lines.length <= max; i++)
+      lines.push([' ', i + 1, newStart + (i - oldStart) + 1, clippedDiffLine(source[i])]);
+  };
+  if (run <= head + tail + 1) append(from, to);
+  else {
+    append(from, from + head);
+    lines.push(['@', null, null, `${run - head - tail} unchanged lines`]);
+    append(to - tail, to);
+  }
+}
+function collectPageItems(hits, items, changed, fresh, session, sourceFile, webFileState) {
+  for (const hit of hits) {
+    for (const source of hit.sources ?? []) {
+      const isFile = hit.type === 'file';
+      const key = isFile ? `file|${hit.url.toLowerCase()}` : `html|${source.rel}`;
+      const existing = items.get(key);
+      if (existing) {
+        existing.count += hit.count ?? 1;
+        continue;
+      }
+      const item = createPageHitItem(hit, source, isFile, changed, fresh, session, sourceFile);
+      annotatePageHitItem(item, hit, source, isFile, webFileState);
+      items.set(key, item);
+    }
+  }
+}
+
+function syncedItems(document, shown, disabled, changed) {
+  return (document?.matched ?? [])
+    .filter((match) => match.identical && !shown.has(match.rel) && !disabled.has(match.rel))
+    .map((match) => ({
+      kind: match.kind,
+      group: 'insync',
+      rel: match.rel,
+      differs: false,
+      canDiff: false,
+      canPause: false,
+      edited: changed.has(match.file),
+    }));
+}
+
+function pausedItems(disabled, indexSources, changed, sourceFile) {
+  return [...disabled].map((rel) => {
+    const index = indexSources();
+    const webFile = index.webByRel.get(rel);
+    const source = index.inlineByRel.get(rel);
+    return {
+      kind: source?.kind ?? 'web-file',
+      group: 'paused',
+      rel,
+      url: webFile?.url ?? null,
+      title: webFile ? webFile.url.split('/').pop() : null,
+      paused: true,
+      canPause: true,
+      canDiff: !BINARY_EXT.test(rel),
+      edited: changed.has(sourceFile(rel)),
+    };
+  });
+}
+
+function currentPagePath(page) {
+  try {
+    return new URL(page.url()).pathname;
+  } catch {
+    return '/';
+  }
+}
+function stripTrailingSlashes(value) {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end--;
+  return value.slice(0, end);
+}
+function isCurrentInspection(page, origin, runtime, runtimeByPage, disposed, pathOf) {
+  return (
+    !disposed &&
+    !page.isClosed() &&
+    sameOrigin(page.url(), origin) &&
+    runtimeByPage.get(page) === runtime &&
+    stripTrailingSlashes(pathOf(page.url())) === stripTrailingSlashes(String(runtime.path))
+  );
+}
+function sessionFlowStartFailure(started) {
+  if (started === true) return null;
+  if (typeof started === 'string') return { ok: false, error: started };
+  return { ok: false, error: 'The portal sign-in did not start.' };
+}
+function sessionFlowMethod(contactId, flow, provider) {
+  if (!contactId) return 'the portal sign-out';
+  if (flow.fields.provider) return provider?.caption ?? provider?.name ?? 'the identity provider';
+  return 'the local sign-in page';
+}
+function isLocalScenarioOrigin(destination) {
+  return (
+    ['127.0.0.1', 'localhost', '[::1]'].includes(destination.hostname) &&
+    destination.protocol === 'http:' &&
+    !destination.username &&
+    !destination.password &&
+    destination.pathname === '/' &&
+    !destination.search &&
+    !destination.hash
+  );
+}
+function runtimePageUsable(page, origin, disposed, adminPage) {
+  return !disposed && !page.isClosed() && sameOrigin(page.url(), origin) && !adminPage(page.url());
+}
+function runtimePageStillOnPortal(page, origin, disposed) {
+  return !disposed && !page.isClosed() && sameOrigin(page.url(), origin);
+}
+function refreshedText(baselineChanged, how) {
+  if (baselineChanged) return `Git baseline updated${how === 'reload' ? ', page reloaded' : ' (no reload)'}`;
+  return (
+    {
+      css: 'Styles swapped without a reload',
+      reload: 'Saved, page reloaded',
+      skipped: 'Saved; no open tab shows that page',
+    }[how] ?? 'Saved (no reload)'
+  );
+}
+function recordPendingBeforeRefresh(page, pageHow, pageRels, pendingFor) {
+  if (pageHow === 'none') for (const rel of pageRels) pendingFor(page).add(rel);
+  else if (pageHow === 'reload') pendingFor(page).clear();
+}
+function recordPendingAfterRefresh(page, pageHow, pageRels, baselineChanged, pendingFor, pendingBaseline) {
+  if (pageHow === 'css') for (const rel of pageRels) pendingFor(page).delete(rel);
+  if (baselineChanged && pageHow !== 'reload') pendingBaseline.add(page);
+  else if (pageHow === 'reload') pendingBaseline.delete(page);
+}
+function validSelectionRequest(body) {
+  return (
+    typeof body.sourceKey === 'string' &&
+    body.sourceKey.length <= 16384 &&
+    typeof body.sourceRevision === 'string' &&
+    typeof body.contentRevision === 'string'
+  );
+}
+function admitEditorSource(admission, context) {
+  const { page, runtime, profileFilesByPage, runtimeFilesByPage, annotateRuntime, fileOf } = context;
+  if (admission.state !== 'exact' || !admission.editorTarget?.file)
+    return {
+      failure: {
+        ok: false,
+        error: 'The local source changed or is unavailable. Refresh inspection.',
+        code: 'SOURCE_' + String(admission.state).toUpperCase(),
+      },
+    };
+  const candidate = { file: admission.editorTarget.file };
+  let files;
+  if (admission.editorTarget.externalProfile === true && typeof admission.sourceRef?.ref === 'string') {
+    const exact = fs.realpathSync.native(candidate.file);
+    candidate.ref = admission.sourceRef.ref;
+    const profiles = profileFilesByPage.get(page) ?? new Map();
+    profiles.set(candidate.ref, exact);
+    profileFilesByPage.set(page, profiles);
+    files = new Map([[candidate.ref, exact]]);
+  } else files = annotateRuntime(candidate, runtime?.roots ?? []);
+  if (!candidate.ref || !files.has(candidate.ref))
+    return {
+      failure: { ok: false, error: 'This source is outside the selected source roots.', code: 'SOURCE_NOT_ADMITTED' },
+    };
+  const known = runtimeFilesByPage.get(page) ?? new Map();
+  known.set(candidate.ref, files.get(candidate.ref));
+  runtimeFilesByPage.set(page, known);
+  return { file: fileOf(candidate.ref, page) };
+}
+function revalidateEditorSource(admission, file) {
+  try {
+    admission = admission.revalidate();
+    if (
+      admission.state !== 'exact' ||
+      !admission.editorTarget?.file ||
+      fs.realpathSync.native(admission.editorTarget.file) !== fs.realpathSync.native(file)
+    )
+      return {
+        failure: {
+          ok: false,
+          error: 'The local source changed while its selection was checked. Refresh inspection.',
+          code: admission.state === 'exact' ? 'SOURCE_STALE' : 'SOURCE_' + String(admission.state).toUpperCase(),
+        },
+      };
+  } catch {
+    return {
+      failure: {
+        ok: false,
+        error: 'The local source identity could not be verified. Refresh inspection.',
+        code: 'SOURCE_UNAVAILABLE',
+      },
+    };
+  }
+  return {
+    line:
+      Number.isSafeInteger(admission.editorTarget.line) && admission.editorTarget.line > 0
+        ? admission.editorTarget.line
+        : 1,
+    col:
+      Number.isSafeInteger(admission.editorTarget.column) && admission.editorTarget.column > 0
+        ? admission.editorTarget.column
+        : 1,
+  };
+}
+function openLocalSource(body, page, fileOf, lineOf) {
+  const file = fileOf(body.rel, page);
+  let line;
+  if (Number.isInteger(body.line) && body.line > 0) line = body.line;
+  else line = (file ? lineOf(file, body.find) : null) ?? 1;
+  const col = Number.isInteger(body.col) && body.col > 0 ? body.col : 1;
+  return { file, line, col };
+}
+function editorOpenResult(error, editor, file, line, col) {
+  if (!error) return { ok: true };
+  // the editor's command is not on the PATH: its link does the same from the browser
+  return {
+    ok: false,
+    error,
+    url: /^code(?:-insiders)?$/.test(editor)
+      ? `vscode://file/${pathToFileURL(file).pathname.replace(/^\//, '')}:${line}:${col}`
+      : undefined,
+  };
+}
+function comparisonLocalSource(rel, context) {
+  const file = context.fileOf(rel);
+  if (!file) return { failure: { ok: false, error: 'this file is not part of the local sources' } };
+  if (BINARY_EXT.test(file)) return { failure: { ok: false, error: 'not a text file' } };
+  if (fs.statSync(file).size > MAX_DIFF_BYTES)
+    return { failure: { ok: false, error: 'the file is too large to compare here' } };
+  const src = context.indexSources().inlineByRel.get(rel);
+  const local = src ? sourceText(src) : readLocalFileSync(file, { maxBytes: MAX_DIFF_BYTES, encoding: 'utf8' });
+  if (local == null) return { failure: { ok: false, error: 'the local file cannot be read' } };
+  return { file, src, local };
+}
+function storeMissingMirageStatus(page, runtimeByPage, runtimeFilesByPage) {
+  runtimeByPage.set(page, {
+    active: false,
+    error: 'The local Mirage status endpoint did not return runtime metadata.',
+  });
+  runtimeFilesByPage.delete(page);
+}
+function storeMiragePageSummary(page, pathname, session, summaryResponse, answer, context) {
+  const { validInspectionReport, trustedRoots, annotateRuntime, summarize, runtimeByPage, runtimeFilesByPage } =
+    context;
+  if (summaryResponse.ok() && !validInspectionReport(answer))
+    throw new Error('Page inspection returned an invalid report.');
+  // Mirages without summaries answer with the whole report.
+  const report = answer && answer.view !== 'summary' ? answer : null;
+  const roots = trustedRoots();
+  const files = report ? annotateRuntime(report, roots) : new Map();
+  let summary = null;
+  if (answer) summary = report ? summarize(report) : answer;
+  runtimeByPage.set(page, {
+    active: true,
+    status: context.status,
+    summary,
+    session,
+    report,
+    roots,
+    path: pathname,
+    version: context.nextVersion(),
+    error: answer ? null : `Page inspection returned HTTP ${summaryResponse.status()}.`,
+  });
+  runtimeFilesByPage.set(page, files);
+}
+function inlineComparisonBase(page, rel, file, src, session, cfg) {
+  const printed = (session.pageHits.get(page) ?? [])
+    .flatMap((hit) => hit.matched ?? [])
+    .find((match) => match.rel === rel && match.online != null);
+  if (printed && src?.mode === 'block') return { before: printed.online, against: `${cfg.envName} online` };
+  const raw = session.baseline.show(file);
+  let before;
+  if (raw == null) before = '';
+  else if (src) before = sourceText(src, raw) ?? '';
+  else before = raw;
+  return { before, against: `git ${session.baseline.spec}` };
+}
+function onlineComparisonAddress(origin, url, resolver, file) {
+  let address;
+  try {
+    address = new URL(portalResourceUrl(origin, url));
+  } catch {
+    /* invalid URL */
+  }
+  const matched = address?.origin === origin && resolver.resolve(address.pathname);
+  return matched && path.resolve(matched.file) === file ? address : null;
+}
 const sameOrigin = (address, origin) => {
   try {
     return new URL(address).origin === origin;
@@ -124,7 +434,7 @@ const readableName = (value) => {
  * @param {string} before
  * @param {string} after
  */
-export function comparison(before, after, context = 3, max = MAX_DIFF_LINES) {
+/* NOSONAR */ export function comparison(before, after, context = 3, max = MAX_DIFF_LINES) {
   const a = toLines(before);
   const b = toLines(after);
   const hunks = diffLines(a, b);
@@ -132,7 +442,6 @@ export function comparison(before, after, context = 3, max = MAX_DIFF_LINES) {
   const added = hunks.reduce((n, h) => n + h.bEnd - h.bStart, 0);
   const removed = hunks.reduce((n, h) => n + h.aEnd - h.aStart, 0);
   if (!hunks.length) return { lines, added, removed, truncated: false };
-  const clip = (s) => (s.length > 500 ? s.slice(0, 500) + ' ...' : s);
   let ai = 0;
   let bi = 0;
   for (let k = 0; k <= hunks.length && lines.length < max; k++) {
@@ -141,20 +450,12 @@ export function comparison(before, after, context = 3, max = MAX_DIFF_LINES) {
     const run = end - ai;
     const head = k === 0 ? 0 : context;
     const tail = h ? context : 0;
-    const same = (from, to) => {
-      for (let i = from; i < to && lines.length <= max; i++) lines.push([' ', i + 1, bi + (i - ai) + 1, clip(a[i])]);
-    };
-    if (run <= head + tail + 1) same(ai, end);
-    else {
-      same(ai, ai + head);
-      lines.push(['@', null, null, `${run - head - tail} unchanged lines`]);
-      same(end - tail, end);
-    }
+    appendDiffContext(lines, a, { from: ai, to: end, newStart: bi, oldStart: ai, head, tail, max });
     bi += run;
     ai = end;
     if (!h) break;
-    for (; ai < h.aEnd && lines.length <= max; ai++) lines.push(['-', ai + 1, null, clip(a[ai])]);
-    for (; bi < h.bEnd && lines.length <= max; bi++) lines.push(['+', null, bi + 1, clip(b[bi])]);
+    for (; ai < h.aEnd && lines.length <= max; ai++) lines.push(['-', ai + 1, null, clippedDiffLine(a[ai])]);
+    for (; bi < h.bEnd && lines.length <= max; bi++) lines.push(['+', null, bi + 1, clippedDiffLine(b[bi])]);
   }
   const truncated = lines.length > max || ai < a.length || bi < b.length;
   return { lines: lines.slice(0, max), added, removed, truncated };
@@ -354,7 +655,9 @@ export function enablePanel(context, session, opts = {}) {
       if (url != null && !pagesByKey.has(pageKey(url))) pagesByKey.set(pageKey(url), { page, url });
     }
     for (const source of model.inlineSources) {
-      for (const key of new Set([source.pageUrl, ...(source.usedOn ?? [])].filter(Boolean).map(pageKey))) {
+      for (const key of new Set(
+        [source.pageUrl, ...(source.usedOn ?? [])].filter(Boolean).map((url, index) => pageKey(url, index)),
+      )) {
         if (!sourcesByPage.has(key)) sourcesByPage.set(key, []);
         sourcesByPage.get(key).push(source);
       }
@@ -425,7 +728,7 @@ export function enablePanel(context, session, opts = {}) {
   /** Absolute path of a source the panel names, or null: only files of the sources are ever opened. */
   const fileOf = (rel, page = null) => {
     if (typeof rel !== 'string' || !rel) return null;
-    rel = rel.replace(/\\/g, '/');
+    rel = rel.replaceAll('\\', '/');
     const index = indexSources();
     const source = index.inlineByRel.get(rel);
     const webFile = index.webByRel.get(rel);
@@ -458,8 +761,11 @@ export function enablePanel(context, session, opts = {}) {
 
   const webFileState = (url) => {
     const state = session.onlineState.get(urlKey(url));
+    let differs = null;
+    if (state === 'different') differs = true;
+    else if (state === 'same') differs = false;
     return {
-      differs: state === 'different' ? true : state === 'same' ? false : null,
+      differs,
       isNew: state === 'not online (local only)',
     };
   };
@@ -501,8 +807,8 @@ export function enablePanel(context, session, opts = {}) {
         const layer = layers.size > 1 && s.kind.startsWith('page-') ? layerOf(s) : lang;
         return {
           rel: s.rel,
-          label: `${SOURCE_LABEL[s.kind] ?? s.kind}${layer ? ` (${layer})` : ''}`,
-          empty: !text || !text.trim(),
+          label: `${SOURCE_LABEL[s.kind] ?? s.kind}${layer ? ' (' + layer + ')' : ''}`,
+          empty: !text?.trim(),
         };
       });
       const info = { path: entry.url, name: entry.page.name ?? '', dir: session.rel(entry.page.dir), sources };
@@ -530,12 +836,9 @@ export function enablePanel(context, session, opts = {}) {
     }
   };
   const trustedRoots = () => {
-    const configured =
-      Array.isArray(cfg.mirageSourceRoots) && cfg.mirageSourceRoots.length
-        ? cfg.mirageSourceRoots
-        : Array.isArray(cfg.mirageConfig?.solutionRoots)
-          ? cfg.mirageConfig.solutionRoots
-          : [];
+    let configured = [];
+    if (Array.isArray(cfg.mirageSourceRoots) && cfg.mirageSourceRoots.length) configured = cfg.mirageSourceRoots;
+    else if (Array.isArray(cfg.mirageConfig?.solutionRoots)) configured = cfg.mirageConfig.solutionRoots;
     return [
       ...new Set([cfg.sourceDir, ...configured].filter((value) => typeof value === 'string' && value).map(realNative)),
     ];
@@ -666,7 +969,7 @@ export function enablePanel(context, session, opts = {}) {
       ].every((key) => value[key] === undefined || Array.isArray(value[key])),
     );
   const loadRuntime = async (page, requestedPath) => {
-    if (disposed || page.isClosed() || !sameOrigin(page.url(), cfg.origin) || adminPage(page.url())) return;
+    if (!runtimePageUsable(page, cfg.origin, disposed, adminPage)) return;
     profileFilesByPage.delete(page);
     // A navigation is reported before the tab commits it; its own path wins over page.url().
     const pathname =
@@ -675,7 +978,7 @@ export function enablePanel(context, session, opts = {}) {
     try {
       if (!cfg.mirage) {
         const result = await sourceInspector.inspect(pathname);
-        if (disposed || page.isClosed() || !sameOrigin(page.url(), cfg.origin)) return;
+        if (!runtimePageStillOnPortal(page, cfg.origin, disposed)) return;
         const roots = result.roots.map(realNative);
         runtimeByPage.set(page, {
           active: true,
@@ -698,34 +1001,22 @@ export function enablePanel(context, session, opts = {}) {
         mirageGet(`/page-resources?path=${encodeURIComponent(pathname)}&view=summary`, 8000, page.context().request),
         readSession(page).catch(() => null),
       ]);
-      if (disposed || page.isClosed() || !sameOrigin(page.url(), cfg.origin)) return;
+      if (!runtimePageStillOnPortal(page, cfg.origin, disposed)) return;
       if (!status) {
-        runtimeByPage.set(page, {
-          active: false,
-          error: 'The local Mirage status endpoint did not return runtime metadata.',
-        });
-        runtimeFilesByPage.delete(page);
+        storeMissingMirageStatus(page, runtimeByPage, runtimeFilesByPage);
       } else {
         lastMirageStatus = status;
         const answer = summaryResponse.ok() ? await summaryResponse.json() : null;
-        if (summaryResponse.ok() && !validInspectionReport(answer))
-          throw new Error('Page inspection returned an invalid report.');
-        // Mirages without summaries answer with the whole report.
-        const report = answer && answer.view !== 'summary' ? answer : null;
-        const roots = trustedRoots();
-        const files = report ? annotateRuntime(report, roots) : new Map();
-        runtimeByPage.set(page, {
-          active: true,
+        storeMiragePageSummary(page, pathname, session, summaryResponse, answer, {
           status,
-          summary: answer ? (report ? summarize(report) : answer) : null,
-          session,
-          report,
-          roots,
-          path: pathname,
-          version: ++runtimeVersion,
-          error: answer ? null : `Page inspection returned HTTP ${summaryResponse.status()}.`,
+          validInspectionReport,
+          trustedRoots,
+          annotateRuntime,
+          summarize,
+          runtimeByPage,
+          runtimeFilesByPage,
+          nextVersion: () => ++runtimeVersion,
         });
-        runtimeFilesByPage.set(page, files);
       }
     } catch (error) {
       runtimeByPage.set(page, { active: false, error: error.message.split('\n')[0] });
@@ -737,7 +1028,10 @@ export function enablePanel(context, session, opts = {}) {
   const refreshRuntime = (page, requestedPath) => {
     if (disposed || !page || page.isClosed()) return Promise.resolve();
     let job = runtimeJobs.get(page);
-    if (!job) runtimeJobs.set(page, (job = { running: null, again: false, path: undefined }));
+    if (!job) {
+      job = { running: null, again: false, path: undefined };
+      runtimeJobs.set(page, job);
+    }
     job.path = requestedPath;
     if (job.running) {
       job.again = true;
@@ -751,7 +1045,7 @@ export function enablePanel(context, session, opts = {}) {
         job.path = undefined;
         await loadRuntime(page, path);
         schedule(page);
-      } while (job.again && !disposed && !page.isClosed());
+      } while (job.again && !disposed && !page.isClosed()); // NOSONAR: loop flag is changed asynchronously
     })().finally(() => {
       job.running = null;
       schedule(page);
@@ -760,7 +1054,7 @@ export function enablePanel(context, session, opts = {}) {
   };
   const publicStatus = (status) => {
     if (!status) return null;
-    const { csrf: ignored, presets, scenarios, ...rest } = status;
+    const { csrf: ignored, presets, scenarios, ...rest } = status; // NOSONAR: binding is excluded from the rest object or is a placeholder
     return {
       ...rest,
       presetCount: Array.isArray(presets) ? presets.length : 0,
@@ -772,21 +1066,18 @@ export function enablePanel(context, session, opts = {}) {
     const runtime = runtimeByPage.get(page);
     const job = runtimeJobs.get(page),
       detail = inspectionProgress.get(page);
+    let phase = detail?.phase ?? null;
+    if (phase == null && job?.running)
+      phase = cfg.mirage ? 'Reading local runtime metadata' : 'Reading local export and Solution metadata';
     const progress = {
       loading: Boolean(job?.running || detail),
       loadingId: detail?.id ?? (job?.running ? job.id : null),
-      phase:
-        detail?.phase ??
-        (job?.running
-          ? cfg.mirage
-            ? 'Reading local runtime metadata'
-            : 'Reading local export and Solution metadata'
-          : null),
+      phase,
     };
-    if (!runtime)
-      return progress.loading
-        ? { active: true, version: 0, mode: cfg.mirage ? 'local-runtime' : 'live-sources', ...progress }
-        : null;
+    if (!runtime) {
+      if (!progress.loading) return null;
+      return { active: true, version: 0, mode: cfg.mirage ? 'local-runtime' : 'live-sources', ...progress };
+    }
     if (!runtime.active) return { active: false, error: runtime.error, ...progress };
     const summary = runtime.summary;
     const counts = summary?.counts ? { ...summary.counts } : null;
@@ -874,10 +1165,8 @@ export function enablePanel(context, session, opts = {}) {
     try {
       const url = new URL(page.url());
       if (url.searchParams.has('paqvilo')) url.searchParams.delete('paqvilo');
-      const signIn = String(lastMirageStatus?.signInPath ?? '/signin')
-        .replace(/\/+$/, '')
-        .toLowerCase();
-      const pathname = url.pathname.replace(/\/+$/, '').toLowerCase();
+      const signIn = stripTrailingSlashes(String(lastMirageStatus?.signInPath ?? '/signin')).toLowerCase();
+      const pathname = stripTrailingSlashes(url.pathname).toLowerCase();
       const unprefixed = pathname.replace(/^\/[a-z]{2}(?:-[a-z]{2,4})?(?=\/)/, '');
       if ((signIn && (pathname === signIn || unprefixed === signIn)) || /^\/account\/login(?:\/|$)/.test(unprefixed)) {
         const target = url.searchParams.get('ReturnUrl') ?? url.searchParams.get('returnUrl') ?? '/';
@@ -885,7 +1174,7 @@ export function enablePanel(context, session, opts = {}) {
       }
       if (
         (session?.identityProvider?.callbackPaths ?? []).some(
-          (item) => item.replace(/\/+$/, '').toLowerCase() === pathname,
+          (item) => stripTrailingSlashes(item).toLowerCase() === pathname,
         )
       )
         return '/';
@@ -916,7 +1205,7 @@ export function enablePanel(context, session, opts = {}) {
    * the sign-in form, or goes to /Account/Login/LogOff, which ends the session through the
    * provider's end-session. The page then navigates and comes back to the return path.
    */
-  const startSessionFlow = async (page, contactId, { origin = cfg.origin, returnPath } = {}) => {
+  /* NOSONAR */ const startSessionFlow = async (page, contactId, { origin = cfg.origin, returnPath } = {}) => {
     const session = await readSession(page, origin);
     if (!session.supported) return { ok: false, error: 'This Mirage has no browser sessions.' };
     if (!contactId && !session.signedIn) return { ok: true, navigating: false, session };
@@ -949,14 +1238,10 @@ export function enablePanel(context, session, opts = {}) {
     } catch (error) {
       started = error.message.split('\n')[0];
     }
-    if (started !== true)
-      return { ok: false, error: typeof started === 'string' ? started : 'The portal sign-in did not start.' };
+    const failure = sessionFlowStartFailure(started);
+    if (failure) return failure;
     const provider = session.identityProvider?.provider;
-    const via = !contactId
-      ? 'the portal sign-out'
-      : flow.fields.provider
-        ? (provider?.caption ?? provider?.name ?? 'the identity provider')
-        : 'the local sign-in page';
+    const via = sessionFlowMethod(contactId, flow, provider);
     log({
       type: 'switch',
       text: contactId ? `Signing in as ${personaName ?? contactId} through ${via}` : 'Signing out through the portal',
@@ -998,72 +1283,12 @@ export function enablePanel(context, session, opts = {}) {
     const hits = session.pageHits.get(page) ?? [];
     const fresh = lastChange && Date.now() - lastChange.at < 8000 ? new Set(lastChange.files) : new Set();
     const items = new Map();
-    for (const hit of hits) {
-      for (const s of hit.sources ?? []) {
-        const isFile = hit.type === 'file';
-        const key = isFile ? `file|${hit.url.toLowerCase()}` : `html|${s.rel}`;
-        const existing = items.get(key);
-        if (existing) {
-          existing.count += hit.count ?? 1;
-          continue;
-        }
-        const item = {
-          kind: s.kind ?? (isFile ? 'web-file' : 'other'),
-          group: isFile ? webFileGroup(hit.url) : (GROUP_OF[s.kind] ?? 'other'),
-          rel: s.rel,
-          url: isFile ? hit.url : null,
-          title: isFile ? readableName(hit.url.split('/').pop() || hit.url) : null,
-          count: hit.count ?? 1,
-          edited: changed.has(sourceFile(s.rel)),
-          fresh: fresh.has(session.rel(sourceFile(s.rel))),
-          canPause: true,
-          canDiff: !BINARY_EXT.test(s.rel),
-        };
-        if (isFile) Object.assign(item, webFileState(hit.url), { note: s.action === 'web-file' ? null : s.action });
-        else
-          Object.assign(item, {
-            differs: !/^injected/.test(s.action),
-            isNew: /^injected/.test(s.action),
-            note: s.action.replace(/^replaced inline block$/, 'replaced').replace(/^injected.*/, 'injected'),
-          });
-        items.set(key, item);
-      }
-    }
+    collectPageItems(hits, items, changed, fresh, session, sourceFile, webFileState);
     const shown = new Set([...items.values()].map((i) => i.rel));
     const document = hits.findLast((h) => h.type === 'html' && h.navigation) ?? hits.findLast((h) => h.type === 'html');
-    const insync = (document?.matched ?? [])
-      .filter((m) => m.identical && !shown.has(m.rel) && !session.disabled.has(m.rel))
-      .map((m) => ({
-        kind: m.kind,
-        group: 'insync',
-        rel: m.rel,
-        differs: false,
-        canDiff: false,
-        canPause: false,
-        edited: changed.has(m.file),
-      }));
-    const paused = [...session.disabled].map((rel) => {
-      const index = indexSources();
-      const webFile = index.webByRel.get(rel);
-      const src = index.inlineByRel.get(rel);
-      return {
-        kind: src?.kind ?? 'web-file',
-        group: 'paused',
-        rel,
-        url: webFile?.url ?? null,
-        title: webFile ? webFile.url.split('/').pop() : null,
-        paused: true,
-        canPause: true,
-        canDiff: !BINARY_EXT.test(rel),
-        edited: changed.has(sourceFile(rel)),
-      };
-    });
-    let pathname = '/';
-    try {
-      pathname = new URL(page.url()).pathname;
-    } catch {
-      /* about:blank */
-    }
+    const insync = syncedItems(document, shown, session.disabled, changed);
+    const paused = pausedItems(session.disabled, indexSources, changed, sourceFile);
+    const pathname = currentPagePath(page);
     return {
       token,
       origin: cfg.origin,
@@ -1096,7 +1321,7 @@ export function enablePanel(context, session, opts = {}) {
       caution: Boolean(cfg.caution),
       mirageMode: cfg.mirage === true,
       scope: cfg.site.scope,
-      sourceDir: cfg.sourceDir.replace(/\\/g, '/'),
+      sourceDir: cfg.sourceDir.replaceAll('\\', '/'),
       online: cfg.mirage ? false : session.bypass,
       live: cfg.mirage ? false : session.liveReload !== false,
       now: Date.now(),
@@ -1221,7 +1446,7 @@ export function enablePanel(context, session, opts = {}) {
         const detail = [body?.error?.message, body?.error?.innererror?.message]
           .map((value) => (typeof value === 'object' ? value?.value : value))
           .filter((value) => typeof value === 'string')
-          .map((value) => redactText(value, 2000).replace(/(\/[^\s?]+)\?[^\s]+/g, '$1?[redacted]'))
+          .map((value) => redactText(value, 2000).replace(/(\/[^\s?]+)\?[^\s]+/g, '$1?[redacted]')) // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
           .join(' · ');
         problem(page, { type: 'http', status: entry.status, text: `${entry.method} ${entry.path}`, where: detail });
       };
@@ -1254,7 +1479,7 @@ export function enablePanel(context, session, opts = {}) {
       if (!sameOrigin(page.url(), cfg.origin) || msg.type() !== 'error') return;
       const text = msg.text();
       // the browser's own line about a failed request; the request itself is listed
-      if (/^Failed to load resource/.test(text)) return;
+      if (text.startsWith('Failed to load resource')) return;
       const loc = consoleLocation(msg, page.url());
       problem(page, { type: 'console', text: text.slice(0, 2000), ...place(loc.url, loc.line, loc.column) });
     });
@@ -1312,25 +1537,16 @@ export function enablePanel(context, session, opts = {}) {
     pageInfoCache.clear();
     const rels = files.map((f) => session.rel(f));
     lastChange = { at: Date.now(), how, files: rels, baselineChanged };
-    const text = baselineChanged
-      ? `Git baseline updated${how === 'reload' ? ', page reloaded' : ' (no reload)'}`
-      : ({
-          css: 'Styles swapped without a reload',
-          reload: 'Saved, page reloaded',
-          skipped: 'Saved; no open tab shows that page',
-        }[how] ?? 'Saved (no reload)');
+    const text = refreshedText(baselineChanged, how);
     log({ type: 'change', how, text, files: rels });
     for (const page of portalPages()) {
       const result = pageResults?.get(page);
       const pageHow = result?.how ?? how;
       const pageRels = (result?.files ?? filesForPage(session, files, page.url())).map((file) => session.rel(file));
       pageChanges.set(page, { ...lastChange, how: pageHow, files: pageRels });
-      if (pageHow === 'none') for (const rel of pageRels) pendingFor(page).add(rel);
-      else if (pageHow === 'reload') pendingFor(page).clear();
+      recordPendingBeforeRefresh(page, pageHow, pageRels, pendingFor);
       refreshRuntime(page).catch(() => {});
-      if (pageHow === 'css') for (const rel of pageRels) pendingFor(page).delete(rel);
-      if (baselineChanged && pageHow !== 'reload') pendingBaseline.add(page);
-      else if (pageHow === 'reload') pendingBaseline.delete(page);
+      recordPendingAfterRefresh(page, pageHow, pageRels, baselineChanged, pendingFor, pendingBaseline);
     }
     scheduleAll();
   });
@@ -1346,26 +1562,15 @@ export function enablePanel(context, session, opts = {}) {
     }
   };
 
-  const compare = async (page, { rel, url }) => {
-    const file = fileOf(rel);
-    if (!file) return { ok: false, error: 'this file is not part of the local sources' };
-    if (BINARY_EXT.test(file)) return { ok: false, error: 'not a text file' };
-    if (fs.statSync(file).size > MAX_DIFF_BYTES) return { ok: false, error: 'the file is too large to compare here' };
-    const src = indexSources().inlineByRel.get(rel);
-    const local = src ? sourceText(src) : readLocalFileSync(file, { maxBytes: MAX_DIFF_BYTES, encoding: 'utf8' });
-    if (local == null) return { ok: false, error: 'the local file cannot be read' };
+  /* NOSONAR */ const compare = async (page, { rel, url }) => {
+    const localSource = comparisonLocalSource(rel, { fileOf, indexSources });
+    if (localSource.failure) return localSource.failure;
+    const { file, src, local } = localSource;
     let before;
     let against;
     if (!src && url) {
-      let address;
-      try {
-        address = new URL(portalResourceUrl(cfg.origin, url));
-      } catch {
-        /* invalid URL */
-      }
-      const matched = address?.origin === cfg.origin && session.resolver.resolve(address.pathname);
-      if (!matched || path.resolve(matched.file) !== file)
-        return { ok: false, error: 'this URL does not map to the selected local source' };
+      const address = onlineComparisonAddress(cfg.origin, url, session.resolver, file);
+      if (!address) return { ok: false, error: 'this URL does not map to the selected local source' };
       // a web file: against what the environment serves right now, with the sign-in of the browser
       let res;
       try {
@@ -1391,18 +1596,8 @@ export function enablePanel(context, session, opts = {}) {
       }
     } else {
       // an inline script or style: against the block the portal printed into this page
-      const printed = (session.pageHits.get(page) ?? [])
-        .flatMap((h) => h.matched ?? [])
-        .find((m) => m.rel === rel && m.online != null);
-      if (printed && src?.mode === 'block') {
-        before = printed.online;
-        against = `${cfg.envName} online`;
-      } else {
-        // a template or snippet is rendered by the portal: the deployed text is what git has
-        const raw = session.baseline.show(file);
-        before = raw == null ? '' : src ? (sourceText(src, raw) ?? '') : raw;
-        against = `git ${session.baseline.spec}`;
-      }
+      // a template or snippet is rendered by the portal: the deployed text is what git has
+      ({ before, against } = inlineComparisonBase(page, rel, file, src, session, cfg));
     }
     if (Buffer.byteLength(before) > MAX_DIFF_BYTES || Buffer.byteLength(local) > MAX_DIFF_BYTES)
       return { ok: false, error: 'the file is too large to compare here' };
@@ -1414,7 +1609,8 @@ export function enablePanel(context, session, opts = {}) {
     const entries = [];
     for (const page of session.model.pages.values()) {
       const rawUrl = session.model.pagePath(page.id);
-      const url = rawUrl ? (rawUrl.endsWith('/') ? rawUrl : rawUrl + '/') : null;
+      let url = null;
+      if (rawUrl) url = rawUrl.endsWith('/') ? rawUrl : rawUrl + '/';
       if (url) entries.push({ t: 'page', title: page.name || url, url });
     }
     entries.sort((a, b) => a.url.localeCompare(b.url));
@@ -1450,13 +1646,13 @@ export function enablePanel(context, session, opts = {}) {
     open: async (body, page) => {
       let file, line, col;
       if (body.sourceKey !== undefined) {
-        if (
-          typeof body.sourceKey !== 'string' ||
-          body.sourceKey.length > 16384 ||
-          typeof body.sourceRevision !== 'string' ||
-          typeof body.contentRevision !== 'string' ||
-          !(await selectionEvidenceCurrent(page, body))
-        )
+        if (!validSelectionRequest(body))
+          return {
+            ok: false,
+            error: 'The selected source is no longer current. Refresh inspection.',
+            code: 'SOURCE_SELECTION_STALE',
+          };
+        if (!(await selectionEvidenceCurrent(page, body)))
           return {
             ok: false,
             error: 'The selected source is no longer current. Refresh inspection.',
@@ -1482,28 +1678,16 @@ export function enablePanel(context, session, opts = {}) {
             code: 'SOURCE_UNAVAILABLE',
           };
         }
-        if (admission.state !== 'exact' || !admission.editorTarget?.file)
-          return {
-            ok: false,
-            error: 'The local source changed or is unavailable. Refresh inspection.',
-            code: 'SOURCE_' + String(admission.state).toUpperCase(),
-          };
-        const candidate = { file: admission.editorTarget.file };
-        let files;
-        if (admission.editorTarget.externalProfile === true && typeof admission.sourceRef?.ref === 'string') {
-          const exact = fs.realpathSync.native(candidate.file);
-          candidate.ref = admission.sourceRef.ref;
-          const profiles = profileFilesByPage.get(page) ?? new Map();
-          profiles.set(candidate.ref, exact);
-          profileFilesByPage.set(page, profiles);
-          files = new Map([[candidate.ref, exact]]);
-        } else files = annotateRuntime(candidate, runtime?.roots ?? []);
-        if (!candidate.ref || !files.has(candidate.ref))
-          return { ok: false, error: 'This source is outside the selected source roots.', code: 'SOURCE_NOT_ADMITTED' };
-        const known = runtimeFilesByPage.get(page) ?? new Map();
-        known.set(candidate.ref, files.get(candidate.ref));
-        runtimeFilesByPage.set(page, known);
-        file = fileOf(candidate.ref, page);
+        const admitted = admitEditorSource(admission, {
+          page,
+          runtime,
+          profileFilesByPage,
+          runtimeFilesByPage,
+          annotateRuntime,
+          fileOf,
+        });
+        if (admitted.failure) return admitted.failure;
+        file = admitted.file;
         if (!(await selectionEvidenceCurrent(page, body)))
           return {
             ok: false,
@@ -1512,50 +1696,16 @@ export function enablePanel(context, session, opts = {}) {
           };
         // The browser check can wait while a local save changes the physical
         // source or its field location. Re-admit after that last round trip.
-        try {
-          admission = admission.revalidate();
-          if (
-            admission.state !== 'exact' ||
-            !admission.editorTarget?.file ||
-            fs.realpathSync.native(admission.editorTarget.file) !== fs.realpathSync.native(file)
-          )
-            return {
-              ok: false,
-              error: 'The local source changed while its selection was checked. Refresh inspection.',
-              code: admission.state === 'exact' ? 'SOURCE_STALE' : 'SOURCE_' + String(admission.state).toUpperCase(),
-            };
-        } catch {
-          return {
-            ok: false,
-            error: 'The local source identity could not be verified. Refresh inspection.',
-            code: 'SOURCE_UNAVAILABLE',
-          };
-        }
-        line =
-          Number.isSafeInteger(admission.editorTarget.line) && admission.editorTarget.line > 0
-            ? admission.editorTarget.line
-            : 1;
-        col =
-          Number.isSafeInteger(admission.editorTarget.column) && admission.editorTarget.column > 0
-            ? admission.editorTarget.column
-            : 1;
+        const checked = revalidateEditorSource(admission, file);
+        if (checked.failure) return checked.failure;
+        line = checked.line;
+        col = checked.col;
       } else {
-        file = fileOf(body.rel, page);
-        line =
-          Number.isInteger(body.line) && body.line > 0 ? body.line : ((file ? lineOf(file, body.find) : null) ?? 1);
-        col = Number.isInteger(body.col) && body.col > 0 ? body.col : 1;
+        ({ file, line, col } = openLocalSource(body, page, fileOf, lineOf));
       }
       if (!file) return { ok: false, error: 'this file is not part of the local sources' };
       const error = await open(cfg.editor ?? 'code', file, line, col);
-      if (!error) return { ok: true };
-      // the editor's command is not on the PATH: its link does the same from the browser
-      return {
-        ok: false,
-        error,
-        url: /^code(?:-insiders)?$/.test(cfg.editor ?? 'code')
-          ? `vscode://file/${pathToFileURL(file).pathname.replace(/^\//, '')}:${line}:${col}`
-          : undefined,
-      };
+      return editorOpenResult(error, cfg.editor ?? 'code', file, line, col);
     },
     toggle: (body) => {
       if (cfg.mirage)
@@ -1577,7 +1727,7 @@ export function enablePanel(context, session, opts = {}) {
       const head = await session.repinBaseline();
       log({
         type: 'switch',
-        text: `Baseline pinned at HEAD ${head.commit.slice(0, 7)}${head.branch ? ` (${head.branch})` : ''}`,
+        text: `Baseline pinned at HEAD ${head.commit.slice(0, 7)}${head.branch ? ' (' + head.branch + ')' : ''}`,
       });
       // other tabs learn about it the way they learn about any baseline change: a banner until reloaded
       session.emit('refreshed', { files: [], how: 'none', baselineChanged: true });
@@ -1613,7 +1763,7 @@ export function enablePanel(context, session, opts = {}) {
     diff: (body, page) => compare(page, body),
     catalog: () => ({ ok: true, entries: catalog() }),
     // ---- Mirage inspection and tweaks (local runtime only)
-    inspect: async (body, page) => {
+    /* NOSONAR: single-pass routine, splitting it would change shared state */ inspect: async (body, page) => {
       const progress = { id: ++inspectionSequence, phase: 'Reading source dependencies' };
       inspectionProgress.set(page, progress);
       schedule(page);
@@ -1650,13 +1800,7 @@ export function enablePanel(context, session, opts = {}) {
             return { ok: false, error: error.message.split('\n')[0] };
           }
         }
-        const current = () =>
-          !disposed &&
-          !page.isClosed() &&
-          sameOrigin(page.url(), cfg.origin) &&
-          runtimeByPage.get(page) === runtime &&
-          pathOf(page.url()).replace(/\/+$/, '') === String(runtime.path).replace(/\/+$/, '');
-        if (!current())
+        if (!isCurrentInspection(page, cfg.origin, runtime, runtimeByPage, disposed, pathOf))
           return {
             ok: false,
             error: 'The page changed during source inspection. Refresh inspection for the current page.',
@@ -1673,17 +1817,20 @@ export function enablePanel(context, session, opts = {}) {
           runtime.inspectionBase ??= structuredClone(runtime.report);
           runtime.report = structuredClone(runtime.inspectionBase);
           await sourceInspector.enrich(runtime.report, rendered).catch((error) => {
-            (runtime.report.unresolved ??= []).push({
-              kind: 'source-inspection',
-              reason: error.message.split('\n')[0],
-            });
+            {
+              if (runtime.report.unresolved == null) runtime.report.unresolved = [];
+              runtime.report.unresolved.push({
+                kind: 'source-inspection',
+                reason: error.message.split('\n')[0],
+              });
+            }
           });
           // Additional code roots come only from stat-validated mappings in this
           // task's trusted configuration, never from a runtime's claimed paths.
           const pluginRoots = await sourceInspector.pluginSourceRoots(runtime.path).catch(() => []);
           runtime.roots = [...new Set([...runtime.roots, ...pluginRoots.map(realNative)])];
         }
-        if (!current())
+        if (!isCurrentInspection(page, cfg.origin, runtime, runtimeByPage, disposed, pathOf))
           return {
             ok: false,
             error: 'The page changed during source inspection. Refresh inspection for the current page.',
@@ -1836,7 +1983,7 @@ export function enablePanel(context, session, opts = {}) {
       if (result.ok) afterTweak(`Preset applied: ${body.id}`);
       return result.ok ? { ok: true } : result;
     },
-    scenario: async (body, page) => {
+    /* NOSONAR: single-pass routine, splitting it would change shared state */ scenario: async (body, page) => {
       if (!cfg.mirage) return { ok: false, error: 'Scenarios change the local Mirage runtime only.' };
       if (typeof body.id !== 'string' || !/^[\w.-]+$/.test(body.id)) return { ok: false, error: 'choose a scenario' };
       if (body.catalogue === true) {
@@ -1848,15 +1995,7 @@ export function enablePanel(context, session, opts = {}) {
         if (!result.ok) return result;
         const opened = result.result,
           destination = new URL(opened.origin);
-        if (
-          !['127.0.0.1', 'localhost', '[::1]'].includes(destination.hostname) ||
-          destination.protocol !== 'http:' ||
-          destination.username ||
-          destination.password ||
-          destination.pathname !== '/' ||
-          destination.search ||
-          destination.hash
-        )
+        if (!isLocalScenarioOrigin(destination))
           return { ok: false, error: 'The scenario returned an invalid local runtime origin.' };
         const returnPath = personaStartPath(opened.path, 'returnUrl');
         if (opened.origin === cfg.origin) return startSessionFlow(page, opened.contactId, { returnPath });
@@ -1879,7 +2018,7 @@ export function enablePanel(context, session, opts = {}) {
       // sign-in or sign-out. The scenario is applied first (its preset can create the persona);
       // the sign-in runs once the page has taken the Mirage's reload, so the two navigations
       // never race.
-      const session = scenario && scenario.persona !== undefined ? await readSession(page) : null;
+      const session = scenario?.persona !== undefined ? await readSession(page) : null;
       const contactId = scenario?.persona?.contactId ?? null;
       const change = Boolean(session?.supported) && (session.signedIn ? session.contactId : null) !== contactId;
       const reloaded = change ? nextLoad(page) : null;

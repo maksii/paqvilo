@@ -17,6 +17,98 @@ const shadow = (dataverseType, parent, extra = {}) =>
   });
 const regularCustom = (source) => !source.def && /^[a-z0-9]+_/.test(source.logical);
 
+function addLookupAttributes(generated, name, field, type, targetHasPhonetic) {
+  if (name === 'owninguser' || name === 'owningteam') return;
+  let targets = field.targets ?? field.lookupTargets;
+  if (targets == null) {
+    if (type === 'owner') targets = ['systemuser', 'team'];
+    else if (type === 'customer') targets = ['account', 'contact'];
+    else targets = [];
+  }
+  generated[name + 'name'] = shadow('nvarchar', name, { maxLength: 100 });
+  if (type === 'owner' || name === 'ownerid')
+    generated[name + 'type'] = {
+      dataverseType: 'entityname',
+      validForCreate: true,
+      validForUpdate: true,
+      dataverseMetadata: { AttributeOf: name, IsLogical: false, IsValidODataAttribute: false },
+    };
+  if (targets.some(targetHasPhonetic)) generated[name + 'yominame'] = shadow('nvarchar', name, { maxLength: 100 });
+}
+
+function addSimpleAttributes(generated, name, field, type) {
+  if (['bit', 'boolean', 'picklist', 'multiselectpicklist', 'state', 'status'].includes(type)) {
+    generated[name + 'name'] = shadow('virtual', name);
+    return;
+  }
+  if (type === 'file') {
+    generated[name] = readOnly('file', {
+      dataverseMetadata: { IsLogical: false, AttributeOf: null, IsValidODataAttribute: true },
+    });
+    generated[name + '_name'] = shadow('nvarchar', name, {
+      maxLength: 200,
+      dataverseMetadata: { AttributeOf: name, IsLogical: true, IsValidODataAttribute: true },
+    });
+    return;
+  }
+  if (type === 'image') {
+    generated[name] = {
+      dataverseType: 'image',
+      validForCreate: true,
+      validForUpdate: true,
+      dataverseMetadata: { AttributeOf: name + 'id', IsLogical: true, IsValidODataAttribute: true },
+    };
+    generated[name + 'id'] = readOnly('uniqueidentifier', {
+      dataverseMetadata: { AttributeOf: null, IsLogical: false, IsValidODataAttribute: true },
+    });
+    generated[name + '_timestamp'] = shadow('bigint', name + 'id', {
+      dataverseMetadata: { AttributeOf: name + 'id', IsLogical: true, IsValidODataAttribute: true },
+    });
+    generated[name + '_url'] = shadow('nvarchar', name + 'id', {
+      maxLength: 200,
+      dataverseMetadata: { AttributeOf: name + 'id', IsLogical: true, IsValidODataAttribute: true },
+    });
+    return;
+  }
+  if (type === 'money' && !name.endsWith('_base'))
+    generated[name + '_base'] = readOnly('money', {
+      precision: field.precision,
+      dataverseMetadata: { IsLogical: false, AttributeOf: null, IsValidODataAttribute: true },
+    });
+}
+
+function inferredFields(generated, declared) {
+  const fields = { ...generated };
+  for (const [name, field] of Object.entries(declared)) {
+    if (!generated[name]) {
+      fields[name] = field;
+      continue;
+    }
+    const facts = field.columnMetadata ?? {};
+    const flags = Object.fromEntries(
+      ['validForCreate', 'validForUpdate', 'validForRead']
+        .filter((key) => Object.hasOwn(facts, key))
+        .map((key) => [key, facts[key]]),
+    );
+    const metadata = Object.fromEntries(
+      [
+        ['attributeOf', 'AttributeOf'],
+        ['isLogical', 'IsLogical'],
+        ['isValidODataAttribute', 'IsValidODataAttribute'],
+      ]
+        .filter(([key]) => Object.hasOwn(facts, key))
+        .map(([key, property]) => [property, facts[key]]),
+    );
+    fields[name] = {
+      ...generated[name],
+      ...flags,
+      ...field,
+      dataverseMetadata: { ...generated[name].dataverseMetadata, ...metadata, ...field.dataverseMetadata },
+    };
+  }
+  return fields;
+}
+
 /** Explicit Solution/standard field facts always win over an inferred platform default. */
 export function implicitAttributes(
   source,
@@ -83,84 +175,9 @@ export function implicitAttributes(
     });
   for (const [name, field] of Object.entries({ ...generated, ...declared })) {
     const type = kind(field);
-    if (['lookup', 'customer', 'owner'].includes(type)) {
-      // These two logical ownership references have no platform name or phonetic-name companion.
-      if (name === 'owninguser' || name === 'owningteam') continue;
-      const targets =
-        field.targets ??
-        field.lookupTargets ??
-        (type === 'owner' ? ['systemuser', 'team'] : type === 'customer' ? ['account', 'contact'] : []);
-      generated[name + 'name'] = shadow('nvarchar', name, { maxLength: 100 });
-      if (type === 'owner' || name === 'ownerid')
-        generated[name + 'type'] = {
-          dataverseType: 'entityname',
-          validForCreate: true,
-          validForUpdate: true,
-          dataverseMetadata: { AttributeOf: name, IsLogical: false, IsValidODataAttribute: false },
-        };
-      // Phonetic companions require evidence on the target table; custom targets are not guessed.
-      if (targets.some(targetHasPhonetic)) generated[name + 'yominame'] = shadow('nvarchar', name, { maxLength: 100 });
-    } else if (['bit', 'boolean', 'picklist', 'multiselectpicklist', 'state', 'status'].includes(type)) {
-      generated[name + 'name'] = shadow('virtual', name);
-    } else if (type === 'file') {
-      generated[name] = readOnly('file', {
-        dataverseMetadata: { IsLogical: false, AttributeOf: null, IsValidODataAttribute: true },
-      });
-      generated[name + '_name'] = shadow('nvarchar', name, {
-        maxLength: 200,
-        dataverseMetadata: { AttributeOf: name, IsLogical: true, IsValidODataAttribute: true },
-      });
-    } else if (type === 'image') {
-      generated[name] = {
-        dataverseType: 'image',
-        validForCreate: true,
-        validForUpdate: true,
-        dataverseMetadata: { AttributeOf: name + 'id', IsLogical: true, IsValidODataAttribute: true },
-      };
-      generated[name + 'id'] = readOnly('uniqueidentifier', {
-        dataverseMetadata: { AttributeOf: null, IsLogical: false, IsValidODataAttribute: true },
-      });
-      generated[name + '_timestamp'] = shadow('bigint', name + 'id', {
-        dataverseMetadata: { AttributeOf: name + 'id', IsLogical: true, IsValidODataAttribute: true },
-      });
-      generated[name + '_url'] = shadow('nvarchar', name + 'id', {
-        maxLength: 200,
-        dataverseMetadata: { AttributeOf: name + 'id', IsLogical: true, IsValidODataAttribute: true },
-      });
-    } else if (type === 'money' && !name.endsWith('_base')) {
-      generated[name + '_base'] = readOnly('money', {
-        precision: field.precision,
-        dataverseMetadata: { IsLogical: false, AttributeOf: null, IsValidODataAttribute: true },
-      });
-    }
+    if (['lookup', 'customer', 'owner'].includes(type))
+      addLookupAttributes(generated, name, field, type, targetHasPhonetic);
+    else addSimpleAttributes(generated, name, field, type);
   }
-  const fields = { ...generated };
-  for (const [name, field] of Object.entries(declared)) {
-    if (!generated[name]) {
-      fields[name] = field;
-      continue;
-    }
-    const facts = field.columnMetadata ?? {};
-    const flags = Object.fromEntries(
-      ['validForCreate', 'validForUpdate', 'validForRead']
-        .filter((key) => Object.hasOwn(facts, key))
-        .map((key) => [key, facts[key]]),
-    );
-    const metadata = Object.fromEntries(
-      [
-        ['attributeOf', 'AttributeOf'],
-        ['isLogical', 'IsLogical'],
-        ['isValidODataAttribute', 'IsValidODataAttribute'],
-      ]
-        .filter(([key]) => Object.hasOwn(facts, key))
-        .map(([key, property]) => [property, facts[key]]),
-    );
-    fields[name] = {
-      ...generated[name],
-      ...flags,
-      ...field,
-      dataverseMetadata: { ...generated[name].dataverseMetadata, ...metadata, ...field.dataverseMetadata },
-    };
-  }
-  return fields;
+  return inferredFields(generated, declared);
 }

@@ -164,7 +164,7 @@ function operations(api) {
     PvaCreateContentSnapshot: async (c) => {
       const bot = boundRow(c, 'bot');
       // The snapshot id is the sha1 of the bot's component rows.
-      const SnapshotId = createHash('sha1')
+      const SnapshotId = createHash('sha1') // NOSONAR: non-security hash used for identity or checksums
         .update(JSON.stringify(componentsOf(bot.botid)))
         .digest('hex');
       return { SnapshotId };

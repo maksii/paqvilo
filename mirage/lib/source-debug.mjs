@@ -28,12 +28,13 @@ export function debugScript(body, target, { line = 0, column = 0, source, inline
   if (inline !== undefined) sourceUrl.searchParams.set('inline', String(inline));
   const text = String(body);
   if (/\/\/[#@]\s*sourceMappingURL=/.test(text)) return text;
-  source = fs.readFileSync(file, 'utf8');
+  void source; // NOSONAR: void is intentional here
+  const sourceText = fs.readFileSync(file, 'utf8');
   let subsequentColumn = 0;
   if (target.field) {
     let scalar;
     if (/\.ya?ml$/i.test(file)) {
-      const document = YAML.parseDocument(source, { keepSourceTokens: true, uniqueKeys: false });
+      const document = YAML.parseDocument(sourceText, { keepSourceTokens: true, uniqueKeys: false });
       YAML.visit(document, {
         Pair(_key, pair) {
           if (
@@ -49,9 +50,9 @@ export function debugScript(body, target, { line = 0, column = 0, source, inline
     // inventing identity mappings to unrelated lines in the containing document.
     if (!scalar) return text + `\n//# sourceURL=${sourceUrl.href}\n`;
     if (scalar) {
-      const offset = source.indexOf(scalar.srcToken.source, scalar.range[0]);
+      const offset = sourceText.indexOf(scalar.srcToken.source, scalar.range[0]);
       if (offset >= 0) {
-        const prefix = source.slice(0, offset),
+        const prefix = sourceText.slice(0, offset),
           indent = /^[ \t]*/.exec(scalar.srcToken.source)[0].length;
         line += prefix.split(/\r\n?|\n/).length - 1;
         column += indent;
@@ -61,7 +62,7 @@ export function debugScript(body, target, { line = 0, column = 0, source, inline
   }
   return (
     text +
-    `\n//# sourceURL=${sourceUrl.href}\n//# sourceMappingURL=${identityMapUrl(file, text.split(/\r\n?|\n/).length, source, { line, column, subsequentColumn })}\n`
+    `\n//# sourceURL=${sourceUrl.href}\n//# sourceMappingURL=${identityMapUrl(file, text.split(/\r\n?|\n/).length, sourceText, { line, column, subsequentColumn })}\n`
   );
 }
 
@@ -77,7 +78,7 @@ export function debugMarkup(source, file, { onEdits } = {}) {
     if (node.tagName === 'script' && !node.attrs.some((attr) => attr.name === 'src')) {
       const type = node.attrs.find((attr) => attr.name === 'type')?.value ?? '';
       const loc = node.sourceCodeLocation;
-      if (loc?.endTag && /^(?:|module|(?:text|application)\/(?:java|ecma)script)$/i.test(type)) {
+      if (loc?.endTag && /^(?:module|(?:text|application)\/(?:java|ecma)script)?$/i.test(type)) {
         const body = text.slice(loc.startTag.endOffset, loc.endTag.startOffset);
         patches.push({
           from: loc.startTag.endOffset,
@@ -95,8 +96,8 @@ export function debugMarkup(source, file, { onEdits } = {}) {
   };
   visit(tree);
   let result = text;
-  for (const patch of patches.sort((a, b) => b.from - a.from))
-    result = result.slice(0, patch.from) + patch.body + result.slice(patch.to);
+  patches.sort((a, b) => b.from - a.from);
+  for (const patch of patches) result = result.slice(0, patch.from) + patch.body + result.slice(patch.to);
   onEdits?.(patches);
   return result;
 }

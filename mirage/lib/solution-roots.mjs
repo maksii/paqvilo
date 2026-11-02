@@ -40,9 +40,14 @@ export async function discoverSolutionRoots(sourceDir, { cacheFile, diagnostics 
     return [];
   }
   const roots = [];
+  const byName = (a, b) => {
+    if (a.name < b.name) return -1;
+    if (a.name > b.name) return 1;
+    return 0;
+  };
   for (const entry of siblings
     .filter((e) => e.isDirectory() && !e.isSymbolicLink() && !e.name.startsWith('.'))
-    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+    .sort(byName)) {
     const candidate = path.join(container, entry.name);
     if (candidate === current || (await canonical(candidate)) === own) continue;
     if ((await discoverSolutionTrees(candidate)).length) roots.push(candidate);
@@ -109,6 +114,43 @@ const RELEVANT_TREE_NAMES = new Set([
 const RELEVANT_TREE_DIRS = { test: (name) => RELEVANT_TREE_NAMES.has(String(name).toLowerCase()) };
 const SKIPPED = /(?:^|[\\/])(?:\.git|\.portalconfig|node_modules|bin|obj|\.paqvilo)(?:[\\/]|$)/i;
 
+function ignoreTreeCandidate(full, tree, stats, sep) {
+  if (full === tree) return false;
+  if (SKIPPED.test(full.slice(tree.length))) return true;
+  const segments = full.slice(tree.length + 1).split(sep);
+  if (!RELEVANT_TREE_DIRS.test(segments[0])) return true;
+  if (!stats?.isFile()) return false;
+  let relevantFile;
+  if (/^(?:controls|webresources)$/i.test(segments[0]))
+    relevantFile = /\.(?:xml|json|map|js|css|resx|png|jpe?g|svg|woff2?)$/i;
+  else if (/^(?:powerpagecomponents)$/i.test(segments[0])) relevantFile = /\.(?:xml|js|sl)$/i;
+  else relevantFile = /\.(?:xml|json|ya?ml)$/i;
+  return !relevantFile.test(full);
+}
+
+function ignoreRootCandidate(full, root, stats, sep) {
+  if (full === root) return false;
+  if (SKIPPED.test(full.slice(root.length))) return true;
+  const segments = full.slice(root.length + 1).split(sep);
+  if (segments.length === 1) return Boolean(stats?.isFile());
+  if (segments.length === 2) return !/^other$/i.test(segments[1]);
+  if (segments.length === 3) return !(/^other$/i.test(segments[1]) && /^solution\.xml$/i.test(segments[2]));
+  return true;
+}
+
+function solutionWatchDecision(candidate, stats, context) {
+  const { key, within, excluded, sources, treeKeys, rootKeys, sep, skipped } = context;
+  const full = key(candidate);
+  if (excluded.some((dir) => within(full, dir))) return true;
+  const source = sources.find((dir) => within(full, dir));
+  if (source) return skipped(full, source);
+  const tree = treeKeys.filter((dir) => within(full, dir)).sort((a, b) => b.length - a.length)[0];
+  if (tree) return ignoreTreeCandidate(full, tree, stats, sep);
+  const root = rootKeys.find((dir) => within(full, dir));
+  if (!root) return false;
+  return ignoreRootCandidate(full, root, stats, sep);
+}
+
 /**
  * chokidar `ignored` predicate limiting solution watching to metadata and declared runtime sources:
  * inside a known solution tree Entities, Other, OptionSets, environment variables,
@@ -144,39 +186,9 @@ export function solutionWatchFilter({ sourceDir, roots = [], layers = [], exclud
   // Runtime output (state, caches) never triggers a source reload.
   const excluded = exclude.filter(Boolean).flatMap(spellings);
   const within = (full, dir) => full === dir || full.startsWith(dir + sep);
+  const skipped = (full, base) => SKIPPED.test(full.slice(base.length));
   // Tool and build directories are skipped below a watched base, never because an
   // ancestor of the base carries such a name (for example a checkout under .paqvilo).
-  const skipped = (full, base) => SKIPPED.test(full.slice(base.length));
-  return (candidate, stats) => {
-    const full = key(candidate);
-    if (excluded.some((dir) => within(full, dir))) return true;
-    const source = sources.find((dir) => within(full, dir));
-    if (source) return skipped(full, source);
-    const tree = treeKeys.filter((dir) => within(full, dir)).sort((a, b) => b.length - a.length)[0];
-    if (tree) {
-      if (full === tree) return false;
-      if (skipped(full, tree)) return true;
-      const segments = full.slice(tree.length + 1).split(sep);
-      if (!RELEVANT_TREE_DIRS.test(segments[0])) return true;
-      return (
-        Boolean(stats?.isFile()) &&
-        !(
-          /^(?:controls|webresources)$/i.test(segments[0])
-            ? /\.(?:xml|json|map|js|css|resx|png|jpe?g|svg|woff2?)$/i
-            : /^(?:powerpagecomponents)$/i.test(segments[0])
-              ? /\.(?:xml|js|sl)$/i
-              : /\.(?:xml|json|ya?ml)$/i
-        ).test(full)
-      );
-    }
-    const root = rootKeys.find((dir) => within(full, dir));
-    if (!root) return false;
-    if (full === root) return false;
-    if (skipped(full, root)) return true;
-    const segments = full.slice(root.length + 1).split(sep);
-    if (segments.length === 1) return Boolean(stats?.isFile());
-    if (segments.length === 2) return !/^other$/i.test(segments[1]);
-    if (segments.length === 3) return !(/^other$/i.test(segments[1]) && /^solution\.xml$/i.test(segments[2]));
-    return true;
-  };
+  const context = { key, within, excluded, sources, treeKeys, rootKeys, sep, skipped };
+  return (candidate, stats) => solutionWatchDecision(candidate, stats, context);
 }

@@ -1689,7 +1689,6 @@ span.ui-status-dot {
   background: var(--ui-info-bg);
 }
 .ui-sort {
-  line-height: 1.2;
   display: inline-flex;
   align-items: center;
   gap: 4px;

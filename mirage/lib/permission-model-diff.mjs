@@ -5,7 +5,7 @@ const id = (value) =>
   String(value ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
-const sorted = (values) => [...new Set(values)].sort();
+const sorted = (values) => [...new Set(values)].sort((a, b) => Number(a > b) - Number(a < b));
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 const operations = new Set(['read', 'create', 'update', 'delete', 'append', 'appendTo']);
 const sources = new Set(['configured', 'exported', 'combined']);
@@ -58,12 +58,7 @@ function modelContext(model, label, work) {
   };
 }
 
-function normalize(model, side, diagnostics, work) {
-  const byId = new Map(),
-    roles = new Map(),
-    byName = new Map(),
-    cells = new Map();
-  const issue = (code, permissionId = null) => diagnostics.push({ code, side, permissionId });
+function indexRoles(model, side, work, issue, roles, byName) {
   for (const role of model.webRoles) {
     work();
     if (!ownObject(role) || !id(role.id) || typeof role.name !== 'string')
@@ -74,6 +69,9 @@ function normalize(model, side, diagnostics, work) {
     if (!byName.has(role.name)) byName.set(role.name, []);
     byName.get(role.name).push(key);
   }
+}
+
+function indexPermissions(model, side, work, issue, byId) {
   for (const permission of model.permissions) {
     work();
     if (!ownObject(permission) || !id(permission.id))
@@ -82,122 +80,154 @@ function normalize(model, side, diagnostics, work) {
     if (byId.has(key)) issue('PERMISSION_DIFF_ID_AMBIGUOUS', key);
     byId.set(key, permission);
   }
+}
+
+function collectModelIssues(model, side, work, issue) {
   for (const diagnostic of model.diagnostics) {
     work();
     if (/UNRESOLVED|AMBIGUOUS|CYCLE|ORPHAN/.test(String(diagnostic.code ?? '')))
       issue(String(diagnostic.code), id(diagnostic.id) || null);
   }
+}
 
-  const roleIds = (permission) => {
-    const explicit = strings(permission.roleIds ?? [], `${side}.permission.roleIds`, work).map(id);
-    if (explicit.length) {
-      if (explicit.some((role) => !roles.has(role))) issue('PERMISSION_DIFF_ROLE_UNRESOLVED', id(permission.id));
-      return explicit.filter((role) => roles.has(role));
+function permissionRoleIds(permission, side, work, roles, byName, issue) {
+  const explicit = strings(permission.roleIds ?? [], `${side}.permission.roleIds`, work).map(id);
+  if (explicit.length) {
+    if (explicit.some((role) => !roles.has(role))) issue('PERMISSION_DIFF_ROLE_UNRESOLVED', id(permission.id));
+    return explicit.filter((role) => roles.has(role));
+  }
+  const names = strings(permission.roles ?? [], `${side}.permission.roles`, work);
+  if (!names.length) {
+    if (permission.imported) {
+      issue('PERMISSION_DIFF_IMPORTED_ROLES_MISSING', id(permission.id));
+      return [];
     }
-    const names = strings(permission.roles ?? [], `${side}.permission.roles`, work);
-    if (!names.length) {
-      if (permission.imported) {
-        issue('PERMISSION_DIFF_IMPORTED_ROLES_MISSING', id(permission.id));
-        return [];
-      }
-      return ['*'];
-    }
-    return sorted(
-      names.flatMap((name) => {
-        const matches = byName.get(name) ?? [];
-        if (matches.length !== 1) issue('PERMISSION_DIFF_ROLE_UNRESOLVED', id(permission.id));
-        return matches.length === 1 ? matches : [];
-      }),
-    );
-  };
-  const relationship = (value, permission, depth = 0) => {
-    work();
-    if (depth > 1) {
-      issue('PERMISSION_DIFF_RELATIONSHIP_UNRESOLVED', id(permission.id));
-      return null;
-    }
-    if (!ownObject(value) || !['entity', 'from', 'to'].every((key) => typeof value[key] === 'string' && value[key])) {
-      issue('PERMISSION_DIFF_RELATIONSHIP_UNRESOLVED', id(permission.id));
-      return null;
-    }
-    const result = { entity: value.entity, from: value.from, to: value.to };
-    if (value.intersect) {
-      result.intersect = relationship(value.intersect, permission, depth + 1);
-      if (!result.intersect) return null;
-    }
-    return result;
-  };
-  const predicate = (permission, role, chain = new Set()) => {
-    work();
-    const key = id(permission.id);
-    if (chain.has(key) || chain.size >= MAX_DEPTH) {
-      issue('PERMISSION_DIFF_PARENT_UNRESOLVED', key);
-      return null;
-    }
-    if (permission.observedOrphanParent) {
-      issue('PERMISSION_DIFF_OBSERVED_PROFILE', key);
-      return null;
-    }
-    const scope = permission.scope ?? 'global';
-    if (scope === 'global') return { scope };
-    if (scope === 'self') return { scope, field: permission.field ?? null };
-    if (scope === 'contact' || scope === 'account') {
-      if (permission.identityRelationship) {
-        const rel = relationship(permission.identityRelationship, permission);
-        return rel ? { scope, relationship: rel } : null;
-      }
-      if (typeof permission.field === 'string' && permission.field) return { scope, field: permission.field };
-      issue('PERMISSION_DIFF_RELATIONSHIP_UNRESOLVED', key);
-      return null;
-    }
-    if (scope === 'parent') {
-      const parent = byId.get(id(permission.parentPermissionId ?? permission.parentId)),
-        rel = relationship(permission.relationship, permission);
-      if (!parent || parent.enabled === false || !rel || rel.entity !== parent.entity) {
-        issue('PERMISSION_DIFF_PARENT_UNRESOLVED', key);
-        return null;
-      }
-      if (!(parent.operations ?? ['read']).includes('read')) return false;
-      const parentRoles = roleIds(parent);
-      if (!parentRoles.includes('*') && !parentRoles.includes(role)) {
-        issue('PERMISSION_DIFF_PARENT_ROLE_DEPENDENCY', key);
-        return null;
-      }
-      const parentPredicate = predicate(parent, role, new Set([...chain, key]));
-      return parentPredicate ? { scope, relationship: rel, parent: parentPredicate } : parentPredicate;
-    }
-    issue('PERMISSION_DIFF_SCOPE_UNRESOLVED', key);
+    return ['*'];
+  }
+  return sorted(
+    names.flatMap((name) => {
+      const matches = byName.get(name) ?? [];
+      if (matches.length !== 1) issue('PERMISSION_DIFF_ROLE_UNRESOLVED', id(permission.id));
+      return matches.length === 1 ? matches : [];
+    }),
+  );
+}
+
+function normalizeRelationship(value, permission, issue, work, depth = 0) {
+  work();
+  if (depth > 1) {
+    issue('PERMISSION_DIFF_RELATIONSHIP_UNRESOLVED', id(permission.id));
     return null;
-  };
-  for (const permission of model.permissions) {
+  }
+  if (!ownObject(value) || !['entity', 'from', 'to'].every((key) => typeof value[key] === 'string' && value[key])) {
+    issue('PERMISSION_DIFF_RELATIONSHIP_UNRESOLVED', id(permission.id));
+    return null;
+  }
+  const result = { entity: value.entity, from: value.from, to: value.to };
+  if (value.intersect) {
+    result.intersect = normalizeRelationship(value.intersect, permission, issue, work, depth + 1);
+    if (!result.intersect) return null;
+  }
+  return result;
+}
+
+function parentPredicate(permission, role, chain, context) {
+  const { byId, roleIds, predicate, relationship, issue } = context;
+  const key = id(permission.id);
+  const parent = byId.get(id(permission.parentPermissionId ?? permission.parentId)),
+    rel = relationship(permission.relationship, permission);
+  if (!parent || parent.enabled === false || !rel || rel.entity !== parent.entity) {
+    issue('PERMISSION_DIFF_PARENT_UNRESOLVED', key);
+    return null;
+  }
+  if (!(parent.operations ?? ['read']).includes('read')) return false;
+  const parentRoles = roleIds(parent);
+  if (!parentRoles.includes('*') && !parentRoles.includes(role)) {
+    issue('PERMISSION_DIFF_PARENT_ROLE_DEPENDENCY', key);
+    return null;
+  }
+  const parentResult = predicate(parent, role, new Set([...chain, key]));
+  return parentResult ? { scope: permission.scope ?? 'global', relationship: rel, parent: parentResult } : parentResult;
+}
+
+function permissionPredicate(permission, role, chain, context) {
+  const { work, issue, relationship } = context;
+  work();
+  const key = id(permission.id);
+  if (chain.has(key) || chain.size >= MAX_DEPTH) {
+    issue('PERMISSION_DIFF_PARENT_UNRESOLVED', key);
+    return null;
+  }
+  if (permission.observedOrphanParent) {
+    issue('PERMISSION_DIFF_OBSERVED_PROFILE', key);
+    return null;
+  }
+  const scope = permission.scope ?? 'global';
+  if (scope === 'global') return { scope };
+  if (scope === 'self') return { scope, field: permission.field ?? null };
+  if (scope === 'contact' || scope === 'account') {
+    if (permission.identityRelationship) {
+      const rel = relationship(permission.identityRelationship, permission);
+      return rel ? { scope, relationship: rel } : null;
+    }
+    if (typeof permission.field === 'string' && permission.field) return { scope, field: permission.field };
+    issue('PERMISSION_DIFF_RELATIONSHIP_UNRESOLVED', key);
+    return null;
+  }
+  if (scope === 'parent') return parentPredicate(permission, role, chain, context);
+  issue('PERMISSION_DIFF_SCOPE_UNRESOLVED', key);
+  return null;
+}
+
+function addRoleGrantCells(permission, role, rights, cells, predicate, work) {
+  work();
+  const condition = predicate(permission, role);
+  if (!condition) return;
+  for (const operation of rights.filter((right) => operations.has(right))) {
     work();
-    if (permission.disabledCode) issue(permission.disabledCode, id(permission.id));
-    if (permission.enabled === false) continue;
-    if (typeof permission.entity !== 'string' || !permission.entity || permission.entity === '*') {
-      issue('PERMISSION_DIFF_TABLE_UNRESOLVED', id(permission.id));
-      continue;
-    }
-    const rights = strings(permission.operations ?? ['read'], `${side}.permission.operations`, work);
-    for (const right of rights)
-      if (!operations.has(right)) issue('PERMISSION_DIFF_OPERATION_UNRESOLVED', id(permission.id));
-    for (const role of roleIds(permission)) {
-      work();
-      const condition = predicate(permission, role);
-      if (!condition) continue;
-      for (const operation of rights.filter((right) => operations.has(right))) {
-        work();
-        const key = JSON.stringify([role, permission.entity, operation]);
-        if (!cells.has(key)) cells.set(key, new Map());
-        if (cells.size > MAX_ITEMS) throw new RangeError('Permission comparison exceeds the 100000 grant-cell limit.');
-        const cell = cells.get(key),
-          signature = JSON.stringify(condition);
-        if (!cell.has(signature))
-          cell.set(signature, { predicate: condition, permissionIds: new Set(), sourceFiles: new Set() });
-        const entry = cell.get(signature);
-        entry.permissionIds.add(id(permission.id));
-        if (typeof permission.provenance?.file === 'string') entry.sourceFiles.add(permission.provenance.file);
-      }
-    }
+    const key = JSON.stringify([role, permission.entity, operation]);
+    if (!cells.has(key)) cells.set(key, new Map());
+    if (cells.size > MAX_ITEMS) throw new RangeError('Permission comparison exceeds the 100000 grant-cell limit.');
+    const cell = cells.get(key),
+      signature = JSON.stringify(condition);
+    if (!cell.has(signature))
+      cell.set(signature, { predicate: condition, permissionIds: new Set(), sourceFiles: new Set() });
+    const entry = cell.get(signature);
+    entry.permissionIds.add(id(permission.id));
+    if (typeof permission.provenance?.file === 'string') entry.sourceFiles.add(permission.provenance.file);
+  }
+}
+
+function addPermissionGrants(permission, side, work, issue, cells, roleIds, predicate) {
+  work();
+  if (permission.disabledCode) issue(permission.disabledCode, id(permission.id));
+  if (permission.enabled === false) return;
+  if (typeof permission.entity !== 'string' || !permission.entity || permission.entity === '*') {
+    issue('PERMISSION_DIFF_TABLE_UNRESOLVED', id(permission.id));
+    return;
+  }
+  const rights = strings(permission.operations ?? ['read'], `${side}.permission.operations`, work);
+  for (const right of rights)
+    if (!operations.has(right)) issue('PERMISSION_DIFF_OPERATION_UNRESOLVED', id(permission.id));
+  for (const role of roleIds(permission)) addRoleGrantCells(permission, role, rights, cells, predicate, work);
+}
+
+function normalize(model, side, diagnostics, work) {
+  const byId = new Map(),
+    roles = new Map(),
+    byName = new Map(),
+    cells = new Map();
+  const issue = (code, permissionId = null) => diagnostics.push({ code, side, permissionId });
+  indexRoles(model, side, work, issue, roles, byName);
+  indexPermissions(model, side, work, issue, byId);
+  collectModelIssues(model, side, work, issue);
+  const roleIds = (permission) => permissionRoleIds(permission, side, work, roles, byName, issue);
+  const relationship = (value, permission, depth = 0) => normalizeRelationship(value, permission, issue, work, depth);
+  const context = { byId, roleIds, relationship, issue, work };
+  const predicate = (permission, role, chain = new Set()) =>
+    permissionPredicate(permission, role, chain, { ...context, predicate });
+  for (const permission of model.permissions) {
+    addPermissionGrants(permission, side, work, issue, cells, roleIds, predicate);
   }
   for (const cell of cells.values()) {
     work(cell.size);
@@ -232,6 +262,22 @@ const evidence = (cell) =>
     }))
     .sort((left, right) => JSON.stringify(left.predicate).localeCompare(JSON.stringify(right.predicate)));
 
+function classifyPermissionChange(oldCoversNew, newCoversOld, diagnostics) {
+  if (oldCoversNew && newCoversOld) return 'unchanged';
+  if (diagnostics.length) return 'indeterminate';
+  if (newCoversOld) return 'wider';
+  if (oldCoversNew) return 'narrower';
+  return 'indeterminate';
+}
+
+function permissionDiffStatus(issues, summary) {
+  if (issues.length || summary.indeterminate) return 'indeterminate';
+  if (summary.wider && summary.narrower) return 'mixed';
+  if (summary.wider) return 'wider';
+  if (summary.narrower) return 'narrower';
+  return 'unchanged';
+}
+
 /** Compare full buildPermissionModel outputs without reading rows, changing grants or contacting a service. */
 export function comparePermissionModels(before, after) {
   let remaining = MAX_WORK;
@@ -260,35 +306,18 @@ export function comparePermissionModels(before, after) {
       b = effectiveCell(right, key, work),
       oldCoversNew = covers(a, b),
       newCoversOld = covers(b, a);
-    const classification =
-      oldCoversNew && newCoversOld
-        ? 'unchanged'
-        : diagnostics.length
-          ? 'indeterminate'
-          : newCoversOld
-            ? 'wider'
-            : oldCoversNew
-              ? 'narrower'
-              : 'indeterminate';
+    const classification = classifyPermissionChange(oldCoversNew, newCoversOld, diagnostics);
     summary[classification]++;
     if (classification === 'unchanged') continue;
     const [roleId, entity, operation] = JSON.parse(key);
     changes.push({ roleId, entity, operation, classification, before: evidence(a), after: evidence(b) });
   }
   const issues = [...new Map(diagnostics.map((entry) => [JSON.stringify(entry), entry])).values()];
+  const status = permissionDiffStatus(issues, summary);
   return {
     version: 1,
     domain: 'compiled-portal-table-grants',
-    status:
-      issues.length || summary.indeterminate
-        ? 'indeterminate'
-        : summary.wider && summary.narrower
-          ? 'mixed'
-          : summary.wider
-            ? 'wider'
-            : summary.narrower
-              ? 'narrower'
-              : 'unchanged',
+    status,
     summary,
     changes,
     diagnostics: issues,

@@ -105,7 +105,7 @@ export function createPersonaContexts({
       serialize(async () => {
         closed = true;
         const failures = [];
-        for (const entry of [...entries.values()]) {
+        /* NOSONAR */ for (const entry of [...entries.values()]) {
           try {
             await stop(entry.id);
           } catch (cause) {

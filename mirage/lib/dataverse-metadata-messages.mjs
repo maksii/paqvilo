@@ -14,7 +14,7 @@ import { zipOf } from './dataverse-solutions.mjs';
 
 const DEFAULT_LCID = 1033;
 const LABEL_LIMIT = 500; // translated text over 500 characters fails the import
-const TABLE_LABELS = ['DisplayName', 'DisplayCollectionName', 'Description'];
+const TABLE_LABELS = new Set(['DisplayName', 'DisplayCollectionName', 'Description']);
 // The only attributes RetrieveLocLabels and SetLocLabels accept (their documented supported tables).
 const LOC_ATTRIBUTES = {
   dynamicproperty: ['name'],
@@ -32,13 +32,9 @@ const fail = (message, status = 400, code = 'InvalidRequest', innerCode) =>
   new DataError(message, status, code, innerCode ? { innerCode } : undefined);
 const lower = (value) => String(value ?? '').toLowerCase();
 const xmlEsc = (value) =>
-  String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 const xmlUnesc = (value) =>
-  value
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, '&');
+  value.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&quot;', '"').replaceAll('&amp;', '&');
 // The operation's argument: a JSON body member for actions, a URL parameter for functions.
 const argOf = (c, name) => (c.body?.[name] !== undefined ? c.body[name] : c.params?.[name]);
 const required = (value, name) => {
@@ -68,7 +64,7 @@ const namesWhere = (api, test) =>
   Object.values(api.store.state.mappings)
     .filter((mapping) => mapping.logicalName && test(mapping))
     .map((mapping) => mapping.logicalName)
-    .sort();
+    .sort((a, b) => Number(a > b) - Number(a < b));
 
 // ---- Autonumber (default seed 1000)
 // The counter is the next value, kept in settings.autoNumberSequences exactly where the record writer advances it.
@@ -198,7 +194,7 @@ function readZipFiles(buffer) {
   return files;
 }
 const attributesOf = (tag) =>
-  Object.fromEntries([...tag.matchAll(/(\w+)="([^"]*)"/g)].map(([, k, v]) => [k, xmlUnesc(v)]));
+  Object.fromEntries([...tag.matchAll(/(\w+)="([^"]*)"/g)].map(([, k, v]) => [k, xmlUnesc(v)])); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
 function rowsOf(text) {
   return [...text.matchAll(/<LocLabel\b([^>]*?)\/?>/g)].map((m) => attributesOf(m[1]));
 }
@@ -215,26 +211,26 @@ function labelXml(rows, root) {
 const CONTENT_TYPES = `<?xml version="1.0" encoding="utf-8"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml" /></Types>`;
 
 // Table labels (dataverseMetadata.labels) and localized labels of rows, one LocLabel per language.
-function exportRows(api, { fields }) {
-  const out = [];
-  if (!fields) {
-    for (const mapping of Object.values(api.store.state.mappings)) {
-      if (!mapping.logicalName) continue;
-      const labels = mapping.dataverseMetadata?.labels ?? {};
-      for (const property of TABLE_LABELS) {
-        for (const [lcid, text] of Object.entries(labels[property] ?? {})) {
-          if (text != null)
-            out.push({
-              ObjectType: 'table',
-              Name: mapping.logicalName,
-              Property: property,
-              languagecode: lcid,
-              description: text,
-            });
-        }
+function exportTableRows(api, out) {
+  for (const mapping of Object.values(api.store.state.mappings)) {
+    if (!mapping.logicalName) continue;
+    const labels = mapping.dataverseMetadata?.labels ?? {};
+    for (const property of TABLE_LABELS) {
+      for (const [lcid, text] of Object.entries(labels[property] ?? {})) {
+        if (text != null)
+          out.push({
+            ObjectType: 'table',
+            Name: mapping.logicalName,
+            Property: property,
+            languagecode: lcid,
+            description: text,
+          });
       }
     }
   }
+}
+
+function exportLocalizedRows(api, out) {
   for (const [key, entry] of Object.entries(api.store.state.dataverse?.locLabels ?? {})) {
     const [logical, , attribute] = key.split('|');
     for (const [lcid, text] of Object.entries(entry)) {
@@ -249,6 +245,12 @@ function exportRows(api, { fields }) {
         });
     }
   }
+}
+
+function exportRows(api, { fields }) {
+  const out = [];
+  if (!fields) exportTableRows(api, out);
+  exportLocalizedRows(api, out);
   return out;
 }
 
@@ -262,13 +264,13 @@ async function importRows(api, rows) {
       if (text.length > LABEL_LIMIT) throw fail(`A translated label is longer than ${LABEL_LIMIT} characters.`);
       if (row.ObjectType === 'table') {
         const mapping = api.store.state.mappings[row.Name];
-        if (!mapping || !TABLE_LABELS.includes(row.Property)) continue; // labels for components not in this organization are dropped
+        if (!mapping || !TABLE_LABELS.has(row.Property)) continue; // labels for components not in this organization are dropped
         mapping.dataverseMetadata ??= {};
         const labels = (mapping.dataverseMetadata.labels ??= {});
-        labels[row.Property] = { ...(labels[row.Property] ?? {}), [lcid]: text };
+        labels[row.Property] = { ...labels[row.Property], [lcid]: text };
       } else if (row.ObjectType === 'field') {
         dv.locLabels ??= {};
-        dv.locLabels[row.Name] = { ...(dv.locLabels[row.Name] ?? {}), [lcid]: text };
+        dv.locLabels[row.Name] = { ...dv.locLabels[row.Name], [lcid]: text };
       }
     }
   });
@@ -291,7 +293,7 @@ const LABEL_COLUMNS = ['Entity Name', 'Object Type', 'Object Id', 'Object Column
 const isLcid = (name) => /^\d+$/.test(name);
 const cellXml = (value) => `<Cell><Data ss:Type="String">${xmlEsc(value ?? '')}</Data></Cell>`;
 const sheetXml = (name, rows) =>
-  `<Worksheet ss:Name="${xmlEsc(name)}"><Table>${rows.map((row) => `<Row>${row.map(cellXml).join('')}</Row>`).join('')}</Table></Worksheet>`;
+  `<Worksheet ss:Name="${xmlEsc(name)}"><Table>${rows.map((row) => '<Row>' + row.map(cellXml).join('') + '</Row>').join('')}</Table></Worksheet>`;
 
 // One row per label, one column per provisioned language. Table labels are Entity rows (Object Id: the entity's MetadataId).
 function labelSheetOf(api) {
@@ -555,10 +557,8 @@ function operations(api) {
       kind: 'action',
       signature: {
         params: [
-          ...[
-            ['EntityName', 'Edm.String'],
-            ['AttributeName', 'Edm.String'],
-          ],
+          ['EntityName', 'Edm.String'],
+          ['AttributeName', 'Edm.String'],
           ['Value', 'Edm.Int64'],
         ],
       },
@@ -570,7 +570,8 @@ function operations(api) {
         privilege(c, 'prvWriteAttribute', 'attribute');
         await writeState(api, () => {
           const settings = (api.store.state.settings ??= {});
-          (settings.autoNumberSequences ??= {})[counterKey] = value;
+          settings.autoNumberSequences ??= {};
+          settings.autoNumberSequences[counterKey] = value;
         });
         return noContent();
       },
@@ -683,7 +684,7 @@ function operations(api) {
           const dv = (api.store.state.dataverse ??= {});
           dv.locLabels ??= {};
           const name = labelKey(mapping, id, attribute);
-          const entry = { ...(dv.locLabels[name] ?? {}) };
+          const entry = { ...dv.locLabels[name] };
           for (const item of labels) {
             const lcid = lcidOf(item?.LanguageCode, 'LanguageCode');
             if (!active.includes(lcid)) throw fail(`The language ${lcid} is not provisioned.`);

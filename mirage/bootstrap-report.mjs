@@ -44,13 +44,197 @@ const countBy = (items, key) =>
     return counts;
   }, {});
 const sortObject = (object) =>
-  Object.fromEntries(Object.entries(object).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  Object.fromEntries(Object.entries(object).sort(([a], [b]) => (a < b ? -1 : Number(a > b))));
 const id = (value) =>
   String(typeof value === 'object' && value ? (value.id ?? '') : (value ?? ''))
     .replace(/[{}]/g, '')
     .toLowerCase();
 // Non-table Power Pages endpoints that share the /_api prefix.
 const NON_TABLE_API = new Set(['cloudflow']);
+
+function portalTableReasons(portal, webApiTables) {
+  const reasons = new Map();
+  const need = (table, reason) => {
+    if (!table) return;
+    const name = String(table).toLowerCase();
+    if (!reasons.has(name)) reasons.set(name, new Set());
+    reasons.get(name).add(reason);
+  };
+  for (const record of portal.records.filter(
+    (r) => r.kind === 'tablepermission' && Number(field(r, 'statecode', 0)) !== 1,
+  ))
+    need(field(record, 'entitylogicalname'), 'permission');
+  for (const name of webApiTables) need(name, 'webapi');
+  for (const item of [...portal.forms, ...portal.lists])
+    need(item.entityName, portal.forms.includes(item) ? 'form' : 'list');
+  for (const step of portal.records.filter((r) => r.kind === 'advancedformstep'))
+    need(field(step, 'targetentitylogicalname', field(step, 'entityname')), 'advanced-form');
+  for (const template of new Set(Object.values(portal.templates)))
+    for (const match of template.source.matchAll(/<(?:entity|link-entity)\b[^>]*\bname\s*=\s*["'](\w+)["']/gi))
+      need(match[1], 'fetchxml');
+  return reasons;
+}
+
+function reportTables(schema, reasons, allFields, lcid) {
+  return Object.values(schema.tables)
+    .sort((a, b) => (a.logicalName < b.logicalName ? -1 : 1))
+    .map((table) => ({
+      logicalName: table.logicalName,
+      entitySet: table.entitySet,
+      entitySetSource: table.entitySetSource,
+      primaryIdAttribute: table.primaryIdAttribute,
+      primaryIdSource: table.primaryIdSource,
+      primaryNameAttribute: table.primaryNameAttribute ?? null,
+      primaryNameSource: table.primaryNameSource ?? null,
+      schemaComplete: table.schemaComplete,
+      completeness: table.completeness,
+      intersect: Boolean(table.isIntersect),
+      attributes: Object.keys(table.attributes).length,
+      layers: table.layers.map((layer) => ({
+        solution: layer.solution,
+        file: layer.file,
+        fullDefinition: layer.fullDefinition,
+        attributes: layer.attributes,
+      })),
+      origin: table.origin,
+      portalUse: [...(reasons.get(table.logicalName) ?? [])].sort((a, b) => Number(a > b) - Number(a < b)),
+      ...(allFields || reasons.has(table.logicalName)
+        ? { fields: tableFields(schema, table.logicalName, { lcid }) }
+        : {}),
+    }));
+}
+
+function reportMissingTables(reasons, schema, state) {
+  return [...reasons.keys()]
+    .filter((name) => !schema.tables[name])
+    .sort((a, b) => Number(a > b) - Number(a < b))
+    .map((name) => ({
+      logicalName: name,
+      portalUse: [...reasons.get(name)].sort((a, b) => Number(a > b) - Number(a < b)),
+      mapping: state.mappings[name] ?? null,
+    }));
+}
+
+function appendTableLookups(name, table, schema, lookups) {
+  for (const attribute of Object.values(table.attributes))
+    if (['lookup', 'customer', 'owner'].includes(attribute.type)) {
+      const related = schema.targets[`${name}/${attribute.name}`];
+      const standard = STANDARD_LOOKUP_TARGETS[attribute.name];
+      let targetsSource = null;
+      if (related) targetsSource = 'relationship';
+      else if (standard) targetsSource = 'dataverse-reference';
+      lookups.push({
+        table: name,
+        column: attribute.name,
+        type: attribute.type,
+        targets: related ?? standard ?? [],
+        targetsSource,
+      });
+    }
+}
+
+function reportLookups(reasons, schema) {
+  const lookups = [];
+  for (const name of reasons.keys()) {
+    const table = schema.tables[name];
+    if (!table) continue;
+    appendTableLookups(name, table, schema, lookups);
+  }
+  return lookups;
+}
+
+function reportApiOracle(texts, mappings) {
+  const apiNames = new Map();
+  for (const text of texts)
+    for (const match of String(text ?? '').matchAll(/\/_api\/([A-Za-z_]\w*)(\/?)/g)) {
+      const entry = apiNames.get(match[1]) ?? { name: match[1], references: 0, continues: false };
+      entry.references++;
+      if (match[2] === '/') entry.continues = true;
+      apiNames.set(match[1], entry);
+    }
+  const bySet = new Map(Object.entries(mappings).map(([name, mapping]) => [mapping.entitySet, { name, mapping }]));
+  return [...apiNames.values()]
+    .sort((a, b) => (a.name < b.name ? -1 : 1))
+    .map((entry) => {
+      const hit = bySet.get(entry.name);
+      let status = 'unresolved';
+      if (hit) status = 'resolved';
+      else if (NON_TABLE_API.has(entry.name.toLowerCase()) || entry.continues) status = 'non-table-endpoint';
+      return {
+        entitySet: entry.name,
+        references: entry.references,
+        table: hit?.name ?? null,
+        entitySetSource: hit?.mapping.entitySetSource ?? null,
+        status,
+      };
+    });
+}
+
+function permissionSummary(model) {
+  const disabled = model.permissions.filter((rule) => rule.enabled === false);
+  return {
+    total: model.permissions.length,
+    enabled: model.permissions.length - disabled.length,
+    byScope: sortObject(
+      model.permissions.reduce((acc, rule) => {
+        acc[rule.scope] ??= { total: 0, enabled: 0 };
+        acc[rule.scope].total++;
+        if (rule.enabled !== false) acc[rule.scope].enabled++;
+        return acc;
+      }, {}),
+    ),
+    disabledByCode: sortObject(countBy(disabled, (rule) => rule.disabledCode ?? 'PERMISSION_DISABLED')),
+    disabled: disabled.map((rule) => ({
+      id: rule.id,
+      name: rule.name,
+      entity: rule.entity,
+      scope: rule.scope,
+      relationshipName: rule.relationshipName ?? null,
+      code: rule.disabledCode ?? null,
+      reason: rule.disabledReason,
+    })),
+    diagnostics: sortObject(countBy(model.diagnostics, 'code')),
+  };
+}
+
+function reportPageRules(portal, pageUrl, roleName) {
+  const pageRight = (rule) => {
+    const right = Number(field(rule, 'right'));
+    if (right === 1) return 'grant-change';
+    if (right === 2) return 'restrict-read';
+    return field(rule, 'right');
+  };
+  return portal.records
+    .filter((r) => r.kind === 'webpageaccesscontrolrule' && Number(field(r, 'statecode', 0)) !== 1)
+    .map((rule) => ({
+      id: rule.id,
+      name: rule.name,
+      page: pageUrl.get(id(field(rule, 'webpageid'))) ?? id(field(rule, 'webpageid')),
+      right: pageRight(rule),
+      scope: Number(field(rule, 'scope', 1)) === 2 ? 'exclude-direct-child-web-files' : 'all-content',
+      roles: [field(rule, 'webpageaccesscontrolrule_webrole', []) ?? []]
+        .flat()
+        .map((role) => roleName.get(id(role)) ?? id(role)),
+    }));
+}
+
+function reportWebApiSettings(portal, state) {
+  const webApi = {};
+  for (const [name, value] of Object.entries(portal.settings)) {
+    const match = /^Webapi\/([^/]+)\/(.+)$/i.exec(name);
+    if (!match) continue;
+    const entry = (webApi[match[1].toLowerCase()] ??= { table: match[1].toLowerCase() });
+    entry[match[2]] = value;
+  }
+  return Object.values(webApi)
+    .sort((a, b) => (a.table < b.table ? -1 : 1))
+    .map((entry) => ({
+      ...entry,
+      entitySet: state.mappings[entry.table]?.entitySet ?? null,
+      schemaComplete: state.mappings[entry.table]?.schemaComplete ?? false,
+      fieldMetadata: Object.keys(state.mappings[entry.table]?.fieldMetadata ?? {}).length,
+    }));
+}
 
 export async function resolveReportInputs(args) {
   if (args.project) {
@@ -205,80 +389,14 @@ export async function bootstrapReport(inputs, { noCache = false, allFields = fal
   timings.modelMs = Math.round(performance.now() - started);
 
   // Why the portal needs each table.
-  const reasons = new Map();
-  const need = (table, reason) => {
-    if (!table) return;
-    const name = String(table).toLowerCase();
-    if (!reasons.has(name)) reasons.set(name, new Set());
-    reasons.get(name).add(reason);
-  };
-  for (const record of portal.records.filter(
-    (r) => r.kind === 'tablepermission' && Number(field(r, 'statecode', 0)) !== 1,
-  ))
-    need(field(record, 'entitylogicalname'), 'permission');
-  for (const name of webApiTables) need(name, 'webapi');
-  for (const item of [...portal.forms, ...portal.lists])
-    need(item.entityName, portal.forms.includes(item) ? 'form' : 'list');
-  for (const step of portal.records.filter((r) => r.kind === 'advancedformstep'))
-    need(field(step, 'targetentitylogicalname', field(step, 'entityname')), 'advanced-form');
-  for (const template of new Set(Object.values(portal.templates)))
-    for (const match of template.source.matchAll(/<(?:entity|link-entity)\b[^>]*\bname\s*=\s*["']([\w]+)["']/gi))
-      need(match[1], 'fetchxml');
-  const tables = Object.values(schema.tables)
-    .sort((a, b) => (a.logicalName < b.logicalName ? -1 : 1))
-    .map((table) => ({
-      logicalName: table.logicalName,
-      entitySet: table.entitySet,
-      entitySetSource: table.entitySetSource,
-      primaryIdAttribute: table.primaryIdAttribute,
-      primaryIdSource: table.primaryIdSource,
-      primaryNameAttribute: table.primaryNameAttribute ?? null,
-      primaryNameSource: table.primaryNameSource ?? null,
-      schemaComplete: table.schemaComplete,
-      completeness: table.completeness,
-      intersect: Boolean(table.isIntersect),
-      attributes: Object.keys(table.attributes).length,
-      layers: table.layers.map((layer) => ({
-        solution: layer.solution,
-        file: layer.file,
-        fullDefinition: layer.fullDefinition,
-        attributes: layer.attributes,
-      })),
-      origin: table.origin,
-      portalUse: [...(reasons.get(table.logicalName) ?? [])].sort(),
-      ...(allFields || reasons.has(table.logicalName)
-        ? { fields: tableFields(schema, table.logicalName, { lcid: inputs.lcid }) }
-        : {}),
-    }));
-  const missingTables = [...reasons.keys()]
-    .filter((name) => !schema.tables[name])
-    .sort()
-    .map((name) => ({
-      logicalName: name,
-      portalUse: [...reasons.get(name)].sort(),
-      mapping: state.mappings[name] ?? null,
-    }));
+  const reasons = portalTableReasons(portal, webApiTables);
+  const tables = reportTables(schema, reasons, allFields, inputs.lcid);
+  const missingTables = reportMissingTables(reasons, schema, state);
   const relationships = Object.values(data.relationships).sort((a, b) =>
     a.schemaName.toLowerCase() < b.schemaName.toLowerCase() ? -1 : 1,
   );
   // Lookup columns of portal tables and whether a relationship resolves their targets.
-  const lookups = [];
-  for (const name of reasons.keys()) {
-    const table = schema.tables[name];
-    if (!table) continue;
-    for (const attribute of Object.values(table.attributes))
-      if (['lookup', 'customer', 'owner'].includes(attribute.type)) {
-        const related = schema.targets[`${name}/${attribute.name}`];
-        const standard = STANDARD_LOOKUP_TARGETS[attribute.name];
-        lookups.push({
-          table: name,
-          column: attribute.name,
-          type: attribute.type,
-          targets: related ?? standard ?? [],
-          targetsSource: related ? 'relationship' : standard ? 'dataverse-reference' : null,
-        });
-      }
-  }
+  const lookups = reportLookups(reasons, schema);
   // /_api/<entity set> references in the portal source (test oracle for entity sets).
   const sources = [
     ...portal.webFiles
@@ -298,94 +416,12 @@ export async function bootstrapReport(inputs, { noCache = false, allFields = fal
     } catch {
       /* Optional source text may be absent; retain the report entry. */
     }
-  const apiNames = new Map();
-  for (const text of texts)
-    for (const match of String(text ?? '').matchAll(/\/_api\/([A-Za-z_][A-Za-z0-9_]*)(\/?)/g)) {
-      const entry = apiNames.get(match[1]) ?? { name: match[1], references: 0, continues: false };
-      entry.references++;
-      if (match[2] === '/') entry.continues = true;
-      apiNames.set(match[1], entry);
-    }
-  const bySet = new Map(
-    Object.entries(state.mappings).map(([name, mapping]) => [mapping.entitySet, { name, mapping }]),
-  );
-  const apiOracle = [...apiNames.values()]
-    .sort((a, b) => (a.name < b.name ? -1 : 1))
-    .map((entry) => {
-      const hit = bySet.get(entry.name);
-      return {
-        entitySet: entry.name,
-        references: entry.references,
-        table: hit?.name ?? null,
-        entitySetSource: hit?.mapping.entitySetSource ?? null,
-        status: hit
-          ? 'resolved'
-          : NON_TABLE_API.has(entry.name.toLowerCase()) || entry.continues
-            ? 'non-table-endpoint'
-            : 'unresolved',
-      };
-    });
-  const permissionSummary = (model) => {
-    const disabled = model.permissions.filter((rule) => rule.enabled === false);
-    return {
-      total: model.permissions.length,
-      enabled: model.permissions.length - disabled.length,
-      byScope: sortObject(
-        model.permissions.reduce((acc, rule) => {
-          acc[rule.scope] ??= { total: 0, enabled: 0 };
-          acc[rule.scope].total++;
-          if (rule.enabled !== false) acc[rule.scope].enabled++;
-          return acc;
-        }, {}),
-      ),
-      disabledByCode: sortObject(countBy(disabled, (rule) => rule.disabledCode ?? 'PERMISSION_DISABLED')),
-      disabled: disabled.map((rule) => ({
-        id: rule.id,
-        name: rule.name,
-        entity: rule.entity,
-        scope: rule.scope,
-        relationshipName: rule.relationshipName ?? null,
-        code: rule.disabledCode ?? null,
-        reason: rule.disabledReason,
-      })),
-      diagnostics: sortObject(countBy(model.diagnostics, 'code')),
-    };
-  };
+  const apiOracle = reportApiOracle(texts, state.mappings);
   const roles = portalWebRoles(portal);
   const roleName = new Map(roles.map((role) => [role.id, role.name]));
   const pageUrl = new Map(portal.pages.map((page) => [page.id, page.url]));
-  const pageRules = portal.records
-    .filter((r) => r.kind === 'webpageaccesscontrolrule' && Number(field(r, 'statecode', 0)) !== 1)
-    .map((rule) => ({
-      id: rule.id,
-      name: rule.name,
-      page: pageUrl.get(id(field(rule, 'webpageid'))) ?? id(field(rule, 'webpageid')),
-      right:
-        Number(field(rule, 'right')) === 1
-          ? 'grant-change'
-          : Number(field(rule, 'right')) === 2
-            ? 'restrict-read'
-            : field(rule, 'right'),
-      scope: Number(field(rule, 'scope', 1)) === 2 ? 'exclude-direct-child-web-files' : 'all-content',
-      roles: []
-        .concat(field(rule, 'webpageaccesscontrolrule_webrole', []) ?? [])
-        .map((role) => roleName.get(id(role)) ?? id(role)),
-    }));
-  const webApi = {};
-  for (const [name, value] of Object.entries(portal.settings)) {
-    const match = /^Webapi\/([^/]+)\/(.+)$/i.exec(name);
-    if (!match) continue;
-    const entry = (webApi[match[1].toLowerCase()] ??= { table: match[1].toLowerCase() });
-    entry[match[2]] = value;
-  }
-  const webApiSettings = Object.values(webApi)
-    .sort((a, b) => (a.table < b.table ? -1 : 1))
-    .map((entry) => ({
-      ...entry,
-      entitySet: state.mappings[entry.table]?.entitySet ?? null,
-      schemaComplete: state.mappings[entry.table]?.schemaComplete ?? false,
-      fieldMetadata: Object.keys(state.mappings[entry.table]?.fieldMetadata ?? {}).length,
-    }));
+  const pageRules = reportPageRules(portal, pageUrl, roleName);
+  const webApiSettings = reportWebApiSettings(portal, state);
   const siteSettings = sortObject(
     Object.fromEntries(
       Object.entries(portal.settings).filter(([name]) =>
@@ -511,11 +547,10 @@ export function formatReport(report) {
   add(
     `Tables: ${s.tables} (complete ${s.completeTables}); entity set: ${pairs(s.entitySetSources)}; primary id: ${pairs(s.primaryIdSources)}`,
   );
+  const formatUses = (tables) => tables.map((t) => `${t.logicalName}[${t.portalUse.join('/')}]`).join(', ');
   add(
     `Portal tables: ${s.portalTables}; without a solution definition: ${s.portalTablesWithoutDefinition}`,
-    s.portalTablesWithoutDefinition
-      ? ` (${report.portalTablesWithoutDefinition.map((t) => `${t.logicalName}[${t.portalUse.join('/')}]`).join(', ')})`
-      : '',
+    s.portalTablesWithoutDefinition ? ` (${formatUses(report.portalTablesWithoutDefinition)})` : '',
   );
   add(`/_api entity-set oracle: ${pairs(s.apiOracle)}`);
   const unresolvedApi = report.apiOracle.filter((entry) => entry.status === 'unresolved');
@@ -525,22 +560,27 @@ export function formatReport(report) {
   );
   if (Object.keys(s.cascadeDelete ?? {}).length) add(`  one-to-many delete behaviour: ${pairs(s.cascadeDelete)}`);
   for (const [mode, summary] of Object.entries(report.permissions)) {
-    add(
-      `Permissions (${mode}): ${summary.enabled}/${summary.total} enabled; by scope: ${Object.entries(summary.byScope)
-        .map(([scope, c]) => `${scope} ${c.enabled}/${c.total}`)
-        .join(', ')}`,
-    );
+    const byScope = Object.entries(summary.byScope)
+      .map(([scope, c]) => `${scope} ${c.enabled}/${c.total}`)
+      .join(', ');
+    add(`Permissions (${mode}): ${summary.enabled}/${summary.total} enabled; by scope: ${byScope}`);
     if (Object.keys(summary.disabledByCode).length) add(`  disabled: ${pairs(summary.disabledByCode)}`);
   }
-  add(
-    `Web roles ${s.webRoles}; page rules ${s.pageRules}; publishing states: ${report.publishingStates.map((p) => `${p.name}${p.isVisible ? ' (visible)' : ''}${p.active ? '' : ' [inactive record]'}`).join(', ') || 'none'}`,
-  );
-  add(
-    `Website access: ${report.websiteAccess.map((a) => `${a.name}${a.previewUnpublishedEntities ? ' (preview)' : ''} [${a.roles.join(', ')}]`).join('; ') || 'none'}`,
-  );
-  add(
-    `Website languages: ${report.websiteLanguages.map((l) => `${l.name}${l.isDefault ? ' (default)' : ''}${l.published ? '' : ' [unpublished]'}`).join(', ') || 'none'}`,
-  );
+  const publishingStates =
+    report.publishingStates
+      .map((p) => `${p.name}${p.isVisible ? ' (visible)' : ''}${p.active ? '' : ' [inactive record]'}`)
+      .join(', ') || 'none';
+  const websiteAccess =
+    report.websiteAccess
+      .map((a) => `${a.name}${a.previewUnpublishedEntities ? ' (preview)' : ''} [${a.roles.join(', ')}]`)
+      .join('; ') || 'none';
+  const websiteLanguages =
+    report.websiteLanguages
+      .map((l) => `${l.name}${l.isDefault ? ' (default)' : ''}${l.published ? '' : ' [unpublished]'}`)
+      .join(', ') || 'none';
+  add(`Web roles ${s.webRoles}; page rules ${s.pageRules}; publishing states: ${publishingStates}`);
+  add(`Website access: ${websiteAccess}`);
+  add(`Website languages: ${websiteLanguages}`);
   add(`Redirects ${s.redirects}; URL history ${s.urlHistory}; shortcuts ${s.shortcuts}`);
   add(`Environment variables: ${s.environmentVariables} (${s.environmentVariablesWithValues} with exported values)`);
   add(

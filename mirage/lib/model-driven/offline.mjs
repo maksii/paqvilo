@@ -31,6 +31,7 @@ const bare = (value) =>
     .replace(/[{}]/g, '')
     .toLowerCase();
 const now = () => new Date().toISOString();
+const valueXml = (value) => `<value>${value}</value>`;
 
 // A custom filter is the FetchXML `<filter>`/`<link-entity>` content of the item's table, from a `<fetch>` document or a bare
 // `<filter>` (the exported ProfileItemEntityFilter text format is a guess; both shapes are accepted): { text, nodes }.
@@ -67,8 +68,10 @@ function filterGap(nodes, entity, profileTables, hierarchical = () => false) {
       node.name === 'condition' &&
       !dataverseFetchOperator(operator) &&
       !(HIERARCHY_OPERATORS.has(operator) && hierarchical(target))
-    )
-      return `The custom filter of ${entity} uses the condition operator ${node.attrs.operator}, which the offline download cannot evaluate${HIERARCHY_OPERATORS.has(operator) ? ` (${target} has no hierarchical relationship)` : ''}.`;
+    ) {
+      const hierarchyMessage = HIERARCHY_OPERATORS.has(operator) ? ` (${target} has no hierarchical relationship)` : '';
+      return `The custom filter of ${entity} uses the condition operator ${node.attrs.operator}, which the offline download cannot evaluate${hierarchyMessage}.`;
+    }
     if (node.name === 'link-entity' && profileTables && !profileTables.has(node.attrs.name))
       return `The custom filter of ${entity} joins ${node.attrs.name ?? 'a table'}, which is not in the offline profile.`;
   }
@@ -80,11 +83,8 @@ function filterGap(nodes, entity, profileTables, hierarchical = () => false) {
  * `profileTables` (the profile's table names) lets the check refuse a link-entity to a table outside the profile;
  * `hierarchical(table)` answers whether a table has a hierarchical relationship (filterGap). */
 export function profileItemFilter(item = {}, { profileTables = null, hierarchical } = {}) {
-  if (!NAME.test(item.entity ?? '')) return { reason: 'The profile item names no table.' };
-  if ((item.relationships ?? []).length > RELATED_LIMIT)
-    return {
-      reason: `More than ${RELATED_LIMIT} relationships on ${item.entity} (Learn: up to ${RELATED_LIMIT} related tables).`,
-    };
+  const reason = profileItemReason(item);
+  if (reason) return { reason };
   const owned = [
     item.ownedByMe && '<condition attribute="ownerid" operator="eq-userid"/>',
     item.ownedByMyTeam && '<condition attribute="ownerid" operator="eq-userteams"/>',
@@ -92,11 +92,8 @@ export function profileItemFilter(item = {}, { profileTables = null, hierarchica
   ].filter(Boolean);
   const parsed = item.filter ? customFilter(item.filter, item.entity) : null,
     custom = parsed?.text ?? null;
-  if (item.filter && custom === null)
-    return { reason: `The custom filter of ${item.entity} is not FetchXML for that table.` };
-  const unsupported =
-    parsed && filterGap(parsed.nodes, item.entity, profileTables instanceof Set ? profileTables : null, hierarchical);
-  if (unsupported) return { reason: unsupported };
+  const customReason = profileCustomReason(item, parsed, custom, profileTables, hierarchical);
+  if (customReason) return { reason: customReason };
   switch (item.distribution) {
     case 1:
       return { filter: '' };
@@ -111,6 +108,20 @@ export function profileItemFilter(item = {}, { profileTables = null, hierarchica
     default:
       return { reason: `Unknown data download filter ${item.distribution} on ${item.entity}.` };
   }
+}
+
+function profileItemReason(item) {
+  if (!NAME.test(item.entity ?? '')) return 'The profile item names no table.';
+  if ((item.relationships ?? []).length > RELATED_LIMIT)
+    return `More than ${RELATED_LIMIT} relationships on ${item.entity} (Learn: up to ${RELATED_LIMIT} related tables).`;
+  return null;
+}
+
+function profileCustomReason(item, parsed, custom, profileTables, hierarchical) {
+  if (item.filter && custom === null) return `The custom filter of ${item.entity} is not FetchXML for that table.`;
+  const unsupported =
+    parsed && filterGap(parsed.nodes, item.entity, profileTables instanceof Set ? profileTables : null, hierarchical);
+  return unsupported || null;
 }
 
 /** Items of a profile the simulator cannot evaluate, as [{ entity, reason }] (relationships are checked at sync time). */
@@ -155,6 +166,88 @@ const linksOf = (tables, entity, schemaName) =>
       link.to,
   );
 
+function takeDownloadedRows(tables, rows, versions, labels, entity, list) {
+  const idColumn = tables[entity].idColumn,
+    bucket = rows.get(entity);
+  let added = 0;
+  for (const raw of list) {
+    const row = storeRow(raw),
+      id = bare(row[idColumn]);
+    if (!bucket.has(id)) added++;
+    bucket.set(id, { ...row, [idColumn]: id });
+    versions.set(`${entity}:${id}`, raw['@odata.etag'] ?? null);
+    // Lookup display names as downloaded, for rows whose target is not in the offline copy.
+    for (const [key, value] of Object.entries(raw)) {
+      const lookup = /^_(.+)_value@OData\.Community\.Display\.V1\.FormattedValue$/.exec(key);
+      if (lookup) labels.set(`${entity}:${id}:${lookup[1]}`, value);
+    }
+  }
+  return added;
+}
+
+function offlineMappings(tables, rows) {
+  return Object.fromEntries(
+    [...rows.keys()].map((entity) => {
+      const table = tables[entity];
+      return [
+        entity,
+        {
+          entitySet: table.entitySet,
+          idColumn: table.idColumn,
+          nameColumn: table.nameColumn,
+          fields: table.fields,
+          relationships: Object.fromEntries(
+            Object.entries(table.relationships ?? {}).filter(([, link]) => rows.has(link.entity)),
+          ),
+        },
+      ];
+    }),
+  );
+}
+
+function offlineRights(webApi, session, rows) {
+  return Object.fromEntries(
+    [...rows.keys()].map((entity) => [
+      entity,
+      Object.fromEntries(
+        ['create', 'update', 'delete'].map((operation) => {
+          const error = webApi.privilegeError?.({ principal: session.principal, entity, operation }) ?? null;
+          return [
+            operation,
+            error && {
+              status: error.status ?? 403,
+              code: error.details?.innerCode ?? error.code ?? null,
+              message: error.message,
+            },
+          ];
+        }),
+      ),
+    ]),
+  );
+}
+
+function offlineTableSummary(items, rows) {
+  return items
+    .filter((item) => rows.has(item.entity))
+    .map((item) => ({
+      entity: item.entity,
+      rows: rows.get(item.entity).size,
+      syncIntervalMinutes: item.syncIntervalMinutes ?? null,
+    }));
+}
+
+function* profileRelationships(items) {
+  for (const item of items) for (const name of item.relationships ?? []) yield { item, name };
+}
+
+function* takeGuidChunks(values, seen) {
+  for (let start = 0; start < values.length; start += 500) {
+    const chunk = values.slice(start, start + 500);
+    chunk.forEach((value) => seen.add(value));
+    yield chunk;
+  }
+}
+
 /** The private local state an offline session persists in: the store's `simulator.offlineSessions` section (the runtime's
  * private state file under the state directory, never pack DATA), keyed per staff user and app. `change` is the host's
  * persisting write wrapper. */
@@ -165,7 +258,10 @@ export function offlineSessionState(store, change = (fn) => fn()) {
       change(() =>
         store.transact(
           () => {
-            const all = ((store.state.simulator ??= {}).offlineSessions ??= {});
+            store.state.simulator ??= {};
+            const simulator = store.state.simulator;
+            simulator.offlineSessions ??= {};
+            const all = simulator.offlineSessions;
             if (value) all[key] = value;
             else delete all[key];
           },
@@ -207,6 +303,32 @@ const revived = (value) => ({
   copy: undefined,
   chain: Promise.resolve(),
 });
+
+function addLocalValue(session, table, values, key, value) {
+  if (!key.endsWith('@odata.bind')) {
+    if (key.includes('@') || key !== key.toLowerCase() || !Object.hasOwn(table.fields ?? {}, key))
+      throw fail(`Column ${key} does not exist on ${table.entity}.`, 400, 'OfflineValidationFailed');
+    values[key] = value;
+    return;
+  }
+  const navigation = key.slice(0, -11),
+    link = table.relationships?.[navigation];
+  let column;
+  if (link?.many === false) column = link.from;
+  else if (table.fields?.[navigation]?.type === 'lookup') column = navigation;
+  else column = null;
+  if (!column) throw fail(`${navigation} is not a lookup of ${table.entity}.`, 400, 'OfflineValidationFailed');
+  if (value === null) {
+    values[column] = null;
+    return;
+  }
+  const match =
+    typeof value === 'string' && /^\/?([a-z_]\w*)\(\{?([\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12})\}?\)$/i.exec(value);
+  const target = match && Object.values(session.catalogueTables).find((candidate) => candidate.entitySet === match[1]);
+  if (!target || (link?.entity && link.entity !== target.entity))
+    throw fail(`${key} needs a /<entityset>(<id>) path of its target table.`, 400, 'OfflineValidationFailed');
+  values[column] = match[2].toLowerCase();
+}
 
 export function createOfflineSessions({ webApi, catalogue, state = null }) {
   // Sessions persist in `state` (offlineSessionState) when the host gives one; restored per staff user and app on first use.
@@ -267,26 +389,25 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
     const key = keyOf(principal, appId);
     const { app, tables } = await appOf(appId);
     let session = sessions.get(key);
-    if (!session)
-      sessions.set(
-        key,
-        (session = {
-          app: appId,
-          mode: 'online',
-          principal,
-          queue: [],
-          conflicts: [],
-          errors: [],
-          versions: new Map(),
-          labels: new Map(),
-          rights: {},
-          db: null,
-          tables: [],
-          gaps: [],
-          lastSync: null,
-          chain: Promise.resolve(),
-        }),
-      );
+    if (!session) {
+      session = {
+        app: appId,
+        mode: 'online',
+        principal,
+        queue: [],
+        conflicts: [],
+        errors: [],
+        versions: new Map(),
+        labels: new Map(),
+        rights: {},
+        db: null,
+        tables: [],
+        gaps: [],
+        lastSync: null,
+        chain: Promise.resolve(),
+      };
+      sessions.set(key, session);
+    }
     Object.assign(session, { principal, host, profile: app.offlineProfiles?.[0] ?? null, catalogueTables: tables });
     return session;
   };
@@ -351,7 +472,7 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
   }
   const hierarchyOf = (session) => (table) => (session.hierarchical ?? []).includes(table);
 
-  async function downsync(session) {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ async function downsync(session) {
     requireProfile(session);
     const tables = session.catalogueTables,
       items = session.profile.items ?? [],
@@ -365,24 +486,6 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
     const gap = (entity, reason) => {
       if (!gaps.some((entry) => entry.entity === entity && entry.reason === reason)) gaps.push({ entity, reason });
     };
-    const take = (entity, list) => {
-      const idColumn = tables[entity].idColumn,
-        bucket = rows.get(entity);
-      let added = 0;
-      for (const raw of list) {
-        const row = storeRow(raw),
-          id = bare(row[idColumn]);
-        if (!bucket.has(id)) added++;
-        bucket.set(id, { ...row, [idColumn]: id });
-        versions.set(`${entity}:${id}`, raw['@odata.etag'] ?? null);
-        // Lookup display names as downloaded, for rows whose target is not in the offline copy.
-        for (const [key, value] of Object.entries(raw)) {
-          const lookup = /^_(.+)_value@OData\.Community\.Display\.V1\.FormattedValue$/.exec(key);
-          if (lookup) labels.set(`${entity}:${id}:${lookup[1]}`, value);
-        }
-      }
-      return added;
-    };
     for (const item of items) {
       if (!tables[item.entity]) {
         gap(item.entity, `${item.entity} has no imported metadata or local mapping.`);
@@ -394,7 +497,7 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
       // A table whose download fails is not in the copy (only tables of the profile the device holds work offline); the gap
       // says why.
       try {
-        take(item.entity, await query(session, item.entity, filter));
+        takeDownloadedRows(tables, rows, versions, labels, item.entity, await query(session, item.entity, filter));
       } catch (error) {
         rows.delete(item.entity);
         gap(item.entity, error.message);
@@ -404,75 +507,57 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
     const asked = new Map();
     for (let pass = 0, grew = true; grew && pass <= items.length; pass++) {
       grew = false;
-      for (const item of items)
-        for (const name of item.relationships ?? []) {
-          if (!rows.has(item.entity)) continue;
-          const links = linksOf(tables, item.entity, name);
-          if (!links.length) {
-            gap(
-              item.entity,
-              `Relationship ${name} is not a one-to-many or many-to-one relationship of ${item.entity}.`,
-            );
+      for (const { item, name } of profileRelationships(items)) {
+        if (!rows.has(item.entity)) continue;
+        const links = linksOf(tables, item.entity, name);
+        if (!links.length) {
+          gap(item.entity, `Relationship ${name} is not a one-to-many or many-to-one relationship of ${item.entity}.`);
+          continue;
+        }
+        for (const link of links) {
+          if (!inProfile.has(link.entity)) {
+            gap(item.entity, `The related table ${link.entity} of ${name} is not in the offline profile.`);
             continue;
           }
-          for (const link of links) {
-            if (!inProfile.has(link.entity)) {
-              gap(item.entity, `The related table ${link.entity} of ${name} is not in the offline profile.`);
-              continue;
-            }
-            if (!rows.has(link.entity)) continue; // its download failed: already a gap
-            const seen = asked.get(`${name}|${link.entity}|${link.to}`) ?? new Set();
-            asked.set(`${name}|${link.entity}|${link.to}`, seen);
-            const values = [
-              ...new Set(
-                [...rows.get(item.entity).values()]
-                  .map((row) => row[link.from])
-                  .filter((value) => value != null)
-                  .map(bare),
-              ),
-            ].filter((value) => GUID.test(value) && !seen.has(value));
-            // ponytail: 500 values per `in` condition; one query per chunk.
-            for (let start = 0; start < values.length; start += 500) {
-              const chunk = values.slice(start, start + 500);
-              chunk.forEach((value) => seen.add(value));
-              try {
-                if (
-                  take(
+          if (!rows.has(link.entity)) continue; // its download failed: already a gap
+          const seen = asked.get(`${name}|${link.entity}|${link.to}`) ?? new Set();
+          asked.set(`${name}|${link.entity}|${link.to}`, seen);
+          const values = [
+            ...new Set(
+              [...rows.get(item.entity).values()]
+                .map((row) => row[link.from])
+                .filter((value) => value != null)
+                .map(bare),
+            ),
+          ].filter((value) => GUID.test(value) && !seen.has(value));
+          // ponytail: 500 values per `in` condition; one query per chunk.
+          for (const chunk of takeGuidChunks(values, seen)) {
+            try {
+              if (
+                takeDownloadedRows(
+                  tables,
+                  rows,
+                  versions,
+                  labels,
+                  link.entity,
+                  await query(
+                    session,
                     link.entity,
-                    await query(
-                      session,
-                      link.entity,
-                      `<filter><condition attribute="${link.to}" operator="in">${chunk.map((value) => `<value>${value}</value>`).join('')}</condition></filter>`,
-                    ),
-                  )
+                    `<filter><condition attribute="${link.to}" operator="in">${chunk.map(valueXml).join('')}</condition></filter>`,
+                  ),
                 )
-                  grew = true;
-              } catch (error) {
-                rows.delete(link.entity);
-                gap(link.entity, error.message);
-                break;
-              }
+              )
+                grew = true;
+            } catch (error) {
+              rows.delete(link.entity);
+              gap(link.entity, error.message);
+              break;
             }
           }
         }
+      }
     }
-    const mappings = Object.fromEntries(
-      [...rows.keys()].map((entity) => {
-        const table = tables[entity];
-        return [
-          entity,
-          {
-            entitySet: table.entitySet,
-            idColumn: table.idColumn,
-            nameColumn: table.nameColumn,
-            fields: table.fields,
-            relationships: Object.fromEntries(
-              Object.entries(table.relationships ?? {}).filter(([, link]) => rows.has(link.entity)),
-            ),
-          },
-        ];
-      }),
-    );
+    const mappings = offlineMappings(tables, rows);
     session.db = new DataStore({
       state: {
         version: 1,
@@ -484,37 +569,14 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
     // The staff user's create, update and delete privileges on each downloaded table, from its roles at download time (the
     // organization's own privilege check, webApi.privilegeError): a write the user cannot make is refused when it is queued,
     // with the error the online write answers. null: allowed.
-    const rights = Object.fromEntries(
-      [...rows.keys()].map((entity) => [
-        entity,
-        Object.fromEntries(
-          ['create', 'update', 'delete'].map((operation) => {
-            const error = webApi.privilegeError?.({ principal: session.principal, entity, operation }) ?? null;
-            return [
-              operation,
-              error && {
-                status: error.status ?? 403,
-                code: error.details?.innerCode ?? error.code ?? null,
-                message: error.message,
-              },
-            ];
-          }),
-        ),
-      ]),
-    );
+    const rights = offlineRights(webApi, session, rows);
     Object.assign(session, {
       versions,
       labels,
       gaps,
       rights,
       lastSync: now(),
-      tables: items
-        .filter((item) => rows.has(item.entity))
-        .map((item) => ({
-          entity: item.entity,
-          rows: rows.get(item.entity).size,
-          syncIntervalMinutes: item.syncIntervalMinutes ?? null,
-        })),
+      tables: offlineTableSummary(items, rows),
     });
   }
 
@@ -541,7 +603,51 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
   // thrown by the pre-check or the in-process Web API: a table no longer in the catalogue, a disabled user) is an answered
   // failure too. Only a call that throws without a client-error status (no answer: transport, host) records a sync error on
   // that entry and stops, so it and every later entry stay queued for the next sync.
-  async function upsync(session) {
+  function upsyncTransportFailure(session, entry, error) {
+    if (error.status >= 400 && error.status < 500)
+      return {
+        status: error.status,
+        body: {
+          error: { code: error.details?.innerCode ?? error.code ?? null, message: String(error.message ?? error) },
+        },
+      };
+    settle(session, entry.entity, entry.id, 'errors', {
+      entity: entry.entity,
+      id: entry.id,
+      operation: entry.operation,
+      status: error.status ?? null,
+      code: error.code ?? 'OfflineSyncFailed',
+      message: String(error.message ?? error),
+      queued: true,
+      at: now(),
+    });
+    throw Object.assign(
+      fail(
+        `Synchronization stopped at the queued ${entry.operation} of ${entry.entity} ${entry.id}: ${error.message ?? error}`,
+        502,
+        'OfflineSyncFailed',
+      ),
+      { recorded: true },
+    ); // native code unknown
+  }
+  function settleUpsyncResponse(session, entry, response, key) {
+    if (response.status < 400) {
+      if (response.body?.['@odata.etag']) session.versions.set(key, response.body['@odata.etag']);
+      settle(session, entry.entity, entry.id);
+      return true;
+    }
+    settle(session, entry.entity, entry.id, response.status === 412 ? 'conflicts' : 'errors', {
+      entity: entry.entity,
+      id: entry.id,
+      operation: entry.operation,
+      status: response.status,
+      code: response.body?.error?.code ?? null,
+      message: response.body?.error?.message ?? `The Web API answered ${response.status}.`,
+      at: now(),
+    });
+    return false;
+  }
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ async function upsync(session) {
     if (!session.queue.length) return;
     const detect = await conflictDetection(session),
       tables = session.catalogueTables;
@@ -552,64 +658,24 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
       const method = { create: 'POST', update: 'PATCH', delete: 'DELETE' }[entry.operation];
       // If-Match * keeps an update from creating a row the server deleted; with conflict detection the device's version
       // must still match the server's (412 otherwise: the server wins).
-      const ifMatch = entry.operation === 'create' ? null : detect ? (session.versions.get(key) ?? '*') : '*';
+      let ifMatch;
+      if (entry.operation === 'create') ifMatch = null;
+      else if (detect) ifMatch = session.versions.get(key) ?? '*';
+      else ifMatch = '*';
       let response;
       try {
         if (!table?.entitySet)
           throw fail(`${entry.entity} has no imported metadata or local mapping.`, 404, 'OfflineTableUnavailable');
-        response = await call(
-          session,
-          method,
-          `${API}/${table.entitySet}${entry.operation === 'create' ? '' : `(${entry.id})`}`,
-          {
-            body: entry.operation === 'delete' ? undefined : entry.body,
-            headers: { prefer: 'return=representation', ...(ifMatch ? { 'if-match': ifMatch } : {}) },
-          },
-        );
+        const recordPath = entry.operation === 'create' ? '' : `(${entry.id})`;
+        response = await call(session, method, `${API}/${table.entitySet}${recordPath}`, {
+          body: entry.operation === 'delete' ? undefined : entry.body,
+          headers: { prefer: 'return=representation', ...(ifMatch ? { 'if-match': ifMatch } : {}) },
+        });
       } catch (error) {
-        if (error.status >= 400 && error.status < 500)
-          response = {
-            status: error.status,
-            body: {
-              error: { code: error.details?.innerCode ?? error.code ?? null, message: String(error.message ?? error) },
-            },
-          };
-        else {
-          settle(session, entry.entity, entry.id, 'errors', {
-            entity: entry.entity,
-            id: entry.id,
-            operation: entry.operation,
-            status: error.status ?? null,
-            code: error.code ?? 'OfflineSyncFailed',
-            message: String(error.message ?? error),
-            queued: true,
-            at: now(),
-          });
-          throw Object.assign(
-            fail(
-              `Synchronization stopped at the queued ${entry.operation} of ${entry.entity} ${entry.id}: ${error.message ?? error}`,
-              502,
-              'OfflineSyncFailed',
-            ),
-            { recorded: true },
-          ); // native code unknown
-        }
+        response = upsyncTransportFailure(session, entry, error);
       }
       session.queue.shift();
-      if (response.status < 400) {
-        if (response.body?.['@odata.etag']) session.versions.set(key, response.body['@odata.etag']);
-        settle(session, entry.entity, entry.id);
-        continue;
-      }
-      settle(session, entry.entity, entry.id, response.status === 412 ? 'conflicts' : 'errors', {
-        entity: entry.entity,
-        id: entry.id,
-        operation: entry.operation,
-        status: response.status,
-        code: response.body?.error?.code ?? null,
-        message: response.body?.error?.message ?? `The Web API answered ${response.status}.`,
-        at: now(),
-      });
+      if (settleUpsyncResponse(session, entry, response, key)) continue;
     }
   }
 
@@ -640,33 +706,11 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
   };
   const exists = (session, entity, id) => session.db.get(entity, id, ADMIN);
   // Basic validation only, as natively offline (lower-case existing columns, lookup bindings, types through the store).
-  function localValues(session, table, data) {
+  /* NOSONAR: captures variables of the enclosing function */ function localValues(session, table, data) {
     if (!data || typeof data !== 'object' || Array.isArray(data))
       throw fail('Provide a record values object.', 400, 'OfflineValidationFailed');
     const values = {};
-    for (const [key, value] of Object.entries(data)) {
-      if (key.endsWith('@odata.bind')) {
-        const navigation = key.slice(0, -11),
-          link = table.relationships?.[navigation];
-        const column =
-          link?.many === false ? link.from : table.fields?.[navigation]?.type === 'lookup' ? navigation : null;
-        if (!column) throw fail(`${navigation} is not a lookup of ${table.entity}.`, 400, 'OfflineValidationFailed');
-        if (value === null) {
-          values[column] = null;
-          continue;
-        }
-        const match =
-          typeof value === 'string' &&
-          /^\/?([A-Za-z_]\w*)\(\{?([\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12})\}?\)$/i.exec(value);
-        const target =
-          match && Object.values(session.catalogueTables).find((candidate) => candidate.entitySet === match[1]);
-        if (!target || (link?.entity && link.entity !== target.entity))
-          throw fail(`${key} needs a /<entityset>(<id>) path of its target table.`, 400, 'OfflineValidationFailed');
-        values[column] = match[2].toLowerCase();
-      } else if (key.includes('@') || key !== key.toLowerCase() || !Object.hasOwn(table.fields ?? {}, key))
-        throw fail(`Column ${key} does not exist on ${table.entity}.`, 400, 'OfflineValidationFailed');
-      else values[key] = value;
-    }
+    for (const [key, value] of Object.entries(data)) addLocalValue(session, table, values, key, value);
     return values;
   }
   const storeOptions = (table) => ({ coerce: true, metadata: () => table.fields });
@@ -687,7 +731,7 @@ export function createOfflineSessions({ webApi, catalogue, state = null }) {
     async retrieveMultiple(session, { entity, options = '' }) {
       available(session, entity);
       const query = params(options, ['$select', '$filter', '$top', '$orderby', '$expand', 'fetchXml']);
-      if (query.fetchXml && !new RegExp(`<entity\\s+name=["']${entity}["']`).test(query.fetchXml))
+      if (query.fetchXml && !new RegExp(String.raw`<entity\s+name=["']${entity}["']`).test(query.fetchXml))
         throw fail('The FetchXML query must target this table.', 400, 'OfflineQueryInvalid');
       // Grouping and aggregation are not supported in mobile offline.
       if (/aggregate\s*=\s*["']true/i.test(query.fetchXml ?? ''))

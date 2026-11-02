@@ -51,30 +51,32 @@ const PLAIN = Object.freeze({
 const LOCAL = 'http://127.0.0.1:';
 export const normalPath = (value) =>
   String(value ?? '')
-    .replace(/\\/g, '/')
+    .replaceAll('\\', '/')
     .replace(/^\.\//, '')
-    .replace(/\/+$/, '')
+    .replace(/\/+$/, '') // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
     .toLowerCase() || '.';
 const samePath = (a, b) => normalPath(a) === normalPath(b);
 // A path inside the project folder, shown from that folder.
 const shortPath = (directory, file) => {
   const base = String(directory ?? '')
-      .replace(/\\/g, '/')
-      .replace(/\/+$/, ''),
-    value = String(file ?? '').replace(/\\/g, '/');
+      .replaceAll('\\', '/')
+      .replace(/\/+$/, ''), // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    value = String(file ?? '').replaceAll('\\', '/');
   return base && value.toLowerCase().startsWith(`${base.toLowerCase()}/`) ? `.${value.slice(base.length)}` : value;
 };
 export const slugName = (text) =>
   String(text ?? '')
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
+    .replace(/^-+|-+$/g, '') // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
     .slice(0, 40) || 'my-project';
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
 /** The runtime kind of a choice of parts: a website needs the Power Pages host; apps without one the standalone app host. */
-export const kindFor = (parts) =>
-  parts.website ? 'power-pages' : parts.modelDriven || parts.canvas ? 'model-driven' : 'dataverse-api';
+export const kindFor = (parts) => {
+  if (parts.website) return 'power-pages';
+  return parts.modelDriven || parts.canvas ? 'model-driven' : 'dataverse-api';
+};
 const partsOf = (kind, settings) => ({
   website: kind === 'power-pages',
   modelDriven: kind !== 'dataverse-api' && settings.modelDriven?.enabled !== false,
@@ -162,7 +164,10 @@ export function quickSteps(state, target, session) {
     { id: 'check', title: 'Check', done: running && !(state.findings ?? []).length },
   ];
   const current = steps.find((step) => !step.done && !step.optional) ?? null;
-  return steps.map((step) => ({ ...step, status: step.done ? 'done' : step === current ? 'current' : 'todo' }));
+  return steps.map((step) => {
+    if (step.done) return { ...step, status: 'done' };
+    return { ...step, status: step === current ? 'current' : 'todo' };
+  });
 }
 
 const linkOf = (session, key, fallback) => {
@@ -182,9 +187,14 @@ export function quickView(ctx) {
   const steps = quickSteps(state, target, session);
   const created = state.layers?.shared?.exists === true;
   const sites = state.kind === 'catalogue' ? (state.sites ?? []) : [];
+  const siteOptions = sites
+    .map(
+      (site) => `<option value="${esc(site.id)}" ${site.id === target?.id ? 'selected' : ''}>${esc(site.id)}</option>`,
+    )
+    .join('');
   const picker =
     sites.length > 1
-      ? `<label class="quick-target">Target <select id="quick-site" class="compact-select">${sites.map((site) => `<option value="${esc(site.id)}" ${site.id === target?.id ? 'selected' : ''}>${esc(site.id)}</option>`).join('')}</select></label>`
+      ? `<label class="quick-target">Target <select id="quick-site" class="compact-select">${siteOptions}</select></label>`
       : '';
   const body = {
     kind: () => kindStep(ctx, created),
@@ -205,15 +215,21 @@ export function quickView(ctx) {
         step.done && !open && ['kind', 'files', 'data'].includes(step.id)
           ? `<button type="button" class="button quiet small" data-quick-edit="${step.id}" aria-label="Change ${esc(step.title.toLowerCase())}">Change</button>`
           : '';
+      let stateText = 'to do';
+      if (step.done) stateText = 'done';
+      else if (step.status === 'current') stateText = 'next step';
+      const summaryHtml =
+        summary && !(open && ['kind', 'files', 'data'].includes(step.id))
+          ? `<p class="quick-summary">${summary}</p>`
+          : '';
+      let bodyHtml = '';
+      if (open && !locked) bodyHtml = `<div class="quick-step-body">${body[step.id]()}</div>`;
+      else if (locked) bodyHtml = '<p class="quick-locked muted small">Available after you create the project.</p>';
       return (
         `<li class="quick-step is-${step.status}${locked ? ' is-locked' : ''}" id="quick-${step.id}"><div class="quick-step-head"><span class="quick-num" aria-hidden="true">${step.done ? '✓' : index + 1}</span>` +
-        `<div class="quick-title"><h3>${esc(step.title)}${step.optional ? ' <span class="muted small">(optional)</span>' : ''}</h3>${summary && !(open && ['kind', 'files', 'data'].includes(step.id)) ? `<p class="quick-summary">${summary}</p>` : ''}</div>` +
-        `<span class="ui-sr-only">${step.done ? 'done' : step.status === 'current' ? 'next step' : 'to do'}</span>${change}</div>` +
-        (open && !locked
-          ? `<div class="quick-step-body">${body[step.id]()}</div>`
-          : locked
-            ? '<p class="quick-locked muted small">Available after you create the project.</p>'
-            : '') +
+        `<div class="quick-title"><h3>${esc(step.title)}${step.optional ? ' <span class="muted small">(optional)</span>' : ''}</h3>${summaryHtml}</div>` +
+        `<span class="ui-sr-only">${stateText}</span>${change}</div>` +
+        bodyHtml +
         '</li>'
       );
     })
@@ -225,6 +241,39 @@ const partsText = (parts) =>
     .filter(([key]) => parts[key])
     .map(([, item]) => item.title)
     .join(', ');
+function fileSummary(target, esc) {
+  let website = '';
+  if (target.parts.website)
+    website = target.sourceStatus?.format
+      ? `Website: <code>${esc(target.source)}</code>`
+      : '<span class="quick-warn">Website export not chosen yet</span>';
+  const solutionList = target.solutionRoots.map((item) => `<code>${esc(item)}</code>`).join(', ');
+  let apps = 'No Solutions';
+  if (target.solutionRoots.length) apps = `Solutions: ${solutionList}`;
+  else if (needsSolutions(target.parts)) apps = '<span class="quick-warn">No Solution chosen yet</span>';
+  return [website, apps].filter(Boolean).join(' · ');
+}
+
+function dataSummary(target, presets, esc) {
+  let data = 'No sample data';
+  if (target.packs.length)
+    data = target.preset
+      ? `Starts with: ${esc(presets.find(([id]) => id === target.preset)?.[1] ?? target.preset)}`
+      : 'Sample data module added; choose its starting data once the preview runs';
+  return `${data} · ${esc(LEVELS[target.level]?.[0] ?? 'Changes are kept in a local state file')}`;
+}
+
+function runSummary({ state, esc, session, operation, checking }) {
+  if (state.runtime?.product === 'Lense') {
+    const siteText = state.runtime.site ? ` · ${esc(state.runtime.site)}` : '';
+    return `Lense preview running${siteText}`;
+  }
+  if (checking) return 'Checking…';
+  if (operation?.state === 'running') return 'Working…';
+  if (session?.ready) return `Running at <code>${esc(session.url)}</code>`;
+  return session ? 'Starting…' : 'Not running';
+}
+
 function summaryOf({ state, esc, target, session, operation, checking, presets = [] }, step) {
   if (!target) return '';
   if (step.id === 'kind')
@@ -232,63 +281,37 @@ function summaryOf({ state, esc, target, session, operation, checking, presets =
       esc(partsText(target.parts) || 'Nothing chosen') +
       (state.kind === 'catalogue' ? ` · <span class="muted">project ${esc(target.id)}</span>` : '')
     );
-  if (step.id === 'files') {
-    const website = target.parts.website
-      ? target.sourceStatus?.format
-        ? `Website: <code>${esc(target.source)}</code>`
-        : '<span class="quick-warn">Website export not chosen yet</span>'
-      : '';
-    const apps = target.solutionRoots.length
-      ? `Solutions: ${target.solutionRoots.map((item) => `<code>${esc(item)}</code>`).join(', ')}`
-      : needsSolutions(target.parts)
-        ? '<span class="quick-warn">No Solution chosen yet</span>'
-        : 'No Solutions';
-    return [website, apps].filter(Boolean).join(' · ');
+  if (step.id === 'files') return fileSummary(target, esc);
+  if (step.id === 'data') return dataSummary(target, presets, esc);
+  if (step.id === 'run') return runSummary({ state, esc, session, operation, checking });
+  if (step.id === 'check') {
+    if ((state.findings ?? []).length) return `${plural(state.findings.length, 'thing')} to fix`;
+    return session?.ready ? 'Running' : 'Setup looks complete';
   }
-  if (step.id === 'data') {
-    const data = target.packs.length
-      ? target.preset
-        ? `Starts with: ${esc(presets.find(([id]) => id === target.preset)?.[1] ?? target.preset)}`
-        : 'Sample data module added; choose its starting data once the preview runs'
-      : 'No sample data';
-    return `${data} · ${esc(LEVELS[target.level]?.[0] ?? 'Changes are kept in a local state file')}`;
-  }
-  if (step.id === 'run' && state.runtime?.product === 'Lense')
-    return `Lense preview running${state.runtime.site ? ` · ${esc(state.runtime.site)}` : ''}`;
-  if (step.id === 'run')
-    return checking
-      ? 'Checking…'
-      : operation?.state === 'running'
-        ? 'Working…'
-        : session?.ready
-          ? `Running at <code>${esc(session.url)}</code>`
-          : session
-            ? 'Starting…'
-            : 'Not running';
-  if (step.id === 'check')
-    return (state.findings ?? []).length
-      ? `${plural(state.findings.length, 'thing')} to fix`
-      : session?.ready
-        ? 'Running'
-        : 'Setup looks complete';
   return '';
 }
 
 const choiceBox = (esc, name, value, checked, title, text, type = 'checkbox') =>
   `<label class="quick-choice"><input type="${type}" name="${esc(name)}" value="${esc(value)}" ${checked ? 'checked' : ''}><span><strong>${esc(title)}</strong><span class="muted">${esc(text)}</span></span></label>`;
 export function partsFieldset(esc, parts, found = {}) {
-  return `<fieldset class="quick-choices"><legend>What do you want to run? <span class="muted">Choose one or more.</span></legend>${Object.entries(
-    PARTS,
-  )
-    .map(([key, item]) =>
-      choiceBox(esc, 'part', key, parts[key], item.title, `${item.text}${found[key] ? ` ${found[key]}` : ''}`),
-    )
-    .join('')}</fieldset>`;
+  const partItems = Object.entries(PARTS)
+    .map(([key, item]) => {
+      const foundNote = found[key] ? ` ${found[key]}` : '';
+      return choiceBox(esc, 'part', key, parts[key], item.title, `${item.text}${foundNote}`);
+    })
+    .join('');
+  return `<fieldset class="quick-choices"><legend>What do you want to run? <span class="muted">Choose one or more.</span></legend>${partItems}</fieldset>`;
 }
 /** With several website exports found, each is a project of its own: the person ticks which ones to set up. */
 export function websitesFieldset(esc, portals = []) {
   if (portals.length < 2) return '';
-  return `<fieldset class="quick-group"><legend>Websites to set up <span class="muted">Each one becomes a project of its own, with its own local address.</span></legend>${portals.map((item) => `<label class="quick-choice compact"><input type="checkbox" name="website-pick" value="${esc(item.value)}" checked><span><strong>${esc(item.name ?? item.path)}</strong><span class="muted"><code>${esc(item.path)}</code>${item.profiles?.length ? ` · ${item.profiles.length} deployment profile(s)` : ''}</span></span></label>`).join('')}</fieldset>`;
+  const portalItems = portals
+    .map((item) => {
+      const profilesNote = item.profiles?.length ? ` · ${item.profiles.length} deployment profile(s)` : '';
+      return `<label class="quick-choice compact"><input type="checkbox" name="website-pick" value="${esc(item.value)}" checked><span><strong>${esc(item.name ?? item.path)}</strong><span class="muted"><code>${esc(item.path)}</code>${profilesNote}</span></span></label>`;
+    })
+    .join('');
+  return `<fieldset class="quick-group"><legend>Websites to set up <span class="muted">Each one becomes a project of its own, with its own local address.</span></legend>${portalItems}</fieldset>`;
 }
 /** The websites ticked in a create form, or null (all found) when the form offered no choice. */
 export const chosenWebsites = (data, candidates) =>
@@ -326,13 +349,15 @@ function kindStep({ state, esc, target, quick }, created) {
   const parts = foundParts(found);
   const folder = String(state.directory ?? '')
     .split(/[\\/]/)
-    .filter(Boolean)
-    .pop();
+    .findLast(Boolean);
+  const seenText = seen.length
+    ? `In this project folder we found ${esc(seen.join(', '))}. We ticked what they contain and will use those folders; you can check or change them in step 2.`
+    : 'No exported files were found in this project folder yet. Choose what you want to run; in the next step you point to your exported files.';
   return (
-    `<form data-form="quick-create" class="quick-form"><p>${seen.length ? `In this project folder we found ${esc(seen.join(', '))}. We ticked what they contain and will use those folders; you can check or change them in step 2.` : 'No exported files were found in this project folder yet. Choose what you want to run; in the next step you point to your exported files.'}</p>` +
+    `<form data-form="quick-create" class="quick-form"><p>${seenText}</p>` +
     partsFieldset(esc, parts, foundText(found)) +
     websitesFieldset(esc, found.portals) +
-    `<label class="quick-field">Project name <span class="muted small">The name of this setup in its settings file and in the simulator. Keep the suggestion if unsure: letters, numbers, - and _.</span><input name="name" value="${esc(slugName(folder))}" required pattern="[A-Za-z0-9][A-Za-z0-9_\\-]*"></label>` +
+    String.raw`<label class="quick-field">Project name <span class="muted small">The name of this setup in its settings file and in the simulator. Keep the suggestion if unsure: letters, numbers, - and _.</span><input name="name" value="${esc(slugName(folder))}" required pattern="[A-Za-z0-9][A-Za-z0-9_\-]*"></label>` +
     `<div class="toolbar"><button type="submit" class="button primary">Create project</button></div><p class="muted small">Creates the settings file <code>${esc(
       String(state.layers?.shared?.file ?? '')
         .split(/[\\/]/)
@@ -360,9 +385,10 @@ function filesStep({ esc, target, quick }) {
               `<label class="quick-choice compact"><input type="radio" name="website" value="${esc(item.value)}" ${samePath(item.value, target.source) ? 'checked' : ''}><span><strong>${esc(item.name ?? item.path)}</strong><span class="muted"><code>${esc(item.path)}</code> · ${esc(item.kind)}</span></span></label>`,
           )
           .join('');
+        const pickedText = other ? `<code>${esc(other)}</code>` : '<span class="muted">No folder chosen</span>';
         return (
           `<fieldset class="quick-group"><legend>Website export</legend><p class="muted small">The folder your website was downloaded into from Power Pages (with the Power Platform CLI: <code>pac pages download</code>).</p>${options || '<p class="quick-warn">No website export was found in this project folder. Choose its folder below.</p>'}` +
-          `<label class="quick-choice compact"><input type="radio" name="website" value="" ${known ? '' : 'checked'}><span><strong>${options ? 'Another folder' : 'Website export folder'}</strong><span class="quick-picked" data-picked="website">${other ? `<code>${esc(other)}</code>` : '<span class="muted">No folder chosen</span>'}</span>` +
+          `<label class="quick-choice compact"><input type="radio" name="website" value="" ${known ? '' : 'checked'}><span><strong>${options ? 'Another folder' : 'Website export folder'}</strong><span class="quick-picked" data-picked="website">${pickedText}</span>` +
           `<input type="hidden" name="website-other" value="${esc(other)}"><button type="button" class="button small" data-pick-folder="website">Choose folder…</button></span></label></fieldset>`
         );
       })();
@@ -377,9 +403,12 @@ function filesStep({ esc, target, quick }) {
   const why = needsSolutions(target.parts)
     ? 'Needed for your apps: your tables, forms, views and apps come from here.'
     : 'Optional: add one to include your own tables, forms and apps.';
+  const solutionsNote =
+    solutions ||
+    `<p class="${needsSolutions(target.parts) ? 'quick-warn' : 'muted'}">No exported Solution was found in this project folder.</p>`;
   return (
     `<form data-form="quick-files" class="quick-form">${website}<fieldset class="quick-group"><legend>Solutions</legend><p class="muted small">${why} A Solution folder is a Solution exported from your environment and unpacked (with <code>pac solution unpack</code>).</p>` +
-    `${solutions || `<p class="${needsSolutions(target.parts) ? 'quick-warn' : 'muted'}">No exported Solution was found in this project folder.</p>`}` +
+    `${solutionsNote}` +
     `<ul class="quick-folders" data-folder-list="solution">${others.map((root) => folderRow(esc, 'solution', root)).join('')}</ul><button type="button" class="button small" data-pick-folder="solution">Add a Solution folder…</button></fieldset>` +
     '<div class="toolbar"><button type="submit" class="button primary">Save</button><button type="button" class="button quiet" data-quick-edit="">Cancel</button></div></form>'
   );
@@ -388,18 +417,21 @@ function filesStep({ esc, target, quick }) {
 // Data sets of the project's own modules first, then the built-in examples; with none chosen, the project's first is selected.
 export function presetGroups(esc, presets, chosen, suggest = true) {
   if (suggest) chosen ||= presets.find((item) => item[2])?.[0];
-  const option = ([id, name]) =>
-    `<option value="${esc(id)}" ${id === chosen ? 'selected' : ''}>${esc(name === id ? id : `${name} (${id})`)}</option>`;
+  const option = ([id, name]) => {
+    const label = name === id ? id : `${name} (${id})`;
+    return `<option value="${esc(id)}" ${id === chosen ? 'selected' : ''}>${esc(label)}</option>`;
+  };
   const own = [...new Set(presets.filter((item) => item[2]).map((item) => item[2]))];
   return (
     own
-      .map(
-        (pack) =>
-          `<optgroup label="${esc(`From your project: ${pack}`)}">${presets
-            .filter((item) => item[2] === pack)
-            .map(option)
-            .join('')}</optgroup>`,
-      )
+      .map((pack) => {
+        const groupLabel = esc(`From your project: ${pack}`);
+        const groupOptions = presets
+          .filter((item) => item[2] === pack)
+          .map(option)
+          .join('');
+        return `<optgroup label="${groupLabel}">${groupOptions}</optgroup>`;
+      })
       .join('') +
     (presets.some((item) => !item[2])
       ? `<optgroup label="Built-in examples (general test setups, not your project's data)">${presets
@@ -409,20 +441,43 @@ export function presetGroups(esc, presets, chosen, suggest = true) {
       : '')
   );
 }
+function presetPickerHtml(esc, presets, target) {
+  if (presets.length) {
+    const extraOption =
+      target.preset && !presets.some(([id]) => id === target.preset)
+        ? `<option value="${esc(target.preset)}" selected>${esc(target.preset)}</option>`
+        : '';
+    return `<label class="quick-field">Start with <span class="muted small">The example records your tables start with. A change takes effect when you restart the preview.</span><select name="preset"><option value="">No starting data</option>${presetGroups(esc, presets, target.preset)}${extraOption}</select></label>`;
+  }
+  if (target.preset)
+    return `<p>Starts with the data set <code>${esc(target.preset)}</code>. Start the preview to choose another.</p>`;
+  return '<p class="muted">The data sets this module offers are listed here once the preview runs (step 4). Until then the preview starts with empty tables.</p>';
+}
 function dataStep({ state, esc, target, quick, presets }) {
   const found = quick?.candidates?.packs ?? [];
   const intro =
     '<p class="muted small">Your tables start empty unless the project has a sample data module: a file in your project that fills tables with example records.</p>';
-  const packs = target.packs.length
-    ? `<p>Sample data module: ${target.packs.map((item) => `<code>${esc(shortPath(state.directory, item.module))}</code>${item.exists ? '' : ' <span class="quick-warn">(file not found)</span>'}`).join(', ')}</p>` +
-      (presets.length
-        ? `<label class="quick-field">Start with <span class="muted small">The example records your tables start with. A change takes effect when you restart the preview.</span><select name="preset"><option value="">No starting data</option>${presetGroups(esc, presets, target.preset)}${target.preset && !presets.some(([id]) => id === target.preset) ? `<option value="${esc(target.preset)}" selected>${esc(target.preset)}</option>` : ''}</select></label>`
-        : target.preset
-          ? `<p>Starts with the data set <code>${esc(target.preset)}</code>. Start the preview to choose another.</p>`
-          : '<p class="muted">The data sets this module offers are listed here once the preview runs (step 4). Until then the preview starts with empty tables.</p>')
-    : found.length
-      ? `<fieldset class="quick-group"><legend>Sample data</legend>${found.map((item) => `<label class="quick-choice compact"><input type="checkbox" name="pack" value="${esc(item.value)}"><span><strong>Use the data module in <code>${esc(item.path)}</code></strong><span class="muted">Only use a module you trust: its code runs when the preview starts.</span></span></label>`).join('')}</fieldset>`
-      : '<p class="muted">No sample data module was found. The preview starts with empty tables; you can add records while it runs.</p>';
+  let packs;
+  if (target.packs.length) {
+    const packItems = target.packs
+      .map(
+        (item) =>
+          `<code>${esc(shortPath(state.directory, item.module))}</code>${item.exists ? '' : ' <span class="quick-warn">(file not found)</span>'}`,
+      )
+      .join(', ');
+    packs = `<p>Sample data module: ${packItems}</p>` + presetPickerHtml(esc, presets, target);
+  } else if (found.length) {
+    const foundItems = found
+      .map(
+        (item) =>
+          `<label class="quick-choice compact"><input type="checkbox" name="pack" value="${esc(item.value)}"><span><strong>Use the data module in <code>${esc(item.path)}</code></strong><span class="muted">Only use a module you trust: its code runs when the preview starts.</span></span></label>`,
+      )
+      .join('');
+    packs = `<fieldset class="quick-group"><legend>Sample data</legend>${foundItems}</fieldset>`;
+  } else {
+    packs =
+      '<p class="muted">No sample data module was found. The preview starts with empty tables; you can add records while it runs.</p>';
+  }
   const level = target.level ?? 'dry-run';
   const levels = Object.entries(LEVELS)
     .filter(([value]) => value !== 'deep' || level === 'deep')
@@ -462,72 +517,126 @@ export function runStep({
   apps = [],
 }) {
   if (!target) return '<p class="muted">Create your project first.</p>';
+  return renderRunStep({ state, esc, target, session, operation, restartHint, previewError, checking, presets, apps });
+}
+
+function liveRunStep(state, esc) {
   // A Lense preview overlays your sources on a live portal in its own browser; setup does not start or stop it.
+  const liveSiteText = state.runtime?.site ? ` · ${esc(state.runtime.site)}` : '';
+  const liveRestartText = state.runtime?.restartCommand
+    ? `<p class="muted small">To restart it, stop it in its terminal (Ctrl+C) and run <code>${esc(state.runtime.restartCommand)}</code>.</p>`
+    : '';
   if (state.runtime?.product === 'Lense')
     return (
-      `<p>Lense preview running${state.runtime.site ? ` · ${esc(state.runtime.site)}` : ''}: your local sources are shown on the live portal in the Lense browser window.</p>` +
-      `${state.runtime.restartRequired === true ? '<p class="quick-warn">You changed settings. Restart Lense to use them.</p>' : ''}${state.runtime.restartCommand ? `<p class="muted small">To restart it, stop it in its terminal (Ctrl+C) and run <code>${esc(state.runtime.restartCommand)}</code>.</p>` : ''}`
+      `<p>Lense preview running${liveSiteText}: your local sources are shown on the live portal in the Lense browser window.</p>` +
+      `${state.runtime.restartRequired === true ? '<p class="quick-warn">You changed settings. Restart Lense to use them.</p>' : ''}${liveRestartText}`
     );
-  if (checking)
-    return '<p class="quick-busy" role="status"><span class="quick-spinner" aria-hidden="true"></span>Checking whether your project is running…</p>';
-  if (operation?.state === 'running')
-    return `<p class="quick-busy" role="status"><span class="quick-spinner" aria-hidden="true"></span>${esc(operation.step === 'stop' ? 'Stopping the preview…' : 'Starting the preview… this can take a minute.')}</p>`;
-  // A failed start shows its reason without the startup log lines; the full message stays one click away.
+  return null;
+}
+
+function operationFailure(operation, target, esc) {
   const reason = String(operation?.message ?? '')
     .replace(/\{[^{}]*\}/g, ' ')
     .replace(/See startup log:\s*\S+/, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  const failed =
-    operation?.state === 'failed' && operation.site === (target.project ? null : target.id)
-      ? `<div class="quick-error" role="alert"><p>The preview could not ${operation.step === 'stop' ? 'stop' : 'start'}. ${esc(reason)}</p>${reason !== operation.message ? `<details><summary>Technical details</summary><pre>${esc(operation.message)}</pre></details>` : ''}</div>`
+  if (operation?.state !== 'failed' || operation.site !== (target.project ? null : target.id)) return '';
+  const verb = operation.step === 'stop' ? 'stop' : 'start';
+  const details =
+    reason !== operation.message
+      ? `<details><summary>Technical details</summary><pre>${esc(operation.message)}</pre></details>`
       : '';
-  const error = previewError ? kitNotice(esc, previewError) : '';
-  if (!session)
-    return `${failed}${error}<p>Start runs your project on this computer, at an address only you can open. It never changes your live environment.</p><div class="toolbar"><button type="button" class="button primary" data-preview="start">Start preview</button></div>`;
-  const parts = target.parts;
-  // Each model-driven app of the project opens by itself; without a list yet, the app host opens.
-  const appLinks =
-    parts.modelDriven && linkOf(session, 'modelDriven', '/main.aspx')
-      ? apps.length
-        ? apps.map(([id, name]) => [
-            `app:${name || id}`,
-            `${linkOf(session, 'modelDriven', '/main.aspx')}?appid=${encodeURIComponent(id)}`,
-          ])
-        : [['apps', linkOf(session, 'modelDriven', '/main.aspx')]]
-      : [];
-  const opens = [
-    parts.website && ['website', linkOf(session, 'powerPages', '/')],
+  return `<div class="quick-error" role="alert"><p>The preview could not ${verb}. ${esc(reason)}</p>${details}</div>`;
+}
+
+function previewOpenLinks(target, session, apps) {
+  let appLinks = [];
+  if (target.parts.modelDriven && linkOf(session, 'modelDriven', '/main.aspx')) {
+    if (apps.length)
+      appLinks = apps.map(([id, name]) => [
+        `app:${name || id}`,
+        `${linkOf(session, 'modelDriven', '/main.aspx')}?appid=${encodeURIComponent(id)}`,
+      ]);
+    else appLinks = [['apps', linkOf(session, 'modelDriven', '/main.aspx')]];
+  }
+  return [
+    target.parts.website && ['website', linkOf(session, 'powerPages', '/')],
     ...appLinks,
-    parts.canvas && ['canvas', linkOf(session, 'canvas', '/_apps/canvas/')],
+    target.parts.canvas && ['canvas', linkOf(session, 'canvas', '/_apps/canvas/')],
     ['simulator', linkOf(session, 'administration', '/_sim/')],
-  ].filter((item) => item && item[1]);
-  const restart = restartHint || state.runtime?.restartRequired === true;
+  ].filter((item) => item?.[1]);
+}
+
+function previewActionItems(opens, restart, esc) {
   const text = (key) =>
     key.startsWith('app:')
       ? [`Open ${key.slice(4)}`, 'A model-driven app of your project, as staff see it.']
       : OPENS[key];
+  return opens
+    .map(
+      ([key, href], index) =>
+        `<li><a class="button${index === 0 && !restart ? ' primary' : ''}" href="${esc(href)}" target="_blank" rel="noopener">${esc(text(key)[0])} ↗</a><span class="muted small">${esc(text(key)[1])}</span></li>`,
+    )
+    .join('');
+}
+
+function previewSampleDataHint(session, target, presets) {
+  if (!(session.ready && target.packs.length && !target.preset && presets.some((item) => item[2]))) return '';
+  return `<p class="quick-hint">Your sample data module offers ${plural(presets.filter((item) => item[2]).length, 'data set')}. <button type="button" class="button small" data-quick-edit="data">Choose starting data</button></p>`;
+}
+
+function previewApiHint(parts, session, esc) {
+  if (!(parts.api && session.links?.dataverseApi)) return '';
+  return `<p>Dataverse Web API for your scripts and tests: <code>${esc(new URL('/api/data/v9.2/', session.links.dataverseApi).href)}</code> <span class="muted small">It answers programs that send a sign-in token, as the real API does, so a browser shows an empty page. Test users and app secrets are under Organization identity &amp; API in the <a href="${esc(linkOf(session, 'administration', '/_sim/'))}" target="_blank" rel="noopener">simulator</a>.</span></p>`;
+}
+
+function renderStartedPreview({ state, esc, target, session, restartHint, presets, apps, failed, error }) {
+  const parts = target.parts;
+  const opens = previewOpenLinks(target, session, apps);
+  const restart = restartHint || state.runtime?.restartRequired === true;
+  const restartClass = restart ? ' primary' : '';
+  const restartCommandHint = state.runtime?.restartCommand
+    ? ` and start it again with <code>${esc(state.runtime.restartCommand)}</code>`
+    : '';
   const controls = session.owned
-    ? `<div class="toolbar"><button type="button" class="button${restart ? ' primary' : ''}" data-preview="restart">Restart</button><button type="button" class="button quiet" data-preview="stop">Stop</button></div>`
-    : `<p class="muted small">This preview was started from a terminal: stop it there (Ctrl+C)${state.runtime?.restartCommand ? ` and start it again with <code>${esc(state.runtime.restartCommand)}</code>` : ''}.</p>`;
+    ? `<div class="toolbar"><button type="button" class="button${restartClass}" data-preview="restart">Restart</button><button type="button" class="button quiet" data-preview="stop">Stop</button></div>`
+    : `<p class="muted small">This preview was started from a terminal: stop it there (Ctrl+C)${restartCommandHint}.</p>`;
+  const readyText = session.ready
+    ? `Your preview is running on this computer at <code>${esc(session.url)}</code>.`
+    : 'Your preview is starting…';
+  const openItems = previewActionItems(opens, restart, esc);
   return (
     `${failed}${error}${restart ? '<p class="quick-warn">You changed settings. Restart the preview to use them.</p>' : ''}` +
-    `<p>${session.ready ? `Your preview is running on this computer at <code>${esc(session.url)}</code>.` : 'Your preview is starting…'}</p>` +
-    (session.ready && target.packs.length && !target.preset && presets.some((item) => item[2])
-      ? `<p class="quick-hint">Your sample data module offers ${plural(presets.filter((item) => item[2]).length, 'data set')}. <button type="button" class="button small" data-quick-edit="data">Choose starting data</button></p>`
-      : '') +
-    (parts.api && session.links?.dataverseApi
-      ? `<p>Dataverse Web API for your scripts and tests: <code>${esc(new URL('/api/data/v9.2/', session.links.dataverseApi).href)}</code> <span class="muted small">It answers programs that send a sign-in token, as the real API does, so a browser shows an empty page. Test users and app secrets are under Organization identity &amp; API in the <a href="${esc(linkOf(session, 'administration', '/_sim/'))}" target="_blank" rel="noopener">simulator</a>.</span></p>`
-      : '') +
-    `<ul class="quick-opens">${opens.map(([key, href], index) => `<li><a class="button${index === 0 && !restart ? ' primary' : ''}" href="${esc(href)}" target="_blank" rel="noopener">${esc(text(key)[0])} ↗</a><span class="muted small">${esc(text(key)[1])}</span></li>`).join('')}</ul>${controls}`
+    `<p>${readyText}</p>` +
+    previewSampleDataHint(session, target, presets) +
+    previewApiHint(parts, session, esc) +
+    `<ul class="quick-opens">${openItems}</ul>${controls}`
   );
+}
+
+function renderRunStep({ state, esc, target, session, operation, restartHint, previewError, checking, presets, apps }) {
+  const live = liveRunStep(state, esc);
+  if (live) return live;
+  if (checking)
+    return '<p class="quick-busy" role="status"><span class="quick-spinner" aria-hidden="true"></span>Checking whether your project is running…</p>';
+  if (operation?.state === 'running')
+    return `<p class="quick-busy" role="status"><span class="quick-spinner" aria-hidden="true"></span>${esc(operation.step === 'stop' ? 'Stopping the preview…' : 'Starting the preview… this can take a minute.')}</p>`;
+  // A failed start shows its reason without the startup log lines; the full message stays one click away.
+  const failed = operationFailure(operation, target, esc);
+  const error = previewError ? kitNotice(esc, previewError) : '';
+  if (!session)
+    return `${failed}${error}<p>Start runs your project on this computer, at an address only you can open. It never changes your live environment.</p><div class="toolbar"><button type="button" class="button primary" data-preview="start">Start preview</button></div>`;
+  return renderStartedPreview({ state, esc, target, session, restartHint, presets, apps, failed, error });
 }
 const kitNotice = (esc, text) => `<p class="quick-error" role="alert">${esc(text)}</p>`;
 
 export function checkStep({ state, esc, session, dashboard, productName, mapHtml, mapOpen }) {
   const findings = (state.findings ?? []).map((item) => {
     const [text, step] = PLAIN[item.code] ?? [item.message, null];
-    return `<li><span>${esc(text)}</span>${step ? `<button type="button" class="button quiet small" data-quick-edit="${step}">Fix</button>` : `<a href="${esc(item.section ?? '#overview')}" data-quick-all>Fix in All settings</a>`}</li>`;
+    const fix = step
+      ? `<button type="button" class="button quiet small" data-quick-edit="${step}">Fix</button>`
+      : `<a href="${esc(item.section ?? '#overview')}" data-quick-all>Fix in All settings</a>`;
+    return `<li><span>${esc(text)}</span>${fix}</li>`;
   });
   let health;
   if (session?.ready && dashboard?.nodes) {
@@ -536,18 +645,29 @@ export function checkStep({ state, esc, session, dashboard, productName, mapHtml
     const bad = [...by('missing'), ...by('error')],
       ready = nodes.filter((node) => ['ready', 'listening'].includes(node.status)).length,
       stand = by('placeholder').length;
+    const standNote = stand
+      ? `, ${stand} run as simplified local stand-ins for cloud services (fine for trying things out)`
+      : '';
+    const badItems = bad
+      .map((node) => {
+        const nodeStatus = String(node.id).startsWith('external:')
+          ? 'is an outside service you start yourself; it is only needed if your project uses it.'
+          : 'is not available.';
+        return `<li><span><strong>${esc(productName(node))}</strong> ${nodeStatus}</span></li>`;
+      })
+      .join('');
     health =
-      `<p>${bad.length ? 'Your preview runs, with things to look at.' : 'Your preview runs and everything it needs answered.'} <span class="muted">${ready} parts ready${stand ? `, ${stand} run as simplified local stand-ins for cloud services (fine for trying things out)` : ''}.</span></p>` +
-      (bad.length
-        ? `<ul class="quick-list">${bad.map((node) => `<li><span><strong>${esc(productName(node))}</strong> ${String(node.id).startsWith('external:') ? 'is an outside service you start yourself; it is only needed if your project uses it.' : 'is not available.'}</span></li>`).join('')}</ul>`
-        : '');
+      `<p>${bad.length ? 'Your preview runs, with things to look at.' : 'Your preview runs and everything it needs answered.'} <span class="muted">${ready} parts ready${standNote}.</span></p>` +
+      (bad.length ? `<ul class="quick-list">${badItems}</ul>` : '');
   } else if (session?.ready) health = '<p class="muted">Reading the running preview…</p>';
   else
     health = `<p class="muted">${findings.length ? 'Fix these, then start the preview.' : 'Your setup looks complete. Start the preview to check it live.'}</p>`;
+  const findingsHtml = findings.length ? `<ul class="quick-list">${findings.join('')}</ul>` : '';
+  const openAttribute = mapOpen ? ' open' : '';
   return (
-    `${findings.length ? `<ul class="quick-list">${findings.join('')}</ul>` : ''}${health}` +
+    `${findingsHtml}${health}` +
     (mapHtml
-      ? `<details class="disclosure quick-map" data-section-key="quick-map"${mapOpen ? ' open' : ''}><summary>See how everything connects</summary>${mapHtml}</details>`
+      ? `<details class="disclosure quick-map" data-section-key="quick-map"${openAttribute}><summary>See how everything connects</summary>${mapHtml}</details>`
       : '')
   );
 }
@@ -583,7 +703,7 @@ function websiteNames(name, portals) {
   return portals.map((portal) => {
     const base = portals.length > 1 ? own(portal) : name;
     let id = base;
-    for (let counter = 2; used.has(id); counter++) id = `${base}-${counter}`;
+    for (let counter = 2; used.has(id); counter++) id = `${base}-${counter}`; // NOSONAR: loop variable is advanced in the body on purpose
     used.add(id);
     return id;
   });
@@ -607,8 +727,8 @@ export function createDocument({
     found = candidates?.portals ?? [],
     solutions = (candidates?.solutions ?? []).map((item) => item.value),
     packs = (candidates?.packs ?? []).slice(0, 1);
-  const chosen =
-    kind === 'power-pages' ? (websites ? found.filter((item) => websites.includes(item.value)) : found) : [];
+  let chosen = [];
+  if (kind === 'power-pages') chosen = websites ? found.filter((item) => websites.includes(item.value)) : found;
   // A data module is registered by its path, so the runtime uses the id the module declares.
   const dataPacks = packs.map((item) => item.value),
     switches = switchesFor(parts);
@@ -661,12 +781,7 @@ export function createDocument({
 
 const set = (path, value) => ({ op: 'set', path, value });
 const remove = (path) => ({ op: 'delete', path });
-/** Edits for a new choice of parts: the runtime kind and its switches; a new website gets a source and a local address. */
-export function partsEdits(target, parts, candidates) {
-  const kind = kindFor(parts),
-    prefix = target.project ? [] : ['sites', target.id, 'mirage'],
-    edits = [];
-  if (kind !== target.kind) edits.push(set([...prefix, 'runtime', 'kind'], kind));
+function appendSwitchEdits(edits, prefix, target, parts, kind) {
   const api = target.switches?.dataverse?.enabled === true;
   if (parts.api && !api) edits.push(set([...prefix, 'dataverse', 'enabled'], true));
   if (!parts.api && api) edits.push(set([...prefix, 'dataverse', 'enabled'], false));
@@ -676,15 +791,27 @@ export function partsEdits(target, parts, candidates) {
     if (off && !wasOff) edits.push(set([...prefix, key, 'enabled'], false));
     if (!off && wasOff) edits.push(remove([...prefix, key, 'enabled']));
   }
-  if (kind === 'power-pages' && !target.project) {
-    const site = ['sites', target.id];
-    if (!target.source) edits.push(set([...site, 'source'], candidates?.portals?.[0]?.value ?? '.'));
-    if (!Object.keys(target.environments ?? {}).length)
-      edits.push(
-        set([...site, 'defaultEnv'], 'local'),
-        set([...site, 'environments', 'local'], `${LOCAL}${target.port || 8787}`),
-      );
-  }
+}
+
+function appendNewSiteEdits(edits, target, kind, candidates) {
+  if (kind !== 'power-pages' || target.project) return;
+  const site = ['sites', target.id];
+  if (!target.source) edits.push(set([...site, 'source'], candidates?.portals?.[0]?.value ?? '.'));
+  if (!Object.keys(target.environments ?? {}).length)
+    edits.push(
+      set([...site, 'defaultEnv'], 'local'),
+      set([...site, 'environments', 'local'], `${LOCAL}${target.port || 8787}`),
+    );
+}
+
+/** Edits for a new choice of parts: the runtime kind and its switches; a new website gets a source and a local address. */
+export function partsEdits(target, parts, candidates) {
+  const kind = kindFor(parts),
+    prefix = target.project ? [] : ['sites', target.id, 'mirage'],
+    edits = [];
+  if (kind !== target.kind) edits.push(set([...prefix, 'runtime', 'kind'], kind));
+  appendSwitchEdits(edits, prefix, target, parts, kind);
+  appendNewSiteEdits(edits, target, kind, candidates);
   return edits;
 }
 /** Edits for the chosen website export and Solution folders. */

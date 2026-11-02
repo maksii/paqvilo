@@ -27,16 +27,16 @@ export function parseLiquidReplayResponse(body) {
     });
   const paging = child(root, 'paging'),
     diagnostics = child(root, 'diagnostics');
+  const hasMore = () => {
+    if (String(paging?.attrs.more ?? '').toLowerCase() === 'true') return true;
+    if (String(paging?.attrs.more ?? '').toLowerCase() === 'false') return false;
+    return null;
+  };
   return {
     operationId: root.attrs['operation-id'],
     outcome: root.attrs.outcome,
     rows,
-    more:
-      String(paging?.attrs.more ?? '').toLowerCase() === 'true'
-        ? true
-        : String(paging?.attrs.more ?? '').toLowerCase() === 'false'
-          ? false
-          : null,
+    more: hasMore(),
     authoredFetchXml: child(diagnostics, 'authored-fetchxml')?.text ?? '',
     effectiveFetchXml: child(diagnostics, 'effective-fetchxml')?.text ?? '',
   };
@@ -102,7 +102,8 @@ export function createLiquidReplayClient({ store, identity, portal, templates, d
       const root = parseSolutionXml(body),
         roles = root.children.find((node) => node.name === 'roles')?.children.map((node) => node.text) ?? [];
       const sameRoles =
-        JSON.stringify([...roles].sort()) === JSON.stringify([...(capturedIdentity.roles ?? [])].sort());
+        JSON.stringify([...roles].sort((a, b) => Number(a > b) - Number(a < b))) ===
+        JSON.stringify([...(capturedIdentity.roles ?? [])].sort((a, b) => Number(a > b) - Number(a < b)));
       if (
         root.attrs['operation-id'] !== operation.id ||
         root.attrs['contact-id'] !== (capturedIdentity.contactId ?? capturedIdentity.id) ||

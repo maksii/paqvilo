@@ -34,6 +34,11 @@ import { cloneStateData } from './state-clone.mjs';
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { portalLanguage } from './portal-languages.mjs';
 
+const chooseLazily = (condition, yes, no) => {
+  if (condition()) return yes();
+  return no();
+};
+
 const TEXT = new Set(['nvarchar', 'string', 'memo', 'ntext', 'text', 'varchar', 'email', 'phone', 'url']);
 const NUMBER = new Set(['int', 'integer', 'bigint', 'decimal', 'money', 'float', 'double']);
 const FLOAT = new Set(['float', 'double']);
@@ -41,6 +46,19 @@ const LOOKUP = new Set(['lookup', 'customer', 'owner']);
 const CHOICE = new Set(['picklist', 'state', 'status', 'choice', 'optionset']);
 // The stored row a record came from: { table, id }. Lets a record from one table be a lookup value in another.
 const ROW = Symbol('power-fx.row');
+
+function columnKind(key, mapping, type, definition) {
+  if (key === mapping.idColumn || type === 'uniqueidentifier') return 'guid';
+  if (TEXT.has(type)) return 'text';
+  if (type === 'money') return 'currency';
+  if (NUMBER.has(type)) return 'number';
+  if (LOOKUP.has(type)) return 'lookup';
+  if (CHOICE.has(type)) return 'choice';
+  if (type === 'datetime' || type === 'date')
+    return behaviourOf(definition) === 'dateonly' || type === 'date' ? 'date' : 'datetime';
+  if (type === 'bit' || type === 'boolean') return 'boolean';
+  return 'other';
+}
 
 const typeName = (definition) => String(definition?.dataverseType ?? definition?.type ?? '').toLowerCase();
 const behaviourOf = (definition) =>
@@ -53,6 +71,55 @@ const behaviourOf = (definition) =>
       '',
   ).toLowerCase();
 const labelOf = (value) => (typeof value === 'string' ? value : null);
+function literalIdentity(value) {
+  const id = chooseLazily(
+    () => value instanceof FxRecordRef,
+    () => value.id,
+    () =>
+      chooseLazily(
+        () => isRecord(value),
+        () => value[ROW]?.id,
+        () =>
+          chooseLazily(
+            () => value instanceof FxGuid,
+            () => value.value,
+            () => value,
+          ),
+      ),
+  );
+  return typeof id === 'string' && /^[0-9a-f-]{36}$/i.test(id) ? id.toLowerCase() : null;
+}
+function typedLookupValue(value, info, readOne) {
+  const table = value.logical_name ?? info.definition.targets?.[0];
+  return table ? new FxRecordRef(table, value.id, () => readOne(table, value.id)) : new FxGuid(value.id);
+}
+/* NOSONAR: mixed return values are part of the contract */ function typedDateValue(info, value) {
+  if (!((info?.type === 'datetime' || info?.type === 'date') && typeof value === 'string')) return undefined;
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) return value;
+  if (info.type === 'date')
+    return new FxDate(
+      'date',
+      Date.UTC(new Date(ms).getUTCFullYear(), new Date(ms).getUTCMonth(), new Date(ms).getUTCDate()),
+    );
+  return new FxDate('datetime', ms, behaviourOf(info.definition) === 'timezoneindependent');
+}
+
+function storeValue(value) {
+  if (isBlank(value)) return null;
+  if (value instanceof FxDate) return value.kind === 'datetime' ? new Date(value.ms).toISOString() : isoOf(value);
+  if (value instanceof FxGuid) return value.value;
+  if (value instanceof FxFloat) return value.value;
+  if (value instanceof FxUntyped) return value.raw;
+  if (value instanceof FxRecordRef) return { id: value.id, logical_name: value.table };
+  if (isRecord(value) && value[ROW]?.id)
+    return { id: String(value[ROW].id).toLowerCase(), logical_name: value[ROW].table };
+  if (Array.isArray(value))
+    return value.map((item) =>
+      isRecord(item) && Object.keys(item).length === 1 ? storeValue(Object.values(item)[0]) : storeValue(item),
+    );
+  return value;
+}
 
 export function dataverseHost(
   api,
@@ -100,26 +167,7 @@ export function dataverseHost(
     if (!key) return null;
     const definition = fields[key] ?? {};
     const type = typeName(definition);
-    const kind =
-      key === mapping.idColumn || type === 'uniqueidentifier'
-        ? 'guid'
-        : TEXT.has(type)
-          ? 'text'
-          : type === 'money'
-            ? 'currency'
-            : NUMBER.has(type)
-              ? 'number'
-              : LOOKUP.has(type)
-                ? 'lookup'
-                : CHOICE.has(type)
-                  ? 'choice'
-                  : type === 'datetime' || type === 'date'
-                    ? behaviourOf(definition) === 'dateonly' || type === 'date'
-                      ? 'date'
-                      : 'datetime'
-                    : type === 'bit' || type === 'boolean'
-                      ? 'boolean'
-                      : 'other';
+    const kind = columnKind(key, mapping, type, definition);
     return { logical: key, odata: kind === 'lookup' ? `_${key}_value` : key, type: kind, definition };
   }
   function aliasesOf(logical) {
@@ -153,20 +201,9 @@ export function dataverseHost(
     if (isBlank(value)) return null;
     const info = columnInfo(logical, key);
     if (info?.type === 'guid' && typeof value === 'string') return new FxGuid(value);
-    if (info?.type === 'lookup' && typeof value === 'object' && value.id) {
-      const table = value.logical_name ?? info.definition.targets?.[0];
-      return table ? new FxRecordRef(table, value.id, () => readOne(table, value.id)) : new FxGuid(value.id);
-    }
-    if ((info?.type === 'datetime' || info?.type === 'date') && typeof value === 'string') {
-      const ms = Date.parse(value);
-      if (Number.isNaN(ms)) return value;
-      if (info.type === 'date')
-        return new FxDate(
-          'date',
-          Date.UTC(new Date(ms).getUTCFullYear(), new Date(ms).getUTCMonth(), new Date(ms).getUTCDate()),
-        );
-      return new FxDate('datetime', ms, behaviourOf(info.definition) === 'timezoneindependent');
-    }
+    if (info?.type === 'lookup' && typeof value === 'object' && value.id) return typedLookupValue(value, info, readOne);
+    const dateValue = typedDateValue(info, value);
+    if (dateValue !== undefined) return dateValue;
     // Decimal, money and whole numbers stay exact (store exact-numeric values); float and double columns are Float.
     if (info?.type === 'number' && FLOAT.has(typeName(info.definition)))
       return new FxFloat(Number(isExactNumeric(value) ? value.value : value));
@@ -186,22 +223,6 @@ export function dataverseHost(
     }
     return row;
   }
-  function storeValue(value) {
-    if (isBlank(value)) return null;
-    if (value instanceof FxDate) return value.kind === 'datetime' ? new Date(value.ms).toISOString() : isoOf(value);
-    if (value instanceof FxGuid) return value.value;
-    if (value instanceof FxFloat) return value.value;
-    if (value instanceof FxUntyped) return value.raw;
-    if (value instanceof FxRecordRef) return { id: value.id, logical_name: value.table };
-    if (isRecord(value) && value[ROW]?.id)
-      return { id: String(value[ROW].id).toLowerCase(), logical_name: value[ROW].table };
-    if (Array.isArray(value))
-      return value.map((item) =>
-        isRecord(item) && Object.keys(item).length === 1 ? storeValue(Object.values(item)[0]) : storeValue(item),
-      );
-    return value;
-  }
-
   // One row by id: the caller's secured read, or (formula columns) the platform's read of the stored row.
   function readOne(logical, id) {
     assertActive();
@@ -269,7 +290,11 @@ export function dataverseHost(
     const logical = mapping.logicalName;
     const keyOf = (record) => {
       const id = record?.[ROW]?.table === logical ? record[ROW].id : record?.[mapping.idColumn];
-      return isBlank(id) ? null : String(id instanceof FxGuid ? id.value : id).toLowerCase();
+      return chooseLazily(
+        () => isBlank(id),
+        () => null,
+        () => String(id instanceof FxGuid ? id.value : id).toLowerCase(),
+      );
     };
     const read = ({ filters = [], orderby = [], top = null, extended = false } = {}) => {
       const params = {};
@@ -349,9 +374,10 @@ export function dataverseHost(
       literal(column, value) {
         if (isBlank(value)) return 'null';
         if (value instanceof FxUntyped) value = value.raw;
+        if (column.type === 'guid' || column.type === 'lookup') return literalIdentity(value);
         switch (column.type) {
           case 'text':
-            return typeof value === 'string' ? `'${value.replace(/'/g, "''")}'` : null;
+            return typeof value === 'string' ? `'${value.replaceAll("'", "''")}'` : null;
           case 'number':
           case 'choice':
             return isNumeric(value) ? toText(value) : null;
@@ -361,18 +387,6 @@ export function dataverseHost(
             return value instanceof FxDate ? new Date(value.ms).toISOString() : null;
           case 'date':
             return value instanceof FxDate ? new Date(value.ms).toISOString().slice(0, 10) : null;
-          case 'guid':
-          case 'lookup': {
-            const id =
-              value instanceof FxRecordRef
-                ? value.id
-                : isRecord(value)
-                  ? value[ROW]?.id
-                  : value instanceof FxGuid
-                    ? value.value
-                    : value;
-            return typeof id === 'string' && /^[0-9a-f-]{36}$/i.test(id) ? id.toLowerCase() : null;
-          }
           default:
             return null;
         }

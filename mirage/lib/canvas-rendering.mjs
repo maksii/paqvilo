@@ -35,6 +35,27 @@ const KINDS = new Set([
 ]);
 const MODERN = /^(?:Modern(?:\/|[A-Z])|(?:Text|TextInput|Button|DropDown|ComboBox|CheckBox|Toggle|DatePicker)(?:@|$))/i;
 
+function renderingGapReason(expanded, control, kind, modern, pcf) {
+  if (pcf) {
+    if (!expanded.codeComponents?.[control.name]?.admitted)
+      return 'Code component is not admitted by its local manifest.';
+  } else if (control.componentName) return 'Canvas component definition is unavailable.';
+  else if (!KINDS.has(kind)) return 'This control is not rendered by the local player.';
+  else if (modern) return 'Modern control behavior is approximated; version-specific properties may be unsupported.';
+  else if (kind === 'htmlviewer')
+    return 'HTML viewer supports a restricted safe markup and typography subset; links and external media are omitted.';
+  else if (kind === 'icon') return 'Icons use approximate text glyphs.';
+  else if (['audio', 'video'].includes(kind))
+    return 'Media playback can be interrupted by screen redraws; local assets and native events are supported.';
+  return null;
+}
+
+function isRenderableControl(modern, kind, control) {
+  return (
+    (modern || ['audio', 'video', 'icon', 'htmlviewer'].includes(kind)) && KINDS.has(kind) && !control.componentName
+  );
+}
+
 /** Explicit source controls the baseline player cannot render; no formula is executed. */
 export function canvasRenderingGaps(source) {
   const expanded = prepareCanvasSource(source);
@@ -46,34 +67,14 @@ export function canvasRenderingGaps(source) {
       const kind = controlKind(control.control, format);
       const modern = format !== 'fx.yaml' && MODERN.test(control.control ?? '');
       const pcf = kind === 'codecomponent';
-      const reason = pcf
-        ? expanded.codeComponents?.[control.name]?.admitted
-          ? null
-          : 'Code component is not admitted by its local manifest.'
-        : control.componentName
-          ? 'Canvas component definition is unavailable.'
-          : !KINDS.has(kind)
-            ? 'This control is not rendered by the local player.'
-            : modern
-              ? 'Modern control behavior is approximated; version-specific properties may be unsupported.'
-              : kind === 'htmlviewer'
-                ? 'HTML viewer supports a restricted safe markup and typography subset; links and external media are omitted.'
-                : kind === 'icon'
-                  ? 'Icons use approximate text glyphs.'
-                  : ['audio', 'video'].includes(kind)
-                    ? 'Media playback can be interrupted by screen redraws; local assets and native events are supported.'
-                    : null;
+      const reason = renderingGapReason(expanded, control, kind, modern, pcf);
       if (reason)
         gaps.push({
           screen: screen.name,
           name: control.name,
           control: control.control,
           reason,
-          ...((modern || ['audio', 'video', 'icon', 'htmlviewer'].includes(kind)) &&
-          KINDS.has(kind) &&
-          !control.componentName
-            ? { renderable: true }
-            : {}),
+          ...(isRenderableControl(modern, kind, control) ? { renderable: true } : {}),
         });
     }
   }

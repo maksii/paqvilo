@@ -28,19 +28,19 @@ export const earlierStateOwner = (file) => {
 };
 
 const uuid = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
-const recordFileName = new RegExp('^' + uuid + '\\.pages$');
-const leaseName = new RegExp('^' + uuid + '\\.lease$');
+const recordFileName = new RegExp('^' + uuid + String.raw`\.pages$`);
+const leaseName = new RegExp('^' + uuid + String.raw`\.lease$`);
 // Temporaries name their creating process; earlier temporaries did not.
 const temporaryName = new RegExp(
-  '^(?:([1-9]\\d*)-' +
+  String.raw`^(?:([1-9]\d*)-` +
     uuid +
-    '\\.(?:owner\\.tmp|lease\\.tmp|sort)|' +
+    String.raw`\.(?:owner\.tmp|lease\.tmp|sort)|` +
     uuid +
-    '(?:\\.owner\\.tmp|\\.sort|-' +
+    String.raw`(?:\.owner\.tmp|\.sort|-` +
     uuid +
-    '\\.lease\\.tmp))$',
+    String.raw`\.lease\.tmp))$`,
 );
-const integrity = (message) => Object.assign(Error(message), { code: 'StateIntegrity' });
+const integrity = (message) => Object.assign(new Error(message), { code: 'StateIntegrity' });
 const OWNER = '.record-owner.json';
 /** A temporary file name in a record directory, attributed to this process. */
 export const temporaryRecordName = (kind) => process.pid + '-' + randomUUID() + '.' + kind;
@@ -95,6 +95,20 @@ function readLease(file) {
  * lease here. A lease that cannot be read counts as live. */
 function removeStaleTemporaries(directory, { isAlive = processAlive } = {}) {
   const names = fs.readdirSync(directory);
+  const otherLive = hasOtherLiveLease(names, directory, isAlive);
+  let removed = 0,
+    retained = 0;
+  for (const name of names) {
+    const match = temporaryName.exec(name);
+    if (!match) continue;
+    const outcome = removeTemporary(directory, name, match[1] ? Number(match[1]) : null, otherLive, isAlive);
+    removed += outcome.removed;
+    retained += outcome.retained;
+  }
+  return { removed, retained };
+}
+
+function hasOtherLiveLease(names, directory, isAlive) {
   let otherLive = false;
   for (const name of names.filter((name) => leaseName.test(name))) {
     try {
@@ -104,26 +118,19 @@ function removeStaleTemporaries(directory, { isAlive = processAlive } = {}) {
       if (error.code !== 'ENOENT') otherLive = true;
     }
   }
-  let removed = 0,
-    retained = 0;
-  for (const name of names) {
-    const match = temporaryName.exec(name);
-    if (!match) continue;
-    const pid = match[1] ? Number(match[1]) : null;
-    if (pid === null ? otherLive : pid === process.pid || isAlive(pid)) {
-      retained++;
-      continue;
-    }
-    try {
-      fs.unlinkSync(path.join(directory, name));
-      removed++;
-    } catch (error) {
-      if (error.code === 'ENOENT') continue;
-      if (!['EACCES', 'EPERM', 'EBUSY'].includes(error.code)) throw error;
-      retained++;
-    }
+  return otherLive;
+}
+
+function removeTemporary(directory, name, pid, otherLive, isAlive) {
+  if (pid === null ? otherLive : pid === process.pid || isAlive(pid)) return { removed: 0, retained: 1 };
+  try {
+    fs.unlinkSync(path.join(directory, name));
+    return { removed: 1, retained: 0 };
+  } catch (error) {
+    if (error.code === 'ENOENT') return { removed: 0, retained: 0 };
+    if (!['EACCES', 'EPERM', 'EBUSY'].includes(error.code)) throw error;
+    return { removed: 0, retained: 1 };
   }
-  return { removed, retained };
 }
 
 // Link failures meaning the filesystem has no hard links (FAT32, exFAT, some shares).
@@ -152,7 +159,8 @@ function publishRecordOwner(directory, body, { io = fs } = {}) {
       throw error;
     }
     try {
-      if (io.writeSync(fd, bytes, 0, bytes.length, 0) !== bytes.length) throw Error('Incomplete record owner write');
+      if (io.writeSync(fd, bytes, 0, bytes.length, 0) !== bytes.length)
+        throw new Error('Incomplete record owner write');
       io.fsyncSync(fd);
     } finally {
       io.closeSync(fd);
@@ -184,20 +192,24 @@ function readOwner(directory) {
       Atomics.wait(wait, 0, 0, 2);
       continue;
     }
-    let owner;
-    try {
-      owner = JSON.parse(text);
-    } catch {
-      throw integrity('Invalid record directory owner');
-    }
-    if (
-      (owner?.format !== 1 && owner?.format !== 2) ||
-      !/^[a-f0-9]{64}$/.test(owner.key ?? '') ||
-      (owner.state !== undefined && !/^[a-f0-9]{64}$/.test(owner.state))
-    )
-      throw integrity('Invalid record directory owner');
-    return owner;
+    return parseRecordOwner(text);
   }
+}
+
+function parseRecordOwner(text) {
+  let owner;
+  try {
+    owner = JSON.parse(text);
+  } catch {
+    throw integrity('Invalid record directory owner');
+  }
+  if (
+    (owner?.format !== 1 && owner?.format !== 2) ||
+    !/^[a-f0-9]{64}$/.test(owner.key ?? '') ||
+    (owner.state !== undefined && !/^[a-f0-9]{64}$/.test(owner.state))
+  )
+    throw integrity('Invalid record directory owner');
+  return owner;
 }
 
 /** Claim a record directory. Its marker holds a random owner key, so a state and
@@ -209,41 +221,47 @@ function readOwner(directory) {
  * marker is used unowned: nothing in it is collected. */
 export function claimRecordDirectory(directory, { ownerKey, location, earlierLocation, adopt = false, io = fs } = {}) {
   if (ownerKey !== undefined && !/^[a-f0-9]{64}$/.test(ownerKey)) throw TypeError('Invalid record directory owner');
-  let owner = readOwner(directory);
-  if (!owner) {
-    removeStaleTemporaries(directory);
-    // Only temporaries (a concurrent creator's included) may precede a marker.
-    if (fs.readdirSync(directory).every((name) => temporaryName.test(name)))
-      publishRecordOwner(
-        directory,
-        { format: 2, key: ownerKey ?? randomBytes(32).toString('hex'), ...(location ? { state: location } : {}) },
-        { io },
-      );
-    owner = readOwner(directory);
-    if (!owner)
-      return { key: ownerKey ?? randomBytes(32).toString('hex'), owned: false, reason: 'missing-owner-marker' };
-  }
-  const matches =
-    ownerKey !== undefined
-      ? owner.key === ownerKey
-      : adopt || !location || [location, earlierLocation].includes(owner.format === 1 ? owner.key : owner.state);
-  if (!matches) throw Error('Record directory belongs to a different state');
+  const owner = ensureRecordOwner(directory, ownerKey, location, io);
+  if (!owner) return { key: ownerKey ?? randomBytes(32).toString('hex'), owned: false, reason: 'missing-owner-marker' };
+  let matches;
+  if (ownerKey !== undefined) matches = owner.key === ownerKey;
+  else
+    matches = adopt || !location || [location, earlierLocation].includes(owner.format === 1 ? owner.key : owner.state);
+  if (!matches) throw new Error('Record directory belongs to a different state');
   // Record where the owning state now lives, migrating an earlier marker.
-  if (location && (owner.format !== 2 || owner.state !== location)) {
-    const temporary = path.join(directory, temporaryRecordName('owner.tmp'));
-    try {
-      fs.writeFileSync(temporary, JSON.stringify({ format: 2, key: owner.key, state: location }), {
-        flag: 'wx',
-        mode: 0o600,
-      });
-      fs.renameSync(temporary, path.join(directory, OWNER));
-    } catch {
-      // The marker stays valid with its earlier location, e.g. while another reader holds it.
-    } finally {
-      fs.rmSync(temporary, { force: true });
-    }
-  }
+  migrateRecordOwner(directory, owner, location);
   return { key: owner.key, owned: true };
+}
+
+function ensureRecordOwner(directory, ownerKey, location, io) {
+  let owner = readOwner(directory);
+  if (owner) return owner;
+  removeStaleTemporaries(directory);
+  // Only temporaries (a concurrent creator's included) may precede a marker.
+  if (fs.readdirSync(directory).every((name) => temporaryName.test(name)))
+    publishRecordOwner(
+      directory,
+      { format: 2, key: ownerKey ?? randomBytes(32).toString('hex'), ...(location ? { state: location } : {}) },
+      { io },
+    );
+  owner = readOwner(directory);
+  return owner;
+}
+
+function migrateRecordOwner(directory, owner, location) {
+  if (!location || (owner.format === 2 && owner.state === location)) return;
+  const temporary = path.join(directory, temporaryRecordName('owner.tmp'));
+  try {
+    fs.writeFileSync(temporary, JSON.stringify({ format: 2, key: owner.key, state: location }), {
+      flag: 'wx',
+      mode: 0o600,
+    });
+    fs.renameSync(temporary, path.join(directory, OWNER));
+  } catch {
+    // The marker stays valid with its earlier location, e.g. while another reader holds it.
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
 }
 
 /** A live session protects every file it has ever admitted. Publish protection
@@ -258,12 +276,13 @@ export class RecordFileLease {
     this.closed = false;
   }
   protect(names) {
-    if (this.closed) throw Error('Record file lease is closed');
+    if (this.closed) throw new Error('Record file lease is closed');
     const next = new Set([...this.files, ...names]);
     if ([...next].some((name) => !recordFileName.test(name))) throw integrity('Invalid leased record filename');
     if (next.size === this.files.size) return;
     const temp = path.join(this.directory, temporaryRecordName('lease.tmp'));
-    const body = JSON.stringify({ format: 1, id: this.id, pid: process.pid, files: [...next].sort() });
+    const files = [...next].sort((a, b) => Number(a > b) - Number(a < b));
+    const body = JSON.stringify({ format: 1, id: this.id, pid: process.pid, files });
     const fd = this.io.openSync(temp, 'wx', 0o600);
     try {
       try {
@@ -310,6 +329,17 @@ export async function collectRecordGarbage(directory, publishedNames, { isAlive 
   const alive = isAlive ?? processAlive;
   const leases = (await fs.promises.readdir(root)).filter((name) => leaseName.test(name));
   const live = new Map();
+  await collectLiveLeases(root, leases, protectedNames, live, alive);
+  const counts = await collectUnprotectedRecords(root, candidates, protectedNames);
+  for (const name of await fs.promises.readdir(root)) {
+    const pid = Number(temporaryName.exec(name)?.[1]);
+    if (pid && !live.has(pid)) live.set(pid, await alive(pid));
+  }
+  const temporaries = removeStaleTemporaries(root, { isAlive: (pid) => live.get(pid) ?? true });
+  return { removed: counts.removed + temporaries.removed, retained: counts.retained + temporaries.retained };
+}
+
+async function collectLiveLeases(root, leases, protectedNames, live, alive) {
   for (const name of leases) {
     const file = path.join(root, name);
     let body;
@@ -326,6 +356,9 @@ export async function collectRecordGarbage(directory, publishedNames, { isAlive 
         if (error.code !== 'ENOENT') throw error;
       });
   }
+}
+
+async function collectUnprotectedRecords(root, candidates, protectedNames) {
   let removed = 0,
     retained = 0;
   for (const name of candidates) {
@@ -343,10 +376,5 @@ export async function collectRecordGarbage(directory, publishedNames, { isAlive 
       retained++;
     }
   }
-  for (const name of await fs.promises.readdir(root)) {
-    const pid = Number(temporaryName.exec(name)?.[1]);
-    if (pid && !live.has(pid)) live.set(pid, await alive(pid));
-  }
-  const temporaries = removeStaleTemporaries(root, { isAlive: (pid) => live.get(pid) ?? true });
-  return { removed: removed + temporaries.removed, retained: retained + temporaries.retained };
+  return { removed, retained };
 }

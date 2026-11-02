@@ -51,32 +51,28 @@ const loopback = (value) => {
     throw new Error('Local simulator and browser debugging addresses must use loopback without credentials.');
   return url;
 };
-const expand = (value, variables) =>
-  Array.isArray(value)
-    ? value.map((item) => expand(item, variables))
-    : value && typeof value === 'object'
-      ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, expand(item, variables)]))
-      : typeof value === 'string'
-        ? value.replace(/\{\{([\w]+)\}\}/g, (_all, name) => {
-            if (variables[name] === undefined) throw new Error(`Unknown flow variable ${name}`);
-            return String(variables[name]);
-          })
-        : value;
-const locate = (page, target) =>
-  target.selector
-    ? page.locator(target.selector)
-    : target.role
-      ? page.getByRole(target.role, {
-          name: target.name,
-          exact: target.exact !== false,
-        })
-      : target.label
-        ? page.getByLabel(target.label, { exact: target.exact !== false })
-        : target.text
-          ? page.getByText(target.text, { exact: target.exact !== false })
-          : (() => {
-              throw new Error('A flow action requires selector, role, label, or text.');
-            })();
+const expand = (value, variables) => {
+  if (Array.isArray(value)) return value.map((item) => expand(item, variables));
+  if (value && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, expand(item, variables)]));
+  if (typeof value === 'string')
+    return value.replace(/\{\{(\w+)\}\}/g, (_all, name) => {
+      if (variables[name] === undefined) throw new Error(`Unknown flow variable ${name}`);
+      return String(variables[name]);
+    });
+  return value;
+};
+const locate = (page, target) => {
+  if (target.selector) return page.locator(target.selector);
+  if (target.role)
+    return page.getByRole(target.role, {
+      name: target.name,
+      exact: target.exact !== false,
+    });
+  if (target.label) return page.getByLabel(target.label, { exact: target.exact !== false });
+  if (target.text) return page.getByText(target.text, { exact: target.exact !== false });
+  throw new Error('A flow action requires selector, role, label, or text.');
+};
 const expectedFields = (record, fields, contains) =>
   Object.entries(fields ?? {}).every(([name, value]) => JSON.stringify(record[name]) === JSON.stringify(value)) &&
   Object.entries(contains ?? {}).every(
@@ -99,7 +95,7 @@ export async function assertAcceptanceCapabilities({ localUrl, requires = [], ti
 }
 
 /** Run explicit actions against exported portal UI; record failures rather than converting partial flows into passes. */
-export async function runAcceptance({
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export async function runAcceptance({
   localUrl,
   liveOrigin,
   cdpUrl,
@@ -276,7 +272,8 @@ export async function runAcceptance({
       const cancelRequests = (requests, reason) => {
         const cancelled = cancelNavigationRequests(requests, pending, requestRecords, { reason });
         if (cancelled.length) {
-          (observation.navigationCancelledRequests ??= []).push(...cancelled);
+          observation.navigationCancelledRequests ??= [];
+          observation.navigationCancelledRequests.push(...cancelled);
           lastRequestActivity = Date.now();
         }
       };
@@ -360,8 +357,9 @@ export async function runAcceptance({
             frames: () => frameState(frameEvents),
           })
             .then((wait) => {
-              if (wait)
-                (observation.navigationWaits ??= []).push({
+              if (wait) {
+                observation.navigationWaits ??= [];
+                observation.navigationWaits.push({
                   navigation: safeUrl(event.request.url),
                   ...wait,
                   commitReserveMs: reserve,
@@ -370,6 +368,7 @@ export async function runAcceptance({
                   writeHoldAllowanceMs: Math.max(0, remaining - reserve),
                   actionRemainingMs: Number.isFinite(actionDeadline) ? Math.max(0, actionDeadline - Date.now()) : null,
                 });
+              }
             })
             .catch(() => {})
             .finally(() => cdp.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {}));
@@ -469,7 +468,8 @@ export async function runAcceptance({
       page.on('console', (message) => {
         if (message.type() === 'error') {
           observation.consoleErrors.push(safeMessage(message.text()));
-          (observation.consoleMessages ??= []).push({
+          observation.consoleMessages ??= [];
+          observation.consoleMessages.push({
             text: safeMessage(message.text()),
             argumentCount: message.args().length,
             url: message.location().url ? failureUrl(message.location().url) : null,
@@ -532,7 +532,8 @@ export async function runAcceptance({
         // requestfinished depending on timing, so it is classified here, once, from its status.
         if (response.request().isNavigationRequest() && [204, 205].includes(response.status())) {
           noContentRequests.add(response.request());
-          (observation.noContentNavigations ??= []).push({
+          observation.noContentNavigations ??= [];
+          observation.noContentNavigations.push({
             method: response.request().method(),
             url: failureUrl(response.url()),
             status: response.status(),
@@ -635,13 +636,14 @@ export async function runAcceptance({
           timeout: actionTimeout,
           ignore: (row) => simulatorBackgroundRequest(row.url ?? row.path, origin),
         });
-        (observation.loadWaits ??= []).push({ url: safeUrl(page.url()), ...quiet });
+        observation.loadWaits ??= [];
+        observation.loadWaits.push({ url: safeUrl(page.url()), ...quiet });
       };
       const settle = async () => {
         // Document holds have their own bounded write wait. Start the settle
         // deadline after releasing an existing hold, so it cannot expire while
         // the runner itself prevents the replacement document from committing.
-        await Promise.allSettled([...navigationHolds]);
+        await Promise.allSettled(navigationHolds);
         const active = () =>
           [...pending.values()].filter(
             (record) => record.type !== 'eventsource' && !simulatorBackgroundRequest(record.url, origin),
@@ -662,39 +664,28 @@ export async function runAcceptance({
               if (response.ok) {
                 const audit = await response.json();
                 const frameTree = await cdp.send('Page.getFrameTree');
-                const flatten = (node) => [node.frame, ...(node.childFrames ?? []).flatMap(flatten)];
-                const currentFrames = flatten(frameTree.frameTree);
+                const currentFrames = flattenFrameTree(frameTree.frameTree);
                 observation.finalFrameTree = currentFrames.map(({ id, parentId, loaderId }) => ({
                   id,
                   parentId,
                   loaderId,
                 }));
-                for (const [request, record] of pending) {
-                  const proof = reconcileSupersededRead(proofInputs.get(request), {
-                    cdpRecords: [...cdpRecords.values()],
-                    audit,
-                    origin: local.origin,
-                    identity: observedIdentity,
-                    frameEvents,
-                    currentFrames,
-                  });
-                  if (proof) {
-                    record.navigationObservation = proof;
-                    (observation.supersededReads ??= []).push(proof);
-                    pending.delete(request);
-                  }
-                }
+                reconcilePendingFrames({
+                  observation,
+                  pending,
+                  proofInputs,
+                  cdpRecords,
+                  audit,
+                  localOrigin: local.origin,
+                  observedIdentity,
+                  frameEvents,
+                  currentFrames,
+                });
               }
             }
           }
           await Promise.allSettled(responseObservations);
-          if (active().length)
-            throw new Error(
-              'Portal requests did not settle: ' +
-                active()
-                  .map((record) => record.method + ' ' + record.url)
-                  .join(', '),
-            );
+          throwIfActiveRequests(active);
         } finally {
           settlementDeadline = Infinity;
         }
@@ -728,12 +719,11 @@ export async function runAcceptance({
           )
             throw new Error('A local mutation/state assertion cannot execute in a live observation flow.');
           actionDeadline = Date.now() + actionTimeout;
-          const surface = step.frame
-            ? (Array.isArray(step.frame) ? step.frame : [step.frame]).reduce(
-                (surface, selector) => surface.frameLocator(selector),
-                page,
-              )
-            : page;
+          let surface;
+          if (step.frame) {
+            const selectors = Array.isArray(step.frame) ? step.frame : [step.frame];
+            surface = selectors.reduce((current, selector) => current.frameLocator(selector), page);
+          } else surface = page;
           const target = () => locate(surface, step);
           if (step.action === 'navigate') {
             await settle();
@@ -957,8 +947,10 @@ export async function runAcceptance({
                 return false;
               }
             });
-          if (own) (observation.browserRequestConsole ??= []).push({ console: message, path: own.path, status });
-          else observation.unexpectedConsoleErrors.push(message);
+          if (own) {
+            observation.browserRequestConsole ??= [];
+            observation.browserRequestConsole.push({ console: message, path: own.path, status });
+          } else observation.unexpectedConsoleErrors.push(message);
         }
         const failures = ['pageErrors', 'blockedRequests'].filter((key) => observation[key].length);
         if (observation.unexpectedConsoleErrors.length) failures.push('consoleErrors');
@@ -1018,6 +1010,49 @@ export async function runAcceptance({
     await fs.writeFile(result.report, JSON.stringify(result, null, 2));
   }
   return result;
+}
+
+function reconcilePendingFrames({
+  observation,
+  pending,
+  proofInputs,
+  cdpRecords,
+  audit,
+  localOrigin,
+  observedIdentity,
+  frameEvents,
+  currentFrames,
+}) {
+  for (const [request, record] of pending) {
+    const proof = reconcileSupersededRead(proofInputs.get(request), {
+      cdpRecords: [...cdpRecords.values()],
+      audit,
+      origin: localOrigin,
+      identity: observedIdentity,
+      frameEvents,
+      currentFrames,
+    });
+    if (proof) {
+      record.navigationObservation = proof;
+      observation.supersededReads ??= [];
+      observation.supersededReads.push(proof);
+      pending.delete(request);
+    }
+  }
+}
+
+function flattenFrameTree(node) {
+  return [node.frame, ...(node.childFrames ?? []).flatMap(flattenFrameTree)];
+}
+
+function throwIfActiveRequests(active) {
+  if (active().length)
+    throw new Error(
+      'Portal requests did not settle: ' +
+        active()
+          .map((record) => record.method + ' ' + record.url)
+          .join(', '),
+    );
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

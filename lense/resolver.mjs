@@ -23,7 +23,7 @@ export function globToRegExp(glob) {
     } else if (c === '?') {
       re += '[^/]';
     } else {
-      re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+      re += c.replace(/[.+^${}()|[\]\\]/g, String.raw`\$&`);
     }
   }
   return new RegExp(`^${re}$`, 'i');
@@ -40,6 +40,33 @@ function isFile(file) {
 function isInside(root, file) {
   const relative = path.relative(root, file);
   return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function resolveRouteFile(model, rule, decoded, prefixEnd) {
+  if (rule.file) return path.resolve(model.sourceDir, rule.file);
+  if (!rule.dir) return null;
+  // Preserve literal suffixes (e.g. *.js) and nested segments after the fixed URL prefix.
+  const rest = decoded.slice(prefixEnd + 1);
+  const root = path.resolve(model.sourceDir, rule.dir);
+  let file = path.resolve(root, rest);
+  // Resolve junctions/symlinks as well as lexical traversal; a request cannot leave its route.
+  try {
+    if (!isInside(root, file) || !isInside(fs.realpathSync.native(root), fs.realpathSync.native(file))) file = null;
+  } catch {
+    file = null;
+  }
+  return file;
+}
+
+function resolveWebFile(model, site, excludes, changed, urlPath, decoded) {
+  if (site.webFiles?.enabled === false) return null;
+  if (excludes.some((re) => re.test(decoded))) return null;
+  // urlKey decodes once itself. Passing decoded here would conflate %252E and %2E.
+  const webFile = model.webFileByUrl.get(urlKey(urlPath));
+  if (!webFile?.file) return null;
+  if (changed && !changed.has(path.resolve(webFile.file))) return null;
+  if (!isSourceFile(model.sourceDir, webFile.file)) return null;
+  return { file: webFile.file, via: 'web-file' };
 }
 
 export class Resolver {
@@ -81,32 +108,11 @@ export class Resolver {
       const m = re.exec(decoded);
       if (!m) continue;
       if (rule.passthrough) return null;
-      let file = null;
-      if (rule.file) file = path.resolve(this.model.sourceDir, rule.file);
-      else if (rule.dir) {
-        // Preserve literal suffixes (e.g. *.js) and nested segments after the fixed URL prefix.
-        const rest = decoded.slice(prefixEnd + 1);
-        const root = path.resolve(this.model.sourceDir, rule.dir);
-        file = path.resolve(root, rest);
-        // Resolve junctions/symlinks as well as lexical traversal; a request cannot leave its route.
-        try {
-          if (!isInside(root, file) || !isInside(fs.realpathSync.native(root), fs.realpathSync.native(file)))
-            file = null;
-        } catch {
-          file = null;
-        }
-      }
+      const file = resolveRouteFile(this.model, rule, decoded, prefixEnd);
       if (file && isFile(file)) return this.inScope(file) ? { file, via: `route ${rule.url}` } : null;
       // rule matched but nothing on disk: fall through to the automatic mapping
     }
 
-    if (this.site.webFiles?.enabled === false) return null;
-    if (this.excludes.some((re) => re.test(decoded))) return null;
-    // urlKey decodes once itself. Passing decoded here would conflate %252E and %2E.
-    const webFile = this.model.webFileByUrl.get(urlKey(urlPath));
-    if (!webFile || !webFile.file) return null;
-    if (!this.inScope(webFile.file)) return null;
-    if (!isSourceFile(this.model.sourceDir, webFile.file)) return null;
-    return { file: webFile.file, via: 'web-file' };
+    return resolveWebFile(this.model, this.site, this.excludes, this.changed, urlPath, decoded);
   }
 }

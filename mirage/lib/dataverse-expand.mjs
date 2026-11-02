@@ -42,30 +42,36 @@ export function assertExpand(items, mapping, resolveRelationship) {
 }
 
 function checkLevel(items, mapping, resolveRelationship, nested) {
-  for (const item of items) {
-    const rel = resolveRelationship(mapping, item.navigation);
-    if (!rel)
-      throw new DataError(
-        `Could not find a navigation property named '${item.navigation}' on ${mapping.logicalName}.`,
-        400,
-        'InvalidAttribute',
-      );
-    if (item.ref && rel.many) throw invalid('Expand with $ref is only supported on lookup type navigation property.');
-    const hasNested = item.expand?.length > 0;
-    if ((hasNested || nested) && rel.intersect)
-      throw invalid(
-        `The navigation property '${item.navigation}' cannot be expanded. Only many-to-one relationships are supported for nested expansion.`,
-      );
-    if (rel.many && nested && (item.top != null || item.orderby)) throw invalid(PAGING_MESSAGE);
-    if (!rel.many && (item.top != null || item.orderby)) throw invalid(PAGING_MESSAGE); // a guess: Dataverse may accept paging on a lookup
-    // ponytail: nested children are not checked when the resolver gives no target mapping.
-    if (hasNested && rel.target) checkLevel(item.expand, rel.target, resolveRelationship, nested);
-  }
+  for (const item of items) checkExpandItem(item, mapping, resolveRelationship, nested);
+}
+
+function checkExpandItem(item, mapping, resolveRelationship, nested) {
+  const rel = resolveRelationship(mapping, item.navigation);
+  if (!rel)
+    throw new DataError(
+      `Could not find a navigation property named '${item.navigation}' on ${mapping.logicalName}.`,
+      400,
+      'InvalidAttribute',
+    );
+  if (item.ref && rel.many) throw invalid('Expand with $ref is only supported on lookup type navigation property.');
+  const hasNested = item.expand?.length > 0;
+  if ((hasNested || nested) && rel.intersect)
+    throw invalid(
+      `The navigation property '${item.navigation}' cannot be expanded. Only many-to-one relationships are supported for nested expansion.`,
+    );
+  if (rel.many && nested && (item.top != null || item.orderby)) throw invalid(PAGING_MESSAGE);
+  if (!rel.many && (item.top != null || item.orderby)) throw invalid(PAGING_MESSAGE); // a guess: Dataverse may accept paging on a lookup
+  // ponytail: nested children are not checked when the resolver gives no target mapping.
+  if (hasNested && rel.target) checkLevel(item.expand, rel.target, resolveRelationship, nested);
 }
 
 // Percent-encodes an option value, keeping the characters the documented nextLinks leave literal.
 const encodeOption = (value) =>
-  encodeURIComponent(String(value)).replace(/%24/g, '$').replace(/%2C/g, ',').replace(/%3B/g, ';').replace(/%3D/g, '=');
+  encodeURIComponent(String(value))
+    .replaceAll('%24', '$')
+    .replaceAll('%2C', ',')
+    .replaceAll('%3B', ';')
+    .replaceAll('%3D', '=');
 
 /** The option pairs of one expand item, raw: $select, $filter, $orderby, $top and a nested $expand. */
 function optionPairs(item) {
@@ -96,8 +102,9 @@ export function childLinks(origin, version, set, id, nav, options = {}, { nested
     return `${pair.slice(0, at + 1)}${encodeOption(pair.slice(at + 1))}`;
   });
   if (nested && token) query.push(`$skiptoken=${skipTokenQueryValue(decodeURIComponent(encodeSkipToken(token)))}`);
+  const queryString = query.length ? `?${query.join('&')}` : '';
   return {
     key: `${nav}@odata.nextLink`,
-    url: `${origin}/api/data/${version}/${set}(${id})/${nav}${query.length ? `?${query.join('&')}` : ''}`,
+    url: `${origin}/api/data/${version}/${set}(${id})/${nav}${queryString}`,
   };
 }

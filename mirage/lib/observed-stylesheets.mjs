@@ -18,6 +18,78 @@ async function sourceBytes(portal, resource) {
     relative: relative.replaceAll('\\', '/'),
   };
 }
+async function captureObservedStylesheet(
+  cache,
+  live,
+  portal,
+  requested,
+  { baselines, captured, failures, diagnostics },
+) {
+  try {
+    validateLivePath(requested);
+    if (/[?#]/.test(requested))
+      throw fail('OBSERVED_STYLESHEET_PATH', 'Observed stylesheet paths cannot contain queries or fragments.');
+    const resources = portal.webFiles.filter((file) => file.url === requested);
+    if (resources.length !== 1)
+      throw fail('OBSERVED_STYLESHEET_MAPPING', 'The path must resolve to one exported stylesheet.');
+    const resource = resources[0],
+      source = await sourceBytes(portal, resource),
+      sourceSha256 = hash(source.bytes),
+      cachePath = prefix + hash(live.origin + '\n' + resource.url + '\n' + sourceSha256) + '.css';
+    let observedMime;
+    const bridge = {
+      origin: live.origin,
+      request: async (p) => {
+        if (p !== cachePath)
+          throw fail('OBSERVED_STYLESHEET_CAPTURE_ESCAPE', 'Stylesheet capture escaped its exact mapped path.');
+        const response = await live.request(requested, { method: 'GET' });
+        observedMime = response.headers?.['content-type'] ?? '';
+        if (response.status !== 200)
+          throw fail('OBSERVED_STYLESHEET_HTTP', 'Native stylesheet did not return HTTP 200.');
+        if (!/^text\/css(?:;|$)/i.test(observedMime))
+          throw fail('OBSERVED_STYLESHEET_MIME', 'Native stylesheet response must use CSS MIME.');
+        return { ...response, headers: { 'content-type': observedMime } };
+      },
+    };
+    const report = await cache.capture([cachePath], bridge);
+    captured.push(...report.captured);
+    if (report.failures.length) {
+      failures.push(...report.failures.map((item) => ({ ...item, path: requested })));
+      return;
+    }
+    const asset = await cache.get(cachePath, { origin: live.origin });
+    if (!asset) throw fail('OBSERVED_STYLESHEET_CACHE', 'Captured stylesheet is unavailable.');
+    const baseline = {
+      version: 1,
+      kind: 'observed-stylesheet',
+      path: resource.url,
+      sourceFile: source.relative,
+      sourceSha256,
+      sha256: hash(asset.body),
+      cachePath,
+      origin: live.origin,
+      contentType: observedMime,
+      bytes: asset.body.length,
+      capturedAt: new Date().toISOString(),
+    };
+    baselines.push(baseline);
+    if (baseline.sha256 !== sourceSha256)
+      diagnostics.push({
+        code: 'OBSERVED_STYLESHEET_VERSION_DIFFERENCE',
+        path: resource.url,
+        sourceSha256,
+        observedSha256: baseline.sha256,
+        message:
+          'Observed native stylesheet bytes differ from exported source. This is a deployment observation, not deployed commit identification.',
+      });
+  } catch (error) {
+    failures.push({
+      path: requested,
+      code: error.code ?? 'OBSERVED_STYLESHEET_CAPTURE',
+      message: error.code ? error.message : 'Stylesheet observation failed.',
+    });
+  }
+}
 /** Explicit static stylesheet observations; this never captures templates or executable scripts. */
 export async function captureObservedStylesheets(cache, live, { portal, paths } = {}) {
   if (!cache || !live?.origin || !live.context || cache.origin !== live.origin)
@@ -31,71 +103,8 @@ export async function captureObservedStylesheets(cache, live, { portal, paths } 
     captured = [],
     failures = [],
     diagnostics = [];
-  for (const requested of [...new Set(paths)])
-    try {
-      validateLivePath(requested);
-      if (/[?#]/.test(requested))
-        throw fail('OBSERVED_STYLESHEET_PATH', 'Observed stylesheet paths cannot contain queries or fragments.');
-      const resources = portal.webFiles.filter((file) => file.url === requested);
-      if (resources.length !== 1)
-        throw fail('OBSERVED_STYLESHEET_MAPPING', 'The path must resolve to one exported stylesheet.');
-      const resource = resources[0],
-        source = await sourceBytes(portal, resource),
-        sourceSha256 = hash(source.bytes),
-        cachePath = prefix + hash(live.origin + '\n' + resource.url + '\n' + sourceSha256) + '.css';
-      let observedMime;
-      const bridge = {
-        origin: live.origin,
-        request: async (p) => {
-          if (p !== cachePath)
-            throw fail('OBSERVED_STYLESHEET_CAPTURE_ESCAPE', 'Stylesheet capture escaped its exact mapped path.');
-          const response = await live.request(requested, { method: 'GET' });
-          observedMime = response.headers?.['content-type'] ?? '';
-          if (response.status !== 200)
-            throw fail('OBSERVED_STYLESHEET_HTTP', 'Native stylesheet did not return HTTP 200.');
-          if (!/^text\/css(?:;|$)/i.test(observedMime))
-            throw fail('OBSERVED_STYLESHEET_MIME', 'Native stylesheet response must use CSS MIME.');
-          return { ...response, headers: { 'content-type': observedMime } };
-        },
-      };
-      const report = await cache.capture([cachePath], bridge);
-      captured.push(...report.captured);
-      if (report.failures.length) {
-        failures.push(...report.failures.map((item) => ({ ...item, path: requested })));
-        continue;
-      }
-      const asset = await cache.get(cachePath, { origin: live.origin });
-      if (!asset) throw fail('OBSERVED_STYLESHEET_CACHE', 'Captured stylesheet is unavailable.');
-      const baseline = {
-        version: 1,
-        kind: 'observed-stylesheet',
-        path: resource.url,
-        sourceFile: source.relative,
-        sourceSha256,
-        sha256: hash(asset.body),
-        cachePath,
-        origin: live.origin,
-        contentType: observedMime,
-        bytes: asset.body.length,
-        capturedAt: new Date().toISOString(),
-      };
-      baselines.push(baseline);
-      if (baseline.sha256 !== sourceSha256)
-        diagnostics.push({
-          code: 'OBSERVED_STYLESHEET_VERSION_DIFFERENCE',
-          path: resource.url,
-          sourceSha256,
-          observedSha256: baseline.sha256,
-          message:
-            'Observed native stylesheet bytes differ from exported source. This is a deployment observation, not deployed commit identification.',
-        });
-    } catch (error) {
-      failures.push({
-        path: requested,
-        code: error.code ?? 'OBSERVED_STYLESHEET_CAPTURE',
-        message: error.code ? error.message : 'Stylesheet observation failed.',
-      });
-    }
+  for (const requested of new Set(paths))
+    await captureObservedStylesheet(cache, live, portal, requested, { baselines, captured, failures, diagnostics });
   return {
     baselines,
     captured,
@@ -143,7 +152,7 @@ export async function resolveObservedStylesheet(portal, resource, baselines, { c
     baseline.version !== 1 ||
     baseline.kind !== 'observed-stylesheet' ||
     baseline.sourceFile !== source.relative ||
-    !new RegExp('^' + prefix + '[a-f\\d]{64}\\.css$').test(baseline.cachePath ?? '') ||
+    !new RegExp('^' + prefix + String.raw`[a-f\d]{64}\.css$`).test(baseline.cachePath ?? '') ||
     !/^[a-f\d]{64}$/.test(baseline.sha256 ?? '') ||
     !/^text\/css(?:;\s*charset=[\w-]+)?$/i.test(baseline.contentType ?? '')
   )

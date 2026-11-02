@@ -35,27 +35,37 @@ async function sectionFingerprint(value, pace) {
 // Sorted-key text of an ordinary flat row through a reused ordered object, as
 // jsonChunks does; anything else (nested values, toJSON, proxies) uses
 // jsonChunks itself. Undefined, function and symbol values are omitted alike.
-function rowText(row, shapes) {
-  const item = rawRecordOf(row) ?? row;
-  if (
+function requiresGeneralRowSerialization(item) {
+  return (
     item === null ||
     typeof item !== 'object' ||
     Array.isArray(item) ||
     types.isProxy(item) ||
     'toJSON' in item ||
     (Object.getPrototypeOf(item) !== Object.prototype && Object.getPrototypeOf(item) !== null)
-  )
-    return [...jsonChunks(row, { sortKeys: true, recordVersions: true })].join('') || 'null';
-  const keys = Object.keys(item);
-  let shape;
+  );
+}
+
+function matchingShape(keys, shapes) {
   candidates: for (const entry of shapes) {
     if (entry.keys.length !== keys.length) continue;
     for (let index = 0; index < keys.length; index++) if (entry.keys[index] !== keys[index]) continue candidates;
-    shape = entry;
-    break;
+    return entry;
   }
+  return undefined;
+}
+
+function generalRowText(row) {
+  return [...jsonChunks(row, { sortKeys: true, recordVersions: true })].join('');
+}
+
+function rowText(row, shapes) {
+  const item = rawRecordOf(row) ?? row;
+  if (requiresGeneralRowSerialization(item)) return generalRowText(row) || 'null';
+  const keys = Object.keys(item);
+  let shape = matchingShape(keys, shapes);
   if (!shape) {
-    const sorted = [...keys].sort();
+    const sorted = [...keys].sort((a, b) => Number(a > b) - Number(a < b));
     const ordered = Object.create(null);
     for (const key of sorted) ordered[key] = null;
     // Integer keys require lexical order rather than native numeric order.
@@ -65,8 +75,7 @@ function rowText(row, shapes) {
   }
   for (const key of keys) {
     const value = item[key];
-    if ((value !== null && typeof value === 'object') || typeof value === 'bigint')
-      return [...jsonChunks(row, { sortKeys: true, recordVersions: true })].join('');
+    if ((value !== null && typeof value === 'object') || typeof value === 'bigint') return generalRowText(row);
     shape.ordered[key] = value;
   }
   return shape.numeric ? JSON.stringify(item, shape.sorted) : JSON.stringify(shape.ordered);
@@ -79,7 +88,7 @@ const boundary = (row, idColumn) => {
   let hash = 0x811c9dc5;
   // Identifiers vary most at their end; a bounded suffix keeps this cheap.
   for (let index = Math.max(0, text.length - 12); index < text.length; index++)
-    hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193);
+    hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193); // NOSONAR: UTF-16 code unit semantics are required
   return ((hash ^ (hash >>> 16)) & BOUNDARY_MASK) === 0;
 };
 
@@ -171,6 +180,11 @@ export async function initializationDelta(before, state) {
   for (const key of Object.keys(state))
     if (key !== 'tables' && before.sections.get(key) !== after.sections.get(key))
       changes.push({ op: 'section', key, value: state[key] });
+  appendTableChanges(before, state, changes, after);
+  return { changes, fingerprint: after };
+}
+
+function appendTableChanges(before, state, changes, after) {
   const tables = state.tables ?? {};
   for (const table of before.tables.keys())
     if (!Object.hasOwn(tables, table)) changes.push({ op: 'remove-table', table });
@@ -181,7 +195,6 @@ export async function initializationDelta(before, state) {
     const rows = previous && rowChanges(table, previous, current, tables[table]);
     changes.push(rows ? { op: 'rows', table, entries: rows } : { op: 'replace-table', table, rows: tables[table] });
   }
-  return { changes, fingerprint: after };
 }
 
 /** Existing journal operations/checksums preserve atomic restart and recovery. */

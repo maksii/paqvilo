@@ -100,7 +100,7 @@ const managed = (value, canBeChanged, name) => ({
   ManagedPropertyLogicalName: name,
   ExtensionData: {},
 });
-const flag = (mask, name) => new RegExp(`(?:^|\\|)${name}(?:\\||$)`, 'i').test(mask ?? '');
+const flag = (mask, name) => new RegExp(String.raw`(?:^|\|)${name}(?:\||$)`, 'i').test(mask ?? '');
 
 function option(o, extra, { externalValue }, lcid, system = false) {
   return {
@@ -120,7 +120,10 @@ function option(o, extra, { externalValue }, lcid, system = false) {
 }
 
 function optionSetMetadata(set, type, custom, lcid, system = false) {
-  const kind = set.type ?? (type === 'bit' ? 'bit' : type === 'state' || type === 'status' ? type : 'picklist');
+  let defaultKind = 'picklist';
+  if (type === 'bit') defaultKind = 'bit';
+  else if (type === 'state' || type === 'status') defaultKind = type;
+  const kind = set.type ?? defaultKind;
   const base = {
     Description: labelSet(set.descriptionLabels, lcid, system),
     DisplayName: labelSet(set.displayLabels, lcid, system),
@@ -144,23 +147,131 @@ function optionSetMetadata(set, type, custom, lcid, system = false) {
       ...base,
     };
   }
-  const options =
-    kind === 'state'
-      ? (set.states ?? []).map((o) =>
-          option(
-            o,
-            { DefaultStatus: o.defaultStatus ?? null, InvariantName: o.invariantName ?? null },
-            { externalValue: null },
-            lcid,
-            system,
-          ),
-        )
-      : kind === 'status'
-        ? (set.statuses ?? []).map((o) =>
-            option(o, { State: o.state ?? null, TransitionData: null }, { externalValue: null }, lcid, system),
-          )
-        : (set.options ?? []).map((o) => option(o, {}, {}, lcid, system));
+  let options;
+  if (kind === 'state') {
+    options = (set.states ?? []).map((o) =>
+      option(
+        o,
+        { DefaultStatus: o.defaultStatus ?? null, InvariantName: o.invariantName ?? null },
+        { externalValue: null },
+        lcid,
+        system,
+      ),
+    );
+  } else if (kind === 'status') {
+    options = (set.statuses ?? []).map((o) =>
+      option(o, { State: o.state ?? null, TransitionData: null }, { externalValue: null }, lcid, system),
+    );
+  } else {
+    options = (set.options ?? []).map((o) => option(o, {}, {}, lcid, system));
+  }
   return { Options: options, ParentOptionSetName: null, ...base };
+}
+
+function stringAttributeMetadata(metadata, facts, formula, ime, format) {
+  const name = FORMAT_NAMES[format] ?? 'Text';
+  return Object.assign(
+    metadata,
+    {
+      Format: Math.max(0, STRING_FORMATS.indexOf(name.toLowerCase())),
+      FormatName: { Value: name, ExtensionData: {} },
+      ImeMode: ime,
+      MaxLength: facts.maxLength ?? null,
+      YomiOf: null,
+      IsLocalizable: facts.isLocalizable ?? false,
+      DatabaseLength: facts.databaseLength ?? null,
+    },
+    formula,
+  );
+}
+
+function memoAttributeMetadata(metadata, facts, ime, format) {
+  const name = FORMAT_NAMES[format] ?? 'TextArea';
+  return Object.assign(metadata, {
+    Format: Math.max(0, STRING_FORMATS.indexOf(name.toLowerCase())),
+    FormatName: { Value: name, ExtensionData: {} },
+    ImeMode: ime,
+    MaxLength: facts.maxLength ?? null,
+    IsLocalizable: facts.isLocalizable ?? false,
+  });
+}
+
+function integerAttributeMetadata(metadata, formula, format, range) {
+  return Object.assign(metadata, { Format: INTEGER_FORMATS[format] ?? 0, ...range }, formula);
+}
+
+function decimalAttributeMetadata(metadata, facts, formula, ime, range) {
+  return Object.assign(metadata, { ...range, Precision: facts.precision ?? null, ImeMode: ime }, formula);
+}
+
+function moneyAttributeMetadata(metadata, facts, formula, ime, range) {
+  return Object.assign(
+    metadata,
+    {
+      ImeMode: ime,
+      ...range,
+      Precision: facts.precision ?? null,
+      PrecisionSource: facts.precisionSource ?? null,
+      CalculationOf: null,
+      IsBaseCurrency: false,
+    },
+    formula,
+  );
+}
+
+function dateAttributeMetadata(metadata, field, facts, formula, ime, format) {
+  return Object.assign(
+    metadata,
+    {
+      Format: /^date(only)?$/.test(format) ? 0 : 1,
+      ImeMode: ime,
+      DateTimeBehavior: { Value: field.dateTimeBehavior ?? 'UserLocal', ExtensionData: {} },
+      // The managed property name is a guess; shared with dataverse-soap-contracts.mjs.
+      CanChangeDateTimeBehavior: managed(
+        facts.canChangeDateTimeBehavior ?? true,
+        facts.canChangeDateTimeBehavior ?? true,
+        'canmodifydatetimebehavior',
+      ),
+    },
+    formula,
+  );
+}
+
+function lookupAttributeMetadata(metadata, field) {
+  return Object.assign(metadata, { Targets: field.targets ?? [], Format: 0 });
+}
+
+function booleanAttributeMetadata(metadata, facts, formula, custom, lcid, system) {
+  const set = facts.optionSet ?? {};
+  return Object.assign(
+    metadata,
+    {
+      DefaultValue: facts.appDefaultValue === '1',
+      OptionSet: optionSetMetadata(set, 'bit', custom || facts.customTable, lcid, system),
+    },
+    formula,
+  );
+}
+
+function picklistAttributeMetadata(metadata, facts, formula, custom, lcid, system) {
+  const value = Number(facts.appDefaultValue);
+  return Object.assign(metadata, formula, {
+    ParentPicklistLogicalName: null,
+    ChildPicklistLogicalNames: null,
+    DefaultFormValue: Number.isInteger(value) && value !== -1 && facts.appDefaultValue !== undefined ? value : null,
+    OptionSet: facts.optionSet
+      ? optionSetMetadata(facts.optionSet, 'picklist', custom || facts.customTable, lcid, system)
+      : null,
+  });
+}
+
+function stateAttributeMetadata(metadata, facts, type, custom, lcid, system) {
+  return Object.assign(metadata, {
+    DefaultFormValue: null,
+    OptionSet: facts.optionSet
+      ? optionSetMetadata(facts.optionSet, type, custom || facts.customTable, lcid, system)
+      : null,
+  });
 }
 
 /**
@@ -266,103 +377,35 @@ export function attributeMetadata(entity, attribute, field, { primaryName, lcid 
   const format = String(facts.format ?? '').toLowerCase();
   const range = { MaxValue: facts.maxValue ?? null, MinValue: facts.minValue ?? null };
   switch (attributeType) {
-    case 14: {
-      const name = FORMAT_NAMES[format] ?? 'Text';
-      return Object.assign(
-        metadata,
-        {
-          Format: Math.max(0, STRING_FORMATS.indexOf(name.toLowerCase())),
-          FormatName: { Value: name, ExtensionData: {} },
-          ImeMode: ime,
-          MaxLength: facts.maxLength ?? null,
-          YomiOf: null,
-          IsLocalizable: facts.isLocalizable ?? false,
-          DatabaseLength: facts.databaseLength ?? null,
-        },
-        formula,
-      );
-    }
-    case 7: {
-      const name = FORMAT_NAMES[format] ?? 'TextArea';
-      return Object.assign(metadata, {
-        Format: Math.max(0, STRING_FORMATS.indexOf(name.toLowerCase())),
-        FormatName: { Value: name, ExtensionData: {} },
-        ImeMode: ime,
-        MaxLength: facts.maxLength ?? null,
-        IsLocalizable: facts.isLocalizable ?? false,
-      });
-    }
+    case 14:
+      return stringAttributeMetadata(metadata, facts, formula, ime, format);
+    case 7:
+      return memoAttributeMetadata(metadata, facts, ime, format);
     case 5:
-      return Object.assign(metadata, { Format: INTEGER_FORMATS[format] ?? 0, ...range }, formula);
+      return integerAttributeMetadata(metadata, formula, format, range);
     case 18:
       return Object.assign(metadata, range);
     case 3:
     case 4:
-      return Object.assign(metadata, { ...range, Precision: facts.precision ?? null, ImeMode: ime }, formula);
+      return decimalAttributeMetadata(metadata, facts, formula, ime, range);
     case 8:
-      return Object.assign(
-        metadata,
-        {
-          ImeMode: ime,
-          ...range,
-          Precision: facts.precision ?? null,
-          PrecisionSource: facts.precisionSource ?? null,
-          CalculationOf: null,
-          IsBaseCurrency: false,
-        },
-        formula,
-      );
+      return moneyAttributeMetadata(metadata, facts, formula, ime, range);
     case 2:
-      return Object.assign(
-        metadata,
-        {
-          Format: /^date(only)?$/.test(format) ? 0 : 1,
-          ImeMode: ime,
-          DateTimeBehavior: { Value: field.dateTimeBehavior ?? 'UserLocal', ExtensionData: {} },
-          // The managed property name is a guess; shared with dataverse-soap-contracts.mjs.
-          CanChangeDateTimeBehavior: managed(
-            facts.canChangeDateTimeBehavior ?? true,
-            facts.canChangeDateTimeBehavior ?? true,
-            'canmodifydatetimebehavior',
-          ),
-        },
-        formula,
-      );
+      return dateAttributeMetadata(metadata, field, facts, formula, ime, format);
     case 1:
     case 6:
     case 9:
-      return Object.assign(metadata, { Targets: field.targets ?? [], Format: 0 });
+      return lookupAttributeMetadata(metadata, field);
     case 0: {
-      const set = facts.optionSet ?? {};
-      return Object.assign(
-        metadata,
-        {
-          DefaultValue: facts.appDefaultValue === '1',
-          OptionSet: optionSetMetadata(set, 'bit', custom || facts.customTable, lcid, system),
-        },
-        formula,
-      );
+      return booleanAttributeMetadata(metadata, facts, formula, custom, lcid, system);
     }
     case 11:
     case 17: {
-      const value = Number(facts.appDefaultValue);
-      return Object.assign(metadata, formula, {
-        ParentPicklistLogicalName: null,
-        ChildPicklistLogicalNames: null,
-        DefaultFormValue: Number.isInteger(value) && value !== -1 && facts.appDefaultValue !== undefined ? value : null,
-        OptionSet: facts.optionSet
-          ? optionSetMetadata(facts.optionSet, 'picklist', custom || facts.customTable, lcid, system)
-          : null,
-      });
+      return picklistAttributeMetadata(metadata, facts, formula, custom, lcid, system);
     }
     case 12:
     case 13:
-      return Object.assign(metadata, {
-        DefaultFormValue: null,
-        OptionSet: facts.optionSet
-          ? optionSetMetadata(facts.optionSet, type, custom || facts.customTable, lcid, system)
-          : null,
-      });
+      return stateAttributeMetadata(metadata, facts, type, custom, lcid, system);
     default:
       return metadata;
   }

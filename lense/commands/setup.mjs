@@ -2,6 +2,19 @@ import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
 import { startSetupServer } from '../setup/server.mjs';
 
+function openSetupUrl(url) {
+  let command;
+  if (process.platform === 'win32')
+    command = [
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', `Start-Process '${url}' -WindowStyle Hidden`],
+    ];
+  else if (process.platform === 'darwin') command = ['open', [url]];
+  else command = ['xdg-open', [url]];
+  const child = spawn(command[0], command[1], { windowsHide: true, stdio: 'ignore' });
+  child.on('error', (error) => console.error(`Open ${url} in your browser (${error.message}).`));
+}
+
 export const SETUP_HELP = `Usage: paqvilo setup [--config FILE | --project FILE] [--port N] [--open] [--json]
 
 Serve the local /_setup/ configuration workspace, including incomplete projects.
@@ -58,19 +71,7 @@ export async function runSetup(args) {
           })
         : `setup       ${server.url}\nLocal project configuration. Ctrl+C to stop.`,
     );
-    if (values.open) {
-      const command =
-        process.platform === 'win32'
-          ? [
-              'powershell.exe',
-              ['-NoProfile', '-NonInteractive', '-Command', `Start-Process '${server.url}' -WindowStyle Hidden`],
-            ]
-          : process.platform === 'darwin'
-            ? ['open', [server.url]]
-            : ['xdg-open', [server.url]];
-      const child = spawn(command[0], command[1], { windowsHide: true, stdio: 'ignore' });
-      child.on('error', (error) => console.error(`Open ${server.url} in your browser (${error.message}).`));
-    }
+    if (values.open) openSetupUrl(server.url);
     await stopped;
   } finally {
     process.off('SIGINT', stop);

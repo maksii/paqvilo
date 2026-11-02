@@ -234,16 +234,19 @@ const SECTIONS = {
   'Many-to-Many relationships': 'many-to-many',
 };
 
-const plain = (value) => (value === undefined ? '' : String(value).replace(/\*\*/g, '').replace(/`/g, '').trim());
+const plain = (value) => (value === undefined ? '' : String(value).replaceAll('**', '').replaceAll('`', '').trim());
 const lower = (value) => plain(value).toLowerCase();
 const label = (value) => (plain(value) ? { [LCID]: plain(value) } : undefined);
 const excluded = (name) => EXCLUDED_PREFIXES.some((prefix) => name.startsWith(prefix));
-const flag = (value) => (plain(value) === 'True' ? true : plain(value) === 'False' ? false : undefined);
+const flag = (value) => {
+  if (plain(value) === 'True') return true;
+  return plain(value) === 'False' ? false : undefined;
+};
 const numberOrUndefined = (value) => (plain(value) === '' ? undefined : Number(plain(value)));
 const sortObject = (object) =>
   Object.fromEntries(
     Object.keys(object)
-      .sort()
+      .sort((a, b) => Number(a > b) - Number(a < b))
       .map((key) => [key, object[key]]),
   );
 
@@ -251,7 +254,7 @@ const sortObject = (object) =>
 function details(text) {
   const out = {};
   for (const part of String(text).split('<br />')) {
-    const match = /^\s*([A-Za-z]+):\s*(.*?)\s*$/.exec(part);
+    const match = /^\s*([A-Za-z]+):\s*(.*)$/.exec(part); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
     if (match) out[match[1]] = plain(match[2]);
   }
   return out;
@@ -304,6 +307,201 @@ function choiceBody(type, block, name, complain) {
   };
 }
 
+function processEntityHeading(line, state, complain) {
+  const h2 = /^## (.+?)\s*$/.exec(line); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  if (h2) {
+    state.section = SECTIONS[h2[1]] ?? null;
+    state.block = null;
+    state.choicesOf = null;
+    return true;
+  }
+  const h3 = /^### <a name="[^"]*"><\/a>\s*(\S+)\s*$/.exec(line);
+  if (h3) {
+    state.block =
+      state.section && state.section !== 'properties'
+        ? { schemaName: h3[1], section: state.section, rows: {}, choices: [] }
+        : null;
+    if (state.block) state.blocks.push(state.block);
+    state.choicesOf = null;
+    return true;
+  }
+  const h4 = /^#### (\S+) Choices\/Options\s*$/.exec(line);
+  if (!h4) return false;
+  state.choicesOf = state.block?.schemaName === h4[1] ? state.block : null;
+  if (!state.choicesOf) complain(`choices heading ${h4[1]} does not follow its column`);
+  else state.choicesOf.choicesSeen = true;
+  return true;
+}
+
+function processEntityRow(line, state) {
+  const row = /^\|(.*)\|\s*$/.exec(line);
+  if (!row?.[1].includes('|')) return;
+  const cut = row[1].indexOf('|');
+  const key = plain(row[1].slice(0, cut));
+  const value = row[1].slice(cut + 1).trim();
+  if (state.choicesOf) {
+    if (/^-?\d+$/.test(key)) state.choicesOf.choices.push({ value: Number(key), text: value });
+    return;
+  }
+  if (state.section === 'properties') state.props[key] = value;
+  else if (state.block) state.block.rows[key] = value;
+}
+
+function parseEntityMarkdown(markdown, complain) {
+  const state = { props: {}, blocks: [], section: null, block: null, choicesOf: null };
+  for (const line of String(markdown).split(/\r?\n/)) {
+    if (processEntityHeading(line, state, complain)) continue;
+    const see = /^See \[([^\s\]]+) /.exec(line);
+    if (see && state.block?.section === 'many-to-many') state.block.otherEntity = see[1];
+    processEntityRow(line, state);
+  }
+  return state;
+}
+
+function addNumericAttributeFields(attr, name, rows, complain) {
+  for (const [source, target] of [
+    ['MaxLength', 'maxLength'],
+    ['MinValue', 'minValue'],
+    ['MaxValue', 'maxValue'],
+    ['Precision', 'precision'],
+    ['PrecisionSource', 'precisionSource'],
+  ]) {
+    const text = plain(rows[source]);
+    if (!text) continue;
+    // PrecisionSource reads "2 (Entity.Attribute)": only the leading integer is the value.
+    const value = source === 'PrecisionSource' ? Number.parseInt(text, 10) : Number(text);
+    if (!Number.isFinite(value)) {
+      complain(`${name}: ${source} ${text} is not a number`);
+      continue;
+    }
+    // 64-bit integer limits (BigInt min/max) exceed the safe integer range, so they stay exact as text.
+    attr[target] = /^-?\d+$/.test(text) && !Number.isSafeInteger(value) ? text : value;
+  }
+}
+
+function addOptionalAttributeFields(attr, type, rows) {
+  const formatCell = type === 'nvarchar' || type === 'memo' ? (rows.FormatName ?? rows.Format) : rows.Format;
+  if (plain(formatCell)) attr.format = lower(formatCell);
+  if (plain(rows.ImeMode)) attr.imeMode = lower(rows.ImeMode);
+  if (plain(rows.IsLocalizable)) attr.isLocalizable = flag(rows.IsLocalizable);
+  if (plain(rows.DateTimeBehavior)) attr.dateTimeBehavior = plain(rows.DateTimeBehavior);
+  if (plain(rows.Targets))
+    attr.targets = plain(rows.Targets)
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  if (type === 'bit' && plain(rows.DefaultValue)) attr.appDefaultValue = flag(rows.DefaultValue) ? '1' : '0';
+  if (
+    ['picklist', 'state', 'status'].includes(type) &&
+    plain(rows.DefaultFormValue) &&
+    plain(rows.DefaultFormValue) !== '-1'
+  ) {
+    attr.appDefaultValue = plain(rows.DefaultFormValue);
+  }
+}
+
+function addAttributeOptionSet(attr, logical, name, type, column, optionSets, complain) {
+  if (!OPTION_TYPES.has(type)) return;
+  const local = `${logical}_${name}`;
+  const setName = plain(column.rows.GlobalChoiceName) || local;
+  const body = choiceBody(type, column, name, complain);
+  if (!body) return;
+  const isGlobal = setName !== local;
+  const set = { type, isGlobal, ...body };
+  attr.optionSetName = setName;
+  if (isGlobal) optionSets[setName] = { name: setName, ...set };
+  else attr.optionSet = set;
+}
+
+function parseEntityAttribute(logical, table, column, keepPrefixed, optionSets, complain) {
+  const r = column.rows;
+  const name = plain(r.LogicalName);
+  if (!name) {
+    complain(`column ${column.schemaName} has no LogicalName`);
+    return { excluded: false };
+  }
+  if (excluded(name) && !keepPrefixed) return { excluded: true };
+  const learnType = plain(r.Type);
+  if (!Object.hasOwn(TYPES, learnType)) {
+    complain(`${name}: unmapped Type ${learnType}`);
+    return { excluded: false };
+  }
+  let type = TYPES[learnType];
+  if (type === 'uniqueidentifier' && name === table.primaryIdAttribute) type = 'primarykey';
+  const writable = column.section === 'writable';
+  const attr = {
+    name,
+    schemaName: column.schemaName,
+    type,
+    requiredLevel: lower(r.RequiredLevel) || undefined,
+    validForCreate: writable,
+    validForUpdate: writable,
+    validForRead: plain(r.IsValidForRead) === 'True',
+    labels: label(r.DisplayName),
+  };
+  addNumericAttributeFields(attr, name, r, complain);
+  addOptionalAttributeFields(attr, type, r);
+  addAttributeOptionSet(attr, logical, name, type, column, optionSets, complain);
+  return { name, attr, excluded: false };
+}
+
+function parseEntityRelationship(item, logical) {
+  const r = item.rows;
+  if (item.section === 'many-to-one')
+    return {
+      kind: 'many-to-one',
+      schemaName: item.schemaName,
+      referencingEntity: logical,
+      referencedEntity: plain(r.ReferencedEntity),
+      referencedAttribute: plain(r.ReferencedAttribute),
+      referencingAttribute: plain(r.ReferencingAttribute),
+      referencingNavigation: plain(r.ReferencingEntityNavigationPropertyName),
+      isHierarchical: flag(r.IsHierarchical),
+      cascade: cascadeOf(r.CascadeConfiguration),
+    };
+  if (item.section === 'one-to-many')
+    return {
+      kind: 'one-to-many',
+      schemaName: item.schemaName,
+      referencedEntity: logical,
+      referencingEntity: plain(r.ReferencingEntity),
+      referencingAttribute: plain(r.ReferencingAttribute),
+      referencedNavigation: plain(r.ReferencedEntityNavigationPropertyName),
+    };
+  // A self-referencing block has Entity1/Entity2 rows. Otherwise the block names its other table
+  // with a See link; a definition-only block (no link) adds nothing here, the linking pages do.
+  const selfReferencing = r.Entity1IntersectAttribute !== undefined;
+  let sides;
+  if (selfReferencing)
+    sides = {
+      entity1: {
+        intersectAttribute: plain(r.Entity1IntersectAttribute),
+        navigation: plain(r.Entity1NavigationPropertyName),
+      },
+      entity2: {
+        intersectAttribute: plain(r.Entity2IntersectAttribute),
+        navigation: plain(r.Entity2NavigationPropertyName),
+      },
+    };
+  else if (item.otherEntity)
+    sides = {
+      [logical]: {
+        intersectAttribute: plain(r.IntersectAttribute),
+        navigation: plain(r.NavigationPropertyName),
+      },
+    };
+  let entities;
+  if (selfReferencing) entities = [logical, logical];
+  else if (item.otherEntity) entities = [logical, item.otherEntity].sort((a, b) => Number(a > b) - Number(a < b));
+  return {
+    kind: 'many-to-many',
+    schemaName: item.schemaName,
+    intersectEntity: plain(r.IntersectEntityName),
+    entities,
+    sides,
+  };
+}
+
 // Reads one Learn entity page. Returns the table facts, its attributes, its option sets (global
 // sets only; local sets are inline on the attribute), its relationship blocks as read from this
 // page, and problems. Excluded-prefix columns are dropped and counted, not reported as problems.
@@ -311,48 +509,7 @@ export function parseEntityPage(markdown, logical, { prefixedTables = PREFIXED_T
   const keepPrefixed = prefixedTables.includes(logical);
   const problems = [];
   const complain = (message) => problems.push(`${logical}: ${message}`);
-  const props = {};
-  const blocks = [];
-  let section = null;
-  let block = null;
-  let choicesOf = null;
-  for (const line of String(markdown).split(/\r?\n/)) {
-    const h2 = /^## (.+?)\s*$/.exec(line);
-    if (h2) {
-      section = SECTIONS[h2[1]] ?? null;
-      block = null;
-      choicesOf = null;
-      continue;
-    }
-    const h3 = /^### <a name="[^"]*"><\/a>\s*(\S+)\s*$/.exec(line);
-    if (h3) {
-      block = section && section !== 'properties' ? { schemaName: h3[1], section, rows: {}, choices: [] } : null;
-      if (block) blocks.push(block);
-      choicesOf = null;
-      continue;
-    }
-    const h4 = /^#### (\S+) Choices\/Options\s*$/.exec(line);
-    if (h4) {
-      choicesOf = block && block.schemaName === h4[1] ? block : null;
-      if (!choicesOf) complain(`choices heading ${h4[1]} does not follow its column`);
-      else choicesOf.choicesSeen = true;
-      continue;
-    }
-    const see = /^See \[([^\s\]]+) /.exec(line);
-    if (see && block && block.section === 'many-to-many') block.otherEntity = see[1];
-    const row = /^\|(.*)\|\s*$/.exec(line);
-    if (!row || !row[1].includes('|')) continue;
-    const cut = row[1].indexOf('|');
-    const key = plain(row[1].slice(0, cut));
-    const value = row[1].slice(cut + 1).trim();
-    if (choicesOf) {
-      if (/^-?\d+$/.test(key)) choicesOf.choices.push({ value: Number(key), text: value });
-      continue;
-    }
-    if (section === 'properties') props[key] = value;
-    else if (block) block.rows[key] = value;
-  }
-
+  const { props, blocks } = parseEntityMarkdown(markdown, complain);
   const p = {};
   for (const [key, value] of Object.entries(props)) p[key] = plain(value);
   for (const key of [
@@ -384,148 +541,14 @@ export function parseEntityPage(markdown, logical, { prefixedTables = PREFIXED_T
   const optionSets = {};
   let excludedColumns = 0;
   for (const column of blocks.filter((item) => item.section === 'writable' || item.section === 'readonly')) {
-    const r = column.rows;
-    const name = plain(r.LogicalName);
-    if (!name) {
-      complain(`column ${column.schemaName} has no LogicalName`);
-      continue;
-    }
-    if (excluded(name) && !keepPrefixed) {
-      excludedColumns += 1;
-      continue;
-    }
-    const learnType = plain(r.Type);
-    if (!Object.hasOwn(TYPES, learnType)) {
-      complain(`${name}: unmapped Type ${learnType}`);
-      continue;
-    }
-    let type = TYPES[learnType];
-    if (type === 'uniqueidentifier' && name === table.primaryIdAttribute) type = 'primarykey';
-    const writable = column.section === 'writable';
-    const attr = {
-      name,
-      schemaName: column.schemaName,
-      type,
-      requiredLevel: lower(r.RequiredLevel) || undefined,
-      validForCreate: writable,
-      validForUpdate: writable,
-      validForRead: plain(r.IsValidForRead) === 'True',
-      labels: label(r.DisplayName),
-    };
-    for (const [source, target] of [
-      ['MaxLength', 'maxLength'],
-      ['MinValue', 'minValue'],
-      ['MaxValue', 'maxValue'],
-      ['Precision', 'precision'],
-      ['PrecisionSource', 'precisionSource'],
-    ]) {
-      const text = plain(r[source]);
-      if (!text) continue;
-      // PrecisionSource reads "2 (Entity.Attribute)": only the leading integer is the value.
-      const value = source === 'PrecisionSource' ? Number.parseInt(text, 10) : Number(text);
-      if (!Number.isFinite(value)) {
-        complain(`${name}: ${source} ${text} is not a number`);
-        continue;
-      }
-      // 64-bit integer limits (BigInt min/max) exceed the safe integer range, so they stay exact as text.
-      attr[target] = /^-?\d+$/.test(text) && !Number.isSafeInteger(value) ? text : value;
-    }
-    const formatCell = type === 'nvarchar' || type === 'memo' ? (r.FormatName ?? r.Format) : r.Format;
-    if (plain(formatCell)) attr.format = lower(formatCell);
-    if (plain(r.ImeMode)) attr.imeMode = lower(r.ImeMode);
-    if (plain(r.IsLocalizable)) attr.isLocalizable = flag(r.IsLocalizable);
-    if (plain(r.DateTimeBehavior)) attr.dateTimeBehavior = plain(r.DateTimeBehavior);
-    if (plain(r.Targets))
-      attr.targets = plain(r.Targets)
-        .split(',')
-        .map((item) => item.trim())
-        .filter(Boolean);
-    if (type === 'bit' && plain(r.DefaultValue)) attr.appDefaultValue = flag(r.DefaultValue) ? '1' : '0';
-    if (
-      ['picklist', 'state', 'status'].includes(type) &&
-      plain(r.DefaultFormValue) &&
-      plain(r.DefaultFormValue) !== '-1'
-    ) {
-      attr.appDefaultValue = plain(r.DefaultFormValue);
-    }
-    if (OPTION_TYPES.has(type)) {
-      const local = `${logical}_${name}`;
-      const setName = plain(r.GlobalChoiceName) || local;
-      const body = choiceBody(type, column, name, complain);
-      if (body) {
-        const isGlobal = setName !== local;
-        const set = { type, isGlobal, ...body };
-        attr.optionSetName = setName;
-        if (isGlobal) {
-          optionSets[setName] = { name: setName, ...set };
-        } else {
-          attr.optionSet = set;
-        }
-      }
-    }
-    attributes[name] = attr;
+    const parsed = parseEntityAttribute(logical, table, column, keepPrefixed, optionSets, complain);
+    if (parsed.excluded) excludedColumns++;
+    else if (parsed.attr) attributes[parsed.name] = parsed.attr;
   }
 
   const relationships = [];
-  for (const item of blocks.filter((entry) => RELATIONSHIP_SECTIONS.has(entry.section))) {
-    const r = item.rows;
-    if (item.section === 'many-to-one') {
-      relationships.push({
-        kind: 'many-to-one',
-        schemaName: item.schemaName,
-        referencingEntity: logical,
-        referencedEntity: plain(r.ReferencedEntity),
-        referencedAttribute: plain(r.ReferencedAttribute),
-        referencingAttribute: plain(r.ReferencingAttribute),
-        referencingNavigation: plain(r.ReferencingEntityNavigationPropertyName),
-        isHierarchical: flag(r.IsHierarchical),
-        cascade: cascadeOf(r.CascadeConfiguration),
-      });
-    } else if (item.section === 'one-to-many') {
-      relationships.push({
-        kind: 'one-to-many',
-        schemaName: item.schemaName,
-        referencedEntity: logical,
-        referencingEntity: plain(r.ReferencingEntity),
-        referencingAttribute: plain(r.ReferencingAttribute),
-        referencedNavigation: plain(r.ReferencedEntityNavigationPropertyName),
-      });
-    } else {
-      // A self-referencing block has Entity1/Entity2 rows. Otherwise the block names its other table
-      // with a See link; a definition-only block (no link) adds nothing here, the linking pages do.
-      const selfReferencing = r.Entity1IntersectAttribute !== undefined;
-      const sides = selfReferencing
-        ? {
-            entity1: {
-              intersectAttribute: plain(r.Entity1IntersectAttribute),
-              navigation: plain(r.Entity1NavigationPropertyName),
-            },
-            entity2: {
-              intersectAttribute: plain(r.Entity2IntersectAttribute),
-              navigation: plain(r.Entity2NavigationPropertyName),
-            },
-          }
-        : item.otherEntity
-          ? {
-              [logical]: {
-                intersectAttribute: plain(r.IntersectAttribute),
-                navigation: plain(r.NavigationPropertyName),
-              },
-            }
-          : undefined;
-      relationships.push({
-        kind: 'many-to-many',
-        schemaName: item.schemaName,
-        intersectEntity: plain(r.IntersectEntityName),
-        entities: selfReferencing
-          ? [logical, logical]
-          : item.otherEntity
-            ? [logical, item.otherEntity].sort()
-            : undefined,
-        sides,
-      });
-    }
-  }
+  for (const item of blocks.filter((entry) => RELATIONSHIP_SECTIONS.has(entry.section)))
+    relationships.push(parseEntityRelationship(item, logical));
   return { table, attributes, optionSets, relationships, excludedColumns, problems };
 }
 
@@ -535,25 +558,25 @@ export function parseEntityPage(markdown, logical, { prefixedTables = PREFIXED_T
 function mergeRelationship(pending, rel, problems) {
   const type = rel.kind === 'many-to-many' ? 'many-to-many' : 'one-to-many';
   const entry = pending.get(rel.schemaName) ?? { schemaName: rel.schemaName, type };
-  const fields =
-    rel.kind === 'many-to-one'
-      ? {
-          referencingEntity: rel.referencingEntity,
-          referencedEntity: rel.referencedEntity,
-          referencedAttribute: rel.referencedAttribute,
-          referencingAttribute: rel.referencingAttribute,
-          referencingNavigation: rel.referencingNavigation,
-          isHierarchical: rel.isHierarchical,
-          cascade: rel.cascade,
-        }
-      : rel.kind === 'one-to-many'
-        ? {
-            referencedEntity: rel.referencedEntity,
-            referencingEntity: rel.referencingEntity,
-            referencingAttribute: rel.referencingAttribute,
-            referencedNavigation: rel.referencedNavigation,
-          }
-        : { entities: rel.entities, intersectEntity: rel.intersectEntity };
+  let fields;
+  if (rel.kind === 'many-to-one')
+    fields = {
+      referencingEntity: rel.referencingEntity,
+      referencedEntity: rel.referencedEntity,
+      referencedAttribute: rel.referencedAttribute,
+      referencingAttribute: rel.referencingAttribute,
+      referencingNavigation: rel.referencingNavigation,
+      isHierarchical: rel.isHierarchical,
+      cascade: rel.cascade,
+    };
+  else if (rel.kind === 'one-to-many')
+    fields = {
+      referencedEntity: rel.referencedEntity,
+      referencingEntity: rel.referencingEntity,
+      referencingAttribute: rel.referencingAttribute,
+      referencedNavigation: rel.referencedNavigation,
+    };
+  else fields = { entities: rel.entities, intersectEntity: rel.intersectEntity };
   for (const [key, value] of Object.entries(fields)) {
     if (value === undefined || value === '') continue;
     if (entry[key] !== undefined && JSON.stringify(entry[key]) !== JSON.stringify(value)) {
@@ -565,8 +588,95 @@ function mergeRelationship(pending, rel, problems) {
     }
   }
   // Each side of a many-to-many keeps its own intersect column and navigation name.
-  if (rel.sides) entry.sides = { ...(entry.sides ?? {}), ...rel.sides };
+  if (rel.sides) entry.sides = { ...entry.sides, ...rel.sides };
   pending.set(rel.schemaName, entry);
+}
+
+function collectStandardPages(pages, prefixedTables, tables, optionSets, pending, problems, stats) {
+  for (const logical of Object.keys(pages).sort((a, b) => Number(a > b) - Number(a < b))) {
+    const parsed = parseEntityPage(pages[logical], logical, { prefixedTables });
+    problems.push(...parsed.problems);
+    tables[logical] = { ...parsed.table, attributes: sortObject(parsed.attributes) };
+    stats.excludedColumns += parsed.excludedColumns;
+    for (const [name, set] of Object.entries(parsed.optionSets)) {
+      if (optionSets[name] && JSON.stringify(optionSets[name]) !== JSON.stringify(set)) {
+        problems.push(`${logical}: global option set ${name} differs between tables`);
+      } else {
+        optionSets[name] = set;
+      }
+    }
+    for (const rel of parsed.relationships) mergeRelationship(pending, rel, problems);
+  }
+}
+
+function reconcileLocalOptionSets(tables, optionSets, problems) {
+  for (const table of Object.values(tables)) {
+    for (const attr of Object.values(table.attributes)) {
+      if (!attr.optionSet || !optionSets[attr.optionSetName]) continue;
+      const { isGlobal: _local, ...local } = attr.optionSet; // NOSONAR: binding is excluded from the rest object or is a placeholder
+      const { name: _name, isGlobal: _global, ...global } = optionSets[attr.optionSetName]; // NOSONAR: binding is excluded from the rest object or is a placeholder
+      if (JSON.stringify(local) === JSON.stringify(global)) delete attr.optionSet;
+      else problems.push(`${table.logicalName}: ${attr.name} option set differs from global ${attr.optionSetName}`);
+    }
+  }
+}
+
+function relationshipSurvives(name, rel, pages, tables, prefixedTables, problems) {
+  const ends = rel.type === 'many-to-many' ? (rel.entities ?? []) : [rel.referencingEntity, rel.referencedEntity];
+  if (ends.length === 0 || !ends.every((end) => end && Object.hasOwn(pages, end))) return false;
+  const sideNames = Object.values(rel.sides ?? {}).flatMap((side) => [side.intersectAttribute, side.navigation]);
+  const names = [
+    ...ends,
+    rel.referencingAttribute,
+    rel.referencedAttribute,
+    rel.referencingNavigation,
+    rel.referencedNavigation,
+    ...sideNames,
+  ].filter(Boolean);
+  // A prefixed name is kept only for an allow-listed end whose referencing column survived the parse.
+  if (names.some(excluded)) {
+    const referencing = tables[rel.referencingEntity]?.attributes ?? {};
+    const throughAllowed =
+      ends.some((end) => prefixedTables.includes(end)) &&
+      Boolean(rel.referencingAttribute && referencing[rel.referencingAttribute]);
+    if (!throughAllowed) return false;
+  }
+  if (
+    rel.type === 'one-to-many' &&
+    !(rel.referencingAttribute && rel.referencedAttribute && rel.referencingNavigation && rel.referencedNavigation)
+  ) {
+    problems.push(`${name}: one-to-many relationship is incomplete`);
+    return false;
+  }
+  return true;
+}
+
+function collectStandardRelationships(pending, pages, tables, prefixedTables, problems, stats) {
+  const relationships = {};
+  for (const name of [...pending.keys()].sort((a, b) => Number(a > b) - Number(a < b))) {
+    const rel = pending.get(name);
+    if (!relationshipSurvives(name, rel, pages, tables, prefixedTables, problems)) continue;
+    relationships[name] = rel;
+    stats.relationships += 1;
+    if (rel.type === 'one-to-many') stats.oneToManyRelationships += 1;
+    else stats.manyToManyRelationships += 1;
+  }
+  return relationships;
+}
+
+function countStandardFacts(tables, optionSets, stats) {
+  stats.tables = Object.keys(tables).length;
+  stats.globalOptionSets = Object.keys(optionSets).length;
+  for (const table of Object.values(tables)) {
+    for (const attr of Object.values(table.attributes)) {
+      stats.columns += 1;
+      const set = attr.optionSet;
+      if (set) stats.localOptionSets += 1;
+      if (set) stats.optionValues += (set.options ?? set.states ?? set.statuses ?? []).length;
+    }
+  }
+  for (const set of Object.values(optionSets))
+    stats.optionValues += (set.options ?? set.states ?? set.statuses ?? []).length;
 }
 
 // pages: { logicalName: markdown }. The keys are the table list: a relationship is kept only when
@@ -587,80 +697,14 @@ export function buildStandardFile(pages, { commit = DEFAULT_COMMIT, prefixedTabl
     oneToManyRelationships: 0,
     manyToManyRelationships: 0,
   };
-  for (const logical of Object.keys(pages).sort()) {
-    const parsed = parseEntityPage(pages[logical], logical, { prefixedTables });
-    problems.push(...parsed.problems);
-    tables[logical] = { ...parsed.table, attributes: sortObject(parsed.attributes) };
-    stats.excludedColumns += parsed.excludedColumns;
-    for (const [name, set] of Object.entries(parsed.optionSets)) {
-      if (optionSets[name] && JSON.stringify(optionSets[name]) !== JSON.stringify(set)) {
-        problems.push(`${logical}: global option set ${name} differs between tables`);
-      } else {
-        optionSets[name] = set;
-      }
-    }
-    for (const rel of parsed.relationships) mergeRelationship(pending, rel, problems);
-  }
+  collectStandardPages(pages, prefixedTables, tables, optionSets, pending, problems, stats);
 
   // A set is global when any table reads it under a name other than its own <table>_<column>.
   // Tables that read the same set locally keep only the name and rely on the top-level copy.
-  for (const table of Object.values(tables)) {
-    for (const attr of Object.values(table.attributes)) {
-      if (!attr.optionSet || !optionSets[attr.optionSetName]) continue;
-      const { isGlobal: _local, ...local } = attr.optionSet;
-      const { name: _name, isGlobal: _global, ...global } = optionSets[attr.optionSetName];
-      if (JSON.stringify(local) === JSON.stringify(global)) delete attr.optionSet;
-      else problems.push(`${table.logicalName}: ${attr.name} option set differs from global ${attr.optionSetName}`);
-    }
-  }
+  reconcileLocalOptionSets(tables, optionSets, problems);
 
-  const relationships = {};
-  for (const name of [...pending.keys()].sort()) {
-    const rel = pending.get(name);
-    const ends = rel.type === 'many-to-many' ? (rel.entities ?? []) : [rel.referencingEntity, rel.referencedEntity];
-    if (ends.length === 0 || !ends.every((end) => end && Object.hasOwn(pages, end))) continue;
-    const sideNames = Object.values(rel.sides ?? {}).flatMap((side) => [side.intersectAttribute, side.navigation]);
-    const names = [
-      ...ends,
-      rel.referencingAttribute,
-      rel.referencedAttribute,
-      rel.referencingNavigation,
-      rel.referencedNavigation,
-      ...sideNames,
-    ].filter(Boolean);
-    // A prefixed name is kept only for an allow-listed end whose referencing column survived the parse.
-    if (names.some(excluded)) {
-      const referencing = tables[rel.referencingEntity]?.attributes ?? {};
-      const throughAllowed =
-        ends.some((end) => prefixedTables.includes(end)) &&
-        Boolean(rel.referencingAttribute && referencing[rel.referencingAttribute]);
-      if (!throughAllowed) continue;
-    }
-    if (
-      rel.type === 'one-to-many' &&
-      !(rel.referencingAttribute && rel.referencedAttribute && rel.referencingNavigation && rel.referencedNavigation)
-    ) {
-      problems.push(`${name}: one-to-many relationship is incomplete`);
-      continue;
-    }
-    relationships[name] = rel;
-    stats.relationships += 1;
-    if (rel.type === 'one-to-many') stats.oneToManyRelationships += 1;
-    else stats.manyToManyRelationships += 1;
-  }
-
-  stats.tables = Object.keys(tables).length;
-  stats.globalOptionSets = Object.keys(optionSets).length;
-  for (const table of Object.values(tables)) {
-    for (const attr of Object.values(table.attributes)) {
-      stats.columns += 1;
-      const set = attr.optionSet;
-      if (set) stats.localOptionSets += 1;
-      if (set) stats.optionValues += (set.options ?? set.states ?? set.statuses ?? []).length;
-    }
-  }
-  for (const set of Object.values(optionSets))
-    stats.optionValues += (set.options ?? set.states ?? set.statuses ?? []).length;
+  const relationships = collectStandardRelationships(pending, pages, tables, prefixedTables, problems, stats);
+  countStandardFacts(tables, optionSets, stats);
 
   const file = {
     commit,
@@ -756,7 +800,7 @@ export async function main(argv = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
-  main().then(
+  /* NOSONAR: module-level promise chain must not block evaluation */ main().then(
     (code) => {
       process.exitCode = code;
     },

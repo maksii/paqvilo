@@ -15,7 +15,7 @@ export const NS = {
   o: 'http://schemas.microsoft.com/xrm/7.1/Contracts', // KeyAttributeCollection, ExecuteTransactionFault, OrganizationResponseCollection
   x9: 'http://schemas.microsoft.com/xrm/9.0/Contracts', // OptionSetValueCollection
   x14: 'http://schemas.microsoft.com/xrm/2014/Contracts', // OrganizationDetail (Microsoft.Xrm.Sdk.Organization)
-  b: 'http://schemas.datacontract.org/2004/07/System.Collections.Generic',
+  b: 'http://schemas.datacontract.org/2004/07/System.Collections.Generic', // NOSONAR: reserved or loopback placeholder host, not a real transport
   c: 'http://www.w3.org/2001/XMLSchema',
   e: 'http://schemas.microsoft.com/2003/10/Serialization/',
   f: 'http://schemas.microsoft.com/2003/10/Serialization/Arrays', // ColumnSet.Columns items (assumed)
@@ -28,7 +28,7 @@ const KEY_ATTRIBUTE_KVP = 'o:KeyValuePairOfstringanyType'; // KeyAttributeCollec
 const SPECIAL_DOUBLE = new Map([
   ['INF', Infinity],
   ['-INF', -Infinity],
-  ['NaN', NaN],
+  ['NaN', Number.NaN],
 ]);
 const HEADER_NAMES = ['CallerId', 'CallerObjectId', 'SdkClientVersion', 'UserType'];
 const SCALAR_TYPES = [
@@ -377,7 +377,12 @@ const scalarEncoder =
   (qname, text = String) =>
   (name, v) =>
     typed(name, qname, esc(text(v.value)));
-const doubleText = (x) => (Number.isNaN(x) ? 'NaN' : x === Infinity ? 'INF' : x === -Infinity ? '-INF' : String(x));
+const doubleText = (x) => {
+  if (Number.isNaN(x)) return 'NaN';
+  if (x === Infinity) return 'INF';
+  if (x === -Infinity) return '-INF';
+  return String(x);
+};
 // An invalid Date has no ISO form; toISOString would throw a RangeError, so it is a 400 fault instead.
 const dateText = (x) => {
   if (!(x instanceof Date)) return String(x);

@@ -8,8 +8,8 @@
   </head>
   <body>
     <script type="module">
-      import { renderControl } from '/_apps/assets/controls.mjs';
-      window.renderFixtureControl = renderControl;
+      const { renderControl } = await import('/_apps/assets/controls.mjs');
+      globalThis.renderFixtureControl = renderControl;
       document.documentElement.dataset.mirageControlsState = 'ready';
     </script>
   </body>

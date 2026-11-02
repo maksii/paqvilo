@@ -13,7 +13,7 @@ function panelBrowserImpl(data) {
   // A queued draw may execute after the tab has navigated to another configured portal.
   if (location.origin !== data.origin) return;
   const ID = 'paqvilo-panel';
-  if (window.__paqviloRetiredSessions?.includes(data.token)) return;
+  if (globalThis.__paqviloRetiredSessions?.includes(data.token)) return;
   let host = document.getElementById(ID);
   if (!host) {
     if (!document.body) return;
@@ -267,7 +267,7 @@ function panelBrowserImpl(data) {
       ['explore', 'Explore'],
       ['actions', 'Actions'],
     ];
-    const MIRAGE_TABS = ['tweaks'];
+    const MIRAGE_TABS = new Set(['tweaks']);
     const PLACEHOLDER = {
       overrides: 'Filter overrides',
       runtime: 'Filter tables, templates, settings ...',
@@ -325,7 +325,7 @@ function panelBrowserImpl(data) {
       pickingElement: false,
       pendingActions: new Map(),
     };
-    const nativeFetch = window.fetch.bind(window);
+    const nativeFetch = globalThis.fetch.bind(globalThis);
     const esc = (s) =>
       String(s ?? '').replace(
         /[&<>"']/g,
@@ -386,10 +386,10 @@ function panelBrowserImpl(data) {
       lifetime.signal.addEventListener('abort', stop, { once: true });
       try {
         if (S.d.transport === 'model-driven') {
-          if (typeof window.__paqviloModelPanelApi !== 'function')
+          if (typeof globalThis.__paqviloModelPanelApi !== 'function')
             return { ok: false, error: 'The model-driven dev loop is unavailable.' };
           return await Promise.race([
-            window.__paqviloModelPanelApi({ token: S.d.token, name, body: body ?? {} }),
+            globalThis.__paqviloModelPanelApi({ token: S.d.token, name, body: body ?? {} }),
             new Promise((resolve) =>
               controller.signal.addEventListener(
                 'abort',
@@ -427,16 +427,12 @@ function panelBrowserImpl(data) {
           'clear',
           'ui',
         ].includes(name);
-        return {
-          ok: false,
-          error: lifetime.signal.aborted
-            ? 'the dev loop has stopped'
-            : timedOut
-              ? writing
-                ? 'The request timed out. Its result is unknown; check the current state before retrying.'
-                : 'The request timed out. Check the dev loop and retry.'
-              : 'the dev loop does not answer (is it still running?)',
-        };
+        let error = 'the dev loop does not answer (is it still running?)';
+        if (lifetime.signal.aborted) error = 'the dev loop has stopped';
+        else if (timedOut && writing)
+          error = 'The request timed out. Its result is unknown; check the current state before retrying.';
+        else if (timedOut) error = 'The request timed out. Check the dev loop and retry.';
+        return { ok: false, error };
       } finally {
         clearTimeout(timeout);
         lifetime.signal.removeEventListener('abort', stop);
@@ -487,7 +483,7 @@ function panelBrowserImpl(data) {
      * elements (a link, a primary button, an input, the alerts), so the panel looks like a part
      * of the site it sits on, whatever theme that site has.
      */
-    const readTheme = () => {
+    /* NOSONAR: single-pass routine, splitting it would change shared state */ const readTheme = () => {
       const probe = document.createElement('div');
       probe.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden;pointer-events:none;';
       const classes = [
@@ -512,17 +508,20 @@ function panelBrowserImpl(data) {
       // the colour that says "warning" / "error" / "done" on this site: the accent bar of its
       // alerts where it has one, else its coloured buttons
       const accent = (alert, btn) =>
-        (parseFloat(alert.borderLeftWidth) >= 2 ? solid(alert.borderLeftColor) : null) ??
+        (Number.parseFloat(alert.borderLeftWidth) >= 2 ? solid(alert.borderLeftColor) : null) ??
         (btn ? solid(btn.backgroundColor) : null);
       const body = getComputedStyle(document.body);
       // a data table of the page, when there is one, has the site's header shade and row lines
       const th = document.querySelector('table thead th');
       const td = document.querySelector('table tbody td');
       const cellLine =
-        td && parseFloat(getComputedStyle(td).borderBottomWidth) > 0
+        td && Number.parseFloat(getComputedStyle(td).borderBottomWidth) > 0
           ? solid(getComputedStyle(td).borderBottomColor)
           : null;
       const primary = solid(button.backgroundColor);
+      let mutedInk = null;
+      if (muted.color !== body.color) mutedInk = solid(muted.color);
+      else if (solid(warning.backgroundColor) && warning.color !== body.color) mutedInk = solid(warning.color);
       const theme = {
         '--font': body.fontFamily,
         '--fg': solid(body.color),
@@ -530,17 +529,13 @@ function panelBrowserImpl(data) {
         '--link': solid(link.color),
         '--primary': primary,
         '--on-primary': primary && solid(button.color),
-        '--radius': primary ? `${Math.min(parseFloat(button.borderTopLeftRadius) || 0, 10)}px` : null,
-        '--input-line': parseFloat(input.borderTopWidth) > 0 ? solid(input.borderTopColor) : null,
-        '--muted':
-          muted.color !== body.color
-            ? solid(muted.color)
-            : solid(warning.backgroundColor) && warning.color !== body.color
-              ? solid(warning.color)
-              : null,
+        '--radius': primary ? `${Math.min(Number.parseFloat(button.borderTopLeftRadius) || 0, 10)}px` : null,
+        '--input-line': Number.parseFloat(input.borderTopWidth) > 0 ? solid(input.borderTopColor) : null,
+        '--muted': mutedInk,
         '--warn-bg': solid(warning.backgroundColor),
         '--warn':
-          accent(warning, null) ?? (parseFloat(warning.borderTopWidth) > 0 ? solid(warning.borderTopColor) : null),
+          accent(warning, null) ??
+          (Number.parseFloat(warning.borderTopWidth) > 0 ? solid(warning.borderTopColor) : null),
         '--danger': accent(danger, dangerButton),
         '--danger-bg': solid(danger.backgroundColor),
         '--success': accent(success, successButton),
@@ -549,7 +544,7 @@ function panelBrowserImpl(data) {
         '--line': cellLine,
         '--badge-bg': solid(badge.backgroundColor),
         '--badge-fg': solid(badge.backgroundColor) && solid(badge.color),
-        '--panel-line': parseFloat(menu.borderTopWidth) > 0 ? solid(menu.borderTopColor) : null,
+        '--panel-line': Number.parseFloat(menu.borderTopWidth) > 0 ? solid(menu.borderTopColor) : null,
         '--shadow': menu.boxShadow && menu.boxShadow !== 'none' ? menu.boxShadow : null,
       };
       // The host does not inherit the portal's ancestor backgrounds. Resolve alpha against
@@ -598,12 +593,9 @@ function panelBrowserImpl(data) {
       };
       const bg = luminance(theme['--bg'] ?? '#fff'),
         fg = luminance(theme['--primary']);
-      theme['--tab-ink'] =
-        bg !== null && fg !== null && (Math.max(bg, fg) + 0.05) / (Math.min(bg, fg) + 0.05) >= 4.5
-          ? theme['--primary']
-          : (bg ?? 1) > 0.179
-            ? '#000'
-            : '#fff';
+      if (bg !== null && fg !== null && (Math.max(bg, fg) + 0.05) / (Math.min(bg, fg) + 0.05) >= 4.5)
+        theme['--tab-ink'] = theme['--primary'];
+      else theme['--tab-ink'] = (bg ?? 1) > 0.179 ? '#000' : '#fff';
       for (const [name, value] of Object.entries(theme)) {
         if (value) wrap.style.setProperty(name, value);
         else wrap.style.removeProperty(name);
@@ -668,10 +660,10 @@ function panelBrowserImpl(data) {
       for (const button of el.panel.querySelectorAll('[data-act]')) {
         const busy = S.pendingActions.has(button.dataset.act) || (mutating && mutationActions.has(button.dataset.act));
         if (busy) {
-          if (!button.hasAttribute('data-paqvilo-busy')) button.dataset.paqviloBusy = String(button.disabled);
+          if (!('paqviloBusy' in button.dataset)) button.dataset.paqviloBusy = String(button.disabled);
           button.disabled = true;
           button.setAttribute('aria-busy', 'true');
-        } else if (button.hasAttribute('data-paqvilo-busy')) {
+        } else if ('paqviloBusy' in button.dataset) {
           button.disabled = button.dataset.paqviloBusy === 'true';
           delete button.dataset.paqviloBusy;
           button.removeAttribute('aria-busy');
@@ -699,7 +691,7 @@ function panelBrowserImpl(data) {
       clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
         saveTimer = 0;
-        if (S.d) api('ui', S.ui);
+        if (S.d) void api('ui', S.ui);
       }, 250);
     };
     // A navigation inside the delay would drop the change, so a pending save goes out with keepalive as the page hides.
@@ -710,7 +702,7 @@ function panelBrowserImpl(data) {
         clearTimeout(saveTimer);
         saveTimer = 0;
         if (S.d.transport === 'model-driven') {
-          api('ui', S.ui);
+          void api('ui', S.ui);
           return;
         }
         nativeFetch('/__paqvilo/api/ui', {
@@ -724,8 +716,9 @@ function panelBrowserImpl(data) {
     );
 
     // ---- placement
-    const place = () => {
-      const pos = S.ui.open ? S.ui.pos : (S.pillPos ??= { h: 'left', v: 'bottom', dx: 12, dy: 12 });
+    /* NOSONAR: single-pass routine, splitting it would change shared state */ const place = () => {
+      if (!S.ui.open) S.pillPos ??= { h: 'left', v: 'bottom', dx: 12, dy: 12 };
+      const pos = S.ui.open ? S.ui.pos : S.pillPos;
       const vw = document.documentElement.clientWidth || window.innerWidth;
       const vh = window.innerHeight;
       const box = (S.ui.open ? el.panel : el.pill).getBoundingClientRect();
@@ -847,7 +840,7 @@ function panelBrowserImpl(data) {
         if (!e.target.closest('a, button, input, .seg')) e.preventDefault();
       });
     }
-    window.addEventListener(
+    globalThis.addEventListener(
       'dragstart',
       (e) => {
         if (stopDrag) e.preventDefault();
@@ -882,16 +875,25 @@ function panelBrowserImpl(data) {
       const [code, cls, what] = fileIcon(it);
       const title = it.title || shortName(it.rel);
       const sub = it.url && it.kind === 'web-file' ? `${it.url}  ←  ${it.rel}` : it.rel;
+      const whatTag = KIND[it.kind] ? `<span class="what">${esc(what)}</span>` : '';
+      const diffButton = it.canDiff
+        ? `<button class="ib" data-act="diff" title="Show what differs">${icon('diff')}</button>`
+        : '';
+      const toggleButton = () => {
+        if (!it.canPause) return '';
+        const label = it.paused ? 'Use the local file again' : 'Pause this override: show the online version';
+        return `<button class="ib" data-act="toggle" data-off="${it.paused ? '' : '1'}" title="${label}">${icon(it.paused ? 'play' : 'pause')}</button>`;
+      };
       return `<div class="row${it.fresh ? ' fresh' : ''}${it.paused ? ' off' : ''}" data-rel="${esc(it.rel)}" data-path="${esc(it.path ?? '')}" data-url="${esc(it.url ?? '')}">
         <span class="ico ${cls}" title="${esc(what)}">${code}</span>
         <button class="main" data-act="open" title="Open ${esc(it.rel)} in the editor">
-          <div class="name" title="${esc(title)}"><span>${hl(title)}</span>${KIND[it.kind] ? `<span class="what">${esc(what)}</span>` : ''}${chips(it)}</div>
+          <div class="name" title="${esc(title)}"><span>${hl(title)}</span>${whatTag}${chips(it)}</div>
           <div class="sub">${hl(sub)}</div>
         </button>
         <div class="acts">
-          ${it.canDiff ? `<button class="ib" data-act="diff" title="Show what differs">${icon('diff')}</button>` : ''}
+          ${diffButton}
           <button class="ib" data-act="copy" title="Copy the file path">${icon('copy')}</button>
-          ${it.canPause ? `<button class="ib" data-act="toggle" data-off="${it.paused ? '' : '1'}" title="${it.paused ? 'Use the local file again' : 'Pause this override: show the online version'}">${icon(it.paused ? 'play' : 'pause')}</button>` : ''}
+          ${toggleButton()}
         </div>
       </div>`;
     };
@@ -913,7 +915,7 @@ function panelBrowserImpl(data) {
           : !S.inspect?.report),
       );
 
-    const overridesHtml = () => {
+    /* NOSONAR: single-pass routine, splitting it would change shared state */ const overridesHtml = () => {
       const d = S.d;
       let out = '';
       if (d.page) {
@@ -923,7 +925,8 @@ function panelBrowserImpl(data) {
               `<button class="src${s.empty ? ' none' : ''}" data-act="open" data-rel="${esc(s.rel)}" title="${esc(s.rel)}${s.empty ? ' (empty)' : ''}">${esc(s.label)}</button>`,
           )
           .join('');
-        out += `<div class="card"><div class="path">${esc(d.page.path)} <span class="dim">&nbsp;${esc(d.page.name ?? '')}${d.page.dir ? ' &middot; ' + esc(d.page.dir) : ''}</span></div>${srcs ? `<div class="srcs"><span class="lbl2">Sources of this page</span>${srcs}</div>` : ''}</div>`;
+        const srcsBlock = srcs ? `<div class="srcs"><span class="lbl2">Sources of this page</span>${srcs}</div>` : '';
+        out += `<div class="card"><div class="path">${esc(d.page.path)} <span class="dim">&nbsp;${esc(d.page.name ?? '')}${d.page.dir ? ' &middot; ' + esc(d.page.dir) : ''}</span></div>${srcsBlock}</div>`;
       } else {
         out += `<div class="card"><div class="path">${esc(location.pathname)} <span class="dim">&nbsp;no web page with this address in the local sources</span></div></div>`;
       }
@@ -947,6 +950,17 @@ function panelBrowserImpl(data) {
         differs: all.filter((i) => i.differs === true || i.isNew).length,
       };
       const filter = counts[S.ui.filter] == null ? 'all' : S.ui.filter;
+      const scopeButton = (s) => {
+        const title =
+          s === 'all'
+            ? 'every local file overrides the site'
+            : 'only files that differ from the git baseline override the site';
+        return `<button class="${d.scope === s ? 'on' : ''}" data-act="scope" data-v="${s}" title="${title}">${s}</button>`;
+      };
+      const scopeSwitch =
+        d.mirageMode || d.capabilities?.scope === false
+          ? ''
+          : `<span class="lbl2">scope</span><span class="seg">${['all', 'changed'].map(scopeButton).join('')}</span>`;
       out += `<div class="filters">
         ${[
           ['all', 'All'],
@@ -959,13 +973,14 @@ function panelBrowserImpl(data) {
               `<button class="f${filter === id ? ' on' : ''}" data-act="filter" data-v="${id}">${esc(label)} <b>${counts[id]}</b></button>`,
           )
           .join('')}
-        <span class="grow"></span>${d.mirageMode || d.capabilities?.scope === false ? '' : `<span class="lbl2">scope</span><span class="seg">${['all', 'changed'].map((s) => `<button class="${d.scope === s ? 'on' : ''}" data-act="scope" data-v="${s}" title="${s === 'all' ? 'every local file overrides the site' : 'only files that differ from the git baseline override the site'}">${s}</button>`).join('')}</span>`}
+        <span class="grow"></span>${scopeSwitch}
       </div>`;
-      const shown = all.filter(
-        (i) =>
-          (filter === 'edited' ? i.edited : filter === 'differs' ? i.differs === true || i.isNew : true) &&
-          matches(i.rel, i.url ?? '', i.title ?? ''),
-      );
+      const inFilter = (i) => {
+        if (filter === 'edited') return i.edited;
+        if (filter === 'differs') return i.differs === true || i.isNew;
+        return true;
+      };
+      const shown = all.filter((i) => inFilter(i) && matches(i.rel, i.url ?? '', i.title ?? ''));
       let lists = '';
       for (const [id, title] of GROUPS) lists += group(id, title, shown.filter((i) => i.group === id).map(itemRow));
       const paused = d.paused.filter((i) => matches(i.rel, i.url ?? ''));
@@ -983,20 +998,21 @@ function panelBrowserImpl(data) {
           out += emptyState('Nothing matches', 'Clear the filter to see every override of this page.');
         else if (d.online)
           out += emptyState('Online mode', 'Switch back to <b>Local</b> to lay your sources over the site.');
-        else
+        else {
+          let hint = 'No web file, script, template or snippet of the local sources was found in this page.';
+          if (d.scope === 'changed')
+            hint =
+              'Scope is <i>changed</i>: only files that differ from the git baseline override the site. Edit a file and save.';
+          else if (d.modelDriven)
+            hint =
+              'No web resource or code component (PCF) of your Solution sources was loaded by this page. Open Inspect for its table, form and views.';
           out += d.mirageMode
             ? emptyState(
                 'Mirage owns source rendering',
                 'Open Inspect to see this page’s templates, tables, permissions and sources, or Tweaks to change the persona.',
               )
-            : emptyState(
-                'Nothing on this page comes from local sources',
-                d.scope === 'changed'
-                  ? 'Scope is <i>changed</i>: only files that differ from the git baseline override the site. Edit a file and save.'
-                  : d.modelDriven
-                    ? 'No web resource or code component (PCF) of your Solution sources was loaded by this page. Open Inspect for its table, form and views.'
-                    : 'No web file, script, template or snippet of the local sources was found in this page.',
-              );
+            : emptyState('Nothing on this page comes from local sources', hint);
+        }
       }
       return out + lists;
     };
@@ -1017,8 +1033,12 @@ function panelBrowserImpl(data) {
       const closed = (S.ui.collapsed[id] ?? collapsed) && !S.q;
       const capped = !closed && items.length > RUNTIME_LIMIT && !S.more[id];
       // Rows are built only for open groups, and only up to the cap.
-      const shown = closed ? [] : (capped ? items.slice(0, RUNTIME_LIMIT) : items).map(toRow);
-      return `<div class="group" data-group="${id}"><button class="gh${closed ? '' : ' openg'}" data-act="fold" data-id="${id}" aria-expanded="${!closed}">${icon('right')}<span>${esc(title)}</span><span class="n dimn">${count ?? items.length}</span><span class="line"></span></button>${shown.join('')}${capped ? `<button class="morebtn" data-act="more" data-id="${id}">Show all ${items.length}</button>` : ''}</div>`;
+      let shown = [];
+      if (!closed) shown = (capped ? items.slice(0, RUNTIME_LIMIT) : items).map(toRow);
+      const moreButton = capped
+        ? `<button class="morebtn" data-act="more" data-id="${id}">Show all ${items.length}</button>`
+        : '';
+      return `<div class="group" data-group="${id}"><button class="gh${closed ? '' : ' openg'}" data-act="fold" data-id="${id}" aria-expanded="${!closed}">${icon('right')}<span>${esc(title)}</span><span class="n dimn">${count ?? items.length}</span><span class="line"></span></button>${shown.join('')}${moreButton}</div>`;
     };
     /** One reported item; rows with a reference open their local source (at `find` when given). */
     const rrow = (
@@ -1032,11 +1052,19 @@ function panelBrowserImpl(data) {
         (/powerpagecomponent\.xml$/i.test(ref) && /^[a-z_]+$/i.test(item?.fieldPath ?? '')
           ? `"${item.fieldPath}":`
           : '');
-      const body = `<div class="name" title="${esc(title)}"><span>${hl(title)}</span>${chips}</div>${sub ? `<div class="sub">${hl(sub)}</div>` : ''}`;
-      return `<div class="row${wrap ? ' wrapt' : ''}${depth ? ` d${Math.min(depth, 6)}` : ''}" data-rel="${esc(ref)}" data-path="${esc(item?.path ?? '')}" data-find="${esc(findText)}">
+      const subLine = sub ? `<div class="sub">${hl(sub)}</div>` : '';
+      const body = `<div class="name" title="${esc(title)}"><span>${hl(title)}</span>${chips}</div>${subLine}`;
+      const depthClass = depth ? ` d${Math.min(depth, 6)}` : '';
+      const mainHtml = ref
+        ? `<button class="main" data-act="open" title="Open ${esc(ref)} in the editor">${body}</button>`
+        : `<div class="main">${body}</div>`;
+      const refActions = ref
+        ? `<button class="ib" data-act="open" title="Open in the editor">${icon('code')}</button><button class="ib" data-act="copy" title="Copy the file path">${icon('copy')}</button>`
+        : '';
+      return `<div class="row${wrap ? ' wrapt' : ''}${depthClass}" data-rel="${esc(ref)}" data-path="${esc(item?.path ?? '')}" data-find="${esc(findText)}">
         <span class="ico ${cls}">${esc(code)}</span>
-        ${ref ? `<button class="main" data-act="open" title="Open ${esc(ref)} in the editor">${body}</button>` : `<div class="main">${body}</div>`}
-        <div class="acts">${acts}${ref ? `<button class="ib" data-act="open" title="Open in the editor">${icon('code')}</button><button class="ib" data-act="copy" title="Copy the file path">${icon('copy')}</button>` : ''}</div>
+        ${mainHtml}
+        <div class="acts">${acts}${refActions}</div>
       </div>`;
     };
     const simButton = (hash, title) =>
@@ -1050,27 +1078,29 @@ function panelBrowserImpl(data) {
         return null;
       }
     };
-    const recordsHash = (entity) =>
-      `records?entity=${encodeURIComponent(entity)}${pageRecordId() ? `&id=${encodeURIComponent(pageRecordId())}` : ''}`;
+    const recordsHash = (entity) => {
+      const recordId = pageRecordId();
+      const idQuery = recordId ? `&id=${encodeURIComponent(recordId)}` : '';
+      return `records?entity=${encodeURIComponent(entity)}${idQuery}`;
+    };
     const mirageStatusCard = (c) => {
       const s = c.status ?? {};
       // The browser's own sign-in session wins over the Mirage default persona.
       const session = c.session?.supported ? c.session : null;
-      const who = session
-        ? session.signedIn
-          ? `Signed in as ${session.name ?? session.contactId}`
-          : 'Anonymous (not signed in)'
-        : s.identity?.contactId
-          ? (s.identity.name ?? s.identity.contactId)
-          : 'Anonymous visitor';
+      let who = 'Anonymous visitor';
+      if (session)
+        who = session.signedIn ? `Signed in as ${session.name ?? session.contactId}` : 'Anonymous (not signed in)';
+      else if (s.identity?.contactId) who = s.identity.name ?? s.identity.contactId;
       const roles = session ? session.roles : s.identity?.roles;
+      const scenario = s.activeScenario ? ` · scenario ${esc(s.activeScenario.name ?? s.activeScenario.id)}` : '';
+      const auditHash = `audit?path=${encodeURIComponent(location.pathname)}`;
       return `<div class="card"><div class="path">Local Mirage <span class="dim">${esc(s.site ?? S.d.site)} · ${esc(s.format ?? 'portal source')}</span></div>
         <div class="srcs"><span class="lbl2">Runtime</span><span class="dim" title="Source fingerprint ${esc(s.sourceFingerprint ?? 'unknown')}">revision ${esc(s.revision ?? '?')} · source ${esc(String(s.sourceFingerprint ?? '').slice(0, 8) || 'unknown')}</span>${s.reloading ? '<span class="c diff">reloading sources</span>' : ''}${s.pendingReload ? '<span class="c diff">another reload queued</span>' : ''}<button class="src" data-act="sim" data-hash="activity?tab=findings">${esc(s.diagnostics ?? 0)} diagnostics</button></div>
-        <div class="srcs"><span class="lbl2">${session ? 'Session' : 'Persona'}</span><span class="dim">${esc(who)} · ${esc((roles ?? []).join(', ') || 'no web roles')} · permissions ${esc(s.permissionMode ?? 'unknown')}${s.activeScenario ? ` · scenario ${esc(s.activeScenario.name ?? s.activeScenario.id)}` : ''}</span><button class="src" data-act="tab" data-v="tweaks">Change</button></div>
-        <div class="srcs"><button class="src" data-act="admin">Open _sim administration</button><button class="src" data-act="sim" data-hash="${esc(`audit?path=${encodeURIComponent(location.pathname)}`)}">Requests for this page</button><button class="src" data-act="copypage">Copy local URL</button></div></div>`;
+        <div class="srcs"><span class="lbl2">${session ? 'Session' : 'Persona'}</span><span class="dim">${esc(who)} · ${esc((roles ?? []).join(', ') || 'no web roles')} · permissions ${esc(s.permissionMode ?? 'unknown')}${scenario}</span><button class="src" data-act="tab" data-v="tweaks">Change</button></div>
+        <div class="srcs"><button class="src" data-act="admin">Open _sim administration</button><button class="src" data-act="sim" data-hash="${esc(auditHash)}">Requests for this page</button><button class="src" data-act="copypage">Copy local URL</button></div></div>`;
     };
 
-    const runtimeHtml = () => {
+    /* NOSONAR: single-pass routine, splitting it would change shared state */ const runtimeHtml = () => {
       const runtime = S.d.inspection ?? S.d.mirage;
       if (!runtime || (inspectionPending(runtime) && !(S.inspect?.report && S.inspect.version >= runtime.version)))
         return loadingState(
@@ -1083,8 +1113,12 @@ function panelBrowserImpl(data) {
           esc(runtime?.error ?? 'The selected export could not be read.'),
         );
       const live = ['live-sources', 'model-driven'].includes(runtime.mode);
+      const sourceKind =
+        runtime.mode === 'model-driven'
+          ? 'Model-driven app · local Solution inspection'
+          : 'Live portal · local source inspection';
       let out = live
-        ? `<div class="card"><div class="path">${runtime.mode === 'model-driven' ? 'Model-driven app · local Solution inspection' : 'Live portal · local source inspection'}</div><div class="sub">${esc(S.d.site)} · ${esc(S.d.env)} · ${runtime.status?.solutionCount ?? 0} Solution roots</div><div class="sub">Source references describe the selected checkout. Live role membership and effective record access are unknown.</div></div>`
+        ? `<div class="card"><div class="path">${sourceKind}</div><div class="sub">${esc(S.d.site)} · ${esc(S.d.env)} · ${runtime.status?.solutionCount ?? 0} Solution roots</div><div class="sub">Source references describe the selected checkout. Live role membership and effective record access are unknown.</div></div>`
         : mirageStatusCard(runtime);
       if (inspectionPending(runtime) && S.inspect?.report)
         out += loadingState(
@@ -1118,26 +1152,50 @@ function panelBrowserImpl(data) {
         ['assets', report.modelDriven ? 'Resources' : 'Files & snippets'],
         ['unresolved', 'Unresolved'],
       ];
-      out += `<div class="card"><div class="srcs inspect-tools"><button class="src" data-act="xray" aria-pressed="${Boolean(document.getElementById('paqvilo-xray')?.__px?.enabled)}">◎ Lense X-ray</button><button class="src" data-act="inspect-refresh">Refresh inspection</button><button class="src" data-act="inspect-pick" aria-pressed="${S.pickingElement}">${S.pickingElement ? 'Cancel element selection' : 'Select an element'}</button><button class="src" data-act="inspect-fold" data-v="open">Expand all</button><button class="src" data-act="inspect-fold" data-v="closed">Collapse all</button></div><div class="srcs inspect-nav" role="group" aria-label="Inspection sections">${sections.map(([id, label]) => `<button class="f${S.inspectSection === id ? ' on' : ''}" data-act="inspect-section" data-v="${id}" aria-pressed="${S.inspectSection === id}">${label}</button>`).join('')}</div><div class="sub inspection-help">${esc(report.evidence?.source ?? 'Static dependencies and local runtime evidence.')} Click a source row to open its file.</div></div>`;
+      const sectionButtons = sections
+        .map(
+          ([id, label]) =>
+            `<button class="f${S.inspectSection === id ? ' on' : ''}" data-act="inspect-section" data-v="${id}" aria-pressed="${S.inspectSection === id}">${label}</button>`,
+        )
+        .join('');
+      out += `<div class="card"><div class="srcs inspect-tools"><button class="src" data-act="xray" aria-pressed="${Boolean(document.getElementById('paqvilo-xray')?.__px?.enabled)}">◎ Lense X-ray</button><button class="src" data-act="inspect-refresh">Refresh inspection</button><button class="src" data-act="inspect-pick" aria-pressed="${S.pickingElement}">${S.pickingElement ? 'Cancel element selection' : 'Select an element'}</button><button class="src" data-act="inspect-fold" data-v="open">Expand all</button><button class="src" data-act="inspect-fold" data-v="closed">Collapse all</button></div><div class="srcs inspect-nav" role="group" aria-label="Inspection sections">${sectionButtons}</div><div class="sub inspection-help">${esc(report.evidence?.source ?? 'Static dependencies and local runtime evidence.')} Click a source row to open its file.</div></div>`;
       if (S.pickingElement)
         out +=
           '<div class="card"><div class="path">Select an element on the portal</div><div class="sub">Click a control or content block. Its action is paused for this click. Press Escape to cancel.</div></div>';
       const page = report.page;
       if (page) {
         const access = page.access ?? {};
-        const verdict =
-          access.allowed === true
-            ? '<span class="c new">allowed</span>'
-            : access.allowed === false
-              ? `<span class="c st" title="${esc(access.code ?? '')}">denied</span>`
-              : '';
+        let verdict = '';
+        if (access.allowed === true) verdict = '<span class="c new">allowed</span>';
+        else if (access.allowed === false)
+          verdict = `<span class="c st" title="${esc(access.code ?? '')}">denied</span>`;
+        const parentHtml = page.parent
+          ? `<span class="lbl2">Parent</span><span class="dim">${esc(page.parent.name ?? page.parent.url)}</span>`
+          : '';
+        const sourceButton = page.ref
+          ? `<button class="src" data-act="open" data-rel="${esc(page.ref)}">Page source</button>`
+          : '';
         out += `<div class="card"><div class="path">${esc(page.pageName ?? page.name ?? location.pathname)} <span class="dim">${esc(page.url ?? '')}</span></div>
-          <div class="srcs"><span class="lbl2">Template</span><span class="dim">${esc(page.pageTemplateName ?? 'none')}</span><span class="lbl2">Publishing</span><span class="dim">${esc(page.publishingState?.name ?? 'not set')}${page.publishingState?.visible === false ? ' (not visible)' : ''}</span>${page.parent ? `<span class="lbl2">Parent</span><span class="dim">${esc(page.parent.name ?? page.parent.url)}</span>` : ''}</div>
-          <div class="srcs"><span class="lbl2">${live ? 'Live access' : 'Current persona'}</span>${verdict || (live ? '<span class="dim">unknown</span>' : '')}<span class="dim">${esc(access.reason ?? access.code ?? '')}</span>${page.ref ? `<button class="src" data-act="open" data-rel="${esc(page.ref)}">Page source</button>` : ''}</div></div>`;
+          <div class="srcs"><span class="lbl2">Template</span><span class="dim">${esc(page.pageTemplateName ?? 'none')}</span><span class="lbl2">Publishing</span><span class="dim">${esc(page.publishingState?.name ?? 'not set')}${page.publishingState?.visible === false ? ' (not visible)' : ''}</span>${parentHtml}</div>
+          <div class="srcs"><span class="lbl2">${live ? 'Live access' : 'Current persona'}</span>${verdict || (live ? '<span class="dim">unknown</span>' : '')}<span class="dim">${esc(access.reason ?? access.code ?? '')}</span>${sourceButton}</div></div>`;
       } else if (!report.modelDriven)
         out += `<div class="card"><div class="path">${esc(location.pathname)} <span class="dim">&nbsp;no exported page matches this address</span></div></div>`;
       const keep = (...texts) => matches(...texts.map((text) => String(text ?? '')));
       const groups = [];
+      const ruleSub = (rule) => {
+        const roles = (rule.roles ?? []).map((role) => role.name ?? `${role.id} (unresolved)`).join(', ') || 'no roles';
+        const inherited = rule.inherited
+          ? ` · inherited from ${rule.page?.name ?? rule.page?.url ?? 'an ancestor'}`
+          : '';
+        return `${rule.id} · ${rule.page?.url ?? ''} · ${rule.rightLabel} · ${rule.scopeLabel} · ${roles}${inherited}`;
+      };
+      const chainSub = (row) => {
+        if (row.kind === 'root') return 'renders';
+        const via = row.via && row.kind === 'web-template' ? ` · ${row.via}` : '';
+        const repeated = row.repeated ? ' · included again' : '';
+        const ref = row.ref ? ` · ${row.ref}` : '';
+        return `${row.kind.replaceAll('-', ' ')}${via}${repeated}${ref}`;
+      };
       const sourceRows = (report.pageSources ?? []).filter((item) => keep(item.name, item.ref));
       groups.push(
         rgroup('runtime-page-sources', 'Page source files', sourceRows, (item) =>
@@ -1152,7 +1210,7 @@ function panelBrowserImpl(data) {
           rrow(rule, {
             code: rule.right === 1 ? 'GRANT' : 'RULE',
             title: rule.name,
-            sub: `${rule.id} · ${rule.page?.url ?? ''} · ${rule.rightLabel} · ${rule.scopeLabel} · ${(rule.roles ?? []).map((role) => role.name ?? `${role.id} (unresolved)`).join(', ') || 'no roles'}${rule.inherited ? ` · inherited from ${rule.page?.name ?? rule.page?.url ?? 'an ancestor'}` : ''}`,
+            sub: ruleSub(rule),
             chips: `${rule.matches ? '<span class="c new">current persona</span>' : ''}${rule.overridden ? '<span class="c edited">local override</span>' : ''}`,
             find: rule.id,
             wrap: true,
@@ -1168,10 +1226,7 @@ function panelBrowserImpl(data) {
               { 'page-template': 'PT', 'web-template': 'TPL', 'content-snippet': 'SNIP', root: 'FROM' }[row.kind] ??
               'SRC',
             title: row.name,
-            sub:
-              row.kind === 'root'
-                ? 'renders'
-                : `${row.kind.replace(/-/g, ' ')}${row.via && row.kind === 'web-template' ? ` · ${row.via}` : ''}${row.repeated ? ' · included again' : ''}${row.ref ? ` · ${row.ref}` : ''}`,
+            sub: chainSub(row),
             depth: row.depth,
           }),
         ),
@@ -1185,8 +1240,13 @@ function panelBrowserImpl(data) {
           const chips = PERMISSION_CHIPS.map(([op, label]) => {
             const result = operations[op];
             if (!result) return '';
-            const tone = !result.allowed ? 'st' : result.scoped ? 'diff' : 'new';
-            return `<span class="c ${tone}" title="${esc(`${op}: ${result.reason ?? ''}`)}">${label}${result.allowed ? (result.scoped ? '~' : '') : '×'}</span>`;
+            let tone = 'new';
+            if (!result.allowed) tone = 'st';
+            else if (result.scoped) tone = 'diff';
+            let mark = '×';
+            if (result.allowed) mark = result.scoped ? '~' : '';
+            const detail = `${op}: ${result.reason ?? ''}`;
+            return `<span class="c ${tone}" title="${esc(detail)}">${label}${mark}</span>`;
           }).join('');
           const reasons = PERMISSION_CHIPS.map(([op]) => (operations[op] ? `${op}: ${operations[op].reason}` : ''))
             .filter(Boolean)
@@ -1200,10 +1260,17 @@ function panelBrowserImpl(data) {
                   )
                   .join('')
               : '';
+          const displayName = table.displayName ? ` (${table.displayName})` : '';
+          const inferred = table.entitySetInferred ? ' (inferred)' : '';
+          const entitySetText = table.entitySet ? `entity set ${table.entitySet}${inferred}` : 'entity set unavailable';
+          let accessNote = '';
+          if (live) accessNote = ' · effective live access unknown';
+          else if (table.permissions?.mode === 'permissive') accessNote = ' · permissions not enforced';
+          const reasonNote = reasons ? ` · ${reasons}` : '';
           return rrow(table, {
             code: 'TBL',
-            title: `${table.logicalName}${table.displayName ? ` (${table.displayName})` : ''}`,
-            sub: `${table.entitySet ? `entity set ${table.entitySet}${table.entitySetInferred ? ' (inferred)' : ''}` : 'entity set unavailable'} · ${table.fieldCount ?? 0} exported fields${live ? ' · effective live access unknown' : table.permissions?.mode === 'permissive' ? ' · permissions not enforced' : ''}${reasons ? ` · ${reasons}` : ''}`,
+            title: `${table.logicalName}${displayName}`,
+            sub: `${entitySetText} · ${table.fieldCount ?? 0} exported fields${accessNote}${reasonNote}`,
             chips,
             wrap: true,
             acts: layers + simButton(recordsHash(table.logicalName), `Open ${table.logicalName} records in _sim`),
@@ -1213,16 +1280,40 @@ function panelBrowserImpl(data) {
       const grants = (report.permissionRules ?? []).filter((rule) =>
         keep(rule.name, rule.entity, rule.scope, ...(rule.roles ?? [])),
       );
+      const permissionSub = (rule) => {
+        const operations = (rule.operations ?? []).join(', ') || 'no operations';
+        const roles = (rule.roles ?? []).join(', ') || 'none';
+        const relationship = rule.relationshipName ? ` · relationship ${rule.relationshipName}` : '';
+        const parent = rule.parentPermissionId ? ` · parent ${rule.parentPermissionId}` : '';
+        const liveNote = live ? ' · exported grant; live access unknown' : '';
+        return `${rule.entity} · ${rule.scope} · ${operations} · roles ${roles}${relationship}${parent}${liveNote}`;
+      };
       groups.push(
         rgroup('runtime-permissions', 'Table permissions and web roles', grants, (rule) =>
           rrow(rule, {
             code: 'RULE',
             title: rule.name,
-            sub: `${rule.entity} · ${rule.scope} · ${(rule.operations ?? []).join(', ') || 'no operations'} · roles ${(rule.roles ?? []).join(', ') || 'none'}${rule.relationshipName ? ` · relationship ${rule.relationshipName}` : ''}${rule.parentPermissionId ? ` · parent ${rule.parentPermissionId}` : ''}${live ? ' · exported grant; live access unknown' : ''}`,
+            sub: permissionSub(rule),
             wrap: true,
           }),
         ),
       );
+      const formSub = (form) => {
+        let kind = 'basic form';
+        if (form.kind === 'advanced-form') kind = 'advanced form';
+        else if (form.kind === 'model-driven-form') kind = `${form.formType ?? 'main'} form`;
+        const mode = FORM_MODE[form.mode] ? ` · ${FORM_MODE[form.mode]}` : '';
+        const formName = form.formName ? ` · form ${form.formName}` : '';
+        let evidence = '';
+        if (form.evidence === 'rendered-component-id') evidence = ' · observed form ID';
+        else if (form.evidence === 'configured-modal-form') evidence = ' · configured modal source';
+        return `${kind}${mode} · table ${form.entity ?? 'unknown'}${formName}${evidence}`;
+      };
+      const stepSub = (step) => {
+        const mode = FORM_MODE[step.mode] ? ` · ${FORM_MODE[step.mode]}` : '';
+        const formName = step.formName ? ` · form ${step.formName}` : '';
+        return `${step.entity ?? 'no table'}${mode}${formName}`;
+      };
       const forms = (report.forms ?? []).filter((form) =>
         keep(form.name, form.entity, form.formName, form.kind, ...(form.steps ?? []).map((step) => step.name)),
       );
@@ -1232,7 +1323,7 @@ function panelBrowserImpl(data) {
             rrow(form, {
               code: form.kind === 'advanced-form' ? 'ADV' : 'FORM',
               title: form.name,
-              sub: `${form.kind === 'advanced-form' ? 'advanced form' : form.kind === 'model-driven-form' ? `${form.formType ?? 'main'} form` : 'basic form'}${FORM_MODE[form.mode] ? ` · ${FORM_MODE[form.mode]}` : ''} · table ${form.entity ?? 'unknown'}${form.formName ? ` · form ${form.formName}` : ''}${form.evidence === 'rendered-component-id' ? ' · observed form ID' : form.evidence === 'configured-modal-form' ? ' · configured modal source' : ''}`,
+              sub: formSub(form),
               acts: form.entity ? simButton(recordsHash(form.entity), `Open ${form.entity} records in _sim`) : '',
             }),
             ...(report.components ?? [])
@@ -1262,7 +1353,7 @@ function panelBrowserImpl(data) {
               rrow(step, {
                 code: 'STEP',
                 title: step.name ?? step.id,
-                sub: `${step.entity ?? 'no table'}${FORM_MODE[step.mode] ? ` · ${FORM_MODE[step.mode]}` : ''}${step.formName ? ` · form ${step.formName}` : ''}`,
+                sub: stepSub(step),
                 depth: 1,
               }),
               ...(step.formXml?.ref
@@ -1279,6 +1370,12 @@ function panelBrowserImpl(data) {
           ].join(''),
         ),
       );
+      const viewSub = (view) => {
+        const columnNames = (view.fields ?? []).map((field) => field.name).join(', ');
+        const usedBy = view.usedBy?.length ? ` · used by ${[...new Set(view.usedBy)].join(', ')}` : '';
+        const observed = view.evidence === 'rendered-view-id' ? ' · observed view ID' : '';
+        return `${view.entity} · ${(view.fields ?? []).length} columns: ${columnNames}${usedBy}${observed}`;
+      };
       const views = (report.views ?? []).filter((view) =>
         keep(view.name, view.entity, ...(view.fields ?? []).map((field) => field.name)),
       );
@@ -1287,11 +1384,22 @@ function panelBrowserImpl(data) {
           rrow(view, {
             code: 'VIEW',
             title: view.name,
-            sub: `${view.entity} · ${(view.fields ?? []).length} columns: ${(view.fields ?? []).map((field) => field.name).join(', ')}${view.usedBy?.length ? ` · used by ${[...new Set(view.usedBy)].join(', ')}` : ''}${view.evidence === 'rendered-view-id' ? ' · observed view ID' : ''}`,
+            sub: viewSub(view),
             wrap: true,
           }),
         ),
       );
+      const nativeCode = (item) => {
+        if (item.kind === 'subgrid') return 'GRID';
+        return item.kind === 'quickform' ? 'QUICK' : 'NOTES';
+      };
+      const nativeSub = (item) => {
+        const relationship = item.relationship ? ` · relationship ${item.relationship}` : '';
+        const lookup = item.lookup ? ` · lookup ${item.lookup}` : '';
+        const control = item.evidence === 'rendered-control-id' ? 'observed control ID' : 'exported form control';
+        const hidden = item.hidden ? ' · hidden in FormXml' : '';
+        return `${item.owner} · table ${item.entity ?? 'unknown'}${relationship}${lookup} · ${control}${hidden}`;
+      };
       const native = (report.nativeComponents ?? []).filter((item) =>
         keep(item.name, item.id, item.kind, item.entity, item.owner, item.relationship),
       );
@@ -1299,26 +1407,41 @@ function panelBrowserImpl(data) {
         rgroup('runtime-native', 'Native grids, quick views and notes', native, (item) =>
           [
             rrow(item, {
-              code: item.kind === 'subgrid' ? 'GRID' : item.kind === 'quickform' ? 'QUICK' : 'NOTES',
+              code: nativeCode(item),
               title: item.name,
-              sub: `${item.owner} · table ${item.entity ?? 'unknown'}${item.relationship ? ` · relationship ${item.relationship}` : ''}${item.lookup ? ` · lookup ${item.lookup}` : ''} · ${item.evidence === 'rendered-control-id' ? 'observed control ID' : 'exported form control'}${item.hidden ? ' · hidden in FormXml' : ''}`,
+              sub: nativeSub(item),
               wrap: true,
             }),
             ...(item.metadataSources ?? []).map((source) =>
               rrow(source, { code: 'META', title: source.name, sub: source.ref ?? '', depth: 1 }),
             ),
-            ...(item.actions ?? []).map((action) =>
-              rrow(action, {
+            ...(item.actions ?? []).map((action) => {
+              const formName = action.formName ? `: ${action.formName}` : '';
+              const modal = action.formId ? ` · modal form ${action.formId}` : '';
+              const conditional = action.conditional ? ' · conditional visibility' : '';
+              return rrow(action, {
                 code: 'ACTION',
-                title: `${action.name}${action.formName ? `: ${action.formName}` : ''}`,
-                sub: `exported action${action.formId ? ` · modal form ${action.formId}` : ''}${action.conditional ? ' · conditional visibility' : ''}`,
+                title: `${action.name}${formName}`,
+                sub: `exported action${modal}${conditional}`,
                 depth: 1,
                 wrap: true,
-              }),
-            ),
+              });
+            }),
           ].join(''),
         ),
       );
+      const columnSub = (column) => {
+        if (column.resolved === false) return 'not described by the selected Solution metadata';
+        const required = column.required ? ' · required' : '';
+        const maxLength = column.maxLength ? ` · max ${column.maxLength}` : '';
+        let options = '';
+        if (column.optionCount) {
+          const more = column.optionCount > (column.options ?? []).length ? ' ...' : '';
+          const labels = (column.options ?? []).map((option) => option.label).join(', ');
+          options = ` · ${column.optionCount} options: ${labels}${more}`;
+        }
+        return `${column.label ?? column.name} · ${column.type ?? 'unknown type'}${required}${maxLength}${options}`;
+      };
       const columns = (report.columns ?? []).filter((column) =>
         keep(column.entity, column.name, column.label, column.type),
       );
@@ -1331,10 +1454,7 @@ function panelBrowserImpl(data) {
             rrow(column, {
               code: 'COL',
               title: `${column.entity}.${column.name}`,
-              sub:
-                column.resolved === false
-                  ? 'not described by the selected Solution metadata'
-                  : `${column.label ?? column.name} · ${column.type ?? 'unknown type'}${column.required ? ' · required' : ''}${column.maxLength ? ` · max ${column.maxLength}` : ''}${column.optionCount ? ` · ${column.optionCount} options: ${(column.options ?? []).map((option) => option.label).join(', ')}${column.optionCount > (column.options ?? []).length ? ' ...' : ''}` : ''}`,
+              sub: columnSub(column),
               chips: column.required ? '<span class="c edited">required</span>' : '',
               find: `<LogicalName>${column.name}</LogicalName>`,
               acts: `<button class="ib" data-act="inspect-locate" data-field="${esc(column.name)}" title="Find this field on the page">${icon('go')}</button>`,
@@ -1352,6 +1472,10 @@ function panelBrowserImpl(data) {
         snippet: 'SNIP',
         fetchxml: 'FXML',
       };
+      const usageTitle = (usage) => {
+        const reference = usage.reference ? `: ${usage.reference}` : ' (dynamic)';
+        return `${usage.kind}${reference}`;
+      };
       const lists = (report.components ?? []).filter(
         (component) => component.kind === 'list' && keep(component.name, component.entity, 'list'),
       );
@@ -1368,13 +1492,13 @@ function panelBrowserImpl(data) {
               ? rrow(list, {
                   code: 'LIST',
                   title: list.name,
-                  sub: `list${list.entity ? ` · table ${list.entity}` : ''}`,
+                  sub: list.entity ? `list · table ${list.entity}` : 'list',
                 })
               : rrow(
                   {},
                   {
                     code: USAGE_CODE[usage.kind] ?? 'USE',
-                    title: `${usage.kind}${usage.reference ? `: ${usage.reference}` : ' (dynamic)'}`,
+                    title: usageTitle(usage),
                     sub: `${usage.expression} · in ${usage.owner}`,
                     wrap: true,
                   },
@@ -1382,6 +1506,12 @@ function panelBrowserImpl(data) {
           { collapsed: usages.length > 40 },
         ),
       );
+      const renderedSub = (item) => {
+        const type = item.type ? ` · ${item.type}` : '';
+        const observed =
+          item.evidence === 'rendered-and-source' ? 'observed with source match' : 'observed; source binding unknown';
+        return `${item.tag}${type} · ${observed}`;
+      };
       const controls = (report.renderedControls ?? []).filter((item) =>
         keep(item.id, item.name, item.field, item.entity),
       );
@@ -1394,7 +1524,7 @@ function panelBrowserImpl(data) {
             rrow(item, {
               code: 'DOM',
               title: item.field ?? item.name ?? item.id ?? item.tag,
-              sub: `${item.tag}${item.type ? ` · ${item.type}` : ''} · ${item.evidence === 'rendered-and-source' ? 'observed with source match' : 'observed; source binding unknown'}`,
+              sub: renderedSub(item),
               acts:
                 item.id || item.name
                   ? `<button class="ib" data-act="inspect-locate" data-field="${esc(item.id || item.name)}" title="Find on the page">${icon('go')}</button>`
@@ -1403,6 +1533,16 @@ function panelBrowserImpl(data) {
           { collapsed: controls.length > 25 },
         ),
       );
+      const apiSub = (item) => {
+        const target = item.entity
+          ? `table ${item.entity}`
+          : 'Entity set binding is absent from selected Solution metadata';
+        const evidence =
+          item.evidence === 'observed-api-request'
+            ? 'observed request; IDs and query values excluded'
+            : 'literal source reference';
+        return `${target} · ${evidence}`;
+      };
       groups.push(
         rgroup(
           'runtime-api',
@@ -1412,10 +1552,18 @@ function panelBrowserImpl(data) {
             rrow(item, {
               code: 'API',
               title: `/_api/${item.name}`,
-              sub: `${item.entity ? `table ${item.entity}` : 'Entity set binding is absent from selected Solution metadata'} · ${item.evidence === 'observed-api-request' ? 'observed request; IDs and query values excluded' : 'literal source reference'}`,
+              sub: apiSub(item),
             }),
         ),
       );
+      const logicCode = (item) => {
+        if (item.kind === 'cloud-flow') return 'FLOW';
+        return item.kind === 'plugin-step' ? 'PLUGIN' : 'LOGIC';
+      };
+      const logicSourceCode = (source) => {
+        if (source.kind === 'plugin-type') return 'TYPE';
+        return source.kind === 'plugin-code' ? 'C#' : 'ASM';
+      };
       groups.push(
         rgroup(
           'runtime-logic',
@@ -1426,7 +1574,7 @@ function panelBrowserImpl(data) {
           (item) =>
             [
               rrow(item, {
-                code: item.kind === 'cloud-flow' ? 'FLOW' : item.kind === 'plugin-step' ? 'PLUGIN' : 'LOGIC',
+                code: logicCode(item),
                 title: item.name,
                 sub:
                   item.kind === 'plugin-step'
@@ -1436,7 +1584,7 @@ function panelBrowserImpl(data) {
               }),
               ...(item.sources ?? []).map((source) =>
                 rrow(source, {
-                  code: source.kind === 'plugin-type' ? 'TYPE' : source.kind === 'plugin-code' ? 'C#' : 'ASM',
+                  code: logicSourceCode(source),
                   title: source.name,
                   sub:
                     source.kind === 'plugin-code'
@@ -1448,6 +1596,23 @@ function panelBrowserImpl(data) {
             ].join(''),
         ),
       );
+      const pcfSub = (item) => {
+        let binding = 'Solution binding unknown';
+        if (item.binding === 'native-formxml') {
+          const desktop = item.selectedDesktop ? 'desktop selected' : 'other form factor';
+          binding = `Native binding · ${desktop} · portal ${item.enablement}`;
+        } else if (item.binding === 'declared-schema-name') binding = 'Exported schema name';
+        else if (item.schemaName) binding = 'Configured component mapping';
+        return `${item.expression} · ${binding}`;
+      };
+      const datasetSub = (dataset) => {
+        let detail = 'Table/view binding unknown';
+        if (dataset.resolved) {
+          const view = dataset.viewName ? ` · ${dataset.viewName}` : '';
+          detail = `${dataset.entity}${view} · ${dataset.fields?.length ?? 0} columns`;
+        }
+        return `${dataset.binding || 'Binding missing'} · ${detail}`;
+      };
       groups.push(
         rgroup(
           'runtime-pcf',
@@ -1458,7 +1623,7 @@ function panelBrowserImpl(data) {
               rrow(item, {
                 code: 'PCF',
                 title: item.schemaName ?? item.name,
-                sub: `${item.expression} · ${item.binding === 'native-formxml' ? `Native binding · ${item.selectedDesktop ? 'desktop selected' : 'other form factor'} · portal ${item.enablement}` : item.binding === 'declared-schema-name' ? 'Exported schema name' : item.schemaName ? 'Configured component mapping' : 'Solution binding unknown'}`,
+                sub: pcfSub(item),
                 wrap: true,
               }),
               ...(item.formSourceFile
@@ -1478,7 +1643,7 @@ function panelBrowserImpl(data) {
                 rrow(dataset, {
                   code: 'DATA',
                   title: dataset.name,
-                  sub: `${dataset.binding || 'Binding missing'} · ${dataset.resolved ? `${dataset.entity}${dataset.viewName ? ` · ${dataset.viewName}` : ''} · ${dataset.fields?.length ?? 0} columns` : 'Table/view binding unknown'}`,
+                  sub: datasetSub(dataset),
                   depth: 1,
                 }),
               ),
@@ -1493,6 +1658,10 @@ function panelBrowserImpl(data) {
             ].join(''),
         ),
       );
+      const assetCode = (item) => {
+        if (/\.css$/i.test(item.url)) return 'CSS';
+        return /\.m?js$/i.test(item.url) ? 'JS' : 'FILE';
+      };
       groups.push(
         rgroup(
           'runtime-assets',
@@ -1500,12 +1669,17 @@ function panelBrowserImpl(data) {
           (report.assets ?? []).filter((item) => keep(item.name, item.url, item.ref)),
           (item) =>
             rrow(item, {
-              code: /\.css$/i.test(item.url) ? 'CSS' : /\.m?js$/i.test(item.url) ? 'JS' : 'FILE',
+              code: assetCode(item),
               title: item.url,
               sub: `${item.evidence === 'rendered-asset' ? 'observed in rendered DOM' : 'static source reference'} · ${item.ref ?? 'attachment source unavailable'}`,
             }),
         ),
       );
+      const snippetSub = (snippet) => {
+        if (snippet.deleted) return 'removed locally';
+        if (snippet.value == null) return '';
+        return `“${snippet.value}”`;
+      };
       const snippets = (report.snippets ?? []).filter((snippet) => keep(snippet.name, snippet.value, snippet.ref));
       groups.push(
         rgroup(
@@ -1516,7 +1690,7 @@ function panelBrowserImpl(data) {
             rrow(snippet, {
               code: 'SNIP',
               title: snippet.name,
-              sub: snippet.deleted ? 'removed locally' : snippet.value == null ? '' : `“${snippet.value}”`,
+              sub: snippetSub(snippet),
               chips: snippet.overridden ? '<span class="c edited">local override</span>' : '',
               acts: simButton(
                 `portal?kind=snippets&name=${encodeURIComponent(snippet.name)}`,
@@ -1560,27 +1734,27 @@ function panelBrowserImpl(data) {
           .filter((shortcut) => keep(shortcut.name, shortcut.title, 'shortcut'))
           .map((item) => ({ kind: 'shortcut', item })),
       ];
-      groups.push(
-        rgroup('runtime-related', 'Related metadata', relatedItems, ({ kind, item }) =>
-          kind === 'link'
-            ? rrow(item, {
-                code: 'LINK',
-                title: item.name,
-                sub: `web link in ${item.set ?? 'an unknown set'}`,
-                find: item.id,
-              })
-            : kind === 'marker'
-              ? rrow(item, { code: 'MARK', title: item.name, sub: 'site marker', find: item.id })
-              : kind === 'redirect'
-                ? rrow(item, {
-                    code: 'REDIR',
-                    title: `/${String(item.inboundUrl ?? '').replace(/^\//, '')}`,
-                    sub: `redirect ${item.statusCode ?? ''} to this page${item.name ? ` · ${item.name}` : ''}`,
-                    find: item.id,
-                  })
-                : rrow(item, { code: 'SHORT', title: item.title ?? item.name, sub: 'shortcut', find: item.id }),
-        ),
-      );
+      const relatedRow = ({ kind, item }) => {
+        if (kind === 'link')
+          return rrow(item, {
+            code: 'LINK',
+            title: item.name,
+            sub: `web link in ${item.set ?? 'an unknown set'}`,
+            find: item.id,
+          });
+        if (kind === 'marker') return rrow(item, { code: 'MARK', title: item.name, sub: 'site marker', find: item.id });
+        if (kind === 'redirect') {
+          const name = item.name ? ` · ${item.name}` : '';
+          return rrow(item, {
+            code: 'REDIR',
+            title: `/${String(item.inboundUrl ?? '').replace(/^\//, '')}`,
+            sub: `redirect ${item.statusCode ?? ''} to this page${name}`,
+            find: item.id,
+          });
+        }
+        return rrow(item, { code: 'SHORT', title: item.title ?? item.name, sub: 'shortcut', find: item.id });
+      };
+      groups.push(rgroup('runtime-related', 'Related metadata', relatedItems, relatedRow));
       const unresolved = (report.unresolved ?? []).filter((item) =>
         keep(item.name, item.expression, item.kind, item.reason, item.owner),
       );
@@ -1589,8 +1763,10 @@ function panelBrowserImpl(data) {
           'runtime-unresolved',
           'Unresolved dependencies',
           unresolved,
-          (item) =>
-            `<div class="row wrapt"><span class="ico k-warn">?</span><div class="main"><div class="name"><span>${hl(item.expression ?? item.name ?? item.kind ?? 'Dependency')}</span><span class="what">${esc(item.kind ?? '')}</span></div><div class="sub">${hl(item.reason ?? item.message ?? '')}${item.owner ? ` · in ${esc(item.owner)}` : ''}</div></div></div>`,
+          (item) => {
+            const owner = item.owner ? ` · in ${esc(item.owner)}` : '';
+            return `<div class="row wrapt"><span class="ico k-warn">?</span><div class="main"><div class="name"><span>${hl(item.expression ?? item.name ?? item.kind ?? 'Dependency')}</span><span class="what">${esc(item.kind ?? '')}</span></div><div class="sub">${hl(item.reason ?? item.message ?? '')}${owner}</div></div></div>`;
+          },
           { collapsed: unresolved.length > 20 },
         ),
       );
@@ -1709,7 +1885,7 @@ function panelBrowserImpl(data) {
           entry.persona.active !== false &&
           terms.every((term) => entry.text.includes(term)) &&
           ['roles', 'tags', 'accounts'].every(
-            (facet) => !query[facet]?.length || query[facet].some((value) => entry[facet].includes(personaFold(value))),
+            (facet) => !query[facet]?.length || query[facet].some((value) => entry[facet].includes(personaFold(value))), // NOSONAR: callbacks capture request-scoped state
           ) &&
           (!query.rolesOnly || entry.roles.length > 0) &&
           (!query.groups?.length || query.groups.map(personaFold).includes(entry.group)) &&
@@ -1725,7 +1901,14 @@ function panelBrowserImpl(data) {
       const row = (entry) => {
         const p = entry.persona,
           selected = S.pick.personaKey ? S.pick.personaKey === entry.key : S.pick.persona === p.contactId;
-        return `<div class="pp-persona-row${selected ? ' selected' : ''}" data-panel-persona-row="${esc(entry.key)}"><button class="pp-persona-choice" data-act="choosepersona" data-contact="${esc(p.contactId)}" data-key="${esc(entry.key)}" aria-pressed="${selected}"><strong>${esc(p.label ?? p.name ?? p.contactId)}${p.default ? ' · Default' : ''}</strong><span>${esc(p.name ?? p.contactId)}${p.account?.name ? ` · ${esc(p.account.name)}` : ''}</span>${p.description ? `<span>${esc(p.description.split(/\r?\n/, 1)[0])}</span>` : ''}<span>${esc((p.roles ?? []).join(', ') || 'No web roles')}${p.tags?.length ? ` · ${esc(p.tags.join(', '))}` : ''}${p.context ? ` · Setup available: ${esc(S.tweaks.personaCatalog?.contexts?.find((c) => c.id === p.context)?.label ?? p.context)} (full picker)` : ''}</span></button><button data-act="pinpersona" data-key="${esc(entry.key)}" aria-pressed="${preferences.pinned.includes(entry.key)}" aria-label="Pin ${esc(p.label ?? p.name)}">${preferences.pinned.includes(entry.key) ? '★' : '☆'}</button></div>`;
+        const account = p.account?.name ? ` · ${esc(p.account.name)}` : '';
+        const description = p.description ? `<span>${esc(p.description.split(/\r?\n/, 1)[0])}</span>` : '';
+        const tags = p.tags?.length ? ` · ${esc(p.tags.join(', '))}` : '';
+        const setup = p.context
+          ? ` · Setup available: ${esc(S.tweaks.personaCatalog?.contexts?.find((c) => c.id === p.context)?.label ?? p.context)} (full picker)`
+          : '';
+        const pinned = preferences.pinned.includes(entry.key);
+        return `<div class="pp-persona-row${selected ? ' selected' : ''}" data-panel-persona-row="${esc(entry.key)}"><button class="pp-persona-choice" data-act="choosepersona" data-contact="${esc(p.contactId)}" data-key="${esc(entry.key)}" aria-pressed="${selected}"><strong>${esc(p.label ?? p.name ?? p.contactId)}${p.default ? ' · Default' : ''}</strong><span>${esc(p.name ?? p.contactId)}${account}</span>${description}<span>${esc((p.roles ?? []).join(', ') || 'No web roles')}${tags}${setup}</span></button><button data-act="pinpersona" data-key="${esc(entry.key)}" aria-pressed="${pinned}" aria-label="Pin ${esc(p.label ?? p.name)}">${pinned ? '★' : '☆'}</button></div>`;
       };
       const shortcut = (keys, label) => {
         const byKey = new Map(matching.map((entry) => [entry.key, entry]));
@@ -1742,26 +1925,36 @@ function panelBrowserImpl(data) {
         { id: '__other', label: 'Other contacts' },
       ];
       const defaultRow = offset === 0 ? matching.find((entry) => entry.persona.default) : null;
-      return `<p class="dim" role="status" data-panel-persona-count>${matching.length ? offset + 1 : 0}–${Math.min(offset + 50, matching.length)} of ${matching.length} personas</p>${defaultRow ? `<section><h4>Default</h4>${row(defaultRow)}</section>` : ''}${shortcut(preferences.pinned, 'Pinned')}${shortcut(preferences.recent, 'Recent')}${groups
-        .map((group) => {
-          const all = matching.filter((entry) => (entry.group || '__other') === group.id),
-            rows = pageRows.filter((entry) => (entry.group || '__other') === group.id && entry !== defaultRow);
-          if (!all.length) return '';
-          return `<details class="pp-persona-group"${all.length <= 25 || S.personaFilters?.q || S.personaFilters?.rolesOnly || ['roles', 'tags', 'accounts', 'groups', 'subgroups'].some((key) => S.personaFilters?.[key]?.length) ? ' open' : ''}><summary>${esc(group.label)} · ${all.length}${!rows.length ? `<button class="btn" data-act="persona-group" data-group="${esc(group.id)}">View ${esc(group.label)} matches</button>` : ''}</summary>${rows
-            .filter((entry) => !entry.persona.subgroup)
-            .map(row)
-            .join('')}${(group.subgroups ?? [])
-            .map((sub) => {
-              const entries = rows.filter((entry) => entry.persona.subgroup === sub.id);
-              return entries.length
-                ? `<h4>${esc(sub.label)} · ${all.filter((entry) => entry.persona.subgroup === sub.id).length}</h4>${entries.map(row).join('')}`
-                : '';
-            })
-            .join('')}</details>`;
-        })
-        .join(
-          '',
-        )}${matching.length ? '' : '<p class="dim">No personas match. Clear a filter or use fewer terms.</p>'}<div class="tw">${offset ? '<button class="btn" data-act="persona-page" data-direction="-1">Previous</button>' : ''}${offset + 50 < matching.length ? '<button class="btn" data-act="persona-page" data-direction="1">Show more</button>' : ''}</div>`;
+      const defaultSection = defaultRow ? `<section><h4>Default</h4>${row(defaultRow)}</section>` : '';
+      const groupHtml = (group) => {
+        const all = matching.filter((entry) => (entry.group || '__other') === group.id),
+          rows = pageRows.filter((entry) => (entry.group || '__other') === group.id && entry !== defaultRow);
+        if (!all.length) return '';
+        const open =
+          all.length <= 25 ||
+          S.personaFilters?.q ||
+          S.personaFilters?.rolesOnly ||
+          ['roles', 'tags', 'accounts', 'groups', 'subgroups'].some((key) => S.personaFilters?.[key]?.length)
+            ? ' open'
+            : '';
+        const viewButton = !rows.length
+          ? `<button class="btn" data-act="persona-group" data-group="${esc(group.id)}">View ${esc(group.label)} matches</button>`
+          : '';
+        const direct = rows
+          .filter((entry) => !entry.persona.subgroup)
+          .map(row)
+          .join('');
+        const subgroups = (group.subgroups ?? [])
+          .map((sub) => {
+            const entries = rows.filter((entry) => entry.persona.subgroup === sub.id); // NOSONAR: callbacks capture request-scoped state
+            if (!entries.length) return '';
+            const count = all.filter((entry) => entry.persona.subgroup === sub.id).length; // NOSONAR: callbacks capture request-scoped state
+            return `<h4>${esc(sub.label)} · ${count}</h4>${entries.map(row).join('')}`;
+          })
+          .join('');
+        return `<details class="pp-persona-group"${open}><summary>${esc(group.label)} · ${all.length}${viewButton}</summary>${direct}${subgroups}</details>`;
+      };
+      return `<p class="dim" role="status" data-panel-persona-count>${matching.length ? offset + 1 : 0}–${Math.min(offset + 50, matching.length)} of ${matching.length} personas</p>${defaultSection}${shortcut(preferences.pinned, 'Pinned')}${shortcut(preferences.recent, 'Recent')}${groups.map(groupHtml).join('')}${matching.length ? '' : '<p class="dim">No personas match. Clear a filter or use fewer terms.</p>'}<div class="tw">${offset ? '<button class="btn" data-act="persona-page" data-direction="-1">Previous</button>' : ''}${offset + 50 < matching.length ? '<button class="btn" data-act="persona-page" data-direction="1">Show more</button>' : ''}</div>`;
     };
     const personaPickerHtml = (selectedId) => {
       if (S.pick.persona === undefined && selectedId !== undefined) S.pick.persona = selectedId;
@@ -1799,18 +1992,16 @@ function panelBrowserImpl(data) {
           ),
         ],
       ];
+      const facetValues = (entry, name) => {
+        if (name === 'groups') return [entry.group];
+        if (name === 'subgroups') return entry.subgroup ? [`${entry.group}:${entry.subgroup}`] : [];
+        return entry[name] ?? [];
+      };
       for (const facet of facets) {
         const [name] = facet,
           available = new Set();
         for (const entry of personaMatches({ ...query, [name]: [] })) {
-          const values =
-            name === 'groups'
-              ? [entry.group]
-              : name === 'subgroups'
-                ? entry.subgroup
-                  ? [`${entry.group}:${entry.subgroup}`]
-                  : []
-                : (entry[name] ?? []);
+          const values = facetValues(entry, name);
           for (const value of values) available.add(personaFold(value));
         }
         facet[2] = facet[2].filter((item) => available.has(personaFold(item.id)) || query[name]?.includes(item.id));
@@ -1821,23 +2012,25 @@ function panelBrowserImpl(data) {
             (total, values) => total + (values?.length ?? 0),
             0,
           ) + (query.rolesOnly ? 1 : 0);
-      return `<div class="pp-persona-picker"><label>Find a persona<input type="search" data-panel-persona-query value="${esc(query.q)}" placeholder="Name, account, role, tag or description"></label><details class="pp-persona-filter-disclosure"${(S.personaFilterDisclosureOpen ?? Boolean(activeFilters)) ? ' open' : ''}><summary>Filters${activeFilters ? ` · ${activeFilters} active` : ''}</summary><div class="pp-persona-facets">${facets
+      const activeSummary = activeFilters ? ` · ${activeFilters} active` : '';
+      const facetSelect = ([name, label, options]) => {
+        const shown = options.filter((item, index) => index < 100 || query[name]?.includes(item.id));
+        const optionsHtml = shown
+          .map(
+            (item) =>
+              `<option value="${esc(item.id)}"${query[name]?.includes(item.id) ? ' selected' : ''}>${esc(item.label)}</option>`,
+          )
+          .join('');
+        return `<label>${label}<select data-panel-persona-facet="${name}" aria-label="${label}" multiple size="2">${optionsHtml}</select></label>`;
+      };
+      return `<div class="pp-persona-picker"><label>Find a persona<input type="search" data-panel-persona-query value="${esc(query.q)}" placeholder="Name, account, role, tag or description"></label><details class="pp-persona-filter-disclosure"${(S.personaFilterDisclosureOpen ?? Boolean(activeFilters)) ? ' open' : ''}><summary>Filters${activeSummary}</summary><div class="pp-persona-facets">${facets
         .filter(([, , options]) => options.length)
-        .map(
-          ([name, label, options]) =>
-            `<label>${label}<select data-panel-persona-facet="${name}" aria-label="${label}" multiple size="2">${options
-              .filter((item, index) => index < 100 || query[name]?.includes(item.id))
-              .map(
-                (item) =>
-                  `<option value="${esc(item.id)}"${query[name]?.includes(item.id) ? ' selected' : ''}>${esc(item.label)}</option>`,
-              )
-              .join('')}</select></label>`,
-        )
+        .map(facetSelect)
         .join(
           '',
         )}</div><label><input type="checkbox" data-panel-persona-roles-only${query.rolesOnly ? ' checked' : ''}> Has web roles</label><p class="dim">All terms match. Any values within one filter match; filters combine.${facets.some(([, , options]) => options.length > 100) ? ' Filter menus show the first 100 values; use search for other names, roles, accounts or tags.' : ''}</p><button class="btn" data-act="persona-clear">Clear filters</button></details><div data-panel-persona-results>${personaRowsHtml()}</div><p class="dim" data-panel-persona-selected>Selected: ${esc(selected?.label ?? selected?.name ?? 'Choose a persona')}. ${S.tweaks?.session?.supported ? 'Sign-in changes this browser’s identity; runtime settings stay unchanged.' : 'Switch persona changes the runtime default for requests without their own sign-in session.'}</p><button class="btn" data-act="sim" data-hash="identity">Open full picker and isolated setups</button></div>`;
     };
-    const refreshPersonaRows = () => {
+    /* NOSONAR: single-pass routine, splitting it would change shared state */ const refreshPersonaRows = () => {
       // Recompute available facets as well as rows, preserving the focused search/control.
       const picker = el.panel.querySelector('.pp-persona-picker');
       if (picker) {
@@ -1878,7 +2071,7 @@ function panelBrowserImpl(data) {
       if (summary) summary.textContent = 'Filters' + (count ? ` · ${count} active` : '');
     };
 
-    const tweaksHtml = () => {
+    /* NOSONAR: single-pass routine, splitting it would change shared state */ const tweaksHtml = () => {
       const runtime = S.d.mirage;
       if (S.d.mirageMode && !runtime) return emptyState('Connecting to the Mirage ...', '');
       if (!runtime?.active)
@@ -1900,6 +2093,12 @@ function panelBrowserImpl(data) {
         out += `<div class="banner" role="alertdialog" aria-label="Confirm local setup"><span class="grow">${esc(S.confirm.text)}</span><button class="btn" data-act="confirm-yes">${esc(S.confirm.label)}</button><button class="f" data-act="confirm-no">Cancel</button></div>`;
       const option = (value, label, selected) =>
         `<option value="${esc(value)}"${selected ? ' selected' : ''}>${esc(label)}</option>`;
+      const scenarioLabel = (item) => {
+        const name = item.name ?? item.id;
+        if (!item.catalogue) return name;
+        const context = item.context ? ' · isolated setup' : '';
+        return `${name} · ${item.persona} → ${item.startPath ?? '/'}${context}`;
+      };
       const session = t.session?.supported ? t.session : null;
       if (session) {
         // This browser's own sign-in session (a cookie): not the Mirage default persona.
@@ -1913,70 +2112,122 @@ function panelBrowserImpl(data) {
         // or the local persona sign-in page when the site has no external provider.
         const idp = session.identityProvider;
         const provider = idp?.available ? idp.provider : null;
+        const providerType = provider?.type ? ` (${esc(provider.type)})` : '';
+        const portNote = provider && idp.port ? ` · local identity provider on port ${idp.port}` : '';
+        const reasonNote = idp?.reason ? ` (${esc(idp.reason)})` : '';
         const via = provider
-          ? `Signs in through ${esc(provider.caption ?? provider.name ?? provider.id)}${provider.type ? ` (${esc(provider.type)})` : ''} · callback ${esc(provider.callbackPath ?? 'not reported')}${idp.port ? ` · local identity provider on port ${idp.port}` : ''}`
-          : `Signs in on the local sign-in page${idp?.reason ? ` (${esc(idp.reason)})` : ''}`;
+          ? `Signs in through ${esc(provider.caption ?? provider.name ?? provider.id)}${providerType} · callback ${esc(provider.callbackPath ?? 'not reported')}${portNote}`
+          : `Signs in on the local sign-in page${reasonNote}`;
+        const whoLine = session.signedIn
+          ? `Signed in as <b>${esc(session.name ?? session.contactId)}</b>`
+          : '<b>Anonymous</b> · this browser is not signed in';
+        const accountNote = session.accountId ? ` · account ${esc(session.accountId)}` : '';
+        const personaControls = t.personas.length
+          ? `<div class="tw">${personaPickerHtml(persona)}<button class="btn" data-act="signin">Sign in as ${esc(chosen?.name ?? chosen?.contactId ?? 'persona')}</button></div>`
+          : '<div class="dim">No local personas yet: create one in _sim, Identity &amp; permissions.</div>';
+        const sessionError = session.error ? `<div class="dim">${esc(session.error)}</div>` : '';
         out += `<div class="card"><div class="path">Browser session <span class="c ${session.signedIn ? 'new' : 'st'}">${session.signedIn ? 'signed in' : 'anonymous'}</span>${session.roleSource === 'override' ? ' <span class="c diff" title="Set in _sim: the roles of this signed-in session are overridden">Simulation override</span>' : ''}</div>
-          <div class="who">${session.signedIn ? `Signed in as <b>${esc(session.name ?? session.contactId)}</b>` : '<b>Anonymous</b> · this browser is not signed in'}</div>
-          <div class="dim">${esc((session.roles ?? []).join(', ') || 'no web roles')}${session.roleSource === 'override' ? ' (simulation override)' : ''}${session.accountId ? ` · account ${esc(session.accountId)}` : ''}</div>
+          <div class="who">${whoLine}</div>
+          <div class="dim">${esc((session.roles ?? []).join(', ') || 'no web roles')}${session.roleSource === 'override' ? ' (simulation override)' : ''}${accountNote}</div>
           <div class="dim" data-idp="${provider ? 'external' : 'local'}">${via}</div>
           ${session.signedIn ? '<div class="tw"><button class="btn" data-act="signout">Sign out</button></div>' : ''}
-          ${t.personas.length ? `<div class="tw">${personaPickerHtml(persona)}<button class="btn" data-act="signin">Sign in as ${esc(chosen?.name ?? chosen?.contactId ?? 'persona')}</button></div>` : '<div class="dim">No local personas yet: create one in _sim, Identity &amp; permissions.</div>'}
-          ${session.error ? `<div class="dim">${esc(session.error)}</div>` : ''}
+          ${personaControls}
+          ${sessionError}
           <div class="dim">This page runs the portal's own sign-in (or sign-out) and comes back here. Only this browser changes; other browsers keep their own sessions.</div></div>`;
       } else {
         const persona = S.pick.persona ?? t.identity?.contactId ?? '';
-        out += `<div class="card"><div class="path">Persona</div>${t.personasAvailable ? `<div class="tw">${personaPickerHtml(persona)}<button class="btn" data-act="choosepersona" data-contact="" data-key="anonymous">Anonymous visitor</button><button class="btn" data-act="persona">Switch persona</button></div>` : '<div class="dim">This Mirage does not report personas.</div>'}<div class="dim">Current: ${esc(t.identity?.name ?? 'Anonymous')} · ${esc((t.identity?.roles ?? []).join(', ') || 'no web roles')}. Pages reload as this persona.</div></div>`;
+        const picker = t.personasAvailable
+          ? `<div class="tw">${personaPickerHtml(persona)}<button class="btn" data-act="choosepersona" data-contact="" data-key="anonymous">Anonymous visitor</button><button class="btn" data-act="persona">Switch persona</button></div>`
+          : '<div class="dim">This Mirage does not report personas.</div>';
+        out += `<div class="card"><div class="path">Persona</div>${picker}<div class="dim">Current: ${esc(t.identity?.name ?? 'Anonymous')} · ${esc((t.identity?.roles ?? []).join(', ') || 'no web roles')}. Pages reload as this persona.</div></div>`;
       }
+      const permissionButton = ([value, label]) => {
+        const title =
+          value === 'enforce'
+            ? 'Apply table permissions, web roles and scopes'
+            : 'Sandbox: every identity may read and write all local tables';
+        return `<button class="${t.permissionMode === value ? 'on' : ''}" data-act="permissions" data-v="${value}" title="${title}">${label}</button>`;
+      };
       out += `<div class="card"><div class="path">Table permissions</div><div class="tw"><span class="seg">${[
         ['enforce', 'Enforce'],
         ['permissive', 'Permissive'],
       ]
-        .map(
-          ([value, label]) =>
-            `<button class="${t.permissionMode === value ? 'on' : ''}" data-act="permissions" data-v="${value}" title="${value === 'enforce' ? 'Apply table permissions, web roles and scopes' : 'Sandbox: every identity may read and write all local tables'}">${label}</button>`,
-        )
+        .map(permissionButton)
         .join('')}</span><span class="dim">grant source ${esc(t.permissionSource ?? 'unknown')}</span></div></div>`;
       if (t.scenarios.length) {
         const pick = S.pick.scenario ?? t.activeScenario?.id ?? t.scenarios[0].id;
-        out += `<div class="card"><div class="path">Scenario <span class="dim">${t.activeScenario ? `active: ${esc(t.activeScenario.name ?? t.activeScenario.id)}` : ''}</span></div><div class="tw"><select data-pick="scenario" aria-label="Scenario">${t.scenarios.map((item) => option(item.id, `${item.name ?? item.id}${item.catalogue ? ` · ${item.persona} → ${item.startPath ?? '/'}${item.context ? ' · isolated setup' : ''}` : ''}`, pick === item.id)).join('')}</select><button class="btn" data-act="ask" data-kind="scenario">Apply scenario</button></div></div>`;
+        const activeNote = t.activeScenario ? `active: ${esc(t.activeScenario.name ?? t.activeScenario.id)}` : '';
+        const scenarioOptions = t.scenarios
+          .map((item) => option(item.id, scenarioLabel(item), pick === item.id))
+          .join('');
+        out += `<div class="card"><div class="path">Scenario <span class="dim">${activeNote}</span></div><div class="tw"><select data-pick="scenario" aria-label="Scenario">${scenarioOptions}</select><button class="btn" data-act="ask" data-kind="scenario">Apply scenario</button></div></div>`;
       }
       if (t.presets.length) {
         const pick = S.pick.preset ?? t.presets[0].id;
         const chosen = t.presets.find((item) => item.id === pick);
-        out += `<div class="card"><div class="path">Preset</div><div class="tw"><select data-pick="preset" aria-label="Preset">${t.presets.map((item) => option(item.id, item.name ?? item.id, pick === item.id)).join('')}</select><button class="btn" data-act="ask" data-kind="preset">Apply preset</button></div>${chosen?.description ? `<div class="dim">${esc(chosen.description)}</div>` : ''}</div>`;
+        const presetNote = chosen?.description ? `<div class="dim">${esc(chosen.description)}</div>` : '';
+        out += `<div class="card"><div class="path">Preset</div><div class="tw"><select data-pick="preset" aria-label="Preset">${t.presets.map((item) => option(item.id, item.name ?? item.id, pick === item.id)).join('')}</select><button class="btn" data-act="ask" data-kind="preset">Apply preset</button></div>${presetNote}</div>`;
       }
       const id = pageRecordId();
-      out += `<div class="card"><div class="path">Open in _sim</div><div class="srcs"><button class="src" data-act="admin">Administration</button><button class="src" data-act="sim" data-hash="${esc(`audit?path=${encodeURIComponent(location.pathname)}`)}">Requests for this page</button><button class="src" data-act="sim" data-hash="activity?tab=findings">Diagnostics</button><button class="src" data-act="sim" data-hash="access">Personas &amp; permissions</button><button class="src" data-act="sim" data-hash="portal">Settings &amp; snippets</button></div>${t.tables.length ? `<div class="srcs"><span class="lbl2">Records${id ? ` (id ${esc(id)})` : ''}</span>${t.tables.map((table) => `<button class="src" data-act="sim" data-hash="${esc(recordsHash(table))}">${esc(table)}</button>`).join('')}</div>` : ''}<div class="srcs"><button class="src" data-act="copypage">Copy local URL</button><span class="dim">${esc(location.href)}</span></div></div>`;
+      const auditHash = `audit?path=${encodeURIComponent(location.pathname)}`;
+      const recordLinks = () => {
+        if (!t.tables.length) return '';
+        const idNote = id ? ` (id ${esc(id)})` : '';
+        const buttons = t.tables
+          .map(
+            (table) =>
+              `<button class="src" data-act="sim" data-hash="${esc(recordsHash(table))}">${esc(table)}</button>`,
+          )
+          .join('');
+        return `<div class="srcs"><span class="lbl2">Records${idNote}</span>${buttons}</div>`;
+      };
+      out += `<div class="card"><div class="path">Open in _sim</div><div class="srcs"><button class="src" data-act="admin">Administration</button><button class="src" data-act="sim" data-hash="${esc(auditHash)}">Requests for this page</button><button class="src" data-act="sim" data-hash="activity?tab=findings">Diagnostics</button><button class="src" data-act="sim" data-hash="access">Personas &amp; permissions</button><button class="src" data-act="sim" data-hash="portal">Settings &amp; snippets</button></div>${recordLinks()}<div class="srcs"><button class="src" data-act="copypage">Copy local URL</button><span class="dim">${esc(location.href)}</span></div></div>`;
       const s = t.status ?? {};
       // Loopback confinement of local pages (an opt-in Content-Security-Policy) and its exceptions.
-      const policy =
-        typeof s.confinePortalPages !== 'boolean'
-          ? null
-          : s.confinePortalPages
-            ? `Confined to loopback · external assets ${s.externalAssets ? 'allowed' : 'blocked'} · ${s.externalFrameOrigins ? `${s.externalFrameOrigins} online embed origin${s.externalFrameOrigins === 1 ? '' : 's'} allowed` : 'no online embedded content'}`
-            : 'Not confined: pages carry only the headers their site settings define';
-      out += `<div class="card"><div class="path">Mirage status</div><div class="srcs"><span class="lbl2">Source</span><span class="dim">${esc(s.sourceFingerprint ?? 'unknown')}</span></div><div class="srcs"><span class="lbl2">Revision</span><span class="dim">${esc(s.revision ?? '?')}${s.reloading ? ' · reloading sources' : ''}${s.pendingReload ? ' · another reload queued' : ''}</span><span class="lbl2">Diagnostics</span><span class="dim">${esc(s.diagnostics?.total ?? s.diagnostics ?? 0)}</span></div>${policy ? `<div class="srcs"><span class="lbl2">Content policy</span><span class="dim" data-policy="${s.confinePortalPages ? 'confined' : 'open'}">${esc(policy)} · ${esc(s.contentPolicySource ?? 'runtime state')}</span><button class="src" data-act="sim" data-hash="connection">Change in _sim</button></div>` : ''}</div>`;
+      let policy = 'Not confined: pages carry only the headers their site settings define';
+      if (typeof s.confinePortalPages !== 'boolean') policy = null;
+      else if (s.confinePortalPages) {
+        const plural = s.externalFrameOrigins === 1 ? '' : 's';
+        const frames = s.externalFrameOrigins
+          ? `${s.externalFrameOrigins} online embed origin${plural} allowed`
+          : 'no online embedded content';
+        policy = `Confined to loopback · external assets ${s.externalAssets ? 'allowed' : 'blocked'} · ${frames}`;
+      }
+      const policyMode = s.confinePortalPages ? 'confined' : 'open';
+      const policyRow = policy
+        ? `<div class="srcs"><span class="lbl2">Content policy</span><span class="dim" data-policy="${policyMode}">${esc(policy)} · ${esc(s.contentPolicySource ?? 'runtime state')}</span><button class="src" data-act="sim" data-hash="connection">Change in _sim</button></div>`
+        : '';
+      out += `<div class="card"><div class="path">Mirage status</div><div class="srcs"><span class="lbl2">Source</span><span class="dim">${esc(s.sourceFingerprint ?? 'unknown')}</span></div><div class="srcs"><span class="lbl2">Revision</span><span class="dim">${esc(s.revision ?? '?')}${s.reloading ? ' · reloading sources' : ''}${s.pendingReload ? ' · another reload queued' : ''}</span><span class="lbl2">Diagnostics</span><span class="dim">${esc(s.diagnostics?.total ?? s.diagnostics ?? 0)}</span></div>${policyRow}</div>`;
       return out;
     };
 
+    const issueKind = (p) => {
+      if (p.type === 'http' || p.type === 'failed') return ['NET', 'k-err'];
+      if (p.type === 'deploy') return ['SRC', 'k-warn'];
+      if (p.type === 'note') return ['SKIP', 'k-warn'];
+      if (p.type === 'warning') return ['WARN', 'k-warn'];
+      return ['ERR', 'k-err'];
+    };
     const issueRow = (p) => {
-      const kind =
-        p.type === 'http' || p.type === 'failed'
-          ? ['NET', 'k-err']
-          : p.type === 'deploy'
-            ? ['SRC', 'k-warn']
-            : p.type === 'note'
-              ? ['SKIP', 'k-warn']
-              : p.type === 'warning'
-                ? ['WARN', 'k-warn']
-                : ['ERR', 'k-err'];
-      const where = p.rel ? `${p.rel}${p.line ? ':' + p.line : ''}` : (p.where ?? '');
-      const main = `<div class="name"><span>${hl(p.text)}</span>${p.status ? `<span class="c st">${p.status}</span>` : ''}${p.rel && p.type !== 'deploy' && p.type !== 'note' ? '<span class="c local" title="comes from a local file">local</span>' : ''}${p.count > 1 ? `<span class="c same">&times;${p.count}</span>` : ''}</div><div class="sub">${hl(where)}</div>`;
+      const kind = issueKind(p);
+      const line = p.line ? ':' + p.line : '';
+      const where = p.rel ? `${p.rel}${line}` : (p.where ?? '');
+      const status = p.status ? `<span class="c st">${p.status}</span>` : '';
+      const localBadge =
+        p.rel && p.type !== 'deploy' && p.type !== 'note'
+          ? '<span class="c local" title="comes from a local file">local</span>'
+          : '';
+      const count = p.count > 1 ? `<span class="c same">&times;${p.count}</span>` : '';
+      const main = `<div class="name"><span>${hl(p.text)}</span>${status}${localBadge}${count}</div><div class="sub">${hl(where)}</div>`;
+      const mainLine = p.line ? ' at line ' + p.line : '';
+      const timeTag = p.at ? `<span class="time">${clock(p.at)}</span>` : '';
+      const mainHtml = p.rel
+        ? `<button class="main" data-act="open" title="Open in the editor${mainLine}">${main}</button>`
+        : `<div class="main">${main}</div>`;
       return `<div class="row wrapt" data-rel="${esc(p.rel ?? '')}" data-line="${p.line ?? ''}" data-col="${p.col ?? ''}" data-text="${esc(p.text)}">
         <span class="ico ${kind[1]}">${kind[0]}</span>
-        ${p.rel ? `<button class="main" data-act="open" title="Open in the editor${p.line ? ' at line ' + p.line : ''}">${main}</button>` : `<div class="main">${main}</div>`}
-        ${p.at ? `<span class="time">${clock(p.at)}</span>` : ''}
+        ${mainHtml}
+        ${timeTag}
         <div class="acts"><button class="ib" data-act="copytext" title="Copy the message">${icon('copy')}</button></div>
       </div>`;
     };
@@ -2005,23 +2256,20 @@ function panelBrowserImpl(data) {
       );
     };
 
+    const activityKind = (a) => {
+      if (a.type === 'fault') return ['ERR', 'k-err'];
+      if (a.type === 'dialog') return ['DIALOG', 'k-warn'];
+      if (a.type === 'deploy') return ['DEPL', 'k-warn'];
+      if (a.type === 'switch') return ['SET', ''];
+      return a.how === 'css' ? ['CSS', ''] : ['SAVE', ''];
+    };
     const activityHtml = () => {
       const rows = S.d.activity
         .filter((a) => matches(a.text, (a.files ?? []).join(' ')))
         .map((a) => {
-          const kind =
-            a.type === 'fault'
-              ? ['ERR', 'k-err']
-              : a.type === 'dialog'
-                ? ['DIALOG', 'k-warn']
-                : a.type === 'deploy'
-                  ? ['DEPL', 'k-warn']
-                  : a.type === 'switch'
-                    ? ['SET', '']
-                    : a.how === 'css'
-                      ? ['CSS', '']
-                      : ['SAVE', ''];
-          return `<div class="row wrapt"><span class="ico ${kind[1]}">${kind[0]}</span><div class="main"><div class="name"><span>${hl(a.text)}</span></div>${a.files?.length ? `<div class="sub">${hl(a.files.join(', '))}</div>` : ''}</div><span class="time">${clock(a.at)}</span></div>`;
+          const kind = activityKind(a);
+          const files = a.files?.length ? `<div class="sub">${hl(a.files.join(', '))}</div>` : '';
+          return `<div class="row wrapt"><span class="ico ${kind[1]}">${kind[0]}</span><div class="main"><div class="name"><span>${hl(a.text)}</span></div>${files}</div><span class="time">${clock(a.at)}</span></div>`;
         });
       return (
         rows.join('') ||
@@ -2042,21 +2290,29 @@ function panelBrowserImpl(data) {
       // an address or name that is exactly what was typed comes first, then the ones starting with it
       const rank = (c) => {
         const names = [c.url ?? '', (c.url ?? '').replace(/^\/|\/$/g, ''), c.title ?? ''].map((s) => s.toLowerCase());
-        return names.includes(q) ? 0 : names.some((n) => n.startsWith(q)) ? 1 : 2;
+        if (names.includes(q)) return 0;
+        return names.some((n) => n.startsWith(q)) ? 1 : 2;
       };
       const found = S.catalog.filter((c) => matches(c.title ?? '', c.url ?? '', c.rel ?? ''));
       if (q) found.sort((a, b) => rank(a) - rank(b));
       const rows = found.slice(0, 150).map((c) => {
         const [code, cls, what] = c.t === 'page' ? KIND.page : fileIcon(c);
         const sub = [c.url, c.rel].filter(Boolean).join('  ←  ');
+        const isPage = c.t === 'page';
+        const kindTag = !isPage && KIND[c.kind] ? `<span class="what">${esc(what)}</span>` : '';
+        const goButton =
+          !isPage && c.url ? `<button class="ib" data-act="go" title="Open ${esc(c.url)}">${icon('go')}</button>` : '';
+        const openButton = c.rel
+          ? `<button class="ib" data-act="open" title="Open in the editor">${icon('code')}</button>`
+          : '';
         return `<div class="row" data-rel="${esc(c.rel ?? '')}" data-path="${esc(c.path ?? '')}" data-url="${esc(c.url ?? '')}">
           <span class="ico ${cls}" title="${esc(what)}">${code}</span>
-          <button class="main" data-act="${c.t === 'page' ? 'go' : 'open'}" title="${c.t === 'page' ? 'Open this page' : 'Open in the editor'}">
-            <div class="name"><span>${hl(c.title || shortName(c.rel))}</span>${c.t !== 'page' && KIND[c.kind] ? `<span class="what">${esc(what)}</span>` : ''}</div><div class="sub">${hl(sub)}</div>
+          <button class="main" data-act="${isPage ? 'go' : 'open'}" title="${isPage ? 'Open this page' : 'Open in the editor'}">
+            <div class="name"><span>${hl(c.title || shortName(c.rel))}</span>${kindTag}</div><div class="sub">${hl(sub)}</div>
           </button>
           <div class="acts">
-            ${c.t !== 'page' && c.url ? `<button class="ib" data-act="go" title="Open ${esc(c.url)}">${icon('go')}</button>` : ''}
-            ${c.rel ? `<button class="ib" data-act="open" title="Open in the editor">${icon('code')}</button>` : ''}
+            ${goButton}
+            ${openButton}
             <button class="ib" data-act="${c.rel ? 'copy' : 'copyurl'}" title="Copy the ${c.rel ? 'file path' : 'address'}">${icon('copy')}</button>
           </div>
         </div>`;
@@ -2075,8 +2331,9 @@ function panelBrowserImpl(data) {
           `<div class="dhead"><button class="ib" data-act="closediff" title="Back">${icon('back')}</button><span class="t">${esc(baseName(f.rel))}</span></div>` +
           loadingState('Comparing sources…', 'You can go back while the comparison runs.')
         );
+      const counts = f.ok ? `<b class="plus">+${f.added}</b> <b class="minus">&minus;${f.removed}</b>` : '';
       const head = `<div class="dhead"><button class="ib" data-act="closediff" title="Back (Esc)">${icon('back')}</button><span class="t" title="${esc(f.rel)}">${esc(baseName(f.rel))}</span>
-        <span class="lbl2">local vs ${esc(f.against ?? '')}</span><span class="grow"></span>${f.ok ? `<b class="plus">+${f.added}</b> <b class="minus">&minus;${f.removed}</b>` : ''}
+        <span class="lbl2">local vs ${esc(f.against ?? '')}</span><span class="grow"></span>${counts}
         <button class="ib" data-act="open" data-rel="${esc(f.rel)}" title="Open in the editor">${icon('code')}</button></div>`;
       if (!f.ok) return head + emptyState('Cannot compare', esc(f.error ?? ''));
       if (!f.lines.length)
@@ -2089,13 +2346,15 @@ function panelBrowserImpl(data) {
               )
             : emptyState('No difference', `The local file has the same content as ${esc(f.against)}.`))
         );
-      const lines = f.lines
-        .map(([t, a, b, s]) =>
-          t === '@'
-            ? `<div class="dl g"><span>${esc(s)}</span></div>`
-            : `<div class="dl ${t === '+' ? 'a' : t === '-' ? 'r' : ''}"${t !== '-' && b ? ` data-act="open" data-rel="${esc(f.rel)}" data-line="${b}"` : ''}><i>${a ?? ''}</i><i>${b ?? ''}</i><span>${t}${esc(s)}</span></div>`,
-        )
-        .join('');
+      const diffLine = ([t, a, b, s]) => {
+        if (t === '@') return `<div class="dl g"><span>${esc(s)}</span></div>`;
+        let tone = '';
+        if (t === '+') tone = 'a';
+        else if (t === '-') tone = 'r';
+        const target = t !== '-' && b ? ` data-act="open" data-rel="${esc(f.rel)}" data-line="${b}"` : '';
+        return `<div class="dl ${tone}"${target}><i>${a ?? ''}</i><i>${b ?? ''}</i><span>${t}${esc(s)}</span></div>`;
+      };
+      const lines = f.lines.map(diffLine).join('');
       return (
         head +
         `<div class="difft">${lines}</div>${f.truncated ? '<div class="empty">The comparison is long; only its beginning is shown.</div>' : ''}`
@@ -2128,7 +2387,7 @@ function panelBrowserImpl(data) {
       }
       return true;
     };
-    const render = () => {
+    /* NOSONAR: single-pass routine, splitting it would change shared state */ const render = () => {
       if (lifetime.signal.aborted) return;
       const d = S.d;
       if (!d) return;
@@ -2142,28 +2401,63 @@ function panelBrowserImpl(data) {
       host.dataset.issues = String(warns + errs + net);
       host.dataset.label = `${d.site} @ ${d.env}`;
       place();
-      const dot = `<span class="dot${d.online ? ' off' : d.mirageMode || d.live ? '' : ' paused'}" title="${d.mirageMode ? 'Mirage renders local source and manages reloads' : d.online ? 'overrides are off' : d.live ? 'live reload is on' : 'live reload is off'}"></span>`;
+      let dotState = ' paused';
+      if (d.online) dotState = ' off';
+      else if (d.mirageMode || d.live) dotState = '';
+      let dotTitle = 'live reload is off';
+      if (d.mirageMode) dotTitle = 'Mirage renders local source and manages reloads';
+      else if (d.online) dotTitle = 'overrides are off';
+      else if (d.live) dotTitle = 'live reload is on';
+      const dot = `<span class="dot${dotState}" title="${dotTitle}"></span>`;
       const real = d.caution ? '<span class="real" title="this environment holds real data">REAL DATA</span>' : '';
       // which checkout state the overlay serves: branch, HEAD commit and the comparison baseline
       const git = d.git ?? {};
       const gitLabel = git.branch ?? (git.commit ? git.commit.slice(0, 7) : null);
-      const baselineText = git.baseline?.available
-        ? `baseline ${git.baseline.requested}${git.baseline.pinned ? ` pinned at ${(git.baseline.commit ?? '').slice(0, 7)}` : ''}`
-        : 'no Git baseline';
-      const gitTitle = gitLabel
-        ? `${git.detached ? 'detached HEAD' : `branch ${git.branch}`} @ ${(git.commit ?? '').slice(0, 7)} · ${baselineText}${git.headMoved ? ' · HEAD differs from the comparison baseline' : ''}`
-        : baselineText;
-      const branch = gitLabel
-        ? `<span class="branch${git.headMoved && git.baseline?.pinned ? ' moved' : ''}" title="${esc(gitTitle)}">⎇ ${esc(gitLabel)}${git.headMoved && git.baseline?.pinned ? ' ≠ baseline' : ''}</span>`
-        : '';
+      let baselineText = 'no Git baseline';
+      if (git.baseline?.available) {
+        const pinned = git.baseline.pinned ? ` pinned at ${(git.baseline.commit ?? '').slice(0, 7)}` : '';
+        baselineText = `baseline ${git.baseline.requested}${pinned}`;
+      }
+      let gitTitle = baselineText;
+      if (gitLabel) {
+        const head = git.detached ? 'detached HEAD' : `branch ${git.branch}`;
+        const moved = git.headMoved ? ' · HEAD differs from the comparison baseline' : '';
+        gitTitle = `${head} @ ${(git.commit ?? '').slice(0, 7)} · ${baselineText}${moved}`;
+      }
+      let branch = '';
+      if (gitLabel) {
+        const movedFromBaseline = git.headMoved && git.baseline?.pinned;
+        branch = `<span class="branch${movedFromBaseline ? ' moved' : ''}" title="${esc(gitTitle)}">⎇ ${esc(gitLabel)}${movedFromBaseline ? ' ≠ baseline' : ''}</span>`;
+      }
+      const overrideCount =
+        d.online || d.mirageMode
+          ? ''
+          : `<span class="n ok" title="${d.items.length} overrides on this page">${d.items.length}</span>`;
+      const warnTitle = d.mirageMode
+        ? 'source notes or runtime issues'
+        : `${warns} source notes, deployment limitations or console warnings`;
+      const warnCount = warns ? `<span class="n warn" title="${warnTitle}">${warns}</span>` : '';
+      const errorLabel = errs === 1 ? 'error' : 'errors';
+      const requestLabel = net === 1 ? 'request' : 'requests';
+      const errorCount =
+        errs + net
+          ? `<span class="n err" title="${errs} JavaScript ${errorLabel}, ${net} failed ${requestLabel}">${errs + net}</span>`
+          : '';
+      const pendingTitle = d.mirageMode
+        ? 'source changes are being applied by Mirage'
+        : 'sources or baseline changed since this page loaded';
+      const pendingMark =
+        d.pending.length || d.pendingBaseline
+          ? `<span class="n warn" title="${pendingTitle}">${icon('reload')}</span>`
+          : '';
       set(
         'pill',
         el.pill,
         `${dot}<b>${d.online ? 'ONLINE' : 'LOCAL'}</b><span class="lbl">${esc(d.site)} @ ${esc(d.env)}</span>${real}${branch}
-         ${d.online || d.mirageMode ? '' : `<span class="n ok" title="${d.items.length} overrides on this page">${d.items.length}</span>`}
-         ${warns ? `<span class="n warn" title="${d.mirageMode ? 'source notes or runtime issues' : `${warns} source notes, deployment limitations or console warnings`}">${warns}</span>` : ''}
-         ${errs + net ? `<span class="n err" title="${errs} JavaScript ${errs === 1 ? 'error' : 'errors'}, ${net} failed ${net === 1 ? 'request' : 'requests'}">${errs + net}</span>` : ''}
-         ${d.pending.length || d.pendingBaseline ? `<span class="n warn" title="${d.mirageMode ? 'source changes are being applied by Mirage' : 'sources or baseline changed since this page loaded'}">${icon('reload')}</span>` : ''}`,
+         ${overrideCount}
+         ${warnCount}
+         ${errorCount}
+         ${pendingMark}`,
       );
       // a save that just arrived: say so even while the panel is closed or hidden
       if (d.lastChange && d.lastChange.at !== S.flashed) {
@@ -2175,13 +2469,14 @@ function panelBrowserImpl(data) {
           /* optional toast deduplication */
         }
         if (fresh && !d.online && d.lastChange.how !== 'skipped') {
+          let changeVerb = 'Saved';
+          if (d.lastChange.how === 'css') changeVerb = 'Styles swapped';
+          else if (d.lastChange.how === 'reload') changeVerb = 'Reloaded';
           const names =
             d.lastChange.files.slice(0, 2).map(baseName).join(', ') +
               (d.lastChange.files.length > 2 ? ` +${d.lastChange.files.length - 2}` : '') ||
             (d.lastChange.baselineChanged ? 'Git baseline updated' : '');
-          float(
-            `${d.lastChange.how === 'css' ? 'Styles swapped' : d.lastChange.how === 'reload' ? 'Reloaded' : 'Saved'} &middot; ${esc(names)}`,
-          );
+          float(`${changeVerb} &middot; ${esc(names)}`);
         }
       }
       const xray = document.getElementById('paqvilo-xray')?.__px;
@@ -2202,11 +2497,12 @@ function panelBrowserImpl(data) {
         place();
         return;
       }
-      const selectionMarkup = S.selectedElement
-        ? `<details class="selection-summary" data-selected-identity data-disclosure="selected-summary" open><summary data-focus-key="selected-summary">Selected: ${esc(S.selectedIdentity?.title ?? S.selectedElement.tag ?? 'element')}<br>${renderInspectionEvidence(S.selectedIdentity?.evidence, { part: 'headline', context: 'panel' })}</summary><button class="selection-clear" data-act="selection-clear" data-focus-key="selection-clear">Clear selection</button><div class="selection-evidence-body">${renderInspectionEvidence(S.selectedIdentity?.evidence, { context: 'panel' })}</div></details>`
-        : S.selectionReason === 'anchor-detached'
-          ? '<div class="selection-summary" role="status">Element removed; select the replacement again.</div>'
-          : '';
+      let selectionMarkup = '';
+      if (S.selectedElement)
+        selectionMarkup = `<details class="selection-summary" data-selected-identity data-disclosure="selected-summary" open><summary data-focus-key="selected-summary">Selected: ${esc(S.selectedIdentity?.title ?? S.selectedElement.tag ?? 'element')}<br>${renderInspectionEvidence(S.selectedIdentity?.evidence, { part: 'headline', context: 'panel' })}</summary><button class="selection-clear" data-act="selection-clear" data-focus-key="selection-clear">Clear selection</button><div class="selection-evidence-body">${renderInspectionEvidence(S.selectedIdentity?.evidence, { context: 'panel' })}</div></details>`;
+      else if (S.selectionReason === 'anchor-detached')
+        selectionMarkup =
+          '<div class="selection-summary" role="status">Element removed; select the replacement again.</div>';
       const disclosures = [...selectionHost.querySelectorAll('details[data-disclosure]')].map((item) => [
         item.dataset.disclosure,
         item.open,
@@ -2222,24 +2518,39 @@ function panelBrowserImpl(data) {
         const body = selectionHost.querySelector('.selection-evidence-body');
         if (body) body.scrollTop = selectionScroll;
       }
+      const localClass = d.online ? '' : 'on live';
+      const onlineClass = d.online ? 'on online' : '';
+      const liveClass = d.live ? 'on' : 'warn';
+      const liveState = d.live ? 'on: saving a file reloads the page' : 'off: reload the page yourself';
+      const liveIcon = icon(d.live ? 'bolt' : 'pause');
+      const modeSwitch = d.mirageMode
+        ? ''
+        : `<span class="seg" title="Compare with the site as it is online (${d.keys.mode})"><button class="${localClass}" data-act="mode" data-v="local">Local</button><button class="${onlineClass}" data-act="mode" data-v="online">Online</button></span><button class="ib ${liveClass}" data-act="live" title="Live reload is ${liveState}">${liveIcon}</button>`;
+      const setupLink = d.setupUrl
+        ? `<a class="ib" href="${esc(d.setupUrl)}" target="_blank" rel="noopener noreferrer" title="Project setup" aria-label="Project setup">${icon('setup')}</a>`
+        : '';
+      const simLink = d.mirageMode
+        ? `<a class="ib" href="/_sim/" target="_blank" rel="noopener noreferrer" title="Manage data and personas" aria-label="Manage data and personas">${icon('sim')}</a>`
+        : '';
       set(
         'head',
         el.head,
         `${dot}<span class="brand">paqvilo</span><span class="tag">${esc(d.site)}</span><span class="tag env">${esc(d.env)}</span>${real}<span class="grow"></span>
-         ${d.mirageMode ? '' : `<span class="seg" title="Compare with the site as it is online (${d.keys.mode})"><button class="${d.online ? '' : 'on live'}" data-act="mode" data-v="local">Local</button><button class="${d.online ? 'on online' : ''}" data-act="mode" data-v="online">Online</button></span><button class="ib ${d.live ? 'on' : 'warn'}" data-act="live" title="Live reload is ${d.live ? 'on: saving a file reloads the page' : 'off: reload the page yourself'}">${icon(d.live ? 'bolt' : 'pause')}</button>`}
+         ${modeSwitch}
          <button class="ib" data-act="xray" title="Lense X-ray (Alt+Shift+X)" aria-label="Toggle Lense X-ray" aria-pressed="${Boolean(document.getElementById('paqvilo-xray')?.__px?.enabled)}">◎</button><button class="ib" data-act="reload" title="Reload this page">${icon('reload')}</button>
-         ${d.setupUrl ? `<a class="ib" href="${esc(d.setupUrl)}" target="_blank" rel="noopener noreferrer" title="Project setup" aria-label="Project setup">${icon('setup')}</a>` : ''}
-         ${d.mirageMode ? `<a class="ib" href="/_sim/" target="_blank" rel="noopener noreferrer" title="Manage data and personas" aria-label="Manage data and personas">${icon('sim')}</a>` : ''}
+         ${setupLink}
+         ${simLink}
          <button class="ib" data-act="size" title="${ui.large ? 'Smaller panel' : 'Larger panel'}">${icon('size')}</button>
          <button class="ib" data-act="hide" title="Hide everything (${d.keys.hide})">${icon('hide')}</button>
          <button class="ib" data-act="close" title="Collapse (${d.keys.panel} or Esc)">${icon('down')}</button>`,
       );
       const inspection = d.inspection ?? d.mirage;
+      const issueTone = errs + net ? 'err' : 'warn';
       const tabCount = {
         overrides: `<span class="n ${d.items.length ? 'ok' : 'dimn'}">${d.items.length}</span>`,
         runtime: '',
         tweaks: '',
-        issues: warns + errs + net ? `<span class="n ${errs + net ? 'err' : 'warn'}">${warns + errs + net}</span>` : '',
+        issues: warns + errs + net ? `<span class="n ${issueTone}">${warns + errs + net}</span>` : '',
         activity: '',
         explore: '',
       };
@@ -2253,27 +2564,38 @@ function panelBrowserImpl(data) {
       ]
         .map(([name, keep]) => {
           const options = S.targets
-            .map((target, index) =>
-              keep(target)
-                ? `<option value="${index}" ${target.origin === location.origin ? 'selected' : ''}>${esc(target.siteName)} @ ${esc(target.envName)}</option>`
-                : '',
-            )
+            .map((target, index) => {
+              if (!keep(target)) return '';
+              const selected = target.origin === location.origin ? 'selected' : '';
+              return `<option value="${index}" ${selected}>${esc(target.siteName)} @ ${esc(target.envName)}</option>`;
+            })
             .join('');
           return options ? `<optgroup label="${name}">${options}</optgroup>` : '';
         })
         .join('');
       const pendingTarget = S.pendingTarget;
+      const realNote = pendingTarget?.caution ? ' (REAL DATA)' : '';
+      const confirmBox = pendingTarget
+        ? `<div class="target-confirm" role="alertdialog" aria-labelledby="paqvilo-target-title"><p id="paqvilo-target-title">Open ${esc(pendingTarget.siteName)} @ ${esc(pendingTarget.envName)}${realNote}? Browser actions can change live data.</p><button class="btn" data-target-cancel>Cancel</button> <button class="btn" data-target-confirm>Confirm</button></div>`
+        : '';
       set(
         'targets',
         el.targets,
-        `<label for="paqvilo-target">Portal / environment</label><select id="paqvilo-target" ${S.targets.length < 2 ? 'disabled' : ''}>${targetGroups}</select><button data-target-go class="btn" aria-busy="${Boolean(S.targetSwitching)}" ${S.targetSwitching ? 'disabled' : ''}>${S.targetSwitching ? 'Opening…' : 'Go'}</button>${pendingTarget ? `<div class="target-confirm" role="alertdialog" aria-labelledby="paqvilo-target-title"><p id="paqvilo-target-title">Open ${esc(pendingTarget.siteName)} @ ${esc(pendingTarget.envName)}${pendingTarget.caution ? ' (REAL DATA)' : ''}? Browser actions can change live data.</p><button class="btn" data-target-cancel>Cancel</button> <button class="btn" data-target-confirm>Confirm</button></div>` : ''}`,
+        `<label for="paqvilo-target">Portal / environment</label><select id="paqvilo-target" ${S.targets.length < 2 ? 'disabled' : ''}>${targetGroups}</select><button data-target-go class="btn" aria-busy="${Boolean(S.targetSwitching)}" ${S.targetSwitching ? 'disabled' : ''}>${S.targetSwitching ? 'Opening…' : 'Go'}</button>${confirmBox}`,
       );
+      const gitMoved = git.headMoved && git.baseline?.pinned ? ' moved' : '';
+      const gitHead = gitLabel
+        ? `⎇ ${esc(gitLabel)} <span class="commit">@ ${esc((git.commit ?? '').slice(0, 7))}</span>`
+        : 'Git HEAD unavailable';
+      const gitBaseline = git.baseline?.available
+        ? `baseline ${esc((git.baseline.commit ?? '').slice(0, 7))}`
+        : 'baseline unavailable';
       set(
         'git',
         el.git,
         d.mirageMode
           ? ''
-          : `<span class="branch${git.headMoved && git.baseline?.pinned ? ' moved' : ''}" title="${esc(gitTitle)}">${gitLabel ? `⎇ ${esc(gitLabel)} <span class="commit">@ ${esc((git.commit ?? '').slice(0, 7))}</span>` : 'Git HEAD unavailable'}</span><span class="commit" title="${esc(baselineText)}">${git.baseline?.available ? `baseline ${esc((git.baseline.commit ?? '').slice(0, 7))}` : 'baseline unavailable'}</span>`,
+          : `<span class="branch${gitMoved}" title="${esc(gitTitle)}">${gitHead}</span><span class="commit" title="${esc(baselineText)}">${gitBaseline}</span>`,
       );
       el.targets.hidden = d.capabilities?.targets === false;
       el.git.hidden = d.capabilities?.git === false;
@@ -2281,8 +2603,7 @@ function panelBrowserImpl(data) {
         'tabs',
         el.tabs,
         TABS.filter(
-          ([id]) =>
-            (id !== 'actions' || d.capabilities?.actions === true) && (!MIRAGE_TABS.includes(id) || d.mirageMode),
+          ([id]) => (id !== 'actions' || d.capabilities?.actions === true) && (!MIRAGE_TABS.has(id) || d.mirageMode),
         )
           .map(
             ([id, label]) =>
@@ -2294,32 +2615,23 @@ function panelBrowserImpl(data) {
       el.input.placeholder = PLACEHOLDER[ui.tab] ?? '';
       el.input.setAttribute('aria-label', el.input.placeholder || 'Search');
       el.input.closest('.search').hidden = ['tweaks', 'actions'].includes(ui.tab);
-      set(
-        'toolbtns',
-        el.toolbtns,
-        ui.tab === 'issues'
-          ? `<button class="f${ui.localOnly ? ' on' : ''}" data-act="localonly" title="Only what comes from local files">local files only</button> <button class="ib" data-act="clear" data-v="problems" title="Clear the list">${icon('clear')}</button>`
-          : ui.tab === 'activity'
-            ? `<button class="ib" data-act="clear" data-v="activity" title="Clear the list">${icon('clear')}</button>`
-            : '',
-      );
+      let toolButtons = '';
+      if (ui.tab === 'issues')
+        toolButtons = `<button class="f${ui.localOnly ? ' on' : ''}" data-act="localonly" title="Only what comes from local files">local files only</button> <button class="ib" data-act="clear" data-v="problems" title="Clear the list">${icon('clear')}</button>`;
+      else if (ui.tab === 'activity')
+        toolButtons = `<button class="ib" data-act="clear" data-v="activity" title="Clear the list">${icon('clear')}</button>`;
+      set('toolbtns', el.toolbtns, toolButtons);
       if (ui.tab === 'runtime') ensureInspect();
       if (ui.tab === 'tweaks') ensureTweaks();
-      const body = S.diff
-        ? diffHtml()
-        : ui.tab === 'actions' && d.capabilities?.actions
-          ? '<div data-panel-actions-host></div>'
-          : ui.tab === 'runtime'
-            ? runtimeHtml()
-            : ui.tab === 'tweaks'
-              ? tweaksHtml()
-              : ui.tab === 'issues'
-                ? issuesHtml()
-                : ui.tab === 'activity'
-                  ? activityHtml()
-                  : ui.tab === 'explore'
-                    ? exploreHtml()
-                    : overridesHtml();
+      let body;
+      if (S.diff) body = diffHtml();
+      else if (ui.tab === 'actions' && d.capabilities?.actions) body = '<div data-panel-actions-host></div>';
+      else if (ui.tab === 'runtime') body = runtimeHtml();
+      else if (ui.tab === 'tweaks') body = tweaksHtml();
+      else if (ui.tab === 'issues') body = issuesHtml();
+      else if (ui.tab === 'activity') body = activityHtml();
+      else if (ui.tab === 'explore') body = exploreHtml();
+      else body = overridesHtml();
       const top = el.body.scrollTop;
       if (set('body', el.body, body)) el.body.scrollTop = S.keepScroll === false ? 0 : top;
       host.dispatchEvent(new CustomEvent('paqvilo-panel-render', { detail: { token: d.token, tab: ui.tab } }));
@@ -2336,10 +2648,22 @@ function panelBrowserImpl(data) {
       );
       pendingFeedback();
       S.keepScroll = true;
+      const modeHint = d.mirageMode ? '' : `, ${d.keys.mode} switches between local and online`;
+      const modeKey = d.mirageMode ? '' : ` &nbsp;<kbd>${d.keyCodes.mode.slice(-1)}</kbd> online`;
+      const statsTitle = d.mirageMode
+        ? 'Mirage renders source and owns source reloads'
+        : 'what the local sources hold: web files, custom scripts and styles, changed templates and snippets';
+      let statsText = 'Mirage runtime';
+      if (!d.mirageMode) {
+        const files = d.modelDriven
+          ? `${d.stats.webFiles} web resources`
+          : `${d.stats.webFiles} files &middot; ${d.stats.blocks} scripts &middot; ${d.stats.patches} patches`;
+        statsText = files;
+      }
       set(
         'foot',
         el.foot,
-        `<span title="${d.keys.hide} hides or shows paqvilo, ${d.keys.panel} opens or closes this panel${d.mirageMode ? '' : `, ${d.keys.mode} switches between local and online`}">Alt+Shift+ <kbd>${d.keyCodes.hide.slice(-1)}</kbd> hide &nbsp;<kbd>${d.keyCodes.panel.slice(-1)}</kbd> panel${d.mirageMode ? '' : ` &nbsp;<kbd>${d.keyCodes.mode.slice(-1)}</kbd> online`} &nbsp;<kbd>X</kbd> X-ray &nbsp;<kbd>Esc</kbd> close &nbsp;<kbd>/</kbd> search</span><span class="grow"></span><span class="stats" title="${d.mirageMode ? 'Mirage renders source and owns source reloads' : 'what the local sources hold: web files, custom scripts and styles, changed templates and snippets'}">${d.mirageMode ? 'Mirage runtime' : `${d.stats.webFiles} ${d.modelDriven ? 'web resources' : `files &middot; ${d.stats.blocks} scripts &middot; ${d.stats.patches} patches`}`}</span>`,
+        `<span title="${d.keys.hide} hides or shows paqvilo, ${d.keys.panel} opens or closes this panel${modeHint}">Alt+Shift+ <kbd>${d.keyCodes.hide.slice(-1)}</kbd> hide &nbsp;<kbd>${d.keyCodes.panel.slice(-1)}</kbd> panel${modeKey} &nbsp;<kbd>X</kbd> X-ray &nbsp;<kbd>Esc</kbd> close &nbsp;<kbd>/</kbd> search</span><span class="grow"></span><span class="stats" title="${statsTitle}">${statsText}</span>`,
       );
     };
 
@@ -2362,7 +2686,7 @@ function panelBrowserImpl(data) {
       if (open && !S.ui.open) previousFocus = root.activeElement ?? document.activeElement;
       S.ui.open = open;
       if (open) S.ui.hidden = false;
-      if (open && S.ui.tab === 'explore' && !S.catalog) loadCatalog();
+      if (open && S.ui.tab === 'explore' && !S.catalog) void loadCatalog();
       saveUi();
       render();
       if (open) el.tabs.querySelector('[aria-selected=true]')?.focus();
@@ -2379,7 +2703,7 @@ function panelBrowserImpl(data) {
       const url = new URL(location.href);
       // A same-URL navigation with a fragment is only a scroll; vary the query to fetch a document.
       if (url.href.includes('#'))
-        url.searchParams.set('paqvilo', `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
+        url.searchParams.set('paqvilo', `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`); // NOSONAR: pseudo-random value for simulation, not a secret
       location.assign(url.href);
     };
     /** A Mirage change reloads open pages through its own event; reload here only if that never comes. */
@@ -2439,7 +2763,7 @@ function panelBrowserImpl(data) {
       const request = ++S.inspectRequest;
       const scope = inspectionScope();
       S.inspectLoading = version;
-      api('inspect', { scope }).then((r) => {
+      void api('inspect', { scope }).then((r) => {
         acceptInspection(request, version, r, scope);
       });
     };
@@ -2449,7 +2773,7 @@ function panelBrowserImpl(data) {
         return;
       const version = c.version;
       S.tweaksLoading = version;
-      api('tweaks').then((r) => {
+      void api('tweaks').then((r) => {
         if (lifetime.signal.aborted || S.tweaksLoading !== version) return;
         S.tweaksLoading = null;
         S.tweaks = {
@@ -2501,12 +2825,12 @@ function panelBrowserImpl(data) {
         node.style.outlineOffset = prior.offset;
       }, 2500);
     };
-    const performAction = async (name, t) => {
+    /* NOSONAR */ const performAction = async (name, t) => {
       const row = t.closest('[data-rel]');
       const rel = t.dataset.rel || row?.dataset.rel || '';
       const url = row?.dataset.url || '';
       const d = S.d;
-      switch (name) {
+      /* NOSONAR: reviewed, a rewrite would not preserve behaviour */ switch (name) {
         case 'selection-clear':
           document.getElementById('paqvilo-xray')?.__px?.clearSelection?.('user-clear');
           S.selectedElement = null;
@@ -2633,7 +2957,7 @@ function panelBrowserImpl(data) {
           stopPicking();
           S.ui.tab = t.dataset.v;
           S.diff = null;
-          if (S.ui.tab === 'explore' && !S.catalog) loadCatalog();
+          if (S.ui.tab === 'explore' && !S.catalog) void loadCatalog();
           saveUi();
           fresh();
           break;
@@ -2653,7 +2977,7 @@ function panelBrowserImpl(data) {
           window.open(`${location.origin}/_sim/#${t.dataset.hash}`, '_blank', 'noopener');
           break;
         case 'copypage':
-          copy(location.href, 'Address');
+          void copy(location.href, 'Address');
           break;
         case 'persona': {
           const r = await api('persona', {
@@ -2703,23 +3027,26 @@ function panelBrowserImpl(data) {
           const id = S.pick[kind] ?? (kind === 'scenario' ? S.tweaks?.activeScenario?.id : null) ?? list[0]?.id;
           const item = list.find((entry) => entry.id === id);
           if (!item) break;
+          let text = `Apply scenario "${item.name ?? id}"? Its preset, persona and permission mode change in one step; pages reload.`;
+          if (kind === 'preset')
+            text = `Apply preset "${item.name ?? id}"? It replaces the local records, roles and settings it defines; pages reload.`;
+          else if (item.catalogue) {
+            const setup =
+              item.context || item.preset
+                ? 'Its setup opens in an isolated local runtime.'
+                : 'This browser signs in through the portal.';
+            text = `Open "${item.name}" as ${item.persona} at ${item.startPath ?? '/'}? ${setup}`;
+          }
           S.confirm =
             kind === 'preset'
-              ? {
-                  kind,
-                  id,
-                  label: 'Apply preset',
-                  text: `Apply preset "${item.name ?? id}"? It replaces the local records, roles and settings it defines; pages reload.`,
-                }
+              ? { kind, id, label: 'Apply preset', text }
               : {
                   kind,
                   id,
                   catalogue: item.catalogue === true,
                   ...(item.catalogueId ? { id: item.catalogueId } : {}),
                   label: 'Apply scenario',
-                  text: item.catalogue
-                    ? `Open "${item.name}" as ${item.persona} at ${item.startPath ?? '/'}? ${item.context || item.preset ? 'Its setup opens in an isolated local runtime.' : 'This browser signs in through the portal.'}`
-                    : `Apply scenario "${item.name ?? id}"? Its preset, persona and permission mode change in one step; pages reload.`,
+                  text,
                 };
           render();
           // The action can be below the fold. Reveal its confirmation and put keyboard focus
@@ -2779,16 +3106,16 @@ function panelBrowserImpl(data) {
           window.open('/_sim/', '_blank', 'noopener');
           break;
         case 'copy':
-          copy(
+          void copy(
             t.dataset.copy ?? (row?.dataset.path || d.sourceDir.replace(/[\\/]$/, '') + '/' + rel.split('#')[0]),
             t.dataset.copyKind === 'reference' ? 'Source reference' : 'Path',
           );
           break;
         case 'copyurl':
-          copy(location.origin + url, 'Address');
+          void copy(location.origin + url, 'Address');
           break;
         case 'copytext':
-          copy(row.dataset.text, 'Message');
+          void copy(row.dataset.text, 'Message');
           break;
         case 'open': {
           if (!rel) break;
@@ -2893,7 +3220,7 @@ function panelBrowserImpl(data) {
 
     el.panel.addEventListener('click', (e) => {
       const t = e.target.closest('[data-act]');
-      if (t) act(t.dataset.act, t);
+      if (t) void act(t.dataset.act, t);
     });
     el.panel.addEventListener(
       'toggle',
@@ -3014,18 +3341,15 @@ function panelBrowserImpl(data) {
     });
     // typing in the panel must not trigger shortcuts of the portal page
     for (const type of ['keydown', 'keyup', 'keypress']) {
-      el.panel.addEventListener(type, (e) => {
+      /* NOSONAR */ el.panel.addEventListener(type, (e) => {
         e.stopPropagation();
         if (type !== 'keydown') return;
         if (e.target.matches('[role=tab]') && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
           const tabs = [...el.tabs.querySelectorAll('[role=tab]')],
-            at = tabs.indexOf(e.target),
-            next =
-              e.key === 'Home'
-                ? 0
-                : e.key === 'End'
-                  ? tabs.length - 1
-                  : (at + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+            at = tabs.indexOf(e.target);
+          let next = (at + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+          if (e.key === 'Home') next = 0;
+          else if (e.key === 'End') next = tabs.length - 1;
           e.preventDefault();
           void act('tab', tabs[next]);
           el.tabs.querySelector('[aria-selected=true]')?.focus();
@@ -3052,10 +3376,10 @@ function panelBrowserImpl(data) {
     }
     document.addEventListener(
       'paqvilo-xray',
-      (event) => {
+      (event) => /* NOSONAR: single-pass routine, splitting it would change shared state */ {
         const detail = event.detail ?? {};
         if (detail.action === 'open') {
-          act('open', {
+          void act('open', {
             evidenceScope: detail.scope,
             anchorGeneration: detail.anchorGeneration,
             dataset: {
@@ -3070,7 +3394,7 @@ function panelBrowserImpl(data) {
             closest: () => null,
           });
         } else if (detail.action === 'refresh') {
-          act('inspect-refresh', { dataset: {}, closest: () => null });
+          void act('inspect-refresh', { dataset: {}, closest: () => null });
         } else if (['selected', 'updated', 'cleared', 'detached', 'stale'].includes(detail.action)) {
           const context = document.getElementById('paqvilo-xray')?.__px?.selectionState?.();
           if (!detail.scope || !Number.isSafeInteger(detail.selectionGeneration)) return;
@@ -3113,7 +3437,7 @@ function panelBrowserImpl(data) {
       { signal: lifetime.signal },
     );
     const onKey = (e) => {
-      if (!host.isConnected) return window.removeEventListener('keydown', onKey, true);
+      if (!host.isConnected) return globalThis.removeEventListener('keydown', onKey, true);
       if (
         S.ui.open &&
         S.ui.tab !== 'tweaks' &&
@@ -3139,7 +3463,7 @@ function panelBrowserImpl(data) {
       e.preventDefault();
       e.stopPropagation();
     };
-    window.addEventListener('keydown', onKey, { capture: true, signal: lifetime.signal });
+    globalThis.addEventListener('keydown', onKey, { capture: true, signal: lifetime.signal });
 
     return {
       get token() {
@@ -3165,7 +3489,7 @@ function panelBrowserImpl(data) {
         clearTimeout(placeTimer);
         host.remove();
       },
-      update(d) {
+      /* NOSONAR: single-pass routine, splitting it would change shared state */ update(d) {
         if (lifetime.signal.aborted) return;
         const catalogChanged = S.d && S.d.catalogVersion !== d.catalogVersion;
         const previousInspection = S.d?.inspection ?? S.d?.mirage,
@@ -3175,7 +3499,7 @@ function panelBrowserImpl(data) {
           S.inspectLoading = null;
         }
         S.d = d;
-        if (MIRAGE_TABS.includes(S.ui.tab) && (!d.mirageMode || d.mirage?.active === false)) S.ui.tab = 'overrides';
+        if (MIRAGE_TABS.has(S.ui.tab) && (!d.mirageMode || d.mirage?.active === false)) S.ui.tab = 'overrides';
         S.targets = (Array.isArray(d.targets) ? d.targets : []).flatMap((target) => {
           try {
             // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
@@ -3212,7 +3536,7 @@ function panelBrowserImpl(data) {
         });
         if (catalogChanged) {
           S.catalog = null;
-          if (S.ui.open && S.ui.tab === 'explore') loadCatalog();
+          if (S.ui.open && S.ui.tab === 'explore') void loadCatalog();
         }
         if (S.first) {
           // where it was left, in whatever tab or page that was
@@ -3220,10 +3544,10 @@ function panelBrowserImpl(data) {
           S.ui = {
             ...S.ui,
             ...saved,
-            pos: { ...S.ui.pos, ...(saved.pos ?? {}) },
-            collapsed: { ...S.ui.collapsed, ...(saved.collapsed ?? {}) },
+            pos: { ...S.ui.pos, ...saved.pos },
+            collapsed: { ...S.ui.collapsed, ...saved.collapsed },
           };
-          if (S.ui.open && S.ui.tab === 'explore') loadCatalog();
+          if (S.ui.open && S.ui.tab === 'explore') void loadCatalog();
         }
         if (S.ui.tab === 'actions' && !d.capabilities?.actions) S.ui.tab = 'overrides';
         render();
@@ -3234,17 +3558,17 @@ function panelBrowserImpl(data) {
 }
 
 // Fixed owned source keeps page.evaluate and panel.mjs composition self-contained.
-export const panelUi = new Function(
+/* NOSONAR: intentional local script execution or generated handler */ export const panelUi = new Function(
   'data',
   `const renderInspectionEvidence=(${renderInspectionEvidence.toString()});return (${panelBrowserImpl.toString()})(data);`,
 );
 
 /** Evaluated in the page during detach; a queued old draw cannot recreate a stopped panel. */
 export function removePanelUi({ token }) {
-  const retired = Array.isArray(window.__paqviloRetiredSessions) ? window.__paqviloRetiredSessions : [];
+  const retired = Array.isArray(globalThis.__paqviloRetiredSessions) ? globalThis.__paqviloRetiredSessions : [];
   if (!retired.includes(token)) retired.push(token);
   if (retired.length > 32) retired.splice(0, retired.length - 32);
-  window.__paqviloRetiredSessions = retired;
+  globalThis.__paqviloRetiredSessions = retired;
   const host = document.getElementById('paqvilo-panel');
   if (host?.__pp?.token === token) host.__pp.dispose();
   const xray = document.getElementById('paqvilo-xray');

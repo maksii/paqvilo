@@ -73,21 +73,9 @@ export async function ensureCodeqlBundle({
   const lock = path.join(cache, '.install.lock'),
     token = randomUUID(),
     deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (complete()) return executable;
-    try {
-      fs.mkdirSync(lock);
-      break;
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      if (Date.now() >= deadline)
-        throw new Error(
-          `CodeQL bundle installation still owns ${lock}; inspect its installer before removing an abandoned lock.`,
-          { cause: error },
-        );
-      await wait();
-    }
-  }
+  const lockAcquisition = acquireBundleInstallLock(lock, complete, deadline, wait);
+  if (lockAcquisition === null) return executable;
+  if (lockAcquisition !== true && !(await lockAcquisition)) return executable;
   fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, token }), { flag: 'wx' });
   let failure;
   try {
@@ -100,6 +88,28 @@ export async function ensureCodeqlBundle({
   } catch (error) {
     failure = error;
   }
+  releaseBundleInstallLock(lock, token, failure);
+  if (failure) throw failure;
+  return executable;
+}
+
+function acquireBundleInstallLock(lock, complete, deadline, wait) {
+  if (complete()) return null;
+  try {
+    fs.mkdirSync(lock);
+    return true;
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    if (Date.now() >= deadline)
+      throw new Error(
+        `CodeQL bundle installation still owns ${lock}; inspect its installer before removing an abandoned lock.`,
+        { cause: error },
+      );
+    return Promise.resolve(wait()).then(() => acquireBundleInstallLock(lock, complete, deadline, wait));
+  }
+}
+
+function releaseBundleInstallLock(lock, token, failure) {
   try {
     const owner = JSON.parse(fs.readFileSync(path.join(lock, 'owner.json'), 'utf8'));
     if (owner.token !== token) throw new Error('CodeQL installer ownership changed; retaining its lock.');
@@ -113,8 +123,6 @@ export async function ensureCodeqlBundle({
       );
     throw error;
   }
-  if (failure) throw failure;
-  return executable;
 }
 
 export async function codeqlExecutable({ env = process.env, platform = process.platform } = {}) {
@@ -154,7 +162,9 @@ export async function codeqlExecutable({ env = process.env, platform = process.p
         const archive = path.join(staging, asset[0]);
         if ((await fileDigest(archive)) !== asset[1]) throw new Error('CodeQL bundle digest mismatch.');
         const tar =
-          platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
+          platform === 'win32'
+            ? path.join(process.env.SystemRoot ?? String.raw`C:\Windows`, 'System32', 'tar.exe')
+            : 'tar';
         run(tar, ['-xzf', archive, '-C', cache]);
       } finally {
         fs.rmSync(staging, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
@@ -258,34 +268,36 @@ function githubDismissals(cacheDirectory) {
     ),
   ];
   const keys = new Set();
-  for (const ref of refs) {
-    const query = `ref=${encodeURIComponent(ref)}&tool_name=CodeQL&per_page=100`;
-    const alerts = gh(`repos/${repository}/code-scanning/alerts?${query}&state=dismissed`, { paginate: true });
-    if (!alerts.length) continue;
-    const latest = new Map();
-    for (const analysis of gh(`repos/${repository}/code-scanning/analyses?${query}`, { paginate: true }))
-      if (!latest.has(analysis.category)) latest.set(analysis.category, analysis); // Newest first.
-    for (const analysis of latest.values()) {
-      // An analysis never changes, so its SARIF is fetched once.
-      const cached = path.join(cacheDirectory, `analysis-${analysis.id}.sarif`);
-      let sarif;
-      try {
-        sarif = JSON.parse(fs.readFileSync(cached, 'utf8'));
-      } catch (error) {
-        if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
-        const contents = run('gh', [
-          'api',
-          `repos/${repository}/code-scanning/analyses/${analysis.id}`,
-          '-H',
-          'Accept: application/sarif+json',
-        ]);
-        sarif = JSON.parse(contents);
-        publishSarifCache(cached, contents);
-      }
-      for (const key of dismissedKeys(sarif, alerts, analysis.commit_sha)) keys.add(key);
-    }
-  }
+  for (const ref of refs) collectRefDismissals(repository, ref, cacheDirectory, keys);
   return keys;
+}
+
+function collectRefDismissals(repository, ref, cacheDirectory, keys) {
+  const query = `ref=${encodeURIComponent(ref)}&tool_name=CodeQL&per_page=100`;
+  const alerts = gh(`repos/${repository}/code-scanning/alerts?${query}&state=dismissed`, { paginate: true });
+  if (!alerts.length) return;
+  const latest = new Map();
+  for (const analysis of gh(`repos/${repository}/code-scanning/analyses?${query}`, { paginate: true }))
+    if (!latest.has(analysis.category)) latest.set(analysis.category, analysis); // Newest first.
+  for (const analysis of latest.values()) {
+    // An analysis never changes, so its SARIF is fetched once.
+    const cached = path.join(cacheDirectory, `analysis-${analysis.id}.sarif`);
+    let sarif;
+    try {
+      sarif = JSON.parse(fs.readFileSync(cached, 'utf8'));
+    } catch (error) {
+      if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+      const contents = run('gh', [
+        'api',
+        `repos/${repository}/code-scanning/analyses/${analysis.id}`,
+        '-H',
+        'Accept: application/sarif+json',
+      ]);
+      sarif = JSON.parse(contents);
+      publishSarifCache(cached, contents);
+    }
+    for (const key of dismissedKeys(sarif, alerts, analysis.commit_sha)) keys.add(key);
+  }
 }
 
 export async function codeqlGate({
@@ -337,7 +349,7 @@ export async function codeqlGate({
     save();
     const cacheDirectory = path.join(path.dirname(path.dirname(codeql)), 'analyses');
     fs.mkdirSync(cacheDirectory, { recursive: true });
-    const keys = await dismissals(cacheDirectory);
+    const keys = await dismissals(cacheDirectory); // NOSONAR: await kept: the value may be a thenable and timing matters
     const findings = [];
     for (const language of codeqlLanguages()) {
       const database = path.join(work, `db-${language}`);

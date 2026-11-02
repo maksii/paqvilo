@@ -20,7 +20,7 @@ export function datePickerFormat(format, dateOnly = true) {
 
 /** Bind the actual captured native picker; no substitute DateTimePicker API is installed. */
 export function clientDateControlsRuntime() {
-  return `(() => {
+  return String.raw`(() => {
     const convert=${datePickerFormat.toString()};
     // Bound controls are tracked in script state: the platform markup carries no local attributes.
     const ready=((window.__portalSimulation||={}).dateControlsReady||=new WeakSet());
@@ -54,7 +54,7 @@ export function clientDateControlsRuntime() {
             display.addEventListener('change',()=>{
               const value=display.value;
               if(!value)input.value='';
-              else if(userLocal){const parts=value.split(/[-T:]/).map(Number),date=new Date(0);date.setFullYear(parts[0],parts[1]-1,parts[2]);date.setHours(parts[3]||0,parts[4]||0,0,0);input.value=date.toISOString().replace(/\\.\\d{3}Z$/,'.0000000Z');}
+              else if(userLocal){const parts=value.split(/[-T:]/).map(Number),date=new Date(0);date.setFullYear(parts[0],parts[1]-1,parts[2]);date.setHours(parts[3]||0,parts[4]||0,0,0);input.value=date.toISOString().replace(/\.\d{3}Z$/,'.0000000Z');}
               else input.value=(dateOnly?value+'T00:00:00':value.length===16?value+':00':value)+'.0000000';
               input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));
             });

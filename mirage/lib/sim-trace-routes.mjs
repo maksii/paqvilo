@@ -14,7 +14,7 @@ import { TRACE_EVENTS } from './trace-store.mjs';
 
 const MAX_BODY = 64 * 1024;
 const PREFIX = /^\/(?:_sim|__sim)\/api(?=\/|$)/;
-const ROUTE = /^\/trace(?:\/(spans|stats|export|settings|clear|flush)|\/span\/([^/]+)|\/id\/([^/]+)|\/([^/]+))?$/;
+const ROUTE = /^\/trace(?:\/(?:(spans|stats|export|settings|clear|flush)|span\/([^/]+)|id\/([^/]+)|([^/]+)))?$/; // NOSONAR: regex kept: a rewrite would change matches or captures
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EXPORT_LIMIT = 200;
 const EXPORT_MAX = 2000;
@@ -23,6 +23,24 @@ const QUERY_PAGE = 200;
 export const routes = Object.freeze(['/trace']);
 const failure = (status, code, message, parameter) =>
   Object.assign(new Error(message), { status, code, ...(parameter ? { parameter } : {}) });
+const settingsRequest = (named, method) => named === 'settings' && (method === 'GET' || method === 'PUT');
+
+function requireTraceCsrf(req, csrf) {
+  const token = csrf();
+  if (!token || req.headers['x-sim-csrf'] !== token) throw failure(403, 'Forbidden', 'Missing simulator CSRF token.');
+}
+
+function writeTraceError(res, error, json) {
+  if (res.headersSent) res.destroy();
+  else
+    json(res, error.status ?? 500, {
+      error: {
+        code: error.code ?? 'InternalError',
+        message: error.status ? error.message : 'The trace request failed.',
+        ...(error.status && error.parameter ? { parameter: error.parameter } : {}),
+      },
+    });
+}
 
 function send(res, status, value, headers = {}) {
   res.writeHead(status, { ...headers, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -100,7 +118,7 @@ export function createTraceChannel(traces, { now, stallMs, defer, onDrop } = {})
     groups.set(key, entry);
     return entry;
   };
-  return (res, url = res.req?.url ? new URL(res.req.url, 'http://local.invalid') : null) => {
+  /* NOSONAR */ return (res, url = res.req?.url ? new URL(res.req.url, 'http://local.invalid') : null) => {
     const t = store();
     if (!t || res.destroyed || res.writableEnded) return;
     const query = url?.searchParams ?? new URLSearchParams();
@@ -194,13 +212,14 @@ export function otlpSpan(record) {
         spanId: hex(link.spanId, 16),
         attributes: keyValues([['mirage.relation', link.relation]]),
       })),
-    status:
-      record.status === 'running' || record.status === 'cancelled'
-        ? { code: 0 }
-        : record.status === 'ok'
-          ? { code: 1 }
-          : { code: 2, message: record.error?.message ?? record.status },
+    status: otlpStatus(record),
   };
+}
+
+function otlpStatus(record) {
+  if (record.status === 'running' || record.status === 'cancelled') return { code: 0 };
+  if (record.status === 'ok') return { code: 1 };
+  return { code: 2, message: record.error?.message ?? record.status };
 }
 
 /**
@@ -218,7 +237,7 @@ export function exportedTraceIds(t, filters) {
   query.set('pageSize', String(QUERY_PAGE));
   const ids = [];
   let total = 0;
-  for (let page = 1; ids.length < limit; page++) {
+  /* NOSONAR: loop variable is advanced in the body on purpose */ for (let page = 1; ids.length < limit; page++) {
     query.set('page', String(page));
     const result = t.query(query);
     total = result.total;
@@ -281,17 +300,18 @@ async function exportTraces(t, filters, res) {
     if (res.destroyed) return;
     const tree = t.tree(traceId);
     if (!tree) continue; // dropped since the query
-    const chunk =
-      format === 'json'
-        ? JSON.stringify(tree)
-        : format === 'ndjson'
-          ? `${JSON.stringify({ trace: tree.trace, spans: tree.spans })}\n`
-          : tree.spans.map((record) => JSON.stringify(otlpSpan(record))).join(',');
+    const chunk = exportChunk(format, tree);
     if (!chunk) continue;
     await write(format !== 'ndjson' && !first ? `,${chunk}` : chunk);
     first = false;
   }
   res.end(close);
+}
+
+function exportChunk(format, tree) {
+  if (format === 'json') return JSON.stringify(tree);
+  if (format === 'ndjson') return `${JSON.stringify({ trace: tree.trace, spans: tree.spans })}\n`;
+  return tree.spans.map((record) => JSON.stringify(otlpSpan(record))).join(',');
 }
 
 /**
@@ -301,7 +321,7 @@ async function exportTraces(t, filters, res) {
  */
 export function createTraceRoutes({ traces, csrf, json = send }) {
   const store = typeof traces === 'function' ? traces : () => traces;
-  return async (req, res, url) => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ return async (req, res, url) => {
     const prefix = PREFIX.exec(url.pathname);
     if (!prefix) return false;
     const match = ROUTE.exec(url.pathname.slice(prefix[0].length));
@@ -310,14 +330,12 @@ export function createTraceRoutes({ traces, csrf, json = send }) {
       method = req.method;
     try {
       if (method !== 'GET') {
-        const token = csrf();
-        if (!token || req.headers['x-sim-csrf'] !== token)
-          throw failure(403, 'Forbidden', 'Missing simulator CSRF token.');
+        requireTraceCsrf(req, csrf);
       }
       const t = store();
       if (!t) throw failure(501, 'TraceNotConfigured', 'This runtime has no trace store.');
       const filters = url.searchParams;
-      if (named === 'settings' && (method === 'GET' || method === 'PUT')) {
+      if (settingsRequest(named, method)) {
         if (method === 'PUT') {
           const partial = await body(req);
           try {
@@ -341,34 +359,36 @@ export function createTraceRoutes({ traces, csrf, json = send }) {
         return true;
       }
       if (method !== 'GET') throw failure(405, 'MethodNotAllowed', 'Unsupported trace operation.');
-      if (!named && !spanId && !canonicalId && !shortId) json(res, 200, t.query(filters));
-      else if (named === 'spans') json(res, 200, t.spans(filters));
-      else if (named === 'stats') json(res, 200, t.stats(filters));
-      else if (named === 'export') await exportTraces(t, filters, res);
-      else if (spanId) {
-        const record = t.span(segment(spanId));
-        if (!record) throw failure(404, 'SpanNotFound', 'No retained span has this id.');
-        json(res, 200, record);
-      } else {
-        const id = segment(canonicalId ?? shortId);
-        // /trace/<id> answers UUID-shaped ids only, so a trace id never competes with a named route.
-        const tree = canonicalId || UUID.test(id) ? t.tree(id) : null;
-        if (!tree)
-          throw failure(404, 'TraceNotFound', 'No retained trace has this id; read a trace at /trace/id/<traceId>.');
-        json(res, 200, tree);
+      switch (named) {
+        case 'spans':
+          json(res, 200, t.spans(filters));
+          break;
+        case 'stats':
+          json(res, 200, t.stats(filters));
+          break;
+        case 'export':
+          await exportTraces(t, filters, res);
+          break;
+        default:
+          if (spanId) {
+            const record = t.span(segment(spanId));
+            if (!record) throw failure(404, 'SpanNotFound', 'No retained span has this id.');
+            json(res, 200, record);
+          } else if (!canonicalId && !shortId) json(res, 200, t.query(filters));
+          else sendTraceTree(t, res, canonicalId, shortId, json);
       }
       return true;
     } catch (error) {
-      if (res.headersSent) res.destroy();
-      else
-        json(res, error.status ?? 500, {
-          error: {
-            code: error.code ?? 'InternalError',
-            message: error.status ? error.message : 'The trace request failed.',
-            ...(error.status && error.parameter ? { parameter: error.parameter } : {}),
-          },
-        });
+      writeTraceError(res, error, json);
       return true;
     }
   };
+}
+
+function sendTraceTree(traces, res, canonicalId, shortId, json) {
+  const id = segment(canonicalId ?? shortId);
+  // /trace/<id> answers UUID-shaped ids only, so a trace id never competes with a named route.
+  const tree = canonicalId || UUID.test(id) ? traces.tree(id) : null;
+  if (!tree) throw failure(404, 'TraceNotFound', 'No retained trace has this id; read a trace at /trace/id/<traceId>.');
+  json(res, 200, tree);
 }

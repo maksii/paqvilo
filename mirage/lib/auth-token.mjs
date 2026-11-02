@@ -54,6 +54,37 @@ function tokenError(res, status, errorId, message) {
   return true;
 }
 
+function respondAnonymous(req, res, url, origin) {
+  const location = `${origin}/SignIn?ReturnUrl=${encodeURIComponent(url.pathname + url.search)}`;
+  if (/xmlhttprequest/i.test(req.headers['x-requested-with'] ?? '')) {
+    res.writeHead(200, {
+      'content-type': 'text/plain; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-responded-json': JSON.stringify({ status: 401, headers: { location } }),
+    });
+    res.end();
+  } else {
+    res.writeHead(302, { location, 'cache-control': 'no-store' });
+    res.end();
+  }
+}
+
+function validClient(res, portal, clientId) {
+  if (clientId == null || clientId === '') return true;
+  const registered = String(setting(portal, 'ImplicitGrantFlow/RegisteredClientId') ?? '')
+    .split(';')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (/^[A-Za-z0-9-]{1,36}$/.test(clientId) && registered.includes(clientId)) return true;
+  tokenError(
+    res,
+    400,
+    'PortalSTS0001',
+    'Client Id provided in the request is not a valid client Id registered for this portal. Please check the parameter and try again.',
+  );
+  return false;
+}
+
 async function parameters(req, url) {
   const values = Object.fromEntries(url.searchParams);
   if (req.method === 'POST' && /application\/x-www-form-urlencoded/i.test(req.headers['content-type'] ?? '')) {
@@ -88,35 +119,12 @@ export async function handleImplicitGrant(
   if (!contactId) {
     // Cookie authentication answers an anonymous AJAX call with 200 and X-Responded-JSON
     // (status 401 and the sign-in location); a navigation is redirected to sign-in.
-    const location = `${origin}/SignIn?ReturnUrl=${encodeURIComponent(url.pathname + url.search)}`;
-    if (/xmlhttprequest/i.test(req.headers['x-requested-with'] ?? '')) {
-      res.writeHead(200, {
-        'content-type': 'text/plain; charset=utf-8',
-        'cache-control': 'no-store',
-        'x-responded-json': JSON.stringify({ status: 401, headers: { location } }),
-      });
-      res.end();
-    } else {
-      res.writeHead(302, { location, 'cache-control': 'no-store' });
-      res.end();
-    }
+    respondAnonymous(req, res, url, origin);
     return true;
   }
   const params = await parameters(req, url);
   const clientId = params.client_id;
-  if (clientId != null && clientId !== '') {
-    const registered = String(setting(portal, 'ImplicitGrantFlow/RegisteredClientId') ?? '')
-      .split(';')
-      .map((value) => value.trim())
-      .filter(Boolean);
-    if (!/^[A-Za-z0-9-]{1,36}$/.test(clientId) || !registered.includes(clientId))
-      return tokenError(
-        res,
-        400,
-        'PortalSTS0001',
-        'Client Id provided in the request is not a valid client Id registered for this portal. Please check the parameter and try again.',
-      );
-  }
+  if (!validClient(res, portal, clientId)) return true;
   const now = Math.floor(clock() / 1000);
   const lifetime = tokenLifetime(portal);
   const field = (name) => contact?.[name] ?? identity?.[name] ?? '';

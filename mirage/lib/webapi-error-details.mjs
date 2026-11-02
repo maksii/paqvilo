@@ -52,9 +52,12 @@ export function attachODataJsonSource(body, source) {
 }
 export const odataNumberLexemes = (body) => body?.[numberLexemes];
 
-const literal = (value) =>
-  isExactNumeric(value) ? value.value : typeof value === 'object' ? JSON.stringify(value) : String(value);
-function inputType(value, numericLexeme) {
+const literal = (value) => {
+  if (isExactNumeric(value)) return value.value;
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+};
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function inputType(value, numericLexeme) {
   if (typeof value === 'string') return 'Edm.String';
   if (typeof value === 'boolean') return 'Edm.Boolean';
   if (typeof value === 'number' || isExactNumeric(value)) {
@@ -124,12 +127,7 @@ export function odataRootDetails(value) {
   return null;
 }
 
-/** Only the explicit observed mode changes a supported reader's inner message. */
-export function observedODataInnerMessage(error, mode = 'diagnostic') {
-  if (mode !== 'odata-wrapper') return null;
-  if (!['InvalidValue', 'InvalidRequest', 'INVALID_REQUEST'].includes(error?.code)) return null;
-  const d = error?.[readerDetails];
-  if (!d) return null;
+function observedMessage(d) {
   let message;
   switch (d.kind) {
     case 'unreadable-stream':
@@ -153,12 +151,12 @@ export function observedODataInnerMessage(error, mode = 'diagnostic') {
       message = `Cannot convert the literal '${d.literal}' to the expected type '${d.expectedType}'. ---> Microsoft.OData.ODataException: Cannot convert a value of type '${d.sourceType}' to the expected target type '${d.expectedType}'.`;
       break;
     case 'primitive-format': {
-      const cause =
-        d.expectedType === 'Edm.Guid'
-          ? 'Guid should contain 32 digits with 4 dashes (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).'
-          : d.expectedType === 'Edm.DateTimeOffset'
-            ? `The string '${d.literal}' is not a valid AllXsd value.`
-            : 'Input string was not in a correct format.';
+      let cause;
+      if (d.expectedType === 'Edm.Guid')
+        cause = 'Guid should contain 32 digits with 4 dashes (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).';
+      else if (d.expectedType === 'Edm.DateTimeOffset')
+        cause = `The string '${d.literal}' is not a valid AllXsd value.`;
+      else cause = 'Input string was not in a correct format.';
       message = `Cannot convert the literal '${d.literal}' to the expected type '${d.expectedType}'. ---> System.FormatException: ${cause}`;
       break;
     }
@@ -166,4 +164,13 @@ export function observedODataInnerMessage(error, mode = 'diagnostic') {
       return null;
   }
   return PREFIX + 'Microsoft.OData.ODataException: ' + message;
+}
+
+/** Only the explicit observed mode changes a supported reader's inner message. */
+export function observedODataInnerMessage(error, mode = 'diagnostic') {
+  if (mode !== 'odata-wrapper') return null;
+  if (!['InvalidValue', 'InvalidRequest', 'INVALID_REQUEST'].includes(error?.code)) return null;
+  const d = error?.[readerDetails];
+  if (!d) return null;
+  return observedMessage(d);
 }

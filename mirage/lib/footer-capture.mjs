@@ -98,6 +98,57 @@ function cssSafe(value) {
   if (/[\\]|@|expression\s*\(|javascript\s*:|\/\*/i.test(value)) return false;
   return [...value.matchAll(/url\s*\(([^)]*)\)/gi)].every((match) => /^\s*["']?#[\w.-]+["']?\s*$/.test(match[1]));
 }
+function topLevelCssOffset(clean, offset) {
+  let depth = 0,
+    quote;
+  for (let index = 0; index < offset; index++) {
+    const character = clean[index];
+    if (quote) {
+      if (character === '\\') index++;
+      else if (character === quote) quote = undefined;
+    } else if (character === '"' || character === "'") quote = character;
+    else if (character === '{') depth++;
+    else if (character === '}') depth--;
+  }
+  return depth === 0;
+}
+
+function hasIntrinsicSvgWidth(rules, clean) {
+  return rules.some(
+    (rule) =>
+      topLevelCssOffset(clean, rule.index + (rule[0].startsWith('}') ? 1 : 0)) &&
+      /(?:^|;)\s*width\s*:\s*auto\s*(?:;|$)/i.test(rule[1]),
+  );
+}
+
+function applyFooterLayout(markup, layout, styleSources) {
+  const { sha256, ...details } = layout;
+  if (
+    details.svgWidth !== 'auto' ||
+    !/^\/(?!\/)[^?#\\]+\.css$/i.test(details.path) ||
+    !/^[a-f\d]{64}$/.test(details.observedCssSha256 ?? '') ||
+    sha256 !== digest(JSON.stringify(details))
+  )
+    throw fail('Observed footer layout failed its integrity check.');
+  const css = styleSources[details.path];
+  if (typeof css !== 'string' || digest(css) !== details.sourceCssSha256)
+    return {
+      markup,
+      diagnostic: {
+        code: 'FOOTER_LAYOUT_SOURCE_CHANGED',
+        message: 'Observed intrinsic footer SVG sizing is stale after a stylesheet source edit.',
+        path: details.path,
+      },
+    };
+  const fragment = parseFragment(markup);
+  for (const graphic of fragment.childNodes ?? [])
+    if (graphic.tagName === 'svg') {
+      const style = graphic.attrs.find((attribute) => attribute.name === 'style');
+      if (style) style.value += ';width:auto';
+      else graphic.attrs.push({ name: 'style', value: 'width:auto' });
+    }
+  return { markup: serialize(fragment) };
+}
 function walk(node, visit) {
   visit(node);
   for (const child of node.childNodes ?? []) walk(child, visit);
@@ -116,6 +167,35 @@ function logoSlot(html) {
   return slots[0];
 }
 
+function validateGraphicAttribute(attribute) {
+  const name = attribute.prefix ? attribute.prefix + ':' + attribute.name : attribute.name;
+  if (!attributes.has(name) || /^on/i.test(name))
+    throw fail(`Footer graphics contain an unsupported attribute: ${name}.`);
+  if (['href', 'xlink:href'].includes(name) && !/^#[\w.-]+$/.test(attribute.value))
+    throw fail('SVG references must be internal to their graphic.');
+  if (
+    name === 'src' &&
+    (!attribute.value.startsWith('/') ||
+      attribute.value.startsWith('//') ||
+      // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
+      /[\\\u0000-\u001f]/.test(attribute.value))
+  )
+    throw fail('Footer images must use a captured portal-relative asset.');
+  if (name === 'style' && !cssSafe(attribute.value))
+    throw fail('Footer inline styles contain active or external content.');
+  if (['fill', 'stroke', 'clip-path', 'mask'].includes(name) && !cssSafe(attribute.value))
+    throw fail('Footer graphic references escaped the image.');
+}
+
+function validateGraphicNode(node) {
+  if (node.nodeName === '#comment') throw fail('Footer graphics cannot contain comments.');
+  if (!node.tagName) return;
+  if (!elements.has(node.tagName)) throw fail('Footer graphics contain a non-static element.');
+  for (const attribute of node.attrs ?? []) validateGraphicAttribute(attribute);
+  if (node.tagName === 'style' && !cssSafe((node.childNodes ?? []).map((n) => n.value ?? '').join('')))
+    throw fail('Footer styles contain active or external content.');
+}
+
 /** Accept static graphics only; page scripts, user values and hidden controls never enter a profile. */
 export function validateFooterLogoMarkup(markup) {
   if (typeof markup !== 'string' || Buffer.byteLength(markup) > 512 * 1024)
@@ -124,32 +204,7 @@ export function validateFooterLogoMarkup(markup) {
   const top = (fragment.childNodes ?? []).filter((node) => node.nodeName !== '#text' || node.value.trim());
   if (!top.length || top.some((node) => !['svg', 'img'].includes(node.tagName)))
     throw fail('Footer slot must contain direct SVG or image elements.');
-  walk(fragment, (node) => {
-    if (node.nodeName === '#comment') throw fail('Footer graphics cannot contain comments.');
-    if (!node.tagName) return;
-    if (!elements.has(node.tagName)) throw fail('Footer graphics contain a non-static element.');
-    for (const attribute of node.attrs ?? []) {
-      const name = attribute.prefix ? attribute.prefix + ':' + attribute.name : attribute.name;
-      if (!attributes.has(name) || /^on/i.test(name))
-        throw fail(`Footer graphics contain an unsupported attribute: ${name}.`);
-      if (['href', 'xlink:href'].includes(name) && !/^#[\w.-]+$/.test(attribute.value))
-        throw fail('SVG references must be internal to their graphic.');
-      if (
-        name === 'src' &&
-        (!attribute.value.startsWith('/') ||
-          attribute.value.startsWith('//') ||
-          // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
-          /[\\\u0000-\u001f]/.test(attribute.value))
-      )
-        throw fail('Footer images must use a captured portal-relative asset.');
-      if (name === 'style' && !cssSafe(attribute.value))
-        throw fail('Footer inline styles contain active or external content.');
-      if (['fill', 'stroke', 'clip-path', 'mask'].includes(name) && !cssSafe(attribute.value))
-        throw fail('Footer graphic references escaped the image.');
-    }
-    if (node.tagName === 'style' && !cssSafe((node.childNodes ?? []).map((n) => n.value ?? '').join('')))
-      throw fail('Footer styles contain active or external content.');
-  });
+  walk(fragment, validateGraphicNode);
   return serialize(fragment);
 }
 
@@ -165,36 +220,11 @@ export function observedFooterLayout({ path, sourceCss, observedCss }) {
   const classNames = footerLogoClasses();
   if (!classNames.length) throw fail('No data pack declares a footer logo container class.');
   const clean = observedCss.replace(/\/\*[\s\S]*?\*\//g, '');
+  const escapedClasses = classNames.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)).join('|');
   const rules = [
-    ...clean.matchAll(
-      new RegExp(
-        String.raw`(?:^|})\s*\.(?:${classNames.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\s+svg\s*\{([^{}]*)\}`,
-        'g',
-      ),
-    ),
+    ...clean.matchAll(new RegExp(String.raw`(?:^|})\s*\.(?:${escapedClasses})\s+svg\s*\{([^{}]*)\}`, 'g')),
   ];
-  const topLevel = (offset) => {
-    let depth = 0,
-      quote;
-    for (let index = 0; index < offset; index++) {
-      const character = clean[index];
-      if (quote) {
-        if (character === '\\') index++;
-        else if (character === quote) quote = undefined;
-      } else if (character === '"' || character === "'") quote = character;
-      else if (character === '{') depth++;
-      else if (character === '}') depth--;
-    }
-    return depth === 0;
-  };
-  if (
-    !rules.some(
-      (rule) =>
-        topLevel(rule.index + (rule[0].startsWith('}') ? 1 : 0)) &&
-        /(?:^|;)\s*width\s*:\s*auto\s*(?:;|$)/i.test(rule[1]),
-    )
-  )
-    return undefined;
+  if (!hasIntrinsicSvgWidth(rules, clean)) return undefined;
   const layout = {
     path,
     sourceCssSha256: digest(sourceCss),
@@ -253,31 +283,9 @@ export function reconcileFooterLogos(rendered, source, profile, { styleSources =
   let markup = validateFooterLogoMarkup(profile.markup),
     diagnostic;
   if (profile.layout) {
-    const { sha256, ...layout } = profile.layout;
-    if (
-      layout.svgWidth !== 'auto' ||
-      !/^\/(?!\/)[^?#\\]+\.css$/i.test(layout.path) ||
-      !/^[a-f\d]{64}$/.test(layout.observedCssSha256 ?? '') ||
-      sha256 !== digest(JSON.stringify(layout))
-    )
-      throw fail('Observed footer layout failed its integrity check.');
-    const css = styleSources[layout.path];
-    if (typeof css !== 'string' || digest(css) !== layout.sourceCssSha256)
-      diagnostic = {
-        code: 'FOOTER_LAYOUT_SOURCE_CHANGED',
-        message: 'Observed intrinsic footer SVG sizing is stale after a stylesheet source edit.',
-        path: layout.path,
-      };
-    else {
-      const fragment = parseFragment(markup);
-      for (const graphic of fragment.childNodes ?? [])
-        if (graphic.tagName === 'svg') {
-          const style = graphic.attrs.find((attribute) => attribute.name === 'style');
-          if (style) style.value += ';width:auto';
-          else graphic.attrs.push({ name: 'style', value: 'width:auto' });
-        }
-      markup = serialize(fragment);
-    }
+    const result = applyFooterLayout(markup, profile.layout, styleSources);
+    markup = result.markup;
+    diagnostic = result.diagnostic;
   }
   const slot = logoSlot(rendered),
     location = slot.sourceCodeLocation;

@@ -1,6 +1,6 @@
 /** Report invocation failures as a single JSON value when requested. */
 export function reportCliError(error) {
-  if (process.argv.slice(2, process.argv.indexOf('--') < 0 ? undefined : process.argv.indexOf('--')).includes('--json'))
+  if (process.argv.slice(2, !process.argv.includes('--') ? undefined : process.argv.indexOf('--')).includes('--json'))
     console.log(
       JSON.stringify({
         schemaVersion: 1,

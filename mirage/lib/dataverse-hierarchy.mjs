@@ -28,6 +28,81 @@ const NAME = /^[a-z_][a-z0-9_]*$/i;
 const refId = (value) => (value !== null && typeof value === 'object' ? value.id : value);
 const lookupKey = (value) => guidKey(refId(value));
 
+function nextHierarchyFrontier(frontier, neighbours, seen) {
+  const next = [];
+  let cycle = false;
+  for (const id of frontier) {
+    for (const neighbour of neighbours(id)) {
+      if (seen.has(neighbour)) {
+        cycle = true;
+        continue;
+      }
+      seen.add(neighbour);
+      next.push(neighbour);
+    }
+  }
+  return { next, cycle };
+}
+
+function walkHierarchy(root, direction, neighbours, maxDepth, diagnostic, logical, lookup) {
+  const result = new Set();
+  if (direction.startsWith('eq-or')) result.add(root);
+  const seen = new Set([root]);
+  let cycle = false;
+  let depth = 0;
+  let frontier = [root];
+  while (frontier.length) {
+    const step = nextHierarchyFrontier(frontier, neighbours, seen),
+      next = step.next;
+    cycle ||= step.cycle;
+    if (!next.length) break;
+    depth += 1;
+    if (depth > maxDepth) {
+      diagnostic?.({
+        code: 'HIERARCHY_DEPTH_EXCEEDED',
+        table: logical,
+        column: lookup,
+        rootId: root,
+        direction,
+        maxDepth,
+        message: `The ${direction} walk on '${logical}' stopped at depth ${maxDepth}; records deeper than that are not returned.`,
+      });
+      break;
+    }
+    for (const id of next) result.add(id);
+    frontier = next;
+  }
+  if (cycle)
+    diagnostic?.({
+      code: 'HIERARCHY_CYCLE',
+      table: logical,
+      column: lookup,
+      rootId: root,
+      direction,
+      message: `The '${lookup}' lookup of '${logical}' forms a loop; the ${direction} walk stopped at the repeated record.`,
+    });
+  return result;
+}
+
+function hierarchyParents(store, logical, idColumn, lookup) {
+  const parents = new Map();
+  for (const row of store.tableRows(logical)) {
+    const id = guidKey(row[idColumn]);
+    if (id) parents.set(id, lookupKey(row[lookup]));
+  }
+  return parents;
+}
+
+function hierarchyChildren(parents) {
+  const children = new Map();
+  for (const [id, parent] of parents) {
+    if (parent === null || !parents.has(parent)) continue;
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(id);
+  }
+  return children;
+}
+
 /** Validates the pack export 'hierarchies': { '<table>': '<lookup column>' }. Returns lowercase names; throws TypeError on a bad entry. */
 export function validateHierarchies(map) {
   if (map === undefined) return {};
@@ -63,71 +138,16 @@ export function resolveHierarchy(
   const logical = String(table).toLowerCase();
   const lookup = String(column).toLowerCase();
   const idColumn = store.state.mappings?.[logical]?.idColumn;
-  const parents = new Map();
-  for (const row of store.tableRows(logical)) {
-    const id = guidKey(row[idColumn]);
-    if (id) parents.set(id, lookupKey(row[lookup]));
-  }
+  const parents = hierarchyParents(store, logical, idColumn, lookup);
   const root = guidKey(rootId);
-  const result = new Set();
-  if (!root || !parents.has(root)) return result;
+  if (!root || !parents.has(root)) return new Set();
 
   const down = direction.endsWith('under');
-  const children = new Map();
-  if (down) {
-    for (const [id, parent] of parents) {
-      if (parent === null || !parents.has(parent)) continue;
-      if (!children.has(parent)) children.set(parent, []);
-      children.get(parent).push(id);
-    }
-  }
+  const children = down ? hierarchyChildren(parents) : new Map();
   const neighbours = (id) =>
     down ? (children.get(id) ?? []) : [parents.get(id)].filter((parent) => parent && parents.has(parent));
 
-  if (direction.startsWith('eq-or')) result.add(root);
-  const seen = new Set([root]);
-  let cycle = false;
-  let depth = 0;
-  let frontier = [root];
-  while (frontier.length) {
-    const next = [];
-    for (const id of frontier) {
-      for (const neighbour of neighbours(id)) {
-        if (seen.has(neighbour)) {
-          cycle = true;
-          continue;
-        }
-        seen.add(neighbour);
-        next.push(neighbour);
-      }
-    }
-    if (!next.length) break;
-    depth += 1;
-    if (depth > maxDepth) {
-      diagnostic?.({
-        code: 'HIERARCHY_DEPTH_EXCEEDED',
-        table: logical,
-        column: lookup,
-        rootId: root,
-        direction,
-        maxDepth,
-        message: `The ${direction} walk on '${logical}' stopped at depth ${maxDepth}; records deeper than that are not returned.`,
-      });
-      break;
-    }
-    for (const id of next) result.add(id);
-    frontier = next;
-  }
-  if (cycle)
-    diagnostic?.({
-      code: 'HIERARCHY_CYCLE',
-      table: logical,
-      column: lookup,
-      rootId: root,
-      direction,
-      message: `The '${lookup}' lookup of '${logical}' forms a loop; the ${direction} walk stopped at the repeated record.`,
-    });
-  return result;
+  return walkHierarchy(root, direction, neighbours, maxDepth, diagnostic, logical, lookup);
 }
 
 // ---- Extension

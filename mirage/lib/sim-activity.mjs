@@ -110,6 +110,68 @@ export function resolveRenderSources(index, refs, sourceDir = null) {
 
 const instant = (value) => (/^\d+(?:\.\d+)?$/.test(value) ? Number(value) : Date.parse(value));
 
+function inActivityRange(from, to, time) {
+  if (from === null && to === null) return true;
+  const at = Date.parse(time);
+  return Number.isFinite(at) && (from === null || at >= from) && (to === null || at <= to);
+}
+
+function activityMembership(query, matched) {
+  const filterKeys = [...new Set(query.keys())].filter((key) => !SHAPING.has(key));
+  const timeOnly = filterKeys.every((key) => key === 'from' || key === 'to');
+  const from = query.get('from') ? instant(query.get('from')) : null,
+    to = query.get('to') ? instant(query.get('to')) : null;
+  return (item) => {
+    if (item.traceId) return matched.has(item.traceId);
+    return timeOnly && inActivityRange(from, to, item.time);
+  };
+}
+
+async function writeActivities(res, ids, traces, deps, counts, line, otlp) {
+  for (const traceId of ids) {
+    if (res.destroyed) return false;
+    const tree = deps.traces.tree(traceId);
+    if (!tree) continue;
+    counts.activities++;
+    if (traces === 'otlp') otlp.push(...tree.spans.map(otlpSpan));
+    else await line({ kind: 'activity', trace: tree.trace, spans: tree.spans });
+  }
+  return true;
+}
+
+async function writeRows(res, rows, kind, property, counts, line) {
+  for (const value of rows) {
+    if (res.destroyed) return false;
+    counts[property]++;
+    const document = { kind };
+    if (property === 'audit') document.entry = value;
+    else if (property === 'logs') document.line = value;
+    else document.diagnostic = value;
+    await line(document);
+  }
+  return true;
+}
+
+async function writeEvidence(line, counts, deps) {
+  const report = await deps.evidence();
+  if (!report) return;
+  counts.evidence++;
+  await line({
+    kind: 'evidence',
+    path: report.path ?? null,
+    time: report.time ?? null,
+    passed: report.passed === true,
+    verified: report.verified === true,
+    stale: report.stale === true,
+    differences: Array.isArray(report.differences) ? report.differences : [],
+    artifactUrls: {
+      live: '/__sim/evidence/live.png',
+      local: '/__sim/evidence/local.png',
+      difference: '/__sim/evidence/difference.png',
+    },
+  });
+}
+
 /**
  * Streams one activity bundle (NDJSON, one document per line, each with `kind`) for query (URLSearchParams: any trace
  * filter, format=bundle, traces=ndjson|otlp, limit): bundle header, activities (`activity` per trace, or one `otlp`
@@ -131,17 +193,8 @@ export async function writeActivityBundle(res, query, deps) {
   // The trace filters are checked (InvalidTraceFilter) before anything is written.
   const { ids, total } = exportedTraceIds(deps.traces, query);
   const matched = new Set(ids);
-  const filterKeys = [...new Set(query.keys())].filter((key) => !SHAPING.has(key));
-  const timeOnly = filterKeys.every((key) => key === 'from' || key === 'to');
-  const from = query.get('from') ? instant(query.get('from')) : null,
-    to = query.get('to') ? instant(query.get('to')) : null;
-  const inRange = (time) => {
-    if (from === null && to === null) return true;
-    const at = Date.parse(time);
-    return Number.isFinite(at) && (from === null || at >= from) && (to === null || at <= to);
-  };
   // An item belongs to the bundle when its trace matched, or (time-only filter) it has no trace and falls in the range.
-  const belongs = (item) => (item.traceId ? matched.has(item.traceId) : timeOnly && inRange(item.time));
+  const belongs = activityMembership(query, matched);
   res.writeHead(200, {
     'content-type': 'application/x-ndjson; charset=utf-8',
     'cache-control': 'no-store',
@@ -160,14 +213,7 @@ export async function writeActivityBundle(res, query, deps) {
     runtime: deps.runtime(),
   });
   const otlp = [];
-  for (const traceId of ids) {
-    if (res.destroyed) return;
-    const tree = deps.traces.tree(traceId);
-    if (!tree) continue; // dropped since the query
-    counts.activities++;
-    if (traces === 'otlp') otlp.push(...tree.spans.map(otlpSpan));
-    else await line({ kind: 'activity', trace: tree.trace, spans: tree.spans });
-  }
+  if (!(await writeActivities(res, ids, traces, deps, counts, line, otlp))) return;
   if (traces === 'otlp')
     await line({
       kind: 'otlp',
@@ -178,38 +224,19 @@ export async function writeActivityBundle(res, query, deps) {
         },
       ],
     });
-  for (const entry of deps.audit.entries.filter((item) => item.traceId && matched.has(item.traceId))) {
-    if (res.destroyed) return;
-    counts.audit++;
-    await line({ kind: 'audit', entry });
-  }
-  for (const logLine of deps.logs().filter(belongs)) {
-    if (res.destroyed) return;
-    counts.logs++;
-    await line({ kind: 'log', line: logLine });
-  }
-  for (const diagnostic of deps.diagnostics().filter(belongs)) {
-    if (res.destroyed) return;
-    counts.findings++;
-    await line({ kind: 'finding', diagnostic });
-  }
-  const report = await deps.evidence();
-  if (report) {
-    counts.evidence++;
-    await line({
-      kind: 'evidence',
-      path: report.path ?? null,
-      time: report.time ?? null,
-      passed: report.passed === true,
-      verified: report.verified === true,
-      stale: report.stale === true,
-      differences: Array.isArray(report.differences) ? report.differences : [],
-      artifactUrls: {
-        live: '/__sim/evidence/live.png',
-        local: '/__sim/evidence/local.png',
-        difference: '/__sim/evidence/difference.png',
-      },
-    });
-  }
+  if (
+    !(await writeRows(
+      res,
+      deps.audit.entries.filter((item) => item.traceId && matched.has(item.traceId)),
+      'audit',
+      'audit',
+      counts,
+      line,
+    ))
+  )
+    return;
+  if (!(await writeRows(res, deps.logs().filter(belongs), 'log', 'logs', counts, line))) return;
+  if (!(await writeRows(res, deps.diagnostics().filter(belongs), 'finding', 'findings', counts, line))) return;
+  await writeEvidence(line, counts, deps);
   res.end(`${JSON.stringify({ kind: 'end', counts })}\n`);
 }

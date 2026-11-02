@@ -6,6 +6,71 @@ import { privateJson, runProcess } from '../../../lense/dataverse/connection.mjs
 import { metadataXml } from '../../../lense/dataverse/provision.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url)),
   project = path.resolve(here, '..');
+
+async function importQuickFindSolution(solution, { journal, updates, folder, client, waitImport, publishViews }) {
+  const prior = journal.entries.find((entry) => entry.solution === solution);
+  if (prior) {
+    if (!prior.importJobId) throw new Error('Import identity missing; reconcile it before resume.');
+    if (prior.status !== 'Imported') await waitImport(prior);
+    await publishViews(updates.filter((entry) => entry.solution === solution));
+    return;
+  }
+  const scoped = updates.filter((entry) => entry.solution === solution);
+  const input = path.join(folder, solution + '.original.zip'),
+    output = path.join(folder, solution + '.edited.zip'),
+    changes = path.join(folder, solution + '.updates.json');
+  await privateJson(changes, scoped);
+  const exported = await client.request('ExportSolution', {
+    method: 'POST',
+    body: { SolutionName: solution, Managed: false },
+  });
+  await fs.writeFile(input, Buffer.from(exported.data.ExportSolutionFile, 'base64'), { flag: 'wx' });
+  await runProcess('powershell.exe', [
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    path.join(here, 'update-quickfind.ps1'),
+    '-InputZip',
+    input,
+    '-OutputZip',
+    output,
+    '-Adjustments',
+    changes,
+  ]);
+  const importJobId = crypto.randomUUID();
+  journal.entries.push({
+    solution,
+    views: scoped.map((entry) => entry.id),
+    input,
+    output,
+    importJobId,
+    status: 'Prepared',
+  });
+  await privateJson(path.join(folder, 'journal.json'), journal);
+  try {
+    const response = await client.request('ImportSolutionAsync', {
+      method: 'POST',
+      body: {
+        CustomizationFile: (await fs.readFile(output)).toString('base64'),
+        PublishWorkflows: false,
+        OverwriteUnmanagedCustomizations: false,
+        ImportJobId: importJobId,
+      },
+    });
+    journal.entries.at(-1).asyncOperationId = response.data?.AsyncOperationId;
+    journal.entries.at(-1).status = 'Dispatched';
+  } catch (error) {
+    journal.entries.at(-1).status = error.code === 'UNKNOWN_COMMIT' ? 'UnknownCommit' : 'Failed';
+    await privateJson(path.join(folder, 'journal.json'), journal);
+    throw error;
+  }
+  await privateJson(path.join(folder, 'journal.json'), journal);
+  await waitImport(journal.entries.at(-1));
+  await publishViews(scoped);
+  console.log(JSON.stringify({ solution, status: 'ImportedAndPublished' }));
+}
+
 export async function importQuickFind(connection, resume) {
   const info = await loadConnection(connection),
     client = connectedClient(info);
@@ -38,76 +103,25 @@ export async function importQuickFind(connection, resume) {
   };
   const publishViews = async (scoped) => {
     const tables = [...new Set(scoped.map((v) => v.table))];
+    const entities = tables.map((t) => `<entity>${t}</entity>`).join('');
     if (tables.length)
       await client.request('PublishXml', {
         method: 'POST',
         body: {
-          ParameterXml: `<importexportxml><entities>${tables.map((t) => `<entity>${t}</entity>`).join('')}</entities></importexportxml>`,
+          ParameterXml: `<importexportxml><entities>${entities}</entities></importexportxml>`,
         },
       });
   };
-  for (const solution of [...new Set(updates.map((v) => v.solution))]) {
-    const prior = journal.entries.find((e) => e.solution === solution);
-    if (prior) {
-      if (!prior.importJobId) throw new Error('Import identity missing; reconcile it before resume.');
-      if (prior.status !== 'Imported') await waitImport(prior);
-      await publishViews(updates.filter((v) => v.solution === solution));
-      continue;
-    }
-    const scoped = updates.filter((v) => v.solution === solution);
-    const input = path.join(folder, solution + '.original.zip'),
-      output = path.join(folder, solution + '.edited.zip'),
-      changes = path.join(folder, solution + '.updates.json');
-    await privateJson(changes, scoped);
-    const exported = await client.request('ExportSolution', {
-      method: 'POST',
-      body: { SolutionName: solution, Managed: false },
-    });
-    await fs.writeFile(input, Buffer.from(exported.data.ExportSolutionFile, 'base64'), { flag: 'wx' });
-    await runProcess('powershell.exe', [
-      '-NoProfile',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-File',
-      path.join(here, 'update-quickfind.ps1'),
-      '-InputZip',
-      input,
-      '-OutputZip',
-      output,
-      '-Adjustments',
-      changes,
-    ]);
-    const importJobId = crypto.randomUUID();
-    journal.entries.push({ solution, views: scoped.map((v) => v.id), input, output, importJobId, status: 'Prepared' });
-    await privateJson(path.join(folder, 'journal.json'), journal);
-    try {
-      const response = await client.request('ImportSolutionAsync', {
-        method: 'POST',
-        body: {
-          CustomizationFile: (await fs.readFile(output)).toString('base64'),
-          PublishWorkflows: false,
-          OverwriteUnmanagedCustomizations: false,
-          ImportJobId: importJobId,
-        },
-      });
-      journal.entries.at(-1).asyncOperationId = response.data?.AsyncOperationId;
-      journal.entries.at(-1).status = 'Dispatched';
-    } catch (error) {
-      journal.entries.at(-1).status = error.code === 'UNKNOWN_COMMIT' ? 'UnknownCommit' : 'Failed';
-      await privateJson(path.join(folder, 'journal.json'), journal);
-      throw error;
-    }
-    await privateJson(path.join(folder, 'journal.json'), journal);
-    await waitImport(journal.entries.at(-1));
-    await publishViews(scoped);
-    console.log(JSON.stringify({ solution, status: 'ImportedAndPublished' }));
+  for (const solution of new Set(updates.map((v) => v.solution))) {
+    await importQuickFindSolution(solution, { journal, updates, folder, client, waitImport, publishViews });
   }
   const tables = [...new Set(updates.map((v) => v.table))];
+  const entities = tables.map((t) => `<entity>${t}</entity>`).join('');
   if (tables.length)
     await client.request('PublishXml', {
       method: 'POST',
       body: {
-        ParameterXml: `<importexportxml><entities>${tables.map((t) => `<entity>${t}</entity>`).join('')}</entities></importexportxml>`,
+        ParameterXml: `<importexportxml><entities>${entities}</entities></importexportxml>`,
       },
     });
   // Dataverse serializes imported XML; validate selected/find fields and row GUIDs.

@@ -22,7 +22,7 @@ const STAGED_BYTES = 4 * 1024 * 1024;
 const rowStates = new WeakMap(),
   tables = new WeakMap();
 // True while any paged table may be alive; it clears after every table is collected.
-export let recordTablesCreated = false;
+export let recordTablesCreated = false; // NOSONAR: exported binding must stay mutable
 let liveTables = 0;
 const liveTableRegistry = new FinalizationRegistry(() => {
   if (--liveTables === 0) recordTablesCreated = false;
@@ -30,7 +30,7 @@ const liveTableRegistry = new FinalizationRegistry(() => {
 const normalizeKey = (value) =>
   value
     .replace(
-      /^(?:\{([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})\}|\(([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})\))$/i,
+      /^(?:\{([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})\}|\(([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})\))$/i, // NOSONAR: regex kept: a rewrite would change matches or captures
       (_match, braced, parenthesized) => braced ?? parenthesized,
     )
     .toLowerCase();
@@ -57,7 +57,7 @@ const locator = (file, page, slot = 0) => {
   return value;
 };
 const partsOf = (value) => {
-  if (!Number.isSafeInteger(value) || value <= 0) throw Error('Invalid record locator');
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error('Invalid record locator');
   const file = Math.floor(value / FILE),
     within = value % FILE;
   return { file, page: Math.floor(within / SLOTS), slot: within % SLOTS };
@@ -86,7 +86,7 @@ const relative = (value, length, fallback) => {
 const unread = Symbol('unread');
 const plainField = (raw, name) => {
   const descriptor = Object.getOwnPropertyDescriptor(raw, name);
-  if (!descriptor || !descriptor.enumerable) return undefined;
+  if (!descriptor?.enumerable) return undefined;
   if (!Object.hasOwn(descriptor, 'value')) return unread;
   const value = descriptor.value;
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
@@ -182,7 +182,7 @@ export class RecordPageSession {
     };
   }
   writer() {
-    if (this.closed) throw Error('Record page session is closed');
+    if (this.closed) throw new Error('Record page session is closed');
     if (this.writerIndex === null) {
       while (this.openReaders.size >= this.maxOpenFiles) {
         const oldest = this.openReaders.keys().next().value;
@@ -213,7 +213,8 @@ export class RecordPageSession {
     // Persist typed numeric markers, matching ordinary simulator state. The
     // public wire encoder, not storage, converts them to exact JSON numbers.
     const text = JSON.stringify(row);
-    if (text?.[0] !== '{' || text.at(-1) !== '}') throw TypeError('A streamed record must encode as a JSON object');
+    if (!text?.startsWith('{') || text.at(-1) !== '}')
+      throw TypeError('A streamed record must encode as a JSON object');
     return this.putText(text, metadata);
   }
   /** Store one record's JSON text (a string, or bytes copied from another page). */
@@ -236,7 +237,7 @@ export class RecordPageSession {
       const header = Buffer.allocUnsafe(values.length * 4);
       values.forEach((value, i) => header.writeUInt32LE(value.length, i * 4));
       if (this.writer().append(1, Buffer.concat([header, ...values]), values.length) !== this.pendingPage)
-        throw Error('Record page numbering changed');
+        throw new Error('Record page numbering changed');
       this.pending = [];
       this.pendingBytes = 0;
     }
@@ -244,7 +245,7 @@ export class RecordPageSession {
     try {
       for (const node of this.staged) {
         if (this.writer().append(node.kind, node.bytes, node.count) !== node.page)
-          throw Error('Key page numbering changed');
+          throw new Error('Key page numbering changed');
         written++;
         this.stagedBytes -= node.bytes.length;
         this.stagedNodes.delete(node.id);
@@ -264,7 +265,7 @@ export class RecordPageSession {
     const p = partsOf(id),
       store = this.files[p.file]?.store,
       entry = store?.page(p.page);
-    if (!entry || p.slot || ![2, 3].includes(entry.kind)) throw Error('Invalid ordinal index page');
+    if (!entry || p.slot || ![2, 3].includes(entry.kind)) throw new Error('Invalid ordinal index page');
     const bytes = this.readBytes(p),
       ids = entry.kind === 2 ? new Uint32Array(entry.count) : new Float64Array(entry.count);
     for (let i = 0; i < ids.length; i++)
@@ -298,7 +299,7 @@ export class RecordPageSession {
     return {
       read: (id) => {
         const p = partsOf(id);
-        if (!limits.has(p.file) || p.page > limits.get(p.file)) throw Error('Unlisted key index child');
+        if (!limits.has(p.file) || p.page > limits.get(p.file)) throw new Error('Unlisted key index child');
         return this.readKeyNode(id);
       },
       write: (node) => {
@@ -334,11 +335,11 @@ export class RecordPageSession {
     }
     const p = partsOf(id),
       entry = this.files[p.file]?.store.page(p.page);
-    if (p.slot || !entry || ![4, 5].includes(entry.kind)) throw Error('Invalid key index page');
+    if (p.slot || !entry || ![4, 5].includes(entry.kind)) throw new Error('Invalid key index page');
     const bytes = this.readBytes(p),
       node = JSON.parse(bytes.toString('utf8'));
     if (Boolean(node.leaf) !== (entry.kind === 4) || (node.leaf ? node.pairs : node.children)?.length !== entry.count)
-      throw Error('Invalid key index node');
+      throw new Error('Invalid key index node');
     this.cacheKeyNode(id, node, bytes.length * 3 + 1024, entry.kind === 5);
     return node;
   }
@@ -384,12 +385,13 @@ export class RecordPageSession {
     const p = partsOf(id),
       store = this.files[p.file]?.store;
     if (this.pending.length && p.file === this.writerIndex && p.page === this.pendingPage) {
-      if (p.slot >= this.pending.length) throw Error('Invalid stored record locator');
+      if (p.slot >= this.pending.length) throw new Error('Invalid stored record locator');
       const text = this.pending[p.slot];
-      return asBytes === (typeof text !== 'string') ? text : asBytes ? Buffer.from(text) : text.toString('utf8');
+      if (asBytes === (typeof text !== 'string')) return text;
+      return asBytes ? Buffer.from(text) : text.toString('utf8');
     }
     const entry = store?.page(p.page);
-    if (!entry || entry.kind !== 1 || p.slot >= entry.count) throw Error('Invalid stored record locator');
+    if (entry?.kind !== 1 || p.slot >= entry.count) throw new Error('Invalid stored record locator');
     const key = p.file + '/' + p.page;
     let raw;
     let decoded = this.decoded.get(key);
@@ -397,27 +399,9 @@ export class RecordPageSession {
       this.decoded.delete(key);
       this.decoded.set(key, decoded);
     } else {
-      const bytes = (raw = this.readBytes(p)),
-        offsets = new Uint32Array(entry.count + 1);
-      let offset = entry.count * 4;
-      if (bytes.length < offset) throw Error('Invalid stored record directory');
-      for (let i = 0; i < entry.count; i++) {
-        offsets[i] = offset;
-        offset += bytes.readUInt32LE(i * 4);
-        if (offset > bytes.length) throw Error('Invalid stored record bounds');
-      }
-      offsets[entry.count] = offset;
-      if (offset !== bytes.length) throw Error('Invalid stored record page length');
-      decoded = { offsets, bytes: offsets.byteLength };
-      if (decoded.bytes <= this.decodedLimit) {
-        while (this.decodedSize + decoded.bytes > this.decodedLimit) {
-          const oldest = this.decoded.keys().next().value;
-          this.decodedSize -= this.decoded.get(oldest).bytes;
-          this.decoded.delete(oldest);
-        }
-        this.decoded.set(key, decoded);
-        this.decodedSize += decoded.bytes;
-      }
+      const page = decodeRecordPage(this, key, entry, p);
+      decoded = page.decoded;
+      raw = page.raw;
     }
     raw ??= this.readBytes(p);
     const start = decoded.offsets[p.slot],
@@ -427,7 +411,7 @@ export class RecordPageSession {
   readRow(id, { metadata = false } = {}) {
     const text = this.recordText(id),
       row = JSON.parse(text);
-    if (!row || typeof row !== 'object' || Array.isArray(row)) throw Error('Invalid stored record');
+    if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error('Invalid stored record');
     return metadata ? { row, bytes: Buffer.byteLength(text) * 3 + 2048 } : row;
   }
   retain(state) {
@@ -492,54 +476,20 @@ export class RecordPageSession {
       if (state) held.set(id, state);
     }
     const sorter = source.keyTree ? new KeySorter(this.directory) : null;
-    let yieldedAt = performance.now(),
-      operations = 0;
-    const yieldWork = async () => {
-      if (performance.now() - yieldedAt >= 8) {
-        await setImmediate();
-        yieldedAt = performance.now();
-      }
-    };
+    const yieldState = { yieldedAt: performance.now() },
+      yieldWork = () => yieldCopyWork(yieldState),
+      saveContext = { session: this, source, table, held, moved, sorter },
+      save = (oldId) => saveCopiedRecord(saveContext, oldId);
     // Stored JSON bytes are copied as they are; only a key column is parsed.
-    const save = (oldId) => {
-      const stored = this.putText(source.session.recordText(oldId, { bytes: true }), true),
-        id = stored.id;
-      if (held.has(oldId)) moved.set(oldId, id);
-      if (sorter) {
-        const key = JSON.parse(stored.text.toString('utf8'))[source.keyColumn];
-        if (typeof key !== 'string') throw Error('Record key index disagrees with its records');
-        table.noteKeyShape(key);
-        sorter.add([normalizeKey(key), id]);
-      }
-      return id;
-    };
     try {
       if (!source.aliases) {
-        for (const chunk of [...source.chunks]) {
-          const ids = new Array(chunk.count);
-          for (let i = 0; i < chunk.count; i++) ids[i] = chunk.ids?.[i] ? save(chunk.ids[i]) : 0;
-          table.appendIds(ids);
-          await yieldWork();
-        }
+        await this.copyChunks(source, table, save, yieldWork);
       } else {
         const positions = new KeySorter(this.directory);
         try {
-          for (let index = 0; index < source.length; index++) {
-            const id = source.id(index);
-            if (id) positions.add([String(id).padStart(16, '0'), index + 1]);
-            if (++operations % 512 === 0) await yieldWork();
-          }
+          const operations = await indexAliasPositions(source, positions, yieldWork);
           table.resize(source.length);
-          let previous, id;
-          for (const [key, position] of positions.sorted()) {
-            const oldId = Number(key);
-            if (oldId !== previous) {
-              id = save(oldId);
-              previous = oldId;
-            } else table.aliases = true;
-            table.setId(position - 1, id, { updateIndex: false, preparedVersion: 0 });
-            if (++operations % 512 === 0) await yieldWork();
-          }
+          await populateAliasPositions(source, table, positions, save, yieldWork, operations);
         } finally {
           positions.close();
         }
@@ -557,6 +507,15 @@ export class RecordPageSession {
       sorter?.close();
     }
   }
+  async copyChunks(source, table, save, yieldWork) {
+    /* NOSONAR: snapshot copy guards against mutation while iterating */ for (const chunk of [...source.chunks]) {
+      // NOSONAR: snapshot, the source chunks may change while yielding
+      const ids = new Array(chunk.count);
+      for (let i = 0; i < chunk.count; i++) ids[i] = chunk.ids?.[i] ? save(chunk.ids[i]) : 0;
+      table.appendIds(ids);
+      await yieldWork();
+    }
+  }
   hasLiveTables() {
     for (const ref of this.backends) {
       const table = ref.deref();
@@ -567,7 +526,7 @@ export class RecordPageSession {
   }
   describe(value) {
     const table = tables.get(value);
-    if (!table || table.session !== this) throw TypeError('Unknown paged record table');
+    if (table?.session !== this) throw TypeError('Unknown paged record table');
     if (table.description) return table.description;
     this.flushRecords();
     const used = new Set();
@@ -603,153 +562,13 @@ export class RecordPageSession {
     return table.description;
   }
   async restoreMany(descriptors) {
-    if (this.files.length) throw Error('Restore requires a fresh record-page session');
-    const groups = new Map(),
-      names = new Map();
-    const checkLength = (n) => Number.isSafeInteger(n) && n >= 0 && n <= 4294967295;
-    for (const descriptor of descriptors) {
-      if (
-        descriptor?.format !== 'paged-records-1' ||
-        !checkLength(descriptor.length) ||
-        !checkLength(descriptor.records) ||
-        descriptor.records > descriptor.length ||
-        !Array.isArray(descriptor.files) ||
-        !Array.isArray(descriptor.chunks) ||
-        descriptor.chunks.length < Math.ceil(descriptor.length / CHUNK) ||
-        descriptor.chunks.length > descriptor.length ||
-        (descriptor.aliases !== undefined && typeof descriptor.aliases !== 'boolean')
-      )
-        throw Error('Invalid paged table descriptor');
-      if (descriptor.owner !== undefined && descriptor.owner !== this.ownerKey)
-        throw Error('Record directory belongs to a different state');
-      for (const file of descriptor.files) {
-        if (
-          !Number.isSafeInteger(file.index) ||
-          file.index < 0 ||
-          file.index >= 2097152 ||
-          !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.pages$/.test(file.name ?? '')
-        )
-          throw Error('Invalid owned record file');
-        if (names.has(file.index) && names.get(file.index) !== file.name)
-          throw Error('Contradictory record file slots');
-        names.set(file.index, file.name);
-        let group = groups.get(file.name);
-        if (!group) groups.set(file.name, (group = { slots: new Set(), prefixes: [] }));
-        group.slots.add(file.index);
-        group.prefixes.push(file.prefix);
-      }
-    }
+    if (this.files.length) throw new Error('Restore requires a fresh record-page session');
+    const groups = collectRestoreGroups(this.ownerKey, descriptors);
     const opened = [];
     try {
-      this.lease.protect(groups.keys());
-      for (const [name, group] of groups) {
-        const file = path.join(this.directory, name),
-          real = fs.realpathSync.native(file);
-        if (path.dirname(real) !== this.directory) throw Error('Record file escapes its owned directory');
-        const prefixes = group.prefixes;
-        if (prefixes.some((prefix) => !prefix || !Number.isSafeInteger(prefix.bytes)))
-          throw Error('Invalid record file prefix');
-        const latest = prefixes.reduce((max, prefix) => (prefix.bytes > max.bytes ? prefix : max));
-        const store = await RecordPageFile.open(file, latest, { prefixes, cacheBytes: 0 });
-        store.suspend();
-        opened.push(store);
-        for (const index of group.slots) this.files[index] = { name, store };
-      }
+      await openRestoreGroups(this, groups, opened);
       const restored = [];
-      for (const descriptor of descriptors) {
-        const table = new PagedRecords(this),
-          allowed = new Map(descriptor.files.map((file) => [file.index, file.prefix]));
-        if (allowed.size !== descriptor.files.length) throw Error('Duplicate record file slot');
-        let previous = 0,
-          ascending = true,
-          length = 0;
-        for (const chunk of descriptor.chunks) {
-          const count = chunk?.holes ?? chunk?.count;
-          if (!Number.isSafeInteger(count) || count < 1 || count > CHUNK) throw Error('Invalid ordinal chunk size');
-          length += count;
-          if (chunk.holes !== undefined) {
-            if (chunk.ref !== undefined) throw Error('Invalid sparse ordinal chunk');
-            table.chunks.push({ ids: null, count, present: 0, owner: table.mutationToken });
-            continue;
-          }
-          const page = partsOf(chunk.ref);
-          if (!allowed.has(page.file) || page.page > allowed.get(page.file).pages)
-            throw Error('Unlisted ordinal file or chunk size');
-          const ids = this.readIndex(chunk.ref);
-          if (ids.length !== count) throw Error('Invalid ordinal count');
-          let present = 0,
-            entry,
-            lastPage = -1,
-            lastFile = -1;
-          for (let i = 0; i < count; i++) {
-            const id = ids[i];
-            if (!id) continue;
-            if (!Number.isSafeInteger(id) || id < 0) throw Error('Dangling record locator');
-            const file = Math.floor(id / FILE),
-              within = id - file * FILE,
-              pageNumber = Math.floor(within / SLOTS);
-            if (file !== lastFile || pageNumber !== lastPage) {
-              entry =
-                allowed.has(file) && pageNumber <= allowed.get(file).pages && pageNumber > 0
-                  ? this.files[file]?.store.entries.at(pageNumber)
-                  : undefined;
-              lastFile = file;
-              lastPage = pageNumber;
-            }
-            if (!entry || entry.kind !== 1 || within - pageNumber * SLOTS >= entry.count)
-              throw Error('Dangling record locator');
-            if (id <= previous) ascending = false;
-            previous = id;
-            present++;
-          }
-          table.present += present;
-          table.chunks.push({ ids, count, present, owner: table.mutationToken, ref: chunk.ref });
-        }
-        if (length !== descriptor.length) throw Error('Invalid ordinal chunk size');
-        if (table.present !== descriptor.records) throw Error('Stored record count disagrees with its locators');
-        table.length = descriptor.length;
-        // Earlier descriptors recorded no alias flag: any out-of-order locator may be one.
-        table.aliases = descriptor.aliases ?? !ascending;
-        // Descriptors predating owner keys, alias flags or header digests are
-        // written afresh on their next publication.
-        table.description =
-          descriptor.owner === undefined ||
-          descriptor.aliases === undefined ||
-          descriptor.files.some((file) => file.prefix?.format !== 2)
-            ? undefined
-            : descriptor;
-        if (
-          descriptor.versionHighWatermark !== undefined &&
-          (!Number.isSafeInteger(descriptor.versionHighWatermark) || descriptor.versionHighWatermark < 0)
-        )
-          throw Error('Invalid stored row-version watermark');
-        table.versionHighWatermark = descriptor.versionHighWatermark;
-        if (descriptor.looseBraceKeys !== undefined && typeof descriptor.looseBraceKeys !== 'boolean')
-          throw Error('Invalid key normalization flag');
-        table.looseBraceKeys = descriptor.looseBraceKeys ?? true;
-        if (descriptor.keyIndex) {
-          const index = descriptor.keyIndex;
-          if (
-            typeof index.column !== 'string' ||
-            !Array.isArray(index.files) ||
-            index.files.some((file) => !allowed.has(file))
-          )
-            throw Error('Invalid key index descriptor');
-          table.keyColumn = index.column;
-          table.keyTree = new PersistentKeyTree(
-            this.keyStoreWithin(index.files.map((file) => [file, allowed.get(file).pages])),
-            { root: index.root, files: index.files },
-          );
-          // Verify root ownership before any query follows its descendants.
-          if (index.root) {
-            const root = partsOf(index.root.id);
-            if (!index.files.includes(root.file) || root.page > allowed.get(root.file).pages)
-              throw Error('Unlisted key index root');
-            table.keyTree.node(index.root);
-          }
-        }
-        restored.push(table.proxy);
-      }
+      for (const descriptor of descriptors) restored.push(restoreDescriptor(this, descriptor));
       return restored;
     } catch (error) {
       for (const store of opened) store.close();
@@ -812,6 +631,232 @@ export class RecordPageSession {
   }
 }
 
+function collectRestoreGroups(ownerKey, descriptors) {
+  const groups = new Map(),
+    names = new Map();
+  for (const descriptor of descriptors) {
+    validateRestoreDescriptorShape(descriptor);
+    if (descriptor.owner !== undefined && descriptor.owner !== ownerKey)
+      throw new Error('Record directory belongs to a different state');
+    for (const file of descriptor.files) registerRestoreFile(file, names, groups);
+  }
+  return groups;
+}
+
+function validateRestoreDescriptorShape(descriptor) {
+  const checkLength = (n) => Number.isSafeInteger(n) && n >= 0 && n <= 4294967295;
+  if (
+    descriptor?.format !== 'paged-records-1' ||
+    !checkLength(descriptor.length) ||
+    !checkLength(descriptor.records) ||
+    descriptor.records > descriptor.length ||
+    !Array.isArray(descriptor.files) ||
+    !Array.isArray(descriptor.chunks) ||
+    descriptor.chunks.length < Math.ceil(descriptor.length / CHUNK) ||
+    descriptor.chunks.length > descriptor.length ||
+    (descriptor.aliases !== undefined && typeof descriptor.aliases !== 'boolean')
+  )
+    throw new Error('Invalid paged table descriptor');
+}
+
+function registerRestoreFile(file, names, groups) {
+  if (
+    !Number.isSafeInteger(file.index) ||
+    file.index < 0 ||
+    file.index >= 2097152 ||
+    !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.pages$/.test(file.name ?? '')
+  )
+    throw new Error('Invalid owned record file');
+  if (names.has(file.index) && names.get(file.index) !== file.name) throw new Error('Contradictory record file slots');
+  names.set(file.index, file.name);
+  let group = groups.get(file.name);
+  if (!group) {
+    group = { slots: new Set(), prefixes: [] };
+    groups.set(file.name, group);
+  }
+  group.slots.add(file.index);
+  group.prefixes.push(file.prefix);
+}
+
+async function openRestoreGroups(session, groups, opened) {
+  session.lease.protect(groups.keys());
+  for (const [name, group] of groups) {
+    const file = path.join(session.directory, name),
+      real = fs.realpathSync.native(file);
+    if (path.dirname(real) !== session.directory) throw new Error('Record file escapes its owned directory');
+    const prefixes = group.prefixes;
+    if (prefixes.some((prefix) => !prefix || !Number.isSafeInteger(prefix.bytes)))
+      throw new Error('Invalid record file prefix');
+    const latest = prefixes.reduce((max, prefix) => (prefix.bytes > max.bytes ? prefix : max));
+    const store = await RecordPageFile.open(file, latest, { prefixes, cacheBytes: 0 });
+    store.suspend();
+    opened.push(store);
+    for (const index of group.slots) session.files[index] = { name, store };
+  }
+}
+
+function restoreDescriptor(session, descriptor) {
+  const table = new PagedRecords(session),
+    allowed = new Map(descriptor.files.map((file) => [file.index, file.prefix]));
+  if (allowed.size !== descriptor.files.length) throw new Error('Duplicate record file slot');
+  const progress = { previous: 0, ascending: true, length: 0 };
+  for (const chunk of descriptor.chunks) restoreOrdinalChunk(session, table, chunk, allowed, progress);
+  if (progress.length !== descriptor.length) throw new Error('Invalid ordinal chunk size');
+  if (table.present !== descriptor.records) throw new Error('Stored record count disagrees with its locators');
+  table.length = descriptor.length;
+  table.aliases = descriptor.aliases ?? !progress.ascending;
+  table.description = isCurrentDescriptor(descriptor) ? descriptor : undefined;
+  if (
+    descriptor.versionHighWatermark !== undefined &&
+    (!Number.isSafeInteger(descriptor.versionHighWatermark) || descriptor.versionHighWatermark < 0)
+  )
+    throw new Error('Invalid stored row-version watermark');
+  table.versionHighWatermark = descriptor.versionHighWatermark;
+  if (descriptor.looseBraceKeys !== undefined && typeof descriptor.looseBraceKeys !== 'boolean')
+    throw new Error('Invalid key normalization flag');
+  table.looseBraceKeys = descriptor.looseBraceKeys ?? true;
+  if (descriptor.keyIndex) restoreKeyIndex(session, table, descriptor.keyIndex, allowed);
+  return table.proxy;
+}
+
+function isCurrentDescriptor(descriptor) {
+  return (
+    descriptor.owner !== undefined &&
+    descriptor.aliases !== undefined &&
+    !descriptor.files.some((file) => file.prefix?.format !== 2)
+  );
+}
+
+function restoreOrdinalChunk(session, table, chunk, allowed, progress) {
+  const count = chunk?.holes ?? chunk?.count;
+  if (!Number.isSafeInteger(count) || count < 1 || count > CHUNK) throw new Error('Invalid ordinal chunk size');
+  progress.length += count;
+  if (chunk.holes !== undefined) {
+    if (chunk.ref !== undefined) throw new Error('Invalid sparse ordinal chunk');
+    table.chunks.push({ ids: null, count, present: 0, owner: table.mutationToken });
+    return;
+  }
+  const page = partsOf(chunk.ref);
+  if (!allowed.has(page.file) || page.page > allowed.get(page.file).pages)
+    throw new Error('Unlisted ordinal file or chunk size');
+  const ids = session.readIndex(chunk.ref);
+  if (ids.length !== count) throw new Error('Invalid ordinal count');
+  const present = validateRestoredLocators(session, ids, allowed, progress);
+  table.present += present;
+  table.chunks.push({ ids, count, present, owner: table.mutationToken, ref: chunk.ref });
+}
+
+function validateRestoredLocators(session, ids, allowed, progress) {
+  let present = 0,
+    entry,
+    lastPage = -1,
+    lastFile = -1;
+  for (const id of ids) {
+    if (!id) continue;
+    if (!Number.isSafeInteger(id) || id < 0) throw new Error('Dangling record locator');
+    const file = Math.floor(id / FILE),
+      within = id - file * FILE,
+      pageNumber = Math.floor(within / SLOTS);
+    if (file !== lastFile || pageNumber !== lastPage) {
+      entry =
+        allowed.has(file) && pageNumber <= allowed.get(file).pages && pageNumber > 0
+          ? session.files[file]?.store.entries.at(pageNumber)
+          : undefined;
+      lastFile = file;
+      lastPage = pageNumber;
+    }
+    if (entry?.kind !== 1 || within - pageNumber * SLOTS >= entry.count) throw new Error('Dangling record locator');
+    if (id <= progress.previous) progress.ascending = false;
+    progress.previous = id;
+    present++;
+  }
+  return present;
+}
+
+function restoreKeyIndex(session, table, index, allowed) {
+  if (typeof index.column !== 'string' || !Array.isArray(index.files) || index.files.some((file) => !allowed.has(file)))
+    throw new Error('Invalid key index descriptor');
+  table.keyColumn = index.column;
+  table.keyTree = new PersistentKeyTree(
+    session.keyStoreWithin(index.files.map((file) => [file, allowed.get(file).pages])),
+    { root: index.root, files: index.files },
+  );
+  if (!index.root) return;
+  const root = partsOf(index.root.id);
+  if (!index.files.includes(root.file) || root.page > allowed.get(root.file).pages)
+    throw new Error('Unlisted key index root');
+  table.keyTree.node(index.root);
+}
+
+function decodeRecordPage(session, key, entry, parts) {
+  const bytes = session.readBytes(parts),
+    offsets = new Uint32Array(entry.count + 1);
+  let offset = entry.count * 4;
+  if (bytes.length < offset) throw new Error('Invalid stored record directory');
+  for (let i = 0; i < entry.count; i++) {
+    offsets[i] = offset;
+    offset += bytes.readUInt32LE(i * 4);
+    if (offset > bytes.length) throw new Error('Invalid stored record bounds');
+  }
+  offsets[entry.count] = offset;
+  if (offset !== bytes.length) throw new Error('Invalid stored record page length');
+  const decoded = { offsets, bytes: offsets.byteLength };
+  if (decoded.bytes <= session.decodedLimit) {
+    while (session.decodedSize + decoded.bytes > session.decodedLimit) {
+      const oldest = session.decoded.keys().next().value;
+      session.decodedSize -= session.decoded.get(oldest).bytes;
+      session.decoded.delete(oldest);
+    }
+    session.decoded.set(key, decoded);
+    session.decodedSize += decoded.bytes;
+  }
+  return { decoded, raw: bytes };
+}
+
+async function indexAliasPositions(source, positions, yieldWork) {
+  let operations = 0;
+  for (let index = 0; index < source.length; index++) {
+    const id = source.id(index);
+    if (id) positions.add([String(id).padStart(16, '0'), index + 1]);
+    if (++operations % 512 === 0) await yieldWork();
+  }
+  return operations;
+}
+
+async function yieldCopyWork(state) {
+  if (performance.now() - state.yieldedAt >= 8) {
+    await setImmediate();
+    state.yieldedAt = performance.now();
+  }
+}
+
+function saveCopiedRecord({ session, source, table, held, moved, sorter }, oldId) {
+  const stored = session.putText(source.session.recordText(oldId, { bytes: true }), true),
+    id = stored.id;
+  if (held.has(oldId)) moved.set(oldId, id);
+  if (sorter) {
+    const key = JSON.parse(stored.text.toString('utf8'))[source.keyColumn];
+    if (typeof key !== 'string') throw new Error('Record key index disagrees with its records');
+    table.noteKeyShape(key);
+    sorter.add([normalizeKey(key), id]);
+  }
+  return id;
+}
+
+async function populateAliasPositions(source, table, positions, save, yieldWork, operations) {
+  let previous, id;
+  for (const [key, position] of positions.sorted()) {
+    const oldId = Number(key);
+    if (oldId !== previous) {
+      id = save(oldId);
+      previous = oldId;
+    } else table.aliases = true;
+    table.setId(position - 1, id, { updateIndex: false, preparedVersion: 0 });
+    if (++operations % 512 === 0) await yieldWork();
+  }
+  return operations;
+}
+
 function typed(values) {
   return values.some((id) => id > 0xffffffff) ? Float64Array.from(values) : Uint32Array.from(values);
 }
@@ -839,7 +884,7 @@ function filesOf(chunk) {
       if (file !== last && !files.includes(file)) files.push(file);
       last = file;
     }
-    chunk.files = files.sort((a, b) => a - b);
+    chunk.files = files.toSorted((a, b) => a - b);
   }
   return chunk.files;
 }
@@ -899,7 +944,7 @@ class PagedRecords {
     this.versionHighWatermark = 0;
     this.looseBraceKeys = false;
     this.target = [];
-    const self = this,
+    const self = this, // NOSONAR: this is used inside a nested non-arrow function
       methods = new Map();
     for (const name of ['splice', 'reverse', 'sort', 'push', 'pop', 'shift', 'unshift', 'fill', 'copyWithin']) {
       const native = Array.prototype[name],
@@ -989,7 +1034,8 @@ class PagedRecords {
       at += this.chunks[c].count;
     }
     starts[this.chunks.length] = at;
-    return (this.starts = starts);
+    this.starts = starts;
+    return starts;
   }
   chunkAt(index) {
     const starts = this.starts ?? this.indexStarts();
@@ -1002,7 +1048,8 @@ class PagedRecords {
       if (starts[mid] <= index) low = mid;
       else high = mid - 1;
     }
-    return (this.cursor = low);
+    this.cursor = low;
+    return low;
   }
   id(index) {
     if (!(index >= 0 && index < this.length)) return 0;
@@ -1054,7 +1101,8 @@ class PagedRecords {
       }
       hash.update(chunk.fingerprint + ':');
     }
-    return (this.fingerprintCache = hash.digest('hex'));
+    this.fingerprintCache = hash.digest('hex');
+    return this.fingerprintCache;
   }
   /** Every position of one record version. Each chunk is skipped by its sorted
    * ids unless it holds the version, so lookups stay bounded after edits. */
@@ -1089,7 +1137,7 @@ class PagedRecords {
       return;
     }
     for (let i = 0; i < this.length && removed.size; i++) {
-      if (i === start) i = end;
+      if (i === start) i = end; // NOSONAR: loop cursor is advanced in the body on purpose
       if (i < this.length) removed.delete(this.id(i));
     }
   }
@@ -1100,21 +1148,25 @@ class PagedRecords {
     // Large truncations/splices are one sequential key pass, rather than one
     // path-copy transaction per removed row. Smaller edits path-copy O(log n)
     // key nodes and persist only the final version of each.
-    if (removedSet.size + addedSet.size > 1024) {
-      const sorter = new KeySorter(this.session.directory);
-      try {
-        for (const pair of this.keyTree.entries()) if (!removedSet.has(pair[1])) sorter.add(pair);
-        for (const id of addedSet) {
-          const key = this.session.readRow(id)[this.keyColumn];
-          if (typeof key !== 'string') return null;
-          this.noteKeyShape(key);
-          sorter.add([normalizeKey(key), id]);
-        }
-        return PersistentKeyTree.fromSorted(this.session.keyStore, sorter.sorted());
-      } finally {
-        sorter.close();
+    if (removedSet.size + addedSet.size > 1024) return this.prepareLargeIndex(removedSet, addedSet);
+    return this.prepareSmallIndex(removedSet, addedSet);
+  }
+  prepareLargeIndex(removedSet, addedSet) {
+    const sorter = new KeySorter(this.session.directory);
+    try {
+      for (const pair of this.keyTree.entries()) if (!removedSet.has(pair[1])) sorter.add(pair);
+      for (const id of addedSet) {
+        const key = this.session.readRow(id)[this.keyColumn];
+        if (typeof key !== 'string') return null;
+        this.noteKeyShape(key);
+        sorter.add([normalizeKey(key), id]);
       }
+      return PersistentKeyTree.fromSorted(this.session.keyStore, sorter.sorted());
+    } finally {
+      sorter.close();
     }
+  }
+  prepareSmallIndex(removedSet, addedSet) {
     const draft = transientKeyStore(this.keyTree.store),
       next = new PersistentKeyTree(draft, {
         root: this.keyTree.root,
@@ -1138,33 +1190,17 @@ class PagedRecords {
     const previous = this.id(index);
     if (previous === id) return;
     if (index >= this.length && !id) return;
-    const nextIndex =
-      updateIndex && this.keyTree
-        ? this.prepareIndex(
-            previous && (!this.aliases || this.positions(previous).length === 1) ? [previous] : [],
-            id ? [id] : [],
-          )
-        : null;
+    let nextIndex = null;
+    if (updateIndex && this.keyTree) {
+      const previousIds = previous && (!this.aliases || this.positions(previous).length === 1) ? [previous] : [];
+      nextIndex = this.prepareIndex(previousIds, id ? [id] : []);
+    }
     const version = preparedVersion ?? (id ? Number(this.session.readRow(id).versionnumber) : undefined);
     if (index >= this.length) this.resize(index + 1);
     const c = this.chunkAt(index),
       old = this.chunks[c],
-      offset = index - this.starts[c];
-    const present = old.present + Number(Boolean(id)) - Number(Boolean(previous));
-    let next;
-    if (!present) next = { ids: null, count: old.count, present: 0, owner: this.mutationToken };
-    else if (old.owner === this.mutationToken && old.ids && (id <= 0xffffffff || old.ids instanceof Float64Array)) {
-      next = old;
-      next.ids[offset] = id;
-      next.present = present;
-      rewritten(next);
-    } else {
-      const wide = id > 0xffffffff || old.ids instanceof Float64Array,
-        ids = new (wide ? Float64Array : Uint32Array)(c === this.chunks.length - 1 ? CHUNK : old.count);
-      if (old.ids) ids.set(old.ids.subarray(0, old.count));
-      ids[offset] = id;
-      next = { ids, count: old.count, present, owner: this.mutationToken };
-    }
+      offset = index - this.starts[c],
+      next = updatedChunk(this, c, old, offset, id, previous);
     this.chunks[c] = next;
     this.present += Number(Boolean(id)) - Number(Boolean(previous));
     this.description = undefined;
@@ -1175,42 +1211,7 @@ class PagedRecords {
   }
   /** Append positions, filling the last chunk in place (after one copy when shared). */
   appendIds(ids) {
-    let at = 0,
-      present = 0;
-    const tail = this.chunks.at(-1);
-    if (tail && tail.count < CHUNK && ids.length) {
-      const n = Math.min(CHUNK - tail.count, ids.length);
-      let wide = tail.ids instanceof Float64Array;
-      for (let i = 0; i < n && !wide; i++) wide = ids[i] > 0xffffffff;
-      let chunk = tail;
-      if (
-        tail.owner === this.mutationToken &&
-        tail.ids &&
-        tail.ids.length >= tail.count + n &&
-        (!wide || tail.ids instanceof Float64Array)
-      )
-        rewritten(chunk);
-      else {
-        const next = new (wide ? Float64Array : Uint32Array)(CHUNK);
-        if (tail.ids) next.set(tail.ids.subarray(0, tail.count));
-        chunk = { ids: next, count: tail.count, present: tail.present, owner: this.mutationToken };
-        this.chunks[this.chunks.length - 1] = chunk;
-      }
-      for (; at < n; at++) {
-        chunk.ids[chunk.count++] = ids[at];
-        if (ids[at]) {
-          chunk.present++;
-          present++;
-        }
-      }
-    }
-    const grew = at < ids.length;
-    while (at < ids.length) {
-      const chunk = chunkOf(Array.from(ids.slice(at, at + CHUNK)), this.mutationToken);
-      this.chunks.push(chunk);
-      present += chunk.present;
-      at += chunk.count;
-    }
+    const { present, grew } = appendRecordIds(this, ids);
     this.present += present;
     this.length += ids.length;
     if (grew || !this.starts) this.restructure();
@@ -1275,54 +1276,40 @@ class PagedRecords {
     const length = +value;
     if (!Number.isInteger(length) || length < 0 || length > 4294967295) throw RangeError('Invalid array length');
     if (length === this.length) return;
-    if (length < this.length) {
-      if (this.keyTree) {
-        const removed = new Set();
-        for (let i = length; i < this.length; i++) {
-          const id = this.id(i);
-          if (id) removed.add(id);
-        }
-        this.retainOutside(removed, length, this.length);
-        this.keyTree = this.prepareIndex(removed, []);
-      }
-      if (!length) this.chunks = [];
-      else {
-        const c = this.chunkAt(length - 1),
-          old = this.chunks[c],
-          keep = length - this.starts[c];
-        this.chunks = this.chunks.slice(0, c + 1);
-        if (keep < old.count)
-          this.chunks[c] = old.ids
-            ? chunkOf(Array.from(old.ids.subarray(0, keep)), this.mutationToken)
-            : { ids: null, count: keep, present: 0, owner: this.mutationToken };
-      }
-      this.present = this.chunks.reduce((sum, chunk) => sum + chunk.present, 0);
-    } else {
-      let missing = length - this.length;
-      const tail = this.chunks.at(-1);
-      if (tail && tail.count < CHUNK) {
-        const count = Math.min(CHUNK, tail.count + missing);
-        let chunk;
-        if (tail.owner === this.mutationToken && (!tail.ids || tail.ids.length >= count)) {
-          chunk = tail;
-          rewritten(chunk);
-        } else {
-          let ids = null;
-          if (tail.ids) {
-            ids = new tail.ids.constructor(CHUNK);
-            ids.set(tail.ids.subarray(0, tail.count));
-          }
-          chunk = { ids, count: tail.count, present: tail.present, owner: this.mutationToken };
-          this.chunks[this.chunks.length - 1] = chunk;
-        }
-        missing -= count - chunk.count;
-        chunk.count = count;
-      }
-      for (; missing > 0; missing -= CHUNK)
-        this.chunks.push({ ids: null, count: Math.min(CHUNK, missing), present: 0, owner: this.mutationToken });
-    }
+    if (length < this.length) this.truncate(length);
+    else this.extend(length);
     this.length = length;
     this.restructure();
+  }
+  truncate(length) {
+    if (this.keyTree) {
+      const removed = new Set();
+      for (let i = length; i < this.length; i++) {
+        const id = this.id(i);
+        if (id) removed.add(id);
+      }
+      this.retainOutside(removed, length, this.length);
+      this.keyTree = this.prepareIndex(removed, []);
+    }
+    if (!length) this.chunks = [];
+    else {
+      const c = this.chunkAt(length - 1),
+        old = this.chunks[c],
+        keep = length - this.starts[c];
+      this.chunks = this.chunks.slice(0, c + 1);
+      if (keep < old.count)
+        this.chunks[c] = old.ids
+          ? chunkOf(Array.from(old.ids.subarray(0, keep)), this.mutationToken)
+          : { ids: null, count: keep, present: 0, owner: this.mutationToken };
+    }
+    this.present = this.chunks.reduce((sum, chunk) => sum + chunk.present, 0);
+  }
+  extend(length) {
+    let missing = length - this.length;
+    const tail = this.chunks.at(-1);
+    if (tail && tail.count < CHUNK) missing = extendRecordTail(this, tail, missing);
+    for (; missing > 0; missing -= CHUNK)
+      this.chunks.push({ ids: null, count: Math.min(CHUNK, missing), present: 0, owner: this.mutationToken });
   }
   set(index, value) {
     const state = rowStates.get(value);
@@ -1360,7 +1347,8 @@ class PagedRecords {
     const id = this.id(index);
     if (!id) return undefined;
     const state = this.rows.get(id)?.deref();
-    return state ? (borrow ? state.raw : structuredClone(state.raw)) : this.session.readRow(id);
+    if (!state) return this.session.readRow(id);
+    return borrow ? state.raw : structuredClone(state.raw);
   }
   at(index) {
     const id = this.id(index);
@@ -1503,40 +1491,18 @@ class PagedRecords {
   /** Array.prototype.splice over record versions. */
   splice(args) {
     const start = relative(args.length ? args[0] : 0, this.length, 0);
-    const remove =
-      args.length < 2
-        ? args.length
-          ? this.length - start
-          : 0
-        : Math.min(Math.max(integer(args[1]), 0), this.length - start);
+    let remove;
+    if (args.length < 2) remove = args.length ? this.length - start : 0;
+    else remove = Math.min(Math.max(integer(args[1]), 0), this.length - start);
     return this.replace(start, remove, args.slice(2));
   }
   replace(start, remove, added) {
     const deleted = new Array(remove);
     if (!remove && !added.length) return deleted;
     if (this.length - remove + added.length > 4294967295) throw RangeError('Invalid array length');
-    for (let i = 0; i < remove; i++) if (this.id(start + i)) deleted[i] = this.at(start + i);
-    const removedIds = new Set();
-    if (this.keyTree)
-      for (let i = 0; i < remove; i++) {
-        const id = this.id(start + i);
-        if (id) removedIds.add(id);
-      }
-    const addedIds = [],
-      reused = [],
-      versions = [];
-    for (const value of added) {
-      const state = rowStates.get(value);
-      if (state?.owner?.deref() === this) {
-        state.index = start + addedIds.length;
-        addedIds.push(this.reuse(state));
-        reused.push(state.id);
-      } else {
-        const stored = this.session.put(value, { metadata: true });
-        addedIds.push(stored.id);
-        versions.push(storedFields(rawOf(value), stored.text).version);
-      }
-    }
+    fillRemovedRecords(this, start, remove, deleted);
+    const removedIds = removedIndexIds(this, start, remove);
+    const { addedIds, reused, versions } = storeAddedRecords(this, start, added);
     const addedSet = new Set(addedIds);
     for (const id of removedIds) if (addedSet.has(id)) removedIds.delete(id);
     this.retainOutside(removedIds, start, start + remove);
@@ -1544,13 +1510,16 @@ class PagedRecords {
     for (const version of versions) this.retainVersion(version);
     this.layout(start, remove, addedIds);
     this.keyTree = nextIndex;
-    if (!this.aliases)
-      for (const id of new Set(reused))
-        if (this.positions(id).length > 1) {
-          this.aliases = true;
-          break;
-        }
+    this.noteReusedAliases(reused);
     return deleted;
+  }
+  noteReusedAliases(reused) {
+    if (this.aliases) return;
+    for (const id of new Set(reused))
+      if (this.positions(id).length > 1) {
+        this.aliases = true;
+        break;
+      }
   }
   push(items) {
     this.replace(this.length, 0, items);
@@ -1645,22 +1614,23 @@ class PagedRecords {
     const ids = new Array(count);
     for (let i = 0; i < count; i++) ids[i] = this.id(from + i);
     const copied = new Set(ids),
-      removed = new Set();
-    if (this.keyTree)
-      for (let i = to; i < to + count; i++) {
-        const id = this.id(i);
-        if (id && !copied.has(id)) removed.add(id);
-      }
+      removed = copiedOverwrittenIds(this, to, count, copied);
     this.retainOutside(removed, to, to + count);
     // Every copied version stays in place at its source or in the copy itself.
     const nextIndex = this.prepareIndex(removed, []);
     this.layout(to, count, ids);
     this.keyTree = nextIndex;
     copied.delete(0);
-    if (!this.aliases)
-      if (copied.size > 64) this.aliases = true;
-      else for (const id of copied) if (this.positions(id).length > 1) this.aliases = true;
+    this.updateCopiedAliases(copied);
     return this.proxy;
+  }
+  updateCopiedAliases(copied) {
+    if (this.aliases) return;
+    if (copied.size > 64) {
+      this.aliases = true;
+      return;
+    }
+    for (const id of copied) if (this.positions(id).length > 1) this.aliases = true;
   }
   fork() {
     const next = new PagedRecords(this.session);
@@ -1680,7 +1650,7 @@ class PagedRecords {
   /** Return to a private snapshot of this table (row facades restore separately). */
   restore(value) {
     const snapshot = tables.get(value);
-    if (!snapshot || snapshot.session !== this.session) throw Error('Invalid record rollback snapshot');
+    if (!snapshot || snapshot.session !== this.session) throw new Error('Invalid record rollback snapshot');
     this.mutationToken = Symbol();
     for (const key of [
       'length',
@@ -1702,7 +1672,7 @@ class PagedRecords {
   restoreRow(row, previous, id) {
     const state = rowStates.get(row);
     if (!state?.changed || state.owner.deref() !== this) return;
-    if (!id) throw Error('Record rollback omitted its prior row');
+    if (!id) throw new Error('Record rollback omitted its prior row');
     this.rows.delete(state.id);
     restoreProperties(state.raw, Object.getOwnPropertyDescriptors(previous));
     state.id = id;
@@ -1712,8 +1682,8 @@ class PagedRecords {
   }
   adopt(value) {
     const next = tables.get(value);
-    if (!next || !next.movedRows || next.length !== this.length || next.present !== this.present)
-      throw Error('Invalid compacted record table');
+    if (!next?.movedRows || next.length !== this.length || next.present !== this.present)
+      throw new Error('Invalid compacted record table');
     const old = this.session,
       rows = new Map();
     for (const [id, ref] of this.rows) {
@@ -1752,6 +1722,142 @@ class PagedRecords {
     this.rows = rows;
     this.trackSession(this.session);
   }
+}
+
+function updatedChunk(table, index, old, offset, id, previous) {
+  const present = old.present + Number(Boolean(id)) - Number(Boolean(previous));
+  if (!present) return { ids: null, count: old.count, present: 0, owner: table.mutationToken };
+  if (old.owner === table.mutationToken && old.ids && (id <= 0xffffffff || old.ids instanceof Float64Array)) {
+    old.ids[offset] = id;
+    old.present = present;
+    rewritten(old);
+    return old;
+  }
+  const wide = id > 0xffffffff || old.ids instanceof Float64Array;
+  const ids = new (wide ? Float64Array : Uint32Array)(index === table.chunks.length - 1 ? CHUNK : old.count);
+  if (old.ids) ids.set(old.ids.subarray(0, old.count));
+  ids[offset] = id;
+  return { ids, count: old.count, present, owner: table.mutationToken };
+}
+
+function appendRecordIds(table, ids) {
+  const { at, present: tailPresent } = appendToRecordTail(table, ids);
+  let next = at,
+    present = tailPresent;
+  const grew = next < ids.length;
+  while (next < ids.length) {
+    const chunk = chunkOf(Array.from(ids.slice(next, next + CHUNK)), table.mutationToken);
+    table.chunks.push(chunk);
+    present += chunk.present;
+    next += chunk.count;
+  }
+  return { present, grew };
+}
+
+function appendToRecordTail(table, ids) {
+  let at = 0,
+    present = 0;
+  const tail = table.chunks.at(-1);
+  if (tail && tail.count < CHUNK && ids.length) {
+    const n = Math.min(CHUNK - tail.count, ids.length);
+    let wide = tail.ids instanceof Float64Array;
+    for (let i = 0; i < n && !wide; i++) wide = ids[i] > 0xffffffff;
+    let chunk = tail;
+    if (canReuseRecordTail(table, tail, n, wide)) rewritten(chunk);
+    else {
+      const next = new (wide ? Float64Array : Uint32Array)(CHUNK);
+      if (tail.ids) next.set(tail.ids.subarray(0, tail.count));
+      chunk = { ids: next, count: tail.count, present: tail.present, owner: table.mutationToken };
+      table.chunks[table.chunks.length - 1] = chunk;
+    }
+    present = appendTailValues(chunk, ids, n);
+    at = n;
+  }
+  return { at, present };
+}
+
+function canReuseRecordTail(table, tail, count, wide) {
+  return (
+    tail.owner === table.mutationToken &&
+    tail.ids &&
+    tail.ids.length >= tail.count + count &&
+    (!wide || tail.ids instanceof Float64Array)
+  );
+}
+
+function appendTailValues(chunk, ids, count) {
+  let present = 0;
+  for (let index = 0; index < count; index++) {
+    chunk.ids[chunk.count++] = ids[index];
+    if (ids[index]) {
+      chunk.present++;
+      present++;
+    }
+  }
+  return present;
+}
+
+function extendRecordTail(table, tail, missing) {
+  const count = Math.min(CHUNK, tail.count + missing);
+  let chunk;
+  if (tail.owner === table.mutationToken && (!tail.ids || tail.ids.length >= count)) {
+    chunk = tail;
+    rewritten(chunk);
+  } else {
+    let ids = null;
+    if (tail.ids) {
+      ids = new tail.ids.constructor(CHUNK);
+      ids.set(tail.ids.subarray(0, tail.count));
+    }
+    chunk = { ids, count: tail.count, present: tail.present, owner: table.mutationToken };
+    table.chunks[table.chunks.length - 1] = chunk;
+  }
+  missing -= count - chunk.count;
+  chunk.count = count;
+  return missing;
+}
+
+function fillRemovedRecords(table, start, remove, deleted) {
+  for (let i = 0; i < remove; i++) if (table.id(start + i)) deleted[i] = table.at(start + i);
+}
+
+function copiedOverwrittenIds(table, to, count, copied) {
+  const removed = new Set();
+  if (table.keyTree)
+    for (let i = to; i < to + count; i++) {
+      const id = table.id(i);
+      if (id && !copied.has(id)) removed.add(id);
+    }
+  return removed;
+}
+
+function removedIndexIds(table, start, remove) {
+  const removed = new Set();
+  if (table.keyTree)
+    for (let i = 0; i < remove; i++) {
+      const id = table.id(start + i);
+      if (id) removed.add(id);
+    }
+  return removed;
+}
+
+function storeAddedRecords(table, start, added) {
+  const addedIds = [],
+    reused = [],
+    versions = [];
+  for (const value of added) {
+    const state = rowStates.get(value);
+    if (state?.owner?.deref() === table) {
+      state.index = start + addedIds.length;
+      addedIds.push(table.reuse(state));
+      reused.push(state.id);
+    } else {
+      const stored = table.session.put(value, { metadata: true });
+      addedIds.push(stored.id);
+      versions.push(storedFields(rawOf(value), stored.text).version);
+    }
+  }
+  return { addedIds, reused, versions };
 }
 
 /** Key-tree edits of one change keep their intermediate nodes in memory;

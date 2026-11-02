@@ -1,3 +1,4 @@
+// @test-kind tooling: browser fixture harness verification of the example project portal harness.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -6,6 +7,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../../../mirage/lib/browser-launch.mjs';
 import { compilePlans } from './compile.mjs';
 
+// @test-kind tooling: browser fixture harness verification
 test('actual Stop button retains Interrupted UI and persisted history while re-enabling controls', async () => {
   const catalogue = JSON.parse(await fs.readFile(new URL('../data/catalogue.json', import.meta.url))),
     schema = JSON.parse(await fs.readFile(new URL('../dataverse/manifest.json', import.meta.url))),
@@ -64,12 +66,12 @@ test('actual Stop button retains Interrupted UI and persisted history while re-e
         writes.push(body);
         return route.fulfill({ status: 204 });
       }
-      const id = url.pathname.match(/\(([a-f0-9-]{36})\)/)?.[1];
+      const id = /\(([a-f0-9-]{36})\)/.exec(url.pathname)?.[1];
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(operations.get(id)) });
     });
     await page.goto('http://127.0.0.1:' + server.address().port);
     await page.evaluate(async (manifest) => {
-      window.shell = {
+      globalThis.shell = {
         getTokenDeferred: () => ({
           done(fn) {
             fn('invented-loopback-token');
@@ -77,7 +79,7 @@ test('actual Stop button retains Interrupted UI and persisted history while re-e
           },
         }),
       };
-      const { mount } = await import('/runtime.mjs');
+      const { mount } = await import('/runtime.mjs'); // NOSONAR: absolute URL is routing or fixture data
       mount(manifest, { contactId: '11111111-1111-4111-8111-111111111111', roles: ['CO Test Runner'] });
     }, manifest);
     await page.locator('#co-read').click();
@@ -132,8 +134,8 @@ test('loopback browser pairs escaped typed Liquid/API rows and saves every artif
     const page = await browser.newPage();
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     const result = await page.evaluate(async (manifest) => {
-      const { createRunner } = await import('/runtime.mjs'),
-        { escapeXml, parseLiquid, decodeArtifact } = await import('/core.mjs');
+      const { createRunner } = await import('/runtime.mjs'), // NOSONAR: absolute URL is routing or fixture data
+        { escapeXml, parseLiquid, decodeArtifact } = await import('/core.mjs'); // NOSONAR: absolute URL is routing or fixture data
       const context = { contactId: manifest.scenarios[0].contactId, roles: ['CO Test Runner', 'CO Employee'] },
         operations = new Map(),
         runs = new Map(),
@@ -157,50 +159,60 @@ test('loopback browser pairs escaped typed Liquid/API rows and saves every artif
         },
       ];
       const response = (data) => ({ ok: true, status: 200, data, text: JSON.stringify(data) });
+      function postRequest(url, body, method) {
+        const id = crypto.randomUUID(),
+          stored = { ...body };
+        if (stored.pqvd_payloadtext)
+          stored.pqvd_payloadtext = stored.pqvd_payloadtext.replaceAll(
+            'https://portal.example.test/_api/',
+            'https://dataverse.example.test/api/data/v9.1/',
+          );
+        saved.push({ url, method, body: stored });
+        if (url === '/_api/pqvd_testruns') runs.set(id, stored);
+        if (url === '/_api/pqvd_testoperations')
+          operations.set(id, {
+            ...body,
+            pqvd_testoperationid: id,
+            pqvd_markerutc: 'CO-UTC:2026-10-13T08:00:00.000Z',
+            pqvd_markeroperation: 'CO-OP:' + id,
+          });
+        return { ...response(null), entityId: id, status: 204 };
+      }
+      function patchRequest(url, body, method) {
+        saved.push({ url, method, body });
+        const id = url.match(/\(([a-f0-9-]{36})\)/)?.[1];
+        if (operations.has(id)) Object.assign(operations.get(id), body);
+        if (runs.has(id)) Object.assign(runs.get(id), body);
+        return { ...response(null), status: 204 };
+      }
+      function resultsResponse(url) {
+        const xml = decodeURIComponent(url.split('fetchXml=')[1]),
+          op = /attribute="pqvd_operationid" operator="eq" value="([a-f0-9-]+)"/.exec(xml)[1];
+        return response({
+          value: saved
+            .filter(
+              (s) =>
+                s.url === '/_api/pqvd_testresults' &&
+                s.body['pqvd_operationid@odata.bind'] === `/pqvd_testoperations(${op})` &&
+                s.body.pqvd_artifactkind === manifest.choices.pqvd_artifactkind.Summary,
+            )
+            .map((s) => s.body),
+        });
+      }
+      function liquidResponse(url) {
+        const id = new URL(url, location.origin).searchParams.get('operationId'),
+          op = operations.get(id),
+          plan = manifest.cases.find((c) => c.id === op.pqvd_caseid);
+        const text = `<co-test-response outcome="success" case-id="${plan.id}" operation-id="${id}" contact-id="${context.contactId}" dataset-version="${manifest.datasetVersion}"><roles>${context.roles.map((r) => '<role>' + escapeXml(r) + '</role>').join('')}</roles><records>${rows.map((row) => '<record>' + plan.fields.map((f) => '<field name="' + String(f.name) + '" type="' + String(f.type) + '" null="' + (row[f.name] === null) + '">' + (row[f.name] === null ? '' : escapeXml(row[f.name])) + '</field>').join('') + '</record>').join('')}</records><paging more="false"></paging><diagnostics><authored-fetchxml>${escapeXml(op.pqvd_authoredquery)}</authored-fetchxml><effective-fetchxml>${escapeXml(op.pqvd_authoredquery.replace('</entity>', '<link-entity name="invented_permission"></link-entity></entity>'))}</effective-fetchxml></diagnostics></co-test-response>`;
+        return { ok: true, status: 200, text };
+      }
       async function request({ url, method = 'GET', body }) {
-        if (method === 'POST') {
-          const id = crypto.randomUUID(),
-            stored = { ...body };
-          if (stored.pqvd_payloadtext)
-            stored.pqvd_payloadtext = stored.pqvd_payloadtext.replaceAll(
-              'https://portal.example.test/_api/',
-              'https://dataverse.example.test/api/data/v9.1/',
-            );
-          saved.push({ url, method, body: stored });
-          if (url === '/_api/pqvd_testruns') runs.set(id, stored);
-          if (url === '/_api/pqvd_testoperations')
-            operations.set(id, {
-              ...body,
-              pqvd_testoperationid: id,
-              pqvd_markerutc: 'CO-UTC:2026-10-13T08:00:00.000Z',
-              pqvd_markeroperation: 'CO-OP:' + id,
-            });
-          return { ...response(null), entityId: id, status: 204 };
-        }
-        if (method === 'PATCH') {
-          saved.push({ url, method, body });
-          const id = url.match(/\(([a-f0-9-]{36})\)/)?.[1];
-          if (operations.has(id)) Object.assign(operations.get(id), body);
-          if (runs.has(id)) Object.assign(runs.get(id), body);
-          return { ...response(null), status: 204 };
-        }
+        if (method === 'POST') return postRequest(url, body, method);
+        if (method === 'PATCH') return patchRequest(url, body, method);
         if (url.startsWith('/_api/pqvd_testoperations('))
           return response(operations.get(url.match(/\(([a-f0-9-]{36})\)/)[1]));
         if (url.startsWith('/_api/pqvd_testruns(')) return response(runs.get(url.match(/\(([a-f0-9-]{36})\)/)[1]));
-        if (url.startsWith('/_api/pqvd_testresults?')) {
-          const xml = decodeURIComponent(url.split('fetchXml=')[1]),
-            op = xml.match(/attribute="pqvd_operationid" operator="eq" value="([a-f0-9-]+)"/)[1];
-          return response({
-            value: saved
-              .filter(
-                (s) =>
-                  s.url === '/_api/pqvd_testresults' &&
-                  s.body['pqvd_operationid@odata.bind'] === `/pqvd_testoperations(${op})` &&
-                  s.body.pqvd_artifactkind === manifest.choices.pqvd_artifactkind.Summary,
-              )
-              .map((s) => s.body),
-          });
-        }
+        if (url.startsWith('/_api/pqvd_testresults?')) return resultsResponse(url);
         if (url.startsWith('/_api/pqvd_pluginevents')) return response({ value: [] });
         if (url.startsWith('/_api/pqvd_employmenttermrecords?'))
           return response({
@@ -208,13 +220,7 @@ test('loopback browser pairs escaped typed Liquid/API rows and saves every artif
             value: rows,
             '@Microsoft.Dynamics.CRM.morerecords': false,
           });
-        if (url.startsWith('/permission-lab/liquid/')) {
-          const id = new URL(url, location.origin).searchParams.get('operationId'),
-            op = operations.get(id),
-            plan = manifest.cases.find((c) => c.id === op.pqvd_caseid);
-          const text = `<co-test-response outcome="success" case-id="${plan.id}" operation-id="${id}" contact-id="${context.contactId}" dataset-version="${manifest.datasetVersion}"><roles>${context.roles.map((r) => '<role>' + escapeXml(r) + '</role>').join('')}</roles><records>${rows.map((row) => '<record>' + plan.fields.map((f) => `<field name="${f.name}" type="${f.type}" null="${row[f.name] === null}">${row[f.name] === null ? '' : escapeXml(row[f.name])}</field>`).join('') + '</record>').join('')}</records><paging more="false"></paging><diagnostics><authored-fetchxml>${escapeXml(op.pqvd_authoredquery)}</authored-fetchxml><effective-fetchxml>${escapeXml(op.pqvd_authoredquery.replace('</entity>', '<link-entity name="invented_permission"></link-entity></entity>'))}</effective-fetchxml></diagnostics></co-test-response>`;
-          return { ok: true, status: 200, text };
-        }
+        if (url.startsWith('/permission-lab/liquid/')) return liquidResponse(url);
         throw new Error('Unexpected fixture route ' + url);
       }
       const runner = createRunner({ manifest, context, request });

@@ -36,7 +36,9 @@ function offsetMinutes(iana, ms) {
       .formatToParts(new Date(ms))
       .find((part) => part.type === 'timeZoneName')?.value ?? 'GMT';
   const match = /GMT([+-])(\d{2}):(\d{2})/.exec(name);
-  return match ? (match[1] === '-' ? -1 : 1) * (Number(match[2]) * 60 + Number(match[3])) : 0;
+  if (!match) return 0;
+  const sign = match[1] === '-' ? -1 : 1;
+  return sign * (Number(match[2]) * 60 + Number(match[3]));
 }
 function isoText(ms, offset) {
   const local = new Date(ms + (offset ?? 0) * 60000).toISOString().slice(0, 19);
@@ -79,36 +81,74 @@ function formatOne(store, value, field, { attributes, retrieved, zone, currencyI
   switch (value.$type) {
     case 'OptionSetValue':
       return formattedValue(value.value, field);
-    case 'OptionSetValueCollection': {
-      const labels = (value.values ?? []).map((item) =>
-        formattedValue(item?.value ?? item, { ...field, dataverseType: 'picklist' }),
-      );
-      if (!labels.length || labels.includes(undefined)) return undefined;
-      return retrieved ? `; ${labels.join('; ')}; ` : labels.join('; ');
-    }
+    case 'OptionSetValueCollection':
+      return formatOptionSetValues(value, field, retrieved);
     case 'Double':
-      return kind === 'double' ? formattedValue(Number(value.value), field) : undefined;
+      return formatDoubleValue(value, field, kind);
     case 'EntityReference':
-      return typeof value.name === 'string' ? value.name : undefined;
+      return formatEntityReference(value);
     case 'Money':
     case 'Decimal':
-      if (!['money', 'decimal'].includes(kind)) return undefined;
-      return formattedValue(exactNumeric(String(value.value), 'Decimal'), field, {
-        currencySymbol: currencySymbol(store, attributes, currencyId),
-      });
+      return formatMoneyValue(store, value, field, kind, attributes, currencyId);
     case 'DateTime': {
-      // A date-only or time-zone-independent value is a wall-clock time; an unzoned user-local value is UTC.
-      const text = String(value.value),
-        ms = Date.parse(
-          /(?:Z|[+-]\d{2}:?\d{2})$/i.test(text) ? text : text.length === 10 ? `${text}T00:00:00Z` : `${text}Z`,
-        );
-      if (!Number.isFinite(ms) || kind !== 'datetime') return undefined;
-      const wallClock = isDateOnlyField(field) || dateTimeBehavior(field) === 'timezoneindependent';
-      return isoText(ms, wallClock ? null : offsetMinutes(zone, ms));
+      return formatDateTime(value, field, kind, zone);
     }
     default:
       return undefined;
   }
+}
+
+function formatOptionSetValues(value, field, retrieved) {
+  const labels = (value.values ?? []).map((item) =>
+    formattedValue(item?.value ?? item, { ...field, dataverseType: 'picklist' }),
+  );
+  if (!labels.length || labels.includes(undefined)) return undefined;
+  return retrieved ? `; ${labels.join('; ')}; ` : labels.join('; ');
+}
+
+function formatDoubleValue(value, field, kind) {
+  return kind === 'double' ? formattedValue(Number(value.value), field) : undefined;
+}
+
+function formatEntityReference(value) {
+  return typeof value.name === 'string' ? value.name : undefined;
+}
+
+function formatMoneyValue(store, value, field, kind, attributes, currencyId) {
+  if (!['money', 'decimal'].includes(kind)) return undefined;
+  return formattedValue(exactNumeric(String(value.value), 'Decimal'), field, {
+    currencySymbol: currencySymbol(store, attributes, currencyId),
+  });
+}
+
+function formatDateTime(value, field, kind, zone) {
+  // A date-only or time-zone-independent value is a wall-clock time; an unzoned user-local value is UTC.
+  const text = String(value.value);
+  let parsable = `${text}Z`;
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(text)) parsable = text;
+  else if (text.length === 10) parsable = `${text}T00:00:00Z`;
+  const ms = Date.parse(parsable);
+  if (!Number.isFinite(ms) || kind !== 'datetime') return undefined;
+  const wallClock = isDateOnlyField(field) || dateTimeBehavior(field) === 'timezoneindependent';
+  return isoText(ms, wallClock ? null : offsetMinutes(zone, ms));
+}
+
+function formatAttribute(store, entity, key, value, options, cache, out) {
+  if (options.keys && !options.keys.includes(key)) return;
+  const field = definitionOf(store, entity, key, cache);
+  if (!field) return;
+  if (value == null) {
+    if (options.nullEntries && listsNull(field)) out[key] = null;
+    return;
+  }
+  if (value?.$type === 'DateTime') options.zone ??= userTimeZone(store, options.userId);
+  const text = formatOne(store, value, field, {
+    attributes: options.attributes,
+    retrieved: options.retrieved,
+    zone: options.zone,
+    currencyId: options.currencyId,
+  });
+  if (text !== undefined && text !== null) out[key] = text;
 }
 
 /** FormattedValues of an SDK entity for the user the pipeline runs as. keys limits the formatted attributes. */
@@ -120,19 +160,10 @@ export function pipelineFormattedValues(
 ) {
   const attributes = sdkEntity?.attributes ?? {},
     cache = {},
-    out = {};
-  let zone;
+    out = {},
+    options = { attributes, retrieved, userId, keys, currencyId, nullEntries };
   for (const [key, value] of Object.entries(attributes)) {
-    if (keys && !keys.includes(key)) continue;
-    const field = definitionOf(store, entity, key, cache);
-    if (!field) continue;
-    if (value == null) {
-      if (nullEntries && listsNull(field)) out[key] = null;
-      continue;
-    }
-    if (value?.$type === 'DateTime') zone ??= userTimeZone(store, userId);
-    const text = formatOne(store, value, field, { attributes, retrieved, zone, currencyId });
-    if (text !== undefined && text !== null) out[key] = text;
+    formatAttribute(store, entity, key, value, options, cache, out);
   }
   return out;
 }
@@ -152,7 +183,7 @@ export function formatPipelineTargets(store, { entity, operation, stage, frame, 
   if (formatted) frame.formattedTargetKeys ??= list.map((target) => Object.keys(target.attributes ?? {}));
   const cache = {};
   const next = list.map((target, index) => {
-    const { formattedValues: _, ...rest } = target;
+    const { formattedValues: _, ...rest } = target; // NOSONAR: binding is excluded from the rest object or is a placeholder
     if (!formatted) return rest;
     const keys = (frame.formattedTargetKeys[index] ?? Object.keys(target.attributes ?? {})).filter(
       (key) => !computedByCore(store, entity, key, cache),

@@ -14,6 +14,17 @@ const canonicalId = (value) =>
 const fieldOf = (record, name) => portalField(record ?? {}, name);
 const FORM_MODE = { insert: 100000000, edit: 100000001, readOnly: 100000002 };
 
+function addRequiredFormFields(known, table, usable, add) {
+  if (usable(known[table.primaryNameAttribute])) add(table.primaryNameAttribute);
+  for (const [attribute, field] of Object.entries(known))
+    if (field.required && field.requiredLevel !== 'systemrequired' && usable(field)) add(attribute);
+}
+
+function addMetadataFormFields(portal, definition, step, add) {
+  const rows = step ? formMetadataRows(portal, null, step.id) : formMetadataRows(portal, definition);
+  for (const row of rows) if (Number(fieldOf(row, 'type')) === 100000000) add(fieldOf(row, 'attributelogicalname'));
+}
+
 /** Basic form metadata rows of a form, or advanced form metadata rows of a step. */
 function formMetadataRows(portal, definition, stepId) {
   return (portal.records ?? []).filter(
@@ -58,18 +69,18 @@ export function approximateFormSchema({ definition, portal, metadata, diagnostic
     const key = canonicalId(value);
     if (key && !names.includes(key)) names.push(key);
   };
-  if (usable(known[table.primaryNameAttribute])) add(table.primaryNameAttribute);
-  for (const [attribute, field] of Object.entries(known))
-    if (field.required && field.requiredLevel !== 'systemrequired' && usable(field)) add(attribute);
-  for (const row of step ? formMetadataRows(portal, null, step.id) : formMetadataRows(portal, definition))
-    if (Number(fieldOf(row, 'type')) === 100000000) add(fieldOf(row, 'attributelogicalname'));
+  addRequiredFormFields(known, table, usable, add);
+  addMetadataFormFields(portal, definition, step, add);
   const fields = names.map((attribute) => ({
-    ...(known[attribute] ?? {}),
+    ...known[attribute],
     name: attribute,
     id: attribute,
     label: known[attribute]?.label ?? attribute,
     readOnly: known[attribute] ? !usable(known[attribute]) : false,
   }));
+  const subject = step
+    ? `Advanced form step '${step.name ?? step.id}' of '${definition.name}'`
+    : `Basic form '${definition.name}'`;
   diagnostic?.({
     code: 'COMPONENT_SCHEMA_REQUIRED',
     severity: 'warning',
@@ -79,7 +90,7 @@ export function approximateFormSchema({ definition, portal, metadata, diagnostic
     entity,
     fields: names,
     ...(step ? { step: step.name ?? step.id } : {}),
-    message: `${step ? `Advanced form step '${step.name ?? step.id}' of '${definition.name}'` : `Basic form '${definition.name}'`} uses form '${definition.formName ?? '(unnamed)'}' of table ${entity}, which is absent in the configured solutions; the local layout is approximated as one section with ${names.length} field(s).`,
+    message: `${subject} uses form '${definition.formName ?? '(unnamed)'}' of table ${entity}, which is absent in the configured solutions; the local layout is approximated as one section with ${names.length} field(s).`,
   });
   return {
     entity,
@@ -121,73 +132,8 @@ export function approximateAdvancedFormSchema({ definition, portal, metadata, sc
       steps.push(known.get(stepId));
       continue;
     }
-    const type = Number(fieldOf(record, 'type') ?? 100000001);
-    const nextStepId = canonicalId(fieldOf(record, 'nextstep')) || null;
-    if (type === 100000003) {
-      const target = portal.pages.find(
-        (page) => canonicalId(page.id) === canonicalId(fieldOf(record, 'redirectwebpage')),
-      );
-      const redirectUrl = target?.url ?? fieldOf(record, 'redirecturl');
-      if (redirectUrl)
-        steps.push({
-          stepId: record.id,
-          type: 'redirect',
-          redirectUrl,
-          appendRecordId: fieldOf(record, 'redirecturlappendentityidquerystring') ?? false,
-          recordQueryName: fieldOf(record, 'redirecturlquerystringname'),
-          js: record.customJavascript,
-          metadata: record,
-        });
-      else
-        diagnostic?.({
-          code: 'ADVANCEDFORM_STEP_UNRESOLVED',
-          severity: 'warning',
-          component: 'webform',
-          form: definition.name,
-          step: record.name ?? record.id,
-          message: `Redirect step '${record.name ?? record.id}' of advanced form '${definition.name}' has no exported target page or URL.`,
-        });
-      continue;
-    }
-    if (type === 100000000) {
-      steps.push({
-        stepId: record.id,
-        type: 'condition',
-        condition: fieldOf(record, 'condition'),
-        nextStepId,
-        conditionDefaultNextStepId: canonicalId(fieldOf(record, 'conditiondefaultnextstep')) || null,
-        js: record.customJavascript,
-        metadata: record,
-      });
-      continue;
-    }
-    if (![100000001, 100000002].includes(type)) {
-      diagnostic?.({
-        code: 'ADVANCEDFORM_STEP_UNSUPPORTED',
-        component: 'webform',
-        form: definition.id,
-        step: record.id,
-        stepType: type,
-        message: 'The exported step type cannot be approximated as a load form.',
-      });
-      continue;
-    }
-    const approximated = approximateFormSchema({
-      definition: {
-        id: record.id,
-        name: definition.name,
-        entityName: fieldOf(record, 'targetentitylogicalname') ?? fieldOf(record, 'entityname'),
-        formName: fieldOf(record, 'formname'),
-        mode: fieldOf(record, 'mode') ?? FORM_MODE.insert,
-        metadata: record,
-      },
-      portal,
-      metadata,
-      diagnostic,
-      step: record,
-    });
-    if (approximated)
-      steps.push({ ...approximated, stepId: record.id, nextStepId, js: record.customJavascript, metadata: record });
+    const step = approximateAdvancedStep(record, definition, portal, metadata, diagnostic);
+    if (step) steps.push(step);
   }
   const start = graph.initialStepId || canonicalId(schema?.initialStepId);
   const first = steps.find((step) => canonicalId(step.stepId) === start);
@@ -201,5 +147,73 @@ export function approximateAdvancedFormSchema({ definition, portal, metadata, sc
     });
     return null;
   }
-  return { ...(schema ?? {}), ...first, steps, initialStepId: start };
+  return { ...schema, ...first, steps, initialStepId: start };
+}
+
+function approximateAdvancedStep(record, definition, portal, metadata, diagnostic) {
+  const type = Number(fieldOf(record, 'type') ?? 100000001);
+  const nextStepId = canonicalId(fieldOf(record, 'nextstep')) || null;
+  if (type === 100000003) return approximateRedirectStep(record, definition, portal, diagnostic);
+  if (type === 100000000)
+    return {
+      stepId: record.id,
+      type: 'condition',
+      condition: fieldOf(record, 'condition'),
+      nextStepId,
+      conditionDefaultNextStepId: canonicalId(fieldOf(record, 'conditiondefaultnextstep')) || null,
+      js: record.customJavascript,
+      metadata: record,
+    };
+  if (![100000001, 100000002].includes(type)) {
+    diagnostic?.({
+      code: 'ADVANCEDFORM_STEP_UNSUPPORTED',
+      component: 'webform',
+      form: definition.id,
+      step: record.id,
+      stepType: type,
+      message: 'The exported step type cannot be approximated as a load form.',
+    });
+    return null;
+  }
+  const approximated = approximateFormSchema({
+    definition: {
+      id: record.id,
+      name: definition.name,
+      entityName: fieldOf(record, 'targetentitylogicalname') ?? fieldOf(record, 'entityname'),
+      formName: fieldOf(record, 'formname'),
+      mode: fieldOf(record, 'mode') ?? FORM_MODE.insert,
+      metadata: record,
+    },
+    portal,
+    metadata,
+    diagnostic,
+    step: record,
+  });
+  return approximated
+    ? { ...approximated, stepId: record.id, nextStepId, js: record.customJavascript, metadata: record }
+    : null;
+}
+
+function approximateRedirectStep(record, definition, portal, diagnostic) {
+  const target = portal.pages.find((page) => canonicalId(page.id) === canonicalId(fieldOf(record, 'redirectwebpage')));
+  const redirectUrl = target?.url ?? fieldOf(record, 'redirecturl');
+  if (redirectUrl)
+    return {
+      stepId: record.id,
+      type: 'redirect',
+      redirectUrl,
+      appendRecordId: fieldOf(record, 'redirecturlappendentityidquerystring') ?? false,
+      recordQueryName: fieldOf(record, 'redirecturlquerystringname'),
+      js: record.customJavascript,
+      metadata: record,
+    };
+  diagnostic?.({
+    code: 'ADVANCEDFORM_STEP_UNRESOLVED',
+    severity: 'warning',
+    component: 'webform',
+    form: definition.name,
+    step: record.name ?? record.id,
+    message: `Redirect step '${record.name ?? record.id}' of advanced form '${definition.name}' has no exported target page or URL.`,
+  });
+  return null;
 }

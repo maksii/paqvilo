@@ -33,6 +33,19 @@ function tableRows(target, table) {
   return rows;
 }
 
+function restoreTransactionSections(transaction, target, restoreSection) {
+  for (const key of Object.keys(target))
+    if (key !== 'tables' && !Object.hasOwn(transaction.metadata, key)) delete target[key];
+  for (const [key, value] of Object.entries(transaction.metadata)) {
+    if (restoreSection && Object.hasOwn(target, key)) {
+      if (!privateRecordEqual(target[key], value, { symbolFreeRight: true }))
+        target[key] = restoreSection(target[key], value);
+      continue;
+    }
+    Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
+  }
+}
+
 /** Undo entries retain only replaced rows. Metadata is small and captured
  * separately; table arrays and unchanged row bodies are never cloned.
  *
@@ -188,16 +201,7 @@ export class RowTransaction {
    */
   rollback(target = this.state, restoreSection = null) {
     for (let i = this.undo.length - 1; i >= 0; i--) this.undo[i](target);
-    for (const key of Object.keys(target))
-      if (key !== 'tables' && !Object.hasOwn(this.metadata, key)) delete target[key];
-    for (const [key, value] of Object.entries(this.metadata)) {
-      if (restoreSection && Object.hasOwn(target, key)) {
-        if (!privateRecordEqual(target[key], value, { symbolFreeRight: true }))
-          target[key] = restoreSection(target[key], value);
-        continue;
-      }
-      Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
-    }
+    restoreTransactionSections(this, target, restoreSection);
     for (const table of Object.keys(target.tables)) if (!this.tables.has(table)) delete target.tables[table];
     if (target === this.state) this.store.state = this.state;
     return target;

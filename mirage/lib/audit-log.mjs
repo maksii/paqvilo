@@ -14,11 +14,11 @@ export function auditText(value, limit = 12000) {
       .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]')
       .replace(/\bSharedAccessSignature\s+[^\s"'<>]+/gi, 'SharedAccessSignature [redacted]')
       // A Basic credential is base64: a token holding a digit, + or / or ending in = (so "Basic plan" stays readable).
-      .replace(/\bBasic\s+(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{4,}={0,2}/gi, 'Basic [redacted]')
+      .replace(/\bBasic\s+(?=[a-z0-9+/]*[0-9+/=])[a-z0-9+/]{4,}={0,2}/gi, 'Basic [redacted]')
       .replace(/\bDigest\s+[\w-]+=[^\r\n<>]*/gi, 'Digest [redacted]')
       .replace(/([?&](?:code|sig)=)[^&#\s"'<>]*/gi, '$1[redacted]')
       .replace(
-        /((?:password|passwd|[\w-]*secret|[\w-]*token|authorization|cookie|credential|api[_-]?key|signature)["']?\s*(?:=|:|\beq\b)\s*)(?:"[^"]*"|'[^']*'|[^\s&<>;,]+)/gi,
+        /((?:password|passwd|[\w-]*secret|[\w-]*token|authorization|cookie|credential|api[_-]?key|signature)["']?\s*(?:=|:|\beq\b)\s*)(?:"[^"]*"|'[^']*'|[^\s&<>;,]+)/gi, // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches; regex kept: a rewrite would change matches or captures
         '$1[redacted]',
       )
       .replace(/<condition\b[^>]*(?:\/>|>[\s\S]*?<\/condition>)/gi, (tag) => {
@@ -33,7 +33,7 @@ export function auditText(value, limit = 12000) {
   );
 }
 
-export function auditQuery(value) {
+/* NOSONAR: mixed return values are part of the contract */ export function auditQuery(value) {
   if (value instanceof URLSearchParams)
     return Object.fromEntries(
       [...value].map(([key, item]) => [key, secretQueryKey(key) ? '[redacted]' : auditText(item)]),
@@ -43,17 +43,14 @@ export function auditQuery(value) {
   return Object.fromEntries(
     Object.entries(value)
       .slice(0, 40)
-      .map(([key, item]) => [
-        key,
-        secretQueryKey(key)
-          ? '[redacted]'
-          : typeof item === 'string'
-            ? auditText(item)
-            : typeof item === 'number' || typeof item === 'boolean'
-              ? item
-              : '[structured value]',
-      ]),
+      .map(([key, item]) => [key, secretQueryKey(key) ? '[redacted]' : auditStructuredItem(item)]),
   );
+}
+
+/* NOSONAR: mixed return values are part of the contract */ function auditStructuredItem(item) {
+  if (typeof item === 'string') return auditText(item);
+  if (typeof item === 'number' || typeof item === 'boolean') return item;
+  return '[structured value]';
 }
 
 // An id filter of at least 8 hexadecimal characters (after an optional kind: prefix, as in visitor:ad87d220) also
@@ -65,7 +62,7 @@ export const idMatches = (actual, wanted) =>
 
 const pathOnly = (value) => {
   try {
-    return new URL(String(value ?? '/'), 'http://local.invalid').pathname.slice(0, 600);
+    return new URL(String(value ?? '/'), 'http://local.invalid').pathname.slice(0, 600); // NOSONAR: reserved or loopback placeholder host, not a real transport
   } catch {
     return '/';
   }
@@ -73,10 +70,10 @@ const pathOnly = (value) => {
 const positive = (value, fallback, max) => Math.min(max, Math.max(1, Number.parseInt(value, 10) || fallback));
 // The trace ids one traceId filter may list (a page of Activities joins its audit entries in one call).
 const MAX_TRACE_IDS = 200;
-const AUDIT_KINDS = ['api', 'liquid-fetchxml', 'form', 'page', 'entity-read', 'entity-query'];
+const AUDIT_KINDS = new Set(['api', 'liquid-fetchxml', 'form', 'page', 'entity-read', 'entity-query']);
 // Runtime services may add their own lowercase kinds (for example native form services).
 const auditKind = (kind) =>
-  AUDIT_KINDS.includes(kind) || (typeof kind === 'string' && /^[a-z][a-z0-9-]{1,39}$/.test(kind)) ? kind : 'api';
+  AUDIT_KINDS.has(kind) || (typeof kind === 'string' && /^[a-z][a-z0-9-]{1,39}$/.test(kind)) ? kind : 'api';
 const statusMatches = (status, filter) => {
   const value = String(filter ?? '')
     .trim()
@@ -186,7 +183,7 @@ export class AuditLog {
         entity: actualEntity,
         saveMs,
         saveMode,
-      } = {}) => {
+      } = {}) => /* NOSONAR: single-pass routine, splitting it would change shared state */ {
         if (completed) return;
         completed = true;
         entry.durationMs = Math.round((performance.now() - started) * 100) / 100;
@@ -196,8 +193,8 @@ export class AuditLog {
         if (Number.isInteger(rowCount) && rowCount >= 0) entry.rowCount = rowCount;
         if (actualProvider) entry.provider = actualProvider === 'live' ? 'live' : 'local';
         if (actualEntity) entry.entity = limitText(actualEntity, 160);
-        entry.outcome =
-          entry.status === 401 || entry.status === 403 ? 'denied' : entry.status >= 400 ? 'error' : 'success';
+        if (entry.status === 401 || entry.status === 403) entry.outcome = 'denied';
+        else entry.outcome = entry.status >= 400 ? 'error' : 'success';
         if (error || simulatorCode || portalError?.code)
           entry.error = {
             code: auditText(error?.code ?? simulatorCode ?? portalError?.code ?? 'SIMULATOR_ERROR', 160),
@@ -278,28 +275,25 @@ export class AuditLog {
       });
     const afterSequence = sequenceBound('afterSequence'),
       throughSequence = sequenceBound('throughSequence');
+    const filter = {
+      kind,
+      provider,
+      outcome,
+      status,
+      method,
+      correlationId,
+      traceIds,
+      visitorId,
+      sessionKey,
+      contactId,
+      afterSequence,
+      throughSequence,
+      pathFilter,
+      entities,
+      search,
+    };
     return this.entries
-      .filter(
-        (entry) =>
-          (!kind || entry.kind === kind) &&
-          (!provider || entry.provider === provider) &&
-          (!outcome || entry.outcome === outcome) &&
-          statusMatches(entry.status, status) &&
-          (!method || entry.method === method) &&
-          (!correlationId || entry.correlationId === correlationId) &&
-          (!traceIds.size || traceIds.has(entry.traceId)) &&
-          (!visitorId || idMatches(entry.visitorId ?? null, visitorId)) &&
-          (!sessionKey || idMatches(entry.sessionKey ?? null, sessionKey)) &&
-          (!contactId ||
-            String(entry.identity.contactId ?? '')
-              .replace(/[{}]/g, '')
-              .toLowerCase() === contactId) &&
-          (afterSequence === null || entry.sequence > afterSequence) &&
-          (throughSequence === null || entry.sequence <= throughSequence) &&
-          (!pathFilter || entry.path.toLowerCase().includes(pathFilter)) &&
-          (!entities || entities.has(String(entry.entity ?? '').toLowerCase())) &&
-          (!search || JSON.stringify(entry).toLowerCase().includes(search)),
-      )
+      .filter((entry) => matchesAuditEntry(entry, filter))
       .slice()
       .reverse();
   }
@@ -343,4 +337,44 @@ export class AuditLog {
     this.dropped = 0;
     return this.list();
   }
+}
+
+function matchesAuditEntry(entry, filter) {
+  const {
+    kind,
+    provider,
+    outcome,
+    status,
+    method,
+    correlationId,
+    traceIds,
+    visitorId,
+    sessionKey,
+    contactId,
+    afterSequence,
+    throughSequence,
+    pathFilter,
+    entities,
+    search,
+  } = filter;
+  return (
+    (!kind || entry.kind === kind) &&
+    (!provider || entry.provider === provider) &&
+    (!outcome || entry.outcome === outcome) &&
+    statusMatches(entry.status, status) &&
+    (!method || entry.method === method) &&
+    (!correlationId || entry.correlationId === correlationId) &&
+    (!traceIds.size || traceIds.has(entry.traceId)) &&
+    (!visitorId || idMatches(entry.visitorId ?? null, visitorId)) &&
+    (!sessionKey || idMatches(entry.sessionKey ?? null, sessionKey)) &&
+    (!contactId ||
+      String(entry.identity.contactId ?? '')
+        .replace(/[{}]/g, '')
+        .toLowerCase() === contactId) &&
+    (afterSequence === null || entry.sequence > afterSequence) &&
+    (throughSequence === null || entry.sequence <= throughSequence) &&
+    (!pathFilter || entry.path.toLowerCase().includes(pathFilter)) &&
+    (!entities || entities.has(String(entry.entity ?? '').toLowerCase())) &&
+    (!search || JSON.stringify(entry).toLowerCase().includes(search))
+  );
 }

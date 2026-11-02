@@ -366,7 +366,7 @@ test('native platform paths are served from local equivalents unless the export 
   const expectations = [
     ['/js/jquery.blockUI.js', /application\/javascript/, /\$\.blockUI = function/],
     ['/JS/JQUERY.BLOCKUI.JS', /application\/javascript/, /\$\.unblockUI = function/],
-    ['/xrm-adx/js/webform.js', /application\/javascript/, /window\.__ppXrmWebForm/],
+    ['/xrm-adx/js/webform.js', /application\/javascript/, /(?:window|globalThis)\.__ppXrmWebForm/],
     ['/xrm-adx/js/radcaptcha.js', /application\/javascript/, /onClientLoad/],
     ['/xrm-adx/js/crmentityformview.js', /application\/javascript/, /validateRequiredField/],
     ['/xrm-adx/js/crmentityformview-datetime.js', /application\/javascript/, /initializeDateControls/],

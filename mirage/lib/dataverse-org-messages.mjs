@@ -140,7 +140,7 @@ function referenceOf(store, value, name) {
 }
 
 // Keyword wildcards: * and % match any text; everything else is literal (case-insensitive by the caller).
-const escapeText = (text) => text.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+const escapeText = (text) => text.replace(/[.+?^${}()|[\]\\]/g, String.raw`\$&`);
 const WALL_PARAMS = [
   ['PageNumber', 'Edm.Int32'],
   ['PageSize', 'Edm.Int32'],
@@ -219,9 +219,10 @@ function csdlOf(
         : `<Parameter Name="${param}" Type="${type}" />`,
     );
   }
-  const complex = response
-    ? `<ComplexType Name="${name}Response">${response.map(([prop, type]) => `<Property Name="${prop}" Type="${type}" />`).join('')}</ComplexType>`
+  const responseProperties = response
+    ? response.map(([prop, type]) => `<Property Name="${prop}" Type="${type}" />`).join('')
     : '';
+  const complex = response ? `<ComplexType Name="${name}Response">${responseProperties}</ComplexType>` : '';
   const result = response ? `mscrm.${name}Response` : returns;
   if (result) parts.push(`<ReturnType Type="${result}" Nullable="false" />`);
   const head = `<${tag} Name="${name}"${bound ? ' IsBound="true"' : ''}>`;
@@ -266,7 +267,7 @@ function operations(api) {
   // The privilege the caller needs on a table (Read or Write), refused as the platform refuses it.
   const need = (c, logical, right) => {
     const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical);
+    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
   };
   const respond = (c, name, payload) => ({
     status: 200,
@@ -304,7 +305,7 @@ function operations(api) {
     if (row.absoluteurl) return row.absoluteurl;
     const parent = parentOfSharePoint(row, logical);
     if (!parent) return row.relativeurl ?? ''; // a root row with no absolute URL: assumed
-    return `${absoluteOf(parent.row, parent.logical, depth + 1).replace(/\/+$/, '')}/${(row.relativeurl ?? '').replace(/^\/+/, '')}`;
+    return `${absoluteOf(parent.row, parent.logical, depth + 1).replace(/\/+$/, '')}/${(row.relativeurl ?? '').replace(/^\/+/, '')}`; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
   };
   // The site collection: the topmost sharepointsite of the row, whose absolute URL is given only when isgridpresent is true (blank otherwise).
   const siteCollectionUrl = (row, logical) => {
@@ -316,7 +317,7 @@ function operations(api) {
       current = parent;
       if (current.logical === 'sharepointsite') site = current;
     }
-    return site && site.row.isgridpresent === true ? absoluteOf(site.row, 'sharepointsite') : '';
+    return site?.row.isgridpresent === true ? absoluteOf(site.row, 'sharepointsite') : '';
   };
   const absoluteUrlOf = (logical, csdl) => ({
     name: 'RetrieveAbsoluteAndSiteCollectionUrl',
@@ -846,11 +847,11 @@ function operations(api) {
         need(c, 'socialprofile', 'Read');
         const rows = tableOf(store, 'socialprofile');
         const sameCommunity = (row) => sameId(row.community, e.community);
-        const existing = given(e.uniqueprofileid)
-          ? rows.find((r) => sameId(r.uniqueprofileid, e.uniqueprofileid) && sameCommunity(r))
-          : given(e.profilename)
-            ? rows.find((r) => sameId(r.profilename, e.profilename) && sameCommunity(r))
-            : undefined;
+        let existing;
+        if (given(e.uniqueprofileid))
+          existing = rows.find((r) => sameId(r.uniqueprofileid, e.uniqueprofileid) && sameCommunity(r));
+        else if (given(e.profilename))
+          existing = rows.find((r) => sameId(r.profilename, e.profilename) && sameCommunity(r));
         let id = existing?.socialprofileid;
         if (existing) {
           authorizeRead(c, 'socialprofile', existing);
@@ -959,17 +960,15 @@ function operations(api) {
         const args = argsOf(c);
         const expression = requiredText(args.expression, 'expression');
         const powerFx = api.providers?.powerFx;
-        const evaluate =
-          typeof api.fxEvaluator === 'function'
-            ? api.fxEvaluator
-            : typeof powerFx?.evaluateSync === 'function'
-              ? (input) => ({
-                  Result: powerFx.evaluateSync(input.expression, {
-                    values: input.inputparameters ?? {},
-                    principal: input.user?.systemuserid ?? null,
-                  }).value,
-                })
-              : null;
+        let evaluate;
+        if (typeof api.fxEvaluator === 'function') evaluate = api.fxEvaluator;
+        else if (typeof powerFx?.evaluateSync === 'function')
+          evaluate = (input) => ({
+            Result: powerFx.evaluateSync(input.expression, {
+              values: input.inputparameters ?? {},
+              principal: input.user?.systemuserid ?? null,
+            }).value,
+          });
         if (!evaluate)
           throw new DataError(
             'Power Fx expressions are not simulated: no evaluator is installed.',

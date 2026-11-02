@@ -7,8 +7,8 @@
  */
 (() => {
   'use strict';
-  if (window.__ppMultiSelectHost) return;
-  window.__ppMultiSelectHost = true;
+  if (globalThis.__ppMultiSelectHost) return;
+  globalThis.__ppMultiSelectHost = true;
   const escape = (value) =>
     String(value ?? '').replace(
       /[&<>"']/g,
@@ -30,10 +30,11 @@
     const text = selected.map((option) => option.label).join(', ');
     const off = Boolean(context.IsDisabled);
     const selectedItems = selected
-      .map(
-        (option) =>
-          `<li class="msos-selected-display-item msos-visible" name="${escape(id)}-selected-item-${option.index}" aria-describedby="${escape(id)}_selecteditems_instructions" id="${escape(id)}-selected-item-${option.index}" tabindex="-1" title="" data-value="${escape(option.value)}" aria-label="${escape(`${option.label} for ${name}`)}"><span class="msos-selected-display-item-text">${escape(option.label)}</span><button class="msos-quick-delete" tabindex="-1" name="${escape(id)}-selected-item-delete-${option.index}" aria-label="${escape(`Remove ${option.label}`)}"${postback ? ' type="button"' : ''}><span class="msos-glyph"></span></button></li>`,
-      )
+      .map((option) => {
+        const itemLabel = escape(`${option.label} for ${name}`);
+        const removeLabel = escape(`Remove ${option.label}`);
+        return `<li class="msos-selected-display-item msos-visible" name="${escape(id)}-selected-item-${option.index}" aria-describedby="${escape(id)}_selecteditems_instructions" id="${escape(id)}-selected-item-${option.index}" tabindex="-1" title="" data-value="${escape(option.value)}" aria-label="${itemLabel}"><span class="msos-selected-display-item-text">${escape(option.label)}</span><button class="msos-quick-delete" tabindex="-1" name="${escape(id)}-selected-item-delete-${option.index}" aria-label="${removeLabel}"${postback ? ' type="button"' : ''}><span class="msos-glyph"></span></button></li>`;
+      })
       .join('');
     // The option boxes are checked by property, not attribute.
     const optionItems = options
@@ -46,8 +47,12 @@
       ? ''
       : `<div class="msos-alert-text" aria-live="assertive" aria-atomic="true" aria-relevant="additions"></div><div class="msos-a11y" aria-hidden="true" id="${escape(id)}_selecteditems_instructions">Use the arrow keys to navigate through the list of currently selected items. Press delete or backspace to deselect an item. For touch devices, use swipe and touch gestures to explore the list.</div><div class="msos-a11y" aria-hidden="true" id="${escape(id)}_combobox_instructions">Use the arrow keys to navigate through the list of items. Press space to select or deselect an item. For touch devices, use swipe and touch gestures to explore this list.</div>`;
     const viewMode = `<div class="msos-viewmode-container" id="${escape(id)}_viewmodecontainer"><div class="msos-viewmode-content"><div class="msos-viewmode-text" title="${escape(text || '---')}">${escape(text || '---')}</div></div><div class="msos-viewmode-button-container msos-hidden"><button class="msos-viewmode-button" aria-controls="${escape(id)}_viewmodecontainer" aria-expanded="false" aria-label="Expand or collapse selected content" type="button"><span class="msos-glyph"></span></button></div></div>`;
-    const strip = `<div class="msos-selecteditems-container"${text ? ` title="${escape(text)}"` : ''} tabindex="0"><ul class="msos-selecteditems msos-current-selection-normal" tabindex="-1" aria-label="${escape(`Selected values for ${name}`)}">${selectedItems}</ul><div class="msos-selecteditems-toggle-container"><button class="msos-selecteditems-toggle msos-invisible" tabindex="-1" aria-hidden="true" type="button">+{0}</button></div></div>`;
-    const inner = `<div class="msos-inner-container" role="combobox" aria-haspopup="true" aria-expanded="false" aria-label="${escape(name)}" aria-controls="${escape(id)}_i"><div class="msos-filter-container"><div class="msos-input-container"><input id="${escape(id)}_ledit" type="text" class="msos-input" placeholder="Select or search options" aria-label="${escape(text ? `${name}. Selected: ${text}` : name)}" aria-autocomplete="list" aria-describedby="${escape(id)}_combobox_instructions"></div><div class="msos-caret-container"><button class="msos-caret-button" tabindex="-1" aria-label="Toggle menu" type="button"><span class="msos-glyph"></span></button></div></div><div class="msos-selection-container"><div class="msos-action-buttons"><label name="${escape(id)}msos-label" class="msos-label msos-selectall msos-option"><input type="checkbox" class="msos-checkbox" id="${escape(id)}_selectAll" tabindex="-1" aria-label="${escape(`Select all ${options.length} items`)}"><div class="msos-label-text" aria-hidden="true"><div class="msos-optionitem-text">Select all</div><div id="${escape(id)}msos-no-of-Items" class="msos-itemcount-text">${options.length} items</div></div></label></div><div id="${escape(id)}_no-results" class="msos-no-results msos-hidden">No entries found</div><ul class="msos-selected-items msos-selection" role="listbox" tabindex="-1" aria-multiselectable="true" aria-labelledby="${escape(id)}msos-no-of-Items">${optionItems}</ul></div></div>`;
+    const titleAttribute = text ? ` title="${escape(text)}"` : '';
+    const stripLabel = escape(`Selected values for ${name}`);
+    const strip = `<div class="msos-selecteditems-container"${titleAttribute} tabindex="0"><ul class="msos-selecteditems msos-current-selection-normal" tabindex="-1" aria-label="${stripLabel}">${selectedItems}</ul><div class="msos-selecteditems-toggle-container"><button class="msos-selecteditems-toggle msos-invisible" tabindex="-1" aria-hidden="true" type="button">+{0}</button></div></div>`;
+    const inputLabel = escape(text ? `${name}. Selected: ${text}` : name);
+    const selectAllLabel = escape(`Select all ${options.length} items`);
+    const inner = `<div class="msos-inner-container" role="combobox" aria-haspopup="true" aria-expanded="false" aria-label="${escape(name)}" aria-controls="${escape(id)}_i"><div class="msos-filter-container"><div class="msos-input-container"><input id="${escape(id)}_ledit" type="text" class="msos-input" placeholder="Select or search options" aria-label="${inputLabel}" aria-autocomplete="list" aria-describedby="${escape(id)}_combobox_instructions"></div><div class="msos-caret-container"><button class="msos-caret-button" tabindex="-1" aria-label="Toggle menu" type="button"><span class="msos-glyph"></span></button></div></div><div class="msos-selection-container"><div class="msos-action-buttons"><label name="${escape(id)}msos-label" class="msos-label msos-selectall msos-option"><input type="checkbox" class="msos-checkbox" id="${escape(id)}_selectAll" tabindex="-1" aria-label="${selectAllLabel}"><div class="msos-label-text" aria-hidden="true"><div class="msos-optionitem-text">Select all</div><div id="${escape(id)}msos-no-of-Items" class="msos-itemcount-text">${options.length} items</div></div></label></div><div id="${escape(id)}_no-results" class="msos-no-results msos-hidden">No entries found</div><ul class="msos-selected-items msos-selection" role="listbox" tabindex="-1" aria-multiselectable="true" aria-labelledby="${escape(id)}msos-no-of-Items">${optionItems}</ul></div></div>`;
     const container = `<div id="${escape(id)}_i" class="msos-container${off ? ' msos-disabled' : ''}${values.length ? '' : ' msos-none-selected'}">${a11y}${viewMode}${strip}${inner}</div>`;
     // The hosted control stamps its container with its launch-point id when it has a selection on
     // a first render (none when empty or after a postback).
@@ -67,44 +72,47 @@
       return false;
     }
   };
-  const mount = () => {
-    for (const config of document.querySelectorAll("span[id^='PcfControlConfig_'][pcf-controlcontext]")) {
-      let context;
-      try {
-        context = JSON.parse(config.getAttribute('pcf-controlcontext'));
-      } catch {
-        continue;
-      }
-      if (context?.ControlName !== 'MscrmControls.MultiSelectPicklist.UpdMSPicklistControl') continue;
-      const view = document.getElementById(context.UniqueId);
-      if (!view || view.childElementCount) continue;
-      const hidden = document.getElementById(context.PcfControlHiddenValueId ?? context.ControlId);
-      let values = [];
-      try {
-        values = hidden?.value
-          ? JSON.parse(hidden.value).map((item) => String(item && typeof item === 'object' ? item.Value : item))
-          : [];
-      } catch {
-        values = String(hidden?.value ?? '')
-          .split(',')
-          .filter(Boolean);
-      }
-      view.innerHTML = render(context, values, postbackPage(config));
-      for (const box of view.querySelectorAll(".msos-selection input[type='checkbox']"))
-        box.checked = values.includes(box.value);
-      // The host expands the value to the selected options' metadata and, when editing, marks the
-      // host dirty.
-      const metadata = (context.ControlProperties?.value_Options ?? []).filter((option) =>
-        values.includes(String(option.Value)),
-      );
-      if (hidden && metadata.length) hidden.setAttribute('value', JSON.stringify(metadata));
-      if (values.length && config.parentElement?.parentElement?.hasAttribute('onchange')) {
-        const host = config.parentElement.parentElement;
-        if (!host.classList.contains('dirty')) host.className = `${host.className} dirty`;
-      }
+  const mountOne = (config) => {
+    let context;
+    try {
+      context = JSON.parse(config.getAttribute('pcf-controlcontext'));
+    } catch {
+      return;
+    }
+    if (context?.ControlName !== 'MscrmControls.MultiSelectPicklist.UpdMSPicklistControl') return;
+    const view = document.getElementById(context.UniqueId);
+    if (!view || view.childElementCount) return;
+    const hidden = document.getElementById(context.PcfControlHiddenValueId ?? context.ControlId);
+    let values = [];
+    try {
+      values = hidden?.value
+        ? JSON.parse(hidden.value).map((item) => String(item && typeof item === 'object' ? item.Value : item))
+        : [];
+    } catch {
+      values = String(hidden?.value ?? '')
+        .split(',')
+        .filter(Boolean);
+    }
+    view.innerHTML = render(context, values, postbackPage(config));
+    for (const box of view.querySelectorAll(".msos-selection input[type='checkbox']"))
+      box.checked = values.includes(box.value);
+    // The host expands the value to the selected options' metadata and, when editing, marks the
+    // host dirty.
+    const metadata = (context.ControlProperties?.value_Options ?? []).filter((option) =>
+      values.includes(String(option.Value)),
+    );
+    if (hidden && metadata.length) hidden.setAttribute('value', JSON.stringify(metadata));
+    if (values.length && config.parentElement?.parentElement?.hasAttribute('onchange')) {
+      const host = config.parentElement.parentElement;
+      if (!host.classList.contains('dirty')) host.className = `${host.className} dirty`;
     }
   };
-  window.__ppMultiSelectHost = { render, mount, postbackPage };
+  const mount = () => {
+    for (const config of document.querySelectorAll("span[id^='PcfControlConfig_'][pcf-controlcontext]")) {
+      mountOne(config);
+    }
+  };
+  globalThis.__ppMultiSelectHost = { render, mount, postbackPage };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mount, { once: true });
   else mount();
 })();

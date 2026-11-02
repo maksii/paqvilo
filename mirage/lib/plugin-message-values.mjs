@@ -31,33 +31,231 @@ const concurrencyValue = (value) => {
   return value;
 };
 
-export function pluginMessageParameters(store, specs, values = {}) {
-  const byName = new Map(specs.map((spec) => [spec.uniquename, spec]));
-  const encode = (spec, value) => {
-    if (isExactNumeric(value)) {
-      const declared = names[Number(spec?.type)] ?? spec?.type;
-      const type = declared === 'Float' ? 'Double' : (declared ?? value.numericType);
-      if (!['Money', 'Decimal', 'Int64', 'Double'].includes(type))
-        throw new DataError(
-          'An exact numeric value requires a numeric SDK parameter.',
-          501,
-          'LocalPluginSdkUnsupported',
-        );
-      return { $type: type, value: value.value };
-    }
-    if (value == null || value?.$type) return structuredClone(value);
-    const type = names[Number(spec?.type)] ?? spec?.type;
-    if (type === 'ConcurrencyBehavior') return { $type: type, value: concurrencyValue(value) };
-    if (['Guid', 'DateTime', 'Decimal', 'Money', 'Int64'].includes(type))
-      return { $type: type, value: String(value?.value ?? value) };
-    if (type === 'Float') return { $type: 'Double', value: String(value) };
-    if (type === 'Picklist') return { $type: 'OptionSetValue', value };
-    if (type === 'StringArray') return { $type: 'PrimitiveArray', elementType: 'String', values: [...value] };
-    if (['PrimitiveArray', 'SdkArray', 'OptionSetValueCollection'].includes(type)) {
-      if (!Array.isArray(value))
-        throw new DataError('A typed SDK collection requires an array.', 501, 'LocalPluginSdkUnsupported');
-      const elementType = type === 'OptionSetValueCollection' ? 'OptionSetValue' : spec.elementType;
-      const element = {
+function encodePluginValue(store, spec, value, encode) {
+  if (isExactNumeric(value)) return encodeExactNumeric(spec, value);
+  if (value == null || value?.$type) return structuredClone(value);
+  const type = names[Number(spec?.type)] ?? spec?.type;
+  if (type === 'ConcurrencyBehavior') return { $type: type, value: concurrencyValue(value) };
+  if (['Guid', 'DateTime', 'Decimal', 'Money', 'Int64'].includes(type))
+    return { $type: type, value: String(value?.value ?? value) };
+  if (type === 'Float') return { $type: 'Double', value: String(value) };
+  if (type === 'Picklist') return { $type: 'OptionSetValue', value };
+  if (type === 'StringArray') return { $type: 'PrimitiveArray', elementType: 'String', values: [...value] };
+  if (['PrimitiveArray', 'SdkArray', 'OptionSetValueCollection'].includes(type))
+    return encodePluginCollection(spec, type, value, encode);
+  if (type === 'EntityCollection') return encodeEntityCollection(spec, value, encode);
+  if (type === 'Entity' || type === 'EntityReference') return encodePluginEntity(store, spec, type, value, encode);
+  if (Array.isArray(value)) return value.map((item) => encode(undefined, item));
+  if (value && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, encode(undefined, item)]));
+  return value;
+}
+
+function encodeExactNumeric(spec, value) {
+  const declared = names[Number(spec?.type)] ?? spec?.type;
+  const type = declared === 'Float' ? 'Double' : (declared ?? value.numericType);
+  if (!['Money', 'Decimal', 'Int64', 'Double'].includes(type))
+    throw new DataError('An exact numeric value requires a numeric SDK parameter.', 501, 'LocalPluginSdkUnsupported');
+  return { $type: type, value: value.value };
+}
+
+function encodePluginCollection(spec, type, value, encode) {
+  if (!Array.isArray(value))
+    throw new DataError('A typed SDK collection requires an array.', 501, 'LocalPluginSdkUnsupported');
+  const elementType = type === 'OptionSetValueCollection' ? 'OptionSetValue' : spec.elementType;
+  const element = {
+    String: 'String',
+    Int32: 'Integer',
+    Boolean: 'Boolean',
+    Int64: 'Int64',
+    Decimal: 'Decimal',
+    Double: 'Float',
+    DateTime: 'DateTime',
+    OptionSetValue: 'Picklist',
+    Money: 'Money',
+    Entity: 'Entity',
+    EntityReference: 'EntityReference',
+    EntityCollection: 'EntityCollection',
+    QueryExpression: 'QueryExpression',
+    'String[]': 'StringArray',
+  }[elementType];
+  if (!element) throw new DataError('Unsupported SDK collection element type.', 501, 'LocalPluginSdkUnsupported');
+  return {
+    $type: type,
+    ...(type === 'OptionSetValueCollection' ? {} : { elementType }),
+    values: value.map((item) => encode({ type: element }, item)),
+  };
+}
+
+function encodeEntityCollection(spec, value, encode) {
+  return {
+    $type: 'EntityCollection',
+    entities: value.map((row) => encode({ ...spec, type: 'Entity' }, row)),
+    moreRecords: false,
+    totalRecordCount: -1,
+    pagingCookie: null,
+  };
+}
+
+function encodePluginEntity(store, spec, type, value, encode) {
+  const entity = logicalName(spec, value);
+  if (!entity)
+    throw new DataError(
+      'A custom API entity value requires its declared logical table.',
+      501,
+      'LocalPluginSdkUnsupported',
+    );
+  if (type === 'EntityReference')
+    return {
+      $type: 'EntityReference',
+      logicalName: entity,
+      id: value.id,
+      name: value.name ?? null,
+      ...(Object.hasOwn(value, 'rowVersion') ? { rowVersion: value.rowVersion } : {}),
+      ...(value.keyAttributes
+        ? {
+            keyAttributes: Object.fromEntries(
+              Object.entries(value.keyAttributes).map(([name, item]) => [name, encode(undefined, item)]),
+            ),
+          }
+        : {}),
+    };
+  const row = recordToSdkEntity(
+    store,
+    entity,
+    Object.fromEntries(Object.entries(value).filter(([name]) => !name.includes('@'))),
+  );
+  row.attributes = Object.fromEntries(
+    Object.entries(row.attributes).map(([name, item]) => [name, encode(undefined, item)]),
+  );
+  return row;
+}
+
+function decodePluginValue(value, store) {
+  if (value?.$type === 'ConcurrencyBehavior') return concurrencyValue(value.value);
+  if (Array.isArray(value)) return value.map((item) => decodePluginValue(item, store));
+  if (['PrimitiveArray', 'SdkArray'].includes(value?.$type))
+    return rememberPluginValue(
+      value.values.map((item) => decodePluginValue(item, store)),
+      value,
+    );
+  if (value?.$type === 'EntityReference')
+    return rememberPluginValue(
+      {
+        ...sdkValueToRecord(value),
+        ...(Object.hasOwn(value, 'rowVersion') ? { rowVersion: value.rowVersion } : {}),
+      },
+      value,
+    );
+  if (value?.$type === 'EntityCollection')
+    return rememberPluginValue(
+      value.entities.map((item) => decodePluginValue(item, store)),
+      value,
+    );
+  if (value?.$type === 'Entity') return decodePluginEntity(value, store);
+  if (value?.$type === 'AliasedValue') return decodePluginValue(value.value, store);
+  if (value && typeof value === 'object' && !value.$type)
+    return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, decodePluginValue(item, store)]));
+  if (
+    value?.$type &&
+    ![
+      'Guid',
+      'DateTime',
+      'Money',
+      'Decimal',
+      'Int64',
+      'Double',
+      'OptionSetValue',
+      'OptionSetValueCollection',
+      'EntityReference',
+      'AliasedValue',
+    ].includes(value.$type)
+  )
+    return structuredClone(value);
+  return sdkValueToRecord(value);
+}
+
+function decodePluginEntity(value, store) {
+  const row = Object.fromEntries(
+    Object.entries(value.attributes ?? {}).map(([name, item]) => [name, decodePluginValue(item, store)]),
+  );
+  const primary = store?.resolveMapping(value.logicalName).idColumn;
+  return rememberPluginValue(
+    {
+      '@odata.type': 'Microsoft.Dynamics.CRM.' + value.logicalName,
+      ...row,
+      ...(primary && value.id ? { [primary]: value.id } : {}),
+    },
+    value,
+  );
+}
+
+function reconcilePluginValue(prior, oldValue, newValue, spec, helpers) {
+  if (prior !== undefined && isDeepStrictEqual(oldValue, newValue)) return structuredClone(prior);
+  // An alias projects its inner value to JavaScript, including values whose
+  // native wire wrapper is retained. Editing that wrapper still edits Value.
+  if (prior?.$type === 'AliasedValue' && newValue?.$type !== 'AliasedValue')
+    return { ...structuredClone(prior), value: helpers.reconcile(prior.value, oldValue, newValue) };
+  // Explicit native wire replacements retain their authored type/metadata.
+  if (newValue?.$type && !isExactNumeric(newValue)) return structuredClone(newValue);
+  const encoded = helpers.encode(spec ?? helpers.inferred(prior), newValue);
+  return reconcileEncodedPluginValue(prior, oldValue, newValue, encoded, helpers);
+}
+
+function reconcileEncodedPluginValue(prior, oldValue, newValue, encoded, helpers) {
+  if (encoded?.$type === 'Entity') return helpers.reconcileEntity(prior, oldValue, newValue, encoded);
+  if (encoded?.$type === 'EntityReference' && prior?.$type === 'EntityReference')
+    return reconcilePluginReference(prior, oldValue, newValue, encoded, helpers.reconcileMap);
+  if (encoded?.$type === 'EntityCollection' && prior?.$type === 'EntityCollection')
+    return {
+      ...structuredClone(prior),
+      ...encoded,
+      ...(Array.isArray(newValue) ? structuredClone(prior) : {}),
+      entities: helpers.reconcileRows(prior.entities, oldValue, newValue, encoded.entities),
+    };
+  if (['PrimitiveArray', 'SdkArray'].includes(encoded?.$type) && prior?.$type === encoded.$type)
+    return reconcilePluginArray(prior, oldValue, newValue, encoded, helpers);
+  if (
+    newValue &&
+    typeof newValue === 'object' &&
+    !Array.isArray(newValue) &&
+    !newValue.$type &&
+    !isExactNumeric(newValue) &&
+    !encoded?.$type
+  )
+    return helpers.reconcileMap(prior, oldValue, newValue);
+  return encoded;
+}
+
+function reconcilePluginReference(prior, oldValue, newValue, encoded, reconcileMap) {
+  const result = { ...structuredClone(prior), ...encoded };
+  if (isDeepStrictEqual(oldValue?.name, newValue?.name)) result.name = prior.name;
+  if (Object.hasOwn(oldValue ?? {}, 'rowVersion') && !Object.hasOwn(newValue ?? {}, 'rowVersion'))
+    delete result.rowVersion;
+  if (!newValue?.keyAttributes) delete result.keyAttributes;
+  else result.keyAttributes = reconcileMap(prior.keyAttributes, oldValue?.keyAttributes, newValue.keyAttributes);
+  return result;
+}
+
+function reconcilePluginArray(prior, oldValue, newValue, encoded, helpers) {
+  if (['Entity', 'EntityReference'].includes(encoded.elementType))
+    return { ...encoded, values: helpers.reconcileRows(prior.values, oldValue, newValue, encoded.values) };
+  return {
+    ...encoded,
+    values: encoded.values.map((wire, index) =>
+      reconcilePluginArrayItem(wire, index, prior, oldValue, newValue, encoded, helpers),
+    ),
+  };
+}
+
+function reconcilePluginArrayItem(wire, index, prior, oldValue, newValue, encoded, helpers) {
+  const origin = pluginValueSource(newValue[index]);
+  const result = helpers.reconcile(
+    origin ?? prior.values[index],
+    origin ? helpers.decoded(origin) : oldValue?.[index],
+    newValue[index],
+    {
+      type: {
         String: 'String',
         Int32: 'Integer',
         Boolean: 'Boolean',
@@ -65,67 +263,20 @@ export function pluginMessageParameters(store, specs, values = {}) {
         Decimal: 'Decimal',
         Double: 'Float',
         DateTime: 'DateTime',
+        EntityReference: 'EntityReference',
         OptionSetValue: 'Picklist',
         Money: 'Money',
-        Entity: 'Entity',
-        EntityReference: 'EntityReference',
         EntityCollection: 'EntityCollection',
-        QueryExpression: 'QueryExpression',
         'String[]': 'StringArray',
-      }[elementType];
-      if (!element) throw new DataError('Unsupported SDK collection element type.', 501, 'LocalPluginSdkUnsupported');
-      return {
-        $type: type,
-        ...(type === 'OptionSetValueCollection' ? {} : { elementType }),
-        values: value.map((item) => encode({ type: element }, item)),
-      };
-    }
-    if (type === 'EntityCollection')
-      return {
-        $type: 'EntityCollection',
-        entities: value.map((row) => encode({ ...spec, type: 'Entity' }, row)),
-        moreRecords: false,
-        totalRecordCount: -1,
-        pagingCookie: null,
-      };
-    if (type === 'Entity' || type === 'EntityReference') {
-      const entity = logicalName(spec, value);
-      if (!entity)
-        throw new DataError(
-          'A custom API entity value requires its declared logical table.',
-          501,
-          'LocalPluginSdkUnsupported',
-        );
-      if (type === 'EntityReference')
-        return {
-          $type: 'EntityReference',
-          logicalName: entity,
-          id: value.id,
-          name: value.name ?? null,
-          ...(Object.hasOwn(value, 'rowVersion') ? { rowVersion: value.rowVersion } : {}),
-          ...(value.keyAttributes
-            ? {
-                keyAttributes: Object.fromEntries(
-                  Object.entries(value.keyAttributes).map(([name, item]) => [name, encode(undefined, item)]),
-                ),
-              }
-            : {}),
-        };
-      const row = recordToSdkEntity(
-        store,
-        entity,
-        Object.fromEntries(Object.entries(value).filter(([name]) => !name.includes('@'))),
-      );
-      row.attributes = Object.fromEntries(
-        Object.entries(row.attributes).map(([name, item]) => [name, encode(undefined, item)]),
-      );
-      return row;
-    }
-    if (Array.isArray(value)) return value.map((item) => encode(undefined, item));
-    if (value && typeof value === 'object')
-      return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, encode(undefined, item)]));
-    return value;
-  };
+      }[encoded.elementType],
+    },
+  );
+  return result === undefined ? wire : result;
+}
+
+export function pluginMessageParameters(store, specs, values = {}) {
+  const byName = new Map(specs.map((spec) => [spec.uniquename, spec]));
+  const encode = (spec, value) => encodePluginValue(store, spec, value, encode);
   return {
     $type: 'ParameterCollection',
     values: Object.fromEntries(
@@ -137,56 +288,9 @@ export function pluginMessageParameters(store, specs, values = {}) {
 }
 
 export function pluginMessageValues(parameters, store) {
-  const decode = (value) => {
-    if (value?.$type === 'ConcurrencyBehavior') return concurrencyValue(value.value);
-    if (Array.isArray(value)) return value.map(decode);
-    if (['PrimitiveArray', 'SdkArray'].includes(value?.$type))
-      return rememberPluginValue(value.values.map(decode), value);
-    if (value?.$type === 'EntityReference')
-      return rememberPluginValue(
-        {
-          ...sdkValueToRecord(value),
-          ...(Object.hasOwn(value, 'rowVersion') ? { rowVersion: value.rowVersion } : {}),
-        },
-        value,
-      );
-    if (value?.$type === 'EntityCollection') return rememberPluginValue(value.entities.map(decode), value);
-    if (value?.$type === 'Entity') {
-      const row = Object.fromEntries(
-        Object.entries(value.attributes ?? {}).map(([name, item]) => [name, decode(item)]),
-      );
-      const primary = store?.resolveMapping(value.logicalName).idColumn;
-      return rememberPluginValue(
-        {
-          '@odata.type': 'Microsoft.Dynamics.CRM.' + value.logicalName,
-          ...row,
-          ...(primary && value.id ? { [primary]: value.id } : {}),
-        },
-        value,
-      );
-    }
-    if (value?.$type === 'AliasedValue') return decode(value.value);
-    if (value && typeof value === 'object' && !value.$type)
-      return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, decode(item)]));
-    if (
-      value?.$type &&
-      ![
-        'Guid',
-        'DateTime',
-        'Money',
-        'Decimal',
-        'Int64',
-        'Double',
-        'OptionSetValue',
-        'OptionSetValueCollection',
-        'EntityReference',
-        'AliasedValue',
-      ].includes(value.$type)
-    )
-      return structuredClone(value);
-    return sdkValueToRecord(value);
-  };
-  return Object.fromEntries(Object.entries(parameters?.values ?? {}).map(([name, value]) => [name, decode(value)]));
+  return Object.fromEntries(
+    Object.entries(parameters?.values ?? {}).map(([name, value]) => [name, decodePluginValue(value, store)]),
+  );
 }
 
 /** A JavaScript observer must not erase SDK types of values it did not change. */
@@ -221,7 +325,7 @@ export function reconcilePluginMessageParameters(store, specs, previous, before,
       item && typeof item === 'object' && !Array.isArray(item)
         ? Object.fromEntries(
             Object.keys(item)
-              .sort()
+              .sort((a, b) => Number(a > b) - Number(a < b))
               .map((key) => [key, item[key]]),
           )
         : item,
@@ -323,75 +427,9 @@ export function reconcilePluginMessageParameters(store, specs, previous, before,
       delete result.attributes[primary];
     return result;
   };
-  const reconcile = (prior, oldValue, newValue, spec) => {
-    if (prior !== undefined && isDeepStrictEqual(oldValue, newValue)) return structuredClone(prior);
-    // An alias projects its inner value to JavaScript, including values whose
-    // native wire wrapper is retained. Editing that wrapper still edits Value.
-    if (prior?.$type === 'AliasedValue' && newValue?.$type !== 'AliasedValue')
-      return { ...structuredClone(prior), value: reconcile(prior.value, oldValue, newValue) };
-    // Explicit native wire replacements retain their authored type/metadata.
-    if (newValue?.$type && !isExactNumeric(newValue)) return structuredClone(newValue);
-    const encoded = encode(spec ?? inferred(prior), newValue);
-    if (encoded?.$type === 'Entity') return reconcileEntity(prior, oldValue, newValue, encoded);
-    if (encoded?.$type === 'EntityReference' && prior?.$type === 'EntityReference') {
-      const result = { ...structuredClone(prior), ...encoded };
-      if (isDeepStrictEqual(oldValue?.name, newValue?.name)) result.name = prior.name;
-      if (Object.hasOwn(oldValue ?? {}, 'rowVersion') && !Object.hasOwn(newValue ?? {}, 'rowVersion'))
-        delete result.rowVersion;
-      if (!newValue?.keyAttributes) delete result.keyAttributes;
-      else result.keyAttributes = reconcileMap(prior.keyAttributes, oldValue?.keyAttributes, newValue.keyAttributes);
-      return result;
-    }
-    if (encoded?.$type === 'EntityCollection' && prior?.$type === 'EntityCollection')
-      return {
-        ...structuredClone(prior),
-        ...encoded,
-        ...(Array.isArray(newValue) ? structuredClone(prior) : {}),
-        entities: reconcileRows(prior.entities, oldValue, newValue, encoded.entities),
-      };
-    if (['PrimitiveArray', 'SdkArray'].includes(encoded?.$type) && prior?.$type === encoded.$type) {
-      if (['Entity', 'EntityReference'].includes(encoded.elementType))
-        return { ...encoded, values: reconcileRows(prior.values, oldValue, newValue, encoded.values) };
-      return {
-        ...encoded,
-        values: encoded.values.map((wire, index) => {
-          const origin = pluginValueSource(newValue[index]);
-          const result = reconcile(
-            origin ?? prior.values[index],
-            origin ? decoded(origin) : oldValue?.[index],
-            newValue[index],
-            {
-              type: {
-                String: 'String',
-                Int32: 'Integer',
-                Boolean: 'Boolean',
-                Int64: 'Int64',
-                Decimal: 'Decimal',
-                Double: 'Float',
-                DateTime: 'DateTime',
-                EntityReference: 'EntityReference',
-                OptionSetValue: 'Picklist',
-                Money: 'Money',
-                EntityCollection: 'EntityCollection',
-                'String[]': 'StringArray',
-              }[encoded.elementType],
-            },
-          );
-          return result === undefined ? wire : result;
-        }),
-      };
-    }
-    if (
-      newValue &&
-      typeof newValue === 'object' &&
-      !Array.isArray(newValue) &&
-      !newValue.$type &&
-      !isExactNumeric(newValue) &&
-      !encoded?.$type
-    )
-      return reconcileMap(prior, oldValue, newValue);
-    return encoded;
-  };
+  const helpers = { encode, inferred, decoded, reconcileEntity, reconcileRows, reconcileMap };
+  const reconcile = (prior, oldValue, newValue, spec) =>
+    reconcilePluginValue(prior, oldValue, newValue, spec, { ...helpers, reconcile });
   return {
     $type: 'ParameterCollection',
     values: Object.fromEntries(
@@ -408,13 +446,11 @@ export function reconcilePluginMessageParameters(store, specs, previous, before,
 export function pluginContextValues(context, store) {
   if (!context) return null;
   return Object.fromEntries(
-    Object.entries(context.values ?? {}).map(([name, value]) => [
-      name,
-      value?.$type === 'ExecutionContext'
-        ? pluginContextValues(value, store)
-        : ['ParameterCollection', 'EntityImageCollection'].includes(value?.$type)
-          ? pluginMessageValues(value, store)
-          : pluginMessageValues({ values: { value } }, store).value,
-    ]),
+    Object.entries(context.values ?? {}).map(([name, value]) => {
+      if (value?.$type === 'ExecutionContext') return [name, pluginContextValues(value, store)];
+      if (['ParameterCollection', 'EntityImageCollection'].includes(value?.$type))
+        return [name, pluginMessageValues(value, store)];
+      return [name, pluginMessageValues({ values: { value } }, store).value];
+    }),
   );
 }

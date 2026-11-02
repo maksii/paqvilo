@@ -10,53 +10,11 @@
       "reason": "Namespace passed from both admin and setup apps to dashboard-map, which calls icons.icon; static namespace analysis loses this argument boundary."
     },
     {
-      "key": "runtime:clone:mirage/lib/bootstrap-plugins-compat.js|mirage/lib/datetimepicker-compat.js:a4f86a11f5f160a70a2d2e6590464b3b562677b401155b6c1ef06062f3a857a1",
-      "files": ["mirage/lib/bootstrap-plugins-compat.js", "mirage/lib/datetimepicker-compat.js"],
-      "lines": 32,
-      "type": "clone",
-      "reason": "Generated standalone jQuery watcher; one authored fragment is enforced by generate-compat-watchers --check."
-    },
-    {
-      "key": "runtime:clone:mirage/lib/bootstrap-plugins-compat.js|mirage/lib/jquery-blockui-compat.js:a4f86a11f5f160a70a2d2e6590464b3b562677b401155b6c1ef06062f3a857a1",
-      "files": ["mirage/lib/bootstrap-plugins-compat.js", "mirage/lib/jquery-blockui-compat.js"],
-      "lines": 32,
-      "type": "clone",
-      "reason": "Generated standalone jQuery watcher; one authored fragment is enforced by generate-compat-watchers --check."
-    },
-    {
-      "key": "runtime:clone:mirage/lib/bootstrap-plugins-compat.js|mirage/lib/jqueryui-dialog-compat.js:a4f86a11f5f160a70a2d2e6590464b3b562677b401155b6c1ef06062f3a857a1",
-      "files": ["mirage/lib/bootstrap-plugins-compat.js", "mirage/lib/jqueryui-dialog-compat.js"],
-      "lines": 32,
-      "type": "clone",
-      "reason": "Generated standalone jQuery watcher; one authored fragment is enforced by generate-compat-watchers --check."
-    },
-    {
-      "key": "runtime:clone:mirage/lib/bootstrap-plugins-compat.js|mirage/lib/jqueryui-widgets-compat.js:a4f86a11f5f160a70a2d2e6590464b3b562677b401155b6c1ef06062f3a857a1",
-      "files": ["mirage/lib/bootstrap-plugins-compat.js", "mirage/lib/jqueryui-widgets-compat.js"],
-      "lines": 32,
-      "type": "clone",
-      "reason": "Generated standalone jQuery watcher; one authored fragment is enforced by generate-compat-watchers --check."
-    },
-    {
       "key": "runtime:clone:mirage/lib/crmentityformview-compat.js|mirage/lib/xrm-webform-compat.js:68e3923544f82ed8f237374c996eb252c30b6abeede4742a8200a819d8d29b68",
       "files": ["mirage/lib/crmentityformview-compat.js", "mirage/lib/xrm-webform-compat.js"],
       "lines": 12,
       "type": "clone",
       "reason": "Independent form adapters retain distinct dirty prompts and class-matching semantics."
-    },
-    {
-      "key": "runtime:clone:mirage/lib/dataverse-app-messages.mjs|mirage/lib/dataverse-calendar-messages.mjs:490fb3b6f53250fac76bb8fa4ba400250b89f580979bdd66b0cba63e1dbebfa8",
-      "files": ["mirage/lib/dataverse-app-messages.mjs", "mirage/lib/dataverse-calendar-messages.mjs"],
-      "lines": 12,
-      "type": "clone",
-      "reason": "Local write/transaction wrappers retain operation-specific response and privilege policy; pure context/read mechanics are shared."
-    },
-    {
-      "key": "runtime:clone:mirage/lib/dataverse-app-messages.mjs|mirage/lib/dataverse-org-messages.mjs:f30d20c3baa00a725338ec0c6f17c9c4938eaf22e7f93a66ebd60bdfdf90e941",
-      "files": ["mirage/lib/dataverse-app-messages.mjs", "mirage/lib/dataverse-org-messages.mjs"],
-      "lines": 14,
-      "type": "clone",
-      "reason": "Local write/transaction wrappers retain operation-specific response and privilege policy; pure context/read mechanics are shared."
     },
     {
       "key": "runtime:clone:mirage/lib/dataverse-fls.mjs|mirage/lib/dataverse-security.mjs:3b19d5e92b0f2570de6f30b71ab380f6cf6f4b8224f82d3d1f9bd163155e9caf",
@@ -106,13 +64,6 @@
       "lines": 15,
       "type": "clone",
       "reason": "Separate operation/type schema identities; matching parameter shapes are declarative protocol data."
-    },
-    {
-      "key": "runtime:clone:mirage/lib/dataverse-solution-messages.mjs|mirage/lib/dataverse-solution-messages.mjs:7f0724106285a0c9826652bca366b260d70b029a0dbc2f8d0cce46fc5be3c10c",
-      "files": ["mirage/lib/dataverse-solution-messages.mjs", "mirage/lib/dataverse-solution-messages.mjs"],
-      "lines": 19,
-      "type": "clone",
-      "reason": "Separate solution operations retain dependency direction, message names and wire contracts."
     },
     {
       "key": "runtime:clone:mirage/lib/dataverse-solution-messages.mjs|mirage/lib/dataverse-solution-messages.mjs:c003863dc2ebbc0e2cc46030771b43b4869fa8d3e960d7a5bed0860f31d7eb39",
@@ -3139,26 +3090,6 @@
       "reason": "Independent example controls, manifests, build and qualification contracts; sharing stops at the owning example package."
     },
     {
-      "key": "support:clone:examples/project/components/pcf-field-types/ExampleDateOnly/index.ts|examples/project/components/pcf-field-types/ExampleDateTime/index.ts:3dde07611f977f0aebe5c27213344c9a0f462f39ea07939e849787d1b2096b34",
-      "files": [
-        "examples/project/components/pcf-field-types/ExampleDateOnly/index.ts",
-        "examples/project/components/pcf-field-types/ExampleDateTime/index.ts"
-      ],
-      "lines": 21,
-      "type": "clone",
-      "reason": "Independent example controls, manifests, build and qualification contracts; sharing stops at the owning example package."
-    },
-    {
-      "key": "support:clone:examples/project/components/pcf-field-types/ExampleDateOnly/index.ts|examples/project/components/pcf-field-types/ExampleDateTime/index.ts:d33bc2874fcc3b40a39930fe3a8cb135e7e7e554679a60ee5d5978154c0bedd7",
-      "files": [
-        "examples/project/components/pcf-field-types/ExampleDateOnly/index.ts",
-        "examples/project/components/pcf-field-types/ExampleDateTime/index.ts"
-      ],
-      "lines": 14,
-      "type": "clone",
-      "reason": "Independent example controls, manifests, build and qualification contracts; sharing stops at the owning example package."
-    },
-    {
       "key": "support:clone:examples/project/components/pcf-field-types/ExampleEmail/index.ts|examples/project/components/pcf-field-types/ExampleMultiple/index.ts:53fc84106b155d9f5739537396b20dd798745b8e26f3b1ef4a42a22c75ff73b1",
       "files": [
         "examples/project/components/pcf-field-types/ExampleEmail/index.ts",
@@ -4249,6 +4180,75 @@
       "lines": 20,
       "type": "clone",
       "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
+    },
+    {
+      "key": "runtime:clone:mirage/lib/bootstrap-plugins-compat.js|mirage/lib/datetimepicker-compat.js:1fea0bdce855dddcfdfb90efed720d1b589e26a6480feb04bf9177c8652b91fd",
+      "files": ["mirage/lib/bootstrap-plugins-compat.js", "mirage/lib/datetimepicker-compat.js"],
+      "lines": 32,
+      "type": "clone",
+      "reason": "Generated standalone jQuery watcher; one authored fragment is enforced by generate-compat-watchers --check."
+    },
+    {
+      "key": "runtime:clone:mirage/lib/bootstrap-plugins-compat.js|mirage/lib/jquery-blockui-compat.js:1fea0bdce855dddcfdfb90efed720d1b589e26a6480feb04bf9177c8652b91fd",
+      "files": ["mirage/lib/bootstrap-plugins-compat.js", "mirage/lib/jquery-blockui-compat.js"],
+      "lines": 32,
+      "type": "clone",
+      "reason": "Generated standalone jQuery watcher; one authored fragment is enforced by generate-compat-watchers --check."
+    },
+    {
+      "key": "runtime:clone:mirage/lib/bootstrap-plugins-compat.js|mirage/lib/jqueryui-dialog-compat.js:1fea0bdce855dddcfdfb90efed720d1b589e26a6480feb04bf9177c8652b91fd",
+      "files": ["mirage/lib/bootstrap-plugins-compat.js", "mirage/lib/jqueryui-dialog-compat.js"],
+      "lines": 32,
+      "type": "clone",
+      "reason": "Generated standalone jQuery watcher; one authored fragment is enforced by generate-compat-watchers --check."
+    },
+    {
+      "key": "runtime:clone:mirage/lib/bootstrap-plugins-compat.js|mirage/lib/jqueryui-widgets-compat.js:1fea0bdce855dddcfdfb90efed720d1b589e26a6480feb04bf9177c8652b91fd",
+      "files": ["mirage/lib/bootstrap-plugins-compat.js", "mirage/lib/jqueryui-widgets-compat.js"],
+      "lines": 32,
+      "type": "clone",
+      "reason": "Generated standalone jQuery watcher; one authored fragment is enforced by generate-compat-watchers --check."
+    },
+    {
+      "key": "runtime:clone:mirage/lib/dataverse-app-messages.mjs|mirage/lib/dataverse-calendar-messages.mjs:2993269f84b1be975288ad24822512642096d4ed5eb4ec521529af30417446a9",
+      "files": ["mirage/lib/dataverse-app-messages.mjs", "mirage/lib/dataverse-calendar-messages.mjs"],
+      "lines": 12,
+      "type": "clone",
+      "reason": "Local write/transaction wrappers retain operation-specific response and privilege policy; pure context/read mechanics are shared."
+    },
+    {
+      "key": "runtime:clone:mirage/lib/dataverse-app-messages.mjs|mirage/lib/dataverse-org-messages.mjs:a4e588b9aa64e49be695baeb5522d55d6740f6d773e4549a887caba42b6adebf",
+      "files": ["mirage/lib/dataverse-app-messages.mjs", "mirage/lib/dataverse-org-messages.mjs"],
+      "lines": 14,
+      "type": "clone",
+      "reason": "Local write/transaction wrappers retain operation-specific response and privilege policy; pure context/read mechanics are shared."
+    },
+    {
+      "key": "runtime:clone:mirage/lib/dataverse-solution-messages.mjs|mirage/lib/dataverse-solution-messages.mjs:68760b0406adc3ddedf441c03ddb9919cbb98f8b2832499c9ab82e4af2b163a5",
+      "files": ["mirage/lib/dataverse-solution-messages.mjs", "mirage/lib/dataverse-solution-messages.mjs"],
+      "lines": 19,
+      "type": "clone",
+      "reason": "Separate solution operations retain dependency direction, message names and wire contracts."
+    },
+    {
+      "key": "support:clone:examples/project/components/pcf-field-types/ExampleDateOnly/index.ts|examples/project/components/pcf-field-types/ExampleDateTime/index.ts:4be02bd07e1550d3c389d0d2e39ce5e7c064fba0c1a4f19b2363b5757eddecc7",
+      "files": [
+        "examples/project/components/pcf-field-types/ExampleDateOnly/index.ts",
+        "examples/project/components/pcf-field-types/ExampleDateTime/index.ts"
+      ],
+      "lines": 21,
+      "type": "clone",
+      "reason": "Independent example controls, manifests, build and qualification contracts; sharing stops at the owning example package."
+    },
+    {
+      "key": "support:clone:examples/project/components/pcf-field-types/ExampleDateOnly/index.ts|examples/project/components/pcf-field-types/ExampleDateTime/index.ts:7ae73b236d852ae8f58a197f9d65a18ffc5f2686dc1b7e4f34025db0156914e1",
+      "files": [
+        "examples/project/components/pcf-field-types/ExampleDateOnly/index.ts",
+        "examples/project/components/pcf-field-types/ExampleDateTime/index.ts"
+      ],
+      "lines": 14,
+      "type": "clone",
+      "reason": "Independent example controls, manifests, build and qualification contracts; sharing stops at the owning example package."
     }
   ]
 }

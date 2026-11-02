@@ -18,7 +18,7 @@ export const currencyReferenceTable = {
   ],
 };
 const fixtureId = (key) => {
-  const b = createHash('sha1')
+  const b = createHash('sha1') // NOSONAR: non-security hash used for identity or checksums
     .update('paqvilo-company-operations-fixtures-v1:' + key)
     .digest()
     .subarray(0, 16);
@@ -88,6 +88,26 @@ export function extendReferenceCatalogue(catalogue, schema) {
   const observable =
     schema.tables.some((table) => table.name === 'pqvd_currencyreference') &&
     schema.relationships.some((relation) => relation.name === 'pqvd_access_currencyreferences');
+  const currencies = addCurrencyReferenceRecords(catalogue, observable);
+  if (observable && catalogue.tables && !catalogue.tables.some((table) => table.name === 'pqvd_currencyreference'))
+    catalogue.tables.push({
+      name: 'pqvd_currencyreference',
+      entitySet: 'pqvd_currencyreferences',
+      primaryId: 'pqvd_currencyreferenceid',
+      keys: currencyReferenceTable.keys.map((key) => key.columns),
+    });
+  const rows = new Map(catalogue.records.map((r) => [r.key, r])),
+    active = schema.choices.find((c) => c.name === 'pqvd_accessstate').options.find((o) => o.label === 'Active').value;
+  const association = (relationship, key) =>
+    catalogue.associations.find((a) => a.relationship === relationship && a.from === key)?.to ?? [];
+  // Vendor/currency projections are separate leaves; they never join the
+  // operational account projection, and clearing a principal revokes them.
+  for (const grant of catalogue.records.filter((r) => r.table === 'pqvd_accesspermission'))
+    projectGrant(catalogue, grant, { rows, active, association, currencies, observable });
+  return catalogue;
+}
+
+function addCurrencyReferenceRecords(catalogue, observable) {
   const currencies = new Map();
   for (const currency of observable
     ? catalogue.records.filter((record) => record.table === 'transactioncurrency')
@@ -120,58 +140,62 @@ export function extendReferenceCatalogue(catalogue, schema) {
       throw new Error('CurrencyReference source mapping drift; do not overwrite an existing reference.');
     currencies.set(currency.key, key);
   }
-  if (observable && catalogue.tables && !catalogue.tables.some((table) => table.name === 'pqvd_currencyreference'))
-    catalogue.tables.push({
-      name: 'pqvd_currencyreference',
-      entitySet: 'pqvd_currencyreferences',
-      primaryId: 'pqvd_currencyreferenceid',
-      keys: currencyReferenceTable.keys.map((key) => key.columns),
-    });
-  const rows = new Map(catalogue.records.map((r) => [r.key, r])),
-    active = schema.choices.find((c) => c.name === 'pqvd_accessstate').options.find((o) => o.label === 'Active').value;
-  const association = (relationship, key) =>
-    catalogue.associations.find((a) => a.relationship === relationship && a.from === key)?.to ?? [];
-  // Vendor/currency projections are separate leaves; they never join the
-  // operational account projection, and clearing a principal revokes them.
-  for (const grant of catalogue.records.filter((r) => r.table === 'pqvd_accesspermission')) {
-    const role = rows.get(grant.refs.pqvd_roleid)?.fields.pqvd_code,
-      principal = grant.refs['pqvd_' + role?.toLowerCase() + 'principalid'];
-    const references = {
-      pqvd_access_currencies: new Set(),
-      pqvd_access_referenceaccounts: new Set(),
-      ...(observable ? { pqvd_access_currencyreferences: new Set() } : {}),
-    };
-    if (
-      referenceRoles.includes(role) &&
-      grant.fields.pqvd_accessstate === active &&
-      principal === grant.refs.pqvd_granteecontactid
-    ) {
-      const accounts = new Set(association('pqvd_access_accounts', grant.key));
-      for (const detail of catalogue.records.filter((r) =>
-        role === 'HR' ? r.table === 'pqvd_employmentterms' : r.table === 'pqvd_equipmentfinance',
-      )) {
-        const parent = rows.get(detail.refs[role === 'HR' ? 'pqvd_employmentid' : 'pqvd_equipmentid']),
-          membership = role === 'HR' ? rows.get(parent?.refs.pqvd_orgcontactid) : null,
-          account = role === 'HR' ? membership?.refs.pqvd_accountid : parent?.refs.pqvd_accountid;
-        if (!accounts.has(account)) continue;
-        if (detail.refs.transactioncurrencyid) {
-          references.pqvd_access_currencies.add(detail.refs.transactioncurrencyid);
-          if (observable) {
-            const reference = currencies.get(detail.refs.transactioncurrencyid);
-            if (!reference) throw new Error('A Money currency lacks its one-to-one observable reference.');
-            references.pqvd_access_currencyreferences.add(reference);
-          }
-        }
-        const vendor = detail.refs.pqvd_supplieraccountid ?? parent?.refs.pqvd_supplieraccountid;
-        if (vendor) references.pqvd_access_referenceaccounts.add(vendor);
-      }
-    }
-    for (const [relationship, set] of Object.entries(references)) {
-      const record = { relationship, from: grant.key, to: [...set].sort() },
-        existing = catalogue.associations.find((a) => a.relationship === relationship && a.from === grant.key);
-      if (existing) existing.to = record.to;
-      else catalogue.associations.push(record);
-    }
+  return currencies;
+}
+
+function projectGrant(catalogue, grant, { rows, active, association, currencies, observable }) {
+  const role = rows.get(grant.refs.pqvd_roleid)?.fields.pqvd_code,
+    principal = grant.refs['pqvd_' + role?.toLowerCase() + 'principalid'];
+  const references = {
+    pqvd_access_currencies: new Set(),
+    pqvd_access_referenceaccounts: new Set(),
+    ...(observable ? { pqvd_access_currencyreferences: new Set() } : {}),
+  };
+  if (isActiveReferenceGrant(grant, role, principal, active)) {
+    const accounts = new Set(association('pqvd_access_accounts', grant.key));
+    const details = catalogue.records.filter((r) =>
+      role === 'HR' ? r.table === 'pqvd_employmentterms' : r.table === 'pqvd_equipmentfinance',
+    );
+    for (const detail of details) addDetailReferences(references, detail, role, accounts, rows, currencies, observable);
   }
-  return catalogue;
+  saveReferenceAssociations(catalogue, grant, references);
+}
+
+function isActiveReferenceGrant(grant, role, principal, active) {
+  return (
+    referenceRoles.includes(role) &&
+    grant.fields.pqvd_accessstate === active &&
+    principal === grant.refs.pqvd_granteecontactid
+  );
+}
+
+function addDetailReferences(references, detail, role, accounts, rows, currencies, observable) {
+  const parent = rows.get(detail.refs[role === 'HR' ? 'pqvd_employmentid' : 'pqvd_equipmentid']),
+    membership = role === 'HR' ? rows.get(parent?.refs.pqvd_orgcontactid) : null,
+    account = role === 'HR' ? membership?.refs.pqvd_accountid : parent?.refs.pqvd_accountid;
+  if (!accounts.has(account)) return;
+  if (detail.refs.transactioncurrencyid) addCurrencyAssociations(references, detail, currencies, observable);
+  const vendor = detail.refs.pqvd_supplieraccountid ?? parent?.refs.pqvd_supplieraccountid;
+  if (vendor) references.pqvd_access_referenceaccounts.add(vendor);
+}
+
+function addCurrencyAssociations(references, detail, currencies, observable) {
+  references.pqvd_access_currencies.add(detail.refs.transactioncurrencyid);
+  if (!observable) return;
+  const reference = currencies.get(detail.refs.transactioncurrencyid);
+  if (!reference) throw new Error('A Money currency lacks its one-to-one observable reference.');
+  references.pqvd_access_currencyreferences.add(reference);
+}
+
+function saveReferenceAssociations(catalogue, grant, references) {
+  for (const [relationship, set] of Object.entries(references)) {
+    const record = {
+        relationship,
+        from: grant.key,
+        to: [...set].sort((left, right) => Number(left > right) - Number(left < right)),
+      },
+      existing = catalogue.associations.find((a) => a.relationship === relationship && a.from === grant.key);
+    if (existing) existing.to = record.to;
+    else catalogue.associations.push(record);
+  }
 }

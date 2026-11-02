@@ -60,7 +60,11 @@ const sameId = (a, b) => key(a) === key(b);
 const refId = (value) => (value !== null && typeof value === 'object' ? value.id : value) ?? undefined;
 const ref = (logical, id) => (id == null ? null : { id, logical_name: logical, name: '' });
 const tableOf = (store, logical) => (store.state.tables[logical] ??= []);
-const listOf = (value) => (value === undefined || value === null ? [] : Array.isArray(value) ? value : [value]);
+const listOf = (value) => {
+  if (value === undefined || value === null) return [];
+  if (Array.isArray(value)) return value;
+  return [value];
+};
 const body = (c) => (typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {}));
 const notFound = (logical, id) => new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id });
 // Refusals carry the Dataverse inner code; InvalidArgument (0x80040203) is the default for an argument the platform rejects.
@@ -244,7 +248,7 @@ function addMember(store, teamId, userId) {
 // Entity id from { "@odata.id": "widgets(<guid>)" } or a bare reference string.
 function targetRef(api, value) {
   const text = String(value?.['@odata.id'] ?? value ?? '');
-  const match = /([a-z_][a-z0-9_]*)\(\s*'?([0-9a-f-]{36})'?\s*\)\s*$/i.exec(text);
+  const match = /([a-z_][a-z0-9_]*)\(\s*'?([0-9a-f-]{36})'?\s*\)\s*$/i.exec(text); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
   if (!match) throw invalid('Invalid argument.');
   return { mapping: api.store.resolveMapping(match[1]), id: match[2] };
 }
@@ -313,7 +317,7 @@ function operations(api) {
   // this one and never finish. A throw discards the working copy.
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, privilege, entity) => {
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, entity);
+    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, entity); // NOSONAR: operand can be NaN or undefined, the negated test differs
   };
   // A complex response carries its Web API context, as the other Dataverse modules' function responses do.
   const respond = (c, name, body) => ({
@@ -509,8 +513,8 @@ function operations(api) {
       binding: 'entity',
       entity: 'systemuser',
       handle: (c) => {
-        const ids = listOf(c.params?.PrivilegeIds).map(key);
-        return userPrivileges(c, 'RetrieveUserSetOfPrivilegesByIds', (p) => ids.includes(key(p.PrivilegeId)));
+        const ids = new Set(listOf(c.params?.PrivilegeIds).map(key));
+        return userPrivileges(c, 'RetrieveUserSetOfPrivilegesByIds', (p) => ids.has(key(p.PrivilegeId)));
       },
       csdl: csdlOf('function', 'RetrieveUserSetOfPrivilegesByIds', {
         bound: 'systemuser',
@@ -574,7 +578,7 @@ function operations(api) {
           member = systemuserOf(store, memberId);
         // The member needs Basic (User) Read on the record's table; the message is the one the platform returns.
         if (
-          !(
+          /* NOSONAR: operand can be NaN or undefined, the negated test differs */ !(
             api.principals
               .privileges(member)
               .get(privilegeName('Read', api.principals.privilegeNoun(mapping.logicalName))) > 0

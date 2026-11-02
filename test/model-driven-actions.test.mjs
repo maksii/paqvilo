@@ -89,7 +89,12 @@ test('diagnostic toggles preserve source routes and unrelated duplicate flags, t
 
 test('availability follows the page: a list page keeps form actions apart even when a closed form left Xrm.Page behind', async () => {
   const { modelDrivenActionAvailability } = await import('../lense/model-driven-action-runner.mjs');
-  const saved = { window: globalThis.window, location: globalThis.location };
+  const saved = {
+    window: globalThis.window,
+    location: globalThis.location,
+    Xrm: globalThis.Xrm,
+    fetch: globalThis.fetch,
+  };
   const stalePage = {
     data: { entity: { getEntityName: () => 'inv_item', getId: () => '{00000000-0000-4000-8000-000000000001}' } },
     ui: { getFormType: () => 2 },
@@ -111,6 +116,8 @@ test('availability follows the page: a list page keeps form actions apart even w
         Navigation: { openUrl() {}, openForm() {} },
       },
     };
+    globalThis.Xrm = globalThis.window.Xrm;
+    globalThis.fetch = globalThis.window.fetch;
     return Object.fromEntries(
       modelDrivenActionAvailability({ origin: 'http://127.0.0.1:1', actions: MODEL_DRIVEN_ACTIONS }).map((item) => [
         item.id,
@@ -132,5 +139,7 @@ test('availability follows the page: a list page keeps form actions apart even w
   } finally {
     globalThis.window = saved.window;
     globalThis.location = saved.location;
+    globalThis.Xrm = saved.Xrm;
+    globalThis.fetch = saved.fetch;
   }
 });

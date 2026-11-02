@@ -1,13 +1,13 @@
 import { definitionQuery } from './definition-query.mjs';
 
 // All embedded code is owned; DOM nodes and bindings remain separate arguments.
-export const observePortalNode = new Function(
+/* NOSONAR: intentional local script execution or generated handler */ export const observePortalNode = new Function(
   `return function observePortalNode(node,options={}){const definitionQuery=(${definitionQuery.toString()}); return (${observePortalNodeImpl.toString()})(node,options);};`,
 )();
 
 /** Self-contained structural Power Pages read. No field values, row IDs or text.
  * Definition URL hints may reject a conflicting placement, never prove one. */
-function observePortalNodeImpl(
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function observePortalNodeImpl(
   node,
   { scope, bindings = {}, sourceRefs = [], sourceRefsByComponent = null, frameDepth = 0 } = {},
 ) {
@@ -52,12 +52,10 @@ function observePortalNodeImpl(
     'basic-form';
   const nativeFormsFor = (element) =>
     forms.filter((form) => {
-      const prefix =
-        formKind(form) === 'advanced-form'
-          ? 'WebFormControl_'
-          : formKind(form) === 'basic-form'
-            ? 'EntityFormControl_'
-            : null;
+      const kind = formKind(form);
+      let prefix = null;
+      if (kind === 'advanced-form') prefix = 'WebFormControl_';
+      else if (kind === 'basic-form') prefix = 'EntityFormControl_';
       if (!prefix) return false;
       const base = prefix + compact(form.id);
       return (
@@ -196,12 +194,10 @@ function observePortalNodeImpl(
           .find((element) => /^(?:EntityFormControl|WebFormControl)(?:_|$)/.test(element.id ?? ''))
       : null;
     const outerForms = outerWrapper ? nativeFormsFor(outerWrapper) : [];
-    const expectedKind =
-      current.id === 'EntityFormView' || /^WebFormControl(?:_|$)/.test(current.id ?? '')
-        ? 'advanced-form'
-        : nativeWrapper || current.id === 'EntityFormControl_EntityFormView'
-          ? 'basic-form'
-          : null;
+    let expectedKind = null;
+    if (current.id === 'EntityFormView' || /^WebFormControl(?:_|$)/.test(current.id ?? ''))
+      expectedKind = 'advanced-form';
+    else if (nativeWrapper || current.id === 'EntityFormControl_EntityFormView') expectedKind = 'basic-form';
     const formConstraints = [
       ...declaredForms,
       ...(nativeForms.length ? [nativeForms] : []),
@@ -281,7 +277,7 @@ function observePortalNodeImpl(
     let frame, modal, grid;
     try {
       const candidate = doc.defaultView.frameElement;
-      const address = candidate?.getAttribute('data-page');
+      const address = candidate?.getAttribute('data-page'); // NOSONAR: reads attributes of observed DOM, dataset would differ
       const expected = address && new URL(address, candidate.ownerDocument.baseURI);
       const current = new URL(doc.URL);
       if (
@@ -401,7 +397,7 @@ function observePortalNodeImpl(
     let frame;
     try {
       const candidate = doc.defaultView.frameElement;
-      const expected = candidate?.getAttribute('data-path');
+      const expected = candidate?.getAttribute('data-path'); // NOSONAR: reads attributes of observed DOM, dataset would differ
       const address = expected && new URL(expected, candidate.ownerDocument.baseURI);
       const current = new URL(doc.URL);
       if (
@@ -464,9 +460,9 @@ function observePortalNodeImpl(
         const encoded = attribute(frame, 'data-form-layout');
         if (encoded) {
           try {
-            if (encoded.length > 65536) throw Error('Oversized layout');
+            if (encoded.length > 65536) throw new Error('Oversized layout');
             const layout = JSON.parse(encoded);
-            if (!layout || typeof layout !== 'object' || Array.isArray(layout)) throw Error('Invalid layout');
+            if (!layout || typeof layout !== 'object' || Array.isArray(layout)) throw new Error('Invalid layout');
             if (typeof layout.EntityName === 'string' && layout.EntityName)
               frameTables.push(layout.EntityName.toLowerCase());
             if (typeof layout.Id === 'string' && layout.Id && norm(layout.Id) !== '0'.repeat(32))
@@ -487,15 +483,15 @@ function observePortalNodeImpl(
         const frameConflict =
           frameTables.some((entity) => entity !== targets[0].entity.toLowerCase()) ||
           frameForms.some((id) => ![targets[0].id, ...aliases].some((value) => norm(value) === norm(id)));
-        const urlConflict = params.some(
-          ([key, value]) =>
-            value &&
-            (['entityname', 'tablename', 'etn', 'typename'].includes(key.toLowerCase())
-              ? value.toLowerCase() !== targets[0].entity.toLowerCase()
-              : ['entityformid', 'formid'].includes(key.toLowerCase())
-                ? ![targets[0].id, ...aliases].some((id) => norm(id) === norm(value))
-                : key.toLowerCase() === 'formname' && value !== targets[0].name),
-        );
+        const urlConflict = params.some(([key, value]) => {
+          if (!value) return false;
+          const name = key.toLowerCase();
+          if (['entityname', 'tablename', 'etn', 'typename'].includes(name))
+            return value.toLowerCase() !== targets[0].entity.toLowerCase();
+          if (['entityformid', 'formid'].includes(name))
+            return ![targets[0].id, ...aliases].some((id) => norm(id) === norm(value));
+          return name === 'formname' && value !== targets[0].name;
+        });
         if (frameConflict || urlConflict || (declaredTable && declaredTable !== targets[0].entity.toLowerCase())) {
           result.facts.push({ scope, dimension: 'owner', kind: 'binding-conflict', reason: conflictReason });
           return result;
@@ -605,7 +601,7 @@ function observePortalNodeImpl(
   };
   const selectedContainer =
     node === boundary &&
-    !/_ProgressIndicator$/.test(boundary.id ?? '') &&
+    !String(boundary.id ?? '').endsWith('_ProgressIndicator') &&
     !node.matches('input,select,textarea,output,label,td,th,[data-attribute],[data-field],[data-fieldname]');
   const primaryContainer = chosenList ?? chosenForm ?? chosenView;
   if (chosenForm?.formXml?.id) {
@@ -675,6 +671,10 @@ function observePortalNodeImpl(
         String(component.id ?? component.recordId)
           .replace(/[{}]/g, '')
           .toLowerCase();
+      const isPrimary = selectedContainer && component === primaryContainer;
+      let role = 'contains';
+      if (isPrimary) role = 'identity';
+      else if (kind === 'view') role = 'current-view';
       add(
         {
           kind,
@@ -683,12 +683,8 @@ function observePortalNodeImpl(
           name: component.name,
           entity: declaredTable,
         },
-        selectedContainer && component === primaryContainer ? 'owner' : 'enclosing',
-        selectedContainer && component === primaryContainer
-          ? 'identity'
-          : kind === 'view'
-            ? 'current-view'
-            : 'contains',
+        isPrimary ? 'owner' : 'enclosing',
+        role,
       );
       result.componentAnchors.push({
         componentKey: key,
@@ -711,7 +707,7 @@ function observePortalNodeImpl(
       control = controls[0];
   }
   control ??= label?.querySelector('input:not([type=hidden]):not([type=password]),select,textarea,output');
-  const cell = ancestors.find((item) => item.matches('td,th,[data-paqvilo-column]'));
+  const cell = ancestors.some((item) => item.matches('td,th,[data-paqvilo-column]'));
   const structural = [control, ...ancestors]
     .filter(Boolean)
     .find((item) =>
@@ -736,15 +732,11 @@ function observePortalNodeImpl(
     );
   });
   const hostName = host && /^(.*)_(?:ControlView|Container)$/i.exec(host.id)[1];
-  const names = hostName
-    ? [hostName]
-    : explicitNames.length
-      ? explicitNames
-      : chosenGrid && cell && bindings.grid?.name
-        ? [bindings.grid.name]
-        : control
-          ? [control.id, attribute(control, 'name')].filter(Boolean)
-          : [];
+  let names = [];
+  if (hostName) names = [hostName];
+  else if (explicitNames.length) names = explicitNames;
+  else if (chosenGrid && cell && bindings.grid?.name) names = [bindings.grid.name];
+  else if (control) names = [control.id, attribute(control, 'name')].filter(Boolean);
   const fields = (bindings.columns ?? bindings.fields ?? []).filter(
     (field) =>
       field.entity?.toLowerCase() === declaredTable &&

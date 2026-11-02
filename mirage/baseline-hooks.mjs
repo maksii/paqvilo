@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 
 export async function runHook(command, { persona, cwd } = {}) {
   if (!command) return { skipped: true };
-  const resolved = command.replace(/\{persona\}/g, persona ?? '');
+  const resolved = command.replaceAll('{persona}', persona ?? '');
   const words = resolved.match(/(?:[^\s"]+|"[^"]*")+/g);
   if (!words) throw new Error('Hook command is empty.');
   const [file, ...args] = words.map((item) => item.replace(/^"|"$/g, ''));

@@ -26,12 +26,11 @@ export async function adminAssetFile(name) {
   );
 }
 /** Content type of an admin asset; modules are text/javascript. */
-export const adminAssetType = (name) =>
-  name.endsWith('.css')
-    ? 'text/css; charset=utf-8'
-    : name.endsWith('.mjs')
-      ? 'text/javascript; charset=utf-8'
-      : 'text/html; charset=utf-8';
+export const adminAssetType = (name) => {
+  if (name.endsWith('.css')) return 'text/css; charset=utf-8';
+  if (name.endsWith('.mjs')) return 'text/javascript; charset=utf-8';
+  return 'text/html; charset=utf-8';
+};
 const error = (message, status = 400, code = 'INVALID_REQUEST') => Object.assign(new Error(message), { status, code });
 const decodeAdminIdentifier = (value) => {
   try {
@@ -57,6 +56,41 @@ export function createRuntimeAdminRouter({
   dataverseAdmin,
   staffSession,
 }) {
+  const pagedRecords = (res, url, entity) => {
+    const identity = { admin: true };
+    const pageSize = Math.min(100, Math.max(1, Number.parseInt(url.searchParams.get('pageSize'), 10) || 25));
+    const search = (url.searchParams.get('search') ?? '').trim().toLowerCase();
+    const rows = store
+      .rows(entity, identity)
+      .filter((row) => !search || JSON.stringify(row).toLowerCase().includes(search));
+    // sort=<column>&order=asc|desc: the admin's sortable record table sorts the whole table before paging.
+    const sortKey = url.searchParams.get('sort');
+    if (sortKey) {
+      const direction = url.searchParams.get('order') === 'desc' ? -1 : 1;
+      const empty = (value) => value === null || value === undefined || value === '';
+      rows.sort((a, b) => {
+        const x = a[sortKey],
+          y = b[sortKey];
+        if (empty(x) || empty(y)) {
+          if (empty(x) === empty(y)) return 0;
+          return empty(x) ? 1 : -1;
+        }
+        return (
+          (typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y))) * direction
+        );
+      });
+    }
+    const total = rows.length,
+      pageSizeCount = Math.max(1, Math.ceil(total / pageSize)),
+      page = Math.min(pageSizeCount, Math.max(1, Number.parseInt(url.searchParams.get('page'), 10) || 1));
+    return json(res, 200, {
+      items: rows.slice((page - 1) * pageSize, page * pageSize),
+      total,
+      page,
+      pageSize,
+      pageCount: pageSizeCount,
+    });
+  };
   const records = async (req, res, url, relative) => {
     const method = req.method;
     const record = /^\/records\/([^/]+)(?:\/([^/]+))?$/.exec(relative);
@@ -68,35 +102,7 @@ export function createRuntimeAdminRouter({
         !id &&
         (url.searchParams.has('page') || url.searchParams.has('pageSize') || url.searchParams.has('search'))
       ) {
-        const pageSize = Math.min(100, Math.max(1, Number.parseInt(url.searchParams.get('pageSize'), 10) || 25));
-        const search = (url.searchParams.get('search') ?? '').trim().toLowerCase();
-        const rows = store
-          .rows(entity, identity)
-          .filter((row) => !search || JSON.stringify(row).toLowerCase().includes(search));
-        // sort=<column>&order=asc|desc: the admin's sortable record table sorts the whole table before paging.
-        const sortKey = url.searchParams.get('sort');
-        if (sortKey) {
-          const direction = url.searchParams.get('order') === 'desc' ? -1 : 1;
-          const empty = (value) => value === null || value === undefined || value === '';
-          rows.sort((a, b) => {
-            const x = a[sortKey],
-              y = b[sortKey];
-            if (empty(x) || empty(y)) return empty(x) === empty(y) ? 0 : empty(x) ? 1 : -1;
-            return (
-              (typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y))) * direction
-            );
-          });
-        }
-        const total = rows.length,
-          pageCount = Math.max(1, Math.ceil(total / pageSize)),
-          page = Math.min(pageCount, Math.max(1, Number.parseInt(url.searchParams.get('page'), 10) || 1));
-        return json(res, 200, {
-          items: rows.slice((page - 1) * pageSize, page * pageSize),
-          total,
-          page,
-          pageSize,
-          pageCount,
-        });
+        return pagedRecords(res, url, entity);
       }
       if (method === 'GET')
         return json(
@@ -173,7 +179,7 @@ export function createRuntimeAdminRouter({
               if (!platformSettingEntries(store.state).some((item) => item.key === key))
                 throw error('Unknown platform setting.', 404);
               await store.transact(() => {
-                delete (store.state.simulator.platformOverrides ?? {})[key];
+                delete store.state.simulator.platformOverrides?.[key];
                 delete store.state.simulator.activeExperiment;
               });
               return { reset: key };

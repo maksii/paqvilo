@@ -108,7 +108,7 @@ const providersOf = (providers = {}) =>
 function extensionDiagnostics(forward) {
   let held = null;
   const sink = (entry) => {
-    if (held && /_NOT_SIMULATED$/.test(String(entry?.code ?? ''))) {
+    if (held && String(entry?.code ?? '').endsWith('_NOT_SIMULATED')) {
       held.set(entry.code, [...(held.get(entry.code) ?? []), entry]);
       return;
     }
@@ -127,13 +127,14 @@ function extensionDiagnostics(forward) {
       }
       const tables = [
         ...new Set(entries.map((entry) => entry.table ?? entry.entity ?? entry.logicalName).filter(Boolean)),
-      ].sort();
+      ].sort((a, b) => Number(a > b) - Number(a < b));
+      const tableScope = tables.length ? ` for ${tables.length} tables` : '';
       forward({
         code,
         severity: entries[0].severity ?? 'info',
         count: entries.length,
         tables,
-        message: `${entries.length} ${code} diagnostics${tables.length ? ` for ${tables.length} tables` : ''}; the first: ${entries[0].message ?? code}`,
+        message: `${entries.length} ${code} diagnostics${tableScope}; the first: ${entries[0].message ?? code}`,
       });
     }
   };
@@ -211,59 +212,20 @@ async function composeOrganizationRuntime({
 }) {
   // One clock, id and scheduler source (runtime-clock.mjs) for the store and the API: an option replaces the store's default,
   // otherwise the store's own drives the API too.
-  if (clockOption && (!store.clock || store.clock === systemClock))
-    store.clock = typeof clockOption === 'function' ? { now: clockOption } : clockOption;
-  const clock = clockOption ? clockFunction(clockOption) : () => (store.clock ?? systemClock).now();
-  if (idsOption && (!store.ids || store.ids === systemIds)) store.ids = idsOption;
-  const ids = idsOption ?? store.ids ?? systemIds;
-  // Organizations own the scheduler only when one of them opened it (no backend or caller supplied one): the last of them
-  // closes it, so organizations hosted without a backend leave no timers. A backend-owned scheduler stays open for the backend.
-  const previousScheduler = store.scheduler;
-  const scheduler = storeScheduler(store, schedulerOption ?? null, { reopen: true });
-  // Activity counters (runtime-counters.mjs) for the /_sim/ dashboard: one set per store, kept across organization restarts.
-  store.counters ??= createCounters();
-  if (!schedulerOption && scheduler !== previousScheduler) organizationSchedulers.set(scheduler, 0);
-  const ownsScheduler = organizationSchedulers.has(scheduler);
-  if (ownsScheduler) {
-    organizationSchedulers.set(scheduler, organizationSchedulers.get(scheduler) + 1);
-    pendingSchedulers.set(store, scheduler);
-  }
+  const { clock, ids, scheduler, ownsScheduler } = configureOrganizationRuntime(
+    store,
+    clockOption,
+    idsOption,
+    schedulerOption,
+  );
   // Standard table columns under the Solution's own fields; the records and TDS layers both read this.
   const solutionFields = metadataFields;
   metadataFields = (logical) => fieldsWithStandard(store, logical, solutionFields(logical));
   const tenantId = (settings.tenantId ?? uuidV5(DATAVERSE_NAMESPACE, `${settings.uniqueName}:tenant`)).toLowerCase();
   const organizationId = dataverseOrganizationId(settings);
   const environmentId = `Default-${tenantId}`;
-  const applications = settings.applications ?? [];
 
-  const securitySettings = {
-    organizationId,
-    tenantId,
-    uniqueName: settings.uniqueName,
-    friendlyName: settings.friendlyName,
-    version: settings.version,
-    auditing: settings.auditing,
-    duplicateDetection: settings.duplicateDetection,
-    currencyCode: settings.currencyCode,
-    currencySymbol: settings.currencySymbol,
-    localeId: settings.localeId,
-    // A managed identity is an application user too: its token's appid is the clientId, and its roles are the user's roles.
-    applications: [
-      ...applications.map((app) => ({ appId: app.appId, displayName: app.displayName, roles: app.roles ?? [] })),
-      ...(settings.managedIdentities ?? []).map((identity) => ({
-        appId: identity.clientId,
-        displayName: identity.displayName,
-        roles: identity.roles ?? [],
-      })),
-    ],
-    // Settings rows use domainname/fullname; the security model reads upn/displayName.
-    users: (settings.users ?? []).map((user) => ({
-      objectId: user.objectId,
-      upn: user.domainname,
-      displayName: user.fullname,
-      roles: user.roles,
-    })),
-  };
+  const securitySettings = organizationSecuritySettings(settings, organizationId, tenantId);
   const registerApplications = () =>
     store.transact(() => {
       seedRegistrations(store, settings, { tenantId, organizationId, environmentId }, clock);
@@ -293,14 +255,12 @@ async function composeOrganizationRuntime({
           ([name]) => !(Object.hasOwn(INTERNAL_TABLE_MAPPINGS, name) && INTERNAL_TABLE_MAPPINGS[name]),
         ),
       ),
-    mapping: (logical) =>
-      Object.hasOwn(INTERNAL_TABLE_MAPPINGS, logical) && INTERNAL_TABLE_MAPPINGS[logical]
-        ? null
-        : Object.hasOwn(store.state.mappings, logical)
-          ? store.state.mappings[logical]
-          : null,
+    mapping: (logical) => {
+      if (Object.hasOwn(INTERNAL_TABLE_MAPPINGS, logical) && INTERNAL_TABLE_MAPPINGS[logical]) return null;
+      return Object.hasOwn(store.state.mappings, logical) ? store.state.mappings[logical] : null;
+    },
     virtualTables: () => store.virtualTables?.() ?? {},
-    globalOptionSets: () => ({ ...standardGlobalOptionSets(), ...(store.state.dataverse?.globalOptionSets ?? {}) }),
+    globalOptionSets: () => ({ ...standardGlobalOptionSets(), ...store.state.dataverse?.globalOptionSets }),
     changeLog: () => store.state.dataverse?.metadataLog ?? [],
     extraCsdl: () => operations.csdlFragments(),
     // Commits advance dataRevision; a replaced state or a table added outside a commit changes the other parts.
@@ -330,7 +290,7 @@ async function composeOrganizationRuntime({
   // they seed get privileges and role grants (seedSecurity is idempotent).
   const routes = [];
   // Shared by the HTTP router and the TDS endpoint, so both admit requests against the same windows.
-  const limits = createServiceProtection({ ...(settings.serviceProtection ?? {}), clock });
+  const limits = createServiceProtection({ ...settings.serviceProtection, clock });
   const api = {
     store,
     change: recordChange,
@@ -427,38 +387,9 @@ async function composeOrganizationRuntime({
 </Function>`,
   );
   const installed = [];
-  let closed;
-  const close = () =>
-    (closed ??= (async () => {
-      const results = await Promise.allSettled(
-        installed.map((extension) => Promise.resolve().then(() => extension.close?.(api))),
-      );
-      try {
-        await recordHandlers.close?.();
-      } finally {
-        changes.close();
-        if (ownsScheduler) releaseOrganizationScheduler(scheduler);
-      }
-      const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
-      if (failures.length) throw new AggregateError(failures, 'Organization extension cleanup failed.');
-    })());
-  try {
-    api.diagnostic.hold();
-    for (const extension of extensions) {
-      if (typeof extension?.install !== 'function')
-        throw new Error('A Dataverse API extension needs an install(api) function.');
-      // An installer may allocate resources before it fails. Give it the same
-      // cleanup opportunity as successfully installed extensions.
-      installed.push(extension);
-      // The runtime's diagnostic sink; pack overrides and providers come from api.packExport / api.providers.
-      await extension.install(api, { diagnostic: api.diagnostic });
-    }
-    api.diagnostic.flush();
-    if (extensions.length) await change(seedSecurity);
-  } catch (error) {
-    await close().catch((cleanup) => log('organization-cleanup', cleanup));
-    throw error;
-  }
+  const closeState = { promise: undefined };
+  const close = () => closeOrganization(closeState, installed, api, recordHandlers, changes, ownsScheduler, scheduler);
+  await installOrganizationExtensions(extensions, api, change, seedSecurity, installed, close, log);
   // The organization the seeded organization row carries (settings.organizationId is null at runtime).
   const organizationRow = store
     .tableRows('organization')
@@ -507,22 +438,118 @@ async function composeOrganizationRuntime({
     runAtomic: (fn, options) => runAtomic(api, fn, options),
     read: (fn) =>
       store.transact(fn, { nested: true, skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true }),
-    reseed: async () => {
-      await registerApplications();
-      await store.transact(() => composeInternalTables(store));
-      api.diagnostic.hold();
-      try {
-        for (const extension of extensions) await extension.reset?.(api);
-      } finally {
-        api.diagnostic.flush();
-      }
-      await seedSecurity();
-      await store.transact(() => {
-        store.state.rowVersion = maxRowVersion(store.state);
-      });
-      await store.flushCommittedEvents?.();
-      changes.reset();
-    },
+    reseed: async () =>
+      reseedOrganizationRuntime({ store, api, extensions, registerApplications, seedSecurity, changes }),
     close,
   };
+}
+
+function closeOrganization(state, installed, api, recordHandlers, changes, ownsScheduler, scheduler) {
+  const existing = state.promise;
+  if (existing != null) return existing;
+  const promise = (async () => {
+    const results = await Promise.allSettled(
+      installed.map((extension) => Promise.resolve().then(() => extension.close?.(api))),
+    );
+    try {
+      await recordHandlers.close?.();
+    } finally {
+      changes.close();
+      if (ownsScheduler) releaseOrganizationScheduler(scheduler);
+    }
+    const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+    if (failures.length) throw new AggregateError(failures, 'Organization extension cleanup failed.');
+  })();
+  state.promise = promise;
+  return promise;
+}
+
+async function reseedOrganizationRuntime({ store, api, extensions, registerApplications, seedSecurity, changes }) {
+  await registerApplications();
+  await store.transact(() => composeInternalTables(store));
+  api.diagnostic.hold();
+  try {
+    for (const extension of extensions) await extension.reset?.(api);
+  } finally {
+    api.diagnostic.flush();
+  }
+  await seedSecurity();
+  await store.transact(() => {
+    store.state.rowVersion = maxRowVersion(store.state);
+  });
+  await store.flushCommittedEvents?.();
+  changes.reset();
+}
+
+function configureOrganizationRuntime(store, clockOption, idsOption, schedulerOption) {
+  if (clockOption && (!store.clock || store.clock === systemClock))
+    store.clock = typeof clockOption === 'function' ? { now: clockOption } : clockOption;
+  const clock = clockOption ? clockFunction(clockOption) : () => (store.clock ?? systemClock).now();
+  if (idsOption && (!store.ids || store.ids === systemIds)) store.ids = idsOption;
+  const ids = idsOption ?? store.ids ?? systemIds;
+  // Organizations own the scheduler only when one of them opened it (no backend or caller supplied one): the last of them
+  // closes it, so organizations hosted without a backend leave no timers. A backend-owned scheduler stays open for the backend.
+  const previousScheduler = store.scheduler;
+  const scheduler = storeScheduler(store, schedulerOption ?? null, { reopen: true });
+  // Activity counters (runtime-counters.mjs) for the /_sim/ dashboard: one set per store, kept across organization restarts.
+  store.counters ??= createCounters();
+  if (!schedulerOption && scheduler !== previousScheduler) organizationSchedulers.set(scheduler, 0);
+  const ownsScheduler = organizationSchedulers.has(scheduler);
+  if (ownsScheduler) {
+    organizationSchedulers.set(scheduler, organizationSchedulers.get(scheduler) + 1);
+    pendingSchedulers.set(store, scheduler);
+  }
+  return { clock, ids, scheduler, ownsScheduler };
+}
+
+function organizationSecuritySettings(settings, organizationId, tenantId) {
+  const applications = settings.applications ?? [];
+  return {
+    organizationId,
+    tenantId,
+    uniqueName: settings.uniqueName,
+    friendlyName: settings.friendlyName,
+    version: settings.version,
+    auditing: settings.auditing,
+    duplicateDetection: settings.duplicateDetection,
+    currencyCode: settings.currencyCode,
+    currencySymbol: settings.currencySymbol,
+    localeId: settings.localeId,
+    // A managed identity is an application user too: its token's appid is the clientId, and its roles are the user's roles.
+    applications: [
+      ...applications.map((app) => ({ appId: app.appId, displayName: app.displayName, roles: app.roles ?? [] })),
+      ...(settings.managedIdentities ?? []).map((identity) => ({
+        appId: identity.clientId,
+        displayName: identity.displayName,
+        roles: identity.roles ?? [],
+      })),
+    ],
+    // Settings rows use domainname/fullname; the security model reads upn/displayName.
+    users: (settings.users ?? []).map((user) => ({
+      objectId: user.objectId,
+      upn: user.domainname,
+      displayName: user.fullname,
+      roles: user.roles,
+    })),
+  };
+}
+
+async function installOrganizationExtensions(extensions, api, change, seedSecurity, installed, close, log) {
+  try {
+    api.diagnostic.hold();
+    for (const extension of extensions) {
+      if (typeof extension?.install !== 'function')
+        throw new Error('A Dataverse API extension needs an install(api) function.');
+      // An installer may allocate resources before it fails. Give it the same
+      // cleanup opportunity as successfully installed extensions.
+      installed.push(extension);
+      // The runtime's diagnostic sink; pack overrides and providers come from api.packExport / api.providers.
+      await extension.install(api, { diagnostic: api.diagnostic });
+    }
+    api.diagnostic.flush();
+    if (extensions.length) await change(seedSecurity);
+  } catch (error) {
+    await close().catch((error_) => log('organization-cleanup', error_));
+    throw error;
+  }
 }

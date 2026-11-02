@@ -190,28 +190,40 @@ function checkRule(rule) {
     throw invalid('Interval must be at least 1.');
   const endType = rule.patternendtype === undefined ? END.noEnd : integerOf(rule.patternendtype, 'PatternEndType');
   if (![END.noEnd, END.occurrences, END.endDate].includes(endType)) throw invalid('PatternEndType must be 1, 2 or 3.');
+  checkPatternEnd(rule, endType);
+  checkPatternFields(rule, type);
+  return type;
+}
+
+function checkPatternEnd(rule, endType) {
   if (endType === END.occurrences && integerOf(rule.occurrences, 'Occurrences') < 1)
     throw invalid('Occurrences must be at least 1.');
-  if (endType === END.endDate) {
-    if (rule.patternenddate == null) throw invalid('PatternEndDate is required for an end date.');
-    if (instantOf(rule.patternenddate, 'PatternEndDate') < instantOf(rule.patternstartdate, 'PatternStartDate')) {
-      throw invalid('PatternEndDate must be on or after PatternStartDate.');
-    }
-  }
-  if (type === PATTERN.weekly) {
-    const mask = integerOf(rule.daysofweekmask, 'DaysOfWeekMask');
-    if (mask < 1 || mask > 127) throw invalid('DaysOfWeekMask must be between 1 and 127.');
-  }
-  if (type === PATTERN.monthly || type === PATTERN.yearly) {
-    const day = integerOf(rule.dayofmonth, 'DayOfMonth');
-    if (!rule.isnthmonthly && !rule.isnthyearly && (day < 1 || day > 31))
-      throw invalid('DayOfMonth must be between 1 and 31.');
-  }
-  if (type === PATTERN.yearly) {
-    const month = integerOf(rule.monthofyear, 'MonthOfYear');
-    if (month < 1 || month > 12) throw invalid('MonthOfYear must be between 1 and 12.');
-  }
-  return type;
+  if (endType !== END.endDate) return;
+  if (rule.patternenddate == null) throw invalid('PatternEndDate is required for an end date.');
+  if (instantOf(rule.patternenddate, 'PatternEndDate') < instantOf(rule.patternstartdate, 'PatternStartDate'))
+    throw invalid('PatternEndDate must be on or after PatternStartDate.');
+}
+
+function checkPatternFields(rule, type) {
+  if (type === PATTERN.weekly) checkWeeklyPattern(rule);
+  if (type === PATTERN.monthly || type === PATTERN.yearly) checkMonthlyPattern(rule);
+  if (type === PATTERN.yearly) checkYearlyPattern(rule);
+}
+
+function checkWeeklyPattern(rule) {
+  const mask = integerOf(rule.daysofweekmask, 'DaysOfWeekMask');
+  if (mask < 1 || mask > 127) throw invalid('DaysOfWeekMask must be between 1 and 127.');
+}
+
+function checkMonthlyPattern(rule) {
+  const day = integerOf(rule.dayofmonth, 'DayOfMonth');
+  if (!rule.isnthmonthly && !rule.isnthyearly && (day < 1 || day > 31))
+    throw invalid('DayOfMonth must be between 1 and 31.');
+}
+
+function checkYearlyPattern(rule) {
+  const month = integerOf(rule.monthofyear, 'MonthOfYear');
+  if (month < 1 || month > 12) throw invalid('MonthOfYear must be between 1 and 12.');
 }
 
 // Whether a local date (day number) is an occurrence of the rule. n0 is the day number of the pattern start.
@@ -307,22 +319,25 @@ function dateParts(iana, value) {
 function busyBlocks(store, resourceId, fromMs, toMs, exceptActivity = null) {
   const blocks = [];
   for (const party of tableOf(store, 'activityparty').filter((row) => sameId(row.partyid, resourceId))) {
-    const activityId = idOf(party.activityid);
-    if (!activityId || sameId(activityId, exceptActivity)) continue;
-    const row = rowOf(store, 'appointment', 'activityid', activityId);
-    if (row) {
-      const startMs = Date.parse(row.scheduledstart);
-      const endMs = Date.parse(row.scheduledend);
-      if (row.statecode === 0 && startMs < toMs && fromMs < endMs) blocks.push({ activityId, startMs, endMs });
-      continue;
-    }
-    const master = rowOf(store, 'recurringappointmentmaster', 'activityid', activityId);
-    if (!master) continue;
-    for (const occurrence of seriesOccurrences(store, master, fromMs, toMs)) {
-      if (!occurrence.materialized) blocks.push({ activityId, startMs: occurrence.startMs, endMs: occurrence.endMs });
-    }
+    appendBusyParty(store, party, fromMs, toMs, exceptActivity, blocks);
   }
   return blocks.sort((left, right) => left.startMs - right.startMs);
+}
+
+function appendBusyParty(store, party, fromMs, toMs, exceptActivity, blocks) {
+  const activityId = idOf(party.activityid);
+  if (!activityId || sameId(activityId, exceptActivity)) return;
+  const row = rowOf(store, 'appointment', 'activityid', activityId);
+  if (row) {
+    const startMs = Date.parse(row.scheduledstart);
+    const endMs = Date.parse(row.scheduledend);
+    if (row.statecode === 0 && startMs < toMs && fromMs < endMs) blocks.push({ activityId, startMs, endMs });
+    return;
+  }
+  const master = rowOf(store, 'recurringappointmentmaster', 'activityid', activityId);
+  if (!master) return;
+  for (const occurrence of seriesOccurrences(store, master, fromMs, toMs))
+    if (!occurrence.materialized) blocks.push({ activityId, startMs: occurrence.startMs, endMs: occurrence.endMs });
 }
 
 // ---- availability and calendar rules ----
@@ -390,44 +405,72 @@ function expandRules(store, calendarId, fromMs, toMs, base = null, depth = 0) {
   const blocks = [];
   for (const rule of tableOf(store, 'calendarrule').filter((row) => sameId(idOf(row.calendarid), calendarId))) {
     if (!rule.pattern) {
-      const startMs =
-        base === null ? (rule.starttime ? Date.parse(rule.starttime) : NaN) : base + Number(rule.offset ?? 0) * MIN;
-      const endMs = rule.duration != null ? startMs + Number(rule.duration) * MIN : Date.parse(rule.endtime);
-      if (Number.isFinite(startMs) && Number.isFinite(endMs) && startMs < toMs && fromMs < endMs)
-        blocks.push({ startMs, endMs, rule, calendarId });
+      appendLeafRule(rule, calendarId, fromMs, toMs, base, blocks);
       continue;
     }
-    const zone = zoneOf(rule.timezonecode ?? calendar?.timezonecode ?? UTC_CODE);
-    const recurrence = patternOf(rule.pattern);
-    const first = wallOf(zone.iana, fromMs);
-    const startDay = dayNumber(first.y, first.m, first.d);
-    const last = wallOf(zone.iana, toMs);
-    const endDay = dayNumber(last.y, last.m, last.d);
-    const effectiveStart = rule.effectiveintervalstart
-      ? dayNumber(...dateParts(zone.iana, rule.effectiveintervalstart))
-      : -Infinity;
-    const effectiveEnd = rule.effectiveintervalend
-      ? dayNumber(...dateParts(zone.iana, rule.effectiveintervalend))
-      : Infinity;
-    const anchor = Number.isFinite(effectiveStart) ? effectiveStart : startDay;
-    for (let dayN = startDay; dayN <= endDay && dayN - startDay < MAX_DAYS; dayN += 1) {
-      if (dayN < effectiveStart || dayN > effectiveEnd) continue;
-      const wall = fromDayNumber(dayN);
-      if (!dayMatches(recurrence, anchor, dayN, wall)) continue;
-      const midnight = utcFromWall(zone.iana, Date.UTC(wall.y, wall.m - 1, wall.d));
-      if (rule.innercalendarid) {
-        const dayFrom = Math.max(fromMs, midnight);
-        const dayTo = Math.min(toMs, midnight + DAY);
-        if (dayFrom < dayTo)
-          blocks.push(...expandRules(store, idOf(rule.innercalendarid), dayFrom, dayTo, midnight, depth + 1));
-        continue;
-      }
-      const startMs = midnight + Number(rule.offset ?? 0) * MIN;
-      const endMs = startMs + Number(rule.duration ?? 0) * MIN;
-      if (startMs < toMs && fromMs < endMs) blocks.push({ startMs, endMs, rule, calendarId });
-    }
+    appendPatternRules(store, rule, { calendarZone: calendar?.timezonecode, calendarId, fromMs, toMs, depth, blocks });
   }
   return blocks;
+}
+
+function appendLeafRule(rule, calendarId, fromMs, toMs, base, blocks) {
+  let startMs;
+  if (base !== null) startMs = base + Number(rule.offset ?? 0) * MIN;
+  else startMs = rule.starttime ? Date.parse(rule.starttime) : Number.NaN;
+  const endMs = rule.duration != null ? startMs + Number(rule.duration) * MIN : Date.parse(rule.endtime);
+  if (Number.isFinite(startMs) && Number.isFinite(endMs) && startMs < toMs && fromMs < endMs)
+    blocks.push({ startMs, endMs, rule, calendarId });
+}
+
+function appendPatternRules(store, rule, { calendarZone, calendarId, fromMs, toMs, depth, blocks }) {
+  const zone = zoneOf(rule.timezonecode ?? calendarZone ?? UTC_CODE);
+  const recurrence = patternOf(rule.pattern);
+  const first = wallOf(zone.iana, fromMs);
+  const startDay = dayNumber(first.y, first.m, first.d);
+  const last = wallOf(zone.iana, toMs);
+  const endDay = dayNumber(last.y, last.m, last.d);
+  const effectiveStart = rule.effectiveintervalstart
+    ? dayNumber(...dateParts(zone.iana, rule.effectiveintervalstart))
+    : -Infinity;
+  const effectiveEnd = rule.effectiveintervalend
+    ? dayNumber(...dateParts(zone.iana, rule.effectiveintervalend))
+    : Infinity;
+  const anchor = Number.isFinite(effectiveStart) ? effectiveStart : startDay;
+  for (let dayN = startDay; dayN <= endDay && dayN - startDay < MAX_DAYS; dayN += 1)
+    appendPatternDay(store, rule, zone, recurrence, {
+      anchor,
+      effectiveStart,
+      effectiveEnd,
+      calendarId,
+      fromMs,
+      toMs,
+      depth,
+      dayN,
+      blocks,
+    });
+}
+
+function appendPatternDay(
+  store,
+  rule,
+  zone,
+  recurrence,
+  { anchor, effectiveStart, effectiveEnd, calendarId, fromMs, toMs, depth, dayN, blocks },
+) {
+  if (dayN < effectiveStart || dayN > effectiveEnd) return;
+  const wall = fromDayNumber(dayN);
+  if (!dayMatches(recurrence, anchor, dayN, wall)) return;
+  const midnight = utcFromWall(zone.iana, Date.UTC(wall.y, wall.m - 1, wall.d));
+  if (rule.innercalendarid) {
+    const dayFrom = Math.max(fromMs, midnight);
+    const dayTo = Math.min(toMs, midnight + DAY);
+    if (dayFrom < dayTo)
+      blocks.push(...expandRules(store, idOf(rule.innercalendarid), dayFrom, dayTo, midnight, depth + 1));
+    return;
+  }
+  const startMs = midnight + Number(rule.offset ?? 0) * MIN;
+  const endMs = startMs + Number(rule.duration ?? 0) * MIN;
+  if (startMs < toMs && fromMs < endMs) blocks.push({ startMs, endMs, rule, calendarId });
 }
 
 // Blocks from a lower rank trim the higher-rank blocks they cover (the rank direction is a guess).
@@ -568,7 +611,7 @@ function operations(api) {
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, logical, right) => {
     const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical);
+    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
   };
   const respond = (c, name, payload) => ({
     status: 200,
@@ -681,12 +724,14 @@ function operations(api) {
         const args = argsOf(c);
         const resourceId = idOf(args.ResourceId);
         if (!resourceId) throw invalid('ResourceId must be a GUID.');
-        const codes = (Array.isArray(args.TimeCodes) ? args.TimeCodes : [args.TimeCodes]).map((code) => {
-          if (typeof code === 'number' || /^\d+$/.test(String(code))) return Number(code);
-          const name = String(code).replace(/^.*'(\w+)'$/, '$1');
-          if (!(name in TIME_CODE)) throw invalid('TimeCodes must be Available, Busy, Unavailable or Filter.');
-          return TIME_CODE[name];
-        });
+        const codes = new Set(
+          (Array.isArray(args.TimeCodes) ? args.TimeCodes : [args.TimeCodes]).map((code) => {
+            if (typeof code === 'number' || /^\d+$/.test(String(code))) return Number(code);
+            const name = String(code).replace(/^.*'(\w+)'$/, '$1');
+            if (!(name in TIME_CODE)) throw invalid('TimeCodes must be Available, Busy, Unavailable or Filter.');
+            return TIME_CODE[name];
+          }),
+        );
         const fromMs = instantOf(args.Start, 'Start');
         const toMs = instantOf(args.End, 'End');
         const calendarId = calendarOf(store, resourceId);
@@ -707,7 +752,7 @@ function operations(api) {
           ...extra,
         });
         const TimeInfos = [];
-        if (codes.includes(BUSY)) {
+        if (codes.has(BUSY)) {
           for (const block of busy) {
             TimeInfos.push({
               ActivityStatusCode: 0,
@@ -724,7 +769,7 @@ function operations(api) {
             });
           }
         }
-        if (available && codes.includes(TIME_CODE.Available)) {
+        if (available && codes.has(TIME_CODE.Available)) {
           for (const [startMs, endMs] of minus(
             available,
             busy.map((block) => [block.startMs, block.endMs]),
@@ -732,13 +777,13 @@ function operations(api) {
             TimeInfos.push(info(startMs, endMs, TIME_CODE.Available, { CalendarId: calendarId }));
           }
         }
-        if (available && codes.includes(TIME_CODE.Unavailable)) {
+        if (available && codes.has(TIME_CODE.Unavailable)) {
           for (const [startMs, endMs] of minus([[fromMs, toMs]], available)) {
             TimeInfos.push(info(startMs, endMs, TIME_CODE.Unavailable, { CalendarId: calendarId }));
           }
         }
         return respond(c, 'QuerySchedule', {
-          TimeInfos: TimeInfos.sort((left, right) => Date.parse(left.Start) - Date.parse(right.Start)),
+          TimeInfos: TimeInfos.toSorted((left, right) => Date.parse(left.Start) - Date.parse(right.Start)),
         });
       },
       csdl: null,
@@ -780,16 +825,7 @@ function operations(api) {
         });
         if (!resources.length) throw invalid('RequiredResources must name at least one resource.');
         const common = resources.reduce((spans, resource) => intersect(spans, resource.free), [[fromMs, toMs]]);
-        const starts = [];
-        for (const [s, e] of direction === 0 ? common : [...common].reverse()) {
-          if (direction === 0) {
-            for (let t = Math.ceil(s / STEP) * STEP; t + durationMs <= e && starts.length < limit; t += STEP)
-              starts.push(t);
-          } else {
-            for (let t = Math.floor((e - durationMs) / STEP) * STEP; t >= s && starts.length < limit; t -= STEP)
-              starts.push(t);
-          }
-        }
+        const starts = proposalStarts(common, direction, durationMs, limit);
         const Proposals = starts.map((startMs) => ({
           Start: iso(startMs),
           End: iso(startMs + durationMs),
@@ -1100,6 +1136,25 @@ function operations(api) {
       csdl: null,
     },
   ];
+}
+
+function proposalStarts(common, direction, durationMs, limit) {
+  const starts = [];
+  for (const [s, e] of direction === 0 ? common : [...common].reverse()) {
+    if (direction === 0) appendForwardProposals(starts, s, e, durationMs, limit);
+    else appendBackwardProposals(starts, s, e, durationMs, limit);
+  }
+  return starts;
+}
+
+function appendForwardProposals(starts, start, end, durationMs, limit) {
+  for (let time = Math.ceil(start / STEP) * STEP; time + durationMs <= end && starts.length < limit; time += STEP)
+    starts.push(time);
+}
+
+function appendBackwardProposals(starts, start, end, durationMs, limit) {
+  for (let time = Math.floor((end - durationMs) / STEP) * STEP; time >= start && starts.length < limit; time -= STEP)
+    starts.push(time);
 }
 
 // ponytail: no CSDL fragments, so these operations are served but absent from $metadata until a client needs them.

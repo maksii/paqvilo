@@ -18,9 +18,8 @@ const encodedCommand = (code) => `node -e "${code}"`;
 export function listenerPort(value) {
   try {
     const url = new URL(value);
-    return ['http:', 'https:'].includes(url.protocol)
-      ? url.port || (url.protocol === 'https:' ? '443' : '80')
-      : undefined;
+    if (!['http:', 'https:'].includes(url.protocol)) return undefined;
+    return url.port || (url.protocol === 'https:' ? '443' : '80');
   } catch {
     return undefined;
   }
@@ -45,13 +44,7 @@ function stopArgument(value, platform) {
 
 /** Copyable CLI hints, with an exact argv batch when a group needs distinct selectors. */
 export function mirageCommandHint(commands, { cli, platform = process.platform, storePayload, cwd } = {}) {
-  if (
-    typeof cli !== 'string' ||
-    !path.isAbsolute(cli) ||
-    cli.includes('\0') ||
-    commands.some((args) => args.some((value) => String(value).includes('\0')))
-  )
-    throw new Error('Command arguments require an absolute CLI path and cannot contain NUL bytes.');
+  validateCommandArguments(commands, cli);
   if (cwd !== undefined && (typeof cwd !== 'string' || !path.isAbsolute(cwd) || cwd.includes('\0')))
     throw new Error('Command working directory must be an absolute path without NUL bytes.');
   if (!commands.length) return null;
@@ -87,6 +80,16 @@ export function mirageCommandHint(commands, { cli, platform = process.platform, 
   if (external.length > MAX_HINT_CHARACTERS)
     throw new Error('Command payload filename exceeds the copyable shell limit.');
   return external;
+}
+
+function validateCommandArguments(commands, cli) {
+  if (
+    typeof cli !== 'string' ||
+    !path.isAbsolute(cli) ||
+    cli.includes('\0') ||
+    commands.some((args) => args.some((value) => String(value).includes('\0')))
+  )
+    throw new Error('Command arguments require an absolute CLI path and cannot contain NUL bytes.');
 }
 
 /** A copyable stop hint: CMD/PowerShell on Windows, POSIX shells elsewhere. */

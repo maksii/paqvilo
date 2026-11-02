@@ -81,7 +81,10 @@ function entityName(entity, { deadLetter = false } = {}) {
 }
 const time = (value) => {
   if (value == null) return null;
-  const ms = value instanceof Date ? value.getTime() : typeof value === 'number' ? value : Date.parse(value);
+  let ms;
+  if (value instanceof Date) ms = value.getTime();
+  else if (typeof value === 'number') ms = value;
+  else ms = Date.parse(value);
   if (!Number.isFinite(ms)) throw new DataError('scheduledEnqueueTime must be a date', 400, 'InvalidRequest');
   return ms;
 };
@@ -91,7 +94,7 @@ function json(value, label, { exact = true } = {}) {
   try {
     return exact
       ? parseExactJson(stringifyExactJson(value), { allowFiniteDouble: true })
-      : JSON.parse(JSON.stringify(value));
+      : JSON.parse(JSON.stringify(value)); // NOSONAR: JSON round trip semantics differ from structuredClone
   } catch {
     throw new DataError(`${label} must be JSON`, 400, 'InvalidRequest');
   }
@@ -124,6 +127,17 @@ function receiveInput(entity, mode, maxMessages) {
   if (!Number.isInteger(maxMessages) || maxMessages < 1 || maxMessages > 1000)
     throw new DataError('maxMessages must be 1-1000', 400, 'InvalidRequest');
 }
+function localMessageState(row, locked, now) {
+  if (row.entity.endsWith(DEAD_LETTER_SUFFIX)) return 'deadLettered';
+  if (locked) return 'locked';
+  if (row.visibleat > now) return 'scheduled';
+  return 'active';
+}
+function emulatorMessageState(entity, lockToken) {
+  if (entity.endsWith(DEAD_LETTER_SUFFIX)) return 'deadLettered';
+  if (lockToken) return 'locked';
+  return 'active';
+}
 function view(row, now, { lock = true } = {}) {
   const locked = row.locktoken != null && row.lockeduntil > now;
   return {
@@ -137,16 +151,17 @@ function view(row, now, { lock = true } = {}) {
     deliveryCount: row.deliverycount,
     lockToken: lock && locked ? row.locktoken : null,
     lockedUntil: locked ? iso(row.lockeduntil) : null,
-    state: row.entity.endsWith(DEAD_LETTER_SUFFIX)
-      ? 'deadLettered'
-      : locked
-        ? 'locked'
-        : row.visibleat > now
-          ? 'scheduled'
-          : 'active',
+    state: localMessageState(row, locked, now),
     deadLetterReason: row.deadletterreason ?? null,
     deadLetterDescription: row.deadletterdescription ?? null,
   };
+}
+
+function locked(rows, lockToken, at) {
+  if (typeof lockToken !== 'string') throw lockLost();
+  const row = rows.find((candidate) => candidate.locktoken === lockToken);
+  if (!row || !(row.lockeduntil > at)) throw lockLost(); // NOSONAR: operand can be NaN or undefined, the negated test differs
+  return row;
 }
 
 /**
@@ -174,7 +189,8 @@ export function createLocalMessageBus({
   // inside each write covers a bus over a bare store and a replaced state.
   const seed = () => {
     store.state.mappings[QUEUE_MESSAGE_TABLE] ??= structuredClone(QUEUE_MESSAGE_MAPPING);
-    return (store.state.tables[QUEUE_MESSAGE_TABLE] ??= []);
+    store.state.tables[QUEUE_MESSAGE_TABLE] ??= [];
+    return store.state.tables[QUEUE_MESSAGE_TABLE];
   };
   const write = (fn, nested) => store.transact(() => fn(seed()), { incremental: true, nested });
   const indexOf = (rows, rowId) => rows.findIndex((row) => row[ID] === rowId);
@@ -210,13 +226,6 @@ export function createLocalMessageBus({
       visibleat: at + backoff(row.deliverycount),
     });
   }
-  function locked(rows, lockToken, at) {
-    if (typeof lockToken !== 'string') throw lockLost();
-    const row = rows.find((candidate) => candidate.locktoken === lockToken);
-    if (!row || !(row.lockeduntil > at)) throw lockLost();
-    return row;
-  }
-
   const bus = {
     id,
     descriptor: localMessageBusDescriptor,
@@ -358,7 +367,7 @@ function emulatorConnection(connectionString) {
   let host;
   try {
     const url = new URL(parts.get('endpoint'));
-    if (url.protocol !== 'sb:') throw new Error();
+    if (url.protocol !== 'sb:') throw new Error('Expected an sb: emulator endpoint.');
     host = url.hostname;
   } catch {
     return refuse('SERVICEBUS_EMULATOR_ENDPOINT_INVALID', 'The connection string Endpoint must be sb://<host>.');
@@ -485,7 +494,7 @@ export function createServiceBusEmulatorBus({
   timeoutMs = 5000,
   now = Date.now,
 } = {}) {
-  const variable = /^env:([A-Za-z_][A-Za-z0-9_]*)$/.exec(settings.connectionString ?? '')?.[1];
+  const variable = /^env:([A-Za-z_]\w*)$/.exec(settings.connectionString ?? '')?.[1];
   if (!variable) throw new TypeError('createServiceBusEmulatorBus requires settings.connectionString as env:NAME');
   const port = settings.amqpPort ?? EMULATOR_AMQP_PORT;
   const names = [...new Set(entities)];
@@ -572,7 +581,7 @@ export function createServiceBusEmulatorBus({
       deliveryCount: (Number(message.header[4]) || 0) + 1,
       lockToken,
       lockedUntil: lockToken ? stamp(lockedUntil) : null,
-      state: entity.endsWith(DEAD_LETTER_SUFFIX) ? 'deadLettered' : lockToken ? 'locked' : 'active',
+      state: emulatorMessageState(entity, lockToken),
       // Assumed: the emulator carries dead-letter reasons as the application properties DeadLetterReason/DeadLetterErrorDescription.
       deadLetterReason: DeadLetterReason,
       deadLetterDescription: DeadLetterErrorDescription,
@@ -723,7 +732,7 @@ export function mappedEntities(settings, providerId) {
 const PROVIDER_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const KINDS = new Set(['local-queue', 'servicebus-emulator']);
 const PACK_KIND = /^pack:[A-Za-z0-9@._-]+\/[A-Za-z0-9._-]+$/;
-const ENV_REFERENCE = /^env:[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+const ENV_REFERENCE = /^env:[A-Za-z_]\w{0,127}$/;
 const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 function retrySettings(value, label) {
@@ -753,68 +762,77 @@ export function messagingSettings(value, label = 'providers.messaging') {
   const result = {};
   for (const [providerId, provider] of Object.entries(value)) {
     if (providerId === 'endpoints') continue;
-    const at = `${label}.${providerId}`;
-    if (!PROVIDER_ID.test(providerId))
-      throw new Error(`${label} provider ids must be lower-case names (got '${providerId.slice(0, 64)}')`);
-    if (!plainObject(provider)) throw new Error(`${at} must be an object`);
-    const { kind } = provider;
-    if (typeof kind !== 'string' || !(KINDS.has(kind) || PACK_KIND.test(kind)))
-      throw new Error(`${at}.kind must be local-queue, servicebus-emulator or pack:<packId>/<name>`);
-    // The emulator's config.json owns lock duration and MaxDeliveryCount, so its entry takes no retry; amqpPort is its AMQP port.
-    const allowed =
-      kind === 'local-queue'
-        ? ['kind', 'retry', 'lockDurationMs']
-        : kind === 'servicebus-emulator'
-          ? ['kind', 'connectionString', 'amqpPort']
-          : ['kind', 'retry', 'connectionString'];
-    for (const key of Object.keys(provider))
-      if (!allowed.includes(key)) throw new Error(`Unknown ${at} key '${key}' for kind ${kind}`);
-    // Only kinds that accept retry get one, so a normalised result parses again unchanged (config-keys and the host both run this).
-    const normalized = {
-      kind,
-      ...(allowed.includes('retry') ? { retry: retrySettings(provider.retry, `${at}.retry`) } : {}),
-    };
-    if (provider.amqpPort !== undefined) {
-      if (!Number.isInteger(provider.amqpPort) || provider.amqpPort < 1 || provider.amqpPort > 65535)
-        throw new Error(`${at}.amqpPort must be an integer from 1 through 65535`);
-      normalized.amqpPort = provider.amqpPort;
-    }
-    if (provider.lockDurationMs !== undefined) {
-      if (
-        !Number.isInteger(provider.lockDurationMs) ||
-        provider.lockDurationMs < 1000 ||
-        provider.lockDurationMs > 300_000
-      )
-        throw new Error(`${at}.lockDurationMs must be an integer from 1000 through 300000`);
-      normalized.lockDurationMs = provider.lockDurationMs;
-    }
-    if (provider.connectionString !== undefined) {
-      if (typeof provider.connectionString !== 'string' || !ENV_REFERENCE.test(provider.connectionString))
-        throw new Error(
-          `${at}.connectionString must be an env:NAME reference; literal connection strings are not accepted in config`,
-        );
-      normalized.connectionString = provider.connectionString;
-    } else if (kind === 'servicebus-emulator') throw new Error(`${at}.connectionString is required (env:NAME)`);
-    result[providerId] = normalized;
+    result[providerId] = normalizeMessagingProvider(providerId, provider, label);
   }
   result.local ??= { kind: 'local-queue', retry: retrySettings(undefined) };
   const endpoints = value.endpoints ?? {};
   if (!plainObject(endpoints))
     throw new Error(`${label}.endpoints must map service endpoint ids or names to <provider>/<entity>`);
   result.endpoints = {};
-  for (const [key, target] of Object.entries(endpoints)) {
-    if (!key.trim() || key.length > 200)
-      throw new Error(`${label}.endpoints keys must be service endpoint ids or names of at most 200 characters`);
-    const slash = typeof target === 'string' ? target.indexOf('/') : -1;
-    const providerId = slash > 0 ? target.slice(0, slash) : '',
-      entity = slash > 0 ? target.slice(slash + 1) : '';
-    if (!Object.hasOwn(result, providerId) || providerId === 'endpoints' || !ENTITY.test(entity))
-      throw new Error(
-        `${label}.endpoints.${key.slice(0, 64)} must be <provider>/<entity> naming a declared messaging provider`,
-      );
-    result.endpoints[key] = target;
-  }
+  for (const [key, target] of Object.entries(endpoints)) validateMessagingEndpoint(result, key, target, label);
   return result;
+}
+
+function normalizeMessagingProvider(providerId, provider, label) {
+  const at = `${label}.${providerId}`;
+  if (!PROVIDER_ID.test(providerId))
+    throw new Error(`${label} provider ids must be lower-case names (got '${providerId.slice(0, 64)}')`);
+  if (!plainObject(provider)) throw new Error(`${at} must be an object`);
+  const { kind } = provider;
+  if (typeof kind !== 'string' || !(KINDS.has(kind) || PACK_KIND.test(kind)))
+    throw new Error(`${at}.kind must be local-queue, servicebus-emulator or pack:<packId>/<name>`);
+  const allowed = allowedMessagingKeys(kind);
+  for (const key of Object.keys(provider))
+    if (!allowed.includes(key)) throw new Error(`Unknown ${at} key '${key}' for kind ${kind}`);
+  const normalized = {
+    kind,
+    ...(allowed.includes('retry') ? { retry: retrySettings(provider.retry, `${at}.retry`) } : {}),
+  };
+  applyMessagingProviderOptions(provider, normalized, at, kind);
+  return normalized;
+}
+
+function allowedMessagingKeys(kind) {
+  if (kind === 'local-queue') return ['kind', 'retry', 'lockDurationMs'];
+  if (kind === 'servicebus-emulator') return ['kind', 'connectionString', 'amqpPort'];
+  return ['kind', 'retry', 'connectionString'];
+}
+
+function applyMessagingProviderOptions(provider, normalized, at, kind) {
+  if (provider.amqpPort !== undefined) {
+    if (!Number.isInteger(provider.amqpPort) || provider.amqpPort < 1 || provider.amqpPort > 65535)
+      throw new Error(`${at}.amqpPort must be an integer from 1 through 65535`);
+    normalized.amqpPort = provider.amqpPort;
+  }
+  if (provider.lockDurationMs !== undefined) {
+    if (
+      !Number.isInteger(provider.lockDurationMs) ||
+      provider.lockDurationMs < 1000 ||
+      provider.lockDurationMs > 300_000
+    )
+      throw new Error(`${at}.lockDurationMs must be an integer from 1000 through 300000`);
+    normalized.lockDurationMs = provider.lockDurationMs;
+  }
+  if (provider.connectionString !== undefined) {
+    if (typeof provider.connectionString !== 'string' || !ENV_REFERENCE.test(provider.connectionString))
+      throw new Error(
+        `${at}.connectionString must be an env:NAME reference; literal connection strings are not accepted in config`,
+      );
+    normalized.connectionString = provider.connectionString;
+  } else if (kind === 'servicebus-emulator') throw new Error(`${at}.connectionString is required (env:NAME)`);
+}
+
+function validateMessagingEndpoint(result, key, target, label) {
+  if (!key.trim() || key.length > 200)
+    throw new Error(`${label}.endpoints keys must be service endpoint ids or names of at most 200 characters`);
+  const slash = typeof target === 'string' ? target.indexOf('/') : -1;
+  const providerId = slash > 0 ? target.slice(0, slash) : '',
+    entity = slash > 0 ? target.slice(slash + 1) : '';
+  if (!Object.hasOwn(result, providerId) || providerId === 'endpoints' || !ENTITY.test(entity))
+    throw new Error(
+      `${label}.endpoints.${key.slice(0, 64)} must be <provider>/<entity> naming a declared messaging provider`,
+    );
+  result.endpoints[key] = target;
 }
 
 /** Pack `messageProviders`: provider kinds mapping to factory functions. */

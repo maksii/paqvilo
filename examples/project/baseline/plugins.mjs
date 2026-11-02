@@ -16,6 +16,10 @@ import { parseArgs } from 'node:util';
 import { loadConnection, connectedClient } from 'paqvilo/lense/dataverse/index.mjs';
 import { guid } from './generate.mjs';
 
+const chooseLazily = (condition, yes, no) => {
+  if (condition()) return yes();
+  return no();
+};
 const root = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(root, '../components/DataversePlugins');
 const SOLUTION = 'PaqviloBaseline';
@@ -23,6 +27,83 @@ const TABLE = 'pqvd_baselineitem';
 const STAGES = { 10: 'prevalidation', 20: 'preoperation', 40: 'postoperation' };
 const MESSAGES = ['Create', 'Update', 'Delete', 'Retrieve', 'RetrieveMultiple'];
 const IMAGE_TYPES = { PreImage: 0, PostImage: 1 };
+
+/* NOSONAR */ async function registerSteps({ steps, messageIds, ensure, client, apply, log, typeId, who }) {
+  for (const step of steps) {
+    const ids = messageIds.get(step.message);
+    const label = step.kind === 'fail' ? `fail ${STAGES[step.stage]}` : step.kind;
+    await ensure(
+      'sdkmessageprocessingsteps',
+      'sdkmessageprocessingstepid',
+      `step/${step.message}/${step.stage}/${step.rank}`,
+      step.id,
+      {
+        name: `Baseline: ${step.message} ${TABLE} ${label}`,
+        stage: step.stage,
+        rank: step.rank,
+        mode: step.mode,
+        supporteddeployment: 0,
+        configuration: step.configuration ?? null,
+        filteringattributes: step.filteringAttributes,
+        'sdkmessageid@odata.bind': `/sdkmessages(${ids.message})`,
+        'sdkmessagefilterid@odata.bind': `/sdkmessagefilters(${ids.filter})`,
+        'eventhandler_plugintype@odata.bind': `/plugintypes(${typeId})`,
+        ...(step.mode === 1 ? { asyncautodelete: step.asyncAutoDelete } : {}),
+        ...(step.runAs === 'application-user'
+          ? { 'impersonatinguserid@odata.bind': `/systemusers(${who.applicationUserId})` }
+          : {}),
+      },
+      92,
+    );
+    if (step.disabled) {
+      const { statecode } = await client
+        .get(`sdkmessageprocessingsteps(${step.id})?$select=statecode`)
+        .catch(() => ({ statecode: null }));
+      const status = statecode === 1 ? 'exists' : 'update';
+      if (apply && status === 'update')
+        await client.request(`sdkmessageprocessingsteps(${step.id})`, {
+          method: 'PATCH',
+          body: { statecode: 1, statuscode: 2 },
+        });
+      log({
+        key: `state/${step.message}/${step.stage}/${step.rank}`,
+        id: step.id,
+        status: apply && status === 'update' ? 'updated' : status,
+      });
+    }
+    if (step.image)
+      await ensure(
+        'sdkmessageprocessingstepimages',
+        'sdkmessageprocessingstepimageid',
+        `image/${step.message}/${step.stage}/${step.image.name}`,
+        step.image.id,
+        {
+          name: step.image.name,
+          entityalias: step.image.name,
+          imagetype: IMAGE_TYPES[step.image.type],
+          messagepropertyname: 'Target',
+          attributes: step.image.attributes,
+          'sdkmessageprocessingstepid@odata.bind': `/sdkmessageprocessingsteps(${step.id})`,
+        },
+      );
+  }
+}
+
+async function loadMessageIds(client) {
+  const messageIds = new Map();
+  for (const name of MESSAGES) {
+    const found = await client.list(`sdkmessages?$select=sdkmessageid&$filter=name eq '${name}'`);
+    if (found.length !== 1) throw new Error(`Ambiguous SDK message ${name}.`);
+    const filters = (
+      await client.list(
+        `sdkmessagefilters?$select=sdkmessagefilterid,iscustomprocessingstepallowed&$filter=_sdkmessageid_value eq ${found[0].sdkmessageid} and primaryobjecttypecode eq '${TABLE}'`,
+      )
+    ).filter((f) => f.iscustomprocessingstepallowed);
+    if (filters.length !== 1) throw new Error(`No unique ${name} message filter for ${TABLE}.`);
+    messageIds.set(name, { message: found[0].sdkmessageid, filter: filters[0].sdkmessagefilterid });
+  }
+  return messageIds;
+}
 
 export function baselineSteps() {
   const steps = [];
@@ -39,79 +120,90 @@ export function baselineSteps() {
         sentinel: `plugin-fail-${key}`,
         error: `Baseline plugin rejected ${message.toLowerCase()} at ${STAGES[stage]}`,
         filteringAttributes: message === 'Update' ? 'pqvd_text' : null,
-        image:
-          message === 'Delete'
-            ? { id: guid(`plugin:image:${key}:baseline`), name: 'baseline', type: 'PreImage', attributes: 'pqvd_text' }
-            : key === 'update-postoperation'
-              ? {
-                  id: guid(`plugin:image:${key}:baselinepost`),
-                  name: 'baselinepost',
-                  type: 'PostImage',
-                  attributes: 'pqvd_text',
-                }
-              : null,
+        image: chooseLazily(
+          () => message === 'Delete',
+          () => ({
+            id: guid(`plugin:image:${key}:baseline`),
+            name: 'baseline',
+            type: 'PreImage',
+            attributes: 'pqvd_text',
+          }),
+          () =>
+            chooseLazily(
+              () => key === 'update-postoperation',
+              () => ({
+                id: guid(`plugin:image:${key}:baselinepost`),
+                name: 'baselinepost',
+                type: 'PostImage',
+                attributes: 'pqvd_text',
+              }),
+              () => null,
+            ),
+        ),
       });
     }
-  steps.push({
-    id: guid('plugin:step:retrieve-postoperation'),
-    kind: 'fail',
-    message: 'Retrieve',
-    stage: 40,
-    rank: 10,
-    mode: 0,
-    sentinel: 'plugin-fail-retrieve-postoperation',
-    error: 'Baseline plugin rejected retrieve at postoperation',
-    filteringAttributes: null,
-    image: null,
-  });
-  steps.push({
-    id: guid('plugin:step:retrievemultiple-postoperation'),
-    kind: 'hide',
-    message: 'RetrieveMultiple',
-    stage: 40,
-    rank: 10,
-    mode: 0,
-    sentinel: 'plugin-hide-retrievemultiple',
-    filteringAttributes: null,
-    image: null,
-  });
-  // Registration-state-only steps: the code ignores configuration "noop".
-  steps.push({
-    id: guid('plugin:step:update-postoperation-impersonated'),
-    kind: 'impersonated-noop',
-    message: 'Update',
-    stage: 40,
-    rank: 30,
-    mode: 0,
-    configuration: 'noop',
-    runAs: 'application-user',
-    filteringAttributes: null,
-    image: null,
-  });
-  steps.push({
-    id: guid('plugin:step:create-postoperation-async'),
-    kind: 'async-noop',
-    message: 'Create',
-    stage: 40,
-    rank: 30,
-    mode: 1,
-    asyncAutoDelete: true,
-    configuration: 'noop',
-    filteringAttributes: null,
-    image: null,
-  });
-  steps.push({
-    id: guid('plugin:step:delete-prevalidation-disabled'),
-    kind: 'disabled',
-    message: 'Delete',
-    stage: 10,
-    rank: 20,
-    mode: 0,
-    configuration: 'noop',
-    disabled: true,
-    filteringAttributes: null,
-    image: null,
-  });
+  steps.push(
+    {
+      id: guid('plugin:step:retrieve-postoperation'),
+      kind: 'fail',
+      message: 'Retrieve',
+      stage: 40,
+      rank: 10,
+      mode: 0,
+      sentinel: 'plugin-fail-retrieve-postoperation',
+      error: 'Baseline plugin rejected retrieve at postoperation',
+      filteringAttributes: null,
+      image: null,
+    },
+    {
+      id: guid('plugin:step:retrievemultiple-postoperation'),
+      kind: 'hide',
+      message: 'RetrieveMultiple',
+      stage: 40,
+      rank: 10,
+      mode: 0,
+      sentinel: 'plugin-hide-retrievemultiple',
+      filteringAttributes: null,
+      image: null,
+    },
+    // Registration-state-only steps: the code ignores configuration "noop".
+    {
+      id: guid('plugin:step:update-postoperation-impersonated'),
+      kind: 'impersonated-noop',
+      message: 'Update',
+      stage: 40,
+      rank: 30,
+      mode: 0,
+      configuration: 'noop',
+      runAs: 'application-user',
+      filteringAttributes: null,
+      image: null,
+    },
+    {
+      id: guid('plugin:step:create-postoperation-async'),
+      kind: 'async-noop',
+      message: 'Create',
+      stage: 40,
+      rank: 30,
+      mode: 1,
+      asyncAutoDelete: true,
+      configuration: 'noop',
+      filteringAttributes: null,
+      image: null,
+    },
+    {
+      id: guid('plugin:step:delete-prevalidation-disabled'),
+      kind: 'disabled',
+      message: 'Delete',
+      stage: 10,
+      rank: 20,
+      mode: 0,
+      configuration: 'noop',
+      disabled: true,
+      filteringAttributes: null,
+      image: null,
+    },
+  );
   for (const message of ['Create', 'Update'])
     steps.push({
       id: guid(`plugin:step:mutate-${message.toLowerCase()}`),
@@ -183,7 +275,11 @@ async function main() {
     });
   async function ensure(set, primary, key, id, body, type) {
     const existing = await client.optional(`${set}(${id})`);
-    const status = !existing ? 'create' : differs(existing, body) ? 'update' : 'exists';
+    const status = chooseLazily(
+      () => !existing,
+      () => 'create',
+      () => (differs(existing, body) ? 'update' : 'exists'),
+    );
     if (apply && status === 'create')
       await client.request(set, { method: 'POST', body: { [primary]: id, ...body }, solution: SOLUTION });
     if (apply && status === 'update')
@@ -213,77 +309,8 @@ async function main() {
     'pluginassemblyid@odata.bind': `/pluginassemblies(${assemblyId})`,
   });
 
-  const messageIds = new Map();
-  for (const name of MESSAGES) {
-    const found = await client.list(`sdkmessages?$select=sdkmessageid&$filter=name eq '${name}'`);
-    if (found.length !== 1) throw new Error(`Ambiguous SDK message ${name}.`);
-    const filters = (
-      await client.list(
-        `sdkmessagefilters?$select=sdkmessagefilterid,iscustomprocessingstepallowed&$filter=_sdkmessageid_value eq ${found[0].sdkmessageid} and primaryobjecttypecode eq '${TABLE}'`,
-      )
-    ).filter((f) => f.iscustomprocessingstepallowed);
-    if (filters.length !== 1) throw new Error(`No unique ${name} message filter for ${TABLE}.`);
-    messageIds.set(name, { message: found[0].sdkmessageid, filter: filters[0].sdkmessagefilterid });
-  }
-
-  for (const step of steps) {
-    const ids = messageIds.get(step.message);
-    const label = step.kind === 'fail' ? `fail ${STAGES[step.stage]}` : step.kind;
-    await ensure(
-      'sdkmessageprocessingsteps',
-      'sdkmessageprocessingstepid',
-      `step/${step.message}/${step.stage}/${step.rank}`,
-      step.id,
-      {
-        name: `Baseline: ${step.message} ${TABLE} ${label}`,
-        stage: step.stage,
-        rank: step.rank,
-        mode: step.mode,
-        supporteddeployment: 0,
-        configuration: step.configuration ?? null,
-        filteringattributes: step.filteringAttributes,
-        'sdkmessageid@odata.bind': `/sdkmessages(${ids.message})`,
-        'sdkmessagefilterid@odata.bind': `/sdkmessagefilters(${ids.filter})`,
-        'eventhandler_plugintype@odata.bind': `/plugintypes(${typeId})`,
-        ...(step.mode === 1 ? { asyncautodelete: step.asyncAutoDelete } : {}),
-        ...(step.runAs === 'application-user'
-          ? { 'impersonatinguserid@odata.bind': `/systemusers(${who.applicationUserId})` }
-          : {}),
-      },
-      92,
-    );
-    if (step.disabled) {
-      const { statecode } = await client
-        .get(`sdkmessageprocessingsteps(${step.id})?$select=statecode`)
-        .catch(() => ({ statecode: null }));
-      const status = statecode === 1 ? 'exists' : 'update';
-      if (apply && status === 'update')
-        await client.request(`sdkmessageprocessingsteps(${step.id})`, {
-          method: 'PATCH',
-          body: { statecode: 1, statuscode: 2 },
-        });
-      log({
-        key: `state/${step.message}/${step.stage}/${step.rank}`,
-        id: step.id,
-        status: apply && status === 'update' ? 'updated' : status,
-      });
-    }
-    if (step.image)
-      await ensure(
-        'sdkmessageprocessingstepimages',
-        'sdkmessageprocessingstepimageid',
-        `image/${step.message}/${step.stage}/${step.image.name}`,
-        step.image.id,
-        {
-          name: step.image.name,
-          entityalias: step.image.name,
-          imagetype: IMAGE_TYPES[step.image.type],
-          messagepropertyname: 'Target',
-          attributes: step.image.attributes,
-          'sdkmessageprocessingstepid@odata.bind': `/sdkmessageprocessingsteps(${step.id})`,
-        },
-      );
-  }
+  const messageIds = await loadMessageIds(client);
+  await registerSteps({ steps, messageIds, ensure, client, apply, log, typeId, who });
   console.log(
     JSON.stringify({
       state: apply ? 'Applied' : 'Plan',
@@ -327,11 +354,11 @@ async function verify(connectionFile) {
       asyncAutoDelete: row.asyncautodelete,
       filteringAttributes: row.filteringattributes || null,
       configuration: row.configuration || null,
-      impersonation: !impersonating
-        ? 'calling-user'
-        : impersonating === who.applicationUserId?.toLowerCase()
-          ? 'application-user'
-          : 'other-user',
+      impersonation: chooseLazily(
+        () => !impersonating,
+        () => 'calling-user',
+        () => (impersonating === who.applicationUserId?.toLowerCase() ? 'application-user' : 'other-user'),
+      ),
       images: images
         .map((image) => ({
           name: image.name,

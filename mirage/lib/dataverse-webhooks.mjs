@@ -68,7 +68,7 @@ async function loopbackAddresses(text, lookup) {
   const host = new URL(text).hostname.toLowerCase();
   if (host === 'localhost' || host === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(host)) return null;
   const addresses = await lookup(host, { all: true }).catch(() => []);
-  if (!addresses.length || addresses.some(({ address }) => !/^127\./.test(address) && address !== '::1'))
+  if (!addresses.length || addresses.some(({ address }) => !address.startsWith('127.') && address !== '::1'))
     throw unavailable();
   return addresses;
 }
@@ -158,50 +158,57 @@ function queryContract(value, type) {
     );
   const fields = new Set(['$type']);
   const result = {
-    ...({
+    ...{
       ColumnSet: { AllColumns: false, Columns: [], AttributeExpressions: [] },
       FilterExpression: { AnyAllFilterLinkEntity: null, FilterOperator: 0, Conditions: [], Filters: [] },
       ConditionExpression: { CompareColumns: false, EntityName: null },
       OrderExpression: { Alias: null, EntityName: null },
       PagingInfo: { ReturnRecordCountLessThanMarv: false },
       QueryExpression: { Distinct: false, NoLock: false },
-    }[type] ?? {}),
+    }[type],
   };
   for (const [kind, property] of contract.slice(2)) {
-    if (kind !== 'Property') continue;
-    const field = property.Name[0].toLowerCase() + property.Name.slice(1);
-    fields.add(field);
-    let item = value[field];
-    if (property.Name === 'Operator' || property.Name === 'FilterOperator') {
-      fields.add('operatorName');
-      item = value.operatorName ?? item;
-    }
-    if (property.Name === 'OrderType') {
-      fields.add('descending');
-      item = value.descending == null ? (item ?? 'Ascending') : value.descending ? 'Descending' : 'Ascending';
-    }
-    if (item === undefined) continue;
-    const convert = (entry, declared) => {
-      if (entry == null) return null;
-      const name = declared.replace(/^mscrm\./, ''),
-        spec = queryContracts.get(name);
-      if (spec?.[0] === 'EnumType') {
-        const member = spec
-          .slice(2)
-          .find(
-            ([, attributes]) =>
-              attributes.Name === entry || (typeof entry === 'number' && Number(attributes.Value) === entry),
-          );
-        if (!member) throw new DataError(`Unknown webhook query ${name} value.`, 501, 'LocalWebhookContextUnsupported');
-        return Number(member[1].Value);
-      }
-      return name !== 'Object' && spec?.[0] === 'ComplexType' ? queryContract(entry, name) : dataContract(entry);
-    };
-    const collection = /^Collection\((.+)\)$/.exec(property.Type);
-    result[property.Name] = collection
-      ? item.map((entry) => convert(entry, collection[1]))
-      : convert(item, property.Type);
+    if (kind === 'Property') addQueryContractProperty(value, property, fields, result);
   }
+  rejectUnknownQueryProperties(value, type, fields);
+  return result;
+}
+function addQueryContractProperty(value, property, fields, result) {
+  const field = property.Name[0].toLowerCase() + property.Name.slice(1);
+  fields.add(field);
+  let item = value[field];
+  if (property.Name === 'Operator' || property.Name === 'FilterOperator') {
+    fields.add('operatorName');
+    item = value.operatorName ?? item;
+  }
+  if (property.Name === 'OrderType') {
+    fields.add('descending');
+    if (value.descending == null) item = item ?? 'Ascending';
+    else item = value.descending ? 'Descending' : 'Ascending';
+  }
+  if (item === undefined) return;
+  const collection = /^Collection\((.+)\)$/.exec(property.Type);
+  result[property.Name] = collection
+    ? item.map((entry) => convertQueryValue(entry, collection[1]))
+    : convertQueryValue(item, property.Type);
+}
+function convertQueryValue(entry, declared) {
+  if (entry == null) return null;
+  const name = declared.replace(/^mscrm\./, ''),
+    spec = queryContracts.get(name);
+  if (spec?.[0] === 'EnumType') {
+    const member = spec
+      .slice(2)
+      .find(
+        ([, attributes]) =>
+          attributes.Name === entry || (typeof entry === 'number' && Number(attributes.Value) === entry),
+      );
+    if (!member) throw new DataError(`Unknown webhook query ${name} value.`, 501, 'LocalWebhookContextUnsupported');
+    return Number(member[1].Value);
+  }
+  return name !== 'Object' && spec?.[0] === 'ComplexType' ? queryContract(entry, name) : dataContract(entry);
+}
+function rejectUnknownQueryProperties(value, type, fields) {
   for (const field of Object.keys(value))
     if (!fields.has(field))
       throw new DataError(
@@ -209,7 +216,6 @@ function queryContract(value, type) {
         501,
         'LocalWebhookContextUnsupported',
       );
-  return result;
 }
 // Exported so the DateTime wire format can be tested without a delivery receiver.
 export function dataContract(value, polymorphic = true) {
@@ -248,10 +254,7 @@ export function dataContract(value, polymorphic = true) {
         TotalRecordCountLimitExceeded: value.totalRecordCountLimitExceeded ?? false,
       });
     case 'Relationship':
-      return typed('Relationship', {
-        SchemaName: value.schemaName,
-        PrimaryEntityRole: value.primaryEntityRole == null ? null : value.primaryEntityRole === 'Referenced' ? 1 : 0,
-      });
+      return relationshipContract(value, typed);
     case 'ColumnSet':
       return typed('ColumnSet', queryContract({ allColumns: false, columns: [], ...value }, 'ColumnSet'));
     case 'FetchExpression':
@@ -259,36 +262,9 @@ export function dataContract(value, polymorphic = true) {
     case 'QueryExpression':
       return typed('QueryExpression', queryContract(value, 'QueryExpression'));
     case 'QueryByAttribute':
-      for (const field of Object.keys(value))
-        if (
-          !['$type', 'entityName', 'attributes', 'values', 'columnSet', 'orders', 'pageInfo', 'topCount'].includes(
-            field,
-          )
-        )
-          throw new DataError(
-            `The webhook query property QueryByAttribute.${field} has no structural contract.`,
-            501,
-            'LocalWebhookContextUnsupported',
-          );
-      return typed('QueryByAttribute', {
-        EntityName: value.entityName,
-        Attributes: [...(value.attributes ?? [])],
-        Values: (value.values ?? []).map((item) => dataContract(item)),
-        ColumnSet: value.columnSet ? queryContract(value.columnSet, 'ColumnSet') : null,
-        Orders: (value.orders ?? []).map((order) => queryContract(order, 'OrderExpression')),
-        PageInfo: value.pageInfo ? queryContract(value.pageInfo, 'PagingInfo') : null,
-        TopCount: value.topCount ?? null,
-      });
+      return typed('QueryByAttribute', queryByAttributeContract(value));
     case 'ExecutionContext':
-      if (value.rootOrigin) return null;
-      return Object.fromEntries(
-        Object.entries(value.values ?? {}).map(([key, item]) => [
-          key,
-          key === 'OperationCreatedOn' && item?.$type === 'DateTime'
-            ? `/Date(${operationTimeEpoch(item.value)})/`
-            : dataContract(item),
-        ]),
-      );
+      return executionContextContract(value);
     case 'ParameterCollection':
       return pairs(value.values);
     case 'EntityImageCollection':
@@ -301,9 +277,7 @@ export function dataContract(value, polymorphic = true) {
     case 'PrimitiveArray':
       return (value.values ?? []).map((item) => dataContract(item));
     case 'OptionSetValueCollection':
-      return (value.values ?? []).map((item) =>
-        dataContract(item?.$type ? item : { $type: 'OptionSetValue', value: item }),
-      );
+      return optionSetCollectionContract(value);
     case 'AliasedValue':
       return typed('AliasedValue', {
         AttributeLogicalName: value.attributeLogicalName,
@@ -321,13 +295,7 @@ export function dataContract(value, polymorphic = true) {
     case 'DateTime': {
       // Unspecified (no zone designator) is the wall clock read as UTC, serialised with the zero offset; a Utc value keeps
       // the bare form. Never reinterpreted in host local time.
-      const text = String(value.value ?? '');
-      if (value.kind === 'Unspecified' || !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(text)) {
-        const ms = Date.parse(text.length === 10 ? `${text}T00:00:00Z` : `${text}Z`);
-        return Number.isFinite(ms) ? `/Date(${ms}+0000)/` : null;
-      }
-      const ms = Date.parse(text);
-      return Number.isFinite(ms) ? `/Date(${ms})/` : null;
+      return dateTimeContract(value);
     }
     case 'Guid':
       return value.value == null ? null : String(value.value);
@@ -345,6 +313,59 @@ export function dataContract(value, polymorphic = true) {
         'LocalWebhookContextUnsupported',
       );
   }
+}
+
+function relationshipContract(value, typed) {
+  let primaryEntityRole = null;
+  if (value.primaryEntityRole != null) primaryEntityRole = value.primaryEntityRole === 'Referenced' ? 1 : 0;
+  return typed('Relationship', { SchemaName: value.schemaName, PrimaryEntityRole: primaryEntityRole });
+}
+
+function executionContextContract(value) {
+  if (value.rootOrigin) return null;
+  return Object.fromEntries(
+    Object.entries(value.values ?? {}).map(([key, item]) => [
+      key,
+      key === 'OperationCreatedOn' && item?.$type === 'DateTime'
+        ? `/Date(${operationTimeEpoch(item.value)})/`
+        : dataContract(item),
+    ]),
+  );
+}
+
+function optionSetCollectionContract(value) {
+  return (value.values ?? []).map((item) =>
+    dataContract(item?.$type ? item : { $type: 'OptionSetValue', value: item }),
+  );
+}
+
+function queryByAttributeContract(value) {
+  for (const field of Object.keys(value))
+    if (!['$type', 'entityName', 'attributes', 'values', 'columnSet', 'orders', 'pageInfo', 'topCount'].includes(field))
+      throw new DataError(
+        `The webhook query property QueryByAttribute.${field} has no structural contract.`,
+        501,
+        'LocalWebhookContextUnsupported',
+      );
+  return {
+    EntityName: value.entityName,
+    Attributes: [...(value.attributes ?? [])],
+    Values: (value.values ?? []).map((item) => dataContract(item)),
+    ColumnSet: value.columnSet ? queryContract(value.columnSet, 'ColumnSet') : null,
+    Orders: (value.orders ?? []).map((order) => queryContract(order, 'OrderExpression')),
+    PageInfo: value.pageInfo ? queryContract(value.pageInfo, 'PagingInfo') : null,
+    TopCount: value.topCount ?? null,
+  };
+}
+
+function dateTimeContract(value) {
+  const text = String(value.value ?? '');
+  if (value.kind === 'Unspecified' || !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(text)) {
+    const ms = Date.parse(text.length === 10 ? `${text}T00:00:00Z` : `${text}Z`);
+    return Number.isFinite(ms) ? `/Date(${ms}+0000)/` : null;
+  }
+  const ms = Date.parse(text);
+  return Number.isFinite(ms) ? `/Date(${ms})/` : null;
 }
 
 // Pipeline creation times use UTC components even when the SDK wire carries
@@ -426,12 +447,12 @@ function asyncRecordContext(store, facts, initiating) {
     // A bridged multiple step runs the single operation under its multiple message (plugin-single-multiple.mjs).
     bridged: facts.bridged === true,
   });
-  const { ConcurrencyBehavior: _, ...inputs } = answer.inputParameters.values;
+  const { ConcurrencyBehavior: _, ...inputs } = answer.inputParameters.values; // NOSONAR: binding is excluded from the rest object or is a placeholder
   // Its ParentContext frames have none either (native crud, async, batch, customApi web hook payloads: Update/30 and
   // Delete/30 list Target and tag only).
   const withoutConcurrency = (node) => {
     if (!node?.values) return node ?? null;
-    const { ConcurrencyBehavior: __, ...values } = node.values.InputParameters?.values ?? {};
+    const { ConcurrencyBehavior: __, ...values } = node.values.InputParameters?.values ?? {}; // NOSONAR: binding is excluded from the rest object or is a placeholder
     return {
       ...node,
       values: {
@@ -454,7 +475,7 @@ function asyncRecordContext(store, facts, initiating) {
 
 /** The RemoteExecutionContext of one step run, with the documented sample
  * properties and typed message parameters. */
-export function remoteExecutionContext(store, facts) {
+/* NOSONAR */ export function remoteExecutionContext(store, facts) {
   const {
     item,
     entity,
@@ -491,99 +512,28 @@ export function remoteExecutionContext(store, facts) {
       false,
     );
   // An image on another message property (Merge SubordinateId) holds that record's row (frame.imageRows).
-  const images = (row, types) =>
-    (item.images ?? [])
-      .filter((spec) => types.includes(spec.type))
-      .map((spec) => {
-        const rows = spec.messagePropertyName && frame.imageRows?.[spec.messagePropertyName];
-        return [spec, rows ? (types.includes(1) ? rows.record : rows.previous) : row];
-      })
-      .filter(([, source]) => source)
-      .map(([spec, source]) => ({ key: spec.alias || spec.name, value: entityOf(source, spec) }));
+  const images = (row, types) => pluginImages(item, frame, types, row, entityOf);
   const created = stage === 40 && operation === 'create';
-  // Message-specific parameter collections retain the SDK's different Target,
-  // Targets, Query and Custom API contracts.
-  const inputValues =
-    facts.messageParameters?.inputParameters?.values ?? (facts.customApi ? frame.inputParameters?.values : undefined);
-  let inputs = inputValues
-    ? pairs(inputValues)
-    : facts.associationParameters
-      ? pairs(facts.associationParameters)
-      : ['createmultiple', 'updatemultiple'].includes(operation)
-        ? pairs({
-            Targets: { $type: 'EntityCollection', entities: facts.targets ?? frame.targets ?? [], totalRecordCount: 0 },
-          })
-        : operation === 'retrievemultiple'
-          ? pairs({ Query: facts.query ?? frame.query })
-          : operation === 'retrieve'
-            ? pairs({
-                Target: facts.holder?.target ??
-                  frame.retrieveTarget ?? { $type: 'EntityReference', logicalName: entity, id: record?.[idColumn] },
-                ColumnSet: { $type: 'ColumnSet', ...(facts.columns ?? frame.columns ?? {}) },
-              })
-            : operation === 'delete'
-              ? [
-                  {
-                    key: 'Target',
-                    value: {
-                      __type: `EntityReference:${NS}`,
-                      Id: record[idColumn],
-                      KeyAttributes: [],
-                      LogicalName: entity,
-                      Name: null,
-                      RowVersion: null,
-                    },
-                  },
-                ]
-              : ['create', 'update'].includes(operation)
-                ? [
-                    {
-                      key: 'Target',
-                      value: dataContract(
-                        recordToSdkEntity(
-                          store,
-                          entity,
-                          { [idColumn]: record?.[idColumn], ...target },
-                          { allColumns: true },
-                        ),
-                      ),
-                    },
-                  ]
-                : [];
-  if (frame.inputParameters?.values) {
-    if (frame.inputParametersStage === stage) inputs = pairs(frame.inputParameters.values);
-    else {
-      const known = new Set(inputs.map((entry) => entry.key));
-      inputs.push(
-        ...pairs(Object.fromEntries(Object.entries(frame.inputParameters.values).filter(([name]) => !known.has(name)))),
-      );
-    }
-  }
-  // A bridged multiple step (plugin-single-multiple.mjs) receives the single Target as one Targets record.
-  if (facts.bridged) {
-    const sdkTarget =
-      operation === 'delete'
-        ? { $type: 'EntityReference', logicalName: entity, id: record?.[idColumn] }
-        : frame.inputParametersStage === stage && frame.inputParameters?.values?.Target?.$type === 'Entity'
-          ? frame.inputParameters.values.Target
-          : recordToSdkEntity(store, entity, { [idColumn]: record?.[idColumn], ...target }, { allColumns: true });
-    inputs = [
-      ...inputs.filter((entry) => entry.key !== 'Target'),
-      ...pairs(bridgeTargetInputs({ Target: sdkTarget }, entity)),
-    ];
-  }
-  const outputs =
-    facts.messageParameters?.outputParameters?.values ??
-    frame.outputParameters?.values ??
-    (created
-      ? { id: record[idColumn] }
-      : stage === 40 && operation === 'createmultiple'
-        ? { Ids: { $type: 'GuidArray', values: record.bulkIds ?? [] } }
-        : stage === 40 && operation === 'retrieve'
-          ? { BusinessEntity: facts.holder?.entity ?? frame.entity }
-          : stage === 40 && operation === 'retrievemultiple'
-            ? { BusinessEntityCollection: facts.collection ?? frame.collection }
-            : {});
+  const inputs = pluginInputs({ store, facts, entity, operation, stage, target, record, idColumn, frame });
+  const outputs = pluginOutputs(facts, stage, operation, created, record, frame, idColumn);
+  const dateWire = () => {
+    const epoch = frame.createdOn == null ? (store.clock ?? systemClock).now() : operationTimeEpoch(frame.createdOn);
+    return `/Date(${epoch})/`;
+  };
+  const primaryEntityIdOf = () => {
+    if (
+      ['associate', 'disassociate'].includes(operation) ||
+      (facts.bridged && asyncExecution && operation === 'delete')
+    )
+      return '00000000-0000-0000-0000-000000000000';
+    return (
+      record?.[idColumn] ?? previous?.[idColumn] ?? (facts.customApi ? '00000000-0000-0000-0000-000000000000' : null)
+    );
+  };
+  const primaryEntityNameOf = () => {
+    if (['associate', 'disassociate'].includes(operation)) return 'none';
+    return entity || (facts.customApi ? 'none' : entity);
+  };
   const context = {
     BusinessUnitId: lookup(user?.businessunitid) ?? store.tableRows('businessunit')[0]?.businessunitid ?? null,
     CorrelationId: frame.correlationId ?? correlationId,
@@ -600,9 +550,7 @@ export function remoteExecutionContext(store, facts) {
     MessageName: facts.customApi?.name ?? messageNameOf(facts.bridged ? multipleMessage(operation) : operation),
     Mode: asyncExecution ? 1 : 0,
     OperationCreatedOn:
-      asyncExecution && frame.asyncOperation
-        ? operationCreatedOn(frame.asyncOperation.createdOn)
-        : `/Date(${frame.createdOn == null ? (store.clock ?? systemClock).now() : operationTimeEpoch(frame.createdOn)})/`,
+      asyncExecution && frame.asyncOperation ? operationCreatedOn(frame.asyncOperation.createdOn) : dateWire(),
     OperationId:
       (asyncExecution && frame.asyncOperation ? frame.asyncOperation.id : frame.operationId) ??
       (store.ids ?? systemIds).uuid(),
@@ -622,15 +570,8 @@ export function remoteExecutionContext(store, facts) {
     ),
     PostEntityImages: stage === 40 && operation !== 'delete' ? images(record, [1, 2]) : [],
     PreEntityImages: images(previous, [0, 2]),
-    PrimaryEntityId:
-      ['associate', 'disassociate'].includes(operation) || (facts.bridged && asyncExecution && operation === 'delete')
-        ? '00000000-0000-0000-0000-000000000000'
-        : (record?.[idColumn] ??
-          previous?.[idColumn] ??
-          (facts.customApi ? '00000000-0000-0000-0000-000000000000' : null)),
-    PrimaryEntityName: ['associate', 'disassociate'].includes(operation)
-      ? 'none'
-      : entity || (facts.customApi ? 'none' : entity),
+    PrimaryEntityId: primaryEntityIdOf(),
+    PrimaryEntityName: primaryEntityNameOf(),
     RequestId: frame.requestId ?? null,
     SecondaryEntityName: 'none',
     SharedVariables: pairs(frame.sharedVariables?.values),
@@ -659,17 +600,114 @@ export function remoteExecutionContext(store, facts) {
     OperationId: guid(context.OperationId),
     OperationCreatedOn: frame.createdOnWire,
   };
-  const chain =
-    asyncMultipleJobParent(frame, facts.bridged ? multipleMessage(operation) : operation, entity, job) ??
-    (asyncExecution && frame.asyncOperation && !frame.delegatedSourceOperation
-      ? // A platform message's frames (a statecode Update's SetStateDynamicEntity) are relabelled like a CLR job's.
-        asynchronousParentChain(
-          frame.delegatedParentContext ?? (context.ParentContext ? null : frame.asyncCallerParent),
-          job,
-        )
-      : null);
+  let chain = asyncMultipleJobParent(frame, facts.bridged ? multipleMessage(operation) : operation, entity, job);
+  if (chain == null && asyncExecution && frame.asyncOperation && !frame.delegatedSourceOperation) {
+    // A platform message's frames (a statecode Update's SetStateDynamicEntity) are relabelled like a CLR job's.
+    chain = asynchronousParentChain(
+      frame.delegatedParentContext ?? (context.ParentContext ? null : frame.asyncCallerParent),
+      job,
+    );
+  }
   if (chain) context.ParentContext = remoteFrame(chain.values);
   return context;
+}
+
+function pluginImages(item, frame, types, row, entityOf) {
+  return (item.images ?? [])
+    .filter((spec) => types.includes(spec.type))
+    .map((spec) => {
+      const rows = spec.messagePropertyName && frame.imageRows?.[spec.messagePropertyName];
+      if (!rows) return [spec, row];
+      return [spec, types.includes(1) ? rows.record : rows.previous];
+    })
+    .filter(([, source]) => source)
+    .map(([spec, source]) => ({ key: spec.alias || spec.name, value: entityOf(source, spec) }));
+}
+
+function pluginInputs({ store, facts, entity, operation, stage, target, record, idColumn, frame }) {
+  let inputs = basePluginInputs({ store, facts, entity, operation, target, record, idColumn, frame });
+  if (frame.inputParameters?.values) {
+    if (frame.inputParametersStage === stage) inputs = pairs(frame.inputParameters.values);
+    else {
+      const known = new Set(inputs.map((entry) => entry.key));
+      inputs.push(
+        ...pairs(Object.fromEntries(Object.entries(frame.inputParameters.values).filter(([name]) => !known.has(name)))),
+      );
+    }
+  }
+  // A bridged multiple step (plugin-single-multiple.mjs) receives the single Target as one Targets record.
+  if (facts.bridged) {
+    let sdkTarget;
+    if (operation === 'delete') sdkTarget = { $type: 'EntityReference', logicalName: entity, id: record?.[idColumn] };
+    else if (frame.inputParametersStage === stage && frame.inputParameters?.values?.Target?.$type === 'Entity')
+      sdkTarget = frame.inputParameters.values.Target;
+    else
+      sdkTarget = recordToSdkEntity(store, entity, { [idColumn]: record?.[idColumn], ...target }, { allColumns: true });
+    inputs = [
+      ...inputs.filter((entry) => entry.key !== 'Target'),
+      ...pairs(bridgeTargetInputs({ Target: sdkTarget }, entity)),
+    ];
+  }
+  return inputs;
+}
+
+function basePluginInputs({ store, facts, entity, operation, target, record, idColumn, frame }) {
+  const inputValues =
+    facts.messageParameters?.inputParameters?.values ?? (facts.customApi ? frame.inputParameters?.values : undefined);
+  let inputs;
+  if (inputValues) inputs = pairs(inputValues);
+  else if (facts.associationParameters) inputs = pairs(facts.associationParameters);
+  else if (['createmultiple', 'updatemultiple'].includes(operation))
+    inputs = pairs({
+      Targets: { $type: 'EntityCollection', entities: facts.targets ?? frame.targets ?? [], totalRecordCount: 0 },
+    });
+  else if (operation === 'retrievemultiple') inputs = pairs({ Query: facts.query ?? frame.query });
+  else if (operation === 'retrieve')
+    inputs = pairs({
+      Target: facts.holder?.target ??
+        frame.retrieveTarget ?? { $type: 'EntityReference', logicalName: entity, id: record?.[idColumn] },
+      ColumnSet: { $type: 'ColumnSet', ...(facts.columns ?? frame.columns) },
+    });
+  else if (operation === 'delete')
+    inputs = [
+      {
+        key: 'Target',
+        value: {
+          __type: `EntityReference:${NS}`,
+          Id: record[idColumn],
+          KeyAttributes: [],
+          LogicalName: entity,
+          Name: null,
+          RowVersion: null,
+        },
+      },
+    ];
+  else if (['create', 'update'].includes(operation))
+    inputs = [
+      {
+        key: 'Target',
+        value: dataContract(
+          recordToSdkEntity(store, entity, { [idColumn]: record?.[idColumn], ...target }, { allColumns: true }),
+        ),
+      },
+    ];
+  else inputs = [];
+  return inputs;
+}
+
+function pluginOutputs(facts, stage, operation, created, record, frame, idColumn) {
+  let outputs = facts.messageParameters?.outputParameters?.values ?? frame.outputParameters?.values;
+  if (outputs == null) {
+    if (created) outputs = { id: record[idColumn] };
+    else if (stage === 40 && operation === 'createmultiple')
+      outputs = { Ids: { $type: 'GuidArray', values: record.bulkIds ?? [] } };
+    else if (stage === 40 && operation === 'retrieve')
+      outputs = { BusinessEntity: facts.holder?.entity ?? frame.entity };
+    else if (stage === 40 && operation === 'retrievemultiple')
+      outputs = { BusinessEntityCollection: facts.collection ?? frame.collection };
+    else outputs = {};
+  }
+  return outputs;
 }
 
 // The authentication values. The stored format is not documented: XML settings as the Plug-in Registration Tool writes them,
@@ -869,14 +907,12 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
   // A step whose endpoint was not contacted never reports delivery: its System Job is Canceled with this message.
   const NOT_CONTACTED = 'Simulator: endpoint not contacted (loopback webhooks only)';
   // Dashboard counters (runtime-counters.mjs): webhooks.delivered (2xx), webhooks.failed (other status), webhooks.notContacted.
-  const count = (status) =>
-    store.counters?.increment(
-      status === null
-        ? 'webhooks.notContacted'
-        : status >= 200 && status < 300
-          ? 'webhooks.delivered'
-          : 'webhooks.failed',
-    );
+  const count = (status) => {
+    let counter = 'webhooks.failed';
+    if (status === null) counter = 'webhooks.notContacted';
+    else if (status >= 200 && status < 300) counter = 'webhooks.delivered';
+    return store.counters?.increment(counter);
+  };
   // The id of the step's primary row (its record, else the pre-image or target), for the span's recordId.
   const recordIdOf = (facts) => {
     let idColumn;

@@ -152,10 +152,10 @@ export function parseCanvasColor(value) {
   const hex = NAMES[input] ?? (/^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/.test(input) ? input.slice(1) : null);
   if (hex)
     return [
-      parseInt(hex.slice(0, 2), 16),
-      parseInt(hex.slice(2, 4), 16),
-      parseInt(hex.slice(4, 6), 16),
-      hex.length === 8 ? parseInt(hex.slice(6, 8), 16) : 255,
+      Number.parseInt(hex.slice(0, 2), 16),
+      Number.parseInt(hex.slice(2, 4), 16),
+      Number.parseInt(hex.slice(4, 6), 16),
+      hex.length === 8 ? Number.parseInt(hex.slice(6, 8), 16) : 255,
     ];
   const match = /^rgba\((\d+),(\d+),(\d+),([\d.]+)\)$/.exec(input.replace(/\s/g, ''));
   if (!match) return null;

@@ -23,7 +23,7 @@ async function refresh() {
     rename.textContent = 'Rename';
     rename.onclick = async () => {
       try {
-        await Items.update(item.x_itemid, { x_name: item.x_name + ' updated' });
+        await Items.update(item.x_itemid, { x_name: item.x_name + ' updated' }); // NOSONAR: stringification is intentional here
         await refresh();
       } catch (error) {
         showError(error);

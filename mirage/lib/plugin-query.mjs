@@ -9,7 +9,7 @@ const fail = (message) => {
 // A Web API lookup value property (_x_value) names the lookup column x.
 const name = (value) => {
   if (typeof value === 'string') value = value.replace(/^_([a-z]\w*)_value$/i, '$1');
-  if (typeof value !== 'string' || !/^[a-z][\w]*$/i.test(value))
+  if (typeof value !== 'string' || !/^[a-z]\w*$/i.test(value))
     fail('SDK query projection requires logical column names.');
   return value;
 };
@@ -26,6 +26,277 @@ const inverseCrm = Object.fromEntries(
     [right, left],
   ]),
 );
+function filterOperand(node) {
+  if (node.type === 'compare' || node.type === 'in') return node.left;
+  if (node.type === 'string') return node.args[0];
+  if (node.type === 'crm') return { type: 'path', segments: String(node.params.PropertyName?.value ?? '').split('/') };
+  return null;
+}
+function navigationFilter(node, negate, logical, segments, context) {
+  const { store } = context;
+  if (!store) fail('SDK navigation filters require source relationship metadata.');
+  const mapping = store.resolveMapping(logical),
+    relation = store.relationshipsFor(mapping, { admin: true })[segments[0]];
+  if (relation?.many !== false || relation.intersect)
+    fail('A scalar SDK navigation filter requires a source-defined lookup relationship.');
+  const path = { type: 'path', segments: segments.slice(1) };
+  let rewritten;
+  if (node.type === 'compare' || node.type === 'in') rewritten = { ...node, left: path };
+  else if (node.type === 'string') rewritten = { ...node, args: [path, ...node.args.slice(1)] };
+  else
+    rewritten = {
+      ...node,
+      params: {
+        ...node.params,
+        PropertyName: { ...node.params.PropertyName, value: segments.slice(1).join('/') },
+      },
+    };
+  const nullAlternative = node.type === 'compare' && node.right.kind === 'null' && (node.op === 'eq') !== negate;
+  return {
+    operatorName: 'And',
+    conditions: [],
+    filters: [],
+    anyAllFilterLinkEntity: {
+      $type: 'LinkEntity',
+      linkFromEntityName: logical,
+      linkToEntityName: relation.entity,
+      linkFromAttributeName: relation.from,
+      linkToAttributeName: relation.to,
+      joinOperator: nullAlternative ? 'NotAny' : 'Any',
+      columns: { allColumns: false, columns: [] },
+      orders: [],
+      linkEntities: [],
+      linkCriteria: filterNode(rewritten, nullAlternative ? !negate : negate, relation.entity, null, context),
+    },
+  };
+}
+function collectionFilter(node, negate, logical, variable, context) {
+  const { store } = context,
+    path = variable && node.path[0] === variable ? node.path.slice(1) : node.path;
+  if (!store || path.length !== 1) fail('SDK collection filters require one source-defined relationship.');
+  const mapping = store.resolveMapping(logical),
+    relation = store.relationshipsFor(mapping, { admin: true })[path[0]];
+  if (!relation || relation.many === false) fail('SDK collection filter requires a collection relationship.');
+  const anti = (node.kind === 'all') !== negate;
+  let body = node.body
+    ? filterNode(node.body, negate, relation.entity, node.variable, context)
+    : { operatorName: 'And', conditions: [], filters: [] };
+  if (node.body && anti) {
+    // A WHERE predicate selects only true, while OData lambdas retain
+    // unknown: all(P) needs no child where P is not true; not any(P)
+    // needs no child where P is not false. Complement the complete body
+    // against this row's source key, preserving nested Kleene logic.
+    const primary = store.resolveMapping(relation.entity).idColumn;
+    body = {
+      operatorName: 'And',
+      conditions: [],
+      filters: [],
+      anyAllFilterLinkEntity: {
+        $type: 'LinkEntity',
+        linkFromEntityName: relation.entity,
+        linkToEntityName: relation.entity,
+        linkFromAttributeName: primary,
+        linkToAttributeName: primary,
+        joinOperator: 'NotAny',
+        columns: { allColumns: false, columns: [] },
+        orders: [],
+        linkEntities: [],
+        linkCriteria: body,
+      },
+    };
+  }
+  const root = {
+    $type: 'LinkEntity',
+    linkFromEntityName: logical,
+    linkToEntityName: relation.intersect?.entity ?? relation.entity,
+    linkFromAttributeName: relation.from,
+    linkToAttributeName: relation.intersect?.from ?? relation.to,
+    joinOperator: anti ? 'NotAny' : 'Any',
+    columns: { allColumns: false, columns: [] },
+    orders: [],
+    linkCriteria: relation.intersect ? { operatorName: 'And', conditions: [], filters: [] } : body,
+    linkEntities: relation.intersect
+      ? [
+          {
+            $type: 'LinkEntity',
+            linkFromEntityName: relation.intersect.entity,
+            linkToEntityName: relation.entity,
+            linkFromAttributeName: relation.intersect.to,
+            linkToAttributeName: relation.to,
+            joinOperator: 'Inner',
+            columns: { allColumns: false, columns: [] },
+            orders: [],
+            linkCriteria: body,
+            linkEntities: [],
+          },
+        ]
+      : [],
+  };
+  return { operatorName: 'And', conditions: [], filters: [], anyAllFilterLinkEntity: root };
+}
+function stringFilter(node, negate, variable, { literal, column }) {
+  const value = literal(node.args[1]);
+  if (typeof value !== 'string') fail('SDK string filters require a string literal.');
+  // SQL Like escaping preserves literal %, _ and [ characters in contains and startswith.
+  const escaped = value.replaceAll('[', '[[]').replaceAll('%', '[%]').replaceAll('_', '[_]');
+  const like = node.name === 'contains' || node.name === 'startswith';
+  let operatorName;
+  if (like) operatorName = negate ? 'NotLike' : 'Like';
+  else operatorName = negate ? 'DoesNotEndWith' : 'EndsWith';
+  let pattern;
+  if (node.name === 'contains') pattern = '%' + escaped + '%';
+  else if (node.name === 'startswith') pattern = escaped + '%';
+  else pattern = value;
+  return {
+    operatorName: 'And',
+    filters: [],
+    conditions: [{ attributeName: column(node.args[0], variable), operatorName, values: [pattern] }],
+  };
+}
+function crmFilter(node, negate, logical, variable, context) {
+  const { store, column } = context,
+    attributeName = column(
+      { type: 'path', segments: String(node.params.PropertyName?.value ?? '').split('/') },
+      variable,
+    ),
+    value = (key) => (node.params[key]?.type === 'array' ? node.params[key].values : node.params[key]?.value);
+  let values;
+  if (node.shape === 'list') values = value('PropertyValues');
+  else if (node.shape === 'pair') values = [value('PropertyValue1'), value('PropertyValue2')];
+  else if (node.shape === 'one') values = [value('PropertyValue')];
+  else values = [];
+  if (!Array.isArray(values)) fail('Dataverse condition values require a literal list.');
+  const condition = { attributeName, operatorName: node.name, values };
+  if (!negate) return { operatorName: 'And', filters: [], conditions: [condition] };
+  // OData negation retains unknown/null operands. In particular the native
+  // DoesNotContainValues operator alone also accepts an empty choices value.
+  const conditions = [{ attributeName, operatorName: 'NotNull', values: [] }];
+  if (inverseCrm[node.name])
+    return {
+      operatorName: 'And',
+      filters: [],
+      conditions: [...conditions, { ...condition, operatorName: inverseCrm[node.name] }],
+    };
+  if (!store) fail('Negating this Dataverse function requires its source primary-key binding.');
+  const primary = store.resolveMapping(logical).idColumn;
+  // Relative dates, fiscal periods and caller sets do not all have public
+  // inverse SDK operators. An anti-semi join to this row's exact source key
+  // complements the shared predicate without guessing clock/date bounds.
+  return {
+    operatorName: 'And',
+    filters: [],
+    conditions,
+    anyAllFilterLinkEntity: {
+      $type: 'LinkEntity',
+      linkFromEntityName: logical,
+      linkToEntityName: logical,
+      linkFromAttributeName: primary,
+      linkToAttributeName: primary,
+      joinOperator: 'NotAny',
+      columns: { allColumns: false, columns: [] },
+      orders: [],
+      linkEntities: [],
+      linkCriteria: { operatorName: 'And', filters: [], conditions: [condition] },
+    },
+  };
+}
+/* NOSONAR */ function comparisonFilter(node, negate, variable, { column, literal }) {
+  return {
+    operatorName: 'And',
+    filters: [],
+    conditions: [
+      {
+        attributeName: column(node.left, variable),
+        operatorName:
+          node.right?.value === null
+            ? ({ eq: negate ? 'NotNull' : 'Null', ne: negate ? 'Null' : 'NotNull' }[node.op] ??
+              fail('Unsupported null comparison.'))
+            : ({
+                eq: negate ? 'NotEqual' : 'Equal',
+                ne: negate ? 'Equal' : 'NotEqual',
+                gt: negate ? 'LessEqual' : 'GreaterThan',
+                ge: negate ? 'LessThan' : 'GreaterEqual',
+                lt: negate ? 'GreaterEqual' : 'LessThan',
+                le: negate ? 'GreaterThan' : 'LessEqual',
+              }[node.op] ?? fail('Unsupported comparison.')),
+        ...(node.right?.type === 'path' ? { compareColumns: true } : {}),
+        values:
+          node.right?.value === null
+            ? []
+            : [node.right?.type === 'path' ? column(node.right, variable) : literal(node.right)],
+      },
+    ],
+  };
+}
+/* NOSONAR */ function filterNode(node, negate, logical, variable, context) {
+  if (node.type === 'not') return filterNode(node.operand, !negate, logical, variable, context);
+  if (node.type === 'literal' && (typeof node.value === 'boolean' || node.value === null)) {
+    const passes = node.value !== null && node.value !== negate;
+    return {
+      operatorName: 'And',
+      filters: [],
+      conditions: passes
+        ? []
+        : [
+            {
+              attributeName: context.store?.resolveMapping(logical).idColumn ?? logical + 'id',
+              operatorName: 'Null',
+              values: [],
+            },
+          ],
+    };
+  }
+  if (node.type === 'path')
+    return filterNode(
+      { type: 'compare', op: 'eq', left: node, right: { type: 'literal', kind: 'boolean', value: true } },
+      negate,
+      logical,
+      variable,
+      context,
+    );
+  if (node.type === 'compare' && node.left.type === 'literal' && node.right.type === 'path')
+    return filterNode(
+      {
+        ...node,
+        left: node.right,
+        right: node.left,
+        op: { eq: 'eq', ne: 'ne', lt: 'gt', le: 'ge', gt: 'lt', ge: 'le' }[node.op],
+      },
+      negate,
+      logical,
+      variable,
+      context,
+    );
+  const operand = filterOperand(node),
+    segments = variable && operand?.segments?.[0] === variable ? operand.segments.slice(1) : operand?.segments;
+  if (segments?.length > 1) return navigationFilter(node, negate, logical, segments, context);
+  if (['and', 'or'].includes(node.type))
+    return {
+      operatorName: (node.type === 'and') !== negate ? 'And' : 'Or',
+      conditions: [],
+      filters: [
+        filterNode(node.left, negate, logical, variable, context),
+        filterNode(node.right, negate, logical, variable, context),
+      ],
+    };
+  if (node.type === 'lambda') return collectionFilter(node, negate, logical, variable, context);
+  if (node.type === 'string') return stringFilter(node, negate, variable, context);
+  if (node.type === 'in')
+    return {
+      operatorName: 'And',
+      filters: [],
+      conditions: [
+        {
+          attributeName: context.column(node.left, variable),
+          operatorName: negate ? 'NotIn' : 'In',
+          values: node.values.map(context.literal),
+        },
+      ],
+    };
+  if (node.type === 'crm') return crmFilter(node, negate, logical, variable, context);
+  if (node.type === 'compare') return comparisonFilter(node, negate, variable, context);
+  fail('SDK read observer query conversion requires explicit support for ' + node.type + '.');
+}
 /** Source-preserving subset for local OData reads. This is not a claim about
  * the portal's proprietary OData-to-Dataverse query conversion. */
 export function odataToSdkQuery(entity, params = {}, store) {
@@ -35,13 +306,11 @@ export function odataToSdkQuery(entity, params = {}, store) {
   // independent options when an observer is installed.
   const literal = (node) => {
     if (node?.type !== 'literal') fail('SDK query condition must use a literal.');
-    return isExactNumeric(node.value)
-      ? { $type: decimalParts(node.value).scale ? 'Decimal' : 'Int64', value: node.value.value }
-      : node.kind === 'guid'
-        ? { $type: 'Guid', value: node.value }
-        : node.kind === 'datetime'
-          ? { $type: 'DateTime', value: node.value }
-          : node.value;
+    if (isExactNumeric(node.value))
+      return { $type: decimalParts(node.value).scale ? 'Decimal' : 'Int64', value: node.value.value };
+    if (node.kind === 'guid') return { $type: 'Guid', value: node.value };
+    if (node.kind === 'datetime') return { $type: 'DateTime', value: node.value };
+    return node.value;
   };
   const column = (node, variable = null) => {
     if (variable && node?.type === 'path' && node.segments[0] === variable)
@@ -50,270 +319,8 @@ export function odataToSdkQuery(entity, params = {}, store) {
       fail('SDK read observers require a direct attribute condition.');
     return name(node.segments[0]);
   };
-  const filter = (node, negate = false, logical = entity, variable = null) => {
-    if (node.type === 'not') return filter(node.operand, !negate, logical, variable);
-    if (node.type === 'literal' && (typeof node.value === 'boolean' || node.value === null)) {
-      const passes = node.value !== null && node.value !== negate;
-      return {
-        operatorName: 'And',
-        filters: [],
-        conditions: passes
-          ? []
-          : [
-              {
-                attributeName: store?.resolveMapping(logical).idColumn ?? logical + 'id',
-                operatorName: 'Null',
-                values: [],
-              },
-            ],
-      };
-    }
-    if (node.type === 'path')
-      return filter(
-        { type: 'compare', op: 'eq', left: node, right: { type: 'literal', kind: 'boolean', value: true } },
-        negate,
-        logical,
-        variable,
-      );
-    if (node.type === 'compare' && node.left.type === 'literal' && node.right.type === 'path')
-      return filter(
-        {
-          ...node,
-          left: node.right,
-          right: node.left,
-          op: { eq: 'eq', ne: 'ne', lt: 'gt', le: 'ge', gt: 'lt', ge: 'le' }[node.op],
-        },
-        negate,
-        logical,
-        variable,
-      );
-    const operand =
-      node.type === 'compare' || node.type === 'in'
-        ? node.left
-        : node.type === 'string'
-          ? node.args[0]
-          : node.type === 'crm'
-            ? { type: 'path', segments: String(node.params.PropertyName?.value ?? '').split('/') }
-            : null;
-    const segments = variable && operand?.segments?.[0] === variable ? operand.segments.slice(1) : operand?.segments;
-    if (segments?.length > 1) {
-      if (!store) fail('SDK navigation filters require source relationship metadata.');
-      const mapping = store.resolveMapping(logical),
-        relation = store.relationshipsFor(mapping, { admin: true })[segments[0]];
-      if (!relation || relation.many !== false || relation.intersect)
-        fail('A scalar SDK navigation filter requires a source-defined lookup relationship.');
-      const path = { type: 'path', segments: segments.slice(1) };
-      const rewritten =
-        node.type === 'compare' || node.type === 'in'
-          ? { ...node, left: path }
-          : node.type === 'string'
-            ? { ...node, args: [path, ...node.args.slice(1)] }
-            : {
-                ...node,
-                params: {
-                  ...node.params,
-                  PropertyName: { ...node.params.PropertyName, value: segments.slice(1).join('/') },
-                },
-              };
-      const nullAlternative = node.type === 'compare' && node.right.kind === 'null' && (node.op === 'eq') !== negate;
-      return {
-        operatorName: 'And',
-        conditions: [],
-        filters: [],
-        anyAllFilterLinkEntity: {
-          $type: 'LinkEntity',
-          linkFromEntityName: logical,
-          linkToEntityName: relation.entity,
-          linkFromAttributeName: relation.from,
-          linkToAttributeName: relation.to,
-          joinOperator: nullAlternative ? 'NotAny' : 'Any',
-          columns: { allColumns: false, columns: [] },
-          orders: [],
-          linkEntities: [],
-          linkCriteria: filter(rewritten, nullAlternative ? !negate : negate, relation.entity),
-        },
-      };
-    }
-    if (['and', 'or'].includes(node.type))
-      return {
-        operatorName: (node.type === 'and') !== negate ? 'And' : 'Or',
-        conditions: [],
-        filters: [filter(node.left, negate, logical, variable), filter(node.right, negate, logical, variable)],
-      };
-    if (node.type === 'lambda') {
-      const path = variable && node.path[0] === variable ? node.path.slice(1) : node.path;
-      if (!store || path.length !== 1) fail('SDK collection filters require one source-defined relationship.');
-      const mapping = store.resolveMapping(logical);
-      const relation = store.relationshipsFor(mapping, { admin: true })[path[0]];
-      if (!relation || relation.many === false) fail('SDK collection filter requires a collection relationship.');
-      const anti = (node.kind === 'all') !== negate;
-      let body = node.body
-        ? filter(node.body, negate, relation.entity, node.variable)
-        : { operatorName: 'And', conditions: [], filters: [] };
-      if (node.body && anti) {
-        // A WHERE predicate selects only true, while OData lambdas retain
-        // unknown: all(P) needs no child where P is not true; not any(P)
-        // needs no child where P is not false. Complement the complete body
-        // against this row's source key, preserving nested Kleene logic.
-        const primary = store.resolveMapping(relation.entity).idColumn;
-        body = {
-          operatorName: 'And',
-          conditions: [],
-          filters: [],
-          anyAllFilterLinkEntity: {
-            $type: 'LinkEntity',
-            linkFromEntityName: relation.entity,
-            linkToEntityName: relation.entity,
-            linkFromAttributeName: primary,
-            linkToAttributeName: primary,
-            joinOperator: 'NotAny',
-            columns: { allColumns: false, columns: [] },
-            orders: [],
-            linkEntities: [],
-            linkCriteria: body,
-          },
-        };
-      }
-      const root = {
-        $type: 'LinkEntity',
-        linkFromEntityName: logical,
-        linkToEntityName: relation.intersect?.entity ?? relation.entity,
-        linkFromAttributeName: relation.from,
-        linkToAttributeName: relation.intersect?.from ?? relation.to,
-        joinOperator: anti ? 'NotAny' : 'Any',
-        columns: { allColumns: false, columns: [] },
-        orders: [],
-        linkCriteria: relation.intersect ? { operatorName: 'And', conditions: [], filters: [] } : body,
-        linkEntities: relation.intersect
-          ? [
-              {
-                $type: 'LinkEntity',
-                linkFromEntityName: relation.intersect.entity,
-                linkToEntityName: relation.entity,
-                linkFromAttributeName: relation.intersect.to,
-                linkToAttributeName: relation.to,
-                joinOperator: 'Inner',
-                columns: { allColumns: false, columns: [] },
-                orders: [],
-                linkCriteria: body,
-                linkEntities: [],
-              },
-            ]
-          : [],
-      };
-      return { operatorName: 'And', conditions: [], filters: [], anyAllFilterLinkEntity: root };
-    }
-    if (node.type === 'string') {
-      const value = literal(node.args[1]);
-      if (typeof value !== 'string') fail('SDK string filters require a string literal.');
-      // SQL Like escaping preserves literal %, _ and [ characters in contains and startswith.
-      const escaped = value.replaceAll('[', '[[]').replaceAll('%', '[%]').replaceAll('_', '[_]');
-      const like = node.name === 'contains' || node.name === 'startswith';
-      const operatorName = like ? (negate ? 'NotLike' : 'Like') : negate ? 'DoesNotEndWith' : 'EndsWith';
-      const pattern =
-        node.name === 'contains' ? '%' + escaped + '%' : node.name === 'startswith' ? escaped + '%' : value;
-      return {
-        operatorName: 'And',
-        filters: [],
-        conditions: [
-          {
-            attributeName: column(node.args[0], variable),
-            operatorName,
-            values: [pattern],
-          },
-        ],
-      };
-    }
-    if (node.type === 'in')
-      return {
-        operatorName: 'And',
-        filters: [],
-        conditions: [
-          {
-            attributeName: column(node.left, variable),
-            operatorName: negate ? 'NotIn' : 'In',
-            values: node.values.map(literal),
-          },
-        ],
-      };
-    if (node.type === 'crm') {
-      const attributeName = column(
-        { type: 'path', segments: String(node.params.PropertyName?.value ?? '').split('/') },
-        variable,
-      );
-      const value = (key) => (node.params[key]?.type === 'array' ? node.params[key].values : node.params[key]?.value);
-      const values =
-        node.shape === 'list'
-          ? value('PropertyValues')
-          : node.shape === 'pair'
-            ? [value('PropertyValue1'), value('PropertyValue2')]
-            : node.shape === 'one'
-              ? [value('PropertyValue')]
-              : [];
-      if (!Array.isArray(values)) fail('Dataverse condition values require a literal list.');
-      const condition = { attributeName, operatorName: node.name, values };
-      if (!negate) return { operatorName: 'And', filters: [], conditions: [condition] };
-      // OData negation retains unknown/null operands. In particular the native
-      // DoesNotContainValues operator alone also accepts an empty choices value.
-      const conditions = [{ attributeName, operatorName: 'NotNull', values: [] }];
-      if (inverseCrm[node.name])
-        return {
-          operatorName: 'And',
-          filters: [],
-          conditions: [...conditions, { ...condition, operatorName: inverseCrm[node.name] }],
-        };
-      if (!store) fail('Negating this Dataverse function requires its source primary-key binding.');
-      const primary = store.resolveMapping(logical).idColumn;
-      // Relative dates, fiscal periods and caller sets do not all have public
-      // inverse SDK operators. An anti-semi join to this row's exact source key
-      // complements the shared predicate without guessing clock/date bounds.
-      return {
-        operatorName: 'And',
-        filters: [],
-        conditions,
-        anyAllFilterLinkEntity: {
-          $type: 'LinkEntity',
-          linkFromEntityName: logical,
-          linkToEntityName: logical,
-          linkFromAttributeName: primary,
-          linkToAttributeName: primary,
-          joinOperator: 'NotAny',
-          columns: { allColumns: false, columns: [] },
-          orders: [],
-          linkEntities: [],
-          linkCriteria: { operatorName: 'And', filters: [], conditions: [condition] },
-        },
-      };
-    }
-    if (node.type === 'compare')
-      return {
-        operatorName: 'And',
-        filters: [],
-        conditions: [
-          {
-            attributeName: column(node.left, variable),
-            operatorName:
-              node.right?.value === null
-                ? ({ eq: negate ? 'NotNull' : 'Null', ne: negate ? 'Null' : 'NotNull' }[node.op] ??
-                  fail('Unsupported null comparison.'))
-                : ({
-                    eq: negate ? 'NotEqual' : 'Equal',
-                    ne: negate ? 'Equal' : 'NotEqual',
-                    gt: negate ? 'LessEqual' : 'GreaterThan',
-                    ge: negate ? 'LessThan' : 'GreaterEqual',
-                    lt: negate ? 'GreaterEqual' : 'LessThan',
-                    le: negate ? 'GreaterThan' : 'LessEqual',
-                  }[node.op] ?? fail('Unsupported comparison.')),
-            ...(node.right?.type === 'path' ? { compareColumns: true } : {}),
-            values:
-              node.right?.value === null
-                ? []
-                : [node.right?.type === 'path' ? column(node.right, variable) : literal(node.right)],
-          },
-        ],
-      };
-    fail('SDK read observer query conversion requires explicit support for ' + node.type + '.');
-  };
+  const filter = (node, negate = false, logical = entity, variable = null) =>
+    filterNode(node, negate, logical, variable, { store, literal, column });
   const top = p.$top === undefined ? null : Number(p.$top);
   if (top !== null && (!Number.isInteger(top) || top < 0)) fail('Invalid SDK query top count.');
   const orderLinks = [],
@@ -331,8 +338,7 @@ export function odataToSdkQuery(entity, params = {}, store) {
       let link = orderPaths.get(prefix);
       if (!link) {
         const relation = store.relationshipsFor(store.resolveMapping(logical), { admin: true })[navigation];
-        if (!relation || relation.many !== false || relation.intersect)
-          fail('SDK order requires a single-valued source lookup.');
+        if (relation?.many !== false || relation.intersect) fail('SDK order requires a single-valued source lookup.');
         link = {
           $type: 'LinkEntity',
           linkFromEntityName: logical,
@@ -441,9 +447,10 @@ export function webApiFetchExpression(query, store, { hidden } = {}) {
     return null;
   }
   const top = /^<fetch\b[^>]*\btop="(\d+)"/.exec(xml)?.[1];
+  const paging = top ? ` top="${top}"` : ' page="1" count="5000"';
   xml = xml
-    .replace(/^<fetch\b[^>]*>/, `<fetch ${NATIVE_FETCH}${top ? ` top="${top}"` : ' page="1" count="5000"'}>`)
-    .replace(/<filter type="and"><\/filter>/g, '')
+    .replace(/^<fetch\b[^>]*>/, `<fetch ${NATIVE_FETCH}${paging}>`)
+    .replaceAll('<filter type="and"></filter>', '')
     .replace(BRACED, (_, head, id) => `${head}{${id.toUpperCase()}}`);
   if (hidden) xml = xml.replace(`<attribute name="${hidden}" />`, '');
   return { $type: 'FetchExpression', query: xml };

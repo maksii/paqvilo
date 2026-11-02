@@ -10,6 +10,45 @@ const safeName = (name) =>
 const truth = (value) => value === true || value === 1 || (typeof value === 'string' && value.toLowerCase() === 'true');
 const invalid = (message) => Object.assign(new Error(message), { status: 400, code: 'InvalidPortalOverride' });
 
+function validateAccessRule(content) {
+  // Page access control rules: right 1 = grant change, 2 = restrict read; scope 1 = all content, 2 = exclude direct child web files.
+  if (
+    !content ||
+    typeof content !== 'object' ||
+    Array.isArray(content) ||
+    Object.keys(content).some((key) => !['name', 'webPageId', 'right', 'scope', 'roleIds'].includes(key))
+  )
+    throw invalid('Page access rules support name, webPageId, right, scope and roleIds.');
+  if (!safeName(content.name) || !safeName(content.webPageId))
+    throw invalid('Page access rules require a name and webPageId.');
+  if (![1, 2].includes(content.right) || ![1, 2].includes(content.scope ?? 1))
+    throw invalid('Page access rule right and scope must be 1 or 2.');
+  if (!Array.isArray(content.roleIds) || !content.roleIds.length || content.roleIds.some((roleId) => !safeName(roleId)))
+    throw invalid('Page access rules require at least one web-role ID.');
+}
+
+function validateRole(content) {
+  if (
+    !content ||
+    typeof content !== 'object' ||
+    Array.isArray(content) ||
+    !safeName(content.name) ||
+    Object.keys(content).some((key) => !['name', 'authenticatedUsersRole', 'anonymousUsersRole'].includes(key))
+  )
+    throw invalid('Web roles require a name and optional automatic-membership flags.');
+  for (const key of ['authenticatedUsersRole', 'anonymousUsersRole'])
+    if (content[key] !== undefined && typeof content[key] !== 'boolean')
+      throw invalid('Web role flags must be boolean.');
+}
+
+function validateOverrideEntry(section, name, content) {
+  if (!safeName(name)) throw invalid('Portal values require a valid name.');
+  if (section === 'accessRules' && content !== null) validateAccessRule(content);
+  else if (section === 'roles' && content !== null) validateRole(content);
+  else if (content !== null && typeof content !== 'string')
+    throw invalid('Portal values require a string or null value.');
+}
+
 /** Persisted local experiments overlay the exported source without rewriting it. */
 export function validatePortalOverrides(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid('Portal overrides must be an object.');
@@ -21,42 +60,7 @@ export function validatePortalOverrides(value = {}) {
       Array.isArray(entries)
     )
       throw invalid('Portal overrides support settings, snippets, roles and accessRules objects.');
-    for (const [name, content] of Object.entries(entries)) {
-      if (!safeName(name)) throw invalid('Portal values require a valid name.');
-      if (section === 'accessRules' && content !== null) {
-        // Page access control rules: right 1 = grant change, 2 = restrict read; scope 1 = all content, 2 = exclude direct child web files.
-        if (
-          !content ||
-          typeof content !== 'object' ||
-          Array.isArray(content) ||
-          Object.keys(content).some((key) => !['name', 'webPageId', 'right', 'scope', 'roleIds'].includes(key))
-        )
-          throw invalid('Page access rules support name, webPageId, right, scope and roleIds.');
-        if (!safeName(content.name) || !safeName(content.webPageId))
-          throw invalid('Page access rules require a name and webPageId.');
-        if (![1, 2].includes(content.right) || ![1, 2].includes(content.scope ?? 1))
-          throw invalid('Page access rule right and scope must be 1 or 2.');
-        if (
-          !Array.isArray(content.roleIds) ||
-          !content.roleIds.length ||
-          content.roleIds.some((roleId) => !safeName(roleId))
-        )
-          throw invalid('Page access rules require at least one web-role ID.');
-      } else if (section === 'roles' && content !== null) {
-        if (
-          !content ||
-          typeof content !== 'object' ||
-          Array.isArray(content) ||
-          !safeName(content.name) ||
-          Object.keys(content).some((key) => !['name', 'authenticatedUsersRole', 'anonymousUsersRole'].includes(key))
-        )
-          throw invalid('Web roles require a name and optional automatic-membership flags.');
-        for (const key of ['authenticatedUsersRole', 'anonymousUsersRole'])
-          if (content[key] !== undefined && typeof content[key] !== 'boolean')
-            throw invalid('Web role flags must be boolean.');
-      } else if (content !== null && typeof content !== 'string')
-        throw invalid('Portal values require a string or null value.');
-    }
+    for (const [name, content] of Object.entries(entries)) validateOverrideEntry(section, name, content);
   }
   return value;
 }
@@ -84,9 +88,7 @@ export async function bindPortalEnvironment(
   return { ...source, settings, secretSettingNames: [...secretNames] };
 }
 
-export function applyPortalOverrides(source, overrides = {}) {
-  validatePortalOverrides(overrides);
-  const portal = { ...source, secretSettingNames: [...(source.secretSettingNames ?? [])] };
+function applyObjectOverrides(portal, source, overrides) {
   for (const section of ['settings', 'snippets']) {
     portal[section] = { ...source[section] };
     for (const [name, value] of Object.entries(overrides[section] ?? {})) {
@@ -95,64 +97,75 @@ export function applyPortalOverrides(source, overrides = {}) {
         Object.defineProperty(portal[section], name, { value, enumerable: true, writable: true, configurable: true });
     }
   }
-  // A name-level override intentionally applies to every request language in
-  // this instance. Otherwise a localized value would silently win over it.
-  if (source.snippetTranslations)
-    portal.snippetTranslations = Object.fromEntries(
-      Object.entries(source.snippetTranslations).map(([language, values]) => {
-        const copy = { ...values };
-        for (const [name, value] of Object.entries(overrides.snippets ?? {})) {
-          if (value === null) delete copy[name];
-          else copy[name] = value;
-        }
-        return [language, copy];
-      }),
-    );
-  portal.records = [...(source.records ?? [])];
-  for (const [roleId, value] of Object.entries(overrides.roles ?? {})) {
-    const index = portal.records.findIndex((record) => record.kind === 'webrole' && record.id === roleId);
-    if (value === null) {
-      if (index >= 0) portal.records.splice(index, 1);
-      continue;
-    }
-    const record = {
-      ...(index >= 0 ? portal.records[index] : {}),
-      kind: 'webrole',
-      id: roleId,
-      name: value.name,
-      adx_webroleid: roleId,
-      adx_name: value.name,
-      adx_authenticatedusersrole: value.authenticatedUsersRole ?? false,
-      adx_anonymoususersrole: value.anonymousUsersRole ?? false,
-    };
-    if (index >= 0) portal.records[index] = record;
-    else portal.records.push(record);
-  }
-  for (const [ruleId, value] of Object.entries(overrides.accessRules ?? {})) {
-    const index = portal.records.findIndex(
-      (record) => record.kind === 'webpageaccesscontrolrule' && record.id === ruleId,
-    );
+}
+
+function applySnippetTranslations(portal, source, overrides) {
+  if (!source.snippetTranslations) return;
+  portal.snippetTranslations = Object.fromEntries(
+    Object.entries(source.snippetTranslations).map(([language, values]) => {
+      const copy = { ...values };
+      for (const [name, value] of Object.entries(overrides.snippets ?? {})) {
+        if (value === null) delete copy[name];
+        else copy[name] = value;
+      }
+      return [language, copy];
+    }),
+  );
+}
+
+function applyRecordOverrides(portal, overrides, section, kind, buildRecord) {
+  for (const [id, value] of Object.entries(overrides[section] ?? {})) {
+    const index = portal.records.findIndex((record) => record.kind === kind && record.id === id);
     if (value === null) {
       if (index >= 0) portal.records.splice(index, 1);
       continue;
     }
     const previous = index >= 0 ? portal.records[index] : {};
-    const record = {
-      _file: previous._file,
-      kind: 'webpageaccesscontrolrule',
-      id: ruleId,
-      name: value.name,
-      adx_webpageaccesscontrolruleid: ruleId,
-      adx_name: value.name,
-      adx_webpageid: value.webPageId,
-      adx_right: value.right,
-      adx_scope: value.scope ?? 1,
-      adx_webpageaccesscontrolrule_webrole: [...value.roleIds],
-      _localOverride: true,
-    };
+    const record = buildRecord(id, value, previous);
     if (index >= 0) portal.records[index] = record;
     else portal.records.push(record);
   }
+}
+
+function applyRoleOverrides(portal, overrides) {
+  applyRecordOverrides(portal, overrides, 'roles', 'webrole', (roleId, value, previous) => ({
+    ...previous,
+    kind: 'webrole',
+    id: roleId,
+    name: value.name,
+    adx_webroleid: roleId,
+    adx_name: value.name,
+    adx_authenticatedusersrole: value.authenticatedUsersRole ?? false,
+    adx_anonymoususersrole: value.anonymousUsersRole ?? false,
+  }));
+}
+
+function applyAccessRuleOverrides(portal, overrides) {
+  applyRecordOverrides(portal, overrides, 'accessRules', 'webpageaccesscontrolrule', (ruleId, value, previous) => ({
+    _file: previous._file,
+    kind: 'webpageaccesscontrolrule',
+    id: ruleId,
+    name: value.name,
+    adx_webpageaccesscontrolruleid: ruleId,
+    adx_name: value.name,
+    adx_webpageid: value.webPageId,
+    adx_right: value.right,
+    adx_scope: value.scope ?? 1,
+    adx_webpageaccesscontrolrule_webrole: [...value.roleIds],
+    _localOverride: true,
+  }));
+}
+
+export function applyPortalOverrides(source, overrides = {}) {
+  validatePortalOverrides(overrides);
+  const portal = { ...source, secretSettingNames: [...(source.secretSettingNames ?? [])] };
+  applyObjectOverrides(portal, source, overrides);
+  // A name-level override intentionally applies to every request language in
+  // this instance. Otherwise a localized value would silently win over it.
+  applySnippetTranslations(portal, source, overrides);
+  portal.records = [...(source.records ?? [])];
+  applyRoleOverrides(portal, overrides);
+  applyAccessRuleOverrides(portal, overrides);
   return portal;
 }
 
@@ -185,7 +198,7 @@ export function portalOverrideEntries(source, overrides = {}, section) {
     const records = (source.records ?? []).filter((record) => record.kind === 'webpageaccesscontrolrule');
     const find = (rows, id) => rows.find((record) => record.kind === 'webpageaccesscontrolrule' && record.id === id);
     return [...new Set([...records.map((record) => record.id), ...Object.keys(overrides.accessRules ?? {})])]
-      .sort()
+      .sort((a, b) => Number(a > b) - Number(a < b))
       .map((id) => ({
         id,
         name: find(effective.records, id)?.name ?? find(records, id)?.name ?? id,
@@ -209,7 +222,7 @@ export function portalOverrideEntries(source, overrides = {}, section) {
       };
     const records = (source.records ?? []).filter((record) => record.kind === 'webrole');
     return [...new Set([...records.map((record) => record.id), ...Object.keys(overrides.roles ?? {})])]
-      .sort()
+      .sort((a, b) => Number(a > b) - Number(a < b))
       .map((id) => ({
         id,
         name:
@@ -223,7 +236,7 @@ export function portalOverrideEntries(source, overrides = {}, section) {
       }));
   }
   return [...new Set([...Object.keys(source[section] ?? {}), ...Object.keys(overrides[section] ?? {})])]
-    .sort()
+    .sort((a, b) => Number(a > b) - Number(a < b))
     .map((name) => ({
       id: name,
       name,

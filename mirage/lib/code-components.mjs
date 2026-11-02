@@ -18,7 +18,7 @@ const canonical = (value) =>
   String(value ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
-const json = (value) => JSON.stringify(value).replace(/</g, '\\u003c');
+const json = (value) => JSON.stringify(value).replaceAll('<', String.raw`\u003c`);
 const contained = (root, file) => {
   const rel = path.relative(root, file);
   return Boolean(rel) && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
@@ -81,28 +81,72 @@ function featureEligibility(features = []) {
       typeof feature.name === 'string' &&
       Boolean(feature.name.trim()) &&
       ['true', 'false', '1', '0'].includes(requiredValue);
-    const hostApiAvailable =
-      feature.name === 'WebAPI'
-        ? true
-        : feature.name === 'Utility' || /^(?:Device|device)\./.test(feature.name ?? '')
-          ? false
-          : null;
+    let hostApiAvailable;
+    if (feature.name === 'WebAPI') hostApiAvailable = true;
+    else if (feature.name === 'Utility' || /^(?:Device|device)\./.test(feature.name ?? '')) hostApiAvailable = false;
+    else hostApiAvailable = null;
+    let reason = {};
+    if (!valid) reason = { reason: 'PCF_FEATURE_DECLARATION_INVALID' };
+    else if (required) reason = { reason: 'PCF_PORTAL_REQUIRED_FEATURE_UNSUPPORTED' };
     return {
       ...feature,
       hostApiAvailable,
       eligible: valid && !required,
-      ...(!valid
-        ? { reason: 'PCF_FEATURE_DECLARATION_INVALID' }
-        : required
-          ? { reason: 'PCF_PORTAL_REQUIRED_FEATURE_UNSUPPORTED' }
-          : {}),
+      ...reason,
     };
   });
 }
 
-function languageLcid(language) {
+/* NOSONAR: mixed return values are part of the contract */ function languageLcid(language) {
   if (Number.isInteger(Number(language?.lcid)) && Number(language.lcid) > 0) return Number(language.lcid);
   return portalLanguage({ name: language?.code })?.lcid ?? null;
+}
+
+function localizedResourceGroups(resources) {
+  const groups = new Map();
+  for (const resource of resources) {
+    if (!resource.lcid) continue;
+    if (!groups.has(resource.group)) groups.set(resource.group, []);
+    groups.get(resource.group).push(resource);
+  }
+  return groups;
+}
+
+function localizedResourceCandidate(group, variants, selectedLcid, defaultLcid, diagnostic) {
+  let candidates = variants.filter((resource) => resource.lcid === selectedLcid);
+  let selection = 'selected-language';
+  if (!candidates.length && defaultLcid) {
+    candidates = variants.filter((resource) => resource.lcid === defaultLcid);
+    selection = 'website-default-language';
+  }
+  if (candidates.length !== 1) {
+    diagnostic?.({
+      code: candidates.length ? 'PCF_RESOURCE_LANGUAGE_AMBIGUOUS' : 'PCF_RESOURCE_LANGUAGE_UNRESOLVED',
+      group,
+      selectedLcid,
+      defaultLcid,
+      paths: candidates.map((resource) => resource.path),
+    });
+    return null;
+  }
+  const resource = candidates[0];
+  if (selection === 'website-default-language')
+    diagnostic?.({
+      code: 'PCF_RESOURCE_LANGUAGE_FALLBACK',
+      group,
+      selectedLcid,
+      selectedResourceLcid: resource.lcid,
+      policy: 'exported-website-default',
+      nativeQualified: false,
+    });
+  return { resource, selection };
+}
+
+function mergeLocalizedEntries(strings, ambiguousKeys, resource) {
+  for (const [key, value] of Object.entries(resource.strings)) {
+    if (Object.hasOwn(strings, key)) ambiguousKeys.add(key);
+    else strings[key] = value;
+  }
 }
 
 function localizedStrings(control, selectedLanguage, defaultLanguage, diagnostic) {
@@ -112,44 +156,13 @@ function localizedStrings(control, selectedLanguage, defaultLanguage, diagnostic
   const strings = Object.create(null),
     selectedResources = [],
     ambiguousKeys = new Set();
-  const groups = new Map();
-  for (const resource of control.stringResources) {
-    if (!resource.lcid) continue;
-    if (!groups.has(resource.group)) groups.set(resource.group, []);
-    groups.get(resource.group).push(resource);
-  }
+  const groups = localizedResourceGroups(control.stringResources);
   for (const [group, variants] of groups) {
-    let candidates = variants.filter((resource) => resource.lcid === selectedLcid);
-    let selection = 'selected-language';
-    if (!candidates.length && defaultLcid) {
-      candidates = variants.filter((resource) => resource.lcid === defaultLcid);
-      selection = 'website-default-language';
-    }
-    if (candidates.length !== 1) {
-      diagnostic?.({
-        code: candidates.length ? 'PCF_RESOURCE_LANGUAGE_AMBIGUOUS' : 'PCF_RESOURCE_LANGUAGE_UNRESOLVED',
-        group,
-        selectedLcid,
-        defaultLcid,
-        paths: candidates.map((resource) => resource.path),
-      });
-      continue;
-    }
-    const resource = candidates[0];
-    if (selection === 'website-default-language')
-      diagnostic?.({
-        code: 'PCF_RESOURCE_LANGUAGE_FALLBACK',
-        group,
-        selectedLcid,
-        selectedResourceLcid: resource.lcid,
-        policy: 'exported-website-default',
-        nativeQualified: false,
-      });
+    const selected = localizedResourceCandidate(group, variants, selectedLcid, defaultLcid, diagnostic);
+    if (!selected) continue;
+    const { resource, selection } = selected;
     selectedResources.push({ path: resource.path, lcid: resource.lcid, selection, attributes: resource.attributes });
-    for (const [key, value] of Object.entries(resource.strings)) {
-      if (Object.hasOwn(strings, key)) ambiguousKeys.add(key);
-      else strings[key] = value;
-    }
+    mergeLocalizedEntries(strings, ambiguousKeys, resource);
   }
   for (const key of ambiguousKeys) {
     delete strings[key];
@@ -158,186 +171,328 @@ function localizedStrings(control, selectedLanguage, defaultLanguage, diagnostic
   return { strings, localization: { selectedLcid, defaultLcid, resources: selectedResources } };
 }
 
+function componentDatasetView(dataset, binding, metadata) {
+  const candidates = (metadata.views ?? []).filter(
+    (view) => canonical(view.id) === canonical(binding) || canonical(view.name) === canonical(binding),
+  );
+  if (candidates.length > 1)
+    return { error: `Dataset ${dataset.name} matches multiple exported views. Bind its exported view ID.` };
+  const view = candidates[0];
+  return { view, entity: view?.entity ?? canonical(binding) };
+}
+
+function componentDatasetColumns(dataset, view, fields, mapping) {
+  const names = view?.fields?.length
+    ? view.fields.map((field) => field.name)
+    : Object.keys(fields).filter((name) => fields[name].validForRead !== false);
+  if (!names.includes(mapping.idColumn)) names.unshift(mapping.idColumn);
+  if (
+    !names.length ||
+    !names.every((name) => /^[a-z_][a-z\d_]*$/i.test(name) && (fields[name] || name === mapping.idColumn))
+  )
+    return {
+      error: `Dataset ${dataset.name} has an aliased or unresolved column binding. Only exported columns of its primary table are supported.`,
+    };
+  return { names };
+}
+
+function componentDatasetFetchError(dataset, view) {
+  if (!view?.fetchXml) return null;
+  try {
+    const fetch = parseSolutionXml(view.fetchXml);
+    if (
+      fetch.attrs.aggregate === 'true' ||
+      fetch.attrs.top != null ||
+      descendants(fetch, 'attribute').some((node) => node.attrs.alias)
+    )
+      return `Dataset ${dataset.name} requires unsupported aggregate, top-limited, or aliased view semantics.`;
+  } catch {
+    return `Dataset ${dataset.name} has malformed exported FetchXML.`;
+  }
+  return null;
+}
+
+function resolveComponentDataset(dataset, { args, metadata, mappings, schema }) {
+  const failure = (error) => ({ error });
+  const binding = args[dataset.name] ?? args[dataset.name.toLowerCase()];
+  if (typeof binding !== 'string' || !binding.trim())
+    return failure(
+      `Code component ${schema} requires a dataset binding to an exported table and view: set the ${dataset.name} tag argument to an exported view ID or table logical name.`,
+    );
+  const selectedView = componentDatasetView(dataset, binding, metadata);
+  if (selectedView.error) return failure(selectedView.error);
+  const { view, entity } = selectedView;
+  const table = metadata.entities?.[entity],
+    mapping = mappings[entity];
+  if (!table || !mapping?.entitySet || !mapping?.idColumn)
+    return failure(`Dataset ${dataset.name} has no exported table definition and exact Web API mapping for ${entity}.`);
+  const fields = table.fields ?? {};
+  const selectedColumns = componentDatasetColumns(dataset, view, fields, mapping);
+  if (selectedColumns.error) return failure(selectedColumns.error);
+  const { names } = selectedColumns;
+  const fetchError = componentDatasetFetchError(dataset, view);
+  if (fetchError) return failure(fetchError);
+  const columns = names.map((name, order) => ({
+    name,
+    displayName: fields[name]?.label ?? name,
+    dataType: pcfTypes[fields[name]?.dataverseType] ?? 'unknown',
+    order,
+    visualSizeFactor: view?.fields?.find((field) => field.name === name)?.width ?? 100,
+    targets: fields[name]?.targets,
+  }));
+  const attributeXml = (name) => `<attribute name="${escape(name)}"/>`;
+  const fetchXmlFor = (entityName) =>
+    `<fetch><entity name="${escape(entityName)}">${names.map(attributeXml).join('')}</entity></fetch>`;
+  return {
+    dataset: {
+      name: dataset.name,
+      entity,
+      entitySet: mapping.entitySet,
+      idColumn: mapping.idColumn,
+      nameColumn: mapping.nameColumn ?? table.primaryNameAttribute,
+      viewId: view?.id ?? null,
+      viewName: view?.name ?? entity,
+      columns,
+      fields: Object.fromEntries(
+        Object.entries(fields).map(([name, field]) => [
+          name,
+          {
+            label: field.label,
+            dataverseType: field.dataverseType,
+            dataType: pcfTypes[field.dataverseType],
+            targets: field.targets,
+          },
+        ]),
+      ),
+      fetchXml: view?.fetchXml || fetchXmlFor(entity),
+    },
+  };
+}
+
+function addStringResource(resource, relative, file, body, diagnostics, stringResources) {
+  const document = parseSolutionXml(body.toString('utf8'));
+  const entries = descendants(document, 'data');
+  const strings = Object.create(null),
+    duplicates = new Set();
+  for (const entry of entries) {
+    const key = entry.attrs.name;
+    if (!key) {
+      diagnostics.push({
+        code: 'PCF_RESOURCE_KEY_UNRESOLVED',
+        file,
+        message: 'RESX data entry has no name.',
+      });
+      continue;
+    }
+    if (Object.hasOwn(strings, key)) duplicates.add(key);
+    else strings[key] = entry.children.find((node) => node.name === 'value')?.text ?? '';
+  }
+  for (const key of duplicates) {
+    delete strings[key];
+    diagnostics.push({
+      code: 'PCF_RESOURCE_KEY_AMBIGUOUS',
+      file,
+      key,
+      message: 'RESX resource contains duplicate named data entries.',
+    });
+  }
+  const locale = /^(.*)\.(\d+)\.resx$/i.exec(relative);
+  const lcid = locale && Number.isSafeInteger(Number(locale[2])) && Number(locale[2]) > 0 ? Number(locale[2]) : null;
+  stringResources.push({
+    path: relative,
+    group: locale?.[1] ?? relative,
+    lcid,
+    attributes: { ...resource.attrs },
+    document,
+    entries,
+    strings,
+  });
+  if (!lcid)
+    diagnostics.push({
+      code: 'PCF_RESOURCE_LANGUAGE_UNRESOLVED',
+      file,
+      message: 'RESX resource has no documented positive LCID filename suffix.',
+    });
+}
+
+async function appendDeclaredResource(
+  resource,
+  { root, token, digest, readFile, diagnostics, resources, stringResources, declaredAssets },
+) {
+  const relative = resource.attrs.path;
+  if (!['code', 'css', 'resx', 'img'].includes(resource.name)) return;
+  if (!relative || /[\\?#]/.test(relative)) throw new Error('Declared PCF resource has an invalid path');
+  const file = await fs.realpath(path.resolve(root, relative)).catch(() => null);
+  if (!file || !contained(root, file) || (await fs.stat(file)).size > 8 * 1024 * 1024)
+    throw new Error('Declared PCF resource is missing, outside its control, or exceeds 8 MiB');
+  const url = `/__sim-static/pcf/${token}/${relative.split('/').map(encodeURIComponent).join('/')}`;
+  const body = await readFile(file, { root, maxBytes: 8 * 1024 * 1024 });
+  digest.update(relative).update(body);
+  declaredAssets.set(url, {
+    file,
+    root,
+    kind: resource.name,
+    contentRevision: createHash('sha256').update(body).digest('hex'),
+  });
+  // SDK bundles can export their constructor through a classic script
+  // module rather than a namespace or registerControl call. Bind only
+  // a declaration from this exact declared resource, never scan globals.
+  const exportGlobal = resource.name === 'code' ? classicExportGlobal(body.toString('utf8')) : undefined;
+  resources.push({
+    kind: resource.name,
+    path: relative,
+    url,
+    order: Number(resource.attrs.order) || 0,
+    attributes: { ...resource.attrs },
+    ...(exportGlobal ? { exportGlobal } : {}),
+  });
+  if (resource.name === 'resx') addStringResource(resource, relative, file, body, diagnostics, stringResources);
+}
+
+async function loadControlResources(control, options) {
+  const { root, token, digest, readFile, diagnostics } = options;
+  const resources = [],
+    stringResources = [],
+    libraries = [],
+    declaredAssets = new Map();
+  for (const resource of descendants(control, 'resources')[0]?.children ?? []) {
+    if (resource.name === 'platform-library') {
+      libraries.push({ ...resource.attrs });
+      continue;
+    }
+    await appendDeclaredResource(resource, {
+      root,
+      token,
+      digest,
+      readFile,
+      diagnostics,
+      resources,
+      stringResources,
+      declaredAssets,
+    });
+  }
+  return { resources, stringResources, libraries, declaredAssets };
+}
+
+async function loadControlDefinition(root, manifestFile, identityFile, options) {
+  const { readFile, forget, diagnostics, identity } = options;
+  const metadataFile = await fs.realpath(identityFile);
+  if (!contained(root, metadataFile) || (await fs.stat(metadataFile)).size > 1024 * 1024)
+    throw new Error('PCF identity metadata is outside its control or exceeds 1 MiB');
+  const metadata = await readFile(metadataFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
+  const schemaName = childText(parseSolutionXml(metadata), 'Name');
+  if (!schemaName || !/^[\w.]+$/.test(schemaName)) throw new Error('PCF identity metadata has no valid exported Name');
+  identity.identified = true;
+  // A declaration supersedes the earlier control even when its manifest or
+  // dependencies cannot be loaded. Never reactivate an older executable.
+  forget(schemaName);
+  if (!contained(root, await fs.realpath(manifestFile)) || (await fs.stat(manifestFile)).size > 1024 * 1024)
+    throw new Error('PCF manifest is outside its control or exceeds 1 MiB');
+  const manifest = await readFile(manifestFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
+  const control = descendants(parseSolutionXml(manifest), 'control')[0];
+  if (!control) throw new Error('PCF manifest has no control declaration');
+  const token = createHash('sha256').update(root).update(manifest).digest('hex').slice(0, 24);
+  const digest = createHash('sha256').update(manifest);
+  const { resources, stringResources, libraries, declaredAssets } = await loadControlResources(control, {
+    root,
+    token,
+    digest,
+    readFile,
+    diagnostics,
+  });
+  if (!resources.some((resource) => resource.kind === 'code'))
+    throw new Error('PCF manifest does not declare an executable code resource');
+  const typeGroups = Object.fromEntries(
+    descendants(control, 'type-group').map((group) => [
+      group.attrs.name,
+      group.children.filter((node) => node.name === 'type').map((node) => node.text.trim()),
+    ]),
+  );
+  const features = (control.children ?? [])
+    .filter((node) => node.name === 'feature-usage')
+    .flatMap((node) =>
+      node.children.filter((child) => child.name === 'uses-feature').map((child) => ({ ...child.attrs })),
+    );
+  const record = {
+    schemaName,
+    constructor: `${control.attrs.namespace}.${control.attrs.constructor}`,
+    type: control.attrs['control-type'],
+    dataset: descendants(control, 'data-set').length > 0,
+    datasets: descendants(control, 'data-set').map((node) => ({ ...node.attrs })),
+    properties: descendants(control, 'property').map((property) => ({
+      ...property.attrs,
+      types: typeGroups[property.attrs['of-type-group']],
+    })),
+    events: (control.children ?? []).filter((node) => node.name === 'event').map((node) => ({ ...node.attrs })),
+    features,
+    libraries,
+    resources: resources.toSorted((a, b) => a.order - b.order),
+    strings: {},
+    stringResources,
+    file: manifestFile,
+    sourceAssets: [...declaredAssets].map(([url, asset]) => ({
+      url,
+      file: asset.file,
+      contentRevision: asset.contentRevision,
+    })),
+    sourceContentRevision: createHash('sha256').update(manifest).digest('hex'),
+    fingerprint: digest.digest('hex'),
+  };
+  return { schemaName, record, declaredAssets };
+}
+
+async function importControlEntry(parent, name, context) {
+  const root = await fs.realpath(path.join(parent, name)).catch(() => null);
+  if (!root || !contained(parent, root) || !(await fs.stat(root)).isDirectory()) return;
+  const manifestFile = path.join(root, 'ControlManifest.xml');
+  const identityFile = path.join(root, 'ControlManifest.xml.data.xml');
+  if (!(await fs.stat(manifestFile).catch(() => null)) && !(await fs.stat(identityFile).catch(() => null))) return;
+  const identity = { identified: false };
+  try {
+    const imported = await loadControlDefinition(root, manifestFile, identityFile, {
+      readFile: context.readFile,
+      forget: context.forget,
+      diagnostics: context.diagnostics,
+      identity,
+    });
+    context.controls.set(imported.schemaName, imported.record);
+    for (const [url, asset] of imported.declaredAssets) context.assets.set(url, asset);
+  } catch (cause) {
+    if (cause.code === 'MODEL_CLIENT_IMPORT_LIMIT') throw cause;
+    if (!identity.identified) context.state.unresolvedIdentity = true;
+    context.diagnostics.push({
+      code: identity.identified ? 'PCF_IMPORT_FAILED' : 'PCF_IDENTITY_UNRESOLVED',
+      file: manifestFile,
+      message: cause.message,
+    });
+  }
+}
+
+async function importLayerControls(layer, context) {
+  if (!layer.dir) return;
+  if (layer.type && layer.type !== 'directory') return;
+  const layerRoot = await fs.realpath(layer.dir).catch(() => null);
+  const parent = await fs.realpath(path.join(layer.dir, 'Controls')).catch(() => null);
+  if (!parent || !layerRoot || !contained(layerRoot, parent)) return;
+  for (const name of await fs.readdir(parent)) await importControlEntry(parent, name, context);
+}
+
 /** Import standard controls and serve only resource paths explicitly declared in the manifest. */
 export async function importCodeComponents(layers = [], { readFile = readLocalFile } = {}) {
   const controls = new Map(),
     assets = new Map(),
     diagnostics = [];
-  let unresolvedIdentity = false;
+  const state = { unresolvedIdentity: false };
   const forget = (name) => {
     const previous = controls.get(name);
     for (const resource of previous?.resources ?? []) assets.delete(resource.url);
     controls.delete(name);
   };
-  for (const layer of layers) {
-    if (!layer.dir) continue;
-    if (layer.type && layer.type !== 'directory') continue;
-    const layerRoot = await fs.realpath(layer.dir).catch(() => null);
-    const parent = await fs.realpath(path.join(layer.dir, 'Controls')).catch(() => null);
-    if (!parent || !layerRoot || !contained(layerRoot, parent)) continue;
-    for (const name of await fs.readdir(parent)) {
-      const root = await fs.realpath(path.join(parent, name)).catch(() => null);
-      if (!root || !contained(parent, root) || !(await fs.stat(root)).isDirectory()) continue;
-      const manifestFile = path.join(root, 'ControlManifest.xml');
-      const identityFile = path.join(root, 'ControlManifest.xml.data.xml');
-      if (!(await fs.stat(manifestFile).catch(() => null)) && !(await fs.stat(identityFile).catch(() => null)))
-        continue;
-      let identified = false;
-      try {
-        const metadataFile = await fs.realpath(identityFile);
-        if (!contained(root, metadataFile) || (await fs.stat(metadataFile)).size > 1024 * 1024)
-          throw new Error('PCF identity metadata is outside its control or exceeds 1 MiB');
-        const metadata = await readFile(metadataFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
-        const schemaName = childText(parseSolutionXml(metadata), 'Name');
-        if (!schemaName || !/^[\w.]+$/.test(schemaName))
-          throw new Error('PCF identity metadata has no valid exported Name');
-        identified = true;
-        // A declaration supersedes the earlier control even when its manifest or
-        // dependencies cannot be loaded. Never reactivate an older executable.
-        forget(schemaName);
-        if (!contained(root, await fs.realpath(manifestFile)) || (await fs.stat(manifestFile)).size > 1024 * 1024)
-          throw new Error('PCF manifest is outside its control or exceeds 1 MiB');
-        const manifest = await readFile(manifestFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
-        const control = descendants(parseSolutionXml(manifest), 'control')[0];
-        if (!control) throw new Error('PCF manifest has no control declaration');
-        const token = createHash('sha256').update(root).update(manifest).digest('hex').slice(0, 24);
-        const digest = createHash('sha256').update(manifest);
-        const resources = [],
-          stringResources = [],
-          libraries = [],
-          declaredAssets = new Map();
-        for (const resource of descendants(control, 'resources')[0]?.children ?? []) {
-          if (resource.name === 'platform-library') {
-            libraries.push({ ...resource.attrs });
-            continue;
-          }
-          const relative = resource.attrs.path;
-          if (!['code', 'css', 'resx', 'img'].includes(resource.name)) continue;
-          if (!relative || /[\\?#]/.test(relative)) throw new Error('Declared PCF resource has an invalid path');
-          const file = await fs.realpath(path.resolve(root, relative)).catch(() => null);
-          if (!file || !contained(root, file) || (await fs.stat(file)).size > 8 * 1024 * 1024)
-            throw new Error('Declared PCF resource is missing, outside its control, or exceeds 8 MiB');
-          const url = `/__sim-static/pcf/${token}/${relative.split('/').map(encodeURIComponent).join('/')}`;
-          const body = await readFile(file, { root, maxBytes: 8 * 1024 * 1024 });
-          digest.update(relative).update(body);
-          declaredAssets.set(url, {
-            file,
-            root,
-            kind: resource.name,
-            contentRevision: createHash('sha256').update(body).digest('hex'),
-          });
-          // SDK bundles can export their constructor through a classic script
-          // module rather than a namespace or registerControl call. Bind only
-          // a declaration from this exact declared resource, never scan globals.
-          const exportGlobal = resource.name === 'code' ? classicExportGlobal(body.toString('utf8')) : undefined;
-          resources.push({
-            kind: resource.name,
-            path: relative,
-            url,
-            order: Number(resource.attrs.order) || 0,
-            attributes: { ...resource.attrs },
-            ...(exportGlobal ? { exportGlobal } : {}),
-          });
-          if (resource.name === 'resx') {
-            const document = parseSolutionXml(body.toString('utf8'));
-            const entries = descendants(document, 'data');
-            const strings = Object.create(null),
-              duplicates = new Set();
-            for (const entry of entries) {
-              const key = entry.attrs.name;
-              if (!key) {
-                diagnostics.push({
-                  code: 'PCF_RESOURCE_KEY_UNRESOLVED',
-                  file,
-                  message: 'RESX data entry has no name.',
-                });
-                continue;
-              }
-              if (Object.hasOwn(strings, key)) duplicates.add(key);
-              else strings[key] = entry.children.find((node) => node.name === 'value')?.text ?? '';
-            }
-            for (const key of duplicates) {
-              delete strings[key];
-              diagnostics.push({
-                code: 'PCF_RESOURCE_KEY_AMBIGUOUS',
-                file,
-                key,
-                message: 'RESX resource contains duplicate named data entries.',
-              });
-            }
-            const locale = /^(.*)\.(\d+)\.resx$/i.exec(relative);
-            const lcid =
-              locale && Number.isSafeInteger(Number(locale[2])) && Number(locale[2]) > 0 ? Number(locale[2]) : null;
-            stringResources.push({
-              path: relative,
-              group: locale?.[1] ?? relative,
-              lcid,
-              attributes: { ...resource.attrs },
-              document,
-              entries,
-              strings,
-            });
-            if (!lcid)
-              diagnostics.push({
-                code: 'PCF_RESOURCE_LANGUAGE_UNRESOLVED',
-                file,
-                message: 'RESX resource has no documented positive LCID filename suffix.',
-              });
-          }
-        }
-        if (!resources.some((resource) => resource.kind === 'code'))
-          throw new Error('PCF manifest does not declare an executable code resource');
-        const typeGroups = Object.fromEntries(
-          descendants(control, 'type-group').map((group) => [
-            group.attrs.name,
-            group.children.filter((node) => node.name === 'type').map((node) => node.text.trim()),
-          ]),
-        );
-        const features = (control.children ?? [])
-          .filter((node) => node.name === 'feature-usage')
-          .flatMap((node) =>
-            node.children.filter((child) => child.name === 'uses-feature').map((child) => ({ ...child.attrs })),
-          );
-        controls.set(schemaName, {
-          schemaName,
-          constructor: `${control.attrs.namespace}.${control.attrs.constructor}`,
-          type: control.attrs['control-type'],
-          dataset: descendants(control, 'data-set').length > 0,
-          datasets: descendants(control, 'data-set').map((node) => ({ ...node.attrs })),
-          properties: descendants(control, 'property').map((property) => ({
-            ...property.attrs,
-            types: typeGroups[property.attrs['of-type-group']],
-          })),
-          events: (control.children ?? []).filter((node) => node.name === 'event').map((node) => ({ ...node.attrs })),
-          features,
-          libraries,
-          resources: resources.sort((a, b) => a.order - b.order),
-          strings: {},
-          stringResources,
-          file: manifestFile,
-          sourceAssets: [...declaredAssets].map(([url, asset]) => ({
-            url,
-            file: asset.file,
-            contentRevision: asset.contentRevision,
-          })),
-          sourceContentRevision: createHash('sha256').update(manifest).digest('hex'),
-          fingerprint: digest.digest('hex'),
-        });
-        for (const [url, asset] of declaredAssets) assets.set(url, asset);
-      } catch (cause) {
-        if (cause.code === 'MODEL_CLIENT_IMPORT_LIMIT') throw cause;
-        if (!identified) unresolvedIdentity = true;
-        diagnostics.push({
-          code: identified ? 'PCF_IMPORT_FAILED' : 'PCF_IDENTITY_UNRESOLVED',
-          file: manifestFile,
-          message: cause.message,
-        });
-      }
-    }
-  }
+  const context = { controls, assets, diagnostics, readFile, forget, state };
+  for (const layer of layers) await importLayerControls(layer, context);
   // An unreadable identity could supersede any earlier control. The independent
   // WebResource catalogue remains usable, but no PCF fallback is safe to serve.
-  if (unresolvedIdentity) {
+  if (state.unresolvedIdentity) {
     controls.clear();
     assets.clear();
   }
@@ -367,7 +522,7 @@ export function renderCodeComponent({
   };
   if (!schema)
     return unsupported(
-      /^[{]?[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}[}]?$/i.test(String(name))
+      /^\{?[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\}?$/i.test(String(name))
         ? `Code component ${name} requires an observed GUID-to-control mapping and solution sources.`
         : `Code component ${name} was not found in the selected solution sources.`,
     );
@@ -399,83 +554,9 @@ export function renderCodeComponent({
   }
   const datasets = [];
   for (const dataset of control.datasets ?? []) {
-    const binding = args[dataset.name] ?? args[dataset.name.toLowerCase()];
-    if (typeof binding !== 'string' || !binding.trim())
-      return unsupported(
-        `Code component ${schema} requires a dataset binding to an exported table and view: set the ${dataset.name} tag argument to an exported view ID or table logical name.`,
-      );
-    const candidates = (metadata.views ?? []).filter(
-      (view) => canonical(view.id) === canonical(binding) || canonical(view.name) === canonical(binding),
-    );
-    if (candidates.length > 1)
-      return unsupported(`Dataset ${dataset.name} matches multiple exported views. Bind its exported view ID.`);
-    const view = candidates[0],
-      entity = view?.entity ?? canonical(binding);
-    const table = metadata.entities?.[entity],
-      mapping = mappings[entity];
-    if (!table || !mapping?.entitySet || !mapping?.idColumn)
-      return unsupported(
-        `Dataset ${dataset.name} has no exported table definition and exact Web API mapping for ${entity}.`,
-      );
-    const fields = table.fields ?? {};
-    const names = view?.fields?.length
-      ? view.fields.map((field) => field.name)
-      : Object.keys(fields).filter((name) => fields[name].validForRead !== false);
-    if (!names.includes(mapping.idColumn)) names.unshift(mapping.idColumn);
-    if (
-      !names.length ||
-      !names.every((name) => /^[a-z_][a-z\d_]*$/i.test(name) && (fields[name] || name === mapping.idColumn))
-    )
-      return unsupported(
-        `Dataset ${dataset.name} has an aliased or unresolved column binding. Only exported columns of its primary table are supported.`,
-      );
-    if (view?.fetchXml) {
-      try {
-        const fetch = parseSolutionXml(view.fetchXml);
-        if (
-          fetch.attrs.aggregate === 'true' ||
-          fetch.attrs.top != null ||
-          descendants(fetch, 'attribute').some((node) => node.attrs.alias)
-        )
-          return unsupported(
-            `Dataset ${dataset.name} requires unsupported aggregate, top-limited, or aliased view semantics.`,
-          );
-      } catch {
-        return unsupported(`Dataset ${dataset.name} has malformed exported FetchXML.`);
-      }
-    }
-    const columns = names.map((name, order) => ({
-      name,
-      displayName: fields[name]?.label ?? name,
-      dataType: pcfTypes[fields[name]?.dataverseType] ?? 'unknown',
-      order,
-      visualSizeFactor: view?.fields?.find((field) => field.name === name)?.width ?? 100,
-      targets: fields[name]?.targets,
-    }));
-    datasets.push({
-      name: dataset.name,
-      entity,
-      entitySet: mapping.entitySet,
-      idColumn: mapping.idColumn,
-      nameColumn: mapping.nameColumn ?? table.primaryNameAttribute,
-      viewId: view?.id ?? null,
-      viewName: view?.name ?? entity,
-      columns,
-      fields: Object.fromEntries(
-        Object.entries(fields).map(([name, field]) => [
-          name,
-          {
-            label: field.label,
-            dataverseType: field.dataverseType,
-            dataType: pcfTypes[field.dataverseType],
-            targets: field.targets,
-          },
-        ]),
-      ),
-      fetchXml:
-        view?.fetchXml ||
-        `<fetch><entity name="${escape(entity)}">${names.map((name) => `<attribute name="${escape(name)}"/>`).join('')}</entity></fetch>`,
-    });
+    const result = resolveComponentDataset(dataset, { args, metadata, mappings, schema });
+    if (result.error) return unsupported(result.error);
+    datasets.push(result.dataset);
   }
   const id = `pcf-${createHash('sha256').update(schema).update(json(args)).digest('hex').slice(0, 16)}`;
   const defaultLanguage = (portal.websiteLanguages ?? []).find((language) => language.isDefault);

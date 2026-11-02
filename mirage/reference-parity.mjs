@@ -11,16 +11,16 @@ const hash = (value) =>
     .update(JSON.stringify(value) ?? 'null')
     .digest('hex');
 const loopback = (host) => ['127.0.0.1', 'localhost', '[::1]'].includes(host);
-const canonical = (value) =>
-  Array.isArray(value)
-    ? value.map(canonical)
-    : value && typeof value === 'object'
-      ? Object.fromEntries(
-          Object.keys(value)
-            .sort()
-            .map((key) => [key, canonical(value[key])]),
-        )
-      : value;
+const canonical = (value) => {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort((a, b) => Number(a > b) - Number(a < b))
+        .map((key) => [key, canonical(value[key])]),
+    );
+  return value;
+};
 const fieldAt = (value, selector) =>
   selector
     .split('.')
@@ -53,11 +53,153 @@ function validateContractOptions(contract) {
     throw new Error('Contract kind must be json or text.');
 }
 
+function validateComparisonOrigins(localUrl, origin) {
+  const local = new URL(localUrl);
+  if (
+    local.protocol !== 'http:' ||
+    !loopback(local.hostname) ||
+    local.username ||
+    local.password ||
+    local.pathname !== '/' ||
+    local.search ||
+    local.hash
+  )
+    throw new Error('Local URL must be an HTTP loopback origin.');
+  const reference = new URL(origin);
+  if (
+    reference.protocol !== 'https:' ||
+    reference.username ||
+    reference.password ||
+    reference.pathname !== '/' ||
+    reference.search ||
+    reference.hash
+  )
+    throw new Error('Reference URL must be a credential-free HTTPS origin.');
+  return { local, reference };
+}
+
+function validateOneContract(contract, ids) {
+  validateContractOptions(contract);
+  if (typeof contract.id !== 'string' || !contract.id.trim() || contract.id.length > 160 || ids.has(contract.id))
+    throw new Error('Contracts require unique string IDs of 1–160 characters.');
+  ids.add(contract.id);
+  validateLivePath(contract.path);
+  if (contract.method !== undefined && contract.method !== 'GET')
+    throw new Error('Reference parity accepts only GET reads.');
+  if (
+    contract.expectedStatus !== undefined &&
+    (!Number.isInteger(contract.expectedStatus) || contract.expectedStatus < 100 || contract.expectedStatus > 599)
+  )
+    throw new Error('Expected HTTP status is invalid.');
+  if (contract.expectedCount !== undefined && (!Number.isInteger(contract.expectedCount) || contract.expectedCount < 0))
+    throw new Error('Expected count must be a nonnegative integer.');
+  if (contract.statusOnly && (contract.fields || contract.collection || contract.expectedCount !== undefined))
+    throw new Error('Status-only contracts cannot assert response data.');
+  if (contract.prefer !== undefined && !/^odata\.maxpagesize=[1-9]\d{0,5}$/i.test(contract.prefer))
+    throw new Error('Only an explicit odata.maxpagesize preference is supported.');
+}
+
+function validateContractPlan(contracts) {
+  if (!Array.isArray(contracts) || !contracts.length || contracts.length > 100)
+    throw new Error('Supply 1–100 explicit read contracts.');
+  const ids = new Set();
+  for (const contract of contracts) validateOneContract(contract, ids);
+}
+
+function validateVisitorOptions(localSession, localVisitor, localOrigin) {
+  if (localSession !== undefined && localVisitor !== undefined)
+    throw new Error('Supply either localSession or localVisitor, not both.');
+  if (
+    localSession !== undefined &&
+    (localSession?.origin !== localOrigin ||
+      typeof localSession.request !== 'function' ||
+      typeof localSession.session !== 'function')
+  )
+    throw new Error('Local session must be a portal visitor for the selected loopback origin.');
+}
+
+function localVisitorOptions(localVisitor, before) {
+  if (localVisitor === undefined) return undefined;
+  if (
+    !localVisitor ||
+    typeof localVisitor !== 'object' ||
+    Array.isArray(localVisitor) ||
+    Object.keys(localVisitor).some((key) => !['contactId', 'roles', 'configuredPersona'].includes(key)) ||
+    (localVisitor.configuredPersona !== undefined && typeof localVisitor.configuredPersona !== 'boolean')
+  )
+    throw new Error('Local visitor requires contactId, optional roles, or configuredPersona: true.');
+  let { contactId, roles } = localVisitor;
+  if (localVisitor.configuredPersona) {
+    const configured = before.config?.identity;
+    contactId ??= configured?.contactId ?? configured?.id;
+    if (roles === undefined && (configured?.roleSource ?? 'override') === 'override') roles = configured?.roles;
+  }
+  if (typeof contactId !== 'string' || !contactId.trim())
+    throw new Error('Local authenticated visitor requires an existing contactId; no configured persona is available.');
+  return { contactId, roles };
+}
+
+async function compareOneContract(contract, bridge, visitor) {
+  const result = {
+    id: contract.id,
+    path: contract.path.split('?')[0],
+    kind: contract.kind ?? 'json',
+    fields: contract.fields,
+    expectedCount: contract.expectedCount,
+    statusOnly: contract.statusOnly === true,
+    passed: false,
+  };
+  try {
+    const native = await bridge.request(contract.path, { method: 'GET', prefer: contract.prefer });
+    // A portal visitor owns its cookies and local-only controls. Neither is
+    // accepted from a plan or copied to the reference browser/evidence.
+    const response = await visitor.request(contract.path, {
+      method: 'GET',
+      headers: contract.prefer ? { Prefer: contract.prefer } : {},
+    });
+    const body = await response.text();
+    result.referenceStatus = native.status;
+    result.localStatus = response.status;
+    const expectedStatus = contract.expectedStatus ?? 200;
+    if (native.status !== expectedStatus || response.status !== expectedStatus)
+      throw new Error('HTTP status differs from the contract.');
+    const nativeBody = Buffer.isBuffer(native.body) ? native.body.toString('utf8') : native.body;
+    const a = normalizeContract(nativeBody, contract),
+      b = normalizeContract(body, contract);
+    result.referenceDigest = hash(a);
+    result.localDigest = hash(b);
+    result.referenceCount = Array.isArray(a) ? a.length : undefined;
+    result.localCount = Array.isArray(b) ? b.length : undefined;
+    if (
+      contract.expectedCount !== undefined &&
+      (result.referenceCount !== contract.expectedCount || result.localCount !== contract.expectedCount)
+    )
+      throw new Error('Result count differs from the contract.');
+    result.passed = result.referenceDigest === result.localDigest;
+    if (!result.passed) result.error = 'Projected response differs.';
+  } catch (cause) {
+    // Bodies, query strings and browser tokens are never emitted in the report.
+    result.error = [
+      'The response lacks the configured collection.',
+      'The response lacks a configured field.',
+      'HTTP status differs from the contract.',
+      'Result count differs from the contract.',
+    ].includes(cause.message)
+      ? cause.message
+      : 'Reference comparison failed; inspect the connected browser and explicit contract.';
+  }
+  return result;
+}
+
+async function compareContracts(contracts, bridge, visitor, results) {
+  for (const contract of contracts) results.push(await compareOneContract(contract, bridge, visitor));
+}
+
 /** Explicit projection prevents volatile annotations from masking useful record parity. */
 export function normalizeContract(body, contract) {
   validateContractOptions(contract);
   if (contract.statusOnly) return null;
-  if (contract.kind === 'text') return String(body).replace(/\r\n/g, '\n');
+  if (contract.kind === 'text') return String(body).replaceAll('\r\n', '\n');
   const parsed = typeof body === 'string' ? JSON.parse(body) : body;
   const collection = contract.collection ? fieldAt(parsed, contract.collection) : parsed;
   if (collection === undefined) throw new Error('The response lacks the configured collection.');
@@ -89,64 +231,10 @@ export async function compareReferenceContracts({
   localSession,
   localVisitor,
 }) {
-  const local = new URL(localUrl);
-  if (
-    local.protocol !== 'http:' ||
-    !loopback(local.hostname) ||
-    local.username ||
-    local.password ||
-    local.pathname !== '/' ||
-    local.search ||
-    local.hash
-  )
-    throw new Error('Local URL must be an HTTP loopback origin.');
-  const reference = new URL(origin);
-  if (
-    reference.protocol !== 'https:' ||
-    reference.username ||
-    reference.password ||
-    reference.pathname !== '/' ||
-    reference.search ||
-    reference.hash
-  )
-    throw new Error('Reference URL must be a credential-free HTTPS origin.');
-  if (!Array.isArray(contracts) || !contracts.length || contracts.length > 100)
-    throw new Error('Supply 1–100 explicit read contracts.');
-  const ids = new Set();
-  for (const contract of contracts) {
-    validateContractOptions(contract);
-    if (typeof contract.id !== 'string' || !contract.id.trim() || contract.id.length > 160 || ids.has(contract.id))
-      throw new Error('Contracts require unique string IDs of 1–160 characters.');
-    ids.add(contract.id);
-    validateLivePath(contract.path);
-    if (contract.method !== undefined && contract.method !== 'GET')
-      throw new Error('Reference parity accepts only GET reads.');
-    if (
-      contract.expectedStatus !== undefined &&
-      (!Number.isInteger(contract.expectedStatus) || contract.expectedStatus < 100 || contract.expectedStatus > 599)
-    )
-      throw new Error('Expected HTTP status is invalid.');
-    if (
-      contract.expectedCount !== undefined &&
-      (!Number.isInteger(contract.expectedCount) || contract.expectedCount < 0)
-    )
-      throw new Error('Expected count must be a nonnegative integer.');
-    if (contract.statusOnly && (contract.fields || contract.collection || contract.expectedCount !== undefined))
-      throw new Error('Status-only contracts cannot assert response data.');
-    if (contract.prefer !== undefined && !/^odata\.maxpagesize=[1-9]\d{0,5}$/i.test(contract.prefer))
-      throw new Error('Only an explicit odata.maxpagesize preference is supported.');
-  }
+  const { local, reference } = validateComparisonOrigins(localUrl, origin);
+  validateContractPlan(contracts);
   if (!outputDir) throw new Error('Supply an ignored evidence output directory.');
-  if (localSession !== undefined && localVisitor !== undefined)
-    throw new Error('Supply either localSession or localVisitor, not both.');
-  if (
-    localSession !== undefined &&
-    (!localSession ||
-      localSession.origin !== local.origin ||
-      typeof localSession.request !== 'function' ||
-      typeof localSession.session !== 'function')
-  )
-    throw new Error('Local session must be a portal visitor for the selected loopback origin.');
+  validateVisitorOptions(localSession, localVisitor, local.origin);
   const readState = async () => {
     const response = await fetch(local.origin + '/__sim/api/state', {
       redirect: 'error',
@@ -165,29 +253,8 @@ export async function compareReferenceContracts({
   const before = await readState();
   let visitor = localSession,
     ownedVisitor = false,
-    visitorIdentity,
-    visitorOptions;
-  if (localVisitor !== undefined) {
-    if (
-      !localVisitor ||
-      typeof localVisitor !== 'object' ||
-      Array.isArray(localVisitor) ||
-      Object.keys(localVisitor).some((key) => !['contactId', 'roles', 'configuredPersona'].includes(key)) ||
-      (localVisitor.configuredPersona !== undefined && typeof localVisitor.configuredPersona !== 'boolean')
-    )
-      throw new Error('Local visitor requires contactId, optional roles, or configuredPersona: true.');
-    let { contactId, roles } = localVisitor;
-    if (localVisitor.configuredPersona) {
-      const configured = before.config?.identity;
-      contactId ??= configured?.contactId ?? configured?.id;
-      if (roles === undefined && (configured?.roleSource ?? 'override') === 'override') roles = configured?.roles;
-    }
-    if (typeof contactId !== 'string' || !contactId.trim())
-      throw new Error(
-        'Local authenticated visitor requires an existing contactId; no configured persona is available.',
-      );
-    visitorOptions = { contactId, roles };
-  }
+    visitorIdentity;
+  const visitorOptions = localVisitorOptions(localVisitor, before);
   const stateSignature = (state) =>
     hash({
       source: state.status?.sourceFingerprint,
@@ -235,57 +302,7 @@ export async function compareReferenceContracts({
       identityFingerprint: visitorSignature(visitorIdentity),
     };
     if (!suppliedBridge) await bridge.connect(cdpUrl);
-    for (const contract of contracts) {
-      const result = {
-        id: contract.id,
-        path: contract.path.split('?')[0],
-        kind: contract.kind ?? 'json',
-        fields: contract.fields,
-        expectedCount: contract.expectedCount,
-        statusOnly: contract.statusOnly === true,
-        passed: false,
-      };
-      try {
-        const native = await bridge.request(contract.path, { method: 'GET', prefer: contract.prefer });
-        // A portal visitor owns its cookies and local-only controls. Neither is
-        // accepted from a plan or copied to the reference browser/evidence.
-        const response = await visitor.request(contract.path, {
-          method: 'GET',
-          headers: contract.prefer ? { Prefer: contract.prefer } : {},
-        });
-        const body = await response.text();
-        result.referenceStatus = native.status;
-        result.localStatus = response.status;
-        const expectedStatus = contract.expectedStatus ?? 200;
-        if (native.status !== expectedStatus || response.status !== expectedStatus)
-          throw new Error('HTTP status differs from the contract.');
-        const nativeBody = Buffer.isBuffer(native.body) ? native.body.toString('utf8') : native.body;
-        const a = normalizeContract(nativeBody, contract),
-          b = normalizeContract(body, contract);
-        result.referenceDigest = hash(a);
-        result.localDigest = hash(b);
-        result.referenceCount = Array.isArray(a) ? a.length : undefined;
-        result.localCount = Array.isArray(b) ? b.length : undefined;
-        if (
-          contract.expectedCount !== undefined &&
-          (result.referenceCount !== contract.expectedCount || result.localCount !== contract.expectedCount)
-        )
-          throw new Error('Result count differs from the contract.');
-        result.passed = result.referenceDigest === result.localDigest;
-        if (!result.passed) result.error = 'Projected response differs.';
-      } catch (cause) {
-        // Bodies, query strings and browser tokens are never emitted in the report.
-        result.error = [
-          'The response lacks the configured collection.',
-          'The response lacks a configured field.',
-          'HTTP status differs from the contract.',
-          'Result count differs from the contract.',
-        ].includes(cause.message)
-          ? cause.message
-          : 'Reference comparison failed; inspect the connected browser and explicit contract.';
-      }
-      report.contracts.push(result);
-    }
+    await compareContracts(contracts, bridge, visitor, report.contracts);
     report.stateUnchanged = stateSignature(before) === stateSignature(await readState());
     report.localVisitor.unchanged = visitorSignature(visitorIdentity) === visitorSignature(await visitor.session());
     report.passed =

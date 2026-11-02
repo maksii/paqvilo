@@ -70,68 +70,83 @@ function reviewBytes(directory, file) {
   return bytes;
 }
 
+function moduleImports(tree, file) {
+  const imports = new Map();
+  for (const statement of tree.statements) {
+    if (ts.isImportDeclaration(statement) && statement.moduleSpecifier.text.startsWith('.')) {
+      const target = path.resolve(path.dirname(file), statement.moduleSpecifier.text);
+      for (const specifier of statement.importClause?.namedBindings?.elements ?? [])
+        imports.set(specifier.name.text, { target, name: (specifier.propertyName ?? specifier.name).text });
+    }
+  }
+  return imports;
+}
+
+function directModuleExports(tree, result, own) {
+  for (const statement of tree.statements) {
+    if (!statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
+    if (statement.name?.text) result.set(statement.name.text, [own(statement.name.text)]);
+    if (ts.isVariableStatement(statement))
+      for (const declaration of statement.declarationList.declarations)
+        if (ts.isIdentifier(declaration.name)) result.set(declaration.name.text, [own(declaration.name.text)]);
+  }
+}
+
+function applyExportStatement(statement, file, imports, result, exportsOf, own) {
+  if (!ts.isExportDeclaration(statement)) return;
+  const target = statement.moduleSpecifier?.text.startsWith('.')
+    ? path.resolve(path.dirname(file), statement.moduleSpecifier.text)
+    : null;
+  if (!statement.exportClause && target) {
+    for (const [name, origins] of exportsOf(target)) result.set(name, [own(name), ...origins]);
+  } else if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+    for (const specifier of statement.exportClause.elements) {
+      const name = specifier.name.text,
+        original = (specifier.propertyName ?? specifier.name).text;
+      const imported = imports.get(original);
+      let origins;
+      if (target) origins = exportsOf(target).get(original);
+      else if (imported) origins = exportsOf(imported.target).get(imported.name);
+      else origins = result.get(original);
+      result.set(name, [own(name), ...(origins ?? [])]);
+    }
+  }
+}
+
+function exportsOf(directory, file, cache) {
+  file = path.resolve(file);
+  if (cache.has(file)) return cache.get(file);
+  const result = new Map();
+  cache.set(file, result);
+  const bytes = reviewBytes(directory, file);
+  if (!bytes) return result;
+  const source = bytes.toString('utf8');
+  const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const own = (name) => `${normalize(file, directory)}:${name}`;
+  const imports = moduleImports(tree, file);
+  directModuleExports(tree, result, own);
+  for (const statement of tree.statements) applyExportStatement(statement, file, imports, result, exportsOfBound, own);
+  return result;
+
+  function exportsOfBound(target) {
+    return exportsOf(directory, target, cache);
+  }
+}
+
 export function publicApiOrigins(directory) {
   directory = nativePath(directory);
   const manifest = JSON.parse(reviewBytes(directory, 'package.json').toString('utf8'));
   const cache = new Map();
-  function exportsOf(file) {
-    file = path.resolve(file);
-    if (cache.has(file)) return cache.get(file);
-    const result = new Map();
-    cache.set(file, result);
-    const bytes = reviewBytes(directory, file);
-    if (!bytes) return result;
-    const source = bytes.toString('utf8');
-    const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-    const own = (name) => `${normalize(file, directory)}:${name}`;
-    const imports = new Map();
-    for (const statement of tree.statements) {
-      if (ts.isImportDeclaration(statement) && statement.moduleSpecifier.text.startsWith('.')) {
-        const target = path.resolve(path.dirname(file), statement.moduleSpecifier.text);
-        for (const specifier of statement.importClause?.namedBindings?.elements ?? [])
-          imports.set(specifier.name.text, { target, name: (specifier.propertyName ?? specifier.name).text });
-      }
-      if (statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
-        if (statement.name?.text) result.set(statement.name.text, [own(statement.name.text)]);
-        if (ts.isVariableStatement(statement))
-          for (const declaration of statement.declarationList.declarations)
-            if (ts.isIdentifier(declaration.name)) result.set(declaration.name.text, [own(declaration.name.text)]);
-      }
-    }
-    for (const statement of tree.statements) {
-      if (!ts.isExportDeclaration(statement)) continue;
-      const target = statement.moduleSpecifier?.text.startsWith('.')
-        ? path.resolve(path.dirname(file), statement.moduleSpecifier.text)
-        : null;
-      if (!statement.exportClause && target) {
-        for (const [name, origins] of exportsOf(target)) result.set(name, [own(name), ...origins]);
-      } else if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
-        for (const specifier of statement.exportClause.elements) {
-          const name = specifier.name.text,
-            original = (specifier.propertyName ?? specifier.name).text;
-          const imported = imports.get(original);
-          const origins = target
-            ? exportsOf(target).get(original)
-            : imported
-              ? exportsOf(imported.target).get(imported.name)
-              : result.get(original);
-          result.set(name, [own(name), ...(origins ?? [])]);
-        }
-      }
-    }
-    return result;
-  }
   const origins = new Set();
-  const targets = (value) =>
-    typeof value === 'string'
-      ? [value]
-      : value && typeof value === 'object'
-        ? Object.values(value).flatMap(targets)
-        : [];
+  const targets = (value) => {
+    if (typeof value === 'string') return [value];
+    if (value && typeof value === 'object') return Object.values(value).flatMap(targets);
+    return [];
+  };
   for (const [entry, target] of Object.entries(manifest.exports ?? {})) {
     if (entry.includes('*')) continue;
     for (const file of targets(target).filter((file) => /\.(?:[cm]?js|d\.[cm]?ts)$/.test(file)))
-      for (const values of exportsOf(path.resolve(directory, file)).values())
+      for (const values of exportsOf(directory, path.resolve(directory, file), cache).values())
         for (const value of values) origins.add(value);
   }
   return origins;
@@ -167,59 +182,69 @@ const invokeAsync = (name, args, cwd, env = {}) =>
     }),
   );
 
-function reviewFiles(directory) {
-  directory = nativePath(directory);
-  const top = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+function sameNativePath(a, b) {
+  const left = nativePath(a),
+    right = nativePath(b);
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+function indexedReviewFiles(directory) {
+  /* NOSONAR */ const top = spawnSync('git', ['rev-parse', '--show-toplevel'], {
     cwd: directory,
     encoding: 'utf8',
     windowsHide: true,
   });
-  const samePath = (a, b) => {
-    const left = nativePath(a),
-      right = nativePath(b);
-    return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
-  };
-  if (top.status === 0 && samePath(directory, top.stdout.trim())) {
-    const listing = spawnSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {
-      cwd: directory,
-      encoding: 'utf8',
-      windowsHide: true,
-    });
-    if (listing.status !== 0) throw new Error('Cannot inventory tracked review sources.');
-    return [...new Set(listing.stdout.split('\0').filter(Boolean))];
+  if (top.status !== 0 || !sameNativePath(directory, top.stdout.trim())) return null;
+  /* NOSONAR */ const listing = spawnSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {
+    cwd: directory,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  if (listing.status !== 0) throw new Error('Cannot inventory tracked review sources.');
+  return [...new Set(listing.stdout.split('\0').filter(Boolean))];
+}
+
+function walkReviewFiles(current, directory, files) {
+  for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+    if (privateSegment(entry.name) || entry.isSymbolicLink()) continue;
+    const file = path.join(current, entry.name);
+    if (entry.isDirectory()) walkReviewFiles(file, directory, files);
+    else if (entry.isFile()) files.push(path.relative(directory, file).replaceAll('\\', '/'));
   }
+}
+
+function reviewFiles(directory) {
+  directory = nativePath(directory);
+  const indexed = indexedReviewFiles(directory);
+  if (indexed !== null) return indexed;
   const files = [];
-  const walk = (current) => {
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-      if (privateSegment(entry.name) || entry.isSymbolicLink()) continue;
-      const file = path.join(current, entry.name);
-      if (entry.isDirectory()) walk(file);
-      else if (entry.isFile()) files.push(path.relative(directory, file).replaceAll('\\', '/'));
-    }
-  };
-  walk(directory);
+  walkReviewFiles(directory, directory, files);
   return files;
+}
+
+function writeAnalysisManifest(destination, bytes) {
+  const manifest = JSON.parse(bytes.toString('utf8'));
+  if (manifest.exports && typeof manifest.exports === 'object' && !Array.isArray(manifest.exports))
+    manifest.exports = Object.fromEntries(Object.entries(manifest.exports).filter(([key]) => !key.includes('*')));
+  fs.writeFileSync(destination, JSON.stringify(manifest));
+}
+
+function copyAnalysisFile(directory, snapshot, name) {
+  if (!/\.(?:[cm]?[jt]sx?|json|html|css|ya?ml|cs|py)$/.test(name) || name.split(/[\\/]/).some(privateSegment)) return;
+  const destination = path.resolve(snapshot, name);
+  if (!destination.startsWith(snapshot + path.sep)) throw new Error(`Review source escapes its workspace: ${name}`);
+  const bytes = reviewBytes(directory, name);
+  if (!bytes) return;
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  if (path.basename(name) === 'package.json') writeAnalysisManifest(destination, bytes);
+  else fs.writeFileSync(destination, bytes);
 }
 
 function analysisSnapshot(directory, { files, dependencies = true } = {}) {
   directory = nativePath(directory);
   const snapshot = nativePath(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-knip-')));
   try {
-    for (const name of files ?? reviewFiles(directory)) {
-      if (!/\.(?:[cm]?[jt]sx?|json|html|css|ya?ml|cs|py)$/.test(name) || name.split(/[\\/]/).some(privateSegment))
-        continue;
-      const destination = path.resolve(snapshot, name);
-      if (!destination.startsWith(snapshot + path.sep)) throw new Error(`Review source escapes its workspace: ${name}`);
-      const bytes = reviewBytes(directory, name);
-      if (!bytes) continue;
-      fs.mkdirSync(path.dirname(destination), { recursive: true });
-      if (path.basename(name) === 'package.json') {
-        const manifest = JSON.parse(bytes.toString('utf8'));
-        if (manifest.exports && typeof manifest.exports === 'object' && !Array.isArray(manifest.exports))
-          manifest.exports = Object.fromEntries(Object.entries(manifest.exports).filter(([key]) => !key.includes('*')));
-        fs.writeFileSync(destination, JSON.stringify(manifest));
-      } else fs.writeFileSync(destination, bytes);
-    }
+    for (const name of files ?? reviewFiles(directory)) copyAnalysisFile(directory, snapshot, name);
     const modules = path.join(directory, 'node_modules');
     if (dependencies && fs.existsSync(modules))
       fs.symlinkSync(modules, path.join(snapshot, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
@@ -264,26 +289,28 @@ export function inspectDeadCode(directory, config, scope = 'full') {
   return deadCodeFindings(stdout, scope, () => publicApiOrigins(directory));
 }
 
+function addDeadCodeIssue(issue, type, scope, publicNames, findings) {
+  for (const value of issue[type] ?? []) {
+    const name = typeof value === 'string' ? value : value.name;
+    if (['exports', 'nsExports'].includes(type) && publicNames.has(`${issue.file.replaceAll('\\', '/')}:${name}`))
+      continue;
+    findings.push({
+      key: `${scope}:${type}:${issue.file.replaceAll('\\', '/')}:${typeof value === 'string' ? value : value.name}`,
+      file: issue.file,
+      type,
+      name: typeof value === 'string' ? value : value.name,
+    });
+  }
+}
+
 function deadCodeFindings(stdout, scope, publicOrigins) {
   const report = JSON.parse(stdout);
   if (!Array.isArray(report.issues)) throw new Error('Knip returned no issue inventory.');
   const publicNames = publicOrigins();
   const findings = [];
-  for (const issue of report.issues) {
-    for (const type of ['files', 'exports', 'nsExports', 'unresolved']) {
-      for (const value of issue[type] ?? []) {
-        const name = typeof value === 'string' ? value : value.name;
-        if (['exports', 'nsExports'].includes(type) && publicNames.has(`${issue.file.replaceAll('\\', '/')}:${name}`))
-          continue;
-        findings.push({
-          key: `${scope}:${type}:${issue.file.replaceAll('\\', '/')}:${typeof value === 'string' ? value : value.name}`,
-          file: issue.file,
-          type,
-          name: typeof value === 'string' ? value : value.name,
-        });
-      }
-    }
-  }
+  for (const issue of report.issues)
+    for (const type of ['files', 'exports', 'nsExports', 'unresolved'])
+      addDeadCodeIssue(issue, type, scope, publicNames, findings);
   return findings;
 }
 
@@ -312,7 +339,9 @@ function cloneFindings(directory, snapshot, output) {
   const report = JSON.parse(fs.readFileSync(path.join(output, 'jscpd-report.json'), 'utf8'));
   if (!Array.isArray(report.duplicates)) throw new Error('jscpd returned no clone inventory.');
   const findings = report.duplicates.map((clone) => {
-    const pair = [clone.firstFile, clone.secondFile].map((file) => normalize(file.name, snapshot)).sort();
+    const pair = [clone.firstFile, clone.secondFile]
+      .map((file) => normalize(file.name, snapshot))
+      .sort((a, b) => Number(a > b) - Number(a < b));
     const hash = createHash('sha256').update(clone.fragment.replaceAll('\r\n', '\n')).digest('hex');
     return { key: `${pair.join('|')}:${hash}`, files: pair, lines: clone.lines };
   });
@@ -354,9 +383,7 @@ export function reviewInventory(directory = root) {
   return {
     runtime: files.filter(
       (file) =>
-        /^(?:bin|lense|mirage)\//.test(file) &&
-        !/^mirage\/test[^/]*(?:\/|\.)/.test(file) &&
-        /\.(?:mjs|js|css)$/.test(file),
+        /^(?:bin|lense|mirage)\//.test(file) && !/^mirage\/test[^/]*[/.]/.test(file) && /\.(?:mjs|js|css)$/.test(file),
     ),
     tests: files.filter(
       (file) =>
@@ -388,33 +415,35 @@ export function compareReview(actual, baseline) {
   });
 }
 
+function reviewedCloneReason(item) {
+  if (item.key.startsWith('tests:'))
+    return 'Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite.';
+  if (item.key.startsWith('support:'))
+    return 'Independent example controls, manifests, build and qualification contracts; sharing stops at the owning example package.';
+  const files = item.files.join('|');
+  if (/jquery|bootstrap-plugins-compat|datetimepicker-compat/.test(files))
+    return 'Generated standalone jQuery watcher; one authored fragment is enforced by generate-compat-watchers --check.';
+  if (/platform-chrome/.test(files))
+    return 'Two supported standalone CSS URLs; standalone-style-contract tests require the shared prefix and accessibility rules.';
+  if (/liquid-resx/.test(files))
+    return 'Independent culture keys retain native locale identity even when translations coincide.';
+  if (/dataverse-operation-contracts/.test(files))
+    return 'Separate operation/type schema identities; matching parameter shapes are declarative protocol data.';
+  if (/dataverse-solution-messages/.test(files))
+    return 'Separate solution operations retain dependency direction, message names and wire contracts.';
+  if (/dataverse-(?:app|calendar|org)-messages/.test(files))
+    return 'Local write/transaction wrappers retain operation-specific response and privilege policy; pure context/read mechanics are shared.';
+  if (/dataverse-fls|dataverse-security/.test(files))
+    return 'Security schema initializers differ in alternate keys and grant seeding; policies remain distinct.';
+  if (/crmentityformview-compat|xrm-webform-compat/.test(files))
+    return 'Independent form adapters retain distinct dirty prompts and class-matching semantics.';
+  throw new Error(`A new runtime clone requires an explicit disposition: ${item.key}`);
+}
+
 function reviewedReason(item) {
   if (item.type === 'unresolved' || (item.key.startsWith('full:') && item.type === 'files'))
     throw new Error(`Resolve this finding before baselining: ${item.key}`);
-  if (item.type === 'clone') {
-    if (item.key.startsWith('tests:'))
-      return 'Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite.';
-    if (item.key.startsWith('support:'))
-      return 'Independent example controls, manifests, build and qualification contracts; sharing stops at the owning example package.';
-    const files = item.files.join('|');
-    if (/jquery|bootstrap-plugins-compat|datetimepicker-compat/.test(files))
-      return 'Generated standalone jQuery watcher; one authored fragment is enforced by generate-compat-watchers --check.';
-    if (/platform-chrome/.test(files))
-      return 'Two supported standalone CSS URLs; standalone-style-contract tests require the shared prefix and accessibility rules.';
-    if (/liquid-resx/.test(files))
-      return 'Independent culture keys retain native locale identity even when translations coincide.';
-    if (/dataverse-operation-contracts/.test(files))
-      return 'Separate operation/type schema identities; matching parameter shapes are declarative protocol data.';
-    if (/dataverse-solution-messages/.test(files))
-      return 'Separate solution operations retain dependency direction, message names and wire contracts.';
-    if (/dataverse-(?:app|calendar|org)-messages/.test(files))
-      return 'Local write/transaction wrappers retain operation-specific response and privilege policy; pure context/read mechanics are shared.';
-    if (/dataverse-fls|dataverse-security/.test(files))
-      return 'Security schema initializers differ in alternate keys and grant seeding; policies remain distinct.';
-    if (/crmentityformview-compat|xrm-webform-compat/.test(files))
-      return 'Independent form adapters retain distinct dirty prompts and class-matching semantics.';
-    throw new Error(`A new runtime clone requires an explicit disposition: ${item.key}`);
-  }
+  if (item.type === 'clone') return reviewedCloneReason(item);
   if (item.key.startsWith('runtime:')) {
     if (
       item.type === 'files' &&

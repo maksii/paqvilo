@@ -41,8 +41,8 @@ export function operationHandlers(packs = []) {
 
 export function assertOperationRole(record, identity) {
   const allowed = (record.roleIds ?? []).map(canonical);
-  const held = (identity?.roleIds ?? []).map(canonical);
-  if (!allowed.length || !allowed.some((id) => held.includes(id)))
+  const held = new Set((identity?.roleIds ?? []).map(canonical));
+  if (!allowed.length || !allowed.some((id) => held.has(id)))
     throw failure('The current web roles cannot execute this operation.', 403, 'Forbidden');
 }
 
@@ -58,9 +58,19 @@ const REASONS = {
   501: 'Not Implemented',
   502: 'Bad Gateway',
 };
+const envelopeBody = (body) => {
+  if (body == null) return '';
+  return typeof body === 'string' ? body : stringifyExactJson(body);
+};
+const reasonOf = (status) => {
+  if (status === 404) return 'Not Found';
+  if (status === 204) return 'No Content';
+  if (status === 201) return 'Created';
+  return 'OK';
+};
 const envelope = (status, body = '', headers = {}, serverError = null) => ({
   StatusCode: status,
-  Body: body == null ? '' : typeof body === 'string' ? body : stringifyExactJson(body),
+  Body: envelopeBody(body),
   IsSuccessStatusCode: status >= 200 && status < 300,
   ReasonPhrase: serverError ?? REASONS[status] ?? String(status),
   ServerError: Boolean(serverError),
@@ -371,6 +381,105 @@ export async function runExportedServerLogic({
       if (!complete) finish(failure(`Server-logic worker stopped before returning a result (${code}).`));
     });
     worker.on('message', (message) => inSpan(() => answerMessage(message)));
+    const answerBridgeMessage = async (message) => {
+      let answer;
+      try {
+        answer = { value: await bridges[message.kind](message) };
+      } catch (error) {
+        answer = { value: envelope(error.status ?? 500, '', {}, error.message) };
+      }
+      return reply(message, answer);
+    };
+    const readWorkerOperation = (message, params) => {
+      if (message.kind === 'query')
+        return store.query(message.entitySet, params, identity, undefined, { dialect: 'dataverse' });
+      const row = store.get(message.entitySet, message.id, identity);
+      if (!row || !params.size) return row;
+      const mapping = store.resolveMapping(message.entitySet);
+      const requested = params.get('$filter');
+      const idFilter = `${mapping.idColumn} eq '${String(message.id).replaceAll("'", "''")}'`;
+      params.set('$filter', requested ? `(${requested}) and (${idFilter})` : idFilter);
+      return store.query(message.entitySet, params, identity, undefined, { dialect: 'dataverse' }).value[0];
+    };
+    const successfulWorkerAnswer = (data, status) => ({
+      value: {
+        StatusCode: status,
+        Body: data === undefined ? '' : stringifyExactJson(data),
+        IsSuccessStatusCode: status < 400,
+        ReasonPhrase: reasonOf(status),
+        ServerError: false,
+        ServerErrorMessage: null,
+        Headers: {},
+      },
+    });
+    const failedWorkerAnswer = (error) => ({
+      value: {
+        StatusCode: error.status ?? 500,
+        Body: '{}',
+        IsSuccessStatusCode: false,
+        ReasonPhrase: error.message,
+        ServerError: true,
+        ServerErrorMessage: error.message,
+        Headers: {},
+      },
+    });
+    const workerMutation = (message) => {
+      if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method))
+        throw failure('Local server-logic mutations require a verified write request.', 403, 'Forbidden');
+      let payload;
+      if (message.kind !== 'delete') {
+        payload = parseExactJson(message.payload);
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload))
+          throw failure('The Dataverse payload must be a JSON object.', 400, 'InvalidRequest');
+      }
+      // The one portal write path (form-service.mjs portalRecordWrites): table permissions, the record pipeline and, under
+      // enhanced authorization, the visitor's mapped user and column security.
+      const writes = portalRecordWrites(store),
+        write = (fn) => store.transact(fn, { incremental: true });
+      return { payload, writes, write };
+    };
+    const answerDataMessage = async (message) => {
+      let answer;
+      try {
+        const params = new URLSearchParams(String(message.options ?? '').replace(/^\?/, ''));
+        let data,
+          status = 200;
+        if (message.kind === 'query' || message.kind === 'get') data = readWorkerOperation(message, params);
+        else {
+          const { payload, writes, write } = workerMutation(message);
+          switch (message.kind) {
+            case 'create':
+              data = await write(() => writes.create(message.entitySet, payload, identity));
+              status = 201;
+              break;
+            case 'update':
+              await write(() => writes.update(message.entitySet, message.id, payload, identity));
+              status = 204;
+              break;
+            case 'delete':
+              await write(() => writes.remove(message.entitySet, message.id, identity));
+              status = 204;
+              break;
+          }
+        }
+        if (['query', 'get'].includes(message.kind) && !data) status = 404;
+        answer = successfulWorkerAnswer(data, status);
+      } catch (error) {
+        answer = failedWorkerAnswer(error);
+      }
+      reply(message, answer);
+    };
+    const finishWorkerMessage = (message) => {
+      if (message.kind === 'result') {
+        finish(null, message.raw);
+        return true;
+      }
+      if (message.kind === 'failure') {
+        finish(failure(message.message));
+        return true;
+      }
+      return false;
+    };
     const answerMessage = async (message) => {
       if (complete) return;
       if (message.kind === 'ready') {
@@ -381,8 +490,7 @@ export async function runExportedServerLogic({
         );
         return;
       }
-      if (message.kind === 'result') return finish(null, message.raw);
-      if (message.kind === 'failure') return finish(failure(message.message));
+      if (finishWorkerMessage(message)) return;
       if (message.kind === 'log') {
         span?.event('trace', { message: message.message, attributes: { level: message.level ?? null } });
         return (services.log ?? (() => {}))({
@@ -396,85 +504,9 @@ export async function runExportedServerLogic({
         span?.event('diagnostic', { message: message.message, attributes: { code: message.code ?? null } });
         return note({ code: message.code, message: message.message });
       }
-      if (bridges[message.kind]) {
-        let answer;
-        try {
-          answer = { value: await bridges[message.kind](message) };
-        } catch (error) {
-          answer = { value: envelope(error.status ?? 500, '', {}, error.message) };
-        }
-        return reply(message, answer);
-      }
+      if (bridges[message.kind]) return answerBridgeMessage(message);
       if (!['query', 'get', 'create', 'update', 'delete'].includes(message.kind)) return;
-      let answer;
-      try {
-        const params = new URLSearchParams(String(message.options ?? '').replace(/^\?/, ''));
-        let data,
-          status = 200;
-        if (message.kind === 'query')
-          data = store.query(message.entitySet, params, identity, undefined, { dialect: 'dataverse' });
-        else if (message.kind === 'get') {
-          const row = store.get(message.entitySet, message.id, identity);
-          if (row && params.size) {
-            const mapping = store.resolveMapping(message.entitySet);
-            const requested = params.get('$filter');
-            const idFilter = `${mapping.idColumn} eq '${String(message.id).replace(/'/g, "''")}'`;
-            params.set('$filter', requested ? `(${requested}) and (${idFilter})` : idFilter);
-            data = store.query(message.entitySet, params, identity, undefined, { dialect: 'dataverse' }).value[0];
-          } else data = row;
-        } else {
-          if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method))
-            throw failure('Local server-logic mutations require a verified write request.', 403, 'Forbidden');
-          let payload;
-          if (message.kind !== 'delete') {
-            payload = parseExactJson(message.payload);
-            if (!payload || typeof payload !== 'object' || Array.isArray(payload))
-              throw failure('The Dataverse payload must be a JSON object.', 400, 'InvalidRequest');
-          }
-          // The one portal write path (form-service.mjs portalRecordWrites): table permissions, the record pipeline and, under
-          // enhanced authorization, the visitor's mapped user and column security.
-          const writes = portalRecordWrites(store),
-            write = (fn) => store.transact(fn, { incremental: true });
-          if (message.kind === 'create') {
-            data = await write(() => writes.create(message.entitySet, payload, identity));
-            status = 201;
-          }
-          if (message.kind === 'update') {
-            await write(() => writes.update(message.entitySet, message.id, payload, identity));
-            status = 204;
-          }
-          if (message.kind === 'delete') {
-            await write(() => writes.remove(message.entitySet, message.id, identity));
-            status = 204;
-          }
-        }
-        if (['query', 'get'].includes(message.kind) && !data) status = 404;
-        answer = {
-          value: {
-            StatusCode: status,
-            Body: data === undefined ? '' : stringifyExactJson(data),
-            IsSuccessStatusCode: status < 400,
-            ReasonPhrase:
-              status === 404 ? 'Not Found' : status === 204 ? 'No Content' : status === 201 ? 'Created' : 'OK',
-            ServerError: false,
-            ServerErrorMessage: null,
-            Headers: {},
-          },
-        };
-      } catch (error) {
-        answer = {
-          value: {
-            StatusCode: error.status ?? 500,
-            Body: '{}',
-            IsSuccessStatusCode: false,
-            ReasonPhrase: error.message,
-            ServerError: true,
-            ServerErrorMessage: error.message,
-            Headers: {},
-          },
-        };
-      }
-      reply(message, answer);
+      return answerDataMessage(message);
     };
   });
   if (!span) return running;
@@ -523,52 +555,16 @@ async function invokeOrganizationOperation(organization, { method, url, payload,
   if (!match || !['GET', 'POST'].includes(verb))
     return error(404, `No HTTP resource was found that matches the request URI '${url}'.`);
   const [, set, key, name, inline] = match;
-  const params = {};
-  for (const part of String(inline ?? '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean)) {
-    const pair = /^([A-Za-z_]\w*)=(?:'((?:[^']|'')*)'|(-?\d+(?:\.\d+)?)|(true|false|null))$/.exec(part);
-    if (!pair) return error(400, `The function parameter '${part}' is not a literal parameter.`);
-    params[pair[1]] =
-      pair[2] !== undefined
-        ? pair[2].replace(/''/g, "'")
-        : pair[3] !== undefined
-          ? Number(pair[3])
-          : pair[4] === 'null'
-            ? null
-            : pair[4] === 'true';
-  }
+  const parameterResult = parseOperationParameters(inline, error);
+  if (parameterResult.error) return parameterResult.error;
+  const params = parameterResult.params;
   const store = organization.store;
-  let mapping = null,
-    target = null;
-  if (set) {
-    try {
-      mapping = store.resolveMapping(set);
-    } catch {
-      return error(404, `Resource not found for the segment '${set}'.`);
-    }
-    const id = key == null ? null : String(key).replace(/^'|'$/g, '');
-    target = {
-      mapping,
-      id,
-      row: id
-        ? (store.tableRows(mapping.logicalName).find((row) => canonical(row[mapping.idColumn]) === canonical(id)) ??
-          null)
-        : null,
-    };
-    if (id && !target.row) return error(404, `${mapping.logicalName} With Id = ${id} Does Not Exist`);
-    // Table permissions govern what server logic reaches; the native status and code of a denial are a guess.
-    if (target.row && !store.allowed(mapping.logicalName, 'read', target.row, identity ?? {}))
-      return {
-        status: 403,
-        body: {
-          error: { code: 'Forbidden', message: `The current portal user cannot read ${mapping.logicalName} ${id}.` },
-        },
-        headers: {},
-      };
-  }
-  const binding = !set ? 'unbound' : key == null ? 'collection' : 'entity';
+  const resolvedTarget = resolveOperationTarget(set, key, store, identity, error);
+  if (resolvedTarget.response) return resolvedTarget.response;
+  const { mapping, target } = resolvedTarget;
+  let binding = 'entity';
+  if (!set) binding = 'unbound';
+  else if (key == null) binding = 'collection';
   const operation = organization.registry.find({
     name,
     kind: verb === 'GET' ? 'function' : 'action',
@@ -576,16 +572,83 @@ async function invokeOrganizationOperation(organization, { method, url, payload,
     entity: mapping?.logicalName,
   });
   if (!operation) return error(404, `Resource not found for the segment '${name}'.`);
+  return invokeRegisteredOperation(organization, store, operation, {
+    method: verb,
+    path,
+    params,
+    payload,
+    principal,
+    origin,
+    target,
+  });
+}
+
+function parseOperationParameters(inline, error) {
+  const params = {};
+  for (const part of String(inline ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)) {
+    const pair = /^([A-Za-z_]\w*)=(?:'((?:[^']|'')*)'|(-?\d+(?:\.\d+)?)|(true|false|null))$/.exec(part); // NOSONAR: regex kept: a rewrite would change matches or captures
+    if (!pair) return { error: error(400, `The function parameter '${part}' is not a literal parameter.`) };
+    let paramValue;
+    if (pair[2] !== undefined) paramValue = pair[2].replaceAll("''", "'");
+    else if (pair[3] !== undefined) paramValue = Number(pair[3]);
+    else if (pair[4] === 'null') paramValue = null;
+    else paramValue = pair[4] === 'true';
+    params[pair[1]] = paramValue;
+  }
+  return { params };
+}
+
+function resolveOperationTarget(set, key, store, identity, error) {
+  let mapping = null,
+    target = null;
+  if (!set) return { mapping, target };
+  try {
+    mapping = store.resolveMapping(set);
+  } catch {
+    return { response: error(404, `Resource not found for the segment '${set}'.`) };
+  }
+  const id = key == null ? null : String(key).replace(/^'|'$/g, '');
+  target = {
+    mapping,
+    id,
+    row: id
+      ? (store.tableRows(mapping.logicalName).find((row) => canonical(row[mapping.idColumn]) === canonical(id)) ?? null)
+      : null,
+  };
+  if (id && !target.row) return { response: error(404, `${mapping.logicalName} With Id = ${id} Does Not Exist`) };
+  // Table permissions govern what server logic reaches; the native status and code of a denial are a guess.
+  if (target.row && !store.allowed(mapping.logicalName, 'read', target.row, identity ?? {}))
+    return {
+      response: {
+        status: 403,
+        body: {
+          error: { code: 'Forbidden', message: `The current portal user cannot read ${mapping.logicalName} ${id}.` },
+        },
+        headers: {},
+      },
+    };
+  return { mapping, target };
+}
+
+async function invokeRegisteredOperation(
+  organization,
+  store,
+  operation,
+  { method, path, params, payload, principal, origin, target },
+) {
   try {
     // The Web API operation call (dataverse-api.mjs runOperation) for the principal's systemuser row.
     const user = store.tableRows('systemuser').find((row) => canonical(row.systemuserid) === canonical(principal));
     const principalContext = organizationPrincipalContext(store, user);
     const c = {
-      method: verb,
+      method,
       url: new URL(path, `${origin}/api/data/v9.2/`),
       route: { version: 'v9.2' },
       params,
-      body: verb === 'POST' ? (payload ?? {}) : undefined,
+      body: method === 'POST' ? (payload ?? {}) : undefined,
       user: principalContext.user,
       caller: principalContext.caller,
       identity: principalContext.identity,
@@ -612,6 +675,59 @@ async function invokeOrganizationOperation(organization, { method, url, payload,
  * Read only workflow JSON paired with its exported WorkflowId in selected layers. The Workflows folder matches without case,
  * in a directory or a Solution ZIP layer (solutionLayerFiles); a file above 1 MiB or an unreadable layer is skipped.
  */
+function importYamlWorkflows(layer, result, limit) {
+  if (layer.format !== 'yaml') return;
+  for (const [id, entry] of modernFlowWorkflows(layer.files ?? [], (file) => {
+    try {
+      return readLocalFileSync(file.path, { root: layer.dir, maxBytes: limit, encoding: 'utf8' });
+    } catch {
+      return null;
+    }
+  }))
+    result.set(id, entry);
+}
+
+function workflowEntries(layer) {
+  try {
+    return solutionLayerFiles(layer, /^workflows$/i).filter((file) => /^[^/]+\/[^/]+$/.test(file.name));
+  } catch {
+    return null;
+  }
+}
+
+function importWorkflowEntry(layer, entry, byName, result, limit) {
+  const name = entry.name.slice(entry.name.indexOf('/') + 1);
+  if (!/\.json\.data\.xml$/i.test(name)) return;
+  const pair = [entry, byName.get(name.replace(/\.data\.xml$/i, '').toLowerCase())];
+  const files = pair.map((file) => file && path.join(layer.dir, ...file.name.split('/')));
+  const contained = pair.map((file) => {
+    try {
+      return file ? file.read(limit).toString('utf8') : null;
+    } catch {
+      return null;
+    }
+  });
+  if (contained.includes(null)) return;
+  const xml = parseSolutionXml(contained[0]);
+  const id = canonical(xml.attrs.WorkflowId ?? descendants(xml, 'Workflow')[0]?.attrs.WorkflowId);
+  if (!/^[0-9a-f-]{36}$/.test(id)) return;
+  const node = descendants(xml, 'Workflow')[0] ?? xml,
+    state =
+      childText(node, 'StateCode') ??
+      childText(node, 'statecode') ??
+      node.attrs.StateCode ??
+      node.attrs.statecode ??
+      null;
+  const active = state === null ? null : ['1', 'activated'].includes(String(state).toLowerCase());
+  result.set(id, {
+    file: files[1],
+    name: xml.attrs.Name ?? node.attrs.Name ?? null,
+    active,
+    activation: { sourceValue: state, sourceFile: files[0] },
+    definition: parseExactJson(contained[1]),
+  });
+}
+
 export async function importOperationWorkflows(layers = []) {
   const result = new Map(),
     limit = 1024 * 1024;
@@ -619,54 +735,11 @@ export async function importOperationWorkflows(layers = []) {
     if (!layer.dir) continue;
     // A YAML repository layer: its modernflows/ cloud flows normalise into the same entries (flow-yaml.mjs); a file that does
     // not parse is reported by its inventory record (MODERNFLOW_YAML_INVALID).
-    if (layer.format === 'yaml')
-      for (const [id, entry] of modernFlowWorkflows(layer.files ?? [], (file) => {
-        try {
-          return readLocalFileSync(file.path, { root: layer.dir, maxBytes: limit, encoding: 'utf8' });
-        } catch {
-          return null;
-        }
-      }))
-        result.set(id, entry);
-    let entries;
-    try {
-      entries = solutionLayerFiles(layer, /^workflows$/i).filter((file) => /^[^/]+\/[^/]+$/.test(file.name));
-    } catch {
-      continue;
-    }
+    importYamlWorkflows(layer, result, limit);
+    const entries = workflowEntries(layer);
+    if (!entries) continue;
     const byName = new Map(entries.map((file) => [file.name.slice(file.name.indexOf('/') + 1).toLowerCase(), file]));
-    for (const entry of entries) {
-      const name = entry.name.slice(entry.name.indexOf('/') + 1);
-      if (!/\.json\.data\.xml$/i.test(name)) continue;
-      const pair = [entry, byName.get(name.replace(/\.data\.xml$/i, '').toLowerCase())];
-      const files = pair.map((file) => file && path.join(layer.dir, ...file.name.split('/')));
-      const contained = pair.map((file) => {
-        try {
-          return file ? file.read(limit).toString('utf8') : null;
-        } catch {
-          return null;
-        }
-      });
-      if (contained.some((value) => value === null)) continue;
-      const xml = parseSolutionXml(contained[0]);
-      const id = canonical(xml.attrs.WorkflowId ?? descendants(xml, 'Workflow')[0]?.attrs.WorkflowId);
-      if (!/^[0-9a-f-]{36}$/.test(id)) continue;
-      const node = descendants(xml, 'Workflow')[0] ?? xml,
-        state =
-          childText(node, 'StateCode') ??
-          childText(node, 'statecode') ??
-          node.attrs.StateCode ??
-          node.attrs.statecode ??
-          null;
-      const active = state === null ? null : ['1', 'activated'].includes(String(state).toLowerCase());
-      result.set(id, {
-        file: files[1],
-        name: xml.attrs.Name ?? node.attrs.Name ?? null,
-        active,
-        activation: { sourceValue: state, sourceFile: files[0] },
-        definition: parseExactJson(contained[1]),
-      });
-    }
+    for (const entry of entries) importWorkflowEntry(layer, entry, byName, result, limit);
   }
   return result;
 }

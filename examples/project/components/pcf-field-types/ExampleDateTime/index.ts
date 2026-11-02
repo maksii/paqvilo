@@ -38,12 +38,9 @@ export class ExampleDateTime implements ComponentFramework.StandardControl<IInpu
   ): void {
     this._notifyOutputChanged = notifyOutputChanged;
     const initialRaw: unknown = context.parameters.controlValue.raw;
-    const raw =
-      initialRaw instanceof Date
-        ? initialRaw
-        : typeof initialRaw === 'string' && initialRaw
-          ? new Date(initialRaw)
-          : undefined;
+    let raw: Date | undefined;
+    if (initialRaw instanceof Date) raw = initialRaw;
+    else if (typeof initialRaw === 'string' && initialRaw) raw = new Date(initialRaw);
     this._value = raw && !Number.isNaN(raw.getTime()) ? raw : undefined;
     this.input = document.createElement('input');
     this.input.type = 'datetime-local';
@@ -56,7 +53,9 @@ export class ExampleDateTime implements ComponentFramework.StandardControl<IInpu
   public updateView(context: ComponentFramework.Context<IInputs>): void {
     if (document.activeElement === this.input) return;
     const value: unknown = context.parameters.controlValue.raw;
-    const raw = value instanceof Date ? value : typeof value === 'string' && value ? new Date(value) : undefined;
+    let raw: Date | undefined;
+    if (value instanceof Date) raw = value;
+    else if (typeof value === 'string' && value) raw = new Date(value);
     const next = raw && !Number.isNaN(raw.getTime()) ? raw : undefined;
     const same = this._value?.getTime() === next?.getTime();
     if (same) return;

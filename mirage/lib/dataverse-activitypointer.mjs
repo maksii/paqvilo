@@ -162,16 +162,22 @@ async function getCollection(c, api) {
     });
     const query = new URLSearchParams(params);
     query.delete('$skiptoken');
-    const text = query.toString().replace(/%24/g, '$');
+    const text = query.toString().replaceAll('%24', '$');
+    const queryPrefix = text ? text + '&' : '';
     body['@odata.nextLink'] =
-      `${c.origin}/api/data/${c.version}/${SET}?${text ? `${text}&` : ''}$skiptoken=${skipTokenQueryValue(decodeURIComponent(token))}`;
+      `${c.origin}/api/data/${c.version}/${SET}?${queryPrefix}$skiptoken=${skipTokenQueryValue(decodeURIComponent(token))}`;
   }
   return { status: 200, body };
 }
 
 const missingRow = (id) =>
   new DataError(`${LOGICAL} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id, innerCode: '0x80040217' });
-const idInKey = (pathname) => /\(([^)]*)\)/.exec(pathname)?.[1];
+const idInKey = (pathname) => {
+  const start = pathname.indexOf('(');
+  if (start < 0) return undefined;
+  const end = pathname.indexOf(')', start + 1);
+  return end < 0 ? undefined : pathname.slice(start + 1, end);
+};
 
 // The activity row a key names, from whichever activity table holds it.
 async function getEntity(c, api) {

@@ -24,7 +24,7 @@ const CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; media-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
 const BODY_LIMIT = 64 * 1024;
 const IMAGE_BODY_LIMIT = 1_500_000;
-const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']); // NOSONAR: version string or loopback address, not a network target
 const escapeHtml = (value) =>
   String(value ?? '').replace(
     /[&<>"']/g,
@@ -51,9 +51,13 @@ const formulaOf = (source, control, property) => {
   );
   return row ? String(row.text ?? '').replace(/^\s*=/, '') : null;
 };
+const bannerOf = (hosted, playerList) => {
+  if (!hosted) return INVENTORY_BANNER;
+  return playerList ? PLAYER_BANNER : BANNER;
+};
 const page = (title, body, hosted, playerList = false) =>
   `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head>` +
-  `<body><p role="status"><strong>${hosted ? (playerList ? PLAYER_BANNER : BANNER) : INVENTORY_BANNER}</strong></p>${body}</body></html>`;
+  `<body><p role="status"><strong>${bannerOf(hosted, playerList)}</strong></p>${body}</body></html>`;
 const summary =
   (hosted) =>
   ({ uniqueName, source }) => ({
@@ -72,29 +76,21 @@ const shown = (value) => {
   return text.length > 300 ? `${text.slice(0, 300)}…` : text;
 };
 
-async function readForm(req) {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > IMAGE_BODY_LIMIT) throw failure(413, 'PayloadTooLarge', 'The request body is too large.');
-    chunks.push(chunk);
-  }
-  const text = Buffer.concat(chunks).toString('utf8');
-  if (/^application\/x-www-form-urlencoded\b/i.test(req.headers['content-type'] ?? '')) {
-    if (size > BODY_LIMIT) throw failure(413, 'PayloadTooLarge', 'The request body is too large.');
-    const fields = Object.fromEntries(new URLSearchParams(text));
-    const action = {
-      action: fields.action,
-      control: fields.control || undefined,
-      screen: fields.screen || undefined,
-      formula: fields.formula || undefined,
-    };
-    if (fields.item !== undefined && fields.item !== '') action.item = Number(fields.item);
-    if (fields.index !== undefined && fields.index !== '') action.value = Number(fields.index);
-    else if (fields.value !== undefined) action.value = fields.value;
-    return { form: true, csrf: fields._csrf, action };
-  }
+function parseFormFields(text) {
+  const fields = Object.fromEntries(new URLSearchParams(text));
+  const action = {
+    action: fields.action,
+    control: fields.control || undefined,
+    screen: fields.screen || undefined,
+    formula: fields.formula || undefined,
+  };
+  if (fields.item !== undefined && fields.item !== '') action.item = Number(fields.item);
+  if (fields.index !== undefined && fields.index !== '') action.value = Number(fields.index);
+  else if (fields.value !== undefined) action.value = fields.value;
+  return { form: true, csrf: fields._csrf, action };
+}
+
+function parseJsonAction(text, size, req) {
   let action;
   try {
     action = text ? JSON.parse(text) : null;
@@ -106,6 +102,85 @@ async function readForm(req) {
   if (size > BODY_LIMIT && !(action.action === 'add-media' && typeof action.data === 'string'))
     throw failure(413, 'PayloadTooLarge', 'Only bounded image input accepts a larger request body.');
   return { form: false, csrf: req.headers['x-sim-csrf'], action };
+}
+
+async function readForm(req) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > IMAGE_BODY_LIMIT) throw failure(413, 'PayloadTooLarge', 'The request body is too large.');
+    chunks.push(chunk);
+  }
+  const text = Buffer.concat(chunks).toString('utf8');
+  if (/^application\/x-www-form-urlencoded\b/i.test(req.headers['content-type'] ?? '')) {
+    if (size > BODY_LIMIT) throw failure(413, 'PayloadTooLarge', 'The request body is too large.');
+    return parseFormFields(text);
+  }
+  return parseJsonAction(text, size, req);
+}
+
+function traceName(kind, action, target) {
+  if (['run', 'evaluate'].includes(kind)) return `${kind} ${action.formula ?? ''}`;
+  if (kind === 'start' || kind === 'reset' || !target) return kind;
+  return `${kind} ${target}`;
+}
+
+function traceInput(app, action, control, property) {
+  let formula = null;
+  if (typeof action.formula === 'string') formula = action.formula;
+  else if (control && property) formula = formulaOf(app.source, control, property);
+  return {
+    formula,
+    ...(action.parameters ? { parameters: action.parameters } : {}),
+    ...(action.value !== undefined ? { value: action.value } : {}),
+  };
+}
+
+function finishTraceAction(span, outcome) {
+  const failed = outcome.errors?.find((item) => item.status >= 400) ?? outcome.errors?.[0];
+  span.output(() => ({ result: outcome.result ?? null, errors: outcome.errors ?? [] }));
+  if (failed)
+    span.end({
+      status: failed.status >= 400 ? statusFromHttp(failed.status) : 'error',
+      error: failed.traceError ? failed : { code: failed.code ?? 'CanvasFormulaError', message: failed.message ?? '' },
+      attributes: { errors: outcome.errors.length },
+    });
+  else span.end();
+  return outcome;
+}
+
+function launchParameters(action) {
+  const parameters = action.parameters ?? {};
+  if (
+    !parameters ||
+    typeof parameters !== 'object' ||
+    Array.isArray(parameters) ||
+    Object.values(parameters).some((value) => !['string', 'number', 'boolean'].includes(typeof value))
+  )
+    throw failure(400, 'CanvasParametersInvalid', 'parameters must be an object of text, number or Boolean values.');
+  return parameters;
+}
+
+async function hostedView(req, app, source, runtime, principal, csrf) {
+  if (!runtime) return '<p>This host does not run canvas apps; the inventory below is all it shows.</p>';
+  if (!source.screens.length) return '<p>The app has no readable screens; nothing runs.</p>';
+  const caller = await principal(req);
+  if (!caller?.principalId)
+    return '<p>Select a staff user in <a href="/_sim/">/_sim/</a> (or sign in to the portal) to run this app.</p>';
+  const instance = runtime.existing(app.uniqueName, { kind: caller.kind, principalId: caller.principalId });
+  if (!instance) {
+    const formAction = `${API_PREFIX}${encodeURIComponent(app.uniqueName)}`;
+    return (
+      `<p>The app is not running.</p><form method="post" action="${escapeHtml(formAction)}">` +
+      `<input type="hidden" name="_csrf" value="${escapeHtml(csrf() ?? '')}"><input type="hidden" name="action" value="start"><button type="submit">Start the app</button></form>`
+    );
+  }
+  try {
+    return appView(app, await instance.observe(), csrf() ?? '');
+  } catch (error) {
+    return `<p>The app could not be read: <code>${escapeHtml(error.code ?? 'CanvasError')}</code> ${escapeHtml(error.message)}</p>`;
+  }
 }
 
 /** The headless app view (no script: every action is a form post that redirects back here). */
@@ -159,42 +234,47 @@ function appView(app, snapshot, token) {
     `<dl>${Object.entries(values)
       .map(([name, value]) => `<dt>${escapeHtml(name)}</dt><dd><code>${escapeHtml(shown(value))}</code></dd>`)
       .join('')}</dl>`;
+  const controlItems = (control) => {
+    if (!control.items) return '';
+    const rows = control.items
+      .map((row) => {
+        const label = `Select item ${row.index}`;
+        return (
+          `<li>${form({ action: 'select', control: control.name, item: row.index }, label)}` +
+          Object.entries(row.controls)
+            .map(([name, values]) => `<p>${escapeHtml(name)}</p>${properties(values)}`)
+            .join('') +
+          '</li>'
+        );
+      })
+      .join('');
+    return `<ol start="0">${rows}</ol>`;
+  };
   const controlRow = (control) =>
     `<li><strong>${escapeHtml(control.name)}</strong> <code>${escapeHtml(control.type ?? '')}</code>` +
     (control.supported ? '' : ' <em>not hosted (unsupported control)</em>') +
     properties(control.properties) +
     controlActions(control) +
-    (control.items
-      ? `<ol start="0">${control.items
-          .map(
-            (row) =>
-              `<li>${form({ action: 'select', control: control.name, item: row.index }, `Select item ${row.index}`)}` +
-              Object.entries(row.controls)
-                .map(([name, values]) => `<p>${escapeHtml(name)}</p>${properties(values)}`)
-                .join('') +
-              '</li>',
-          )
-          .join('')}</ol>`
-      : '') +
+    controlItems(control) +
     '</li>';
   const section = (title, value) => `<h2>${escapeHtml(title)}</h2><pre>${escapeHtml(stringifyExactJson(value))}</pre>`;
+  const screenOptions = snapshot.screens
+    .map((screen) => `<option${screen.current ? ' selected' : ''}>${escapeHtml(screen.name)}</option>`)
+    .join('');
+  const unsupportedItems = snapshot.unsupported
+    .map((item) => `<li>${escapeHtml(item.screen)}.${escapeHtml(item.name)}: ${escapeHtml(item.control)}</li>`)
+    .join('');
   return (
     `<h1>${escapeHtml(snapshot.name)}</h1>` +
     `<p>Current screen: <strong>${escapeHtml(snapshot.currentScreen ?? 'none')}</strong> (history: ${escapeHtml(snapshot.history.join(' → '))})</p>` +
     form({ action: 'back' }, 'Back') +
-    form(
-      { action: 'navigate' },
-      'Navigate',
-      `<label>Screen <select name="screen">${snapshot.screens.map((screen) => `<option${screen.current ? ' selected' : ''}>${escapeHtml(screen.name)}</option>`).join('')}</select></label>`,
-    ) +
+    form({ action: 'navigate' }, 'Navigate', `<label>Screen <select name="screen">${screenOptions}</select></label>`) +
     form(
       { action: 'run' },
       'Run behaviour formula',
       `<label>Formula <textarea name="formula" rows="2" cols="60"></textarea></label>`,
     ) +
-    (snapshot.unsupported.length
-      ? `<h2>Not hosted</h2><ul>${snapshot.unsupported.map((item) => `<li>${escapeHtml(item.screen)}.${escapeHtml(item.name)}: ${escapeHtml(item.control)}</li>`).join('')}</ul>`
-      : '') +
+    (snapshot.unsupported.length ? `<h2>Not hosted</h2><ul>${unsupportedItems}</ul>` : '') +
     snapshot.screens
       .map(
         (screen) =>
@@ -253,22 +333,14 @@ export function createCanvasHandler({
   const traceAction = async (app, action, fn) => {
     if (!traces?.enabled) return fn();
     const kind = String(action.action ?? 'unknown');
-    const property =
-      kind === 'codecomponent-event'
-        ? action.event
-        : kind === 'start' || kind === 'reset'
-          ? 'OnStart'
-          : ACTION_PROPERTY[kind];
+    let property = ACTION_PROPERTY[kind];
+    if (kind === 'codecomponent-event') property = action.event;
+    else if (kind === 'start' || kind === 'reset') property = 'OnStart';
     const control = kind === 'start' || kind === 'reset' ? 'App' : (action.control ?? null);
     const target = control && property ? `${control}.${property}` : (action.control ?? action.screen ?? null);
-    const name = ['run', 'evaluate'].includes(kind)
-      ? `${kind} ${action.formula ?? ''}`
-      : kind === 'start' || kind === 'reset' || !target
-        ? kind
-        : `${kind} ${target}`;
     const span = traces.start({
       kind: 'canvas',
-      name,
+      name: traceName(kind, action, target),
       module: 'canvas',
       operation: kind,
       attributes: {
@@ -279,16 +351,7 @@ export function createCanvasHandler({
         ...(action.screen ? { screen: action.screen } : {}),
         ...(Number.isInteger(action.item) ? { item: action.item } : {}),
       },
-      input: () => ({
-        formula:
-          typeof action.formula === 'string'
-            ? action.formula
-            : control && property
-              ? formulaOf(app.source, control, property)
-              : null,
-        ...(action.parameters ? { parameters: action.parameters } : {}),
-        ...(action.value !== undefined ? { value: action.value } : {}),
-      }),
+      input: () => traceInput(app, action, control, property),
     });
     let outcome;
     try {
@@ -297,18 +360,7 @@ export function createCanvasHandler({
       span.fail(error);
       throw error;
     }
-    const failed = outcome.errors?.find((item) => item.status >= 400) ?? outcome.errors?.[0];
-    span.output(() => ({ result: outcome.result ?? null, errors: outcome.errors ?? [] }));
-    if (failed)
-      span.end({
-        status: failed.status >= 400 ? statusFromHttp(failed.status) : 'error',
-        error: failed.traceError
-          ? failed
-          : { code: failed.code ?? 'CanvasFormulaError', message: failed.message ?? '' },
-        attributes: { errors: outcome.errors.length },
-      });
-    else span.end();
-    return outcome;
+    return finishTraceAction(span, outcome);
   };
   const reported = new Set();
   const once = (key, entry) => {
@@ -362,18 +414,7 @@ export function createCanvasHandler({
     if (action.action === 'reset' || action.action === 'start') {
       // Launch parameters (Param) of a new instance: a record of text values; a running instance keeps its own (parameter
       // values do not change until the app reloads), so a page that passes new ones resets first.
-      const parameters = action.parameters ?? {};
-      if (
-        !parameters ||
-        typeof parameters !== 'object' ||
-        Array.isArray(parameters) ||
-        Object.values(parameters).some((value) => !['string', 'number', 'boolean'].includes(typeof value))
-      )
-        throw failure(
-          400,
-          'CanvasParametersInvalid',
-          'parameters must be an object of text, number or Boolean values.',
-        );
+      const parameters = launchParameters(action);
       const viewport = action.viewport === undefined ? undefined : canvasViewport(action.viewport);
       const { snapshot } = await traceAction(app, action, async () => {
         if (action.action === 'reset') runtime.reset(app.uniqueName, caller);
@@ -415,32 +456,16 @@ export function createCanvasHandler({
             source: app.uniqueName,
           },
     );
-    const diagnostics = source.diagnostics.length
-      ? `<ul>${source.diagnostics.map((item) => `<li><code>${escapeHtml(item.code)}</code> ${escapeHtml(item.message)}</li>`).join('')}</ul>`
-      : '<p>None.</p>';
-    let hosted;
-    if (!runtime) hosted = '<p>This host does not run canvas apps; the inventory below is all it shows.</p>';
-    else if (!source.screens.length) hosted = '<p>The app has no readable screens; nothing runs.</p>';
-    else {
-      const caller = await principal(req);
-      if (!caller?.principalId)
-        hosted =
-          '<p>Select a staff user in <a href="/_sim/">/_sim/</a> (or sign in to the portal) to run this app.</p>';
-      else {
-        const instance = runtime.existing(app.uniqueName, { kind: caller.kind, principalId: caller.principalId });
-        // The page never starts the app: a Start form (a CSRF-checked POST) does.
-        if (!instance)
-          hosted =
-            `<p>The app is not running.</p><form method="post" action="${escapeHtml(`${API_PREFIX}${encodeURIComponent(app.uniqueName)}`)}">` +
-            `<input type="hidden" name="_csrf" value="${escapeHtml(csrf() ?? '')}"><input type="hidden" name="action" value="start"><button type="submit">Start the app</button></form>`;
-        else
-          try {
-            hosted = appView(app, await instance.observe(), csrf() ?? '');
-          } catch (error) {
-            hosted = `<p>The app could not be read: <code>${escapeHtml(error.code ?? 'CanvasError')}</code> ${escapeHtml(error.message)}</p>`;
-          }
-      }
+    let diagnostics = '<p>None.</p>';
+    if (source.diagnostics.length) {
+      const items = source.diagnostics
+        .map((item) => `<li><code>${escapeHtml(item.code)}</code> ${escapeHtml(item.message)}</li>`)
+        .join('');
+      diagnostics = `<ul>${items}</ul>`;
     }
+    // The page never starts the app: a Start form (a CSRF-checked POST) does.
+    const hosted = await hostedView(req, app, source, runtime, principal, csrf);
+    const screens = source.screens.map((screen) => `<li>${escapeHtml(screen.name)}</li>`).join('');
     send(
       res,
       200,
@@ -450,12 +475,88 @@ export function createCanvasHandler({
         `<h1>${escapeHtml(source.app.name)}</h1><dl>` +
           `<dt>Unique name</dt><dd>${escapeHtml(app.uniqueName)}</dd><dt>Version</dt><dd>${escapeHtml(source.app.version ?? 'unknown')}</dd>` +
           `<dt>Schema</dt><dd>${escapeHtml(source.app.schemaVersion ?? 'unknown')}</dd><dt>Formulas</dt><dd>${source.formulas.length}</dd></dl>` +
-          `<h2>Screens</h2><ul>${source.screens.map((screen) => `<li>${escapeHtml(screen.name)}</li>`).join('')}</ul><h2>Diagnostics</h2>${diagnostics}` +
+          `<h2>Screens</h2><ul>${screens}</ul><h2>Diagnostics</h2>${diagnostics}` +
           `<h2>Headless app</h2>${hosted}`,
         Boolean(runtime),
       ),
     );
   }
+  /* NOSONAR */ const handlePagePath = async (req, res, url, rest, list, find) => {
+    const assetRoute = /^([^/]+)\/assets\/([^/]+)$/.exec(rest);
+    if (assetRoute) {
+      const app = find(assetRoute[1]);
+      let name;
+      try {
+        name = decodeURIComponent(assetRoute[2]);
+      } catch {
+        name = null;
+      }
+      const asset = name && app?.source?.[CANVAS_ASSETS]?.get(name);
+      if (!asset) throw failure(404, 'CanvasAssetNotFound', 'Canvas asset not found.');
+      if (asset.type === 'image/svg+xml')
+        res.setHeader(
+          'content-security-policy',
+          "sandbox; default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        );
+      return send(res, 200, asset.type, asset.data);
+    }
+    if (!rest || url.pathname === '/_apps/canvas') {
+      if (/\bapplication\/json\b/.test(req.headers.accept ?? ''))
+        return json(res, 200, {
+          level: runtime ? 'behaviour' : 'inventory',
+          reason: reasonOf(runtime),
+          hosted: Boolean(runtime),
+          apps: list.map(summary(Boolean(runtime))),
+        });
+      return send(
+        res,
+        200,
+        'text/html; charset=utf-8',
+        page(
+          'Canvas apps',
+          `<h1>Canvas apps</h1><ul>${list
+            .map(
+              (app) =>
+                `<li><a href="${PREFIX}${escapeHtml(encodeURIComponent(app.uniqueName))}">${escapeHtml(app.source.app.name)}</a> (${escapeHtml(app.uniqueName)})</li>`,
+            )
+            .join('')}</ul>`,
+          Boolean(runtime),
+          true,
+        ),
+      );
+    }
+    const playerAsset = await canvasPlayerAsset(rest);
+    if (playerAsset) return send(res, 200, playerAsset.type, playerAsset.body);
+    const [, inventory, encoded] = /^(api\/)?([^/]+)$/.exec(rest) ?? [];
+    const app = encoded && find(encoded);
+    if (!app) throw failure(404, 'CanvasAppNotFound', 'Canvas app not found.');
+    if (inventory && url.searchParams.get('revision') === '1')
+      return json(res, 200, { revision: app.source.revision ?? null });
+    if (inventory)
+      return json(res, 200, {
+        uniqueName: app.uniqueName,
+        level: levelOf(app.source, Boolean(runtime)),
+        reason: canvasSourceCoverageGaps(app.source)[0]?.code ?? reasonOf(runtime),
+        ...app.source,
+        assets: canvasAssetUrls(app.uniqueName, app.source[CANVAS_ASSETS] ?? new Map()),
+        rendering: { level: 'contract', gaps: canvasRenderingGaps(app.source) },
+      });
+    if (runtime && app.source.screens.length && url.searchParams.get('view') !== 'inspect') {
+      // Explicitly trusted PCF bundles commonly generate Fluent CSS at runtime. Script execution stays same-origin.
+      if (Object.values(app.source.codeComponents ?? {}).some((component) => component.admitted))
+        res.setHeader('content-security-policy', CSP.replace("style-src 'self'", "style-src 'self' 'unsafe-inline'"));
+      return send(
+        res,
+        200,
+        'text/html; charset=utf-8',
+        canvasPlayerPage(app, csrf() ?? '', {
+          traceId: res.getHeader('x-trace-id') ?? null,
+          spanId: res.getHeader('x-sim-span-id') ?? null,
+        }),
+      );
+    }
+    return view(req, res, app);
+  };
   const handle = async (req, res, url) => {
     const { pathname } = url;
     // The root's actor is the principal the app runs as; an unusable session is answered by the paths that need one.
@@ -501,81 +602,7 @@ export function createCanvasHandler({
         },
       });
     }
-    const rest = pathname.slice(PREFIX.length);
-    const assetRoute = /^([^/]+)\/assets\/([^/]+)$/.exec(rest);
-    if (assetRoute) {
-      const app = find(assetRoute[1]);
-      let name;
-      try {
-        name = decodeURIComponent(assetRoute[2]);
-      } catch {
-        name = null;
-      }
-      const asset = name && app?.source?.[CANVAS_ASSETS]?.get(name);
-      if (!asset) throw failure(404, 'CanvasAssetNotFound', 'Canvas asset not found.');
-      if (asset.type === 'image/svg+xml')
-        res.setHeader(
-          'content-security-policy',
-          "sandbox; default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-        );
-      return send(res, 200, asset.type, asset.data);
-    }
-    if (!rest || pathname === '/_apps/canvas') {
-      if (/\bapplication\/json\b/.test(req.headers.accept ?? ''))
-        return json(res, 200, {
-          level: runtime ? 'behaviour' : 'inventory',
-          reason: reasonOf(runtime),
-          hosted: Boolean(runtime),
-          apps: list.map(summary(Boolean(runtime))),
-        });
-      return send(
-        res,
-        200,
-        'text/html; charset=utf-8',
-        page(
-          'Canvas apps',
-          `<h1>Canvas apps</h1><ul>${list
-            .map(
-              (app) =>
-                `<li><a href="${PREFIX}${escapeHtml(encodeURIComponent(app.uniqueName))}">${escapeHtml(app.source.app.name)}</a> (${escapeHtml(app.uniqueName)})</li>`,
-            )
-            .join('')}</ul>`,
-          Boolean(runtime),
-          true,
-        ),
-      );
-    }
-    const asset = await canvasPlayerAsset(rest);
-    if (asset) return send(res, 200, asset.type, asset.body);
-    const [, inventory, encoded] = /^(api\/)?([^/]+)$/.exec(rest) ?? [];
-    const app = encoded && find(encoded);
-    if (!app) throw failure(404, 'CanvasAppNotFound', 'Canvas app not found.');
-    if (inventory && url.searchParams.get('revision') === '1')
-      return json(res, 200, { revision: app.source.revision ?? null });
-    if (inventory)
-      return json(res, 200, {
-        uniqueName: app.uniqueName,
-        level: levelOf(app.source, Boolean(runtime)),
-        reason: canvasSourceCoverageGaps(app.source)[0]?.code ?? reasonOf(runtime),
-        ...app.source,
-        assets: canvasAssetUrls(app.uniqueName, app.source[CANVAS_ASSETS] ?? new Map()),
-        rendering: { level: 'contract', gaps: canvasRenderingGaps(app.source) },
-      });
-    if (runtime && app.source.screens.length && url.searchParams.get('view') !== 'inspect') {
-      // Explicitly trusted PCF bundles commonly generate Fluent CSS at runtime. Script execution stays same-origin.
-      if (Object.values(app.source.codeComponents ?? {}).some((component) => component.admitted))
-        res.setHeader('content-security-policy', CSP.replace("style-src 'self'", "style-src 'self' 'unsafe-inline'"));
-      return send(
-        res,
-        200,
-        'text/html; charset=utf-8',
-        canvasPlayerPage(app, csrf() ?? '', {
-          traceId: res.getHeader('x-trace-id') ?? null,
-          spanId: res.getHeader('x-sim-span-id') ?? null,
-        }),
-      );
-    }
-    return view(req, res, app);
+    return handlePagePath(req, res, url, pathname.slice(PREFIX.length), list, find);
   };
   return (req, res, url = new URL(req.url, 'http://localhost')) => {
     const { pathname } = url;

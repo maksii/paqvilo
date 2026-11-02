@@ -68,7 +68,7 @@ function main() {
   const archives = [
     ...new Set(
       Object.values(consumerLock.packages)
-        .filter((entry) => !entry.dev && /^https:\/\//.test(entry.resolved ?? ''))
+        .filter((entry) => !entry.dev && (entry.resolved ?? '').startsWith('https://'))
         .map((entry) => entry.resolved),
     ),
   ];

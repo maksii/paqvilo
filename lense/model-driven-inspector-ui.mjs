@@ -1,6 +1,6 @@
 /** Model-driven tools attach to the canonical Lense panel; this module owns no alternate chrome. */
 export function modelDrivenInspectorUi(data) {
-  if (location.origin !== data.origin || window.__paqviloRetiredModelInspectors?.includes(data.token)) return;
+  if (location.origin !== data.origin || globalThis.__paqviloRetiredModelInspectors?.includes(data.token)) return;
   const host = document.getElementById('paqvilo-panel');
   if (!host?.shadowRoot || host.__pp?.token !== data.token) return;
   if (host.__paqModelInspector?.token === data.token) return;

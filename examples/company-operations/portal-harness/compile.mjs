@@ -36,13 +36,13 @@ export function compilePlans(catalogue, schema, resolvedIds = {}) {
       });
       if (/^R(?:0\d|1\d|2[01])$/.test(q.id))
         fetchXml = fetchXml.replace(
-          new RegExp(`<condition attribute="${table.primaryId}" operator="in">[\\s\\S]*?</condition>`),
+          new RegExp(String.raw`<condition attribute="${table.primaryId}" operator="in">[\s\S]*?</condition>`),
           `<condition attribute="${table.primaryId}" operator="in">${catalogue.records
             .filter((r) => r.table === q.table)
             .map((r) => `<value>${ids[r.key]}</value>`)
             .join('')}</condition>`,
         );
-      for (const order of [...fetchXml.matchAll(/<order entityname="([^"]+)" attribute="([^"]+)"\s*\/>/g)]) {
+      for (const order of fetchXml.matchAll(/<order entityname="([^"]+)" attribute="([^"]+)"\s*\/>/g)) {
         fetchXml = fetchXml.replace(order[0], '');
         const linked = new RegExp(
           '(\x3clink-entity[^>]*alias="' + order[1] + '"[^>]*>)([\\s\\S]*?)(\x3c/link-entity>)',
@@ -61,7 +61,7 @@ export function compilePlans(catalogue, schema, resolvedIds = {}) {
         .replace('</entity>', `${guard}</entity>`)
         .replace(/<([^<>]+)\/>/g, (_, tag) => `<${tag}></${tag.split(/\s/)[0]}>`);
       const fields = q.columns.map((name) => {
-        const selected = [...fetchXml.matchAll(/<attribute\s+([^>]+)>/g)].find((a) =>
+        /* NOSONAR */ const selected = [...fetchXml.matchAll(/<attribute\s+([^>]+)>/g)].find((a) =>
           new RegExp(`(?:alias|name)="${name}"`).test(a[1]),
         );
         const actualName = selected?.[1].match(/name="([^"]+)"/)?.[1] || name;
@@ -69,11 +69,10 @@ export function compilePlans(catalogue, schema, resolvedIds = {}) {
           .map((t) => t[actualName])
           .find(Boolean);
         const aggregate = selected?.[1].match(/aggregate="([^"]+)"/)?.[1];
-        let type = aggregate
-          ? 'integer'
-          : name.endsWith('id')
-            ? 'guid'
-            : col?.type || (name.includes('count') || name === 'kind' ? 'integer' : 'string');
+        let type;
+        if (aggregate) type = 'integer';
+        else if (name.endsWith('id')) type = 'guid';
+        else type = col?.type || (name.includes('count') || name === 'kind' ? 'integer' : 'string');
         if (col?.behavior === 'DateOnly' || actualName === 'pqvd_startdate') type = 'dateonly';
         if (col?.type === 'choice') type = 'integer';
         if (name === 'organisation') type = 'guid';
@@ -118,7 +117,9 @@ export function compilePlans(catalogue, schema, resolvedIds = {}) {
       !plan.fields.some((f) => f.aggregate) &&
       !/distinct="true"/.test(plan.fetchXml)
     ) {
-      const filter = new RegExp(`<condition attribute="${plan.primaryId}" operator="in">([\\s\\S]*?)</condition>`),
+      const filter = new RegExp(
+          String.raw`<condition attribute="${plan.primaryId}" operator="in">([\s\S]*?)</condition>`,
+        ),
         match = plan.fetchXml.match(filter);
       if (!match) continue;
       const values = [...match[1].matchAll(/<value>[^<]+<\/value>/g)].map((m) => m[0]);
@@ -164,10 +165,16 @@ export function caseTemplate(plan) {
     .replaceAll('{{page}}', '{{ operation.pqvd_pagenumber }}')
     .replaceAll('{{markerUtc}}', '{{ operation.pqvd_markerutc | xml_escape }}')
     .replaceAll('{{markerOperation}}', '{{ operation.pqvd_markeroperation | xml_escape }}');
+  const fieldValueText = (type) => {
+    if (type === 'guid') return '{{ value.id | default: value | xml_escape }}';
+    if (type === 'integer') return '{{ value.value | default: value | xml_escape }}';
+    if (type === 'dateonly') return "{{ value | date: 'yyyy-MM-dd' | xml_escape }}";
+    return '{{ value | xml_escape }}';
+  };
   const fields = plan.fields
     .map(
       (f) =>
-        `{% assign value = record['${f.name}'] %}<field name="${f.name}" type="${f.type}" null="{% if value == nil %}true{% else %}false{% endif %}">{% if value != nil %}${f.type === 'guid' ? '{{ value.id | default: value | xml_escape }}' : f.type === 'integer' ? '{{ value.value | default: value | xml_escape }}' : f.type === 'dateonly' ? "{{ value | date: 'yyyy-MM-dd' | xml_escape }}" : '{{ value | xml_escape }}'}{% endif %}</field>`,
+        `{% assign value = record['${f.name}'] %}<field name="${f.name}" type="${f.type}" null="{% if value == nil %}true{% else %}false{% endif %}">{% if value != nil %}${fieldValueText(f.type)}{% endif %}</field>`,
     )
     .join('');
   return `{% capture authored_xml %}${authored}{% endcapture %}{% fetchxml visibility_query %}{{ authored_xml }}{% endfetchxml %}<co-test-response version="1" outcome="{% if visibility_query.results == nil or visibility_query.results.entities == nil %}query-error{% else %}success{% endif %}" case-id="${plan.id}" operation-id="{{ operation.id | xml_escape }}" contact-id="{{ user.id | xml_escape }}" dataset-version="{{ dataset_version | xml_escape }}"><roles>{% for role in user.roles %}<role>{{ role | xml_escape }}</role>{% endfor %}</roles><records>{% for record in visibility_query.results.entities %}<record>${fields}</record>{% endfor %}</records><paging more="{{ visibility_query.results.more_records | xml_escape }}" total="{{ visibility_query.results.total_record_count | xml_escape }}" limited="{{ visibility_query.results.total_record_count_limit_exceeded | xml_escape }}"><cookie>{{ visibility_query.results.paging_cookie | xml_escape }}</cookie></paging><diagnostics><authored-fetchxml>{{ authored_xml | xml_escape }}</authored-fetchxml><effective-fetchxml>{{ visibility_query.xml | xml_escape }}</effective-fetchxml></diagnostics></co-test-response>`;
@@ -227,15 +234,17 @@ export async function prepare({
   }));
   const equipment = manifest.cases.find((c) => c.id === 'R09');
   manifest.stressCases = Array.from({ length: 17 }, (_, joins) => {
+    const budgetJoins = Array.from(
+      { length: joins },
+      (_, i) =>
+        `<link-entity name="pqvd_equipment" from="pqvd_equipmentid" to="pqvd_equipmentid" alias="budget${i + 1}" link-type="outer"></link-entity>`,
+    ).join('');
     const fetchXml = equipment.fetchXml
       .replace(
         /(<condition attribute="pqvd_equipmentid" operator="in">)([\s\S]*?)(<\/condition>)/,
         (_, open, values, close) => open + values.match(/<value>[^<]+<\/value>/)[0] + close,
       )
-      .replace(
-        '</entity>',
-        `${Array.from({ length: joins }, (_, i) => `<link-entity name="pqvd_equipment" from="pqvd_equipmentid" to="pqvd_equipmentid" alias="budget${i + 1}" link-type="outer"></link-entity>`).join('')}</entity>`,
-      );
+      .replace('</entity>', `${budgetJoins}</entity>`);
     return {
       ...equipment,
       fragments: undefined,

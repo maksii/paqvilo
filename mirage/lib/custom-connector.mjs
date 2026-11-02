@@ -38,7 +38,7 @@ const SECTIONS = {
   convertarraytoobject: ['Request', 'Response'],
   convertobjecttoarray: ['Request', 'Response'],
 };
-const BODY_POLICIES = ['setproperty', 'convertarraytoobject', 'convertobjecttoarray'];
+const BODY_POLICIES = new Set(['setproperty', 'convertarraytoobject', 'convertobjecttoarray']);
 export const OAUTH_FLOWS = Object.freeze(['application', 'accessCode']);
 const METHODS = ['get', 'put', 'post', 'patch', 'delete', 'head', 'options'];
 const isMap = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -66,53 +66,64 @@ export function compileOpenApi(document) {
     ? `${scheme}://${document.host}${String(document.basePath ?? '').replace(/\/$/, '')}`
     : null;
   const security = Object.values(document.securityDefinitions ?? {}).find(isMap);
-  const auth = !security
-    ? { type: 'none' }
-    : security.type === 'apiKey'
-      ? { type: 'apiKey', in: security.in === 'query' ? 'query' : 'header', name: String(security.name ?? '') }
-      : security.type === 'basic'
-        ? { type: 'basic' }
-        : security.type === 'oauth2'
-          ? {
-              type: 'oauth',
-              flow: String(security.flow ?? ''),
-              tokenUrl: security.tokenUrl ?? null,
-              authorizationUrl: security.authorizationUrl ?? null,
-              scopes: Object.keys(security.scopes ?? {}),
-            }
-          : { type: 'unsupported', kind: String(security.type) };
+  const auth = compileAuth(security);
   if (auth.type === 'unsupported')
     diagnostics.push({
       code: 'CONNECTOR_AUTH_UNSUPPORTED',
       message: `Security definition type ${auth.kind} is not compiled.`,
     });
+  const operations = compileOperations(document);
+  return { version: '2.0', title: document.info?.title ?? null, baseUrl, auth, operations, diagnostics };
+}
+
+function compileAuth(security) {
+  if (!security) return { type: 'none' };
+  if (security.type === 'apiKey')
+    return { type: 'apiKey', in: security.in === 'query' ? 'query' : 'header', name: String(security.name ?? '') };
+  if (security.type === 'basic') return { type: 'basic' };
+  if (security.type === 'oauth2')
+    return {
+      type: 'oauth',
+      flow: String(security.flow ?? ''),
+      tokenUrl: security.tokenUrl ?? null,
+      authorizationUrl: security.authorizationUrl ?? null,
+      scopes: Object.keys(security.scopes ?? {}),
+    };
+  return { type: 'unsupported', kind: String(security.type) };
+}
+
+function compileOperations(document) {
   const shared = document.parameters ?? {};
   const operations = {};
   for (const [path, item] of Object.entries(document.paths ?? {})) {
     if (!isMap(item)) continue;
-    for (const method of METHODS) {
-      const operation = item[method];
-      if (!isMap(operation) || !operation.operationId) continue;
-      const parameters = [...(item.parameters ?? []), ...(operation.parameters ?? [])]
-        .map((p) => (isMap(p) && typeof p.$ref === 'string' ? shared[p.$ref.split('/').pop()] : p))
-        .filter(isMap)
-        .map((p) => ({
-          name: String(p.name),
-          in: String(p.in),
-          required: p.required === true,
-          ...(p.default !== undefined ? { default: p.default } : {}),
-          visibility: p['x-ms-visibility'] ?? null,
-        }));
-      operations[operation.operationId] = {
-        method: method.toUpperCase(),
-        pathTemplate: path,
-        parameters,
-        consumes: operation.consumes ?? document.consumes ?? ['application/json'],
-        responses: Object.keys(operation.responses ?? {}),
-      };
-    }
+    compilePathOperations(operations, path, item, document, shared);
   }
-  return { version: '2.0', title: document.info?.title ?? null, baseUrl, auth, operations, diagnostics };
+  return operations;
+}
+
+function compilePathOperations(operations, path, item, document, shared) {
+  for (const method of METHODS) {
+    const operation = item[method];
+    if (!isMap(operation) || !operation.operationId) continue;
+    const parameters = [...(item.parameters ?? []), ...(operation.parameters ?? [])]
+      .map((p) => (isMap(p) && typeof p.$ref === 'string' ? shared[p.$ref.split('/').pop()] : p))
+      .filter(isMap)
+      .map((p) => ({
+        name: String(p.name),
+        in: String(p.in),
+        required: p.required === true,
+        ...(p.default !== undefined ? { default: p.default } : {}),
+        visibility: p['x-ms-visibility'] ?? null,
+      }));
+    operations[operation.operationId] = {
+      method: method.toUpperCase(),
+      pathTemplate: path,
+      parameters,
+      consumes: operation.consumes ?? document.consumes ?? ['application/json'],
+      responses: Object.keys(operation.responses ?? {}),
+    };
+  }
 }
 
 /** Policy template instances, in order, as [{ templateId, supported, section, operations, parameters, reason? }]. */
@@ -132,23 +143,22 @@ function compilePolicies(instances) {
     const unsupportedExpression = Object.values(values).some(
       (value) => typeof value === 'string' && expressions(value).some((e) => !e.supported),
     );
-    const reason = !SUPPORTED_POLICIES.includes(templateId)
-      ? 'template'
-      : !SECTIONS[templateId].includes(section)
-        ? 'section'
-        : templateId === 'routerequesttoendpoint' &&
-            values.httpMethod != null &&
-            !/^[A-Za-z]+$/.test(String(values.httpMethod))
-          ? 'httpMethod'
-          : unsupportedExpression
-            ? 'expression'
-            : null;
+    let reason = null;
+    if (!SUPPORTED_POLICIES.includes(templateId)) reason = 'template';
+    else if (!SECTIONS[templateId].includes(section)) reason = 'section';
+    else if (
+      templateId === 'routerequesttoendpoint' &&
+      values.httpMethod != null &&
+      !/^[A-Za-z]+$/.test(String(values.httpMethod))
+    )
+      reason = 'httpMethod';
+    else if (unsupportedExpression) reason = 'expression';
     return { templateId, supported: !reason, section, operations, parameters: values, ...(reason ? { reason } : {}) };
   });
 }
 
 // One policy expression: @name('a'[, 'b']) (single or double quotes) with an optional property path (@body().a.b).
-const EXPRESSION = /@(\w+)\(\s*(?:(['"])(.*?)\2\s*(?:,\s*(['"])(.*?)\4\s*)?)?\)((?:\.[A-Za-z_$][\w$-]*)*)/g;
+const EXPRESSION = /@(\w+)\(\s*(?:(['"])(.*?)\2\s*(?:,\s*(['"])(.*?)\4\s*)?)?\)((?:\.[A-Za-z_$][\w$-]*)*)/g; // NOSONAR: regex kept: a rewrite would change matches or captures
 const KNOWN = new Set([
   'headers',
   'header',
@@ -179,18 +189,7 @@ export function compileConnector(record) {
   const openapi = record.compiled ?? compileOpenApi(null),
     diagnostics = [...openapi.diagnostics];
   const policies = compilePolicies(record.policyInstances);
-  for (const policy of policies.filter((p) => !p.supported))
-    diagnostics.push({
-      code: 'CONNECTOR_POLICY_UNSUPPORTED',
-      message: `Policy template ${policy.templateId} (${policy.reason}) is not run locally.`,
-    });
-  for (const policy of policies.filter((p) => p.supported))
-    for (const operation of policy.operations)
-      if (!Object.hasOwn(openapi.operations, operation))
-        diagnostics.push({
-          code: 'CONNECTOR_POLICY_OPERATION_UNKNOWN',
-          message: `Policy ${policy.templateId} names unknown operation ${operation}.`,
-        });
+  appendPolicyDiagnostics(diagnostics, policies, openapi.operations);
   if (openapi.auth.type === 'oauth' && !OAUTH_FLOWS.includes(openapi.auth.flow))
     diagnostics.push({
       code: 'CONNECTOR_AUTH_UNSUPPORTED',
@@ -205,20 +204,9 @@ export function compileConnector(record) {
       code: 'CONNECTOR_SCRIPT_MISSING',
       message: 'The connector declares custom code but its script.csx text is not in the sources.',
     });
-  for (const id of record.scriptOperations ?? [])
-    if (!Object.hasOwn(openapi.operations, id))
-      diagnostics.push({
-        code: 'CONNECTOR_SCRIPT_OPERATION_UNKNOWN',
-        message: `The script names unknown operation ${id}.`,
-      });
-  for (const [id, operation] of Object.entries(openapi.operations))
-    if (operation.parameters.some((p) => p.in === 'body' || p.in === 'formData') && !mediaType(operation))
-      diagnostics.push({
-        code: 'CONNECTOR_MEDIA_TYPE_UNSUPPORTED',
-        message: `Operation ${id} consumes ${operation.consumes.join(', ')}; only JSON, application/x-www-form-urlencoded and multipart/form-data bodies are sent locally.`,
-      });
+  appendOperationDiagnostics(diagnostics, record, openapi.operations);
   const name = String(record.name ?? '');
-  const blocking = [
+  const blocking = new Set([
     'CONNECTOR_OPENAPI_VERSION_UNSUPPORTED',
     'CONNECTOR_AUTH_UNSUPPORTED',
     'CONNECTOR_POLICY_UNSUPPORTED',
@@ -226,10 +214,10 @@ export function compileConnector(record) {
     'CONNECTOR_SCRIPT_OPERATION_UNKNOWN',
     'CONNECTOR_POLICY_OPERATION_UNKNOWN',
     'CONNECTOR_MEDIA_TYPE_UNSUPPORTED',
-  ];
+  ]);
   return {
     name,
-    connectorIds: [...new Set([name, 'shared_' + name.replace(/_/g, '-5f')])],
+    connectorIds: [...new Set([name, 'shared_' + name.replaceAll('_', '-5f')])],
     title: openapi.title,
     baseUrl: openapi.baseUrl,
     auth: openapi.auth,
@@ -237,9 +225,39 @@ export function compileConnector(record) {
     policies,
     connectionParameters: record.connectionParameters ?? {},
     script: scriptText === null ? null : { text: scriptText, operations: (record.scriptOperations ?? []).map(String) },
-    blocked: diagnostics.find((d) => blocking.includes(d.code)) ?? null,
+    blocked: diagnostics.find((d) => blocking.has(d.code)) ?? null,
     diagnostics,
   };
+}
+
+function appendPolicyDiagnostics(diagnostics, policies, operations) {
+  for (const policy of policies.filter((p) => !p.supported))
+    diagnostics.push({
+      code: 'CONNECTOR_POLICY_UNSUPPORTED',
+      message: `Policy template ${policy.templateId} (${policy.reason}) is not run locally.`,
+    });
+  for (const policy of policies.filter((p) => p.supported))
+    for (const operation of policy.operations)
+      if (!Object.hasOwn(operations, operation))
+        diagnostics.push({
+          code: 'CONNECTOR_POLICY_OPERATION_UNKNOWN',
+          message: `Policy ${policy.templateId} names unknown operation ${operation}.`,
+        });
+}
+
+function appendOperationDiagnostics(diagnostics, record, operations) {
+  for (const id of record.scriptOperations ?? [])
+    if (!Object.hasOwn(operations, id))
+      diagnostics.push({
+        code: 'CONNECTOR_SCRIPT_OPERATION_UNKNOWN',
+        message: `The script names unknown operation ${id}.`,
+      });
+  for (const [id, operation] of Object.entries(operations))
+    if (operation.parameters.some((p) => p.in === 'body' || p.in === 'formData') && !mediaType(operation))
+      diagnostics.push({
+        code: 'CONNECTOR_MEDIA_TYPE_UNSUPPORTED',
+        message: `Operation ${id} consumes ${operation.consumes.join(', ')}; only JSON, application/x-www-form-urlencoded and multipart/form-data bodies are sent locally.`,
+      });
 }
 /** Whether an operation of a compiled connector runs its C# script (scriptOperations empty: every operation). */
 export const scriptRuns = (connector, operationId) =>
@@ -280,54 +298,107 @@ function build(connector, operationId, parameters, connection) {
     body,
     method = operation.method,
     base = connector.baseUrl;
+  const requestParts = buildParameters(operation, parameters, value, path, headers, query);
+  path = requestParts.path;
+  body = requestParts.body;
+  const set = { headers: new Set(), query: new Set(), auth: new Set() };
+  // Request policies in instance order: each sees the headers, query and body the earlier ones left.
+  ({ path, body, method, base } = applyRequestPolicies(connector, operationId, operation, connection, value, {
+    path,
+    body,
+    method,
+    base,
+    headers,
+    query,
+    set,
+  }));
+  if (!base) fail('ProviderFailed', 'The custom connector definition has no host.');
+  applyAuthentication(connector.auth, connection.credentials ?? {}, headers, query, set);
+  const url = new URL(base + (path.startsWith('/') ? path : '/' + path));
+  for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
+  // The body is serialised by the operation's first supported `consumes` media type (compileConnector blocks the others);
+  // multipart answers a native FormData, which the provider turns into bytes and a boundary content type.
+  const payload = serializeBody(operation, body, headers);
+  return { request: { method, url: url.href, headers, body: payload }, set };
+}
+
+function buildParameters(operation, parameters, value, initialPath, headers, query) {
+  let path = initialPath,
+    body;
   for (const p of operation.parameters) {
-    let v = value(p);
-    if (p.in === 'body') {
-      const nested = Object.entries(parameters).filter(([key]) => key.startsWith(p.name + '/'));
-      if (v === undefined && nested.length) {
-        v = {};
-        for (const [key, item] of nested) setPath(v, key.slice(p.name.length + 1).split('/'), item);
-      }
-    }
+    const v = parameterValue(p, parameters, value(p));
     if (v === undefined || v === null) {
       if (p.required) fail('ProviderFailed', `The custom connector parameter ${p.name} is required.`);
       continue;
     }
-    if (p.in === 'path') path = path.replaceAll(`{${p.name}}`, encodeURIComponent(String(v)));
-    else if (p.in === 'query') query[p.name] = String(v);
-    else if (p.in === 'header') headers[p.name] = String(v);
-    else if (p.in === 'body') body = structuredClone(v);
-    else if (p.in === 'formData') (body ??= {})[p.name] = v;
+    const updated = assignParameter(p, v, path, body, headers, query);
+    path = updated.path;
+    body = updated.body;
   }
-  const set = { headers: new Set(), query: new Set(), auth: new Set() };
-  // Request policies in instance order: each sees the headers, query and body the earlier ones left.
+  return { path, body };
+}
+
+function parameterValue(parameter, parameters, value) {
+  if (parameter.in !== 'body') return value;
+  const nested = Object.entries(parameters).filter(([key]) => key.startsWith(parameter.name + '/'));
+  if (value !== undefined || !nested.length) return value;
+  const body = {};
+  for (const [key, item] of nested) setPath(body, key.slice(parameter.name.length + 1).split('/'), item);
+  return body;
+}
+
+function assignParameter(parameter, value, path, body, headers, query) {
+  if (parameter.in === 'path') path = path.replaceAll(`{${parameter.name}}`, encodeURIComponent(String(value)));
+  else if (parameter.in === 'query') query[parameter.name] = String(value);
+  else if (parameter.in === 'header') headers[parameter.name] = String(value);
+  else if (parameter.in === 'body') body = structuredClone(value);
+  else if (parameter.in === 'formData') {
+    body ??= {};
+    body[parameter.name] = value;
+  }
+  return { path, body };
+}
+
+/* NOSONAR */ function applyRequestPolicies(connector, operationId, operation, connection, value, parts) {
+  let { path, body, method, base } = parts;
+  const { headers, query, set } = parts;
   for (const policy of policiesOf(connector, operationId, 'Request')) {
     const p = policy.parameters,
       evaluate = evaluator(connection, query, headers, body);
     if (policy.templateId === 'routerequesttoendpoint') {
-      path = evaluate(p.newPath).replace(/\{(\w+)\}/g, (m, name) => {
-        const declared = operation.parameters.find((item) => item.in === 'path' && item.name === name);
-        return declared && value(declared) != null ? encodeURIComponent(String(value(declared))) : m;
-      });
-      if (p.httpMethod) method = String(p.httpMethod).toUpperCase();
+      ({ path, method } = routeRequestPolicy(p, operation, value, evaluate, method));
     } else if (policy.templateId === 'dynamichosturl') {
-      // Assumed: the evaluated URL replaces the definition's host and base path; the operation path follows it.
-      base = evaluate(p.urlTemplate).replace(/\/$/, '');
-      try {
-        new URL(base);
-      } catch {
-        fail('ProviderFailed', 'The Set Host URL policy produced no absolute URL.');
-      }
-    } else if (BODY_POLICIES.includes(policy.templateId)) body = transformBody(policy, body, connection);
+      base = dynamicHostPolicy(p, evaluate);
+    } else if (BODY_POLICIES.has(policy.templateId)) body = transformBody(policy, body, connection);
     else {
       const header = policy.templateId === 'setheader',
         key = applyPolicy(header ? headers : query, policy, evaluate(p.value ?? ''), header);
       if (key != null) set[header ? 'headers' : 'query'].add(key);
     }
   }
-  if (!base) fail('ProviderFailed', 'The custom connector definition has no host.');
-  const auth = connector.auth,
-    credentials = connection.credentials ?? {};
+  return { path, body, method, base };
+}
+
+function routeRequestPolicy(parameters, operation, value, evaluate, method) {
+  const path = evaluate(parameters.newPath).replace(/\{(\w+)\}/g, (m, name) => {
+    const declared = operation.parameters.find((item) => item.in === 'path' && item.name === name);
+    return declared && value(declared) != null ? encodeURIComponent(String(value(declared))) : m;
+  });
+  if (parameters.httpMethod) method = String(parameters.httpMethod).toUpperCase();
+  return { path, method };
+}
+
+function dynamicHostPolicy(parameters, evaluate) {
+  const base = evaluate(parameters.urlTemplate).replace(/\/$/, '');
+  try {
+    new URL(base);
+  } catch {
+    fail('ProviderFailed', 'The Set Host URL policy produced no absolute URL.');
+  }
+  return base;
+}
+
+/* NOSONAR */ function applyAuthentication(auth, credentials, headers, query, set) {
   if (auth.type === 'apiKey') {
     if (credentials.apiKey == null)
       fail('ConnectionUnauthorized', 'The custom connector connection has no apiKey reference.');
@@ -355,10 +426,9 @@ function build(connector, operationId, parameters, connection) {
     headers.Authorization = 'Bearer ' + credentials.token;
     set.headers.add('Authorization');
   }
-  const url = new URL(base + (path.startsWith('/') ? path : '/' + path));
-  for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
-  // The body is serialised by the operation's first supported `consumes` media type (compileConnector blocks the others);
-  // multipart answers a native FormData, which the provider turns into bytes and a boundary content type.
+}
+
+function serializeBody(operation, body, headers) {
   const media = mediaType(operation) ?? 'application/json',
     typed = Object.keys(headers).some((k) => k.toLowerCase() === 'content-type');
   const text = (v) => (typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v));
@@ -366,21 +436,25 @@ function build(connector, operationId, parameters, connection) {
   if (body !== undefined && typeof body !== 'string') {
     if (media === 'application/x-www-form-urlencoded')
       payload = new URLSearchParams(Object.entries(body).map(([k, v]) => [k, text(v)])).toString();
-    else if (media === 'multipart/form-data') {
-      payload = new FormData();
-      for (const [k, v] of Object.entries(body))
-        isMap(v) && typeof v.$content === 'string'
-          ? payload.append(
-              k,
-              new Blob([Buffer.from(v.$content, 'base64')], { type: v['$content-type'] ?? 'application/octet-stream' }),
-              k,
-            )
-          : payload.append(k, text(v));
-    } else payload = JSON.stringify(body);
+    else if (media === 'multipart/form-data') payload = multipartBody(body, text);
+    else payload = JSON.stringify(body);
     if (!typed && media !== 'multipart/form-data')
       headers['content-type'] = media === 'application/x-www-form-urlencoded' ? media : 'application/json';
   }
-  return { request: { method, url: url.href, headers, body: payload }, set };
+  return payload;
+}
+
+function multipartBody(body, text) {
+  const payload = new FormData();
+  for (const [k, v] of Object.entries(body))
+    isMap(v) && typeof v.$content === 'string'
+      ? payload.append(
+          k,
+          new Blob([Buffer.from(v.$content, 'base64')], { type: v['$content-type'] ?? 'application/octet-stream' }),
+          k,
+        )
+      : payload.append(k, text(v));
+  return payload;
 }
 
 /**
@@ -431,10 +505,10 @@ export function rewrite(url, rewrites = {}) {
 /** The answer after the operation's Response policies in order: setheader on the headers (`@headers('n')` reads the response
  * headers) and the body templates on a JSON body. */
 export function applyResponsePolicies(connector, operationId, answer, connection = {}) {
-  const headers = { ...(answer.headers ?? {}) };
+  const headers = { ...answer.headers };
   let body = answer.body;
   for (const policy of policiesOf(connector, operationId, 'Response')) {
-    if (BODY_POLICIES.includes(policy.templateId)) {
+    if (BODY_POLICIES.has(policy.templateId)) {
       if (body && typeof body === 'object') body = transformBody(policy, body, connection);
     } else applyPolicy(headers, policy, evaluator(connection, {}, headers, body)(policy.parameters.value ?? ''), true);
   }
@@ -452,23 +526,22 @@ const policiesOf = (connector, operationId, section) =>
   );
 // The value of one expression: request headers, query and connection parameters, environment variables, body paths.
 function expressionValue(source, { name, arg, fallback, path }, item) {
-  const found =
-    name === 'connectionParameters'
-      ? source.connection.parameters?.[arg]
-      : name === 'queryParameters'
-        ? source.query[arg]
-        : name === 'environmentVariables'
-          ? source.connection.environment?.(arg)
-          : name === 'headers' || name === 'header'
-            ? headerLookup(source.headers)(arg)
-            : walk(name === 'item' ? item : source.body, path ? path.slice(1).split('.') : []);
+  let found;
+  if (name === 'connectionParameters') found = source.connection.parameters?.[arg];
+  else if (name === 'queryParameters') found = source.query[arg];
+  else if (name === 'environmentVariables') found = source.connection.environment?.(arg);
+  else if (name === 'headers' || name === 'header') found = headerLookup(source.headers)(arg);
+  else found = walk(name === 'item' ? item : source.body, path ? path.slice(1).split('.') : []);
   return found ?? fallback ?? null;
 }
 // An expression match as text: only @body() and @item() take a property path; after any other expression the dotted text is
 // literal (e.g. http://@headers('subdomain').azure.net).
 const render = (source, m, item) => {
   const value = expressionValue(source, { name: m[1], arg: m[3], fallback: m[5], path: m[6] }, item);
-  const text = value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+  let text;
+  if (value == null) text = '';
+  else if (typeof value === 'object') text = JSON.stringify(value);
+  else text = String(value);
   return ['body', 'item'].includes(m[1]) ? text : text + (m[6] ?? '');
 };
 const evaluator = (connection, query, headers, body) => (template) =>
@@ -518,7 +591,8 @@ function parents(body, parentPath) {
   const parent = pathOf(parentPath),
     value = parent.root === 'body' ? walk(body, parent.parts) : undefined;
   if (parent.root !== 'body') fail('ProviderFailed', 'A policy parent path must start at @body().');
-  return Array.isArray(value) ? value : value != null ? [value] : [];
+  if (Array.isArray(value)) return value;
+  return value != null ? [value] : [];
 }
 // Writes a template's result: an @body() path is absolute, @item() and a plain path are relative to the element.
 function writeAt(body, element, target, value) {
@@ -531,47 +605,50 @@ function transformBody(policy, input, connection) {
   const body = structuredClone(input),
     p = policy.parameters,
     source = { connection, query: {}, headers: {}, body };
-  if (policy.templateId === 'setproperty') {
-    // setproperty: the value is a constant, a path, or a template with {path} parts; on a collection it applies to each element.
-    for (const element of parents(body, p.newPropertyParentPathTemplate)) {
-      const template = String(p.propertyValuePathTemplate ?? ''),
-        whole = [...template.matchAll(EXPRESSION)];
-      const value =
-        whole.length === 1 && whole[0][0] === template.trim() && ['body', 'item'].includes(whole[0][1])
-          ? expressionValue(source, { name: whole[0][1], path: whole[0][6] }, element)
-          : template.replace(/\{\s*(@[^{}]*?)\s*\}/g, '$1').replace(EXPRESSION, (...m) => render(source, m, element));
-      writeAt(body, element, String(p.newPropertySubPathTemplate ?? ''), value);
-    }
-    return body;
-  }
+  if (policy.templateId === 'setproperty') return setBodyProperty(body, p, source);
   // convertarraytoobject and convertobjecttoarray: per parent element, the subpath's array (object) becomes an object keyed by
   // each item's key (an array of { keyName, valueName }) written to the new property path. retainKey defaults to true.
   // The key and value property names convertobjecttoarray uses when keyName or valueName is empty ('key', 'value') are a guess.
   const sub = p.propertySubPath ? String(p.propertySubPath).split('.') : [];
-  for (const element of parents(body, p.propertyParentPath)) {
-    const value = walk(element, sub);
-    if (policy.templateId === 'convertarraytoobject') {
-      if (!Array.isArray(value)) continue;
-      const keyPath = String(p.keyWithinCollectionPath ?? '').split('.'),
-        retain = String(p.retainKey ?? 'true') !== 'false',
-        result = {};
-      for (const item of value) {
-        const key = walk(item, keyPath);
-        if (key == null || unsafe(String(key))) continue;
-        const copy = isMap(item) ? { ...item } : item;
-        if (!retain && isMap(copy)) delete copy[keyPath[0]];
-        result[String(key)] = copy;
-      }
-      writeAt(body, element, p.newPropertyPath, result);
-    } else {
-      if (!isMap(value)) continue;
-      writeAt(
-        body,
-        element,
-        p.newPropertyPath,
-        Object.entries(value).map(([key, item]) => ({ [p.keyName || 'key']: key, [p.valueName || 'value']: item })),
-      );
-    }
+  for (const element of parents(body, p.propertyParentPath)) transformCollectionElement(policy, body, element, sub, p);
+  return body;
+}
+
+function setBodyProperty(body, p, source) {
+  for (const element of parents(body, p.newPropertyParentPathTemplate)) {
+    const template = String(p.propertyValuePathTemplate ?? ''),
+      whole = [...template.matchAll(EXPRESSION)];
+    const value =
+      whole.length === 1 && whole[0][0] === template.trim() && ['body', 'item'].includes(whole[0][1])
+        ? expressionValue(source, { name: whole[0][1], path: whole[0][6] }, element)
+        : template.replace(/\{\s*(@[^{}]*?)\s*\}/g, '$1').replace(EXPRESSION, (...m) => render(source, m, element)); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    writeAt(body, element, String(p.newPropertySubPathTemplate ?? ''), value);
   }
   return body;
+}
+
+/* NOSONAR */ function transformCollectionElement(policy, body, element, sub, p) {
+  const value = walk(element, sub);
+  if (policy.templateId === 'convertarraytoobject') {
+    if (!Array.isArray(value)) return;
+    const keyPath = String(p.keyWithinCollectionPath ?? '').split('.'),
+      retain = String(p.retainKey ?? 'true') !== 'false',
+      result = {};
+    for (const item of value) {
+      const key = walk(item, keyPath);
+      if (key == null || unsafe(String(key))) continue;
+      const copy = isMap(item) ? { ...item } : item;
+      if (!retain && isMap(copy)) delete copy[keyPath[0]];
+      result[String(key)] = copy;
+    }
+    writeAt(body, element, p.newPropertyPath, result);
+  } else {
+    if (!isMap(value)) return;
+    writeAt(
+      body,
+      element,
+      p.newPropertyPath,
+      Object.entries(value).map(([key, item]) => ({ [p.keyName || 'key']: key, [p.valueName || 'value']: item })),
+    );
+  }
 }

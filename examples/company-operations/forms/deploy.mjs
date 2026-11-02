@@ -6,6 +6,11 @@ import { privateJson } from '../../../lense/dataverse/connection.mjs';
 import { compileForms } from './catalogue.mjs';
 import { metadataXml } from '../../../lense/dataverse/provision.mjs';
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const saveStatus = (differs, before) => {
+  if (!differs) return 'exists';
+  if (before) return 'update';
+  return 'create';
+};
 export async function inspectFormMetadata(client, schema) {
   const metadata = {};
   for (const table of schema.tables.filter((t) => t.name !== 'transactioncurrency')) {
@@ -64,6 +69,25 @@ export async function deployForms({ connection, apply = false }) {
         ? typeof actual[k] === 'string' && metadataXml(actual[k]) === metadataXml(v)
         : actual[k] === v,
     );
+  const regularSavePath = (route, id, before) => (before ? `${route}(${id})` : route);
+  const regularSaveOptions = (route, id, body, solution, before) => ({
+    method: before ? 'PATCH' : 'POST',
+    body: before ? body : { ...body, [route === 'systemforms' ? 'formid' : 'savedqueryid']: id },
+    solution,
+  });
+  const applySavedForm = async (route, id, body, solution, before) => {
+    if (before && route === 'savedqueries' && body.fetchxml && body.layoutxml) {
+      // This environment validates generated Lookup layout columns against the
+      // persisted FetchXML. Commit selection first, then its matching layout.
+      if (before.fetchxml !== body.fetchxml)
+        await client.request(`${route}(${id})`, { method: 'PATCH', body: { fetchxml: body.fetchxml }, solution });
+      const remaining = { ...body };
+      delete remaining.fetchxml;
+      if (!compare(before, remaining))
+        await client.request(`${route}(${id})`, { method: 'PATCH', body: remaining, solution });
+    } else
+      await client.request(regularSavePath(route, id, before), regularSaveOptions(route, id, body, solution, before));
+  };
   const save = async (route, id, body, solution, type) => {
     const before = await client.optional(`${route}(${id})`);
     if (before && body.name && before.name !== body.name)
@@ -73,50 +97,37 @@ export async function deployForms({ connection, apply = false }) {
       id,
       route,
       name: body.name,
-      status: differs ? (before ? 'update' : 'create') : 'exists',
+      status: saveStatus(differs, before),
       ...(differs && before ? { before } : {}),
       desired: body,
     });
     await privateJson(file, journal);
     if (apply) {
-      if (differs) {
-        if (before && route === 'savedqueries' && body.fetchxml && body.layoutxml) {
-          // This environment validates generated Lookup layout columns against the
-          // persisted FetchXML. Commit selection first, then its matching layout.
-          if (before.fetchxml !== body.fetchxml)
-            await client.request(`${route}(${id})`, { method: 'PATCH', body: { fetchxml: body.fetchxml }, solution });
-          const remaining = { ...body };
-          delete remaining.fetchxml;
-          if (!compare(before, remaining))
-            await client.request(`${route}(${id})`, { method: 'PATCH', body: remaining, solution });
-        } else
-          await client.request(before ? `${route}(${id})` : route, {
-            method: before ? 'PATCH' : 'POST',
-            body: before ? body : { ...body, [route === 'systemforms' ? 'formid' : 'savedqueryid']: id },
-            solution,
-          });
-      }
+      if (differs) await applySavedForm(route, id, body, solution, before);
       await include(id, type, solution);
     }
   };
-  for (const v of catalogue.views)
-    await save(
-      'savedqueries',
-      v.id,
-      { name: v.name, returnedtypecode: v.table, querytype: 0, fetchxml: v.fetchXml, layoutxml: v.layoutXml },
-      v.solution,
-      26,
-    );
-  for (const f of catalogue.forms)
-    await save(
-      'systemforms',
-      f.id,
-      { name: f.name, objecttypecode: f.table, type: 2, formxml: f.formXml, formactivationstate: 1 },
-      f.solution,
-      60,
-    );
+  const saveCatalogueItems = async () => {
+    for (const v of catalogue.views)
+      await save(
+        'savedqueries',
+        v.id,
+        { name: v.name, returnedtypecode: v.table, querytype: 0, fetchxml: v.fetchXml, layoutxml: v.layoutXml },
+        v.solution,
+        26,
+      );
+    for (const f of catalogue.forms)
+      await save(
+        'systemforms',
+        f.id,
+        { name: f.name, objecttypecode: f.table, type: 2, formxml: f.formXml, formactivationstate: 1 },
+        f.solution,
+        60,
+      );
+  };
+  await saveCatalogueItems();
   journal.quickFindImport = [];
-  for (const v of catalogue.adjustments) {
+  const applyAdjustment = async (v) => {
     const rows = await client.list(
       `savedqueries?$select=savedqueryid,name,querytype,fetchxml,layoutxml,isquickfindquery&$filter=returnedtypecode eq '${v.table}' and querytype eq ${v.queryType}`,
     );
@@ -130,26 +141,33 @@ export async function deployForms({ connection, apply = false }) {
     if (v.queryType === 4) {
       if (!compare(rows[0], body)) journal.quickFindImport.push({ ...v, id: rows[0].savedqueryid, before: rows[0] });
       if (apply) await include(rows[0].savedqueryid, 26, v.solution);
-      continue;
+      return;
     }
     await save('savedqueries', rows[0].savedqueryid, body, v.solution, 26);
-  }
-  for (const table of schema.tables.filter((t) => !t.existing)) {
-    const defaultView = catalogue.views.find((v) => v.table === table.name),
-      rows = await client.list(
-        `savedqueries?$select=savedqueryid,name,isdefault&$filter=returnedtypecode eq '${table.name}' and querytype eq 0`,
-      );
-    for (const row of rows)
-      if (row.isdefault !== (row.savedqueryid === defaultView.id))
-        await save(
-          'savedqueries',
-          row.savedqueryid,
-          { isdefault: row.savedqueryid === defaultView.id },
-          defaultView.solution,
-          26,
+  };
+  const applyAdjustments = async () => {
+    for (const v of catalogue.adjustments) await applyAdjustment(v);
+  };
+  await applyAdjustments();
+  const alignDefaultViews = async () => {
+    for (const table of schema.tables.filter((t) => !t.existing)) {
+      const defaultView = catalogue.views.find((v) => v.table === table.name),
+        rows = await client.list(
+          `savedqueries?$select=savedqueryid,name,isdefault&$filter=returnedtypecode eq '${table.name}' and querytype eq 0`,
         );
-  }
-  if (apply) {
+      for (const row of rows)
+        if (row.isdefault !== (row.savedqueryid === defaultView.id))
+          await save(
+            'savedqueries',
+            row.savedqueryid,
+            { isdefault: row.savedqueryid === defaultView.id },
+            defaultView.solution,
+            26,
+          );
+    }
+  };
+  await alignDefaultViews();
+  const publishAndVerify = async () => {
     await client.request('PublishXml', {
       method: 'POST',
       body: {
@@ -171,7 +189,8 @@ export async function deployForms({ connection, apply = false }) {
         throw new Error(`View readback failed ${v.name}`);
       journal.checked++;
     }
-  }
+  };
+  if (apply) await publishAndVerify();
   journal.finishedAt = new Date().toISOString();
   await privateJson(file, journal);
   await privateJson(path.join(folder, 'quickfind-import.json'), journal.quickFindImport);

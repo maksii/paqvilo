@@ -139,7 +139,7 @@ export function createPortalProvenanceTransport(context, configs, { onDescriptor
       };
       const destroyed = ({ executionContextId }) => retire(executionContextId);
       const cleared = () => {
-        for (const id of [...contexts.keys()]) retire(id);
+        for (const id of [...contexts.keys()]) retire(id); // NOSONAR: snapshot copy guards against mutation while iterating
       };
       const requested = (event) => {
         if (closed || event.type !== 'Document') return;

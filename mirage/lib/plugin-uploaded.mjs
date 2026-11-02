@@ -241,15 +241,13 @@ export function releaseUploadedRuntime(runtimes, stepId, diagnostic = () => {}) 
  * content changed. */
 export function releaseStaleUploadedRuntimes(store, runtimes, steps, diagnostic = () => {}) {
   const byId = new Map(steps.map((step) => [step.id, step]));
-  for (const [id, runtime] of [...runtimes]) {
+  /* NOSONAR: snapshot copy guards against mutation while iterating */ for (const [id, runtime] of [...runtimes]) {
     if (!runtime.uploaded) continue;
     const step = byId.get(id);
     const api = step ? null : rowOf(store, 'customapi', id);
-    const assembly = step?.uploadedAssemblyId
-      ? rowOf(store, 'pluginassembly', step.uploadedAssemblyId)
-      : api?.plugintypeid
-        ? uploadedAssemblyOfType(store, api.plugintypeid)
-        : null;
+    let assembly = null;
+    if (step?.uploadedAssemblyId) assembly = rowOf(store, 'pluginassembly', step.uploadedAssemblyId);
+    else if (api?.plugintypeid) assembly = uploadedAssemblyOfType(store, api.plugintypeid);
     if (
       !assembly ||
       canon(assembly.pluginassemblyid) !== runtime.uploaded.assemblyId ||

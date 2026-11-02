@@ -80,7 +80,9 @@ async function runNativeBatch(page, input) {
   await page.goto(input.portalUrl, { waitUntil: 'domcontentloaded' });
   const capture = await page.evaluate(
     async ({ requests, liquidUrls }) => {
-      const token = await new Promise((resolve, reject) => window.shell.getTokenDeferred().done(resolve).fail(reject));
+      const token = await new Promise((resolve, reject) =>
+        globalThis.shell.getTokenDeferred().done(resolve).fail(reject),
+      );
       const results = [],
         start = Date.now(),
         api = requests.filter((request) => request.lane === 'webapi');
@@ -234,7 +236,7 @@ async function main() {
     if (
       config.expectedBusinessRoleNames &&
       stable(actor.roles.filter((name) => config.businessRoleNames.includes(name)).sort()) !==
-        stable([...config.expectedBusinessRoleNames].sort())
+        stable([...config.expectedBusinessRoleNames].sort((a, b) => Number(a > b) - Number(a < b)))
     )
       throw new Error('Native role display has not stabilized after mask update.');
     const selectedPlans = [
@@ -279,6 +281,11 @@ async function main() {
       plans,
       journalFile: path.join(config.outputDir, 'intent-journal.json'),
     });
+    const requestUrl = (intent) => {
+      if (intent.plan.queryType === 'odata') return odataRequest(intent.plan, intent.operation);
+      if (intent.lane !== 'webapi') return null;
+      return `/_api/${intent.plan.entitySet}?fetchXml=${encodeURIComponent(authoredQuery(intent.plan, intent.operation, intent.plan.page))}`;
+    };
     const requests = prepared.intents.map((intent) => ({
       caseId: intent.plan.id,
       variant: intent.plan.variant,
@@ -288,12 +295,7 @@ async function main() {
       authoredFetchXml:
         intent.plan.queryType === 'odata' ? null : authoredQuery(intent.plan, intent.operation, intent.plan.page),
       authoredRequest: intent.plan.queryType === 'odata' ? odataRequest(intent.plan, intent.operation) : null,
-      url:
-        intent.plan.queryType === 'odata'
-          ? odataRequest(intent.plan, intent.operation)
-          : intent.lane === 'webapi'
-            ? `/_api/${intent.plan.entitySet}?fetchXml=${encodeURIComponent(authoredQuery(intent.plan, intent.operation, intent.plan.page))}`
-            : null,
+      url: requestUrl(intent),
     }));
     const liquidIds = requests.filter((request) => request.lane === 'liquid').map((request) => request.operationId);
     const liquidUrls = Array.from({ length: Math.ceil(liquidIds.length / 30) }, (_, index) => ({
@@ -329,9 +331,9 @@ async function main() {
         }),
       );
     capture.rowComparisons = selectedPlans.map((plan) => {
-      const ids = prepared.intents.filter((intent) => intent.plan.id === plan.id).map((intent) => intent.id);
-      const left = liquidPages.filter((page) => ids.includes(page.operationId)),
-        right = capture.results.filter((result) => result.lane === 'webapi' && ids.includes(result.operationId));
+      const ids = new Set(prepared.intents.filter((intent) => intent.plan.id === plan.id).map((intent) => intent.id));
+      const left = liquidPages.filter((page) => ids.has(page.operationId)),
+        right = capture.results.filter((result) => result.lane === 'webapi' && ids.has(result.operationId));
       const a = left
         .flatMap((page) => canonicalRows(page.rows, plan))
         .sort((a, b) => stable(a).localeCompare(stable(b)));

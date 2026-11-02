@@ -56,50 +56,63 @@ const firstError = (...values) => values.find((value) => value instanceof FxErro
 
 // Infer only result types fixed by syntax, without evaluating an unselected formula or invoking host functions.
 // Dynamic names, connector calls and mixed-type arithmetic need a full Power Fx type checker and remain unknown.
+function knownLiteralType(value) {
+  if (value instanceof FxError && value.errors.every((error) => error.Kind === ErrorKind.Numeric)) return 'number';
+  if (isExactNumeric(value) || typeof value === 'number') return 'number';
+  if (typeof value === 'string') return 'text';
+  if (typeof value === 'boolean') return 'boolean';
+  return null;
+}
+function knownBinaryType(node) {
+  if (node.op === '^') return 'float';
+  if (['/', '*'].includes(node.op)) {
+    const left = knownResultType(node.l),
+      right = knownResultType(node.r);
+    if (left === 'float' || right === 'float') return 'float';
+    if (left === 'number' && right === 'number') return 'number';
+    return null;
+  }
+  if (node.op === '&') return 'text';
+  if (['=', '<>', '<', '<=', '>', '>=', 'in', 'exactin', '&&', '||'].includes(node.op)) return 'boolean';
+  if (['+', '-'].includes(node.op) && knownResultType(node.l) === 'number' && knownResultType(node.r) === 'number')
+    return 'number';
+  return null;
+}
 function knownResultType(node) {
   if (!node) return null;
-  if (node.t === 'lit') {
-    if (node.v instanceof FxError && node.v.errors.every((error) => error.Kind === ErrorKind.Numeric)) return 'number';
-    if (isExactNumeric(node.v) || typeof node.v === 'number') return 'number';
-    if (typeof node.v === 'string') return 'text';
-    if (typeof node.v === 'boolean') return 'boolean';
-  }
-  if (node.t === 'interp') return 'text';
-  if (node.t === 'pct' || (node.t === 'unary' && node.op !== '!')) {
-    const operand = knownResultType(node.e);
-    return operand === 'number' || operand === 'float' ? operand : null;
-  }
-  if (node.t === 'unary') return 'boolean';
-  if (node.t === 'bin') {
-    if (node.op === '^') return 'float';
-    if (['/', '*'].includes(node.op)) {
-      const left = knownResultType(node.l),
-        right = knownResultType(node.r);
-      if (left === 'float' || right === 'float') return 'float';
-      if (left === 'number' && right === 'number') return 'number';
-      return null;
+  switch (node.t) {
+    case 'lit':
+      return knownLiteralType(node.v);
+    case 'interp':
+      return 'text';
+    case 'pct': {
+      const operand = knownResultType(node.e);
+      return operand === 'number' || operand === 'float' ? operand : null;
     }
-    if (node.op === '&') return 'text';
-    if (['=', '<>', '<', '<=', '>', '>=', 'in', 'exactin', '&&', '||'].includes(node.op)) return 'boolean';
-    if (['+', '-'].includes(node.op) && knownResultType(node.l) === 'number' && knownResultType(node.r) === 'number')
-      return 'number';
+    case 'unary': {
+      if (node.op === '!') return 'boolean';
+      const operand = knownResultType(node.e);
+      return operand === 'number' || operand === 'float' ? operand : null;
+    }
+    case 'bin':
+      return knownBinaryType(node);
+    case 'call':
+      return (
+        {
+          Text: 'text',
+          Value: 'number',
+          Decimal: 'number',
+          Float: 'float',
+          Boolean: 'boolean',
+          DateValue: 'date',
+          Date: 'date',
+          DateTimeValue: 'datetime',
+          TimeValue: 'time',
+        }[node.name] ?? null
+      );
+    default:
+      return null;
   }
-  if (node.t === 'call') {
-    return (
-      {
-        Text: 'text',
-        Value: 'number',
-        Decimal: 'number',
-        Float: 'float',
-        Boolean: 'boolean',
-        DateValue: 'date',
-        Date: 'date',
-        DateTimeValue: 'datetime',
-        TimeValue: 'time',
-      }[node.name] ?? null
-    );
-  }
-  return null;
 }
 function coerceIfErrorReplacement(fx, value, type) {
   if (value instanceof FxError || isBlank(value)) return value;
@@ -173,13 +186,16 @@ function scaled(x, digits, mode) {
   const sign = x < 0 ? -1 : 1;
   const shift = (v, d) => Number(`${v}e${d}`);
   const abs = shift(round15(Math.abs(x)), digits);
-  const whole = mode === 'round' ? Math.round(abs) : mode === 'up' ? Math.ceil(round15(abs)) : Math.floor(round15(abs));
+  let whole;
+  if (mode === 'round') whole = Math.round(abs);
+  else if (mode === 'up') whole = Math.ceil(round15(abs));
+  else whole = Math.floor(round15(abs));
   return sign * shift(whole, -digits) || 0;
 }
 const rounding = (mode) => ({
   min: 1,
   max: 2,
-  fn: (fx, value, digits = 0) => {
+  /* NOSONAR: mixed return values are part of the contract */ fn: (fx, value, digits = 0) => {
     const x = toNumber(value),
       d = toNumber(digits);
     if (x instanceof FxError) return x;
@@ -192,16 +208,7 @@ const rounding = (mode) => ({
 
 // ---- Number formatting (Learn "Text function": 0 # , . % placeholders, literal text)
 
-function formatNumber(value, format, language) {
-  let separators;
-  try {
-    if (!Intl.NumberFormat.supportedLocalesOf([language]).length) throw new RangeError();
-    separators = new Intl.NumberFormat(language).formatToParts(1234.5);
-  } catch {
-    return fail('BadLanguageCode', `Language code '${language}' not supported.`);
-  }
-  const group = separators.find((part) => part.type === 'group')?.value ?? ',';
-  const decimal = separators.find((part) => part.type === 'decimal')?.value ?? '.';
+function numberFormatPattern(format) {
   const fmt = String(format).replace(/^\[\$-[^\]]*\]/, '');
   const parts = [...fmt.matchAll(/"([^"]*)"|\\(.)|([0#,.%])|(.)/gs)].map((m) =>
     m[3] !== undefined ? { p: m[3] } : { t: m[1] ?? m[2] ?? m[4] },
@@ -211,7 +218,7 @@ function formatNumber(value, format, language) {
     fractionSlots = [];
   for (const [index, part] of parts.entries())
     if (part.p === '0' || part.p === '#') (point < 0 || index < point ? integerSlots : fractionSlots).push(index);
-  if (!integerSlots.length && !fractionSlots.length) return parts.map((part) => part.t ?? part.p).join('');
+  if (!integerSlots.length && !fractionSlots.length) return { plain: parts.map((part) => part.t ?? part.p).join('') };
   const firstZero = integerSlots.findIndex((index) => parts[index].p === '0');
   const minInt = firstZero < 0 ? 0 : integerSlots.length - firstZero;
   const decimals = fractionSlots.length;
@@ -223,32 +230,53 @@ function formatNumber(value, format, language) {
     integerSlots.length > 1 &&
     parts.some((part, index) => part.p === ',' && index > integerSlots[0] && index < lastInteger);
   const percentCount = parts.filter((part) => part.p === '%').length;
+  return {
+    parts,
+    point,
+    integerSlots,
+    fractionSlots,
+    minInt,
+    decimals,
+    minDecimals,
+    scalingCommas,
+    grouped,
+    percentCount,
+  };
+}
+
+function formattedDigits(value, pattern) {
   // Power Fx formats decimal digits without converting an exact Decimal to a double.
   // Float formatting uses the platform's 15-significant-digit decimal presentation.
   const input = value instanceof FxFloat ? round15(value.value) : value;
   const partsValue = decimalParts(input);
   let coefficient = partsValue.coefficient;
-  let scale = partsValue.scale - 2 * percentCount + 3 * scalingCommas;
+  let scale = partsValue.scale - 2 * pattern.percentCount + 3 * pattern.scalingCommas;
   if (scale < 0) {
     coefficient *= 10n ** BigInt(-scale);
     scale = 0;
   }
   const negative = coefficient < 0n;
   let magnitude = negative ? -coefficient : coefficient;
-  if (scale > decimals) {
-    const divisor = 10n ** BigInt(scale - decimals);
+  if (scale > pattern.decimals) {
+    const divisor = 10n ** BigInt(scale - pattern.decimals);
     magnitude = magnitude / divisor + ((magnitude % divisor) * 2n >= divisor ? 1n : 0n);
-  } else magnitude *= 10n ** BigInt(decimals - scale);
-  const digits = magnitude.toString().padStart(decimals + 1, '0');
-  const whole = decimals ? digits.slice(0, -decimals) : digits;
-  const fraction = decimals ? digits.slice(-decimals) : '';
-  const intText = whole === '0' && minInt === 0 ? '' : whole.padStart(minInt, '0');
+  } else magnitude *= 10n ** BigInt(pattern.decimals - scale);
+  const digits = magnitude.toString().padStart(pattern.decimals + 1, '0');
+  const whole = pattern.decimals ? digits.slice(0, -pattern.decimals) : digits;
+  const fraction = pattern.decimals ? digits.slice(-pattern.decimals) : '';
+  const intText = whole === '0' && pattern.minInt === 0 ? '' : whole.padStart(pattern.minInt, '0');
   let decText = fraction;
-  while (decText.length > minDecimals && decText.endsWith('0')) decText = decText.slice(0, -1);
+  while (decText.length > pattern.minDecimals && decText.endsWith('0')) decText = decText.slice(0, -1);
+  return { negative, magnitude, intText, decText };
+}
+
+function renderNumberPattern(pattern, digits, separators) {
+  const { parts, point, integerSlots, fractionSlots, decimals, grouped } = pattern;
+  const { negative, magnitude, intText, decText } = digits;
   // Assign digits to their original slots, retaining literals between slots. Overflow belongs to the first slot.
   const rendered = new Map();
   const integerDigits = [...intText].map((digit, index) =>
-    grouped && index > 0 && (intText.length - index) % 3 === 0 ? group + digit : digit,
+    grouped && index > 0 && (intText.length - index) % 3 === 0 ? separators.group + digit : digit,
   );
   for (const index of integerSlots.toReversed()) rendered.set(index, integerDigits.pop() ?? '');
   if (integerSlots.length) rendered.set(integerSlots[0], integerDigits.join('') + rendered.get(integerSlots[0]));
@@ -257,11 +285,29 @@ function formatNumber(value, format, language) {
     .map((part, index) => {
       if (rendered.has(index)) return rendered.get(index);
       if (part.p === ',') return '';
-      if (index === point) return (integerSlots.length ? '' : intText) + (decText || !decimals ? decimal : '');
+      if (index === point)
+        return (integerSlots.length ? '' : intText) + (decText || !decimals ? separators.decimal : '');
       return part.t ?? part.p;
     })
     .join('');
   return `${negative && magnitude !== 0n ? '-' : ''}${body}`;
+}
+
+/* NOSONAR: mixed return values are part of the contract */ function formatNumber(value, format, language) {
+  let separators;
+  try {
+    if (!Intl.NumberFormat.supportedLocalesOf([language]).length) throw new RangeError('Unsupported language code.');
+    const parts = new Intl.NumberFormat(language).formatToParts(1234.5);
+    separators = {
+      group: parts.find((part) => part.type === 'group')?.value ?? ',',
+      decimal: parts.find((part) => part.type === 'decimal')?.value ?? '.',
+    };
+  } catch {
+    return fail('BadLanguageCode', `Language code '${language}' not supported.`);
+  }
+  const pattern = numberFormatPattern(format);
+  if (pattern.plain !== undefined) return pattern.plain;
+  return renderNumberPattern(pattern, formattedDigits(value, pattern), separators);
 }
 
 // ---- Dates (Learn "DateAdd, DateDiff", "Day, Month, Year, Hour, Minute, Second, and Weekday", "WeekNum and ISOWeekNum") --
@@ -277,7 +323,7 @@ const datePart = (get) => ({
   },
 });
 const UNITS = { milliseconds: 1, seconds: 1000, minutes: 60_000, hours: 3_600_000, days: DAY };
-function unitOf(value) {
+/* NOSONAR: mixed return values are part of the contract */ function unitOf(value) {
   const unit = String(value ?? 'Days').toLowerCase();
   if (UNITS[unit] || ['months', 'quarters', 'years'].includes(unit)) return unit;
   return fail('InvalidArgument', `'${value}' is not a TimeUnit.`);
@@ -316,11 +362,10 @@ function regexOf(fx, pattern, options, fallback) {
   let source = String(pattern);
   if (opts.includes('x'))
     source = source
-      .replace(/\\#/g, '\u0000')
+      .replaceAll(String.raw`\#`, '\u0000')
       .replace(/#[^\n]*/g, '')
       .replace(/\s+/g, '')
-      // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
-      .replace(/\u0000/g, '\\#');
+      .replaceAll('\u0000', String.raw`\#`);
   const begins = opts.includes('^c'),
     ends = opts.includes('c$');
   source = `${begins ? '^' : ''}(?:${source})${ends ? '$' : ''}`;
@@ -342,10 +387,139 @@ function matchRecord(match, numbered) {
   return record;
 }
 
+function choicesFromSource(fx, args, column) {
+  const source = fx.ev(column.obj);
+  if (source instanceof FxError) return source;
+  if (
+    !(source instanceof FxDataSource) ||
+    source.name !== column.obj.name ||
+    source.adapter[Symbol.for('paqvilo.power-fx.dataverse-choices')] !== true ||
+    typeof source.adapter.choices !== 'function'
+  ) {
+    fx.warn({
+      code: 'POWER_FX_CHOICES_UNAVAILABLE',
+      operation: 'Choices',
+      message: 'The data source does not provide choice metadata.',
+    });
+    return fail('NotSupported', 'Choices metadata is unavailable for this data source.');
+  }
+  const filter = args[1] ? toText(fx.ev(args[1]), fx) : '';
+  if (filter instanceof FxError) return filter;
+  const info = source.adapter.choices(column.name);
+  if (!info) {
+    fx.warn({
+      code: 'POWER_FX_CHOICES_UNAVAILABLE',
+      operation: 'Choices',
+      message: 'The column choice or lookup metadata is unavailable.',
+    });
+    return fail('NotSupported', 'Choices metadata is unavailable for this column.');
+  }
+  if (info.kind === 'choice') {
+    fx.warn({
+      code: 'POWER_FX_CHOICE_APPROXIMATION',
+      operation: 'Choices',
+      message:
+        'Choice values are represented as label and numeric Id records; native opaque choice types are not modeled.',
+    });
+    const prefix = filter.toLocaleLowerCase(fx.language);
+    return info.values.filter((row) => row.Value.toLocaleLowerCase(fx.language).startsWith(prefix));
+  }
+  if (info.kind !== 'lookup' || !(info.source instanceof FxDataSource))
+    return fail('NotSupported', 'Choices lookup metadata is invalid.');
+  const rows = rowsOf(fx, info.source, 'Choices');
+  if (rows instanceof FxError) return rows;
+  const prefix = filter.toLocaleLowerCase(fx.language);
+  return prefix
+    ? rows.filter((row) => {
+        const value = member(fx, row, info.nameColumn);
+        return typeof value === 'string' && value.toLocaleLowerCase(fx.language).startsWith(prefix);
+      })
+    : rows;
+}
+
+function sortColumnKeys(fx, args) {
+  const isOrder = (node) => (node.t === 'lit' ? /^(ascending|descending)$/i.test(String(node.v)) : node.t !== 'id');
+  const keys = [];
+  for (let i = 1; i < args.length; i++) {
+    const name = columnName(fx, args[i]);
+    if (name instanceof FxError) return { error: name };
+    let order = 'Ascending';
+    if (i + 1 < args.length && isOrder(args[i + 1])) {
+      const orderValue = fx.ev(args[++i]);
+      if (orderValue instanceof FxError) return { error: orderValue };
+      order = Array.isArray(orderValue) ? orderValue : toText(orderValue, fx);
+    }
+    keys.push({ name, order });
+  }
+  return { keys };
+}
+
+function removeRecords(target, records, all) {
+  if (target instanceof FxDataSource) {
+    for (const record of records) {
+      const removed = guarded(() => target.adapter.remove(record));
+      if (removed instanceof FxError) return removed;
+    }
+    return null;
+  }
+  for (const record of records) {
+    const error = removeCollectionRecord(target, record, all);
+    if (error) return error;
+  }
+  return null;
+}
+
+function removeCollectionRecord(target, record, all) {
+  const index = target.findIndex((row) => sameRow(row, record));
+  if (index < 0) return fail('NotFound', 'The record to remove was not found.');
+  if (all)
+    for (let i = target.length - 1; i >= 0; i--) {
+      if (sameRow(target[i], record)) target.splice(i, 1);
+    }
+  else target.splice(index, 1);
+  return null;
+}
+
+function applyRowUpdate(target, row, change) {
+  if (target instanceof FxDataSource) {
+    const updated = guarded(() => target.adapter.update(row, change));
+    if (updated instanceof FxError) return updated;
+  } else {
+    const index = target.indexOf(row);
+    if (index >= 0) target[index] = merged([row, change]);
+  }
+  return undefined;
+}
+
+function updateRowIf(fx, args, row, table, target) {
+  for (let i = 1; i < args.length; i += 2) {
+    const condition = inRow(fx, row, table, () => toBoolean(fx.ev(args[i])));
+    if (condition instanceof FxError) return condition;
+    if (!condition) continue;
+    const change = inRow(fx, row, table, () => fx.ev(args[i + 1]));
+    if (change instanceof FxError) return change;
+    if (!isRecord(change)) return fail('InvalidArgument', 'UpdateIf needs a change record.');
+    const error = applyRowUpdate(target, row, change);
+    if (error instanceof FxError) return error;
+    break;
+  }
+  return undefined;
+}
+
+function collectIntoDataSource(target, records, values) {
+  const created = [];
+  for (const record of records) {
+    const row = guarded(() => target.adapter.create(record));
+    if (row instanceof FxError) return row;
+    created.push(row);
+  }
+  return values.length === 1 && isRecord(values[0]) ? created[0] : created;
+}
+
 // ---- JSON (Learn "JSON function", "ParseJSON function")
 
-function jsonOf(fx, value, flatten) {
-  if (isBlank(value)) return null;
+const JSON_NOT_HANDLED = Symbol('json value not handled');
+function jsonWrappedValue(fx, value, flatten) {
   if (value instanceof FxError) throw value;
   if (value instanceof FxDate) return value.kind === 'datetime' ? new Date(value.ms).toISOString() : isoOf(value);
   if (value instanceof FxGuid) return value.value;
@@ -354,6 +528,13 @@ function jsonOf(fx, value, flatten) {
   if (isExactNumeric(value)) return JSON.rawJSON(toText(value));
   if (value instanceof FxRecordRef) return jsonOf(fx, value.record, flatten);
   if (value instanceof FxDataSource) return jsonOf(fx, readAll(fx, value, 'JSON'), flatten);
+  return JSON_NOT_HANDLED;
+}
+
+function jsonOf(fx, value, flatten) {
+  if (isBlank(value)) return null;
+  const wrapped = jsonWrappedValue(fx, value, flatten);
+  if (wrapped !== JSON_NOT_HANDLED) return wrapped;
   if (Array.isArray(value)) {
     const single = flatten && value.every((row) => isRecord(row) && Object.keys(row).length === 1 && 'Value' in row);
     return value.map((row) => (single ? jsonOf(fx, row.Value, flatten) : jsonOf(fx, row, flatten)));
@@ -391,6 +572,68 @@ function columnRef(node, source, asName) {
     return source.adapter.column(node.name);
   return null;
 }
+function textExprWhole(fx, node, source, asName, index) {
+  const value = node.args[index] ? constantOf(fx, node.args[index], source, asName) : undefined;
+  const number = value === undefined ? Number.NaN : toNumber(value);
+  return Number.isInteger(number) && number >= 0 ? number : null;
+}
+const quotedODataText = (value) => `'${value.replaceAll("'", "''")}'`;
+const withOData = (inner, odata) => ({ ...inner, odata });
+function textExprRight(fx, node, source, asName, inner) {
+  const count = textExprWhole(fx, node, source, asName, 1);
+  return count === null ? null : withOData(inner, `right(${inner.odata},${count})`);
+}
+function textExprLeft(fx, node, source, asName, inner) {
+  const count = textExprWhole(fx, node, source, asName, 1);
+  return count === null ? null : withOData(inner, `substring(${inner.odata},0,${count})`);
+}
+function textExprSubstitute(fx, node, source, asName, inner) {
+  if (node.args.length !== 3) return null; // an instance argument stays in memory
+  const [from, to] = [1, 2]
+    .map((index) => constantOf(fx, node.args[index], source, asName))
+    .map((value) => (value === undefined ? null : toText(value, fx)));
+  return typeof from === 'string' && typeof to === 'string'
+    ? withOData(inner, `replace(${inner.odata},${quotedODataText(from)},${quotedODataText(to)})`)
+    : null;
+}
+function textExprMid(fx, node, source, asName, inner) {
+  const start = textExprWhole(fx, node, source, asName, 1),
+    count = node.args.length > 2 ? textExprWhole(fx, node, source, asName, 2) : undefined;
+  if (!start || count === null) return null;
+  const countArgument = count === undefined ? '' : `,${count}`;
+  return withOData(inner, `substring(${inner.odata},${start - 1}${countArgument})`);
+}
+function textExprReplace(fx, node, source, asName, inner) {
+  const start = textExprWhole(fx, node, source, asName, 1),
+    count = textExprWhole(fx, node, source, asName, 2),
+    value = node.args[3] ? constantOf(fx, node.args[3], source, asName) : undefined;
+  const text = value === undefined ? null : toText(value, fx);
+  if (!start || count === null || typeof text !== 'string') return null;
+  return withOData(
+    inner,
+    `concat(concat(substring(${inner.odata},0,${start - 1}),${quotedODataText(text)}),substring(${inner.odata},${start - 1 + count}))`,
+  );
+}
+function textExprCall(fx, node, source, asName, inner) {
+  switch (node.name) {
+    case 'Upper':
+      return node.args.length === 1 ? withOData(inner, `toupper(${inner.odata})`) : null;
+    case 'Lower':
+      return node.args.length === 1 ? withOData(inner, `tolower(${inner.odata})`) : null;
+    case 'Right':
+      return textExprRight(fx, node, source, asName, inner);
+    case 'Substitute':
+      return textExprSubstitute(fx, node, source, asName, inner);
+    case 'Left':
+      return textExprLeft(fx, node, source, asName, inner);
+    case 'Mid':
+      return textExprMid(fx, node, source, asName, inner);
+    case 'Replace':
+      return textExprReplace(fx, node, source, asName, inner);
+    default:
+      return null;
+  }
+}
 // Learn (Dataverse delegation, note 3): DateTime is delegable except for the Now() and Today() functions.
 const VOLATILE = new Set(['Now', 'Today', 'UTCNow', 'UTCToday', 'IsToday', 'IsUTCToday']);
 const callsVolatile = (node) =>
@@ -414,118 +657,82 @@ function textExpr(fx, node, source, asName) {
   const column = columnRef(node, source, asName);
   if (column || node.t !== 'call' || !node.args.length) return column;
   const inner = textExpr(fx, node.args[0], source, asName);
-  if (!inner || inner.type !== 'text') return null;
-  const whole = (i) => {
-    const value = node.args[i] ? constantOf(fx, node.args[i], source, asName) : undefined;
-    const x = value === undefined ? NaN : toNumber(value);
-    return Number.isInteger(x) && x >= 0 ? x : null;
-  };
-  const quoted = (text) => `'${text.replace(/'/g, "''")}'`;
-  const of = (odata) => ({ ...inner, odata });
-  switch (node.name) {
-    case 'Upper':
-      return node.args.length === 1 ? of(`toupper(${inner.odata})`) : null;
-    case 'Lower':
-      return node.args.length === 1 ? of(`tolower(${inner.odata})`) : null;
-    case 'Right': {
-      const count = whole(1);
-      return count === null ? null : of(`right(${inner.odata},${count})`);
-    }
-    case 'Substitute': {
-      if (node.args.length !== 3) return null; // an instance argument stays in memory
-      const [from, to] = [1, 2]
-        .map((i) => constantOf(fx, node.args[i], source, asName))
-        .map((value) => (value === undefined ? null : toText(value, fx)));
-      return typeof from === 'string' && typeof to === 'string'
-        ? of(`replace(${inner.odata},${quoted(from)},${quoted(to)})`)
-        : null;
-    }
-    case 'Left': {
-      const count = whole(1);
-      return count === null ? null : of(`substring(${inner.odata},0,${count})`);
-    }
-    case 'Mid': {
-      const start = whole(1),
-        count = node.args.length > 2 ? whole(2) : undefined;
-      return !start || count === null
-        ? null
-        : of(`substring(${inner.odata},${start - 1}${count === undefined ? '' : `,${count}`})`);
-    }
-    case 'Replace': {
-      const start = whole(1),
-        count = whole(2),
-        value = node.args[3] ? constantOf(fx, node.args[3], source, asName) : undefined;
-      const text = value === undefined ? null : toText(value, fx);
-      if (!start || count === null || typeof text !== 'string') return null;
-      return of(
-        `concat(concat(substring(${inner.odata},0,${start - 1}),${quoted(text)}),substring(${inner.odata},${start - 1 + count}))`,
-      );
-    }
-    default:
-      return null;
-  }
+  if (inner?.type !== 'text') return null;
+  return textExprCall(fx, node, source, asName, inner);
 }
 // One predicate as an OData $filter clause: a string, true or false for a constant predicate, null when not delegable.
-function delegate(fx, source, node, asName) {
-  if (!readsRow(node, source, asName)) {
-    const value = fx.ev(node);
-    if (value instanceof FxError) return null;
-    const b = toBoolean(value);
-    return b instanceof FxError ? null : b;
+const delegatedClause = (inner) => (inner === null || typeof inner === 'boolean' ? null : inner);
+function delegateLogical(fx, source, node, asName) {
+  const l = delegatedClause(delegate(fx, source, node.l, asName)),
+    r = delegatedClause(delegate(fx, source, node.r, asName));
+  if (!l || !r) return null;
+  const operator = node.op === '&&' ? 'and' : 'or';
+  return `(${l} ${operator} ${r})`;
+}
+function delegateNegation(fx, source, node, asName) {
+  const inner = delegatedClause(delegate(fx, source, node.e ?? node.args[0], asName));
+  return inner ? `not (${inner})` : null;
+}
+function delegateComparison(fx, source, node, asName) {
+  let column = textExpr(fx, node.l, source, asName),
+    other = node.r,
+    op = node.op;
+  if (!column) {
+    column = textExpr(fx, node.r, source, asName);
+    other = node.l;
+    op = SWAPPED[node.op];
   }
-  const clause = (inner) => (inner === null || typeof inner === 'boolean' ? null : inner);
-  if (node.t === 'bin' && (node.op === '&&' || node.op === '||')) {
-    const l = clause(delegate(fx, source, node.l, asName)),
-      r = clause(delegate(fx, source, node.r, asName));
-    return l && r ? `(${l} ${node.op === '&&' ? 'and' : 'or'} ${r})` : null;
-  }
-  if ((node.t === 'unary' && node.op === '!') || (node.t === 'call' && node.name === 'Not' && node.args.length === 1)) {
-    const inner = clause(delegate(fx, source, node.e ?? node.args[0], asName));
-    return inner ? `not (${inner})` : null;
-  }
-  if (node.t === 'bin' && ODATA_OP[node.op]) {
-    let column = textExpr(fx, node.l, source, asName),
-      other = node.r,
-      op = node.op;
-    if (!column) {
-      column = textExpr(fx, node.r, source, asName);
-      other = node.l;
-      op = SWAPPED[node.op];
-    }
-    if (!column || (!['=', '<>'].includes(op) && !ORDERED.has(column.type))) return null;
-    const value = constantOf(fx, other, source, asName);
-    if (value === undefined) return null;
-    const literal = source.adapter.literal(column, value);
-    return literal === null ? null : `${column.odata} ${ODATA_OP[op]} ${literal}`;
-  }
-  if (node.t === 'call' && node.name === 'IsBlank' && node.args.length === 1) {
+  if (!column || (!['=', '<>'].includes(op) && !ORDERED.has(column.type))) return null;
+  const value = constantOf(fx, other, source, asName);
+  if (value === undefined) return null;
+  const literal = source.adapter.literal(column, value);
+  return literal === null ? null : `${column.odata} ${ODATA_OP[op]} ${literal}`;
+}
+function delegateCall(fx, source, node, asName) {
+  if (node.name === 'IsBlank' && node.args.length === 1) {
     const column = columnRef(node.args[0], source, asName);
     return column && column.type !== 'choice' ? `${column.odata} eq null` : null;
   }
-  if (node.t === 'call' && node.name === 'StartsWith' && node.args.length === 2) {
+  if (node.name === 'StartsWith' && node.args.length === 2) {
     const column = columnRef(node.args[0], source, asName);
     const value = column?.type === 'text' ? constantOf(fx, node.args[1], source, asName) : undefined;
     return value === undefined
       ? null
       : `startswith(${column.odata},${source.adapter.literal(column, toText(value, fx))})`;
   }
-  if (node.t === 'bin' && node.op === 'in') {
-    const column = columnRef(node.r, source, asName);
-    if (column?.type === 'text') {
-      // substring: "x" in Col
-      const value = constantOf(fx, node.l, source, asName);
-      return value === undefined
-        ? null
-        : `contains(${column.odata},${source.adapter.literal(column, toText(value, fx))})`;
-    }
-    const member = columnRef(node.l, source, asName); // membership: Col in [a, b]
-    const list = member ? constantOf(fx, node.r, source, asName) : undefined;
-    if (!Array.isArray(list) || !list.length) return null;
-    const literals = list.map((row) => source.adapter.literal(member, isRecord(row) ? Object.values(row)[0] : row));
-    return literals.includes(null)
+  return null;
+}
+function delegateMembership(fx, source, node, asName) {
+  const column = columnRef(node.r, source, asName);
+  if (column?.type === 'text') {
+    // substring: "x" in Col
+    const value = constantOf(fx, node.l, source, asName);
+    return value === undefined
       ? null
-      : `(${literals.map((literal) => `${member.odata} eq ${literal}`).join(' or ')})`;
+      : `contains(${column.odata},${source.adapter.literal(column, toText(value, fx))})`;
   }
+  const member = columnRef(node.l, source, asName); // membership: Col in [a, b]
+  const list = member ? constantOf(fx, node.r, source, asName) : undefined;
+  if (!Array.isArray(list) || !list.length) return null;
+  const literals = list.map((row) => source.adapter.literal(member, isRecord(row) ? Object.values(row)[0] : row));
+  if (literals.includes(null)) return null;
+  const comparisons = literals.map((literal) => `${member.odata} eq ${literal}`).join(' or ');
+  return `(${comparisons})`;
+}
+
+/* NOSONAR: mixed return values are part of the contract */ function delegate(fx, source, node, asName) {
+  if (!readsRow(node, source, asName)) {
+    const value = fx.ev(node);
+    if (value instanceof FxError) return null;
+    const b = toBoolean(value);
+    return b instanceof FxError ? null : b;
+  }
+  if (node.t === 'bin' && (node.op === '&&' || node.op === '||')) return delegateLogical(fx, source, node, asName);
+  if ((node.t === 'unary' && node.op === '!') || (node.t === 'call' && node.name === 'Not' && node.args.length === 1))
+    return delegateNegation(fx, source, node, asName);
+  if (node.t === 'bin' && ODATA_OP[node.op]) return delegateComparison(fx, source, node, asName);
+  if (node.t === 'call') return delegateCall(fx, source, node, asName);
+  if (node.t === 'bin' && node.op === 'in') return delegateMembership(fx, source, node, asName);
   return null;
 }
 // Filter over a data source: delegated when every predicate translates, else read up to the row limit and filtered here.
@@ -586,7 +793,7 @@ function aggregate(name, reduce) {
         const column = plainColumn(args[1], first.value, first.name);
         // Learn: Sum, Min, Max, Avg delegate for Number columns; the delegated read has no row limit.
         const rows =
-          column && column.type === 'number'
+          column?.type === 'number'
             ? first.value.adapter.read({ ...first.value.query, top: first.value.query.top })
             : rowsOf(fx, first.value, name);
         if (rows instanceof FxError) return rows;
@@ -676,7 +883,7 @@ export const FUNCTIONS = {
   And: {
     min: 1,
     lazy: true,
-    fn: (fx, args) => {
+    /* NOSONAR: mixed return values are part of the contract */ fn: (fx, args) => {
       for (const arg of args) {
         const b = toBoolean(fx.ev(arg));
         if (b instanceof FxError || !b) return b;
@@ -687,7 +894,7 @@ export const FUNCTIONS = {
   Or: {
     min: 1,
     lazy: true,
-    fn: (fx, args) => {
+    /* NOSONAR: mixed return values are part of the contract */ fn: (fx, args) => {
       for (const arg of args) {
         const b = toBoolean(fx.ev(arg));
         if (b instanceof FxError || b) return b;
@@ -836,7 +1043,7 @@ export const FUNCTIONS = {
   Mod: {
     min: 2,
     max: 2,
-    fn: (fx, a, b) => {
+    /* NOSONAR: mixed return values are part of the contract */ fn: (fx, a, b) => {
       const x = toDecimal(a),
         d = toDecimal(b);
       if (firstError(x, d)) return firstError(x, d);
@@ -882,7 +1089,7 @@ export const FUNCTIONS = {
   },
   Boolean: { min: 1, max: 1, fn: (fx, value) => (isBlank(value) || value === '' ? null : toBoolean(value)) },
   Sum: aggregate('Sum', (fx, values) => total(values)),
-  Average: aggregate('Average', (fx, values) => {
+  /* NOSONAR: mixed return values are part of the contract */ Average: aggregate('Average', (fx, values) => {
     const sum = total(values);
     if (sum instanceof FxError) return sum;
     if (!values.length) return fail('Div0', 'Average of no values: division by zero.');
@@ -897,7 +1104,7 @@ export const FUNCTIONS = {
   Sequence: {
     min: 1,
     max: 3,
-    fn(fx, records, start = 1, step = 1) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, records, start = 1, step = 1) {
       const count = toNumber(records),
         from = toNumber(start),
         by = toNumber(step);
@@ -966,8 +1173,8 @@ export const FUNCTIONS = {
   Lower: textual((t) => t.toLowerCase()),
   Upper: textual((t) => t.toUpperCase()),
   Proper: textual((t) => t.toLowerCase().replace(/(^|[^\p{L}])(\p{L})/gu, (m, a, b) => a + b.toUpperCase())),
-  Trim: textual((t) => t.replace(/^ +| +$/g, '').replace(/ {2,}/g, ' ')),
-  TrimEnds: textual((t) => t.replace(/^ +| +$/g, '')),
+  Trim: textual((t) => t.replace(/^ +/, '').replace(/ +$/, '').replace(/ {2,}/g, ' ')), // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  TrimEnds: textual((t) => t.replace(/^ +/, '').replace(/ +$/, '')), // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
   Left: {
     min: 2,
     max: 2,
@@ -983,10 +1190,11 @@ export const FUNCTIONS = {
     fn: (fx, value, count) => {
       const t = text(fx, value),
         c = integer(n(fx, count));
-      return (
-        firstError(t, c) ??
-        (c < 0 ? fail('InvalidArgument', 'Right needs a non-negative count.') : c === 0 ? '' : t.slice(-c))
-      );
+      const error = firstError(t, c);
+      if (error != null) return error;
+      if (c < 0) return fail('InvalidArgument', 'Right needs a non-negative count.');
+      if (c === 0) return '';
+      return t.slice(-c);
     },
   },
   Mid: {
@@ -1056,10 +1264,14 @@ export const FUNCTIONS = {
       const t = text(fx, value),
         s = text(fx, separator);
       if (firstError(t, s)) return firstError(t, s);
-      return singleColumn(t === '' ? [] : s === '' ? [...t] : t.split(s));
+      let parts;
+      if (t === '') parts = [];
+      else if (s === '') parts = [...t];
+      else parts = t.split(s);
+      return singleColumn(parts);
     },
   },
-  Char: numeric((x) => String.fromCharCode(Math.trunc(x))),
+  Char: numeric((x) => String.fromCharCode(Math.trunc(x))), // NOSONAR: UTF-16 code unit semantics are required
   StartsWith: {
     min: 2,
     max: 2,
@@ -1081,7 +1293,7 @@ export const FUNCTIONS = {
   IsMatch: {
     min: 2,
     max: 3,
-    fn(fx, value, pattern, options) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, value, pattern, options) {
       const { re, error } = regexOf(fx, pattern, options, isMatchDefault(fx));
       if (error) return error;
       const t = text(fx, value);
@@ -1103,7 +1315,7 @@ export const FUNCTIONS = {
   MatchAll: {
     min: 2,
     max: 3,
-    fn(fx, value, pattern, options) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, value, pattern, options) {
       const { re, error, numbered } = regexOf(fx, pattern, options, 'c');
       if (error) return error;
       const t = text(fx, value);
@@ -1121,7 +1333,7 @@ export const FUNCTIONS = {
       if (t instanceof FxError) return t;
       const m = /^\{?([0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12})\}?$/i.exec(t.trim());
       if (!m) return fail('InvalidArgument', `'${t}' is not a GUID.`);
-      const hex = m[1].replace(/-/g, '');
+      const hex = m[1].replaceAll('-', '');
       return new FxGuid(
         `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
       );
@@ -1130,7 +1342,7 @@ export const FUNCTIONS = {
   JSON: {
     min: 1,
     max: 2,
-    fn(fx, value, format = '') {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, value, format = '') {
       const options = toText(format, fx);
       if (options instanceof FxError) return options;
       try {
@@ -1167,7 +1379,7 @@ export const FUNCTIONS = {
   IsToday: {
     min: 1,
     max: 1,
-    fn(fx, value) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, value) {
       if (isBlank(value)) return false;
       const date = toDate(value, 'any', fx);
       if (date instanceof FxError) return date;
@@ -1180,7 +1392,7 @@ export const FUNCTIONS = {
   IsUTCToday: {
     min: 1,
     max: 1,
-    fn(fx, value) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, value) {
       if (isBlank(value)) return false;
       const date = toDate(value, 'any', fx);
       return date instanceof FxError ? date : Math.floor(date.ms / DAY) === Math.floor(fx.now() / DAY);
@@ -1234,7 +1446,7 @@ export const FUNCTIONS = {
   WeekNum: {
     min: 1,
     max: 2,
-    fn(fx, value, start = 1) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, value, start = 1) {
       if (isBlank(value)) return null;
       const date = toDate(value, 'any', fx),
         type = toNumber(start);
@@ -1265,7 +1477,10 @@ export const FUNCTIONS = {
         return new FxDate(base.kind, base.ms + amount * UNITS[unit], base.tzi);
       }
       const wall = wallOf(date, fx.timeZone);
-      const months = unit === 'months' ? amount : unit === 'quarters' ? amount * 3 : unit === 'years' ? amount * 12 : 0;
+      let months = 0;
+      if (unit === 'months') months = amount;
+      else if (unit === 'quarters') months = amount * 3;
+      else if (unit === 'years') months = amount * 12;
       const moved = unit === 'days' ? wall + amount * DAY : addMonths(wall, Math.trunc(months));
       return fromWall(date.kind, moved, fx.timeZone, date.tzi);
     },
@@ -1273,7 +1488,7 @@ export const FUNCTIONS = {
   DateDiff: {
     min: 2,
     max: 3,
-    fn(fx, startValue, endValue, units) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, startValue, endValue, units) {
       if (isBlank(startValue) || isBlank(endValue)) return null;
       const start = toDate(startValue, 'any', fx),
         end = toDate(endValue, 'any', fx),
@@ -1325,7 +1540,7 @@ export const FUNCTIONS = {
   RandBetween: {
     min: 2,
     max: 2,
-    fn(fx, bottom, top) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, bottom, top) {
       const low = toNumber(bottom),
         high = toNumber(top);
       const error = firstError(low, high);
@@ -1348,13 +1563,13 @@ export const FUNCTIONS = {
   EncodeUrl: {
     min: 1,
     max: 1,
-    fn(fx, value) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, value) {
       const text = toText(value, fx);
       if (text instanceof FxError) return text;
       try {
         return encodeURIComponent(text).replace(
           /[!'()*]/g,
-          (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+          (character) => `%${character.codePointAt(0).toString(16).toUpperCase()}`,
         );
       } catch {
         return fail('InvalidArgument', 'The text cannot be URL encoded.');
@@ -1366,7 +1581,7 @@ export const FUNCTIONS = {
   RGBA: {
     min: 4,
     max: 4,
-    fn(fx, red, green, blue, alpha) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, red, green, blue, alpha) {
       const values = [red, green, blue, alpha].map(toNumber);
       const error = firstError(...values);
       if (error) return error;
@@ -1387,16 +1602,18 @@ export const FUNCTIONS = {
   ColorFade: {
     min: 2,
     max: 2,
-    fn(fx, value, amount) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, value, amount) {
       const color = parseCanvasColor(value),
         fade = toNumber(amount);
       if (fade instanceof FxError) return fade;
       if (!color || !Number.isFinite(fade) || fade < -1 || fade > 1)
         return fail('InvalidArgument', 'The color or fade amount is invalid.');
       return canvasColorCss(
-        color.map((channel, index) =>
-          index === 3 ? channel : Math.floor(channel + (fade < 0 ? channel : 255 - channel) * fade),
-        ),
+        color.map((channel, index) => {
+          if (index === 3) return channel;
+          const span = fade < 0 ? channel : 255 - channel;
+          return Math.floor(channel + span * fade);
+        }),
       );
     },
   },
@@ -1437,53 +1654,7 @@ export const FUNCTIONS = {
       }
       if (column.t !== 'dot' || column.obj?.t !== 'id')
         return fail('NotSupported', 'Choices requires a direct data source column reference.');
-      const source = fx.ev(column.obj);
-      if (source instanceof FxError) return source;
-      if (
-        !(source instanceof FxDataSource) ||
-        source.name !== column.obj.name ||
-        source.adapter[Symbol.for('paqvilo.power-fx.dataverse-choices')] !== true ||
-        typeof source.adapter.choices !== 'function'
-      ) {
-        fx.warn({
-          code: 'POWER_FX_CHOICES_UNAVAILABLE',
-          operation: 'Choices',
-          message: 'The data source does not provide choice metadata.',
-        });
-        return fail('NotSupported', 'Choices metadata is unavailable for this data source.');
-      }
-      const filter = args[1] ? toText(fx.ev(args[1]), fx) : '';
-      if (filter instanceof FxError) return filter;
-      const info = source.adapter.choices(column.name);
-      if (!info) {
-        fx.warn({
-          code: 'POWER_FX_CHOICES_UNAVAILABLE',
-          operation: 'Choices',
-          message: 'The column choice or lookup metadata is unavailable.',
-        });
-        return fail('NotSupported', 'Choices metadata is unavailable for this column.');
-      }
-      if (info.kind === 'choice') {
-        fx.warn({
-          code: 'POWER_FX_CHOICE_APPROXIMATION',
-          operation: 'Choices',
-          message:
-            'Choice values are represented as label and numeric Id records; native opaque choice types are not modeled.',
-        });
-        const prefix = filter.toLocaleLowerCase(fx.language);
-        return info.values.filter((row) => row.Value.toLocaleLowerCase(fx.language).startsWith(prefix));
-      }
-      if (info.kind !== 'lookup' || !(info.source instanceof FxDataSource))
-        return fail('NotSupported', 'Choices lookup metadata is invalid.');
-      const rows = rowsOf(fx, info.source, 'Choices');
-      if (rows instanceof FxError) return rows;
-      const prefix = filter.toLocaleLowerCase(fx.language);
-      return prefix
-        ? rows.filter((row) => {
-            const value = member(fx, row, info.nameColumn);
-            return typeof value === 'string' && value.toLocaleLowerCase(fx.language).startsWith(prefix);
-          })
-        : rows;
+      return choicesFromSource(fx, args, column);
     },
   },
   DataSourceInfo: {
@@ -1497,12 +1668,12 @@ export const FUNCTIONS = {
       if (info instanceof FxError) return info;
       const column = args[2] ? columnName(fx, args[2]) : null;
       if (column instanceof FxError) return column;
-      const permissions = ['CreatePermission', 'DeletePermission', 'EditPermission', 'ReadPermission'];
+      const permissions = new Set(['CreatePermission', 'DeletePermission', 'EditPermission', 'ReadPermission']);
       const columns = ['DisplayName', 'MaxLength', 'MaxValue', 'MinValue', 'Required'];
       if (
         ![...permissions, ...columns, 'AllowedValues'].includes(info) ||
         (columns.includes(info) && !column) ||
-        (permissions.includes(info) && column)
+        (permissions.has(info) && column)
       )
         return fail('InvalidArgument', 'DataSourceInfo arguments are invalid.');
       if (source instanceof FxDataSource && source.adapter.dataSourceInfo) {
@@ -1514,7 +1685,7 @@ export const FUNCTIONS = {
         operation: 'DataSourceInfo',
         message: `Data source information ${info} is unavailable.`,
       });
-      return info === 'Required' || permissions.includes(info) ? false : null;
+      return info === 'Required' || permissions.has(info) ? false : null;
     },
   },
   Search: {
@@ -1589,23 +1760,13 @@ export const FUNCTIONS = {
   SortByColumns: {
     min: 2,
     lazy: true,
-    fn(fx, args) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, args) {
       const value = fx.ev(args[0]);
       if (value instanceof FxError) return value;
       // Column arguments are identifiers or text; an order argument is SortOrder.X, "Ascending"/"Descending" or a table.
-      const isOrder = (node) => (node.t === 'lit' ? /^(ascending|descending)$/i.test(String(node.v)) : node.t !== 'id');
-      const keys = [];
-      for (let i = 1; i < args.length; i++) {
-        const name = columnName(fx, args[i]);
-        if (name instanceof FxError) return name;
-        let order = 'Ascending';
-        if (i + 1 < args.length && isOrder(args[i + 1])) {
-          const orderValue = fx.ev(args[++i]);
-          if (orderValue instanceof FxError) return orderValue;
-          order = Array.isArray(orderValue) ? orderValue : toText(orderValue, fx);
-        }
-        keys.push({ name, order });
-      }
+      const built = sortColumnKeys(fx, args);
+      if (built.error) return built.error;
+      const keys = built.keys;
       if (value instanceof FxDataSource) {
         const columns = keys.map((key) => ({
           key,
@@ -1671,7 +1832,9 @@ export const FUNCTIONS = {
     fn: (fx, value, count = 1) =>
       asRows(fx, value, 'LastN', (rows) => {
         const c = integer(toNumber(count));
-        return c instanceof FxError ? c : c <= 0 ? [] : rows.slice(-c);
+        if (c instanceof FxError) return c;
+        if (c <= 0) return [];
+        return rows.slice(-c);
       }),
   },
   Index: {
@@ -1682,11 +1845,9 @@ export const FUNCTIONS = {
       if (i instanceof FxError) return i;
       if (value instanceof FxUntyped) {
         if (!Array.isArray(value.raw)) return fail('InvalidArgument', 'Index needs an array.');
-        return i >= 1 && i <= value.raw.length
-          ? value.raw[i - 1] === null
-            ? null
-            : new FxUntyped(value.raw[i - 1])
-          : fail('InvalidArgument', `Index ${i} is out of range.`);
+        if (!(i >= 1 && i <= value.raw.length)) return fail('InvalidArgument', `Index ${i} is out of range.`);
+        if (value.raw[i - 1] === null) return null;
+        return new FxUntyped(value.raw[i - 1]);
       }
       return asRows(fx, value, 'Index', (rows) =>
         i >= 1 && i <= rows.length ? rows[i - 1] : fail('InvalidArgument', `Index ${i} is out of range.`),
@@ -1826,7 +1987,7 @@ export const FUNCTIONS = {
     min: 2,
     max: 2,
     lazy: true,
-    fn(fx, [target, valueNode]) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, [target, valueNode]) {
       const value = fx.ev(valueNode);
       if (value instanceof FxError) return value;
       if (target.t === 'dot') {
@@ -1850,7 +2011,7 @@ export const FUNCTIONS = {
   UpdateContext: {
     min: 1,
     max: 1,
-    fn(fx, record) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, record) {
       if (!fx.host.context) return notHosted('UpdateContext');
       if (!isRecord(record)) return fail('InvalidArgument', 'UpdateContext needs a record.');
       Object.assign(fx.host.context, record);
@@ -1863,7 +2024,7 @@ export const FUNCTIONS = {
     min: 1,
     max: 1,
     lazy: true,
-    fn(fx, [node]) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, [node]) {
       const target = collectionTarget(fx, node, false);
       if (target.error) return target.error;
       if (target.value instanceof FxDataSource)
@@ -1915,23 +2076,7 @@ export const FUNCTIONS = {
       if (error) return error;
       const all = values.length > 1 && values[values.length - 1] === 'All';
       const records = recordsOf(all || values[values.length - 1] === 'First' ? values.slice(0, -1) : values);
-      if (target.value instanceof FxDataSource) {
-        for (const record of records) {
-          const removed = guarded(() => target.value.adapter.remove(record));
-          if (removed instanceof FxError) return removed;
-        }
-        return null;
-      }
-      for (const record of records) {
-        const index = target.value.findIndex((row) => sameRow(row, record));
-        if (index < 0) return fail('NotFound', 'The record to remove was not found.');
-        if (all)
-          for (let i = target.value.length - 1; i >= 0; i--) {
-            if (sameRow(target.value[i], record)) target.value.splice(i, 1);
-          }
-        else target.value.splice(index, 1);
-      }
-      return null;
+      return removeRecords(target.value, records, all);
     },
   },
   RemoveIf: {
@@ -1965,22 +2110,8 @@ export const FUNCTIONS = {
       const rows = rowsOf(fx, target.value, 'UpdateIf');
       if (rows instanceof FxError) return rows;
       for (const row of rows) {
-        for (let i = 1; i < args.length; i += 2) {
-          const condition = inRow(fx, row, table, () => toBoolean(fx.ev(args[i])));
-          if (condition instanceof FxError) return condition;
-          if (!condition) continue;
-          const change = inRow(fx, row, table, () => fx.ev(args[i + 1]));
-          if (change instanceof FxError) return change;
-          if (!isRecord(change)) return fail('InvalidArgument', 'UpdateIf needs a change record.');
-          if (target.value instanceof FxDataSource) {
-            const updated = guarded(() => target.value.adapter.update(row, change));
-            if (updated instanceof FxError) return updated;
-          } else {
-            const index = target.value.indexOf(row);
-            if (index >= 0) target.value[index] = merged([row, change]);
-          }
-          break;
-        }
+        const error = updateRowIf(fx, args, row, table, target.value);
+        if (error instanceof FxError) return error;
       }
       return target.value instanceof FxDataSource ? rowsOf(fx, target.value, 'UpdateIf') : target.value;
     },
@@ -1999,7 +2130,7 @@ export const FUNCTIONS = {
   Navigate: {
     min: 1,
     max: 3,
-    fn(fx, screen, transition = null, context = null) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, screen, transition = null, context = null) {
       if (typeof fx.host.navigate !== 'function') return notHosted('Navigate');
       fx.host.navigate(screen, transition, context);
       return true;
@@ -2008,7 +2139,7 @@ export const FUNCTIONS = {
   Back: {
     min: 0,
     max: 1,
-    fn(fx, transition = null) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, transition = null) {
       if (typeof fx.host.back !== 'function') return notHosted('Back');
       // The host answers false when there is no earlier screen.
       return fx.host.back(transition) !== false;
@@ -2017,7 +2148,7 @@ export const FUNCTIONS = {
   Notify: {
     min: 1,
     max: 3,
-    fn(fx, message, type = 'Information', timeout = 0) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, message, type = 'Information', timeout = 0) {
       if (typeof fx.host.notify !== 'function') return notHosted('Notify');
       const t = toText(message, fx);
       if (t instanceof FxError) return t;
@@ -2028,7 +2159,7 @@ export const FUNCTIONS = {
   Trace: {
     min: 1,
     max: 3,
-    fn(fx, message, severity = null, custom = null) {
+    /* NOSONAR: mixed return values are part of the contract */ fn(fx, message, severity = null, custom = null) {
       const t = toText(message, fx);
       if (t instanceof FxError) return t;
       fx.host.trace?.(t, severity, custom);
@@ -2046,7 +2177,10 @@ function asRows(fx, value, operation, fn) {
 // Blank first in ascending order. Power Fx's placement of blanks and its text collation are not known; text compares by code
 // unit here.
 function compareKeys(fx, a, b) {
-  if (isBlank(a) || isBlank(b)) return isBlank(a) && isBlank(b) ? 0 : isBlank(a) ? -1 : 1;
+  if (isBlank(a) || isBlank(b)) {
+    if (isBlank(a) && isBlank(b)) return 0;
+    return isBlank(a) ? -1 : 1;
+  }
   const c = compare(a, b, fx);
   return c instanceof FxError ? 0 : c;
 }
@@ -2081,21 +2215,16 @@ function collect(fx, args, clear) {
   const error = firstError(...values);
   if (error) return error;
   // A lazy data source is a table argument, not a scalar record. Materialize it under the nondelegable row limit before mutating the destination.
-  const materialized = values.map((value) =>
-    value instanceof FxDataSource ? rowsOf(fx, value, clear ? 'ClearCollect' : 'Collect') : value,
-  );
+  const materialized = values.map((value) => {
+    if (!(value instanceof FxDataSource)) return value;
+    return rowsOf(fx, value, clear ? 'ClearCollect' : 'Collect');
+  });
   const readError = firstError(...materialized);
   if (readError) return readError;
   const records = recordsOf(materialized);
   if (target.value instanceof FxDataSource) {
     if (clear) return fail('NotSupported', 'ClearCollect works on collections, not data sources.');
-    const created = [];
-    for (const record of records) {
-      const row = guarded(() => target.value.adapter.create(record));
-      if (row instanceof FxError) return row;
-      created.push(row);
-    }
-    return values.length === 1 && isRecord(values[0]) ? created[0] : created;
+    return collectIntoDataSource(target.value, records, values);
   }
   if (clear) target.value.length = 0;
   const added = records.map(copyRecord);

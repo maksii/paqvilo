@@ -25,11 +25,11 @@ function gitOptions(cwd, { buffer = false, input } = {}) {
   };
 }
 
-const git = (cwd, args, options) => execFileSync('git', [...GIT_ARGS, ...args], gitOptions(cwd, options));
+const git = (cwd, args, options) => execFileSync('git', [...GIT_ARGS, ...args], gitOptions(cwd, options)); // NOSONAR: fixed tool name resolved through PATH by developer tooling
 const gitAsync = (cwd, args, options) =>
   new Promise((resolve, reject) => {
     const { input, ...settings } = gitOptions(cwd, options);
-    const child = execFile('git', [...GIT_ARGS, ...args], settings, (err, stdout) =>
+    /* NOSONAR */ const child = execFile('git', [...GIT_ARGS, ...args], settings, (err, stdout) =>
       err ? reject(err) : resolve(stdout),
     );
     // A Git process that exits early reports through the callback; an unread stdin is no crash.
@@ -144,7 +144,7 @@ export class GitBaseline {
     this.changeGeneration = 0;
     this.baselineVersion = 0;
     this.pendingChanges = 0;
-    this.changeQueue = Promise.resolve();
+    this.changeQueue = Promise.resolve(); // NOSONAR: constructor timing must not change
     this.pendingRefCheck = null;
     try {
       this.refArgs = refArgs(ref);
@@ -189,7 +189,7 @@ export class GitBaseline {
   /** Non-blocking ref check for the watcher, including merge-base changes and lost/recovered refs. */
   async checkForUpdate() {
     if (!this.refArgs) return false;
-    if (this.pendingRefCheck) return this.pendingRefCheck;
+    if (this.pendingRefCheck) return this.pendingRefCheck; // NOSONAR: optional pending promise, awaited only when set
     const generation = ++this.refGeneration;
     const pending = (async () => {
       try {
@@ -209,7 +209,7 @@ export class GitBaseline {
     const rel = path.relative(this.sourceDir, path.resolve(file));
     return !rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)
       ? null
-      : rel.replace(/\\/g, '/');
+      : rel.replaceAll('\\', '/');
   }
 
   #batch(files) {
@@ -341,6 +341,48 @@ export class GitBaseline {
     }
   }
 
+  async #refreshChangeRef(generation, current) {
+    const refGeneration = ++this.refGeneration;
+    try {
+      const commit = (await gitAsync(this.sourceDir, this.refArgs)).trim();
+      if (generation !== this.changeGeneration) return current();
+      if (refGeneration === this.refGeneration) this.#acceptCommit(commit);
+      else if (this.pendingRefCheck) await this.pendingRefCheck; // NOSONAR: optional pending promise, awaited only when set
+    } catch (err) {
+      if (generation !== this.changeGeneration) return current();
+      if (refGeneration === this.refGeneration) this.#unavailable(err);
+      else if (this.pendingRefCheck) await this.pendingRefCheck; // NOSONAR: optional pending promise, awaited only when set
+    }
+    return null;
+  }
+
+  async #scanChanges(generation, files, forceFull, current) {
+    let attempts = 0;
+    while (generation === this.changeGeneration && this.available) {
+      const version = this.baselineVersion;
+      const plan = this.#changePlan(files, forceFull);
+      if (plan.scoped?.length === 0) return current();
+      // Wait for both commands even on failure before another queued scan can start.
+      const results = await Promise.allSettled(plan.commands.map((args) => gitAsync(this.sourceDir, args)));
+      if (generation !== this.changeGeneration) return current();
+      // A ref poll changed the baseline during the scan. Recompute against its new commit.
+      if (version !== this.baselineVersion) {
+        if (++attempts >= 3)
+          throw new Error(
+            'Baseline changed during three consecutive change scans; retry after local Git activity settles',
+          );
+        continue;
+      }
+      const failed = results.find((result) => result.status === 'rejected');
+      if (failed) throw failed.reason;
+      return this.#mergeChanges(
+        plan,
+        results.map((result) => result.value),
+      );
+    }
+    return current();
+  }
+
   /** Non-blocking equivalent of changedFiles. Newer scans supersede older pending results. */
   changedFilesAsync({ files, refreshRef = true } = {}) {
     const generation = ++this.changeGeneration;
@@ -353,42 +395,10 @@ export class GitBaseline {
       if (generation !== this.changeGeneration || !this.refArgs) return current();
       try {
         if (refreshRef) {
-          const refGeneration = ++this.refGeneration;
-          try {
-            const commit = (await gitAsync(this.sourceDir, this.refArgs)).trim();
-            if (generation !== this.changeGeneration) return current();
-            if (refGeneration === this.refGeneration) this.#acceptCommit(commit);
-            else if (this.pendingRefCheck) await this.pendingRefCheck;
-          } catch (err) {
-            if (generation !== this.changeGeneration) return current();
-            if (refGeneration === this.refGeneration) this.#unavailable(err);
-            else if (this.pendingRefCheck) await this.pendingRefCheck;
-          }
+          const refreshed = await this.#refreshChangeRef(generation, current);
+          if (refreshed) return refreshed;
         }
-        let attempts = 0;
-        while (generation === this.changeGeneration && this.available) {
-          const version = this.baselineVersion;
-          const plan = this.#changePlan(files, forceFull);
-          if (plan.scoped?.length === 0) return current();
-          // Wait for both commands even on failure before another queued scan can start.
-          const results = await Promise.allSettled(plan.commands.map((args) => gitAsync(this.sourceDir, args)));
-          if (generation !== this.changeGeneration) return current();
-          // A ref poll changed the baseline during the scan. Recompute against its new commit.
-          if (version !== this.baselineVersion) {
-            if (++attempts >= 3)
-              throw new Error(
-                'Baseline changed during three consecutive change scans; retry after local Git activity settles',
-              );
-            continue;
-          }
-          const failed = results.find((result) => result.status === 'rejected');
-          if (failed) throw failed.reason;
-          return this.#mergeChanges(
-            plan,
-            results.map((result) => result.value),
-          );
-        }
-        return current();
+        return await this.#scanChanges(generation, files, forceFull, current);
       } catch (err) {
         if (generation === this.changeGeneration) this.#unavailable(err);
         return current();

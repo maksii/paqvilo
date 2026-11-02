@@ -1,11 +1,34 @@
 import { environmentOrigin, tokenProvider } from './connection.mjs';
 
-const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '[::1]'];
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
+function requestHeaders(token, body, solution, mergeLabels, prefer, ifMatch, ifNoneMatch) {
+  const headers = {
+    Accept: 'application/json',
+    'OData-Version': '4.0',
+    'OData-MaxVersion': '4.0',
+    Authorization: `Bearer ${token}`,
+  };
+  if (body !== undefined) headers['Content-Type'] = 'application/json; charset=utf-8';
+  if (solution) headers['MSCRM.SolutionUniqueName'] = solution;
+  if (mergeLabels) headers['MSCRM.MergeLabels'] = 'true';
+  for (const [name, value] of [
+    ['Prefer', prefer],
+    ['If-Match', ifMatch],
+    ['If-None-Match', ifNoneMatch],
+  ]) {
+    if (value !== undefined) {
+      if (typeof value !== 'string' || /[\r\n]/.test(value)) throw new Error('Invalid Dataverse request header.');
+      headers[name] = value;
+    }
+  }
+  return headers;
+}
 
 // Shared with connection.mjs: only loopback origins may stand in for production hosts, and only when a caller allows it.
 export function isLoopbackOrigin(value) {
   const url = value instanceof URL ? value : new URL(value);
-  return ['http:', 'https:'].includes(url.protocol) && LOOPBACK_HOSTS.includes(url.hostname);
+  return ['http:', 'https:'].includes(url.protocol) && LOOPBACK_HOSTS.has(url.hostname);
 }
 
 export class DataverseClient {
@@ -52,25 +75,7 @@ export class DataverseClient {
         ),
         { code: method === 'GET' ? 'READ_FAILED' : 'UNKNOWN_COMMIT' },
       );
-    const headers = {
-      Accept: 'application/json',
-      'OData-Version': '4.0',
-      'OData-MaxVersion': '4.0',
-      Authorization: `Bearer ${await this.token()}`,
-    };
-    if (body !== undefined) headers['Content-Type'] = 'application/json; charset=utf-8';
-    if (solution) headers['MSCRM.SolutionUniqueName'] = solution;
-    if (mergeLabels) headers['MSCRM.MergeLabels'] = 'true';
-    for (const [name, value] of [
-      ['Prefer', prefer],
-      ['If-Match', ifMatch],
-      ['If-None-Match', ifNoneMatch],
-    ]) {
-      if (value !== undefined) {
-        if (typeof value !== 'string' || /[\r\n]/.test(value)) throw new Error('Invalid Dataverse request header.');
-        headers[name] = value;
-      }
-    }
+    const headers = requestHeaders(await this.token(), body, solution, mergeLabels, prefer, ifMatch, ifNoneMatch);
     let response;
     try {
       response = await this.fetch(url, {

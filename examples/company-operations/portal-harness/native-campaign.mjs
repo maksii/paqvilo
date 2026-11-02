@@ -69,28 +69,31 @@ export function continuationCases(capture, manifest) {
   for (const request of capture.requests ?? []) {
     const plan = plans.find((plan) => plan.id === request.caseId);
     if (!plan) throw new Error('Continuation request is outside the frozen query catalogue.');
-    if (request.lane === 'liquid') {
-      const result = capture.liquidPages?.find((page) => page.operationId === request.operationId);
-      if (result?.outcome === 'success' && result.more === true) pending.add(plan.id);
-    } else if (request.lane === 'webapi') {
-      const response = capture.results?.find(
-        (result) => result.operationId === request.operationId && result.lane === 'webapi',
-      );
-      let body;
-      try {
-        body = JSON.parse(response?.body);
-      } catch {
-        /* Optional payload or browser capability is unavailable. */
-      }
-      if (
-        response?.status === 200 &&
-        Array.isArray(body?.value) &&
-        (body['@odata.nextLink'] || body.value.length === plan.pageSize)
-      )
-        pending.add(plan.id);
-    }
+    addPendingContinuation(capture, request, plan, pending);
   }
-  return [...pending].sort();
+  return [...pending].sort((a, b) => Number(a > b) - Number(a < b));
+}
+function addPendingContinuation(capture, request, plan, pending) {
+  if (request.lane === 'liquid') {
+    const result = capture.liquidPages?.find((page) => page.operationId === request.operationId);
+    if (result?.outcome === 'success' && result.more === true) pending.add(plan.id);
+  } else if (request.lane === 'webapi') {
+    const response = capture.results?.find(
+      (result) => result.operationId === request.operationId && result.lane === 'webapi',
+    );
+    let body;
+    try {
+      body = JSON.parse(response?.body);
+    } catch {
+      /* Optional payload or browser capability is unavailable. */
+    }
+    if (
+      response?.status === 200 &&
+      Array.isArray(body?.value) &&
+      (body['@odata.nextLink'] || body.value.length === plan.pageSize)
+    )
+      pending.add(plan.id);
+  }
 }
 export function pendingCampaignMasks(domain, journal, maxMasks) {
   if (!Number.isInteger(maxMasks) || maxMasks < 1 || maxMasks > 4096)
@@ -163,6 +166,23 @@ function assertFrozenCapture(capture, frozen) {
     )
       throw new Error('Native campaign frozen permission/data witness changed.');
 }
+function assertNativeWitnesses(domain) {
+  if (domain.missingNativeWitnesses.length)
+    throw new Error('Native campaign requires all five declared frozen configuration witnesses.');
+}
+
+function assertCampaignWitnesses(frozen, witnesses) {
+  if (stable(campaignFrozenWitnesses(frozen)) !== stable(witnesses))
+    throw new Error('Native campaign five source witnesses changed; create a new frozen campaign configuration.');
+}
+
+function nativeAssemblyBytesMatch(actual, expected) {
+  return (
+    actual.length === 1 &&
+    createHash('sha256').update(Buffer.from(actual[0].content, 'base64')).digest('hex') === expected.sha256
+  );
+}
+
 export function nativeCampaignContinuationPolicy(value = 'per-page') {
   if (!['per-page', 'mask-window'].includes(value))
     throw new Error('Native campaign continuation policy must be explicit per-page or mask-window.');
@@ -217,8 +237,7 @@ async function runOwnedNativeCampaign(config, { runChild }) {
     ]),
     blueprint = buildBlueprint(schema, catalogue),
     domain = buildQualificationDomain({ blueprint, schema, catalogue, manifest, witnesses: config.witnesses ?? {} });
-  if (domain.missingNativeWitnesses.length)
-    throw new Error('Native campaign requires all five declared frozen configuration witnesses.');
+  assertNativeWitnesses(domain);
   const directory = path.resolve(config.campaignDir);
   await mkdir(directory, { recursive: true });
   const journalFile = path.join(directory, 'campaign.json');
@@ -274,16 +293,12 @@ async function runOwnedNativeCampaign(config, { runChild }) {
     const actual = await api.list(
       `pluginassemblies?$select=name,content&$filter=name eq '${expected.name.replaceAll("'", "''")}'`,
     );
-    if (
-      actual.length !== 1 ||
-      createHash('sha256').update(Buffer.from(actual[0].content, 'base64')).digest('hex') !== expected.sha256
-    )
+    if (!nativeAssemblyBytesMatch(actual, expected))
       throw new Error('Native assembly bytes changed before campaign activation.');
     assemblies.push(expected);
   }
   const frozen = { snapshot, siteComponentsSha256: snapshotHash(logicalComponents), registrationSha256, assemblies };
-  if (stable(campaignFrozenWitnesses(frozen)) !== stable(config.witnesses))
-    throw new Error('Native campaign five source witnesses changed; create a new frozen campaign configuration.');
+  assertCampaignWitnesses(frozen, config.witnesses);
   const batch = {
     id: 'batch-' + Date.now(),
     startedAt: new Date().toISOString(),

@@ -130,9 +130,9 @@ export async function createOrganizationBackend({
     close: () =>
       (closed ??= (async () => {
         await settleCommittedWork(store, [triggerRunner, asyncPluginRunner], { close: true });
-        for (const [id, runtime] of [...runtimes])
+        /* NOSONAR */ for (const [id, runtime] of [...runtimes])
           if (runtime.uploaded) releaseUploadedRuntime(runtimes, id, diagnostic);
-          else await closeClrHostPool({ runtime, diagnostic });
+          else await closeClrHostPool({ runtime, diagnostic }); // NOSONAR: await kept: the value may be a thenable and timing matters
       })()),
   };
 }

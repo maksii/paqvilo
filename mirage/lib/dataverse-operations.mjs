@@ -4,7 +4,7 @@ import { PLATFORM_OPERATIONS, platformOperationCsdl, platformCsdl } from './data
 import { entryMessageActive, entryParameters, runEntryMessage } from './plugin-platform-messages.mjs';
 import { requestMessage } from './dataverse-sdk-message-catalogue.mjs';
 
-const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const NAME = /^[A-Za-z_]\w*$/;
 const KINDS = new Set(['function', 'action']);
 const BINDINGS = new Set(['unbound', 'entity', 'collection']);
 const ENTITY_RESPONSE_TYPES = new Set([
@@ -26,7 +26,9 @@ function declarationOf(op) {
   const tag = op.kind === 'action' ? 'Action' : 'Function';
   const sig = op.signature ?? {};
   const table = op.entity === '*' ? 'mscrm.crmbaseentity' : `mscrm.${op.entity}`;
-  const bound = op.binding === 'collection' ? `Collection(${table})` : op.binding === 'entity' ? table : null;
+  let bound = null;
+  if (op.binding === 'collection') bound = `Collection(${table})`;
+  else if (op.binding === 'entity') bound = table;
   const returns = sig.response ? `mscrm.${op.name}Response` : (sig.returns ?? null);
   const complex = sig.response
     ? `<ComplexType Name="${op.name}Response">${sig.response.map(responseMember).join('')}</ComplexType>`

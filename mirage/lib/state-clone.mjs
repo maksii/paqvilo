@@ -4,7 +4,7 @@ import { cloneRecordGraph } from './record-clone.mjs';
 
 const BULK_ROWS = 100000;
 const MEMO_PARTITION_LIMIT = 4000000;
-const own = (value, name) => Object.prototype.hasOwnProperty.call(value, name);
+const own = (value, name) => Object.hasOwn(value, name);
 
 /** Wide heterogeneous metadata maps need dictionary storage without changing
  * their public Object prototype or the data-property semantics of object spread.
@@ -67,6 +67,45 @@ const bulkSourceComponents = (value) => {
   return baseline && typeof baseline === 'object' && !types.isProxy(baseline) && Object.keys(baseline).length >= 1000;
 };
 
+function makePlainTarget(source, context) {
+  const { memos, notPlain, setTop } = context;
+  if (types.isProxy(source) || JSON.isRawJSON?.(source)) throw notPlain;
+  const array = Array.isArray(source),
+    prototype = Object.getPrototypeOf(source);
+  if (!array && prototype !== Object.prototype && prototype !== null) throw notPlain;
+  const keys = Object.keys(source);
+  let bucket = 0;
+  const sample = keys.length ? descriptorValue(source, keys[0]) : undefined;
+  if (typeof sample === 'string')
+    for (let i = 0; i < Math.min(64, sample.length); i++) bucket = (bucket * 31 + sample.charCodeAt(i)) & 255; // NOSONAR: UTF-16 code unit semantics are required
+  else if (typeof sample === 'number') bucket = sample & 255;
+  for (let memo = memos[bucket]; memo; memo = memo.previous) {
+    const target = memo.values.get(source);
+    if (target !== undefined) return target;
+  }
+  if (!memos[bucket] || memos[bucket].count >= MEMO_PARTITION_LIMIT)
+    memos[bucket] = { values: new Map(), count: 0, previous: memos[bucket] ?? null };
+  const target = array ? new Array(source.length) : {};
+  memos[bucket].values.set(source, target);
+  memos[bucket].count++;
+  setTop({ source, target, keys, index: 0 });
+  return target;
+}
+
+function copyPlainFrame(frame, context) {
+  const { blocked, property, notPlain, make } = context;
+  const key = frame.keys[frame.index++],
+    descriptor = Object.getOwnPropertyDescriptor(frame.source, key);
+  if (!descriptor || !own(descriptor, 'value')) throw notPlain;
+  const item = descriptor.value;
+  if (typeof item === 'function' || typeof item === 'symbol') throw notPlain;
+  const copied = item !== null && typeof item === 'object' ? make(item) : item;
+  if (blocked.has(key)) {
+    property.value = copied;
+    Object.defineProperty(frame.target, key, property);
+  } else frame.target[key] = copied;
+}
+
 // Assignment is safe for ordinary keys. Inherited setters/read-only properties
 // require CreateDataProperty semantics, including customized array prototypes.
 function guardedKeys() {
@@ -93,56 +132,35 @@ export function copyPlainGraph(value) {
   const blocked = guardedKeys();
   if (!blocked) return structuredClone(value);
   const notPlain = Symbol('native clone required');
-  let memos = Object.create(null),
-    top = null,
+  const memos = Object.create(null);
+  let top = null,
     result;
   const property = { value: undefined, enumerable: true, writable: true, configurable: true };
-  const make = (source) => {
-    if (types.isProxy(source) || JSON.isRawJSON?.(source)) throw notPlain;
-    const array = Array.isArray(source),
-      prototype = Object.getPrototypeOf(source);
-    if (!array && prototype !== Object.prototype && prototype !== null) throw notPlain;
-    const keys = Object.keys(source);
-    let bucket = 0;
-    const sample = keys.length ? descriptorValue(source, keys[0]) : undefined;
-    if (typeof sample === 'string')
-      for (let i = 0; i < Math.min(64, sample.length); i++) bucket = (bucket * 31 + sample.charCodeAt(i)) & 255;
-    else if (typeof sample === 'number') bucket = sample & 255;
-    for (let memo = memos[bucket]; memo; memo = memo.previous) {
-      const target = memo.values.get(source);
-      if (target !== undefined) return target;
-    }
-    if (!memos[bucket] || memos[bucket].count >= MEMO_PARTITION_LIMIT)
-      memos[bucket] = { values: new Map(), count: 0, previous: memos[bucket] ?? null };
-    const target = array ? new Array(source.length) : {};
-    memos[bucket].values.set(source, target);
-    memos[bucket].count++;
-    top = { source, target, keys, index: 0, parent: top };
-    return target;
+  const context = {
+    blocked,
+    notPlain,
+    property,
+    memos,
+    make: null,
+    setTop(frame) {
+      frame.parent = top;
+      top = frame;
+    },
   };
+  context.make = (source) => makePlainTarget(source, context);
   try {
-    result = make(value);
+    result = context.make(value);
     while (top) {
       const frame = top;
       if (frame.index === frame.keys.length) {
         top = frame.parent;
         continue;
       }
-      const key = frame.keys[frame.index++],
-        descriptor = Object.getOwnPropertyDescriptor(frame.source, key);
-      if (!descriptor || !own(descriptor, 'value')) throw notPlain;
-      const item = descriptor.value;
-      if (typeof item === 'function' || typeof item === 'symbol') throw notPlain;
-      const copied = item !== null && typeof item === 'object' ? make(item) : item;
-      if (blocked.has(key)) {
-        property.value = copied;
-        Object.defineProperty(frame.target, key, property);
-      } else frame.target[key] = copied;
+      copyPlainFrame(frame, context);
     }
     return result;
   } catch (error) {
     if (error !== notPlain) throw error;
-    memos = null;
     top = null;
     property.value = undefined;
     return structuredClone(value);

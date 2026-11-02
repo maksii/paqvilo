@@ -294,11 +294,7 @@ const notFound = (logical, id) =>
 const rowById = (store, logical, column, id) =>
   id == null ? null : (store.tableRows(logical).find((row) => same(row[column], id)) ?? null);
 const organizationOf = (store) => String(organizationRecord(store)?.organizationid ?? '').toLowerCase();
-const idOf = (bind) =>
-  String(bind)
-    .match(/\(([^()]*)\)\s*$/)?.[1]
-    .replace(/[{}]/g, '')
-    .toLowerCase() ?? null;
+const idOf = (bind) => /\(([^()]*)\)\s*$/.exec(String(bind))?.[1].replace(/[{}]/g, '').toLowerCase() ?? null;
 
 // A lookup's id: the nav@odata.bind the write carries, else the column (data first, then the existing row).
 function ref(data, existing, column, nav = column) {
@@ -452,23 +448,27 @@ function sourceAvailability(plugins) {
     if ([0, 1, 2].includes(message.availability)) record.message = message.availability;
     Object.assign(record.filters, message.filterAvailability ?? {});
   }
-  for (const filter of plugins.messageFilters ?? []) {
-    const name =
-      messages.get(String(filter.messageId).toLowerCase()) ?? SDK_MESSAGES[String(filter.messageId).toLowerCase()];
-    if (name && [0, 1, 2].includes(filter.availability)) add(name).filters[filter.entity] = filter.availability;
-  }
-  for (const step of plugins.steps ?? [])
-    if (step.message) {
-      const record = add(step.message);
-      if ([0, 1, 2].includes(step.messageAvailability)) record.message = step.messageAvailability;
-      if ([0, 1, 2].includes(step.filterAvailability)) record.filters[step.entity ?? 'none'] = step.filterAvailability;
-    }
+  for (const filter of plugins.messageFilters ?? []) addFilterAvailability(filter, messages, add);
+  for (const step of plugins.steps ?? []) addStepAvailability(step, add);
   return Object.fromEntries(
     Object.entries(metadata).map(([name, record]) => [
       name,
       { ...record, filters: Object.fromEntries(Object.entries(record.filters)) },
     ]),
   );
+}
+
+function addFilterAvailability(filter, messages, add) {
+  const name =
+    messages.get(String(filter.messageId).toLowerCase()) ?? SDK_MESSAGES[String(filter.messageId).toLowerCase()];
+  if (name && [0, 1, 2].includes(filter.availability)) add(name).filters[filter.entity] = filter.availability;
+}
+
+function addStepAvailability(step, add) {
+  if (!step.message) return;
+  const record = add(step.message);
+  if ([0, 1, 2].includes(step.messageAvailability)) record.message = step.messageAvailability;
+  if ([0, 1, 2].includes(step.filterAvailability)) record.filters[step.entity ?? 'none'] = step.filterAvailability;
 }
 
 /**
@@ -480,86 +480,127 @@ export function solutionPluginRows(plugins, { organizationId } = {}) {
   const assemblies = plugins?.assemblies ?? [];
   const assemblyById = new Map(assemblies.map((assembly) => [assembly.id, assembly]));
   const rows = { pluginassembly: [], plugintype: [], sdkmessageprocessingstep: [], sdkmessageprocessingstepimage: [] };
-  for (const assembly of assemblies) {
-    const facts = assemblyFacts(assembly);
-    rows.pluginassembly.push({
-      pluginassemblyid: assembly.id,
-      name: assembly.name,
-      version: assembly.version ?? null,
-      ...facts,
-      isolationmode: assembly.isolationMode ?? 2,
-      sourcetype: assembly.sourceType ?? 0,
-      // The exported .dll bytes (solution-metadata.mjs), so its steps run them like uploaded content.
-      ...(assembly.content ? { content: assembly.content } : {}),
-      organizationid: org,
-    });
-  }
-  for (const type of plugins?.types ?? []) {
-    const assembly = assemblyById.get(type.assemblyId);
-    const facts = assembly ? assemblyFacts(assembly) : {};
-    rows.plugintype.push({
-      plugintypeid: type.id,
-      typename: type.name,
-      name: type.name,
-      friendlyname: type.friendlyName ?? type.name,
-      pluginassemblyid: type.assemblyId ?? null,
-      assemblyname: assembly?.name ?? null,
-      version: assembly?.version ?? null,
-      culture: facts.culture ?? null,
-      publickeytoken: facts.publickeytoken ?? null,
-      organizationid: org,
-    });
-  }
+  for (const assembly of assemblies) rows.pluginassembly.push(solutionAssemblyRow(assembly, org));
+  for (const type of plugins?.types ?? []) rows.plugintype.push(solutionTypeRow(type, assemblyById, org));
   for (const step of plugins?.steps ?? []) {
-    const message = step.message ? messageId(step.message) : null;
-    const entity = step.entity && step.entity !== 'none' ? step.entity : null;
-    rows.sdkmessageprocessingstep.push({
-      sdkmessageprocessingstepid: step.id,
-      name: step.name ?? step.id,
-      stage: step.stage ?? null,
-      mode: step.mode ?? 0,
-      rank: step.rank ?? 1,
-      supporteddeployment: step.supportedDeployment ?? 0,
-      ...(Object.hasOwn(stepConstructorSettings(step), 'unsecureConfiguration')
-        ? { configuration: stepConstructorSettings(step).unsecureConfiguration }
-        : {}),
-      // An imported step has no secure configuration (N3 solution trial: sdkmessageprocessingstepsecureconfigid null after
-      // import, the plug-in constructed with secure null); a trusted descriptor may still supply local secure text.
-      ...(step.customizationLevel != null ? { customizationlevel: step.customizationLevel } : {}),
-      filteringattributes: (step.filteringAttributes ?? []).join(',') || null,
-      statecode: step.enabled === false ? 1 : 0,
-      statuscode: step.enabled === false ? 2 : 1,
-      sdkmessageid: message,
-      sdkmessagefilterid: entity && message ? filterId(org, step.message, entity) : null,
-      eventhandler: step.typeId ?? step.serviceEndpointId ?? step.eventHandlerId ?? null,
-      plugintypeid: step.typeId ?? null,
-      impersonatinguserid: step.impersonatingUserId ?? null,
-      organizationid: org,
-    });
-    const imageAliasOf = (image) => image.alias || image.name;
-    for (const image of step.images ?? []) {
-      // A shared alias (pre and post image of one name) keys the id by the image type too; a unique alias keeps its id.
-      const shared = (step.images ?? []).filter((other) => imageAliasOf(other) === imageAliasOf(image)).length > 1;
-      rows.sdkmessageprocessingstepimage.push({
-        sdkmessageprocessingstepimageid: uuidV5(
-          org,
-          shared
-            ? `sdkmessageprocessingstepimage:${step.id}:${image.type ?? 0}:${imageAliasOf(image)}`
-            : `sdkmessageprocessingstepimage:${step.id}:${imageAliasOf(image)}`,
-        ),
-        sdkmessageprocessingstepid: step.id,
-        name: image.name || image.alias,
-        entityalias: image.alias || image.name,
-        imagetype: image.type ?? 0,
-        attributes: (image.attributes ?? []).join(',') || null,
-        // The exported MessagePropertyName; without it, Create images read the response Id property and others Target.
-        messagepropertyname:
-          image.messagePropertyName ?? (step.message === 'Create' && (image.type ?? 0) !== 0 ? 'Id' : 'Target'),
-        organizationid: org,
-      });
-    }
+    rows.sdkmessageprocessingstep.push(solutionStepRow(step, org));
+    appendSolutionImageRows(rows, step, org);
   }
   return rows;
+}
+
+function solutionAssemblyRow(assembly, org) {
+  const facts = assemblyFacts(assembly);
+  return {
+    pluginassemblyid: assembly.id,
+    name: assembly.name,
+    version: assembly.version ?? null,
+    ...facts,
+    isolationmode: assembly.isolationMode ?? 2,
+    sourcetype: assembly.sourceType ?? 0,
+    // The exported .dll bytes (solution-metadata.mjs), so its steps run them like uploaded content.
+    ...(assembly.content ? { content: assembly.content } : {}),
+    organizationid: org,
+  };
+}
+
+function solutionTypeRow(type, assemblyById, org) {
+  const assembly = assemblyById.get(type.assemblyId);
+  const facts = assembly ? assemblyFacts(assembly) : {};
+  return {
+    plugintypeid: type.id,
+    typename: type.name,
+    name: type.name,
+    friendlyname: type.friendlyName ?? type.name,
+    pluginassemblyid: type.assemblyId ?? null,
+    assemblyname: assembly?.name ?? null,
+    version: assembly?.version ?? null,
+    culture: facts.culture ?? null,
+    publickeytoken: facts.publickeytoken ?? null,
+    organizationid: org,
+  };
+}
+
+function solutionStepRow(step, org) {
+  const message = step.message ? messageId(step.message) : null;
+  const entity = step.entity && step.entity !== 'none' ? step.entity : null;
+  return {
+    sdkmessageprocessingstepid: step.id,
+    ...solutionStepMetadata(step),
+    ...solutionStepConfiguration(step),
+    filteringattributes: (step.filteringAttributes ?? []).join(',') || null,
+    ...solutionStepState(step),
+    ...solutionStepLinks(step, org, message, entity),
+    organizationid: org,
+  };
+}
+
+function solutionStepMetadata(step) {
+  return {
+    name: step.name ?? step.id,
+    stage: step.stage ?? null,
+    mode: step.mode ?? 0,
+    rank: step.rank ?? 1,
+    supporteddeployment: step.supportedDeployment ?? 0,
+  };
+}
+
+function solutionStepConfiguration(step) {
+  return {
+    ...(Object.hasOwn(stepConstructorSettings(step), 'unsecureConfiguration')
+      ? { configuration: stepConstructorSettings(step).unsecureConfiguration }
+      : {}),
+    // An imported step has no secure configuration (N3 solution trial: sdkmessageprocessingstepsecureconfigid null after
+    // import, the plug-in constructed with secure null); a trusted descriptor may still supply local secure text.
+    ...(step.customizationLevel != null ? { customizationlevel: step.customizationLevel } : {}),
+  };
+}
+
+function solutionStepState(step) {
+  return {
+    statecode: step.enabled === false ? 1 : 0,
+    statuscode: step.enabled === false ? 2 : 1,
+  };
+}
+
+function solutionStepLinks(step, org, message, entity) {
+  return {
+    sdkmessageid: message,
+    sdkmessagefilterid: entity && message ? filterId(org, step.message, entity) : null,
+    eventhandler: step.typeId ?? step.serviceEndpointId ?? step.eventHandlerId ?? null,
+    plugintypeid: step.typeId ?? null,
+    impersonatinguserid: step.impersonatingUserId ?? null,
+  };
+}
+
+function appendSolutionImageRows(rows, step, org) {
+  for (const image of step.images ?? []) rows.sdkmessageprocessingstepimage.push(solutionImageRow(step, image, org));
+}
+
+function solutionImageRow(step, image, org) {
+  const imageAliasOf = (item) => item.alias || item.name;
+  // A shared alias (pre and post image of one name) keys the id by the image type too; a unique alias keeps its id.
+  const shared = (step.images ?? []).filter((other) => imageAliasOf(other) === imageAliasOf(image)).length > 1;
+  return {
+    sdkmessageprocessingstepimageid: uuidV5(
+      org,
+      shared
+        ? `sdkmessageprocessingstepimage:${step.id}:${image.type ?? 0}:${imageAliasOf(image)}`
+        : `sdkmessageprocessingstepimage:${step.id}:${imageAliasOf(image)}`,
+    ),
+    sdkmessageprocessingstepid: step.id,
+    name: image.name || image.alias,
+    entityalias: image.alias || image.name,
+    imagetype: image.type ?? 0,
+    attributes: (image.attributes ?? []).join(',') || null,
+    // The exported MessagePropertyName; without it, Create images read the response Id property and others Target.
+    messagepropertyname: solutionImageMessagePropertyName(step, image),
+    organizationid: org,
+  };
+}
+
+function solutionImageMessagePropertyName(step, image) {
+  return image.messagePropertyName ?? (step.message === 'Create' && (image.type ?? 0) !== 0 ? 'Id' : 'Target');
 }
 
 // The mutable step fields a row carries. Stored values are read back in the form solutionPluginRows writes them.
@@ -763,7 +804,10 @@ function seed(api, plugins = null) {
   const stepMessages = (plugins?.steps ?? []).map((step) => step.message).filter(Boolean);
   const names = [...(api.registry?.names?.() ?? []).map(requestMessage), ...stepMessages];
   const availability = plugins ? sourceAvailability(plugins) : (store.state.dataverse?.pluginSourceAvailability ?? {});
-  if (plugins) (store.state.dataverse ??= {}).pluginSourceAvailability = availability;
+  if (plugins) {
+    store.state.dataverse ??= {};
+    store.state.dataverse.pluginSourceAvailability = availability;
+  }
   upsert(store, 'sdkmessage', 'sdkmessageid', messageRows(store, org, names, availability), { fresh: true });
   // A table's derived filters go with the table (a dropped table keeps none); custom API filters re-added below stay.
   const filters = store.state.tables.sdkmessagefilter ?? [];
@@ -773,7 +817,8 @@ function seed(api, plugins = null) {
       store.removeRow('sdkmessagefilter', filters, i);
   }
   upsert(store, 'sdkmessagefilter', 'sdkmessagefilterid', filterRows(store, org, availability), { fresh: true });
-  (store.state.dataverse ??= {}).customApiMessages = store.tableRows('customapi').map((api) => api.uniquename);
+  store.state.dataverse ??= {};
+  store.state.dataverse.customApiMessages = store.tableRows('customapi').map((api) => api.uniquename);
   if (plugins)
     for (const [logical, rows] of Object.entries(solutionPluginRows(plugins, { organizationId: org })))
       upsert(store, logical, `${logical}id`, rows);
@@ -809,16 +854,13 @@ const dependentSteps = (logical, id, count) =>
 function guardDelete(store, logical, existing) {
   if (logical === 'pluginassembly' && ref({}, existing, 'packageid') != null)
     throw fail('Unable to delete plug-in assembly as it is part of plugin package', '0x80081117');
-  const types =
-    logical === 'pluginpackage'
-      ? assembliesOfPackage(store, existing.pluginpackageid).flatMap((assembly) =>
-          typesOfAssembly(store, assembly.pluginassemblyid),
-        )
-      : logical === 'pluginassembly'
-        ? typesOfAssembly(store, existing.pluginassemblyid)
-        : logical === 'plugintype'
-          ? [existing]
-          : [];
+  let types = [];
+  if (logical === 'pluginpackage')
+    types = assembliesOfPackage(store, existing.pluginpackageid).flatMap((assembly) =>
+      typesOfAssembly(store, assembly.pluginassemblyid),
+    );
+  else if (logical === 'pluginassembly') types = typesOfAssembly(store, existing.pluginassemblyid);
+  else if (logical === 'plugintype') types = [existing];
   const steps = types.reduce((count, type) => count + stepsOfType(store, type.plugintypeid).length, 0);
   if (steps) throw dependentSteps(logical, existing[`${logical}id`], steps);
   if (logical === 'pluginpackage') removePackageRows(store, existing.pluginpackageid, () => true);
@@ -867,21 +909,18 @@ function assemblyKey(row) {
     `${row.major ?? major}.${row.minor ?? minor}`,
   ].join('|');
 }
-const base64Bytes = (content) =>
-  Math.floor((content.length * 3) / 4) - (content.endsWith('==') ? 2 : content.endsWith('=') ? 1 : 0);
+const base64Bytes = (content) => {
+  let padding = 0;
+  if (content.endsWith('==')) padding = 2;
+  else if (content.endsWith('=')) padding = 1;
+  return Math.floor((content.length * 3) / 4) - padding;
+};
 
 function validateAssembly({ store, data, existing }) {
   const val = (column) => valueOf(data, existing, column);
   // Codes and texts follow the documented error table (PluginAssemblyContentSizeExceeded, InvalidAssemblySourceType,
   // InvalidPluginRegistrationConfiguration for an isolation mode other than Sandbox, the only mode online).
-  if (typeof val('content') === 'string') {
-    const bytes = base64Bytes(val('content'));
-    if (bytes > SIXTEEN_MB)
-      throw fail(
-        `The assembly content size '${bytes} bytes' has exceeded the maximum value allowed for isolated plug-ins '${SIXTEEN_MB} bytes'.`,
-        '0x8004418f',
-      );
-  }
+  if (typeof val('content') === 'string') validateAssemblyContentSize(val('content'));
   if (data.sourcetype !== undefined && data.sourcetype !== null && Number(data.sourcetype) !== 0)
     throw fail('The given plugin assembly source type is not supported for isolated plugin assemblies.', '0x8004417D');
   // Native (N3 package trial, a package-owned assembly) refuses an isolation mode other than sandbox with 403 0x80040256
@@ -920,6 +959,15 @@ function validateAssembly({ store, data, existing }) {
     );
 }
 
+function validateAssemblyContentSize(content) {
+  const bytes = base64Bytes(content);
+  if (bytes > SIXTEEN_MB)
+    throw fail(
+      `The assembly content size '${bytes} bytes' has exceeded the maximum value allowed for isolated plug-ins '${SIXTEEN_MB} bytes'.`,
+      '0x8004418f',
+    );
+}
+
 // Native's OData payload reader refuses a fractional rank with the inner conversion error and this stack (native registration
 // probes round 2, 'Reg2: rank 1.5'; one capture). A non-numeric rank keeps the short text, which is not captured.
 const RANK_PAYLOAD_FRAMES =
@@ -944,10 +992,11 @@ const RANK_PAYLOAD_FRAMES =
   '   at Microsoft.AspNet.OData.Formatter.Deserialization.ODataReaderExtensions.ReadResourceOrResourceSet(ODataReader reader)\r\n' +
   '   at Microsoft.Crm.Extensibility.CrmODataEntityDeserializer.Read(ODataMessageReader messageReader, Type type, ODataDeserializerContext readContext)\r\n' +
   '   at Microsoft.AspNet.OData.Formatter.ODataInputFormatterHelper.ReadFromStream(Type type, Object defaultValue, IEdmModel model, ODataVersion version, Uri baseAddress, IWebApiRequestMessage internalRequest, Func`1 getODataRequestMessage, Func`2 getEdmTypeDeserializer, Func`2 getODataPayloadDeserializer, Func`1 getODataDeserializerContext, Action`1 registerForDisposeAction, Action`1 logErrorAction).';
-const rankPayloadTail = (value) =>
-  Number.isNaN(Number(value))
-    ? ''
-    : ` ---> Microsoft.OData.ODataException: Cannot convert a value of type '${typeof value === 'number' ? 'Edm.Decimal' : 'Edm.String'}' to the expected target type 'Edm.Int32'.${RANK_PAYLOAD_FRAMES}`;
+const rankPayloadTail = (value) => {
+  if (Number.isNaN(Number(value))) return '';
+  const valueType = typeof value === 'number' ? 'Edm.Decimal' : 'Edm.String';
+  return ` ---> Microsoft.OData.ODataException: Cannot convert a value of type '${valueType}' to the expected target type 'Edm.Int32'.${RANK_PAYLOAD_FRAMES}`;
+};
 // The SQL error native appends to the duplicate key sentence (native-trial and native-trial-r2 n3-package, byte-identical).
 // The per-request connection ids and the routing destination (an environment value) are composed by duplicateKeyTail.
 const SQL_INSERT_FRAMES =
@@ -979,25 +1028,33 @@ const duplicateKeyTail = (store) =>
 function validatePackage({ store, data, existing, operation }) {
   const val = (column) => valueOf(data, existing, column);
   const content = typeof data.content === 'string' && data.content !== '' ? data.content : null;
-  let facts = null;
-  if (content)
-    try {
-      facts = inspectPackage(Buffer.from(content, 'base64'));
-    } catch (error) {
-      if (!(error instanceof InvalidAssembly)) throw error;
-    }
-  const contentError = () =>
-    fail('Plug-in assembly does not contain the required types or assembly content cannot be updated.', '0x8004418b');
+  const facts = content ? inspectPackageContent(content) : null;
   const plugins = facts?.assemblies.filter((assembly) => assembly.types.some((type) => type.isPlugin)) ?? [];
-  if (content && !plugins.length) throw contentError();
-  if (operation === 'create' && facts) {
-    if (val('name') == null || val('name') === '') data.name = facts.id;
-    if (val('version') == null || val('version') === '') data.version = facts.version;
-  }
-  for (const column of ['name', 'version']) if (val(column) == null || val(column) === '') throw required(column);
+  if (content && !plugins.length) throw packageContentError();
+  setPackageCreateIdentity(operation, facts, data, val);
+  validatePackageNameAndVersion(val);
   // Native (N3 package trial) reads package_name as the uniquename plus '.nupkg' on create, and a renaming PATCH sets both
   // name and uniquename. The default copying name into a missing uniquename is unproven (NATIVE package-edge-cases); no
   // update derives package_name, native was not observed changing it.
+  setPackageUniqueName(data, existing, operation, val);
+  if (!facts) return;
+  const packageId = String(existing?.pluginpackageid ?? (data.pluginpackageid ??= store.ids.uuid())).toLowerCase();
+  const org = organizationOf(store);
+  removeDroppedPackageRows(store, packageId, plugins);
+  for (const assembly of plugins) upsertPackageAssembly(store, packageId, org, assembly);
+}
+
+function setPackageCreateIdentity(operation, facts, data, val) {
+  if (operation !== 'create' || !facts) return;
+  if (val('name') == null || val('name') === '') data.name = facts.id;
+  if (val('version') == null || val('version') === '') data.version = facts.version;
+}
+
+function validatePackageNameAndVersion(val) {
+  for (const column of ['name', 'version']) if (val(column) == null || val(column) === '') throw required(column);
+}
+
+function setPackageUniqueName(data, existing, operation, val) {
   if (operation === 'create') {
     if (data.uniquename == null || data.uniquename === '') data.uniquename = val('name');
     data.package_name = `${data.uniquename}.nupkg`;
@@ -1009,82 +1066,110 @@ function validatePackage({ store, data, existing, operation }) {
   ) {
     data.uniquename = data.name;
   }
-  if (!facts) return;
-  const packageId = String(existing?.pluginpackageid ?? (data.pluginpackageid ??= store.ids.uuid())).toLowerCase();
-  const org = organizationOf(store);
+}
+
+function inspectPackageContent(content) {
+  try {
+    return inspectPackage(Buffer.from(content, 'base64'));
+  } catch (error) {
+    if (!(error instanceof InvalidAssembly)) throw error;
+    return null;
+  }
+}
+
+function packageContentError() {
+  return fail(
+    'Plug-in assembly does not contain the required types or assembly content cannot be updated.',
+    '0x8004418b',
+  );
+}
+
+function packagePluginTypes(assembly) {
+  return assembly.types.filter((type) => type.isPlugin).map((type) => type.fullName);
+}
+
+function removeDroppedPackageRows(store, packageId, plugins) {
   const next = new Map(plugins.map((assembly) => [assembly.name.toLowerCase(), assembly]));
-  const pluginTypes = (assembly) => assembly.types.filter((type) => type.isPlugin).map((type) => type.fullName);
   const dropped = new Set();
   for (const assembly of assembliesOfPackage(store, packageId)) {
     const kept = next.get(String(assembly.name).toLowerCase());
     if (!kept) dropped.add(assembly);
     for (const type of typesOfAssembly(store, assembly.pluginassemblyid))
-      if (!kept || !pluginTypes(kept).includes(type.typename)) {
-        if (stepsOfType(store, type.plugintypeid).length) throw contentError();
+      if (!kept || !packagePluginTypes(kept).includes(type.typename)) {
+        if (stepsOfType(store, type.plugintypeid).length) throw packageContentError();
         dropped.add(type);
       }
   }
   removePackageRows(store, packageId, (row) => dropped.has(row));
-  for (const assembly of plugins) {
-    const current = assembliesOfPackage(store, packageId).find(
-      (row) => String(row.name).toLowerCase() === assembly.name.toLowerCase(),
+}
+
+function upsertPackageAssembly(store, packageId, org, assembly) {
+  const current = assembliesOfPackage(store, packageId).find(
+    (row) => String(row.name).toLowerCase() === assembly.name.toLowerCase(),
+  );
+  const assemblyId = String(current?.pluginassemblyid ?? store.ids.uuid()).toLowerCase();
+  const identity = {
+    version: assembly.version,
+    culture: assembly.culture,
+    publickeytoken: assembly.publicKeyToken ?? 'null',
+  };
+  assertPackageAssemblyUnique(store, assembly, assemblyId, identity);
+  upsert(store, 'pluginassembly', 'pluginassemblyid', [
+    {
+      ...current,
+      pluginassemblyid: assemblyId,
+      name: assembly.name,
+      ...identity,
+      major: assembly.major,
+      minor: assembly.minor,
+      isolationmode: 2,
+      sourcetype: 4,
+      content: assembly.bytes.toString('base64'),
+      packageid: packageId,
+      organizationid: org,
+    },
+  ]);
+  const types = typesOfAssembly(store, assemblyId);
+  upsert(
+    store,
+    'plugintype',
+    'plugintypeid',
+    packagePluginTypes(assembly).map((typename) =>
+      packageTypeRow(types, typename, assembly, assemblyId, org, identity, store),
+    ),
+  );
+}
+
+function assertPackageAssemblyUnique(store, assembly, assemblyId, identity) {
+  const duplicate = store
+    .tableRows('pluginassembly')
+    .some(
+      (row) =>
+        !same(row.pluginassemblyid, assemblyId) &&
+        assemblyKey(row) ===
+          assemblyKey({ name: assembly.name, ...identity, major: assembly.major, minor: assembly.minor }),
     );
-    const assemblyId = String(current?.pluginassemblyid ?? store.ids.uuid()).toLowerCase();
-    const identity = {
-      version: assembly.version,
-      culture: assembly.culture,
-      publickeytoken: assembly.publicKeyToken ?? 'null',
-    };
-    const duplicate = store
-      .tableRows('pluginassembly')
-      .find(
-        (row) =>
-          !same(row.pluginassemblyid, assemblyId) &&
-          assemblyKey(row) ===
-            assemblyKey({ name: assembly.name, ...identity, major: assembly.major, minor: assembly.minor }),
-      );
-    if (duplicate)
-      throw fail(
-        `Cannot insert duplicate key exception when executing non-query: System.Data.SqlClient.SqlCommand Exception: System.Data.SqlClient.SqlException (0x80131904): Violation of UNIQUE KEY constraint 'UQ_PluginAssemblyBase_AssemblyMetadata'. Cannot insert duplicate key in object 'dbo.PluginAssemblyBase'. The duplicate key value is (${assembly.name}, ${assembly.major}, ${assembly.minor}, ${assembly.culture}, ${identity.publickeytoken}, fd140aae-4df4-11dd-bd17-0019b9312238, 0, Jan  1 1900 12:00AM).${duplicateKeyTail(store)}`,
-        '0x80040265',
-      );
-    upsert(store, 'pluginassembly', 'pluginassemblyid', [
-      {
-        ...current,
-        pluginassemblyid: assemblyId,
-        name: assembly.name,
-        ...identity,
-        major: assembly.major,
-        minor: assembly.minor,
-        isolationmode: 2,
-        sourcetype: 4,
-        content: assembly.bytes.toString('base64'),
-        packageid: packageId,
-        organizationid: org,
-      },
-    ]);
-    const types = typesOfAssembly(store, assemblyId);
-    upsert(
-      store,
-      'plugintype',
-      'plugintypeid',
-      pluginTypes(assembly).map((typename) => {
-        const type = types.find((row) => row.typename === typename);
-        return {
-          ...type,
-          plugintypeid: String(type?.plugintypeid ?? store.ids.uuid()).toLowerCase(),
-          typename,
-          name: type?.name ?? typename,
-          friendlyname: type?.friendlyname ?? typename,
-          pluginassemblyid: assemblyId,
-          assemblyname: assembly.name,
-          ...identity,
-          isworkflowactivity: false,
-          organizationid: org,
-        };
-      }),
+  if (duplicate)
+    throw fail(
+      `Cannot insert duplicate key exception when executing non-query: System.Data.SqlClient.SqlCommand Exception: System.Data.SqlClient.SqlException (0x80131904): Violation of UNIQUE KEY constraint 'UQ_PluginAssemblyBase_AssemblyMetadata'. Cannot insert duplicate key in object 'dbo.PluginAssemblyBase'. The duplicate key value is (${assembly.name}, ${assembly.major}, ${assembly.minor}, ${assembly.culture}, ${identity.publickeytoken}, fd140aae-4df4-11dd-bd17-0019b9312238, 0, Jan  1 1900 12:00AM).${duplicateKeyTail(store)}`,
+      '0x80040265',
     );
-  }
+}
+
+function packageTypeRow(types, typename, assembly, assemblyId, org, identity, store) {
+  const type = types.find((row) => row.typename === typename);
+  return {
+    ...type,
+    plugintypeid: String(type?.plugintypeid ?? store.ids.uuid()).toLowerCase(),
+    typename,
+    name: type?.name ?? typename,
+    friendlyname: type?.friendlyname ?? typename,
+    pluginassemblyid: assemblyId,
+    assemblyname: assembly.name,
+    ...identity,
+    isworkflowactivity: false,
+    organizationid: org,
+  };
 }
 
 function validateType({ store, data, existing }) {
@@ -1169,6 +1254,10 @@ function validateImage({ store, data, existing }) {
     throw fail(`Message property name '${property}' is not valid on message ${name}.`, '0x8004416b');
   if (post && [10, 20].includes(Number(step.stage)))
     throw fail('PreEvent step registration does not support Post Image.', '0x8004416e');
+  validateImageAttributes(store, data, existing, step, val);
+}
+
+function validateImageAttributes(store, data, existing, step, val) {
   // The selected attributes must be columns of the step's table (native registration round 2).
   const table = rowById(
     store,
@@ -1176,26 +1265,38 @@ function validateImage({ store, data, existing }) {
     'sdkmessagefilterid',
     step.sdkmessagefilterid,
   )?.primaryobjecttypecode;
-  if (table && table !== 'none') {
-    const columns = columnsOf(store, table);
-    const unknown = String(val('attributes') ?? '')
-      .split(',')
-      .map((item) => item.trim().toLowerCase())
-      .find((attribute) => attribute && !columns.has(attribute));
-    if (unknown) {
-      const imageId = String(
-        existing?.sdkmessageprocessingstepimageid ?? (data.sdkmessageprocessingstepimageid ??= store.ids.uuid()),
-      ).toLowerCase();
-      throw fail(
-        `The step image '${val('entityalias')}' (id '${imageId}') references attribute '${unknown}', which does not exist on entity '${table}'. This step image is entity-specific, so a required solution dependency is likely missing or incomplete. Verify that all dependent solutions are installed and that the attribute exists on the entity.`,
-        '0x80081119',
-      );
-    }
-  }
+  if (!table || table === 'none') return;
+  const columns = columnsOf(store, table);
+  const unknown = String(val('attributes') ?? '')
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .find((attribute) => attribute && !columns.has(attribute));
+  if (!unknown) return;
+  const imageId = String(
+    existing?.sdkmessageprocessingstepimageid ?? (data.sdkmessageprocessingstepimageid ??= store.ids.uuid()),
+  ).toLowerCase();
+  throw fail(
+    `The step image '${val('entityalias')}' (id '${imageId}') references attribute '${unknown}', which does not exist on entity '${table}'. This step image is entity-specific, so a required solution dependency is likely missing or incomplete. Verify that all dependent solutions are installed and that the attribute exists on the entity.`,
+    '0x80081119',
+  );
 }
 
 function validateStep({ store, principals, c, data, existing, operation }) {
   const val = (column) => valueOf(data, existing, column);
+  const core = validateStepCore({ store, data, existing, operation, val });
+  const { messageRefId, filterRefId, stepId, handler, staged, stage, mode } = core;
+  const message = rowById(store, 'sdkmessage', 'sdkmessageid', messageRefId);
+  if (!message) throw notFound('sdkmessage', messageRefId);
+  const messageName = message.name;
+  validateStepMessage(store, messageName, stage, mode, staged, val, stepId);
+  // A filtered step needs an existing filter that allows custom steps (an unknown filter is 404); native does not check
+  // that the filter belongs to the step's message (a Merge step on an Update filter is accepted). A step with no filter is
+  // accepted on any existing message except those whose 'none' filter refuses unfiltered steps (NONE_FILTERS).
+  validateStepFilter(store, filterRefId, message, messageName, stepId, val);
+  validateStepSecurity({ store, principals, c, data, existing, handler, val });
+}
+
+function validateStepCore({ store, data, existing, operation, val }) {
   // A managed level-zero (Microsoft registered) step is read-only (documented 0x8004419a); a local reading of the row's
   // flags, not publisher or ownership evidence.
   if (operation === 'update' && existing?.ismanaged === true && Number(existing.customizationlevel) === 0)
@@ -1234,9 +1335,35 @@ function validateStep({ store, principals, c, data, existing, operation }) {
         `A validation error occurred. The value ${value} of '${column}' on record of type 'sdkmessageprocessingstep' is outside the valid range. Accepted Values: ${accepted.join(',')}`,
         '0x8004431a',
       );
-  const message = rowById(store, 'sdkmessage', 'sdkmessageid', messageRefId);
-  if (!message) throw notFound('sdkmessage', messageRefId);
-  const messageName = message.name;
+  return { messageRefId, filterRefId, stepId, handler, staged, stage, mode };
+}
+
+function validateStepSecurity({ store, principals, c, data, existing, handler, val }) {
+  if (ref(data, existing, 'sdkmessageprocessingstepsecureconfigid') && Number(val('supporteddeployment') ?? 0) !== 0)
+    throw fail(
+      'Only SdkMessageProcessingStep with ServerOnly supported deployment can have secure configuration.',
+      '0x80044185',
+    );
+  const impersonates =
+    ['impersonatinguserid', 'impersonatinguserid@odata.bind'].some((key) => key in data) &&
+    ref(data, existing, 'impersonatinguserid');
+  if (impersonates && c.user) {
+    const allowed =
+      principals.roles(c.user).some((role) => ADMIN_ROLES.has(role.name)) ||
+      principals.privileges(c.user).has(IMPERSONATE);
+    if (!allowed) throw privilegeDeniedError(c.user, IMPERSONATE, 'sdkmessageprocessingstep');
+  }
+  // A web hook step takes no configuration (documented); the text and code are guesses.
+  validateStepWebhookConfig(store, handler, val);
+}
+
+function validateStepWebhookConfig(store, handler, val) {
+  if (handler.table !== 'serviceendpoint' && !rowById(store, 'serviceendpoint', 'serviceendpointid', handler.id))
+    return;
+  if (val('configuration')) throw fail('A web hook step cannot have a configuration.', '0x80040203');
+}
+
+function validateStepMessage(store, messageName, stage, mode, staged, val, stepId) {
   const customApi = store.tableRows('customapi').find((row) => row.uniquename === messageName);
   if (customApi) {
     const policy = Number(customApi.allowedcustomprocessingsteptype ?? 0);
@@ -1254,9 +1381,9 @@ function validateStep({ store, principals, c, data, existing, operation }) {
       `Asynchronous steps are only supported in AfterMainOperationInsideTransaction stages and AfterMainOperationOutsideTransaction stage. SdkMessageProcessingStep name '${val('name') ?? ''}', id '${stepId()}'.`,
       '0x80040203',
     );
-  // A filtered step needs an existing filter that allows custom steps (an unknown filter is 404); native does not check
-  // that the filter belongs to the step's message (a Merge step on an Update filter is accepted). A step with no filter is
-  // accepted on any existing message except those whose 'none' filter refuses unfiltered steps (NONE_FILTERS).
+}
+
+function validateStepFilter(store, filterRefId, message, messageName, stepId, val) {
   const filter = rowById(store, 'sdkmessagefilter', 'sdkmessagefilterid', filterRefId);
   if (filterRefId && !filter) throw notFound('sdkmessagefilter', filterRefId);
   if (filter && filter.iscustomprocessingstepallowed !== true)
@@ -1269,49 +1396,39 @@ function validateStep({ store, principals, c, data, existing, operation }) {
       `Custom SdkMessageProcessingStep with Id: '${stepId()}' is not allowed on the message with SdkMessageId: '${String(message.sdkmessageid).toLowerCase()}'.`,
       '0x80044187',
     );
+  validateStepAvailability(store, filter, message, messageName, val);
+  validateStepFilterAttributes(store, filter, stepId, val);
+  return filter;
+}
+
+function validateStepAvailability(store, filter, message, messageName, val) {
   // The supported deployment must agree with the availability of the step's filter (else its message): server-only (0)
   // takes deployment 0, client-only (1) deployment 1, both (2) any. A Solution's recorded availability wins. Checked before
   // the secure-configuration rule (native registration round 2 answers this error with secure configuration supplied).
   const sourced = store.state.dataverse?.pluginSourceAvailability?.[String(messageName).toLowerCase()];
-  const availability = [
+  const availability = new Set([
     sourced?.filters?.[filter?.primaryobjecttypecode ?? 'none'] ?? (filter ? filter.availability : undefined),
     sourced?.message ?? (filter ? undefined : message.availability),
-  ];
+  ]);
   const deployment = Number(val('supporteddeployment') ?? 0);
-  if ((deployment !== 0 && availability.includes(0)) || (deployment !== 1 && availability.includes(1)))
+  if ((deployment !== 0 && availability.has(0)) || (deployment !== 1 && availability.has(1)))
     throw fail('Supported deployment does not agree with message availability', '0x80040203');
+}
+
+function validateStepFilterAttributes(store, filter, stepId, val) {
   // The attributes must be columns of the filter's table (a missing dependency natively); any message is accepted. A padded
   // token is refused by its raw text (native: 'Id= PQWP_Integer ' answers 0x8004f036), so the tokens are not trimmed.
   const table = filter?.primaryobjecttypecode;
-  if (table && table !== 'none') {
-    const columns = columnsOf(store, table);
-    for (const attribute of String(val('filteringattributes') ?? '')
-      .split(',')
-      .filter((item) => item !== ''))
-      if (!columns.has(attribute.toLowerCase()) || attribute !== attribute.trim())
-        throw fail(
-          `The dependent component Attribute (Id=${attribute}) does not exist.  Failure trying to associate it with SdkMessageProcessingStep (Id=${stepId()}) as a dependency. Missing dependency lookup type = AttributeNameLookup.`,
-          '0x8004f036',
-        );
-  }
-  if (ref(data, existing, 'sdkmessageprocessingstepsecureconfigid') && Number(val('supporteddeployment') ?? 0) !== 0)
-    throw fail(
-      'Only SdkMessageProcessingStep with ServerOnly supported deployment can have secure configuration.',
-      '0x80044185',
-    );
-  const impersonates =
-    ['impersonatinguserid', 'impersonatinguserid@odata.bind'].some((key) => key in data) &&
-    ref(data, existing, 'impersonatinguserid');
-  if (impersonates && c.user) {
-    const allowed =
-      principals.roles(c.user).some((role) => ADMIN_ROLES.has(role.name)) ||
-      principals.privileges(c.user).has(IMPERSONATE);
-    if (!allowed) throw privilegeDeniedError(c.user, IMPERSONATE, 'sdkmessageprocessingstep');
-  }
-  // A web hook step takes no configuration (documented); the text and code are guesses.
-  if (handler.table === 'serviceendpoint' || rowById(store, 'serviceendpoint', 'serviceendpointid', handler.id)) {
-    if (val('configuration')) throw fail('A web hook step cannot have a configuration.', '0x80040203');
-  }
+  if (!table || table === 'none') return;
+  const columns = columnsOf(store, table);
+  for (const attribute of String(val('filteringattributes') ?? '')
+    .split(',')
+    .filter((item) => item !== ''))
+    if (!columns.has(attribute.toLowerCase()) || attribute !== attribute.trim())
+      throw fail(
+        `The dependent component Attribute (Id=${attribute}) does not exist.  Failure trying to associate it with SdkMessageProcessingStep (Id=${stepId()}) as a dependency. Missing dependency lookup type = AttributeNameLookup.`,
+        '0x8004f036',
+      );
 }
 
 // A web hook (contract 8) needs its endpoint URL and one of its three authentication types: WebhookKey (4),
@@ -1505,7 +1622,9 @@ export function solutionPluginExtension(plugins) {
   const sync = (api) => {
     const { store } = api,
       current = pluginsOf();
-    const seeded = ((store.state.dataverse ??= {}).sourceSeeded ??= {});
+    store.state.dataverse ??= {};
+    store.state.dataverse.sourceSeeded ??= {};
+    const seeded = store.state.dataverse.sourceSeeded;
     const org = organizationOf(store) || String(api.settings?.organizationId ?? '').toLowerCase();
     const rows = current ? solutionPluginRows(current, { organizationId: org }) : {};
     const changes = {};

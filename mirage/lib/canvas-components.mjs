@@ -23,8 +23,6 @@ export function prepareCanvasSource(source) {
       .map((name) => name.toLowerCase()),
   );
   let serial = 0;
-  let count = 0,
-    limited = false;
   const next = () => {
     let name;
     do {
@@ -40,109 +38,11 @@ export function prepareCanvasSource(source) {
       source: null,
     });
   const rows = (owner) => originalFormulas.filter((row) => row.owner.toLowerCase() === owner.toLowerCase());
+  const state = { count: 0, limited: false };
+  const shared = { definitions, formulas, scopes, functions, next, report, rows, state };
   const screens = (tree.screens ?? []).map((screen) => {
     const output = [];
-    const expand = (control, parentScope = null, stack = []) => {
-      if (count >= 5000 || stack.length >= 32) {
-        if (!limited) {
-          report('CANVAS_COMPONENT_EXPANSION_LIMIT', control);
-          limited = true;
-        }
-        return;
-      }
-      count++;
-      const component =
-        control.componentName && (control.control ?? '').toLowerCase().startsWith('canvascomponent')
-          ? definitions.get(control.componentName.toLowerCase())
-          : null;
-      if (!control.componentName || !(control.control ?? '').toLowerCase().startsWith('canvascomponent')) {
-        output.push(control);
-        return;
-      }
-      if (control.componentLibraryUniqueName || !component || component.definitionType !== 'CanvasComponent') {
-        report('CANVAS_COMPONENT_DEFINITION_UNAVAILABLE', control);
-        output.push(control);
-        return;
-      }
-      if (stack.includes(component.name.toLowerCase())) {
-        report('CANVAS_COMPONENT_RECURSIVE', control);
-        output.push(control);
-        return;
-      }
-      const unsupported = Object.values(component.customProperties ?? {}).some(
-        (property) =>
-          (!['Input', 'Output', 'InputFunction', 'OutputFunction', 'Action', 'Event'].includes(property.kind) &&
-            !(property.kind === 'LegacyUnknown' && property.functionScope !== true)) ||
-          (['InputFunction', 'OutputFunction', 'Action', 'Event'].includes(property.kind) &&
-            (!property.returnType || property.parametersValid === false)),
-      );
-      if (unsupported) {
-        report('CANVAS_COMPONENT_PROPERTY_UNSUPPORTED', control);
-        output.push(control);
-        return;
-      }
-      const root = control.name;
-      const children = component.controls ?? [];
-      const local = Object.fromEntries(children.map((child) => [child.name, next()]));
-      const scope = {
-        root,
-        definition: component.name,
-        locals: local,
-        accessAppScope: component.accessAppScope === true,
-        resetInputs: Object.entries(component.customProperties ?? {})
-          .filter(([, property]) => property.kind === 'Input' && property.raiseOnReset === true)
-          .map(([name]) => name),
-        parent: parentScope,
-      };
-      scopes[root] = scope;
-      functions[root] = Object.fromEntries(
-        Object.entries(component.customProperties ?? {}).filter(([, property]) =>
-          ['InputFunction', 'OutputFunction', 'Action', 'Event'].includes(property.kind),
-        ),
-      );
-      output.push({ ...control, control: 'GroupContainer@1.0.0', componentName: undefined, componentInstance: root });
-      const instanceOwner = `${screen.name}.${root}`;
-      const existing = new Set(
-        formulas
-          .filter((row) => row.owner.toLowerCase() === instanceOwner.toLowerCase())
-          .map((row) => row.property.toLowerCase()),
-      );
-      for (const row of rows(component.name)) {
-        const property = component.customProperties?.[row.property];
-        if (
-          ['Input', 'LegacyUnknown', 'InputFunction', 'Event'].includes(property?.kind) &&
-          existing.has(row.property.toLowerCase())
-        )
-          continue;
-        formulas.push({ ...row, owner: instanceOwner, componentDefinition: component.name });
-      }
-      for (const [name, property] of Object.entries(component.customProperties ?? {})) {
-        if (
-          ['Input', 'LegacyUnknown', 'InputFunction', 'Event'].includes(property.kind) &&
-          property.default != null &&
-          !existing.has(name.toLowerCase()) &&
-          !rows(component.name).some((row) => row.property.toLowerCase() === name.toLowerCase())
-        )
-          formulas.push({
-            owner: instanceOwner,
-            property: name,
-            text: property.default,
-            source: null,
-            line: null,
-            componentDefinition: component.name,
-          });
-      }
-      for (const child of children) {
-        const name = local[child.name],
-          parent = child.parent ? local[child.parent] : root;
-        const copy = { ...child, name, originalName: child.name, componentInstance: root, parent };
-        scopes[name] = scope;
-        for (const row of rows(`${component.name}.${child.name}`))
-          formulas.push({ ...row, owner: `${screen.name}.${name}`, componentDefinition: component.name });
-        expand(copy, root, [...stack, component.name.toLowerCase()]);
-      }
-    };
-    for (const control of screen.controls ?? []) expand({ ...control });
+    for (const control of screen.controls ?? []) expandCanvasControl({ ...control }, null, [], shared, output, screen);
     return { ...screen, controls: output };
   });
   return {
@@ -155,4 +55,122 @@ export function prepareCanvasSource(source) {
     componentScopes: scopes,
     componentFunctions: functions,
   };
+}
+
+function expandCanvasControl(control, parentScope, stack, shared, output, screen) {
+  const { definitions, report, state } = shared;
+  if (state.count >= 5000 || stack.length >= 32) {
+    if (!state.limited) {
+      report('CANVAS_COMPONENT_EXPANSION_LIMIT', control);
+      state.limited = true;
+    }
+    return;
+  }
+  state.count++;
+  const component =
+    control.componentName && (control.control ?? '').toLowerCase().startsWith('canvascomponent')
+      ? definitions.get(control.componentName.toLowerCase())
+      : null;
+  if (!control.componentName || !(control.control ?? '').toLowerCase().startsWith('canvascomponent')) {
+    output.push(control);
+    return;
+  }
+  if (control.componentLibraryUniqueName || component?.definitionType !== 'CanvasComponent') {
+    report('CANVAS_COMPONENT_DEFINITION_UNAVAILABLE', control);
+    output.push(control);
+    return;
+  }
+  if (stack.includes(component.name.toLowerCase())) {
+    report('CANVAS_COMPONENT_RECURSIVE', control);
+    output.push(control);
+    return;
+  }
+  if (hasUnsupportedComponentProperties(component)) {
+    report('CANVAS_COMPONENT_PROPERTY_UNSUPPORTED', control);
+    output.push(control);
+    return;
+  }
+  expandCanvasInstance(control, parentScope, stack, component, shared, output, screen);
+}
+
+function hasUnsupportedComponentProperties(component) {
+  return Object.values(component.customProperties ?? {}).some(
+    (property) =>
+      (!['Input', 'Output', 'InputFunction', 'OutputFunction', 'Action', 'Event'].includes(property.kind) &&
+        !(property.kind === 'LegacyUnknown' && property.functionScope !== true)) ||
+      (['InputFunction', 'OutputFunction', 'Action', 'Event'].includes(property.kind) &&
+        (!property.returnType || property.parametersValid === false)),
+  );
+}
+
+function expandCanvasInstance(control, parentScope, stack, component, shared, output, screen) {
+  const { formulas, scopes, functions, next, rows } = shared;
+  const root = control.name;
+  const children = component.controls ?? [];
+  const local = Object.fromEntries(children.map((child) => [child.name, next()]));
+  const scope = {
+    root,
+    definition: component.name,
+    locals: local,
+    accessAppScope: component.accessAppScope === true,
+    resetInputs: Object.entries(component.customProperties ?? {})
+      .filter(([, property]) => property.kind === 'Input' && property.raiseOnReset === true)
+      .map(([name]) => name),
+    parent: parentScope,
+  };
+  scopes[root] = scope;
+  functions[root] = Object.fromEntries(
+    Object.entries(component.customProperties ?? {}).filter(([, property]) =>
+      ['InputFunction', 'OutputFunction', 'Action', 'Event'].includes(property.kind),
+    ),
+  );
+  output.push({ ...control, control: 'GroupContainer@1.0.0', componentName: undefined, componentInstance: root });
+  const instanceOwner = `${screen.name}.${root}`;
+  const existing = new Set(
+    formulas
+      .filter((row) => row.owner.toLowerCase() === instanceOwner.toLowerCase())
+      .map((row) => row.property.toLowerCase()),
+  );
+  addComponentFormulas(component, instanceOwner, existing, formulas, rows);
+  addComponentChildren(children, { local, root, component, screen, scope, stack, shared, output });
+}
+
+function addComponentFormulas(component, instanceOwner, existing, formulas, rows) {
+  for (const row of rows(component.name)) {
+    const property = component.customProperties?.[row.property];
+    if (
+      ['Input', 'LegacyUnknown', 'InputFunction', 'Event'].includes(property?.kind) &&
+      existing.has(row.property.toLowerCase())
+    )
+      continue;
+    formulas.push({ ...row, owner: instanceOwner, componentDefinition: component.name });
+  }
+  for (const [name, property] of Object.entries(component.customProperties ?? {})) {
+    if (
+      ['Input', 'LegacyUnknown', 'InputFunction', 'Event'].includes(property.kind) &&
+      property.default != null &&
+      !existing.has(name.toLowerCase()) &&
+      !rows(component.name).some((row) => row.property.toLowerCase() === name.toLowerCase())
+    )
+      formulas.push({
+        owner: instanceOwner,
+        property: name,
+        text: property.default,
+        source: null,
+        line: null,
+        componentDefinition: component.name,
+      });
+  }
+}
+
+function addComponentChildren(children, { local, root, component, screen, scope, stack, shared, output }) {
+  for (const child of children) {
+    const name = local[child.name],
+      parent = child.parent ? local[child.parent] : root;
+    const copy = { ...child, name, originalName: child.name, componentInstance: root, parent };
+    shared.scopes[name] = scope;
+    for (const row of shared.rows(`${component.name}.${child.name}`))
+      shared.formulas.push({ ...row, owner: `${screen.name}.${name}`, componentDefinition: component.name });
+    expandCanvasControl(copy, root, [...stack, component.name.toLowerCase()], shared, output, screen);
+  }
 }

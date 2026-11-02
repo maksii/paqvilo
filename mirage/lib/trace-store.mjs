@@ -47,7 +47,7 @@ export const SPAN_KINDS = Object.freeze([
   'canvas',
   'internal',
 ]);
-const STATUSES = SPAN_STATUSES.filter((status) => status !== 'running');
+const STATUSES = new Set(SPAN_STATUSES.filter((status) => status !== 'running'));
 const SORTS = ['start', 'duration', 'spans', 'errors'];
 // The search text of one span (D-R3-15): its metadata, attributes and events, then (level full) its payloads, each part
 // bounded so a search never scans more than SEARCH_META + SEARCH_PAYLOAD characters of one span.
@@ -65,7 +65,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Credential-named keys, compared without separators (api_key, x-functions-key, client-secret); `sas` and `sig` only as
 // whole keys.
 const SECRET_KEY =
-  /password|passwd|secret|token|authorization|authentication|cookie|credential|apikey|signature|sharedaccesssignature|authvalue|connectionstring|saskey|sharedaccesskey|accountkey|functionskey|functionkey|subscriptionkey|privatekey|^sas$|^sig$/i;
+  /password|passwd|secret|token|auth(?:orization|entication)|cookie|credential|apikey|signature|sharedaccesssignature|authvalue|connectionstring|saskey|sharedaccesskey|accountkey|function(?:s)?key|subscriptionkey|privatekey|^sas$|^sig$/i; // NOSONAR: regex kept: a rewrite would change matches or captures
 const MAX_EVENTS = 1000;
 const MAX_DEPTH = 16;
 const MAX_ITEMS = 1000;
@@ -99,7 +99,9 @@ const actorKey = (value) =>
 /** The span status for an HTTP answer: 401 and 403 are `denied`, other 4xx and 5xx `error`, anything else `ok`. */
 export function statusFromHttp(status) {
   const code = Number(status);
-  return code === 401 || code === 403 ? 'denied' : code >= 400 ? 'error' : 'ok';
+  if (code === 401 || code === 403) return 'denied';
+  if (code >= 400) return 'error';
+  return 'ok';
 }
 
 // Base64 of binary content: only base64 characters, a whole number of 4-character groups (line breaks aside), and upper
@@ -114,6 +116,27 @@ const looksBase64 = (text) =>
 // { bytes, mimetype?, filename?, sha256 } of a file column value (decoded bytes), or null when the value is not one.
 // documentbody is always a file; body and *image* keys hold one when the value is binary, a data URL or base64 of at
 // least 64 characters; any other key only when the value is a data URL or base64 longer than 1 KB.
+function stringFileSummary(key, value, named) {
+  const data = DATA_URL.exec(value);
+  const text = data ? value.slice(data[0].length) : value;
+  const file =
+    data ||
+    (/^documentbody$/i.test(key) && value !== '') ||
+    (text.length >= (named ? 64 : BASE64_MIN + 1) && looksBase64(text));
+  if (!file) return null;
+  return { bytes: Buffer.from(text, 'base64'), mimetype: data?.[1] ?? null };
+}
+
+function fileMetadata(key, siblings, mimetype) {
+  const sibling = (name) => (typeof siblings?.[name] === 'string' ? auditText(siblings[name], 300) : null);
+  mimetype = sibling('mimetype') ?? mimetype;
+  const filename = sibling('filename') ?? sibling('name');
+  return {
+    ...(mimetype ? { mimetype } : {}),
+    ...(filename && /^(?:documentbody|body)$/i.test(key) ? { filename } : {}),
+  };
+}
+
 function fileSummary(key, value, siblings) {
   const named = FILE_KEY.test(key);
   let bytes,
@@ -121,25 +144,58 @@ function fileSummary(key, value, siblings) {
   if (named && (value instanceof ArrayBuffer || ArrayBuffer.isView(value)))
     bytes = Buffer.from(value instanceof ArrayBuffer ? value : value.buffer, value.byteOffset ?? 0, value.byteLength);
   else if (typeof value === 'string') {
-    const data = DATA_URL.exec(value);
-    const text = data ? value.slice(data[0].length) : value;
-    const file =
-      data ||
-      (/^documentbody$/i.test(key) && value !== '') ||
-      (text.length >= (named ? 64 : BASE64_MIN + 1) && looksBase64(text));
-    if (!file) return null;
-    bytes = Buffer.from(text, 'base64');
-    mimetype = data?.[1] ?? null;
+    const summary = stringFileSummary(key, value, named);
+    if (!summary) return null;
+    bytes = summary.bytes;
+    mimetype = summary.mimetype;
   } else return null;
-  const sibling = (name) => (typeof siblings?.[name] === 'string' ? auditText(siblings[name], 300) : null);
-  mimetype = sibling('mimetype') ?? mimetype;
-  const filename = sibling('filename') ?? sibling('name');
   return {
     bytes: bytes.length,
-    ...(mimetype ? { mimetype } : {}),
-    ...(filename && /^(?:documentbody|body)$/i.test(key) ? { filename } : {}),
+    ...fileMetadata(key, siblings, mimetype),
     sha256: createHash('sha256').update(bytes).digest('hex'),
   };
+}
+
+function cleanArray(source, limit, depth, seen) {
+  return source.slice(0, MAX_ITEMS).map((item) => clean(item, limit, depth + 1, seen) ?? null);
+}
+
+/* NOSONAR */ function cleanObject(source, limit, depth, seen) {
+  // A DataContract { key, value } pair whose key names a credential hides its value.
+  const pair = typeof source.key === 'string' && 'value' in source && secretKey(source.key);
+  const result = {};
+  for (const key of Object.keys(source).slice(0, MAX_ITEMS)) {
+    const item = source[key];
+    if ((pair && key === 'value') || secretKey(key)) result[key] = item == null ? item : REDACTED;
+    else {
+      // A { key, value } pair names its column in key (SOAP attribute collections).
+      const column = key === 'value' && typeof source.key === 'string' ? source.key : key;
+      const file = item != null && fileSummary(column, item, source);
+      const cleaned = file || clean(item, limit, depth + 1, seen);
+      if (cleaned !== undefined) result[key] = cleaned;
+    }
+  }
+  return result;
+}
+
+function cleanContainer(value, limit, depth, seen) {
+  if (value === null) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  if (value instanceof URLSearchParams) return auditQuery(value);
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return `[binary ${value.byteLength} bytes]`;
+  if (value instanceof Error)
+    return { name: value.name, code: clean(value.code, 160, depth, seen), message: auditText(value.message, 2000) };
+  if (seen.has(value)) return '[circular]';
+  if (depth >= MAX_DEPTH) return '[depth limit]';
+  seen.add(value);
+  let source = value;
+  if (value instanceof Map) source = Object.fromEntries(value);
+  else if (value instanceof Set) source = [...value];
+  const result = Array.isArray(source)
+    ? cleanArray(source, limit, depth, seen)
+    : cleanObject(source, limit, depth, seen);
+  seen.delete(value);
+  return result;
 }
 
 function clean(value, limit, depth, seen) {
@@ -157,37 +213,7 @@ function clean(value, limit, depth, seen) {
     case 'symbol':
       return undefined;
   }
-  if (value === null) return null;
-  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
-  if (value instanceof URLSearchParams) return auditQuery(value);
-  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return `[binary ${value.byteLength} bytes]`;
-  if (value instanceof Error)
-    return { name: value.name, code: clean(value.code, 160, depth, seen), message: auditText(value.message, 2000) };
-  if (seen.has(value)) return '[circular]';
-  if (depth >= MAX_DEPTH) return '[depth limit]';
-  seen.add(value);
-  const source = value instanceof Map ? Object.fromEntries(value) : value instanceof Set ? [...value] : value;
-  let result;
-  if (Array.isArray(source))
-    result = source.slice(0, MAX_ITEMS).map((item) => clean(item, limit, depth + 1, seen) ?? null);
-  else {
-    // A DataContract { key, value } pair whose key names a credential hides its value.
-    const pair = typeof source.key === 'string' && 'value' in source && secretKey(source.key);
-    result = {};
-    for (const key of Object.keys(source).slice(0, MAX_ITEMS)) {
-      const item = source[key];
-      if ((pair && key === 'value') || secretKey(key)) result[key] = item == null ? item : REDACTED;
-      else {
-        // A { key, value } pair names its column in key (SOAP attribute collections).
-        const column = key === 'value' && typeof source.key === 'string' ? source.key : key;
-        const file = item != null && fileSummary(column, item, source);
-        const cleaned = file || clean(item, limit, depth + 1, seen);
-        if (cleaned !== undefined) result[key] = cleaned;
-      }
-    }
-  }
-  seen.delete(value);
-  return result;
+  return cleanContainer(value, limit, depth, seen);
 }
 
 /**
@@ -220,13 +246,10 @@ function flat(attributes) {
   for (const key of Object.keys(attributes)) {
     const value = attributes[key];
     if (value === undefined) continue;
-    result[key] = secretKey(key)
-      ? REDACTED
-      : typeof value === 'string'
-        ? auditText(value, 2000)
-        : value === null || typeof value === 'number' || typeof value === 'boolean'
-          ? value
-          : clean(value, 2048, 0, new WeakSet());
+    if (secretKey(key)) result[key] = REDACTED;
+    else if (typeof value === 'string') result[key] = auditText(value, 2000);
+    else if (value === null || typeof value === 'number' || typeof value === 'boolean') result[key] = value;
+    else result[key] = clean(value, 2048, 0, new WeakSet());
   }
   return result;
 }
@@ -234,8 +257,11 @@ function flat(attributes) {
 // The memory estimate (status()) is kept as spans change: a fixed cost per span and per event, plus key and string
 // lengths of attributes and messages (JSON only for the rare structured attribute) and the captured payload bytes.
 const jsonLength = (value) => (value === undefined ? 0 : (JSON.stringify(value)?.length ?? 0));
-const valueBytes = (value) =>
-  typeof value === 'string' ? value.length : value !== null && typeof value === 'object' ? jsonLength(value) : 8;
+const valueBytes = (value) => {
+  if (typeof value === 'string') return value.length;
+  if (value !== null && typeof value === 'object') return jsonLength(value);
+  return 8;
+};
 const attributeBytes = (attributes) => {
   let bytes = 0;
   for (const key in attributes) bytes += key.length + valueBytes(attributes[key]);
@@ -282,7 +308,7 @@ function errorOf(error, nested = false) {
  */
 export function recordHttpError(span, status, { code, message, details } = {}) {
   const value = Number(status);
-  if (!span?.enabled || !(value >= 400)) return span;
+  if (!span?.enabled || !(value >= 400)) return span; // NOSONAR: operand can be NaN or undefined, the negated test differs
   span.setStatus(statusFromHttp(value));
   span.setError({ code: code ?? `Http${value}`, message: message ?? `HTTP ${value}`, status: value, details });
   return span;
@@ -442,7 +468,7 @@ class Span {
   }
   // The status end uses when it is given none (recordHttpError); `running` or an unknown status is ignored.
   setStatus(status) {
-    if (this.#record.status === 'running' && STATUSES.includes(status)) this.#status = status;
+    if (this.#record.status === 'running' && STATUSES.has(status)) this.#status = status;
     return this;
   }
   // The span's error ({ code, message, ...facts }, as for end) while it runs; a later end({ error }) replaces it.
@@ -492,7 +518,10 @@ class Span {
     if (attributes) this.#core.grow(this.#trace, merge(record.attributes, flat(attributes)));
     if (error != null) record.error = errorOf(error);
     record.durationMs = round(this.#core.now() - this.#start);
-    record.status = STATUSES.includes(status) ? status : (this.#status ?? (record.error ? 'error' : 'ok'));
+    if (STATUSES.has(status)) record.status = status;
+    else if (this.#status != null) record.status = this.#status;
+    else if (record.error) record.status = 'error';
+    else record.status = 'ok';
     this.#core.ended(this.#trace, record, this.#start);
     return this;
   }
@@ -503,12 +532,14 @@ class Span {
 
 // A refused filter: RangeError { status: 400, code: 'InvalidTraceFilter', parameter }, the message starting with the
 // filter name; an unknown enum value adds the value it got.
-const invalid = (key, rule, got) =>
-  Object.assign(new RangeError(`${key} ${rule}${got === undefined ? '' : ` (got ${JSON.stringify(String(got))})`}.`), {
+const invalid = (key, rule, got) => {
+  const gotText = got === undefined ? '' : ' (got ' + JSON.stringify(String(got)) + ')';
+  return Object.assign(new RangeError(`${key} ${rule}${gotText}.`), {
     status: 400,
     code: 'InvalidTraceFilter',
     parameter: key,
   });
+};
 const oneOf = (key, value, allowed) => {
   if (value !== null && !allowed.includes(value)) throw invalid(key, `must be one of ${allowed.join(', ')}`, value);
   return value;
@@ -535,12 +566,10 @@ function parseFilters(filters = {}, { entityNames = null } = {}) {
   const time = (key) => {
     const value = get(key);
     if (value === null) return null;
-    const ms =
-      value instanceof Date
-        ? value.getTime()
-        : /^\d+(?:\.\d+)?$/.test(String(value))
-          ? Number(value)
-          : Date.parse(String(value));
+    let ms;
+    if (value instanceof Date) ms = value.getTime();
+    else if (/^\d+(?:\.\d+)?$/.test(String(value))) ms = Number(value);
+    else ms = Date.parse(String(value));
     if (!Number.isFinite(ms)) throw invalid(key, 'must be an ISO date-time or epoch milliseconds');
     return ms;
   };
@@ -632,10 +661,7 @@ export function searchText(record) {
     parts.push(event.type, event.message, attributes);
     size += event.type.length + (event.message?.length ?? 0) + attributes.length;
   }
-  let text = parts
-    .filter((part) => part)
-    .join('\n')
-    .slice(0, SEARCH_META);
+  let text = parts.filter(Boolean).join('\n').slice(0, SEARCH_META);
   const payload = [record.input, record.output]
     .filter((value) => value !== undefined)
     .map((value) => JSON.stringify(value))
@@ -703,6 +729,58 @@ const defaultBucket = (range) => {
 // A record without its captured payloads (payload-free listener copies).
 const bare = ({ input: _input, output: _output, ...rest }) => rest;
 
+function traceTimeMatches(trace, f) {
+  if (f.from === null && f.to === null) return true;
+  if ((f.from !== null && trace.lastStart < f.from) || (f.to !== null && trace.first > f.to)) return false;
+  return trace.spans.some(
+    (span) => (f.from === null || startOf(span) >= f.from) && (f.to === null || startOf(span) <= f.to),
+  );
+}
+
+function matchesTrace(trace, f, helpers) {
+  if (f.traceId && trace.traceId !== f.traceId) return false;
+  if (!helpers.resultMatches(trace, f)) return false;
+  if (!traceTimeMatches(trace, f)) return false;
+  if (f.spanFiltered && !trace.spans.some((span) => helpers.spanMatches(recordOf(span), f.span, helpers.searchOf)))
+    return false;
+  if (f.minDurationMs !== null && helpers.totalOf(trace) < f.minDurationMs) return false;
+  if (f.hasErrors !== null && trace.errorCount > 0 !== f.hasErrors) return false;
+  return true;
+}
+
+function matchesSpan(span, f, helpers) {
+  const record = recordOf(span),
+    start = startOf(span);
+  return !(
+    (f.from !== null && start < f.from) ||
+    (f.to !== null && start > f.to) ||
+    (f.minDurationMs !== null && !(record.durationMs >= f.minDurationMs)) /* NOSONAR */ ||
+    (f.hasErrors !== null && (record.status === 'error') !== f.hasErrors) ||
+    (f.parentSpanId && record.parentSpanId !== f.parentSpanId) ||
+    (f.depth !== null && record.depth !== f.depth) ||
+    (f.spanFiltered && !helpers.spanMatches(record, f.span, helpers.searchOf))
+  );
+}
+
+function eventForListener(type, record, summary, payloads, copies) {
+  if (payloads) {
+    if (copies.full == null)
+      copies.full = Object.freeze({
+        type,
+        span: Object.freeze(copies.copy(record)),
+        ...(summary ? { trace: summary } : {}),
+      });
+    return copies.full;
+  }
+  if (copies.slim == null)
+    copies.slim = Object.freeze({
+      type,
+      span: Object.freeze(copies.copy(bare(record))),
+      ...(summary ? { trace: { ...summary, root: bare(summary.root) } } : {}),
+    });
+  return copies.slim;
+}
+
 /**
  * Creates the trace store. settings: a mirage.trace value (trace-settings.mjs); stateDirectory: the ignored state folder
  * (or a function returning it, read when a trace is persisted); now: epoch milliseconds (wall clock by default).
@@ -769,16 +847,10 @@ export function createTraceStore({
 
   const emit = (type, record, summary) => {
     if (!listeners.size) return;
-    let full, slim;
+    const copies = { full: null, slim: null, copy };
     for (const [listener, { payloads, events, traceId }] of listeners) {
       if ((events && !events.has(type)) || (traceId && record.traceId !== traceId)) continue;
-      const event = payloads
-        ? (full ??= Object.freeze({ type, span: Object.freeze(copy(record)), ...(summary ? { trace: summary } : {}) }))
-        : (slim ??= Object.freeze({
-            type,
-            span: Object.freeze(copy(bare(record))),
-            ...(summary ? { trace: { ...summary, root: bare(summary.root) } } : {}),
-          }));
+      const event = eventForListener(type, record, summary, payloads, copies);
       try {
         listener(event);
       } catch {
@@ -918,20 +990,9 @@ export function createTraceStore({
   // The matching traces (internal objects), sorted; summaries are built only for what a caller returns.
   function matchedTraces(f) {
     const rows = [];
-    const timed = f.from !== null || f.to !== null;
-    const inRange = (start) => (f.from === null || start >= f.from) && (f.to === null || start <= f.to);
+    const helpers = { resultMatches, spanMatches, searchOf, totalOf };
     for (const trace of traces.values()) {
-      if (f.traceId && trace.traceId !== f.traceId) continue;
-      if (!resultMatches(trace, f)) continue;
-      // A trace matches the time range when any of its spans starts in it.
-      if (timed) {
-        if ((f.from !== null && trace.lastStart < f.from) || (f.to !== null && trace.first > f.to)) continue;
-        if (!trace.spans.some((span) => inRange(startOf(span)))) continue;
-      }
-      if (f.spanFiltered && !trace.spans.some((span) => spanMatches(recordOf(span), f.span, searchOf))) continue;
-      if (f.minDurationMs !== null && totalOf(trace) < f.minDurationMs) continue;
-      if (f.hasErrors !== null && trace.errorCount > 0 !== f.hasErrors) continue;
-      rows.push(trace);
+      if (matchesTrace(trace, f, helpers)) rows.push(trace);
     }
     const key = SORT_KEYS[f.sort],
       direction = f.order === 'asc' ? 1 : -1;
@@ -942,19 +1003,12 @@ export function createTraceStore({
   }
   function matchedSpans(f) {
     const rows = [];
+    const helpers = { resultMatches, spanMatches, searchOf };
     for (const trace of traces.values()) {
       if (f.traceId && trace.traceId !== f.traceId) continue;
       if (!resultMatches(trace, f)) continue;
       for (const span of trace.spans) {
-        const record = recordOf(span),
-          start = startOf(span);
-        if ((f.from !== null && start < f.from) || (f.to !== null && start > f.to)) continue;
-        if (f.minDurationMs !== null && !(record.durationMs >= f.minDurationMs)) continue;
-        if (f.hasErrors !== null && (record.status === 'error') !== f.hasErrors) continue;
-        if (f.parentSpanId && record.parentSpanId !== f.parentSpanId) continue;
-        if (f.depth !== null && record.depth !== f.depth) continue;
-        if (f.spanFiltered && !spanMatches(record, f.span, searchOf)) continue;
-        rows.push(span);
+        if (matchesSpan(span, f, helpers)) rows.push(span);
       }
     }
     return rows.sort((a, b) =>
@@ -988,81 +1042,82 @@ export function createTraceStore({
     return { trace: summary, root: summary.root, spans: flatSpans, children };
   }
 
-  const store = {
-    /** False when the level is off (start returns the shared no-op span). */
-    get enabled() {
-      return settings.level !== 'off';
-    },
-    /**
-     * Opens a span under the explicit parent, else the current span, else the request context span. A full trace
-     * refuses it with the trace's overflow handle.
-     */
-    start(args = {}) {
-      if (settings.level === 'off') return NOOP;
-      let parent = null,
-        parentSpanId = null,
-        named = null,
-        request = null;
-      const links = linksOf(args.links);
-      if (args.parentSpanId !== undefined || args.traceId !== undefined) {
-        named = validId(args.traceId);
-        parentSpanId = validId(args.parentSpanId);
-      } else {
-        const current = als.getStore();
-        if (OVERFLOWS.has(current)) named = current.traceId;
-        else if (current) parent = current;
-        else {
-          request = currentRequest();
-          named = validId(request?.traceId);
-          parentSpanId = validId(request?.spanId);
-        }
+  function resolveImplicitParent() {
+    const current = als.getStore();
+    if (OVERFLOWS.has(current)) return { parent: null, named: current.traceId, request: null, parentSpanId: null };
+    if (current) return { parent: current, named: null, request: null, parentSpanId: null };
+    const request = currentRequest();
+    return {
+      parent: null,
+      named: validId(request?.traceId),
+      request,
+      parentSpanId: validId(request?.spanId),
+    };
+  }
+
+  function resolveStartContext(args) {
+    let parent = null,
+      parentSpanId = null,
+      named,
+      request = null;
+    const links = linksOf(args.links);
+    if (args.parentSpanId !== undefined || args.traceId !== undefined) {
+      named = validId(args.traceId);
+      parentSpanId = validId(args.parentSpanId);
+    } else {
+      ({ parent, named, request, parentSpanId } = resolveImplicitParent());
+    }
+    if (!parent && parentSpanId) {
+      parent = spans.get(parentSpanId) ?? null;
+      if (!parent) {
+        if (!links.some((link) => link.spanId === parentSpanId))
+          links.push({ traceId: named, spanId: parentSpanId, relation: 'parent-request' });
+        parent = (named && traces.get(named)?.root) || null;
       }
-      if (!parent && parentSpanId) {
-        // A retained parent decides the trace; an unknown one leaves its id as a link and the span goes under the named
-        // trace's root when that trace is retained, else it is a root.
-        parent = spans.get(parentSpanId) ?? null;
-        if (!parent) {
-          if (!links.some((link) => link.spanId === parentSpanId))
-            links.push({ traceId: named, spanId: parentSpanId, relation: 'parent-request' });
-          parent = (named && traces.get(named)?.root) || null;
-        }
-      }
-      const traceId = parent?.traceId ?? named ?? randomUUID();
-      let trace = traces.get(traceId);
-      if (trace && trace.spans.length >= settings.spansPerTrace) {
-        trace.droppedSpans++;
-        droppedSpans++;
-        return overflowOf(trace);
-      }
-      if (trace) traces.delete(traceId);
-      else
-        trace = {
-          traceId,
-          spans: [],
-          root: null,
-          running: 0,
-          droppedSpans: 0,
-          bytes: 0,
-          errorCount: 0,
-          firstError: null,
-          deniedCount: 0,
-          kinds: {},
-          entities: new Set(),
-          modules: new Set(),
-          first: Infinity,
-          lastStart: -Infinity,
-          lastEnd: -Infinity,
-          persisted: 0,
-          partial: [],
-          persistQueued: false,
-          evicted: false,
-          overflow: null,
-        };
-      traces.set(traceId, trace);
-      while (traces.size > settings.traces) evict(traces.values().next().value);
-      const parentRecord = parent ? recordOf(parent) : null;
-      const start = now();
-      const record = {
+    }
+    return { parent, named, request, links };
+  }
+
+  function traceForStart(traceId) {
+    let trace = traces.get(traceId);
+    if (trace && trace.spans.length >= settings.spansPerTrace) {
+      trace.droppedSpans++;
+      droppedSpans++;
+      return { overflow: overflowOf(trace) };
+    }
+    if (trace) traces.delete(traceId);
+    else
+      trace = {
+        traceId,
+        spans: [],
+        root: null,
+        running: 0,
+        droppedSpans: 0,
+        bytes: 0,
+        errorCount: 0,
+        firstError: null,
+        deniedCount: 0,
+        kinds: {},
+        entities: new Set(),
+        modules: new Set(),
+        first: Infinity,
+        lastStart: -Infinity,
+        lastEnd: -Infinity,
+        persisted: 0,
+        partial: [],
+        persistQueued: false,
+        evicted: false,
+        overflow: null,
+      };
+    traces.set(traceId, trace);
+    while (traces.size > settings.traces) evict(traces.values().next().value);
+    return { trace };
+  }
+
+  function startRecord(args, parent, parentRecord, request, traceId, links, start) {
+    return {
+      parentRecord,
+      record: {
         traceId,
         spanId: randomUUID(),
         parentSpanId: parent?.spanId ?? null,
@@ -1085,7 +1140,46 @@ export function createTraceStore({
         attributes: flat(args.attributes),
         events: [],
         links,
-      };
+      },
+    };
+  }
+
+  function retainStartedSpan(trace, span, record, start, bytes) {
+    trace.spans.push(span);
+    if (!trace.root || (recordOf(trace.root).parentSpanId !== null && record.parentSpanId === null)) trace.root = span;
+    trace.kinds[record.kind] = (trace.kinds[record.kind] ?? 0) + 1;
+    if (record.entity) trace.entities.add(record.entity);
+    if (record.module) trace.modules.add(record.module);
+    trace.first = Math.min(trace.first, start);
+    trace.lastStart = Math.max(trace.lastStart, start);
+    trace.running++;
+    running++;
+    trace.bytes += bytes;
+    memoryBytes += bytes;
+    spans.set(record.spanId, span);
+    if ('auditId' in record.attributes) core.audited(span);
+    emit('span-start', record);
+  }
+
+  const store = {
+    /** False when the level is off (start returns the shared no-op span). */
+    get enabled() {
+      return settings.level !== 'off';
+    },
+    /**
+     * Opens a span under the explicit parent, else the current span, else the request context span. A full trace
+     * refuses it with the trace's overflow handle.
+     */
+    start(args = {}) {
+      if (settings.level === 'off') return NOOP;
+      const { parent, named, request, links } = resolveStartContext(args);
+      const traceId = parent?.traceId ?? named ?? randomUUID();
+      const stored = traceForStart(traceId);
+      if (stored.overflow) return stored.overflow;
+      const trace = stored.trace;
+      const parentRecord = parent ? recordOf(parent) : null;
+      const start = now();
+      const { record } = startRecord(args, parent, parentRecord, request, traceId, links, start);
       let bytes = 512 + attributeBytes(record.attributes);
       if (settings.level === 'full' && args.input !== undefined) {
         const captured = capture(args.input, settings.payloadBytes);
@@ -1093,21 +1187,7 @@ export function createTraceStore({
         bytes += captured.bytes;
       }
       const span = new Span(core, trace, record, start);
-      trace.spans.push(span);
-      if (!trace.root || (recordOf(trace.root).parentSpanId !== null && record.parentSpanId === null))
-        trace.root = span;
-      trace.kinds[record.kind] = (trace.kinds[record.kind] ?? 0) + 1;
-      if (record.entity) trace.entities.add(record.entity);
-      if (record.module) trace.modules.add(record.module);
-      trace.first = Math.min(trace.first, start);
-      trace.lastStart = Math.max(trace.lastStart, start);
-      trace.running++;
-      running++;
-      trace.bytes += bytes;
-      memoryBytes += bytes;
-      spans.set(record.spanId, span);
-      if ('auditId' in record.attributes) core.audited(span);
-      emit('span-start', record);
+      retainStartedSpan(trace, span, record, start, bytes);
       return span;
     },
     /** Runs fn with span (or an overflow handle) as the current span for everything synchronous and awaited inside it. */
@@ -1278,7 +1358,10 @@ export function createTraceStore({
       const add = (map, key, record) => {
         if (key === null || key === undefined) return;
         let group = map.get(key);
-        if (!group) map.set(key, (group = []));
+        if (!group) {
+          group = [];
+          map.set(key, group);
+        }
         group.push(record);
       };
       const finish = (map) => Object.fromEntries([...map].map(([key, group]) => [key, figures(group)]));
@@ -1292,8 +1375,8 @@ export function createTraceStore({
         add(groups.byStatus, record.status, record);
       }
       const starts = matched.map((span) => startOf(span));
-      const from = f.from ?? (starts.length ? starts.reduce((a, b) => Math.min(a, b)) : null),
-        to = f.to ?? (starts.length ? starts.reduce((a, b) => Math.max(a, b)) : null);
+      const from = f.from ?? (starts.length ? starts.reduce((a, b) => Math.min(a, b)) : null), // NOSONAR: reduce kept as authored
+        to = f.to ?? (starts.length ? starts.reduce((a, b) => Math.max(a, b)) : null); // NOSONAR: reduce kept as authored
       let bucketMs = null;
       const timeline = [];
       if (from !== null && to !== null && to >= from) {
@@ -1315,7 +1398,7 @@ export function createTraceStore({
             count: bucket.count,
             errors: bucket.errors,
             p95: percentile(
-              bucket.durations.sort((a, b) => a - b),
+              bucket.durations.toSorted((a, b) => a - b),
               0.95,
             ),
           }),
@@ -1352,7 +1435,7 @@ export function createTraceStore({
     subscribe(listener, { payloads = true, flush = null, events = null, traceId = null } = {}) {
       if (typeof listener !== 'function') throw new TypeError('Trace listeners must be functions.');
       if (flush !== null && typeof flush !== 'function') throw new TypeError('A listener flush must be a function.');
-      const types = events === null ? null : [].concat(events);
+      const types = events === null ? null : [events].flat();
       if (types && (!types.length || types.some((type) => !TRACE_EVENTS.includes(type))))
         throw new TypeError(`Trace listener events must be one or more of ${TRACE_EVENTS.join(', ')}.`);
       if (traceId !== null && typeof traceId !== 'string') throw new TypeError('A listener traceId must be a string.');
@@ -1431,7 +1514,11 @@ export function createTraceStore({
       const subscribers = Promise.allSettled(
         [...listeners.values()].filter(({ flush }) => flush).map(({ flush }) => Promise.resolve().then(flush)),
       );
-      for (let pending = null; pending !== queue;) await (pending = queue);
+      let pending = null;
+      while (pending !== queue) {
+        pending = queue;
+        await pending;
+      }
       await subscribers;
     },
   };

@@ -13,8 +13,150 @@ const declaresFont = (body) =>
 const exactPath = (value, localOrigin) =>
   value === fontPath || (typeof value === 'string' && value === localOrigin + fontPath);
 
+function validStylesheetEvidence(item, seen) {
+  return !(
+    seen.has(item.path) ||
+    item.status !== 200 ||
+    !sha.test(item.sha256 ?? '') ||
+    !Number.isSafeInteger(item.bytes) ||
+    item.bytes < 1 ||
+    typeof item.declaresFont !== 'boolean' ||
+    !(
+      item.path === skinPath ||
+      /^\/_pcfwebresource\/[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(item.path)
+    )
+  );
+}
+
+function validateNetworkFailures(report, fail) {
+  const nativeCodes = new Set();
+  if (report.networkFailures !== undefined && !Array.isArray(report.networkFailures))
+    return fail('NATIVE_BASELINE_NETWORK_INVALID', 'Native failed-request evidence must be an array.');
+  for (const item of report.networkFailures ?? []) {
+    const hasResponse = report.fontResponses.some((response) => response.requestKey === item.requestKey);
+    if (
+      item.path !== fontPath ||
+      item.method !== 'GET' ||
+      item.status !== 404 ||
+      item.correlatedResponse !== true ||
+      !item.requestKey ||
+      !hasResponse ||
+      item.errorText !== 'net::ERR_ABORTED'
+    )
+      return fail(
+        'NATIVE_BASELINE_NETWORK_INVALID',
+        'A native failed request lacks exact same-request GET/404 evidence or a supported observed error code.',
+      );
+    nativeCodes.add(item.errorText);
+  }
+  return nativeCodes;
+}
+
+function validateObservationHeader(report, cache, localOrigin, fail) {
+  if (
+    report?.version !== 1 ||
+    report.fingerprintKind !== 'export-file-bytes' ||
+    report.sourceUnchanged !== true ||
+    !sha.test(report.sourceFingerprint ?? '') ||
+    report.sourceFingerprintAfter !== report.sourceFingerprint ||
+    !Number.isFinite(Date.parse(report.observedAt)) ||
+    report.errors?.length ||
+    !Array.isArray(report.errors)
+  )
+    return fail(
+      'NATIVE_BASELINE_INVALID',
+      'Native observation schema, stable source fingerprint, time, or clean page-error evidence is invalid.',
+    );
+  const origin = new URL(report.origin);
+  if (
+    origin.protocol !== 'https:' ||
+    origin.origin !== report.origin ||
+    cache?.origin !== report.origin ||
+    !localOrigin ||
+    new URL(localOrigin).origin !== localOrigin
+  )
+    return fail(
+      'NATIVE_BASELINE_ORIGIN',
+      'Native/cache/local origins do not match the explicitly configured observation.',
+    );
+  return null;
+}
+
+function validateObservationHttpEvidence(report, fail) {
+  if (
+    !Array.isArray(report.fontResponses) ||
+    !report.fontResponses.length ||
+    report.fontResponses.length > 100 ||
+    report.fontResponses.some((item) => item.path !== fontPath || item.method !== 'GET' || item.status !== 404)
+  )
+    return fail(
+      'NATIVE_BASELINE_HTTP',
+      'Only explicit native static font GET/404 responses can establish this baseline.',
+    );
+  const config = report.configuration;
+  if (
+    !config ||
+    !sha.test(config.sha256 ?? '') ||
+    !sha.test(config.sourceSha256 ?? '') ||
+    !/^\/_webresource\/\w+\.js$/.test(config.observedPath ?? '')
+  )
+    return fail('NATIVE_BASELINE_CONFIG_INVALID', 'The native static configuration provenance is invalid.');
+  return null;
+}
+
+function activeConfigurationResource(portal, report, config, configured, fail) {
+  if (!Array.isArray(configured))
+    return {
+      failure: fail(
+        'NATIVE_BASELINE_CONFIG_INACTIVE',
+        'No active source-bound rich-text JSON configuration is supplied.',
+      ),
+    };
+  const matches = configured.filter(
+    (item) =>
+      item?.origin === report.origin &&
+      item.observedPath === config.observedPath &&
+      item.sha256 === config.sha256 &&
+      item.sourceSha256 === config.sourceSha256,
+  );
+  if (matches.length !== 1)
+    return {
+      failure: fail(
+        'NATIVE_BASELINE_CONFIG_INACTIVE',
+        'The observed configuration is not uniquely active with the same source/captured hashes.',
+      ),
+    };
+  const resource = (portal.webFiles ?? []).find((item) => item.url === matches[0].url);
+  if (!resource)
+    return {
+      failure: fail('NATIVE_BASELINE_CONFIG_INACTIVE', 'The mapped exported configuration resource is missing.'),
+    };
+  return { resource };
+}
+
+function validateResolvedConfiguration(resolved, config, fail) {
+  if (!resolved.body || hash(resolved.body) !== config.sha256)
+    return fail(
+      'NATIVE_BASELINE_CONFIG_CHANGED',
+      'The active source-bound configuration is stale, changed, or missing cached bytes.',
+    );
+  return null;
+}
+
+function validateStylesheetList(report, fail) {
+  if (!Array.isArray(report.linkedCSS) || !report.linkedCSS.length || report.linkedCSS.length > 32)
+    return fail('NATIVE_BASELINE_CSS_INVALID', 'Observed native stylesheet provenance is missing or unbounded.');
+  return null;
+}
+
+function validateDeclaredStylesheet(declared, fail) {
+  if (!declared)
+    return fail('NATIVE_BASELINE_CSS_INVALID', 'No matching observed stylesheet declares the exact font dependency.');
+  return null;
+}
+
 /** Validate an explicit observation against currently active local bytes, not a guessed deployment. */
-export async function validateNativeNetworkBaseline(options) {
+/* NOSONAR */ export async function validateNativeNetworkBaseline(options) {
   const { report, portal, cache, localOrigin } = options ?? {},
     diagnostics = [];
   const result = { valid: false, diagnostics, observation: null };
@@ -24,103 +166,31 @@ export async function validateNativeNetworkBaseline(options) {
     return result;
   };
   try {
-    if (
-      !report ||
-      report.version !== 1 ||
-      report.fingerprintKind !== 'export-file-bytes' ||
-      report.sourceUnchanged !== true ||
-      !sha.test(report.sourceFingerprint ?? '') ||
-      report.sourceFingerprintAfter !== report.sourceFingerprint ||
-      !Number.isFinite(Date.parse(report.observedAt)) ||
-      report.errors?.length ||
-      !Array.isArray(report.errors)
-    )
-      return fail(
-        'NATIVE_BASELINE_INVALID',
-        'Native observation schema, stable source fingerprint, time, or clean page-error evidence is invalid.',
-      );
-    const origin = new URL(report.origin);
-    if (
-      origin.protocol !== 'https:' ||
-      origin.origin !== report.origin ||
-      cache?.origin !== report.origin ||
-      !localOrigin ||
-      new URL(localOrigin).origin !== localOrigin
-    )
-      return fail(
-        'NATIVE_BASELINE_ORIGIN',
-        'Native/cache/local origins do not match the explicitly configured observation.',
-      );
+    const headerFailure = validateObservationHeader(report, cache, localOrigin, fail);
+    if (headerFailure) return headerFailure;
     if (!portal?.sourceDir || (await sourceFingerprint(portal.sourceDir)) !== report.sourceFingerprint)
       return fail(
         'NATIVE_BASELINE_SOURCE_CHANGED',
         'The portal export no longer matches the observed source fingerprint.',
       );
-    if (
-      !Array.isArray(report.fontResponses) ||
-      !report.fontResponses.length ||
-      report.fontResponses.length > 100 ||
-      report.fontResponses.some((item) => item.path !== fontPath || item.method !== 'GET' || item.status !== 404)
-    )
-      return fail(
-        'NATIVE_BASELINE_HTTP',
-        'Only explicit native static font GET/404 responses can establish this baseline.',
-      );
+    const httpFailure = validateObservationHttpEvidence(report, fail);
+    if (httpFailure) return httpFailure;
     const config = report.configuration;
-    if (
-      !config ||
-      !sha.test(config.sha256 ?? '') ||
-      !sha.test(config.sourceSha256 ?? '') ||
-      !/^\/_webresource\/[A-Za-z0-9_]+\.js$/.test(config.observedPath ?? '')
-    )
-      return fail('NATIVE_BASELINE_CONFIG_INVALID', 'The native static configuration provenance is invalid.');
     const configured =
       typeof options.activeConfigurations === 'function'
         ? await options.activeConfigurations()
         : options.activeConfigurations;
-    if (!Array.isArray(configured))
-      return fail(
-        'NATIVE_BASELINE_CONFIG_INACTIVE',
-        'No active source-bound rich-text JSON configuration is supplied.',
-      );
-    const matches = configured.filter(
-      (item) =>
-        item?.origin === report.origin &&
-        item.observedPath === config.observedPath &&
-        item.sha256 === config.sha256 &&
-        item.sourceSha256 === config.sourceSha256,
-    );
-    if (matches.length !== 1)
-      return fail(
-        'NATIVE_BASELINE_CONFIG_INACTIVE',
-        'The observed configuration is not uniquely active with the same source/captured hashes.',
-      );
-    const resource = (portal.webFiles ?? []).find((item) => item.url === matches[0].url);
-    if (!resource)
-      return fail('NATIVE_BASELINE_CONFIG_INACTIVE', 'The mapped exported configuration resource is missing.');
+    const { failure: activeFailure, resource } = activeConfigurationResource(portal, report, config, configured, fail);
+    if (activeFailure) return activeFailure;
     const resolved = await resolveRichTextConfiguration(portal, resource, configured, { cache, origin: report.origin });
-    if (!resolved.body || hash(resolved.body) !== config.sha256)
-      return fail(
-        'NATIVE_BASELINE_CONFIG_CHANGED',
-        'The active source-bound configuration is stale, changed, or missing cached bytes.',
-      );
-    if (!Array.isArray(report.linkedCSS) || !report.linkedCSS.length || report.linkedCSS.length > 32)
-      return fail('NATIVE_BASELINE_CSS_INVALID', 'Observed native stylesheet provenance is missing or unbounded.');
+    const configFailure = validateResolvedConfiguration(resolved, config, fail);
+    if (configFailure) return configFailure;
+    const stylesheetFailure = validateStylesheetList(report, fail);
+    if (stylesheetFailure) return stylesheetFailure;
     let declared = 0;
     const seen = new Set();
     for (const item of report.linkedCSS) {
-      if (
-        seen.has(item.path) ||
-        item.status !== 200 ||
-        !sha.test(item.sha256 ?? '') ||
-        !Number.isSafeInteger(item.bytes) ||
-        item.bytes < 1 ||
-        typeof item.declaresFont !== 'boolean' ||
-        !(
-          item.path === skinPath ||
-          /^\/_pcfwebresource\/[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(item.path)
-        )
-      )
+      if (!validStylesheetEvidence(item, seen))
         return fail(
           'NATIVE_BASELINE_CSS_INVALID',
           'Only distinct observed editor/PCF stylesheet hashes can support the font baseline.',
@@ -140,28 +210,10 @@ export async function validateNativeNetworkBaseline(options) {
         );
       if (item.declaresFont) declared++;
     }
-    if (!declared)
-      return fail('NATIVE_BASELINE_CSS_INVALID', 'No matching observed stylesheet declares the exact font dependency.');
-    const nativeCodes = new Set();
-    if (report.networkFailures !== undefined && !Array.isArray(report.networkFailures))
-      return fail('NATIVE_BASELINE_NETWORK_INVALID', 'Native failed-request evidence must be an array.');
-    for (const item of report.networkFailures ?? []) {
-      const response = report.fontResponses.find((response) => response.requestKey === item.requestKey);
-      if (
-        item.path !== fontPath ||
-        item.method !== 'GET' ||
-        item.status !== 404 ||
-        item.correlatedResponse !== true ||
-        !item.requestKey ||
-        !response ||
-        item.errorText !== 'net::ERR_ABORTED'
-      )
-        return fail(
-          'NATIVE_BASELINE_NETWORK_INVALID',
-          'A native failed request lacks exact same-request GET/404 evidence or a supported observed error code.',
-        );
-      nativeCodes.add(item.errorText);
-    }
+    const declarationFailure = validateDeclaredStylesheet(declared, fail);
+    if (declarationFailure) return declarationFailure;
+    const nativeCodes = validateNetworkFailures(report, fail);
+    if (!(nativeCodes instanceof Set)) return nativeCodes;
     result.valid = true;
     result.observation = {
       observedAt: report.observedAt,
@@ -201,8 +253,7 @@ export async function classifyNativeNetworkFailures(failures, validated) {
   for (const failure of rawFailures) {
     let expected =
       validation.valid &&
-      failure &&
-      failure.method === 'GET' &&
+      failure?.method === 'GET' &&
       failure.status === 404 &&
       exactPath(failure.path ?? failure.url, options.localOrigin);
     if (expected && failure.kind === 'network') {

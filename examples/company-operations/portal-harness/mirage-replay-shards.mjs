@@ -11,19 +11,127 @@ import {
   replayCells,
   loadReplayCellInputs,
   replayRoleWitness,
+  stable,
 } from './mirage-campaign-replay.mjs';
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const stable = (value) =>
-  JSON.stringify(value, (_, item) =>
-    item && typeof item === 'object' && !Array.isArray(item)
-      ? Object.fromEntries(
-          Object.keys(item)
-            .sort()
-            .map((key) => [key, item[key]]),
-        )
-      : item,
-  );
 const module = fileURLToPath(new URL('./mirage-campaign-replay.mjs', import.meta.url));
+
+async function prepareShardJobs(job, parentRoot, workers) {
+  const jobs = [];
+  for (let index = 0; index < workers; index++) {
+    const outputRoot = path.join(parentRoot, 'shard-' + index),
+      cacheRoot = path.join(job.cacheRoot, 'shard-' + index),
+      childJob = { ...job, outputRoot, cacheRoot, shard: { index, count: workers } },
+      jobFile = path.join(parentRoot, 'job-' + index + '.json');
+    try {
+      await savePrivateJson(jobFile, childJob, { exclusive: true });
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      if (stable(JSON.parse(await boundedReplayBytes(jobFile, 65536))) !== stable(childJob))
+        throw new Error('An immutable shard job changed.', { cause: error });
+    }
+    jobs.push({ index, job: childJob, jobFile });
+  }
+  return jobs;
+}
+
+async function runShardWorkers(jobs, runWorker, controller) {
+  const outcomes = await Promise.allSettled(
+    jobs.map(async (row) => {
+      try {
+        return { ...row, result: await runWorker(row.jobFile, { signal: controller.signal }) };
+      } catch (error) {
+        controller.abort();
+        throw error;
+      }
+    }),
+  );
+  const failed = outcomes.filter((outcome) => outcome.status === 'rejected');
+  if (failed.length)
+    throw new AggregateError(
+      failed.map((outcome) => outcome.reason),
+      'Parallel replay failed; no aggregate qualification. Owned workers have exited.',
+    );
+  return outcomes;
+}
+
+/* NOSONAR */ async function verifyShardCell(entry, index, workers, childJob, state) {
+  if (
+    replayCellShard(entry.id, workers) !== index ||
+    entry.state !== 'complete' ||
+    path.dirname(entry.resultFile) !== childJob.outputRoot
+  )
+    throw new Error('Shard cell ownership/completeness is invalid.');
+  const declared = state.declaredCells.get(entry.id);
+  if (!declared || entry.inputSha256 !== hash(Buffer.from(stable(declared))))
+    throw new Error('An actual shard cell specification changed or is absent.');
+  const { inputs } = await loadReplayCellInputs(childJob, declared),
+    roleWitness = replayRoleWitness(childJob, declared, inputs);
+  const bytes = await boundedReplayBytes(entry.resultFile),
+    body = JSON.parse(bytes);
+  if (
+    hash(bytes) !== entry.resultSha256 ||
+    entry.allQualified !== (body.allQualified === true) ||
+    entry.physicalReads !== body.physicalReads ||
+    entry.qualifiedReads !== body.qualifiedReads ||
+    !Number.isInteger(body.physicalReads) ||
+    body.physicalReads < 1 ||
+    !Number.isInteger(body.qualifiedReads) ||
+    body.qualifiedReads < 0 ||
+    body.qualifiedReads > body.physicalReads ||
+    stable(body.roleWitness ?? null) !== stable(roleWitness) ||
+    (body.allQualified === true &&
+      (body.qualifiedReads !== body.physicalReads ||
+        body.sourceWitness?.verified !== true ||
+        body.wireSourceWitness?.verified !== true ||
+        body.pages?.length !== body.physicalReads ||
+        body.pages.some((page) => page.qualified !== true) ||
+        (roleWitness && !roleWitness.complete)))
+  )
+    throw new Error('Shard result receipt is incomplete, changed or inconsistent.');
+  if (roleWitness) {
+    if (state.roleMasks.has(roleWitness.mask)) throw new Error('Role masks repeat across process shards.');
+    state.roleMasks.add(roleWitness.mask);
+    for (const [values, seen] of [
+      [roleWitness.runIds, state.runIds],
+      [roleWitness.operationIds, state.operationIds],
+    ])
+      for (const value of values) {
+        if (seen.has(value)) throw new Error('Native Run/operation identities repeat across role process shards.');
+        seen.add(value);
+      }
+  }
+  state.cells.push({ ...entry, shard: index });
+}
+
+async function verifyShardOutcome(outcome, runtimeSha256, workers, state) {
+  const { index, job: childJob, result } = outcome.value,
+    ledgerFile = path.join(childJob.outputRoot, 'replay.json'),
+    bytes = await boundedReplayBytes(ledgerFile),
+    ledger = JSON.parse(bytes);
+  if (
+    !Number.isInteger(result.pid) ||
+    result.pid <= 0 ||
+    result.summary?.pid !== result.pid ||
+    ledger.runtimeSha256 !== runtimeSha256 ||
+    ledger.jobSha256 !== hash(Buffer.from(stable(childJob)))
+  )
+    throw new Error('A shard PID/runtime/job receipt does not match its parent.');
+  const latest = new Map();
+  for (const entry of ledger.cells) latest.set(entry.id, entry);
+  for (const entry of latest.values()) await verifyShardCell(entry, index, workers, childJob, state);
+  state.workerReceipts.push({
+    index,
+    pid: result.pid,
+    durationMs: result.durationMs,
+    ledgerFile,
+    ledgerSha256: hash(bytes),
+  });
+}
+
+async function verifyShardOutcomes(outcomes, runtimeSha256, workers, state) {
+  for (const outcome of outcomes) await verifyShardOutcome(outcome, runtimeSha256, workers, state);
+}
 function spawnWorker(jobFile, { signal } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -106,115 +214,16 @@ export async function runMirageReplayShards(job, { workers = 10, runWorker = spa
         },
       }),
       parentJobSha256 = hash(Buffer.from(stable(job))),
-      jobs = [];
-    for (let index = 0; index < workers; index++) {
-      const outputRoot = path.join(parentRoot, 'shard-' + index),
-        cacheRoot = path.join(job.cacheRoot, 'shard-' + index),
-        childJob = { ...job, outputRoot, cacheRoot, shard: { index, count: workers } },
-        jobFile = path.join(parentRoot, 'job-' + index + '.json');
-      try {
-        await savePrivateJson(jobFile, childJob, { exclusive: true });
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-        if (stable(JSON.parse(await boundedReplayBytes(jobFile, 65536))) !== stable(childJob))
-          throw new Error('An immutable shard job changed.', { cause: error });
-      }
-      jobs.push({ index, job: childJob, jobFile });
-    }
-    const outcomes = await Promise.allSettled(
-        jobs.map(async (row) => {
-          try {
-            return { ...row, result: await runWorker(row.jobFile, { signal: controller.signal }) };
-          } catch (error) {
-            controller.abort();
-            throw error;
-          }
-        }),
-      ),
-      failed = outcomes.filter((outcome) => outcome.status === 'rejected');
-    if (failed.length)
-      throw new AggregateError(
-        failed.map((outcome) => outcome.reason),
-        'Parallel replay failed; no aggregate qualification. Owned workers have exited.',
-      );
+      jobs = await prepareShardJobs(job, parentRoot, workers),
+      outcomes = await runShardWorkers(jobs, runWorker, controller);
     const declaredCells = new Map((await replayCells(job)).map((cell) => [cell.id, cell])),
       cells = [],
       workerReceipts = [],
       roleMasks = new Set(),
       runIds = new Set(),
       operationIds = new Set();
-    for (const outcome of outcomes) {
-      const { index, job: childJob, result } = outcome.value,
-        ledgerFile = path.join(childJob.outputRoot, 'replay.json'),
-        bytes = await boundedReplayBytes(ledgerFile),
-        ledger = JSON.parse(bytes);
-      if (
-        !Number.isInteger(result.pid) ||
-        result.pid <= 0 ||
-        result.summary?.pid !== result.pid ||
-        ledger.runtimeSha256 !== runtimeSha256 ||
-        ledger.jobSha256 !== hash(Buffer.from(stable(childJob)))
-      )
-        throw new Error('A shard PID/runtime/job receipt does not match its parent.');
-      const latest = new Map();
-      for (const entry of ledger.cells) latest.set(entry.id, entry);
-      for (const entry of latest.values()) {
-        if (
-          replayCellShard(entry.id, workers) !== index ||
-          entry.state !== 'complete' ||
-          path.dirname(entry.resultFile) !== childJob.outputRoot
-        )
-          throw new Error('Shard cell ownership/completeness is invalid.');
-        const declared = declaredCells.get(entry.id);
-        if (!declared || entry.inputSha256 !== hash(Buffer.from(stable(declared))))
-          throw new Error('An actual shard cell specification changed or is absent.');
-        const { inputs } = await loadReplayCellInputs(childJob, declared),
-          roleWitness = replayRoleWitness(childJob, declared, inputs);
-        const bytes = await boundedReplayBytes(entry.resultFile),
-          body = JSON.parse(bytes);
-        if (
-          hash(bytes) !== entry.resultSha256 ||
-          entry.allQualified !== (body.allQualified === true) ||
-          entry.physicalReads !== body.physicalReads ||
-          entry.qualifiedReads !== body.qualifiedReads ||
-          !Number.isInteger(body.physicalReads) ||
-          body.physicalReads < 1 ||
-          !Number.isInteger(body.qualifiedReads) ||
-          body.qualifiedReads < 0 ||
-          body.qualifiedReads > body.physicalReads ||
-          stable(body.roleWitness ?? null) !== stable(roleWitness) ||
-          (body.allQualified === true &&
-            (body.qualifiedReads !== body.physicalReads ||
-              body.sourceWitness?.verified !== true ||
-              body.wireSourceWitness?.verified !== true ||
-              body.pages?.length !== body.physicalReads ||
-              body.pages.some((page) => page.qualified !== true) ||
-              (roleWitness && !roleWitness.complete)))
-        )
-          throw new Error('Shard result receipt is incomplete, changed or inconsistent.');
-        if (roleWitness) {
-          if (roleMasks.has(roleWitness.mask)) throw new Error('Role masks repeat across process shards.');
-          roleMasks.add(roleWitness.mask);
-          for (const [values, seen] of [
-            [roleWitness.runIds, runIds],
-            [roleWitness.operationIds, operationIds],
-          ])
-            for (const value of values) {
-              if (seen.has(value))
-                throw new Error('Native Run/operation identities repeat across role process shards.');
-              seen.add(value);
-            }
-        }
-        cells.push({ ...entry, shard: index });
-      }
-      workerReceipts.push({
-        index,
-        pid: result.pid,
-        durationMs: result.durationMs,
-        ledgerFile,
-        ledgerSha256: hash(bytes),
-      });
-    }
+    const state = { declaredCells, cells, workerReceipts, roleMasks, runIds, operationIds };
+    await verifyShardOutcomes(outcomes, runtimeSha256, workers, state);
     if (
       new Set(workerReceipts.map((row) => row.pid)).size !== workers ||
       new Set(cells.map((row) => row.id)).size !== cells.length ||

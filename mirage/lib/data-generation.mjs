@@ -34,30 +34,40 @@ const object = (value) =>
 const validName = (value) =>
   typeof value === 'string' && /^[\w.-]+$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
 
-function validateDatasetBody(value, label) {
-  if (!object(value)) throw new Error(`${label} must be a dataset object`);
-  for (const section of ['mappings', 'tables'])
-    if (value[section] !== undefined && !object(value[section]))
-      throw new Error(`${label}.${section} must be an object`);
-  for (const [table, mapping] of Object.entries(value.mappings ?? {})) {
+function validateDatasetMappings(mappings, label) {
+  for (const [table, mapping] of Object.entries(mappings ?? {})) {
     if (!validName(table) || !object(mapping))
       throw new Error(`${label}.mappings must contain valid table names and mapping objects`);
     for (const field of ['idColumn', 'entitySet'])
       if (mapping[field] !== undefined && !validName(mapping[field]))
         throw new Error(`${label}.mappings.${table}.${field} must be a valid name`);
   }
-  for (const [table, rows] of Object.entries(value.tables ?? {})) {
+}
+
+function validateDatasetTables(tables, label) {
+  for (const [table, rows] of Object.entries(tables ?? {})) {
     if (!validName(table) || !Array.isArray(rows))
       throw new Error(`${label}.tables must contain valid table names and row arrays`);
     for (const row of readRecordValues(rows))
       if (!object(row)) throw new Error(`${label}.tables.${table} rows must be objects`);
   }
-  if (value.permissions !== undefined) {
-    if (!Array.isArray(value.permissions))
-      throw new Error(`${label}.permissions must be an array of permission objects`);
-    for (const permission of value.permissions)
-      if (!object(permission)) throw new Error(`${label}.permissions must be an array of permission objects`);
-  }
+}
+
+function validateDatasetPermissions(permissions, label) {
+  if (permissions === undefined) return;
+  if (!Array.isArray(permissions)) throw new Error(`${label}.permissions must be an array of permission objects`);
+  for (const permission of permissions)
+    if (!object(permission)) throw new Error(`${label}.permissions must be an array of permission objects`);
+}
+
+function validateDatasetBody(value, label) {
+  if (!object(value)) throw new Error(`${label} must be a dataset object`);
+  for (const section of ['mappings', 'tables'])
+    if (value[section] !== undefined && !object(value[section]))
+      throw new Error(`${label}.${section} must be an object`);
+  validateDatasetMappings(value.mappings, label);
+  validateDatasetTables(value.tables, label);
+  validateDatasetPermissions(value.permissions, label);
 }
 
 /** Merge mappings: generated definitions under existing (explicit edits win). */
@@ -93,6 +103,87 @@ function mergeRows(state, tables = {}, report) {
       entry.added++;
     }
   }
+}
+
+function mergeDatasetCatalogAndPermissions(result, fragment, basePreset, packId) {
+  let catalog = result.personaCatalog;
+  if (basePreset?.personaCatalog !== undefined)
+    catalog = mergePersonaCatalogs(
+      catalog,
+      validatePersonaCatalog(basePreset.personaCatalog, `Preset ${basePreset.id ?? basePreset.name ?? 'base'}`),
+    );
+  if (fragment.personaCatalog !== undefined)
+    catalog = mergePersonaCatalogs(
+      catalog,
+      validatePersonaCatalog(fragment.personaCatalog, `Dataset ${packId ?? 'pack'}`),
+    );
+  if (catalog !== undefined) result.personaCatalog = validatePersonaCatalog(catalog, 'Merged state');
+  const permissionIds = new Set(result.permissions.map((permission) => permission.id));
+  let addedPermissions = 0;
+  for (const permission of [...(basePreset?.permissions ?? []), ...(fragment.permissions ?? [])])
+    if (permission.id && !permissionIds.has(permission.id)) {
+      result.permissions.push(clone(permission));
+      permissionIds.add(permission.id);
+      addedPermissions++;
+    }
+  return addedPermissions;
+}
+
+function validatePersonaRoleDescriptor(descriptor) {
+  if (
+    !descriptor ||
+    typeof descriptor !== 'object' ||
+    Array.isArray(descriptor) ||
+    typeof (descriptor.contactId ?? descriptor.id) !== 'string' ||
+    !(descriptor.contactId ?? descriptor.id).trim() ||
+    !Array.isArray(descriptor.roles) ||
+    descriptor.roles.some((name) => typeof name !== 'string' || !name.trim())
+  )
+    throw new Error('Dataset personaRoles must contain explicit contactId and role-name arrays.');
+}
+
+function materializeDatasetMemberships(result, fragment, basePreset, portal) {
+  if (!portal || !Array.isArray(portal.records))
+    throw new Error('Persona memberships require the selected imported portal export.');
+  const descriptors = fragment.personaRoles ?? [];
+  if (!Array.isArray(descriptors))
+    throw new Error('Dataset personaRoles must be an array of { contactId, roles } descriptors.');
+  const normalizeId = (value) =>
+    guidKey(value) ??
+    String(value ?? '')
+      .replace(/[{}]/g, '')
+      .toLowerCase();
+  const contactIdColumn = idColumnOf(result, 'contact');
+  const contacts = new Map((result.tables.contact ?? []).map((row) => [normalizeId(row[contactIdColumn]), row]));
+  const generatedContacts = new Set(
+    [...(basePreset?.tables?.contact ?? []), ...(fragment.tables?.contact ?? [])].map((row) =>
+      normalizeId(row[contactIdColumn]),
+    ),
+  );
+  for (const descriptor of descriptors) {
+    validatePersonaRoleDescriptor(descriptor);
+    const contact = contacts.get(normalizeId(descriptor.contactId ?? descriptor.id));
+    if (!contact || Number(contact.statecode?.value ?? contact.statecode ?? 0) !== 0)
+      throw new Error('Persona membership contact is missing or inactive in the merged local data.');
+    if (!generatedContacts.has(normalizeId(descriptor.contactId ?? descriptor.id)))
+      throw new Error('Persona membership contact must be supplied by this dataset or its base preset.');
+  }
+  // Resolve every role before adding any assignments. Catalogue metadata and
+  // a base preset never implicitly create memberships during additive merge.
+  const assignments = membershipsForRoles(portal, descriptors);
+  if (!assignments.length) return 0;
+  result.simulator ??= {};
+  const memberships = (result.simulator.contactRoles ??= []);
+  const seen = new Set(memberships.map((entry) => `${normalizeId(entry.contactId)}:${normalizeId(entry.roleId)}`));
+  let addedMemberships = 0;
+  for (const assignment of assignments) {
+    const key = `${assignment.contactId}:${assignment.roleId}`;
+    if (seen.has(key)) continue;
+    memberships.push(assignment);
+    seen.add(key);
+    addedMemberships++;
+  }
+  return addedMemberships;
 }
 
 /** Every `{ id, logical_name }` lookup in the listed tables resolves to a row. */
@@ -171,29 +262,10 @@ function mergeDatasetState(
     ]),
     result.settings?.collation,
   );
-  let catalog = result.personaCatalog;
-  if (basePreset?.personaCatalog !== undefined)
-    catalog = mergePersonaCatalogs(
-      catalog,
-      validatePersonaCatalog(basePreset.personaCatalog, `Preset ${basePreset.id ?? basePreset.name ?? 'base'}`),
-    );
-  if (fragment.personaCatalog !== undefined)
-    catalog = mergePersonaCatalogs(
-      catalog,
-      validatePersonaCatalog(fragment.personaCatalog, `Dataset ${packId ?? 'pack'}`),
-    );
-  if (catalog !== undefined) result.personaCatalog = validatePersonaCatalog(catalog, 'Merged state');
-  const permissionIds = new Set(result.permissions.map((permission) => permission.id));
-  let addedPermissions = 0;
-  for (const permission of [...(basePreset?.permissions ?? []), ...(fragment.permissions ?? [])])
-    if (permission.id && !permissionIds.has(permission.id)) {
-      result.permissions.push(clone(permission));
-      permissionIds.add(permission.id);
-      addedPermissions++;
-    }
+  const addedPermissions = mergeDatasetCatalogAndPermissions(result, fragment, basePreset, packId);
   result.provenance = {
-    ...(result.provenance ?? {}),
-    dataPacks: { ...(result.provenance?.dataPacks ?? {}), [packId ?? 'pack']: clone(fragment.provenance ?? {}) },
+    ...result.provenance,
+    dataPacks: { ...result.provenance?.dataPacks, [packId ?? 'pack']: clone(fragment.provenance ?? {}) },
   };
   const dangling = findDanglingLookups(result, Object.keys(fragment.tables ?? {}));
   if (dangling.length)
@@ -210,57 +282,8 @@ function mergeDatasetState(
       `Generated data does not match the bootstrapped schema:\n${formatViolations(violations).join('\n')}`,
     );
   let addedMemberships = 0;
-  if (materializePersonaMemberships) {
-    if (!portal || !Array.isArray(portal.records))
-      throw new Error('Persona memberships require the selected imported portal export.');
-    const descriptors = fragment.personaRoles ?? [];
-    if (!Array.isArray(descriptors))
-      throw new Error('Dataset personaRoles must be an array of { contactId, roles } descriptors.');
-    const normalizeId = (value) =>
-      guidKey(value) ??
-      String(value ?? '')
-        .replace(/[{}]/g, '')
-        .toLowerCase();
-    const contactIdColumn = idColumnOf(result, 'contact');
-    const contacts = new Map((result.tables.contact ?? []).map((row) => [normalizeId(row[contactIdColumn]), row]));
-    const generatedContacts = new Set(
-      [...(basePreset?.tables?.contact ?? []), ...(fragment.tables?.contact ?? [])].map((row) =>
-        normalizeId(row[contactIdColumn]),
-      ),
-    );
-    for (const descriptor of descriptors) {
-      if (
-        !descriptor ||
-        typeof descriptor !== 'object' ||
-        Array.isArray(descriptor) ||
-        typeof (descriptor.contactId ?? descriptor.id) !== 'string' ||
-        !(descriptor.contactId ?? descriptor.id).trim() ||
-        !Array.isArray(descriptor.roles) ||
-        descriptor.roles.some((name) => typeof name !== 'string' || !name.trim())
-      )
-        throw new Error('Dataset personaRoles must contain explicit contactId and role-name arrays.');
-      const contact = contacts.get(normalizeId(descriptor.contactId ?? descriptor.id));
-      if (!contact || Number(contact.statecode?.value ?? contact.statecode ?? 0) !== 0)
-        throw new Error('Persona membership contact is missing or inactive in the merged local data.');
-      if (!generatedContacts.has(normalizeId(descriptor.contactId ?? descriptor.id)))
-        throw new Error('Persona membership contact must be supplied by this dataset or its base preset.');
-    }
-    // Resolve every role before adding any assignments. Catalogue metadata and
-    // a base preset never implicitly create memberships during additive merge.
-    const assignments = membershipsForRoles(portal, descriptors);
-    if (assignments.length) {
-      result.simulator ??= {};
-      const memberships = (result.simulator.contactRoles ??= []);
-      const seen = new Set(memberships.map((entry) => `${normalizeId(entry.contactId)}:${normalizeId(entry.roleId)}`));
-      for (const assignment of assignments) {
-        const key = `${assignment.contactId}:${assignment.roleId}`;
-        if (seen.has(key)) continue;
-        memberships.push(assignment);
-        seen.add(key);
-        addedMemberships++;
-      }
-    }
-  }
+  if (materializePersonaMemberships)
+    addedMemberships = materializeDatasetMemberships(result, fragment, basePreset, portal);
   return { state: result, report: { ...report, addedPermissions, addedMemberships, schemaViolations: 0 } };
 }
 
@@ -326,7 +349,7 @@ const parseCount = (value, option) => {
 const parseCounts = (entries = []) => {
   const counts = {};
   for (const entry of entries) {
-    const match = /^([A-Za-z][A-Za-z0-9_]*)=(.+)$/.exec(entry);
+    const match = /^([A-Za-z]\w*)=(.+)$/.exec(entry);
     if (!match || ['__proto__', 'constructor', 'prototype'].includes(match[1]))
       throw new Error('--count must be NAME=N with a valid generator-defined name');
     if (Object.hasOwn(counts, match[1])) throw new Error(`Duplicate --count ${match[1]}`);
@@ -474,6 +497,50 @@ async function generateDataCommand({
   });
 }
 
+function mergeScaffoldTables(output, scaffold, metadata) {
+  const rows = {};
+  for (const [table, generated] of Object.entries(scaffold.tables)) {
+    if (!own(output.mappings, table) && own(metadata.mappings, table)) {
+      const { fieldMetadata: _fields, schemaComplete: _complete, ...mapping } = own(metadata.mappings, table); // NOSONAR: binding is excluded from the rest object or is a placeholder
+      output.mappings[table] = cloneStateData(mapping);
+    } else if (!own(output.mappings, table))
+      // Tables the solution layers do not define (such as the web role
+      // membership intersect) get the conventional mapping of their rows.
+      output.mappings[table] = {
+        entitySet: `${table}s`,
+        idColumn: own(scaffold.idColumns, table),
+        relationships: {},
+        inferred: true,
+      };
+    const key = own(output.mappings, table)?.idColumn ?? own(scaffold.idColumns, table);
+    const existing = own(output.tables, table) ?? (output.tables[table] = []);
+    // An existing row without the key never hides a generated row without it.
+    const ids = new Set(rowKeys(existing, key, ''));
+    let added = 0;
+    for (const row of generated)
+      if (!ids.has(rowKey(own(row, key)))) {
+        existing.push(cloneStateData(row));
+        added++;
+      }
+    rows[table] = { added, alreadyPresent: generated.length - added };
+  }
+  return rows;
+}
+
+function mergeScaffoldMemberships(output, scaffold) {
+  const memberships = (output.simulator.contactRoles ??= []);
+  const seen = new Set(memberships.map((entry) => `${rowKey(entry.contactId)}:${rowKey(entry.roleId)}`));
+  let addedMemberships = 0;
+  for (const entry of scaffold.contactRoles) {
+    const key = `${rowKey(entry.contactId)}:${rowKey(entry.roleId)}`;
+    if (seen.has(key)) continue;
+    memberships.push(cloneStateData(entry));
+    seen.add(key);
+    addedMemberships++;
+  }
+  return addedMemberships;
+}
+
 /**
  * `data scaffold`: generate the schema-driven scaffold (lib/scaffold-data.mjs)
  * for the portal at --source and merge it additively by primary key into
@@ -542,43 +609,9 @@ export async function scaffoldDataCommand({
     output.mappings ??= {};
     output.permissions ??= [];
     output.simulator ??= {};
-    const rows = {};
-    for (const [table, generated] of Object.entries(scaffold.tables)) {
-      if (!own(output.mappings, table) && own(metadata.mappings, table)) {
-        const { fieldMetadata: _fields, schemaComplete: _complete, ...mapping } = own(metadata.mappings, table);
-        output.mappings[table] = cloneStateData(mapping);
-      } else if (!own(output.mappings, table))
-        // Tables the solution layers do not define (such as the web role
-        // membership intersect) get the conventional mapping of their rows.
-        output.mappings[table] = {
-          entitySet: `${table}s`,
-          idColumn: own(scaffold.idColumns, table),
-          relationships: {},
-          inferred: true,
-        };
-      const key = own(output.mappings, table)?.idColumn ?? own(scaffold.idColumns, table);
-      const existing = own(output.tables, table) ?? (output.tables[table] = []);
-      // An existing row without the key never hides a generated row without it.
-      const ids = new Set(rowKeys(existing, key, ''));
-      let added = 0;
-      for (const row of generated)
-        if (!ids.has(rowKey(own(row, key)))) {
-          existing.push(cloneStateData(row));
-          added++;
-        }
-      rows[table] = { added, alreadyPresent: generated.length - added };
-    }
-    const memberships = (output.simulator.contactRoles ??= []);
-    const seen = new Set(memberships.map((entry) => `${rowKey(entry.contactId)}:${rowKey(entry.roleId)}`));
-    let addedMemberships = 0;
-    for (const entry of scaffold.contactRoles) {
-      const key = `${rowKey(entry.contactId)}:${rowKey(entry.roleId)}`;
-      if (seen.has(key)) continue;
-      memberships.push(cloneStateData(entry));
-      seen.add(key);
-      addedMemberships++;
-    }
-    output.provenance = { ...(output.provenance ?? {}), scaffold: { ...scaffold.report, source: sourceDir } };
+    const rows = mergeScaffoldTables(output, scaffold, metadata);
+    const addedMemberships = mergeScaffoldMemberships(output, scaffold);
+    output.provenance = { ...output.provenance, scaffold: { ...scaffold.report, source: sourceDir } };
     await assertOfflineState(outputPath);
     await writeOfflineState(ownResource, sourceStore, outputPath, output);
     return {

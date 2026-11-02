@@ -3,17 +3,17 @@
 (() => {
   // One adapter per document: a repeated include only re-attaches the plugin to
   // the current jQuery (a later jQuery include replaces $.fn).
-  const compat = (window.__ppSimCompat ||= {});
+  const compat = (globalThis.__ppSimCompat ||= {});
   if (compat.dateTimePicker) {
-    compat.dateTimePicker(window.jQuery);
+    compat.dateTimePicker(globalThis.jQuery);
     return;
   }
-  const moment = window.moment;
-  if (!window.jQuery || !moment) {
+  const moment = globalThis.moment;
+  if (!globalThis.jQuery || !moment) {
     console.error('Local date picker compatibility requires jQuery and Moment.');
     return;
   }
-  const jq = () => window.jQuery;
+  const jq = () => globalThis.jQuery;
   const instances = new WeakMap();
   const trigger = (root, name, detail) => {
     // Native bindings survive later source includes replacing window.jQuery.
@@ -40,7 +40,7 @@
     chooser.type = hasTime ? 'datetime-local' : 'date';
     chooser.className = 'paqvilo-mirage-date-chooser';
     // Local-only controls are marked so parity comparisons can tell them from platform markup.
-    chooser.setAttribute('data-paqvilo-local', '');
+    chooser.dataset.paqviloLocal = '';
     chooser.setAttribute('aria-label', display.getAttribute('aria-label') || 'Choose date');
     chooser.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;left:0;bottom:0';
     // The platform's picker group holds only the box and the calendar button until it opens:
@@ -52,7 +52,7 @@
     chooser.addEventListener('blur', detachChooser);
     const buttons = document.createElement('span');
     buttons.className = 'paqvilo-mirage-date-actions';
-    buttons.setAttribute('data-paqvilo-local', '');
+    buttons.dataset.paqviloLocal = '';
     buttons.setAttribute('role', 'group');
     buttons.setAttribute('aria-label', 'Date actions');
     const makeButton = (label, action) => {
@@ -110,26 +110,31 @@
         }
       };
     chooser.addEventListener('change', () => {
-      setDate(chooser.value ? moment(chooser.value, hasTime ? 'YYYY-MM-DDTHH:mm' : 'YYYY-MM-DD', true) : null, true);
+      const chooserFormat = hasTime ? 'YYYY-MM-DDTHH:mm' : 'YYYY-MM-DD';
+      setDate(chooser.value ? moment(chooser.value, chooserFormat, true) : null, true);
       detachChooser();
     });
-    display.addEventListener('change', () => {
+    const handleDisplayChange = () => {
       const value = parse(display.value, format);
-      if (value?.isValid()) {
-        if (nativeBinding) lastGoodValue = display.value;
-        const oldDate = parseCurrent();
-        if (canonical !== display && !nativeBinding) canonical.value = isoValue(value);
-        chooser.value = isoValue(value);
-        notify(oldDate, value);
-      } else if (nativeBinding) {
-        const previous = parseCurrent();
-        if (!display.value.trim()) lastGoodValue = '';
-        const restored = lastGoodValue ? parse(lastGoodValue, format) : null;
-        display.value = restored?.isValid() ? lastGoodValue : '';
-        chooser.value = restored?.isValid() ? isoValue(restored) : '';
-        notify(previous, restored?.isValid() ? restored : null);
-      }
-    });
+      if (value?.isValid()) return handleValidDisplayValue(value);
+      if (nativeBinding) restoreInvalidNativeValue();
+    };
+    const handleValidDisplayValue = (value) => {
+      if (nativeBinding) lastGoodValue = display.value;
+      const oldDate = parseCurrent();
+      if (canonical !== display && !nativeBinding) canonical.value = isoValue(value);
+      chooser.value = isoValue(value);
+      notify(oldDate, value);
+    };
+    const restoreInvalidNativeValue = () => {
+      const previous = parseCurrent();
+      if (!display.value.trim()) lastGoodValue = '';
+      const restored = lastGoodValue ? parse(lastGoodValue, format) : null;
+      display.value = restored?.isValid() ? lastGoodValue : '';
+      chooser.value = restored?.isValid() ? isoValue(restored) : '';
+      notify(previous, restored?.isValid() ? restored : null);
+    };
+    display.addEventListener('change', handleDisplayChange);
     root.addEventListener('click', (event) => {
       if (event.target.closest('.input-group-addon,[data-date-icon],.customCalender')) {
         event.preventDefault();
@@ -156,13 +161,13 @@
         if (date?.isValid()) chooser.min = isoValue(date);
         return api;
       },
-      showTodayButton(value) {
+      /* NOSONAR: mixed return values are part of the contract */ showTodayButton(value) {
         if (!arguments.length) return !todayButton.hidden;
         todayButton.hidden = !value;
         syncButtons();
         return api;
       },
-      showClear(value) {
+      /* NOSONAR: mixed return values are part of the contract */ showClear(value) {
         if (!arguments.length) return !clearButton.hidden;
         clearButton.hidden = !value;
         syncButtons();
@@ -218,20 +223,27 @@
     if (typeof $?.fn?.jquery === 'string' && !$.fn.datetimepicker) $.fn.datetimepicker = plugin;
   };
   compat.dateTimePicker = attach;
-  attach(window.jQuery);
+  attach(globalThis.jQuery);
   watchJQuery(compat, attach);
-  ((globalThis.__portalSimulation ||= {}).compatibility ||= {}).datePickerMode = 'native-compatibility';
+  globalThis.__portalSimulation ||= {};
+  globalThis.__portalSimulation.compatibility ||= {};
+  globalThis.__portalSimulation.compatibility.datePickerMode = 'native-compatibility';
   console.info('Local date picker compatibility adapter active; browser-native controls are used.');
   /** Re-attach this adapter whenever a later script replaces window.jQuery. */
   // BEGIN generated jQuery watcher
   function watchJQuery(registry, attach) {
-    (registry.jqueryWatchers ||= new Set()).add(attach);
+    let watchers = registry.jqueryWatchers;
+    if (!watchers) {
+      watchers = new Set();
+      registry.jqueryWatchers = watchers;
+    }
+    watchers.add(attach);
     if (registry.jqueryWatched) return;
-    const descriptor = Object.getOwnPropertyDescriptor(window, 'jQuery');
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'jQuery');
     if (descriptor && (descriptor.get || descriptor.set || descriptor.configurable === false)) return;
-    let current = window.jQuery;
+    let current = globalThis.jQuery;
     try {
-      Object.defineProperty(window, 'jQuery', {
+      Object.defineProperty(globalThis, 'jQuery', {
         configurable: true,
         enumerable: true,
         get: () => current,

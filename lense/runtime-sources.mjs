@@ -27,7 +27,7 @@ export function annotateRuntimeSources(report, { sourceDir, roots, realpath = fs
       if (index >= 0) {
         const name = path.basename(roots[index]);
         const duplicate = roots.slice(0, index).some((root) => path.basename(root) === name);
-        ref = `@${name}${duplicate ? `~${index}` : ''}/${path.relative(roots[index], absolute).replaceAll('\\', '/')}`;
+        ref = `@${name}${duplicate ? '~' + index : ''}/${path.relative(roots[index], absolute).replaceAll('\\', '/')}`;
       }
     }
     const found = ref ? { ref, path: absolute } : null;
@@ -41,16 +41,11 @@ export function annotateRuntimeSources(report, { sourceDir, roots, realpath = fs
       for (const item of value) visit(item, depth + 1);
       return;
     }
-    const file =
-      typeof value.sourceFile === 'string'
-        ? value.sourceFile
-        : typeof value.file === 'string'
-          ? value.file
-          : typeof value.relativePath === 'string'
-            ? path.resolve(sourceDir, value.relativePath)
-            : typeof value.rel === 'string'
-              ? path.resolve(sourceDir, value.rel)
-              : null;
+    let file = null;
+    if (typeof value.sourceFile === 'string') file = value.sourceFile;
+    else if (typeof value.file === 'string') file = value.file;
+    else if (typeof value.relativePath === 'string') file = path.resolve(sourceDir, value.relativePath);
+    else if (typeof value.rel === 'string') file = path.resolve(sourceDir, value.rel);
     const found = reference(file);
     if (found) Object.assign(value, found);
     if (Array.isArray(value.sourceFiles)) value.sourceRefs = value.sourceFiles.map(reference).filter(Boolean);

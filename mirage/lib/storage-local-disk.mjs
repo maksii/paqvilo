@@ -174,7 +174,7 @@ export function createLocalDiskStorage({
           etag: `"${digest.slice(0, 16)}-${sequence}"`,
           version: sequence,
           contentType: options.contentType ?? current?.contentType ?? 'application/octet-stream',
-          metadata: { ...(options.metadata ?? {}) },
+          metadata: { ...options.metadata },
           lastModified: new Date(clock()).toISOString(),
         };
         index.set(key, entry);
@@ -319,7 +319,9 @@ export function createLocalDiskStorage({
           throw error('InvalidKey', 'Continuation token is invalid.');
         }
       }
-      const keys = [...index.keys()].filter((key) => key.startsWith(prefix) && (after === null || key > after)).sort();
+      const keys = [...index.keys()]
+        .filter((key) => key.startsWith(prefix) && (after === null || key > after))
+        .sort((a, b) => Number(a > b) - Number(a < b));
       const page = keys.slice(0, pageSize);
       const items = page.map((key) => {
         const e = index.get(key);
@@ -331,7 +333,7 @@ export function createLocalDiskStorage({
     async sas(key, { permission = 'r', expiresOn } = {}) {
       key = validateKey(key, id);
       if (!['r', 'w', 'rw'].includes(permission)) throw error('InvalidKey', "SAS permission must be 'r', 'w' or 'rw'.");
-      const expiry = new Date(expiresOn ?? clock() + 3600_000).toISOString();
+      const expiry = new Date(expiresOn ?? clock() + 3_600_000).toISOString();
       const query = new URLSearchParams({ se: expiry, sp: permission, sig: signature(key, expiry, permission) });
       return `${sasBase}${key.split('/').map(encodeURIComponent).join('/')}?${query}`;
     },

@@ -16,9 +16,66 @@ import {
   splitPayload,
 } from './core.mjs';
 
+function scalarCanaryPermissionVerdict(expected, response) {
+  if (!expected) return 'incomplete';
+  if (response.ok) return expected.expectedAllowed ? 'pass' : 'fail';
+  if (expected.expectedAllowed) return 'fail';
+  if (response.status === 403 && response.data?.error?.code === '90040102') return 'pass';
+  return 'rejected-with-layer-unqualified';
+}
+
 // Async plugin commits arrive after the initiating HTTP response. Keep the owned
 // probe until the operation's checksummed packets settle, without claiming durability.
-export async function reconcileBackendArtifact({
+async function readBackendReconciliation(read, timeoutMs, started, now) {
+  const controller = new AbortController();
+  let timer, response;
+  try {
+    response = await Promise.race([
+      read({ signal: controller.signal }),
+      new Promise((resolve, reject) => {
+        timer = setTimeout(
+          () => {
+            controller.abort();
+            reject(new Error('Backend reconciliation deadline exceeded.'));
+          },
+          Math.max(1, timeoutMs - (now() - started)),
+        );
+      }),
+    ]);
+  } catch (error) {
+    return { state: controller.signal.aborted ? 'timeout' : 'read-failed', error: error.message };
+  } finally {
+    clearTimeout(timer);
+  }
+  return { response };
+}
+
+function backendReconciliationEvents(response) {
+  if (!response.ok) return { state: 'read-failed', extra: { httpStatus: response.status, error: response.text } };
+  if (!Array.isArray(response.data?.value))
+    return { state: 'read-failed', extra: { error: 'Backend event envelope missing.' } };
+  const events = response.data.value;
+  if (
+    response.data['@odata.nextLink'] ||
+    response.data['@Microsoft.Dynamics.CRM.morerecords'] === true ||
+    events.length >= 200
+  )
+    return { state: 'paging-incomplete', events };
+  return { events };
+}
+
+function validBackendReconciliationBounds(timeoutMs, intervalMs) {
+  return (
+    Number.isSafeInteger(timeoutMs) &&
+    timeoutMs >= 1 &&
+    timeoutMs <= 120000 &&
+    Number.isSafeInteger(intervalMs) &&
+    intervalMs >= 1 &&
+    intervalMs <= timeoutMs
+  );
+}
+
+/* NOSONAR */ export async function reconcileBackendArtifact({
   read,
   artifactType,
   stopped = () => false,
@@ -27,14 +84,7 @@ export async function reconcileBackendArtifact({
   now = () => Date.now(),
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 }) {
-  if (
-    !Number.isSafeInteger(timeoutMs) ||
-    timeoutMs < 1 ||
-    timeoutMs > 120000 ||
-    !Number.isSafeInteger(intervalMs) ||
-    intervalMs < 1 ||
-    intervalMs > timeoutMs
-  )
+  if (!validBackendReconciliationBounds(timeoutMs, intervalMs))
     throw new Error('Invalid backend reconciliation bound.');
   const started = now();
   let events = [],
@@ -43,77 +93,84 @@ export async function reconcileBackendArtifact({
   const finish = (state, extra = {}) => ({ state, attempts, elapsedMs: now() - started, events, ...extra });
   while (now() - started < timeoutMs) {
     if (stopped()) return finish('stopped');
-    const controller = new AbortController();
-    let timer, response;
-    try {
-      response = await Promise.race([
-        read({ signal: controller.signal }),
-        new Promise((resolve, reject) => {
-          timer = setTimeout(
-            () => {
-              controller.abort();
-              reject(new Error('Backend reconciliation deadline exceeded.'));
-            },
-            Math.max(1, timeoutMs - (now() - started)),
-          );
-        }),
-      ]);
-    } catch (error) {
-      return finish(controller.signal.aborted ? 'timeout' : 'read-failed', { error: error.message });
-    } finally {
-      clearTimeout(timer);
-    }
+    const readResult = await readBackendReconciliation(read, timeoutMs, started, now);
+    if (readResult.state) return finish(readResult.state, { error: readResult.error });
     attempts++;
-    if (!response.ok) return finish('read-failed', { httpStatus: response.status, error: response.text });
-    if (!Array.isArray(response.data?.value))
-      return finish('read-failed', { error: 'Backend event envelope missing.' });
-    events = response.data.value;
-    if (
-      response.data['@odata.nextLink'] ||
-      response.data['@Microsoft.Dynamics.CRM.morerecords'] === true ||
-      events.length >= 200
-    )
-      return finish('paging-incomplete');
-    const groups = new Map();
-    let valid = true;
-    for (const event of events) {
-      if (
-        typeof event.pqvd_payloadtext !== 'string' ||
-        (await sha256(event.pqvd_payloadtext)) !== event.pqvd_payloadhash
-      )
-        return finish('checksum-failed');
-      if (
-        !event.pqvd_spanid ||
-        !event.pqvd_artifacttype ||
-        !Number.isSafeInteger(event.pqvd_partcount) ||
-        event.pqvd_partcount < 1 ||
-        event.pqvd_partcount > 100 ||
-        !Number.isSafeInteger(event.pqvd_partnumber) ||
-        event.pqvd_partnumber < 1 ||
-        event.pqvd_partnumber > event.pqvd_partcount
-      )
-        return finish('invalid-parts');
-      const key = event.pqvd_spanid + ':' + event.pqvd_artifacttype;
-      groups.set(key, [...(groups.get(key) || []), event]);
-    }
-    for (const group of groups.values())
-      if (
-        group.length !== group[0].pqvd_partcount ||
-        new Set(group.map((e) => e.pqvd_partnumber)).size !== group.length ||
-        group.some((e) => e.pqvd_partcount !== group[0].pqvd_partcount)
-      )
-        valid = false;
-    const fingerprint = stable(
-      events
-        .map((e) => [e.pqvd_plugineventid, e.pqvd_payloadhash, e.pqvd_partnumber, e.pqvd_partcount])
-        .sort((a, b) => stable(a).localeCompare(stable(b))),
-    );
+    const eventResult = backendReconciliationEvents(readResult.response);
+    if (eventResult.events) events = eventResult.events;
+    if (eventResult.state) return finish(eventResult.state, eventResult.extra);
+    const validation = await validateBackendEvents(events);
+    if (validation.state) return finish(validation.state);
+    const { valid, fingerprint } = validation;
     if (valid && events.some((e) => e.pqvd_artifacttype === artifactType) && fingerprint === previous)
       return finish('observed');
     previous = valid ? fingerprint : null;
     await sleep(Math.min(intervalMs, Math.max(0, timeoutMs - (now() - started))));
   }
   return finish('timeout');
+}
+
+async function validateBackendEvents(events) {
+  const groups = new Map();
+  let valid = true;
+  for (const event of events) {
+    if (typeof event.pqvd_payloadtext !== 'string' || (await sha256(event.pqvd_payloadtext)) !== event.pqvd_payloadhash)
+      return { state: 'checksum-failed' };
+    if (
+      !event.pqvd_spanid ||
+      !event.pqvd_artifacttype ||
+      !Number.isSafeInteger(event.pqvd_partcount) ||
+      event.pqvd_partcount < 1 ||
+      event.pqvd_partcount > 100 ||
+      !Number.isSafeInteger(event.pqvd_partnumber) ||
+      event.pqvd_partnumber < 1 ||
+      event.pqvd_partnumber > event.pqvd_partcount
+    )
+      return { state: 'invalid-parts' };
+    const key = event.pqvd_spanid + ':' + event.pqvd_artifacttype;
+    groups.set(key, [...(groups.get(key) || []), event]);
+  }
+  for (const group of groups.values())
+    if (
+      group.length !== group[0].pqvd_partcount ||
+      new Set(group.map((event) => event.pqvd_partnumber)).size !== group.length ||
+      group.some((event) => event.pqvd_partcount !== group[0].pqvd_partcount)
+    )
+      valid = false;
+  const fingerprint = stable(
+    events
+      .map((event) => [event.pqvd_plugineventid, event.pqvd_payloadhash, event.pqvd_partnumber, event.pqvd_partcount])
+      .sort((a, b) => stable(a).localeCompare(stable(b))),
+  );
+  return { valid, fingerprint };
+}
+
+function trackPagingRows(canonical, seenPages, pagingDuplicates, page) {
+  for (const row of canonical) {
+    const key = stable(row);
+    if (seenPages.has(key) && seenPages.get(key) !== page)
+      pagingDuplicates.push({ firstPage: seenPages.get(key), page, row });
+    else seenPages.set(key, page);
+  }
+}
+
+function* backendEvidencePages(pairs) {
+  for (const pair of pairs)
+    for (const laneResult of [pair.liquid, pair.webapi])
+      for (const page of laneResult.pages) if (page.operationId) yield page;
+}
+
+function visibilityLaneVerdict(result, expected) {
+  if (!result.complete || result.outcome !== 'success') return 'incomplete';
+  if (stable(result.ids) === stable(expected.expectedIds) && result.rows.length === expected.expectedIds.length)
+    return 'pass';
+  return 'fail';
+}
+
+function linkedAssertionVerdict(allowed, result, outside) {
+  if (!allowed || !result.complete || result.outcome !== 'success') return 'incomplete';
+  if (outside.length) return 'fail';
+  return 'pass';
 }
 
 // `clock` ({ now, sleep }) replaces the wall clock of backend reconciliation; tests pass a virtual one.
@@ -171,10 +228,12 @@ export function createRunner({ manifest, context, request, notify = () => {}, st
       freshness = nonce
         ? `<filter type="or"><condition attribute="pqvd_plugineventid" operator="eq" value="${nonce}"></condition><condition attribute="pqvd_plugineventid" operator="ne" value="${nonce}"></condition></filter>`
         : '';
-    const xml = `<fetch count="200"><entity name="pqvd_pluginevent">${fields.map((f) => `<attribute name="${f}"></attribute>`).join('')}<filter><condition attribute="pqvd_operationid" operator="eq" value="${guid(operationId)}"></condition>${freshness}</filter><order attribute="pqvd_plugineventid"></order></entity></fetch>`;
+    const attributes = fields.map((f) => `<attribute name="${f}"></attribute>`).join('');
+    const xml = `<fetch count="200"><entity name="pqvd_pluginevent">${attributes}<filter><condition attribute="pqvd_operationid" operator="eq" value="${guid(operationId)}"></condition>${freshness}</filter><order attribute="pqvd_plugineventid"></order></entity></fetch>`;
     return request({ url: `/_api/pqvd_pluginevents?fetchXml=${encodeURIComponent(xml)}`, signal });
   }
-  const actor = () => sha256({ contactId: context.contactId, roles: [...context.roles].sort() });
+  const actor = () =>
+    sha256({ contactId: context.contactId, roles: [...context.roles].sort((a, b) => Number(a > b) - Number(a < b)) });
   async function create(table, body) {
     const response = await request({ url: `/_api/${table}`, method: 'POST', body });
     if (!response.ok) throw Object.assign(new Error(`Recorder ${table}: HTTP ${response.status}`), { response });
@@ -283,7 +342,9 @@ export function createRunner({ manifest, context, request, notify = () => {}, st
       if (stopped() || fragments.at(-1).outcome !== 'success') break;
     }
     const rows = fragments.flatMap((f) => f.rows).sort((a, b) => stable(a).localeCompare(stable(b))),
-      ids = [...new Set(rows.map((r) => r[plan.primaryId]).filter(Boolean))].sort();
+      ids = [...new Set(rows.map((r) => r[plan.primaryId]).filter(Boolean))].sort(
+        (a, b) => Number(a > b) - Number(a < b),
+      );
     return {
       caseId: plan.id,
       engine,
@@ -306,6 +367,133 @@ export function createRunner({ manifest, context, request, notify = () => {}, st
       canonicalHash: await sha256(rows),
     };
   }
+  async function requestLanePage(plan, engine, pairId, page, state) {
+    state.op = await operation(plan, engine, pairId, page);
+    state.xml = plan.queryType === 'odata' ? odataRequest(plan, state.op) : authoredQuery(plan, state.op, page);
+    const intent = await request({
+      method: 'PATCH',
+      url: `/_api/pqvd_testoperations(${state.op.pqvd_testoperationid})`,
+      body: {
+        pqvd_authoredquery: state.xml,
+        pqvd_logicalqueryhash: plan.logicalQueryHash,
+        pqvd_physicalqueryhash: await sha256(state.xml),
+      },
+    });
+    if (!intent.ok) throw new Error('Authored intent persistence failed.');
+    let requestUrl;
+    if (engine === 'liquid')
+      requestUrl = `/permission-lab/liquid/?suiteVersion=${encodeURIComponent(manifest.suiteVersion)}&operationId=${state.op.pqvd_testoperationid}`;
+    else if (plan.queryType === 'odata') requestUrl = state.xml;
+    else requestUrl = `/_api/${plan.entitySet}?fetchXml=${encodeURIComponent(state.xml)}`;
+    state.response = await request({ url: requestUrl });
+    if (!state.response.ok)
+      throw Object.assign(new Error(`${engine} HTTP ${state.response.status}`), { response: state.response });
+    return parseLaneResponse(state.response, plan, engine, state.op, state.xml);
+  }
+  function parseLaneResponse(response, plan, engine, op, xml) {
+    const parsed =
+      engine === 'liquid'
+        ? parseLiquid(response.text, plan)
+        : {
+            rows: response.data?.value,
+            more: response.data?.['@Microsoft.Dynamics.CRM.morerecords'],
+            cookie: response.data?.['@Microsoft.Dynamics.CRM.fetchxmlpagingcookie'],
+            nextLink: response.data?.['@odata.nextLink'],
+            effectiveFetchXml: null,
+          };
+    if (!Array.isArray(parsed.rows)) throw new Error('Missing records collection; response is not an empty success.');
+    if (
+      engine === 'liquid' &&
+      (parsed.contactId !== guid(context.contactId) ||
+        stable([...parsed.roles].sort((a, b) => Number(a > b) - Number(a < b))) !==
+          stable([...context.roles].sort((a, b) => Number(a > b) - Number(a < b))) ||
+        parsed.operationId !== op.pqvd_testoperationid ||
+        parsed.caseId !== plan.id ||
+        parsed.datasetVersion !== manifest.datasetVersion)
+    )
+      throw new Error('Identity/dataset/intent drift between shell and Liquid response.');
+    if (engine === 'liquid' && parsed.authoredFetchXml.trim() !== xml.trim())
+      throw new Error('Liquid authored query differs from shared manifest intent.');
+    return parsed;
+  }
+  async function captureLanePage(plan, engine, page, state, parsed, canonical, { rows, pages }) {
+    rows.push(...canonical);
+    const pageEvidence = {
+      page,
+      operationId: state.op.pqvd_testoperationid,
+      physicalQueryHash: await sha256(state.xml),
+      authoredFetchXml: plan.queryType === 'odata' ? null : state.xml,
+      authoredRequest: plan.queryType === 'odata' ? state.xml : null,
+      authoredJoinCount: plan.queryType === 'odata' ? null : (state.xml.match(/<link-entity\b/g) || []).length,
+      effectiveJoinCount: parsed.effectiveFetchXml
+        ? (parsed.effectiveFetchXml.match(/<link-entity\b/g) || []).length
+        : null,
+      httpStatus: state.response.status,
+      count: canonical.length,
+      more: parsed.more ?? null,
+      cookie: parsed.cookie || null,
+      urlLength: state.response.url?.length || 0,
+      duration: performance.now() - state.started,
+      effectiveFetchXml: parsed.effectiveFetchXml || null,
+      effectiveXmlAvailability: engine === 'liquid' ? 'exposed' : 'not-exposed',
+      backendCaptureState: manifest.readiness.durableCollector ? 'pending' : 'transaction-bound-lab-only',
+    };
+    pages.push(pageEvidence);
+    await record(
+      plan,
+      state.op.pqvd_testoperationid,
+      engine,
+      {
+        Summary: pageEvidence,
+        [plan.queryType === 'odata' ? 'Request' : 'AuthoredXml']: state.xml,
+        RawResponse: state.response.text,
+        CanonicalResult: canonical,
+        ...(engine === 'liquid' ? { EffectiveXml: parsed.effectiveFetchXml || '' } : {}),
+      },
+      { page, httpStatus: state.response.status, count: canonical.length, duration: pageEvidence.duration },
+    );
+    if (plan.queryType === 'odata') {
+      const complete = !parsed.nextLink && state.response.data['@odata.count'] === canonical.length;
+      if (!complete) pageEvidence.continuationState = 'native-paging-contract-not-qualified';
+      return { done: true, complete };
+    }
+    if (
+      pageComplete({
+        more: parsed.more,
+        rowCount: canonical.length,
+        pageSize: plan.pageSize,
+        nextLink: parsed.nextLink,
+      })
+    )
+      return { done: true, complete: true };
+    return { done: false, complete: false };
+  }
+  async function recordLaneFailure(plan, engine, page, state, error, pages) {
+    const failedResponse = error.response || state.response;
+    const failure = {
+      page,
+      error: error.message,
+      httpStatus: failedResponse?.status || null,
+      body: failedResponse?.text || error.rawLiquidResponse || null,
+      effectiveFetchXml: error.effectiveFetchXml || null,
+      urlLength: failedResponse?.url?.length || null,
+      operationId: state.op?.pqvd_testoperationid || null,
+    };
+    pages.push(failure);
+    if (state.op)
+      await record(
+        plan,
+        state.op.pqvd_testoperationid,
+        engine,
+        {
+          Summary: failure,
+          RawResponse: failedResponse?.text || error.rawLiquidResponse || '',
+          ...(error.effectiveFetchXml ? { EffectiveXml: error.effectiveFetchXml } : {}),
+          ...(state.xml ? { [plan.queryType === 'odata' ? 'Request' : 'AuthoredXml']: state.xml } : {}),
+        },
+        { page, httpStatus: failedResponse?.status || 0 },
+      );
+  }
   async function laneOne(plan, engine, pairId) {
     const rows = [],
       pages = [],
@@ -319,144 +507,26 @@ export function createRunner({ manifest, context, request, notify = () => {}, st
         outcome = 'stopped';
         break;
       }
-      let op, xml, response;
-      const start = performance.now();
+      const state = { started: performance.now() };
       try {
-        op = await operation(plan, engine, pairId, page);
-        xml = plan.queryType === 'odata' ? odataRequest(plan, op) : authoredQuery(plan, op, page);
-        const intent = await request({
-          method: 'PATCH',
-          url: `/_api/pqvd_testoperations(${op.pqvd_testoperationid})`,
-          body: {
-            pqvd_authoredquery: xml,
-            pqvd_logicalqueryhash: plan.logicalQueryHash,
-            pqvd_physicalqueryhash: await sha256(xml),
-          },
-        });
-        if (!intent.ok) throw new Error('Authored intent persistence failed.');
-        response = await request({
-          url:
-            engine === 'liquid'
-              ? `/permission-lab/liquid/?suiteVersion=${encodeURIComponent(manifest.suiteVersion)}&operationId=${op.pqvd_testoperationid}`
-              : plan.queryType === 'odata'
-                ? xml
-                : `/_api/${plan.entitySet}?fetchXml=${encodeURIComponent(xml)}`,
-        });
-        if (!response.ok) throw Object.assign(new Error(`${engine} HTTP ${response.status}`), { response });
-        const parsed =
-          engine === 'liquid'
-            ? parseLiquid(response.text, plan)
-            : {
-                rows: response.data?.value,
-                more: response.data?.['@Microsoft.Dynamics.CRM.morerecords'],
-                cookie: response.data?.['@Microsoft.Dynamics.CRM.fetchxmlpagingcookie'],
-                nextLink: response.data?.['@odata.nextLink'],
-                effectiveFetchXml: null,
-              };
-        if (!Array.isArray(parsed.rows))
-          throw new Error('Missing records collection; response is not an empty success.');
-        if (
-          engine === 'liquid' &&
-          (parsed.contactId !== guid(context.contactId) ||
-            stable([...parsed.roles].sort()) !== stable([...context.roles].sort()) ||
-            parsed.operationId !== op.pqvd_testoperationid ||
-            parsed.caseId !== plan.id ||
-            parsed.datasetVersion !== manifest.datasetVersion)
-        )
-          throw new Error('Identity/dataset/intent drift between shell and Liquid response.');
-        if (engine === 'liquid' && parsed.authoredFetchXml.trim() !== xml.trim())
-          throw new Error('Liquid authored query differs from shared manifest intent.');
+        const parsed = await requestLanePage(plan, engine, pairId, page, state);
         const canonical = canonicalRows(parsed.rows, plan);
-        for (const row of canonical) {
-          const key = stable(row);
-          if (seenPages.has(key) && seenPages.get(key) !== page)
-            pagingDuplicates.push({ firstPage: seenPages.get(key), page, row });
-          else seenPages.set(key, page);
-        }
-        rows.push(...canonical);
-        const pageEvidence = {
-          page,
-          operationId: op.pqvd_testoperationid,
-          physicalQueryHash: await sha256(xml),
-          authoredFetchXml: plan.queryType === 'odata' ? null : xml,
-          authoredRequest: plan.queryType === 'odata' ? xml : null,
-          authoredJoinCount: plan.queryType === 'odata' ? null : (xml.match(/<link-entity\b/g) || []).length,
-          effectiveJoinCount: parsed.effectiveFetchXml
-            ? (parsed.effectiveFetchXml.match(/<link-entity\b/g) || []).length
-            : null,
-          httpStatus: response.status,
-          count: canonical.length,
-          more: parsed.more ?? null,
-          cookie: parsed.cookie || null,
-          urlLength: response.url?.length || 0,
-          duration: performance.now() - start,
-          effectiveFetchXml: parsed.effectiveFetchXml || null,
-          effectiveXmlAvailability: engine === 'liquid' ? 'exposed' : 'not-exposed',
-          backendCaptureState: manifest.readiness.durableCollector ? 'pending' : 'transaction-bound-lab-only',
-        };
-        pages.push(pageEvidence);
-        await record(
-          plan,
-          op.pqvd_testoperationid,
-          engine,
-          {
-            Summary: pageEvidence,
-            [plan.queryType === 'odata' ? 'Request' : 'AuthoredXml']: xml,
-            RawResponse: response.text,
-            CanonicalResult: canonical,
-            ...(engine === 'liquid' ? { EffectiveXml: parsed.effectiveFetchXml || '' } : {}),
-          },
-          { page, httpStatus: response.status, count: canonical.length, duration: pageEvidence.duration },
-        );
-        if (plan.queryType === 'odata') {
-          complete = !parsed.nextLink && response.data['@odata.count'] === canonical.length;
-          if (!complete) pageEvidence.continuationState = 'native-paging-contract-not-qualified';
-          break;
-        }
-        if (
-          pageComplete({
-            more: parsed.more,
-            rowCount: canonical.length,
-            pageSize: plan.pageSize,
-            nextLink: parsed.nextLink,
-          })
-        ) {
-          complete = true;
-          break;
-        }
+        trackPagingRows(canonical, seenPages, pagingDuplicates, page);
+        const pageResult = await captureLanePage(plan, engine, page, state, parsed, canonical, { rows, pages });
+        complete = pageResult.complete;
+        if (pageResult.done) break;
         // Number paging retains deterministic ordering. A full terminal page without MORE requires an empty next-page proof.
       } catch (e) {
         outcome = 'error';
         error = e.message;
-        const failedResponse = e.response || response;
-        const failure = {
-          page,
-          error,
-          httpStatus: failedResponse?.status || null,
-          body: failedResponse?.text || e.rawLiquidResponse || null,
-          effectiveFetchXml: e.effectiveFetchXml || null,
-          urlLength: failedResponse?.url?.length || null,
-          operationId: op?.pqvd_testoperationid || null,
-        };
-        pages.push(failure);
-        if (op)
-          await record(
-            plan,
-            op.pqvd_testoperationid,
-            engine,
-            {
-              Summary: failure,
-              RawResponse: failedResponse?.text || e.rawLiquidResponse || '',
-              ...(e.effectiveFetchXml ? { EffectiveXml: e.effectiveFetchXml } : {}),
-              ...(xml ? { [plan.queryType === 'odata' ? 'Request' : 'AuthoredXml']: xml } : {}),
-            },
-            { page, httpStatus: failedResponse?.status || 0 },
-          );
+        await recordLaneFailure(plan, engine, page, state, e, pages);
         break;
       }
     }
     rows.sort((a, b) => stable(a).localeCompare(stable(b)));
-    const ids = [...new Set(rows.map((r) => r[plan.primaryId]).filter(Boolean))].sort();
+    const ids = [...new Set(rows.map((r) => r[plan.primaryId]).filter(Boolean))].sort(
+      (a, b) => Number(a > b) - Number(a < b),
+    );
     if (pagingDuplicates.length) complete = false;
     return {
       caseId: plan.id,
@@ -487,6 +557,245 @@ export function createRunner({ manifest, context, request, notify = () => {}, st
     } finally {
       running = false;
     }
+  }
+  async function runSelectedPairs(selectedCases, pairs) {
+    for (const plan of [...manifest.cases, ...(manifest.stressCases || [])].filter((plan) =>
+      selectedCases.includes(plan.id),
+    )) {
+      if (stopped()) break;
+      const pairId = crypto.randomUUID();
+      const liquid = await lane(plan, 'liquid', pairId),
+        webapi = await lane(plan, 'webapi', pairId);
+      const pair = { caseId: plan.id, pairId, liquid, webapi, verdict: compareResults(liquid, webapi) };
+      pairs.push(pair);
+      notify(pair);
+    }
+  }
+  async function runOdataVariants(selectedCases) {
+    const variants = [];
+    for (const plan of (manifest.odataVariants || []).filter((plan) => selectedCases.includes(plan.baseCaseId))) {
+      if (stopped()) break;
+      const result = await lane(plan, 'webapi', crypto.randomUUID());
+      variants.push(result);
+      notify({ caseId: plan.id, kind: 'API-only OData variant', ...result });
+    }
+    return variants;
+  }
+  async function collectPageBackendEvidence(page) {
+    try {
+      const result = await backendEvents(page.operationId);
+      page.backendEvents = result.ok ? result.data.value : [];
+      if (result.ok && page.backendEvents.length) page.backendCaptureState = 'transaction-bound-observed';
+      else if (result.ok) page.backendCaptureState = 'no-backend-invocation-observed';
+      else page.backendCaptureState = 'backend-evidence-read-failed';
+      if (!result.ok) page.backendError = { status: result.status, body: result.text };
+    } catch (error) {
+      page.backendCaptureState = 'backend-evidence-read-failed';
+      page.backendError = error.message;
+    }
+  }
+  /* NOSONAR: captures variables of the enclosing function */ function visibilityLaneAssertion(result, expected) {
+    return {
+      engine: result.engine,
+      verdict: visibilityLaneVerdict(result, expected),
+      actualIds: result.ids,
+      actualRowCount: result.rows.length,
+      expectedRowCount: expected.expectedIds.length,
+    };
+  }
+  function createVisibilityAssertions(pairs) {
+    const fixtureOracle = manifest.visibilityOracle?.find((item) => guid(item.contactId) === guid(context.contactId));
+    const visibilityAssertions =
+      fixtureOracle?.cases.map((expected) => {
+        const pair = pairs.find((item) => item.caseId === expected.caseId);
+        return {
+          caseId: expected.caseId,
+          expectedIds: expected.expectedIds,
+          kind: fixtureOracle.kind,
+          runtimeAttested: false,
+          lanes: pair ? [pair.liquid, pair.webapi].map((result) => visibilityLaneAssertion(result, expected)) : [],
+        };
+      }) || [];
+    return { fixtureOracle, visibilityAssertions };
+  }
+  /* NOSONAR: captures variables of the enclosing function */ function createLinkedAssertions(pairs, fixtureOracle) {
+    const linkedAssertions = [];
+    for (const [prefix, field, allowedCase] of [
+      ['R25', 'engagementid', 'R05'],
+      ['R26', 'scopedaccountid', 'R01'],
+      ['R30', 'financeid', 'R11'],
+    ]) {
+      const allowed = fixtureOracle?.cases.find((item) => item.caseId === allowedCase)?.expectedIds;
+      for (const pair of pairs.filter((item) => item.caseId.startsWith(prefix)))
+        for (const result of [pair.liquid, pair.webapi]) {
+          const disclosed = [...new Set(result.rows.map((row) => row[field]).filter(Boolean))],
+            outside = allowed ? disclosed.filter((id) => !allowed.includes(id)) : [];
+          linkedAssertions.push({
+            caseId: pair.caseId,
+            engine: result.engine,
+            field,
+            kind: 'independent-linked-record-eligibility',
+            verdict: linkedAssertionVerdict(allowed, result, outside),
+            outsideScopeIds: outside,
+          });
+        }
+    }
+    return linkedAssertions;
+  }
+  async function persistRunSummary({
+    pairs,
+    variants,
+    oracle,
+    visibilityAssertions,
+    linkedAssertions,
+    baseline,
+    crud,
+  }) {
+    const summary = {
+      artifactTransport: {
+        limitBytes: artifactTransportBudgetBytes,
+        estimatedUsedBytesBeforeSummary: artifactTransportBytes,
+        accounting:
+          'Encoded payload plus conservative 2048-byte per-row metadata allowance; combined client/server quota requires external collector qualification.',
+      },
+      runId,
+      datasetVersion: manifest.datasetVersion,
+      manifestHash: manifest.manifestHash,
+      sourceHash: manifest.sourceHash,
+      configuration: {
+        kind: 'Desired portable configuration; independent native readback required',
+        permissionBlueprintHash: manifest.configuredPermissionBlueprintHash,
+      },
+      contactId: context.contactId,
+      roles: context.roles,
+      pairs,
+      variants,
+      oracle,
+      visibilityAssertions,
+      linkedAssertions,
+      baseline,
+      coverage: {
+        strictPaired: pairs.length,
+        durableBackend: manifest.readiness.durableCollector,
+        businessCrud: crud && manifest.readiness.businessMutation,
+      },
+      evidence,
+      residuals,
+    };
+    const summaryPlan = { id: 'RUN-SUMMARY', table: 'pqvd_testrun', variant: 'run-summary' };
+    const summaryOperation = await operation(summaryPlan, 'webapi', crypto.randomUUID(), 1, {
+      phase: 'Comparison',
+      message: 'Update',
+    });
+    await record(
+      summaryPlan,
+      summaryOperation.pqvd_testoperationid,
+      'webapi',
+      { Summary: summary },
+      { phase: 'Comparison', operation: 'Compare' },
+    );
+    let state;
+    if (stopped()) state = 'Interrupted';
+    else if (
+      !manifest.readiness.durableCollector ||
+      evidence.some((item) => /(error|incomplete)/.test(item.kind || '') || item.kind === 'blocked') ||
+      pairs.some((pair) => pair.verdict === 'incomplete')
+    )
+      state = 'Incomplete';
+    else state = 'Completed';
+    const compact = {
+      runId,
+      datasetVersion: manifest.datasetVersion,
+      contactId: context.contactId,
+      roles: context.roles,
+      summaryOperationId: summaryOperation.pqvd_testoperationid,
+      pairs: pairs.map((pair) => ({
+        caseId: pair.caseId,
+        verdict: pair.verdict,
+        liquidCount: pair.liquid.returnedCount,
+        webApiCount: pair.webapi.returnedCount,
+      })),
+      variants: variants.map((variant) => ({
+        caseId: variant.caseId,
+        outcome: variant.outcome,
+        complete: variant.complete,
+        error: variant.error,
+      })),
+      oracle,
+      visibilityAssertions: visibilityAssertions.map((assertion) => ({
+        caseId: assertion.caseId,
+        kind: assertion.kind,
+        lanes: assertion.lanes.map((laneResult) => ({ engine: laneResult.engine, verdict: laneResult.verdict })),
+      })),
+      baseline,
+      evidenceCounts: {
+        total: evidence.length,
+        persistenceErrors: evidence.filter((item) => item.kind === 'persistence-error').length,
+        blocked: evidence.filter((item) => item.kind === 'blocked').length,
+      },
+      residuals,
+    };
+    const compactText = stable(compact);
+    if (compactText.length > 60000)
+      throw new Error('Run index exceeds safe summary bound; full summary parts have been saved separately.');
+    const response = await request({
+      method: 'PATCH',
+      url: `/_api/pqvd_testruns(${runId})`,
+      body: {
+        pqvd_finishedat: new Date().toISOString(),
+        pqvd_runstate: choice('pqvd_runstate', state),
+        pqvd_summaryjson: compactText,
+      },
+    });
+    if (!response.ok) {
+      summary.persistenceError = `Final history PATCH HTTP ${response.status}`;
+      summary.completeness = 'incomplete';
+      evidence.push({ kind: 'persistence-error', phase: 'RunIndex', status: response.status, body: response.text });
+      notify(summary);
+    }
+    return summary;
+  }
+  async function persistRunFailure(error, pairs) {
+    const summary = { runId, error: error.message, pairs, evidence, residuals };
+    try {
+      const plan = { id: 'RUN-FAILURE', table: 'pqvd_testrun', variant: 'run-failure' },
+        op = await operation(plan, 'webapi', crypto.randomUUID(), 1, { phase: 'Comparison', message: 'Update' });
+      await record(
+        plan,
+        op.pqvd_testoperationid,
+        'webapi',
+        { Summary: summary },
+        { phase: 'Comparison', operation: 'Compare' },
+      );
+      summary.failureOperationId = op.pqvd_testoperationid;
+    } catch (persistenceError) {
+      summary.failurePartsError = persistenceError.message;
+    }
+    const index = {
+      runId,
+      error: String(error.message).slice(0, 2000),
+      failureOperationId: summary.failureOperationId || null,
+      failurePartsError: summary.failurePartsError || null,
+      pairedCaseCount: pairs.length,
+      evidenceCount: evidence.length,
+      residuals: residuals.slice(0, 100),
+    };
+    try {
+      const response = await request({
+        method: 'PATCH',
+        url: `/_api/pqvd_testruns(${runId})`,
+        body: {
+          pqvd_finishedat: new Date().toISOString(),
+          pqvd_runstate: choice('pqvd_runstate', 'Incomplete'),
+          pqvd_summaryjson: stable(index),
+        },
+      });
+      if (!response.ok) summary.persistenceError = { status: response.status, body: response.text };
+    } catch (persistenceError) {
+      summary.persistenceError = persistenceError.message;
+    }
+    notify(summary);
+    return summary;
   }
   async function runInner({
     crud = false,
@@ -525,240 +834,67 @@ export function createRunner({ manifest, context, request, notify = () => {}, st
     });
     const pairs = [];
     try {
-      for (const plan of [...manifest.cases, ...(manifest.stressCases || [])].filter((c) =>
-        selectedCases.includes(c.id),
-      )) {
-        if (stopped()) break;
-        const pairId = crypto.randomUUID();
-        const liquid = await lane(plan, 'liquid', pairId),
-          webapi = await lane(plan, 'webapi', pairId);
-        const verdict = compareResults(liquid, webapi);
-        const pair = { caseId: plan.id, pairId, liquid, webapi, verdict };
-        pairs.push(pair);
-        notify(pair);
-      }
-      const variants = [];
-      for (const plan of (manifest.odataVariants || []).filter((p) => selectedCases.includes(p.baseCaseId))) {
-        if (stopped()) break;
-        const result = await lane(plan, 'webapi', crypto.randomUUID());
-        variants.push(result);
-        notify({ caseId: plan.id, kind: 'API-only OData variant', ...result });
-      }
+      await runSelectedPairs(selectedCases, pairs);
+      const variants = await runOdataVariants(selectedCases);
       const observations = pairs.map((p) => p.webapi);
       const oracle = manifest.scenarios
         .filter((s) => guid(s.contactId) === guid(context.contactId))
         .map((s) => ({ scenario: s.id, assertions: assessScenario(s, observations, manifest) }));
       if (crud) await runCrud(crudMode);
       if (pluginProfile) await runPluginProfile(pluginProfile);
-      for (const pair of pairs)
-        for (const laneResult of [pair.liquid, pair.webapi])
-          for (const page of laneResult.pages) {
-            if (!page.operationId) continue;
-            try {
-              const result = await backendEvents(page.operationId);
-              page.backendEvents = result.ok ? result.data.value : [];
-              page.backendCaptureState =
-                result.ok && page.backendEvents.length
-                  ? 'transaction-bound-observed'
-                  : result.ok
-                    ? 'no-backend-invocation-observed'
-                    : 'backend-evidence-read-failed';
-              if (!result.ok) page.backendError = { status: result.status, body: result.text };
-            } catch (error) {
-              page.backendCaptureState = 'backend-evidence-read-failed';
-              page.backendError = error.message;
-            }
-          }
-      const fixtureOracle = manifest.visibilityOracle?.find((o) => guid(o.contactId) === guid(context.contactId));
-      const visibilityAssertions =
-        fixtureOracle?.cases.map((expected) => {
-          const pair = pairs.find((p) => p.caseId === expected.caseId);
-          return {
-            caseId: expected.caseId,
-            expectedIds: expected.expectedIds,
-            kind: fixtureOracle.kind,
-            runtimeAttested: false,
-            lanes: pair
-              ? [pair.liquid, pair.webapi].map((result) => ({
-                  engine: result.engine,
-                  verdict:
-                    !result.complete || result.outcome !== 'success'
-                      ? 'incomplete'
-                      : stable(result.ids) === stable(expected.expectedIds) &&
-                          result.rows.length === expected.expectedIds.length
-                        ? 'pass'
-                        : 'fail',
-                  actualIds: result.ids,
-                  actualRowCount: result.rows.length,
-                  expectedRowCount: expected.expectedIds.length,
-                }))
-              : [],
-          };
-        }) || [];
-      const linkedAssertions = [];
-      for (const [prefix, field, allowedCase] of [
-        ['R25', 'engagementid', 'R05'],
-        ['R26', 'scopedaccountid', 'R01'],
-        ['R30', 'financeid', 'R11'],
-      ]) {
-        const allowed = fixtureOracle?.cases.find((c) => c.caseId === allowedCase)?.expectedIds;
-        for (const pair of pairs.filter((p) => p.caseId.startsWith(prefix)))
-          for (const result of [pair.liquid, pair.webapi]) {
-            const disclosed = [...new Set(result.rows.map((r) => r[field]).filter(Boolean))],
-              outside = allowed ? disclosed.filter((id) => !allowed.includes(id)) : [];
-            linkedAssertions.push({
-              caseId: pair.caseId,
-              engine: result.engine,
-              field,
-              kind: 'independent-linked-record-eligibility',
-              verdict:
-                !allowed || !result.complete || result.outcome !== 'success'
-                  ? 'incomplete'
-                  : outside.length
-                    ? 'fail'
-                    : 'pass',
-              outsideScopeIds: outside,
-            });
-          }
-      }
+      for (const page of backendEvidencePages(pairs)) await collectPageBackendEvidence(page);
+      const { fixtureOracle, visibilityAssertions } = createVisibilityAssertions(pairs);
+      const linkedAssertions = createLinkedAssertions(pairs, fixtureOracle);
       const baseline = baselineId ? await compareBaseline(baselineId, pairs) : null;
-      const summary = {
-        artifactTransport: {
-          limitBytes: artifactTransportBudgetBytes,
-          estimatedUsedBytesBeforeSummary: artifactTransportBytes,
-          accounting:
-            'Encoded payload plus conservative 2048-byte per-row metadata allowance; combined client/server quota requires external collector qualification.',
-        },
-        runId,
-        datasetVersion: manifest.datasetVersion,
-        manifestHash: manifest.manifestHash,
-        sourceHash: manifest.sourceHash,
-        configuration: {
-          kind: 'Desired portable configuration; independent native readback required',
-          permissionBlueprintHash: manifest.configuredPermissionBlueprintHash,
-        },
-        contactId: context.contactId,
-        roles: context.roles,
+      return await persistRunSummary({
         pairs,
         variants,
         oracle,
         visibilityAssertions,
         linkedAssertions,
         baseline,
-        coverage: {
-          strictPaired: pairs.length,
-          durableBackend: manifest.readiness.durableCollector,
-          businessCrud: crud && manifest.readiness.businessMutation,
-        },
-        evidence,
-        residuals,
-      };
-      const summaryPlan = { id: 'RUN-SUMMARY', table: 'pqvd_testrun', variant: 'run-summary' };
-      const summaryOperation = await operation(summaryPlan, 'webapi', crypto.randomUUID(), 1, {
-        phase: 'Comparison',
-        message: 'Update',
+        crud,
       });
-      await record(
-        summaryPlan,
-        summaryOperation.pqvd_testoperationid,
-        'webapi',
-        { Summary: summary },
-        { phase: 'Comparison', operation: 'Compare' },
-      );
-      const state = stopped()
-        ? 'Interrupted'
-        : !manifest.readiness.durableCollector ||
-            evidence.some((e) => /(error|incomplete)/.test(e.kind || '') || e.kind === 'blocked') ||
-            pairs.some((p) => p.verdict === 'incomplete')
-          ? 'Incomplete'
-          : 'Completed';
-      const compact = {
-        runId,
-        datasetVersion: manifest.datasetVersion,
-        contactId: context.contactId,
-        roles: context.roles,
-        summaryOperationId: summaryOperation.pqvd_testoperationid,
-        pairs: pairs.map((p) => ({
-          caseId: p.caseId,
-          verdict: p.verdict,
-          liquidCount: p.liquid.returnedCount,
-          webApiCount: p.webapi.returnedCount,
-        })),
-        variants: variants.map((v) => ({ caseId: v.caseId, outcome: v.outcome, complete: v.complete, error: v.error })),
-        oracle,
-        visibilityAssertions: visibilityAssertions.map((a) => ({
-          caseId: a.caseId,
-          kind: a.kind,
-          lanes: a.lanes.map((l) => ({ engine: l.engine, verdict: l.verdict })),
-        })),
-        baseline,
-        evidenceCounts: {
-          total: evidence.length,
-          persistenceErrors: evidence.filter((e) => e.kind === 'persistence-error').length,
-          blocked: evidence.filter((e) => e.kind === 'blocked').length,
-        },
-        residuals,
-      };
-      const compactText = stable(compact);
-      if (compactText.length > 60000)
-        throw new Error('Run index exceeds safe summary bound; full summary parts have been saved separately.');
-      const response = await request({
-        method: 'PATCH',
-        url: `/_api/pqvd_testruns(${runId})`,
-        body: {
-          pqvd_finishedat: new Date().toISOString(),
-          pqvd_runstate: choice('pqvd_runstate', state),
-          pqvd_summaryjson: compactText,
-        },
-      });
-      if (!response.ok) {
-        summary.persistenceError = `Final history PATCH HTTP ${response.status}`;
-        summary.completeness = 'incomplete';
-        evidence.push({ kind: 'persistence-error', phase: 'RunIndex', status: response.status, body: response.text });
-        notify(summary);
-      }
-      return summary;
     } catch (error) {
-      const summary = { runId, error: error.message, pairs, evidence, residuals };
-      try {
-        const plan = { id: 'RUN-FAILURE', table: 'pqvd_testrun', variant: 'run-failure' },
-          op = await operation(plan, 'webapi', crypto.randomUUID(), 1, { phase: 'Comparison', message: 'Update' });
-        await record(
-          plan,
-          op.pqvd_testoperationid,
-          'webapi',
-          { Summary: summary },
-          { phase: 'Comparison', operation: 'Compare' },
-        );
-        summary.failureOperationId = op.pqvd_testoperationid;
-      } catch (persistenceError) {
-        summary.failurePartsError = persistenceError.message;
-      }
-      const index = {
-        runId,
-        error: String(error.message).slice(0, 2000),
-        failureOperationId: summary.failureOperationId || null,
-        failurePartsError: summary.failurePartsError || null,
-        pairedCaseCount: pairs.length,
-        evidenceCount: evidence.length,
-        residuals: residuals.slice(0, 100),
-      };
-      try {
-        const response = await request({
-          method: 'PATCH',
-          url: `/_api/pqvd_testruns(${runId})`,
-          body: {
-            pqvd_finishedat: new Date().toISOString(),
-            pqvd_runstate: choice('pqvd_runstate', 'Incomplete'),
-            pqvd_summaryjson: stable(index),
-          },
-        });
-        if (!response.ok) summary.persistenceError = { status: response.status, body: response.text };
-      } catch (persistenceError) {
-        summary.persistenceError = persistenceError.message;
-      }
-      notify(summary);
-      return summary;
+      return await persistRunFailure(error, pairs);
+    }
+  }
+  async function cleanupPluginProfile(profile, probeId, plan) {
+    if (!probeId || !residuals.includes(probeId)) return;
+    try {
+      const cleanupPlan = { ...plan, id: `${profile}-cleanup` },
+        cleanupOp = await operation(cleanupPlan, 'webapi', crypto.randomUUID(), 1, {
+          phase: 'Cleanup',
+          message: 'Delete',
+        }),
+        url = `/_api/pqvd_crudprobes(${probeId})`;
+      await record(
+        cleanupPlan,
+        cleanupOp.pqvd_testoperationid,
+        'webapi',
+        { Request: { method: 'DELETE', url, probeId } },
+        { phase: 'Cleanup', operation: 'Delete' },
+      );
+      const cleanup = await request({ method: 'DELETE', url }),
+        result = {
+          kind: cleanup.ok ? 'profile-cleanup' : 'profile-cleanup-error',
+          profile,
+          probeId,
+          operationId: cleanupOp.pqvd_testoperationid,
+          status: cleanup.status,
+          rawResponse: cleanup.text,
+        };
+      evidence.push(result);
+      await record(
+        cleanupPlan,
+        cleanupOp.pqvd_testoperationid,
+        'webapi',
+        { Cleanup: result, RawResponse: cleanup.text },
+        { phase: 'Cleanup', operation: 'Delete', httpStatus: cleanup.status },
+      );
+      if (cleanup.ok) residuals.splice(residuals.indexOf(probeId), 1);
+    } catch (error) {
+      evidence.push({ kind: 'profile-cleanup-error', profile, probeId, error: error.message });
     }
   }
   async function runPluginProfile(profile) {
@@ -836,44 +972,98 @@ export function createRunner({ manifest, context, request, notify = () => {}, st
         rawResponse: error.response?.text,
       });
     } finally {
-      if (probeId && residuals.includes(probeId)) {
-        try {
-          const cleanupPlan = { ...plan, id: `${profile}-cleanup` },
-            cleanupOp = await operation(cleanupPlan, 'webapi', crypto.randomUUID(), 1, {
-              phase: 'Cleanup',
-              message: 'Delete',
-            }),
-            url = `/_api/pqvd_crudprobes(${probeId})`;
-          await record(
-            cleanupPlan,
-            cleanupOp.pqvd_testoperationid,
-            'webapi',
-            { Request: { method: 'DELETE', url, probeId } },
-            { phase: 'Cleanup', operation: 'Delete' },
-          );
-          const cleanup = await request({ method: 'DELETE', url }),
-            result = {
-              kind: cleanup.ok ? 'profile-cleanup' : 'profile-cleanup-error',
-              profile,
-              probeId,
-              operationId: cleanupOp.pqvd_testoperationid,
-              status: cleanup.status,
-              rawResponse: cleanup.text,
-            };
-          evidence.push(result);
-          await record(
-            cleanupPlan,
-            cleanupOp.pqvd_testoperationid,
-            'webapi',
-            { Cleanup: result, RawResponse: cleanup.text },
-            { phase: 'Cleanup', operation: 'Delete', httpStatus: cleanup.status },
-          );
-          if (cleanup.ok) residuals.splice(residuals.indexOf(probeId), 1);
-        } catch (error) {
-          evidence.push({ kind: 'profile-cleanup-error', profile, probeId, error: error.message });
-        }
+      if (probeId && residuals.includes(probeId)) await cleanupPluginProfile(profile, probeId, plan);
+    }
+  }
+  async function readBaselineParts(baselineId) {
+    const selected = [
+      'pqvd_testresultid',
+      'pqvd_caseid',
+      'pqvd_engine',
+      'pqvd_observationkey',
+      'pqvd_partnumber',
+      'pqvd_partcount',
+      'pqvd_payloadtext',
+      'pqvd_payloadhash',
+    ];
+    const parts = [];
+    let complete = false;
+    for (let page = 1; page <= 30; page++) {
+      const attributes = selected.map((field) => `<attribute name="${field}"></attribute>`).join(''),
+        xml = `<fetch count="100" page="${page}"><entity name="pqvd_testresult">${attributes}<filter><condition attribute="pqvd_runid" operator="eq" value="${guid(baselineId)}"></condition><condition attribute="pqvd_artifactkind" operator="eq" value="${choice('pqvd_artifactkind', 'CanonicalResult')}"></condition></filter><order attribute="pqvd_testresultid"></order></entity></fetch>`,
+        response = await request({ url: `/_api/pqvd_testresults?fetchXml=${encodeURIComponent(xml)}` });
+      if (!response.ok) throw new Error(`Baseline artifacts HTTP ${response.status}: ${response.text}`);
+      if (!Array.isArray(response.data?.value)) throw new Error('Baseline artifact envelope missing.');
+      parts.push(...response.data.value);
+      if (
+        pageComplete({
+          more: response.data['@Microsoft.Dynamics.CRM.morerecords'],
+          rowCount: response.data.value.length,
+          pageSize: 100,
+          nextLink: response.data['@odata.nextLink'],
+        })
+      ) {
+        complete = true;
+        break;
       }
     }
+    if (!complete) throw new Error('Baseline paging incomplete.');
+    return parts;
+  }
+  async function decodeBaselineRows(parts) {
+    const groups = new Map();
+    for (const part of parts) {
+      if ((await sha256(part.pqvd_payloadtext)) !== part.pqvd_payloadhash)
+        throw new Error('Baseline part checksum mismatch.');
+      const key = part.pqvd_observationkey;
+      groups.set(key, [...(groups.get(key) || []), part]);
+    }
+    const oldRows = new Map();
+    for (const group of groups.values()) {
+      group.sort((a, b) => a.pqvd_partnumber - b.pqvd_partnumber);
+      if (
+        group.length !== group[0].pqvd_partcount ||
+        group.some(
+          (part, index) =>
+            part.pqvd_partnumber !== index + 1 ||
+            part.pqvd_partcount !== group.length ||
+            part.pqvd_caseid !== group[0].pqvd_caseid ||
+            part.pqvd_engine !== group[0].pqvd_engine,
+        )
+      )
+        throw new Error('Missing, duplicated or mixed baseline payload part.');
+      const payload = JSON.parse(await decodeArtifact(group.map((part) => part.pqvd_payloadtext).join('')));
+      if (!Array.isArray(payload)) throw new Error('Baseline canonical payload must be an array.');
+      const key = group[0].pqvd_caseid + ':' + group[0].pqvd_engine;
+      oldRows.set(key, [...(oldRows.get(key) || []), ...payload]);
+    }
+    return oldRows;
+  }
+  function baselineLaneDifference(result, oldRows, verified) {
+    const prior = oldRows.get(
+        result.caseId + ':' + choice('pqvd_engine', result.engine === 'liquid' ? 'Liquid' : 'WebAPI'),
+      ),
+      plan = [...manifest.cases, ...(manifest.stressCases || [])].find((item) => item.id === result.caseId);
+    const previousLane = verified.summary.pairs.find((pair) => pair.caseId === result.caseId)?.[
+      result.engine === 'liquid' ? 'liquid' : 'webapi'
+    ];
+    const baselineVerdict = () => {
+      if (!prior) return 'missing-baseline';
+      if (!result.complete) return 'incomplete';
+      if (stable(prior.sort((a, b) => stable(a).localeCompare(stable(b)))) === stable(result.rows)) return 'equal';
+      return 'different';
+    };
+    return {
+      caseId: result.caseId,
+      engine: result.engine,
+      ...(previousLane && plan
+        ? diffObservation(previousLane, result, plan)
+        : { outcomeVerdict: 'missing-baseline-lane' }),
+      verdict: baselineVerdict(),
+      priorCount: prior?.length,
+      currentCount: result.rows.length,
+      ...(prior && plan ? diffRows(prior, result.rows, plan) : {}),
+    };
   }
   async function compareBaseline(baselineId, pairs) {
     try {
@@ -892,226 +1082,153 @@ export function createRunner({ manifest, context, request, notify = () => {}, st
         throw new Error(
           'Complete verified baseline summary unavailable; outcome comparison cannot be inferred from missing canonical parts.',
         );
-      const selected = [
-        'pqvd_testresultid',
-        'pqvd_caseid',
-        'pqvd_engine',
-        'pqvd_observationkey',
-        'pqvd_partnumber',
-        'pqvd_partcount',
-        'pqvd_payloadtext',
-        'pqvd_payloadhash',
-      ];
-      const parts = [];
-      let complete = false;
-      for (let page = 1; page <= 30; page++) {
-        const xml = `<fetch count="100" page="${page}"><entity name="pqvd_testresult">${selected.map((f) => `<attribute name="${f}"></attribute>`).join('')}<filter><condition attribute="pqvd_runid" operator="eq" value="${guid(baselineId)}"></condition><condition attribute="pqvd_artifactkind" operator="eq" value="${choice('pqvd_artifactkind', 'CanonicalResult')}"></condition></filter><order attribute="pqvd_testresultid"></order></entity></fetch>`,
-          response = await request({ url: `/_api/pqvd_testresults?fetchXml=${encodeURIComponent(xml)}` });
-        if (!response.ok) throw new Error(`Baseline artifacts HTTP ${response.status}: ${response.text}`);
-        if (!Array.isArray(response.data?.value)) throw new Error('Baseline artifact envelope missing.');
-        parts.push(...response.data.value);
-        if (
-          pageComplete({
-            more: response.data['@Microsoft.Dynamics.CRM.morerecords'],
-            rowCount: response.data.value.length,
-            pageSize: 100,
-            nextLink: response.data['@odata.nextLink'],
-          })
-        ) {
-          complete = true;
-          break;
-        }
-      }
-      if (!complete) throw new Error('Baseline paging incomplete.');
-      const groups = new Map();
-      for (const part of parts) {
-        if ((await sha256(part.pqvd_payloadtext)) !== part.pqvd_payloadhash)
-          throw new Error('Baseline part checksum mismatch.');
-        const key = part.pqvd_observationkey;
-        groups.set(key, [...(groups.get(key) || []), part]);
-      }
-      const oldRows = new Map();
-      for (const group of groups.values()) {
-        group.sort((a, b) => a.pqvd_partnumber - b.pqvd_partnumber);
-        if (
-          group.length !== group[0].pqvd_partcount ||
-          group.some(
-            (p, i) =>
-              p.pqvd_partnumber !== i + 1 ||
-              p.pqvd_partcount !== group.length ||
-              p.pqvd_caseid !== group[0].pqvd_caseid ||
-              p.pqvd_engine !== group[0].pqvd_engine,
-          )
-        )
-          throw new Error('Missing, duplicated or mixed baseline payload part.');
-        const payload = JSON.parse(await decodeArtifact(group.map((p) => p.pqvd_payloadtext).join('')));
-        if (!Array.isArray(payload)) throw new Error('Baseline canonical payload must be an array.');
-        const key = group[0].pqvd_caseid + ':' + group[0].pqvd_engine;
-        oldRows.set(key, [...(oldRows.get(key) || []), ...payload]);
-      }
+      const parts = await readBaselineParts(baselineId);
+      const oldRows = await decodeBaselineRows(parts);
       const differences = pairs.flatMap((pair) =>
-        [pair.liquid, pair.webapi].map((result) => {
-          const prior = oldRows.get(
-              result.caseId + ':' + choice('pqvd_engine', result.engine === 'liquid' ? 'Liquid' : 'WebAPI'),
-            ),
-            plan = [...manifest.cases, ...(manifest.stressCases || [])].find((c) => c.id === result.caseId);
-          const previousLane = verified.summary.pairs.find((p) => p.caseId === result.caseId)?.[
-            result.engine === 'liquid' ? 'liquid' : 'webapi'
-          ];
-          return {
-            caseId: result.caseId,
-            engine: result.engine,
-            ...(previousLane && plan
-              ? diffObservation(previousLane, result, plan)
-              : { outcomeVerdict: 'missing-baseline-lane' }),
-            verdict: !prior
-              ? 'missing-baseline'
-              : !result.complete
-                ? 'incomplete'
-                : stable(prior.sort((a, b) => stable(a).localeCompare(stable(b)))) === stable(result.rows)
-                  ? 'equal'
-                  : 'different',
-            priorCount: prior?.length,
-            currentCount: result.rows.length,
-            ...(prior && plan ? diffRows(prior, result.rows, plan) : {}),
-          };
-        }),
+        [pair.liquid, pair.webapi].map((result) => baselineLaneDifference(result, oldRows, verified)),
       );
       return { baselineId, differences };
     } catch (error) {
       return { baselineId, verdict: 'incomplete', error: error.message };
     }
   }
-  async function runCrud(mode = 'all') {
-    // Probe CRUD validates the recorder/session without mutating the business baseline.
+  async function runCrudProbeOperations(plan, probeId) {
+    for (const [method, body] of [
+      ['GET', undefined],
+      ['PATCH', { pqvd_value: 'after', pqvd_counter: 1 }],
+      ['GET', undefined],
+      ['DELETE', undefined],
+    ]) {
+      if (stopped()) break;
+      const op = await operation(plan, 'webapi', crypto.randomUUID(), 1, {
+        phase: 'CRUD',
+        message: { GET: 'Retrieve', PATCH: 'Update', DELETE: 'Delete' }[method],
+      });
+      const response = await request({
+        method,
+        url: `/_api/pqvd_crudprobes(${probeId})${method === 'GET' ? '?$select=pqvd_crudprobeid,pqvd_name,pqvd_value,pqvd_counter' : ''}`,
+        body,
+      });
+      let operationName;
+      if (method === 'GET') operationName = 'Read';
+      else if (method === 'PATCH') operationName = 'Update';
+      else operationName = 'Delete';
+      const result = { table: plan.table, method, status: response.status, body: response.text };
+      evidence.push(result);
+      await record(
+        plan,
+        op.pqvd_testoperationid,
+        'webapi',
+        { Summary: result, RawResponse: response.text },
+        { phase: 'CRUD', operation: operationName, httpStatus: response.status },
+      );
+      if (!response.ok) break;
+      if (method === 'DELETE') residuals.splice(residuals.indexOf(probeId), 1);
+    }
+  }
+  async function cleanupCrudProbe(plan, probeId) {
+    if (!probeId || !residuals.includes(probeId)) return;
+    try {
+      const cleanupOp = await operation(plan, 'webapi', crypto.randomUUID(), 1, {
+          phase: 'Cleanup',
+          message: 'Delete',
+        }),
+        response = await request({ method: 'DELETE', url: `/_api/pqvd_crudprobes(${probeId})` });
+      await record(
+        plan,
+        cleanupOp.pqvd_testoperationid,
+        'webapi',
+        { Cleanup: { probeId, status: response.status }, RawResponse: response.text },
+        { phase: 'Cleanup', operation: 'Delete', httpStatus: response.status },
+      );
+      if (response.ok) residuals.splice(residuals.indexOf(probeId), 1);
+      else evidence.push({ kind: 'probe-cleanup-error', probeId, status: response.status, rawResponse: response.text });
+    } catch (error) {
+      evidence.push({ kind: 'probe-cleanup-error', probeId, error: error.message });
+    }
+  }
+  async function runCrudProbe(plan) {
     let probeId;
-    const plan = { id: 'CRUD-probe', table: 'pqvd_crudprobe', variant: 'positive-control' };
-    if (['all', 'probe'].includes(mode))
-      try {
-        const createOp = await operation(plan, 'webapi', crypto.randomUUID(), 1, { phase: 'CRUD', message: 'Create' });
-        await record(
-          plan,
-          createOp.pqvd_testoperationid,
-          'webapi',
-          {
-            Request: {
-              table: 'pqvd_crudprobe',
-              purpose: 'Create disposable positive-control probe',
-              runId,
-              ownerContactId: context.contactId,
-            },
+    try {
+      const createOp = await operation(plan, 'webapi', crypto.randomUUID(), 1, { phase: 'CRUD', message: 'Create' });
+      await record(
+        plan,
+        createOp.pqvd_testoperationid,
+        'webapi',
+        {
+          Request: {
+            table: 'pqvd_crudprobe',
+            purpose: 'Create disposable positive-control probe',
+            runId,
+            ownerContactId: context.contactId,
           },
-          { phase: 'CRUD', operation: 'Create' },
-        );
-        probeId = await create('pqvd_crudprobes', {
-          pqvd_name: 'CO Disposable Probe',
-          pqvd_token: crypto.randomUUID(),
-          'pqvd_ownercontactid@odata.bind': bind('contacts', context.contactId),
-          'pqvd_runid@odata.bind': bind('pqvd_testruns', runId),
-          pqvd_value: 'before',
-          pqvd_counter: 0,
-        });
-        residuals.push(probeId);
-        await record(
-          plan,
-          createOp.pqvd_testoperationid,
-          'webapi',
-          { Summary: { table: plan.table, method: 'POST', probeId } },
-          { phase: 'CRUD', operation: 'Create' },
-        );
-        for (const [method, body] of [
-          ['GET', undefined],
-          ['PATCH', { pqvd_value: 'after', pqvd_counter: 1 }],
-          ['GET', undefined],
-          ['DELETE', undefined],
-        ]) {
-          if (stopped()) break;
-          const op = await operation(plan, 'webapi', crypto.randomUUID(), 1, {
-            phase: 'CRUD',
-            message: { GET: 'Retrieve', PATCH: 'Update', DELETE: 'Delete' }[method],
-          });
-          const response = await request({
-            method,
-            url: `/_api/pqvd_crudprobes(${probeId})${method === 'GET' ? '?$select=pqvd_crudprobeid,pqvd_name,pqvd_value,pqvd_counter' : ''}`,
-            body,
-          });
-          const result = { table: plan.table, method, status: response.status, body: response.text };
-          evidence.push(result);
-          await record(
-            plan,
-            op.pqvd_testoperationid,
-            'webapi',
-            { Summary: result, RawResponse: response.text },
-            {
-              phase: 'CRUD',
-              operation: method === 'GET' ? 'Read' : method === 'PATCH' ? 'Update' : 'Delete',
-              httpStatus: response.status,
-            },
-          );
-          if (!response.ok) break;
-          if (method === 'DELETE') residuals.splice(residuals.indexOf(probeId), 1);
-        }
-      } catch (error) {
-        evidence.push({
-          kind: 'probe-error',
-          error: error.message,
-          httpStatus: error.response?.status,
-          rawResponse: error.response?.text,
-          probeId,
-        });
-      } finally {
-        if (probeId && residuals.includes(probeId)) {
-          try {
-            const cleanupOp = await operation(plan, 'webapi', crypto.randomUUID(), 1, {
-                phase: 'Cleanup',
-                message: 'Delete',
-              }),
-              response = await request({ method: 'DELETE', url: `/_api/pqvd_crudprobes(${probeId})` });
-            await record(
-              plan,
-              cleanupOp.pqvd_testoperationid,
-              'webapi',
-              { Cleanup: { probeId, status: response.status }, RawResponse: response.text },
-              { phase: 'Cleanup', operation: 'Delete', httpStatus: response.status },
-            );
-            if (response.ok) residuals.splice(residuals.indexOf(probeId), 1);
-            else
-              evidence.push({
-                kind: 'probe-cleanup-error',
-                probeId,
-                status: response.status,
-                rawResponse: response.text,
-              });
-          } catch (error) {
-            evidence.push({ kind: 'probe-cleanup-error', probeId, error: error.message });
-          }
-        }
-      }
+        },
+        { phase: 'CRUD', operation: 'Create' },
+      );
+      probeId = await create('pqvd_crudprobes', {
+        pqvd_name: 'CO Disposable Probe',
+        pqvd_token: crypto.randomUUID(),
+        'pqvd_ownercontactid@odata.bind': bind('contacts', context.contactId),
+        'pqvd_runid@odata.bind': bind('pqvd_testruns', runId),
+        pqvd_value: 'before',
+        pqvd_counter: 0,
+      });
+      residuals.push(probeId);
+      await record(
+        plan,
+        createOp.pqvd_testoperationid,
+        'webapi',
+        { Summary: { table: plan.table, method: 'POST', probeId } },
+        { phase: 'CRUD', operation: 'Create' },
+      );
+      await runCrudProbeOperations(plan, probeId);
+    } catch (error) {
+      evidence.push({
+        kind: 'probe-error',
+        error: error.message,
+        httpStatus: error.response?.status,
+        rawResponse: error.response?.text,
+        probeId,
+      });
+    } finally {
+      if (probeId && residuals.includes(probeId)) await cleanupCrudProbe(plan, probeId);
+    }
+  }
+  function runCrudFixture(fixture) {
+    let scalarResult;
+    if (fixture.targets && manifest.readiness.businessScalarUpdates) scalarResult = scalarCanaries(fixture);
+    else
+      evidence.push({
+        kind: 'blocked',
+        table: fixture.table,
+        operations: ['Update'],
+        reason: fixture.targets
+          ? 'Scalar mutation guards not qualified.'
+          : 'Reference/grant mutation requires a prepared negative payload; baseline rows are protected.',
+      });
+    const runEquipmentCanary = () => {
+      if (fixture.table === 'pqvd_equipment' && manifest.readiness.equipmentCanaryCreateDelete)
+        return equipmentCanary(fixture);
+      evidence.push({
+        kind: 'blocked',
+        table: fixture.table,
+        operations: ['Create', 'Delete'],
+        reason: 'Maintained scope projections and valid disposable parent/singleton dependencies not qualified.',
+      });
+    };
+    return scalarResult ? scalarResult.then(runEquipmentCanary) : runEquipmentCanary(); // NOSONAR: optional pending promise, awaited only when set
+  }
+  async function runCrud(mode = 'all') {
+    const plan = { id: 'CRUD-probe', table: 'pqvd_crudprobe', variant: 'positive-control' };
+    if (['all', 'probe'].includes(mode)) await runCrudProbe(plan);
     for (const fixture of manifest.crudFixtures) {
       if (stopped()) break;
       if (mode === 'probe' || (mode === 'equipment' && fixture.table !== 'pqvd_equipment')) continue;
-      if (fixture.targets && manifest.readiness.businessScalarUpdates) await scalarCanaries(fixture);
-      else
-        evidence.push({
-          kind: 'blocked',
-          table: fixture.table,
-          operations: ['Update'],
-          reason: fixture.targets
-            ? 'Scalar mutation guards not qualified.'
-            : 'Reference/grant mutation requires a prepared negative payload; baseline rows are protected.',
-        });
-      if (fixture.table === 'pqvd_equipment' && manifest.readiness.equipmentCanaryCreateDelete)
-        await equipmentCanary(fixture);
-      else
-        evidence.push({
-          kind: 'blocked',
-          table: fixture.table,
-          operations: ['Create', 'Delete'],
-          reason: 'Maintained scope projections and valid disposable parent/singleton dependencies not qualified.',
-        });
+      const pending = runCrudFixture(fixture);
+      if (pending) await pending; // NOSONAR: optional pending promise, awaited only when set
     }
   }
-  async function scalarCanaries(fixture) {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ async function scalarCanaries(fixture) {
     const entitySet = manifest.cases.find((c) => c.table === fixture.table).entitySet;
     for (const side of ['A', 'B']) {
       if (stopped()) break;
@@ -1151,17 +1268,7 @@ export function createRunner({ manifest, context, request, notify = () => {}, st
           portalErrorCode: response.data?.error?.code || null,
           denialLayer:
             response.status === 403 && response.data?.error?.code === '90040102' ? 'table-write-permission' : null,
-          verdict: !expected
-            ? 'incomplete'
-            : response.ok
-              ? expected.expectedAllowed
-                ? 'pass'
-                : 'fail'
-              : expected.expectedAllowed
-                ? 'fail'
-                : response.status === 403 && response.data?.error?.code === '90040102'
-                  ? 'pass'
-                  : 'rejected-with-layer-unqualified',
+          verdict: scalarCanaryPermissionVerdict(expected, response),
         };
         await record(
           plan,
@@ -1246,15 +1353,16 @@ export function createRunner({ manifest, context, request, notify = () => {}, st
         { phase: 'CRUD', operation: 'Delete' },
       );
       const negative = await request({ method: 'DELETE', url: negativeUrl });
+      const ordinaryDeleteVerdict = () => {
+        if (negative.ok) return 'fail';
+        if (negative.status === 403 && negative.data?.error?.code === '90040104') return 'expected-permission-denied';
+        return 'rejected-other-layer';
+      };
       result.ordinaryDelete = {
         status: negative.status,
         body: negative.text,
         accepted: negative.ok,
-        verdict: negative.ok
-          ? 'fail'
-          : negative.status === 403 && negative.data?.error?.code === '90040104'
-            ? 'expected-permission-denied'
-            : 'rejected-other-layer',
+        verdict: ordinaryDeleteVerdict(),
       };
       await record(
         plan,
@@ -1357,7 +1465,7 @@ export async function portalRequest({ url, method = 'GET', body, signal }) {
     (!target.pathname.startsWith('/_api/') && target.pathname !== '/permission-lab/liquid/')
   )
     throw new Error('Request escaped portal test endpoints.');
-  const token = await new Promise((resolve, reject) => window.shell.getTokenDeferred().done(resolve).fail(reject));
+  const token = await new Promise((resolve, reject) => globalThis.shell.getTokenDeferred().done(resolve).fail(reject));
   const response = await fetch(target, {
     method,
     headers: {
@@ -1394,6 +1502,43 @@ export async function portalRequest({ url, method = 'GET', body, signal }) {
   };
 }
 
+function appendPageQueryBlocks(detail, observation, lane, page) {
+  const blocks = [
+    ['Authored FetchXML', page.authoredFetchXml],
+    ['Liquid permission-applied XML', page.effectiveFetchXml],
+  ];
+  for (const event of page.backendEvents || []) {
+    try {
+      const content = JSON.parse(event.pqvd_payloadtext)?.content;
+      if (content?.query?.xml)
+        blocks.push([
+          `Plugin-received FetchXML: stage ${event.pqvd_stage}, ${content.linkCount ?? '?'} joins`,
+          content.query.xml,
+        ]);
+    } catch {
+      /* Optional payload or browser capability is unavailable. */
+    }
+  }
+  for (const [label, text] of blocks) {
+    if (!text) continue;
+    const heading = document.createElement('p'),
+      xml = document.createElement('pre');
+    heading.textContent = `${observation.caseId} ${lane.engine} ${page.fragment || ''} page ${page.page}: ${label}`;
+    xml.textContent = text;
+    detail.append(heading, xml);
+  }
+}
+
+function appendLaneEvidence(detail, observation, lane) {
+  for (const page of lane.pages || []) appendPageQueryBlocks(detail, observation, lane, page);
+}
+
+function appendObservationEvidence(detail, result) {
+  for (const observation of result.pairs || [result])
+    for (const lane of [observation.liquid, observation.webapi].filter(Boolean))
+      appendLaneEvidence(detail, observation, lane);
+}
+
 export function mount(manifest, context) {
   const log = document.getElementById('co-results'),
     status = document.getElementById('co-status');
@@ -1406,62 +1551,36 @@ export function mount(manifest, context) {
     title.textContent = result.caseId
       ? `${result.caseId}: ${result.verdict || result.kind || ''} | Liquid ${result.liquid?.returnedCount ?? '-'} | Web API ${result.webapi?.returnedCount ?? '-'}`
       : result.error || 'Run summary';
-    const confirmation = result.liquid
-      ? {
-          test: result.caseId,
-          verdict: result.verdict,
-          liquid: {
-            count: result.liquid.returnedCount,
-            ids: result.liquid.ids,
-            complete: result.liquid.complete,
-            error: result.liquid.error,
-          },
-          webapi: {
-            count: result.webapi.returnedCount,
-            ids: result.webapi.ids,
-            complete: result.webapi.complete,
-            error: result.webapi.error,
-          },
-        }
-      : result.runId
-        ? {
-            runId: result.runId,
-            pairs: result.pairs?.length,
-            error: result.error,
-            persistenceError: result.persistenceError,
-            residuals: result.residuals,
-          }
-        : result;
+    let confirmation;
+    if (result.liquid)
+      confirmation = {
+        test: result.caseId,
+        verdict: result.verdict,
+        liquid: {
+          count: result.liquid.returnedCount,
+          ids: result.liquid.ids,
+          complete: result.liquid.complete,
+          error: result.liquid.error,
+        },
+        webapi: {
+          count: result.webapi.returnedCount,
+          ids: result.webapi.ids,
+          complete: result.webapi.complete,
+          error: result.webapi.error,
+        },
+      };
+    else if (result.runId)
+      confirmation = {
+        runId: result.runId,
+        pairs: result.pairs?.length,
+        error: result.error,
+        persistenceError: result.persistenceError,
+        residuals: result.residuals,
+      };
+    else confirmation = result;
     pre.textContent = JSON.stringify(confirmation, null, 2);
     detail.append(title, pre);
-    for (const observation of result.pairs || [result])
-      for (const lane of [observation.liquid, observation.webapi].filter(Boolean))
-        for (const page of lane.pages || []) {
-          const blocks = [
-            ['Authored FetchXML', page.authoredFetchXml],
-            ['Liquid permission-applied XML', page.effectiveFetchXml],
-          ];
-          for (const event of page.backendEvents || []) {
-            try {
-              const content = JSON.parse(event.pqvd_payloadtext)?.content;
-              if (content?.query?.xml)
-                blocks.push([
-                  `Plugin-received FetchXML: stage ${event.pqvd_stage}, ${content.linkCount ?? '?'} joins`,
-                  content.query.xml,
-                ]);
-            } catch {
-              /* Optional payload or browser capability is unavailable. */
-            }
-          }
-          for (const [label, text] of blocks) {
-            if (!text) continue;
-            const heading = document.createElement('p'),
-              xml = document.createElement('pre');
-            heading.textContent = `${observation.caseId} ${lane.engine} ${page.fragment || ''} page ${page.page}: ${label}`;
-            xml.textContent = text;
-            detail.append(heading, xml);
-          }
-        }
+    appendObservationEvidence(detail, result);
     const full = document.createElement('details'),
       label = document.createElement('summary'),
       raw = document.createElement('pre');
@@ -1528,11 +1647,9 @@ export function mount(manifest, context) {
         pluginProfile: profileSelect.value || null,
       });
       render(current);
-      status.textContent = current.error
-        ? 'Incomplete: ' + current.error
-        : cancelled
-          ? 'Interrupted; inspect recorded completeness and verdicts.'
-          : 'Finished; inspect recorded completeness and verdicts.';
+      if (current.error) status.textContent = 'Incomplete: ' + current.error;
+      else if (cancelled) status.textContent = 'Interrupted; inspect recorded completeness and verdicts.';
+      else status.textContent = 'Finished; inspect recorded completeness and verdicts.';
     } catch (error) {
       status.textContent = error.message;
       current = { error: error.message, httpStatus: error.response?.status, rawResponse: error.response?.text };

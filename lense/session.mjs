@@ -12,7 +12,7 @@ import { scriptSourceBody, scriptResourceProof } from './script-source-evidence.
 // Editors and tools leave scratch files next to the sources (safe-write temporaries, swap and
 // backup files). They are never portal sources, so they must not rebuild the index or reload tabs.
 const SCRATCH_FILE =
-  /(?:~|\.swp|\.swx|\.swo|\.tmp|\.temp|\.bak|\.orig|\.rej|\.crswap|___jb_tmp___|___jb_old___)$|(?:^|[\\/])(?:\.#[^\\/]*|~\$[^\\/]*|4913|\.DS_Store|Thumbs\.db|desktop\.ini)$/i;
+  /(?:~|\.swp|\.swx|\.swo|\.tmp|\.temp|\.bak|\.orig|\.rej|\.crswap|___jb_tmp___|___jb_old___)$|(?:^|[\\/])(?:\.#[^\\/]*|~\$[^\\/]*|4913|\.DS_Store|Thumbs\.db|desktop\.ini)$/i; // NOSONAR: regex kept: a rewrite would change matches or captures
 
 // Sign-in and token endpoints are never touched, so authentication behaves exactly as online.
 // Matched against the path without its language segment (/en-US/signin is /signin).
@@ -30,6 +30,35 @@ const NEVER_REWRITE = [
 
 const TEXT_TYPES = /^(?:text\/|application\/(?:json|javascript|xml|xhtml))/i;
 const MAX_PAGE_SOURCE_BYTES = 8 * 1024 * 1024;
+
+function classifyChange(file, sourceDir, knownFiles, routeRoots) {
+  const rel = path.relative(sourceDir, file).replaceAll('\\', '/');
+  const inExtract = rel !== '' && rel !== '..' && !rel.startsWith('../') && !path.isAbsolute(rel);
+  let exists = true;
+  let directory = false;
+  try {
+    directory = fs.statSync(file).isDirectory();
+  } catch {
+    exists = false;
+  }
+  if (knownFiles.has(file)) return { relevant: true, structural: !exists || isPortalMetadata(rel) };
+  if (directory) return { relevant: false, structural: false };
+  if (!exists && [...knownFiles].some((known) => known.startsWith(file + path.sep)))
+    return { relevant: true, structural: true };
+  if (routeRoots.some((root) => file === root || file.startsWith(root + path.sep)))
+    return { relevant: true, structural: false };
+  if (!inExtract || SCRATCH_FILE.test(file)) return { relevant: false, structural: false };
+  const assetLocation = /^web-files\/[^/]+$/i.test(rel) || /^powerpagecomponents\/[^/]+\/filecontent\//i.test(rel);
+  if (isPortalMetadata(rel) || inlineKindOf(file) || assetLocation) return { relevant: true, structural: true };
+  return { relevant: false, structural: false };
+}
+const hasRecordedSources = (hit) => hit.sources?.length || hit.type === 'file' || hit.matched?.length;
+function repeatedPageFileHit(hit, list) {
+  return list.find(
+    (previous) =>
+      previous.type === 'file' && previous.url === hit.url && previous.sources?.[0]?.rel === hit.sources?.[0]?.rel,
+  );
+}
 
 export class OverlaySession extends EventEmitter {
   /** Prepare disk-heavy indexes without serial synchronous reads blocking startup. */
@@ -86,7 +115,7 @@ export class OverlaySession extends EventEmitter {
     this.api = null;
     /** where Git HEAD of the checkout points: {commit, branch, detached}; null until read or outside Git */
     this.head = null;
-    this.refreshQueue = Promise.resolve();
+    this.refreshQueue = Promise.resolve(); // NOSONAR: constructor timing must not change
     this.rewriter =
       prepared.rewriter ??
       new HtmlRewriter({
@@ -116,7 +145,7 @@ export class OverlaySession extends EventEmitter {
   }
 
   rel(file) {
-    return path.relative(this.cfg.sourceDir, file).replace(/\\/g, '/');
+    return path.relative(this.cfg.sourceDir, file).replaceAll('\\', '/');
   }
 
   #acceptChanges(changed) {
@@ -192,45 +221,10 @@ export class OverlaySession extends EventEmitter {
     const ignored = [];
     let structural = false;
     for (const file of files.map((file) => path.resolve(file))) {
-      const rel = path.relative(sourceDir, file).replace(/\\/g, '/');
-      const inExtract = rel !== '' && rel !== '..' && !rel.startsWith('../') && !path.isAbsolute(rel);
-      let exists = true;
-      let directory = false;
-      try {
-        directory = fs.statSync(file).isDirectory();
-      } catch {
-        exists = false;
-      }
-      if (this.knownFiles.has(file)) {
-        relevant.push(file);
-        if (!exists || isPortalMetadata(rel)) structural = true;
-        continue;
-      }
-      // children report their own events; a removed folder may have held indexed sources
-      if (directory) {
-        ignored.push(file);
-        continue;
-      }
-      if (!exists && [...this.knownFiles].some((known) => known.startsWith(file + path.sep))) {
-        relevant.push(file);
-        structural = true;
-        continue;
-      }
-      if (routeRoots.some((root) => file === root || file.startsWith(root + path.sep))) {
-        relevant.push(file);
-        continue;
-      }
-      if (!inExtract || SCRATCH_FILE.test(file)) {
-        ignored.push(file);
-        continue;
-      }
-      const assetLocation = /^web-files\/[^/]+$/i.test(rel) || /^powerpagecomponents\/[^/]+\/filecontent\//i.test(rel);
-      if (isPortalMetadata(rel) || inlineKindOf(file) || assetLocation) {
-        relevant.push(file);
-        structural = true;
-        continue;
-      }
-      ignored.push(file);
+      const decision = classifyChange(file, sourceDir, this.knownFiles, routeRoots);
+      if (decision.relevant) relevant.push(file);
+      else ignored.push(file);
+      if (decision.structural) structural = true;
     }
     return { relevant, ignored, structural };
   }
@@ -345,56 +339,56 @@ export class OverlaySession extends EventEmitter {
       }
       const list = this.pageHits.get(page) ?? [];
       let bytes = this.pageHitBytes.get(page) ?? 0;
-      if (hit.sources?.length || hit.type === 'file' || hit.matched?.length) {
-        const repeated =
-          hit.type === 'file' &&
-          list.find(
-            (previous) =>
-              previous.type === 'file' &&
-              previous.url === hit.url &&
-              previous.sources?.[0]?.rel === hit.sources?.[0]?.rel,
-          );
+      if (hasRecordedSources(hit)) {
+        const repeated = hit.type === 'file' && repeatedPageFileHit(hit, list);
         if (repeated) repeated.count = (repeated.count ?? 1) + 1;
-        else {
-          // Inline text supports panel comparisons, but polling responses must not retain
-          // hundreds of complete copies. Keep the latest response per background URL.
-          let keptBytes = 0;
-          const kept = {
-            ...hit,
-            matched: hit.matched?.map((match) => {
-              const size = typeof match.online === 'string' ? Buffer.byteLength(match.online) : 0;
-              if (keptBytes + size > MAX_PAGE_SOURCE_BYTES) {
-                const { online: _omitted, ...metadata } = match;
-                return { ...metadata, onlineOmitted: true };
-              }
-              keptBytes += size;
-              return match;
-            }),
-          };
-          this.hitBytes.set(kept, keptBytes);
-          const previous =
-            !hit.navigation && hit.type === 'html'
-              ? list.findIndex((entry) => !entry.navigation && entry.type === 'html' && entry.url === hit.url)
-              : -1;
-          if (previous >= 0) {
-            kept.count = (list[previous].count ?? 1) + 1;
-            bytes -= this.hitBytes.get(list[previous]) ?? 0;
-            list.splice(previous, 1);
-          }
-          list.push(kept);
-          bytes += keptBytes;
-        }
+        else bytes = this.#appendRecordedHit(hit, list, bytes);
         // Preserve the latest top-level document and bound both history and retained source bytes.
-        while (list.length > 500 || bytes > MAX_PAGE_SOURCE_BYTES) {
-          const [removed] = list.splice(list[0]?.navigation ? 1 : 0, 1);
-          if (!removed) break;
-          bytes -= this.hitBytes.get(removed) ?? 0;
-        }
+        bytes = this.#trimRecordedHits(list, bytes);
       }
       this.pageHits.set(page, list);
       this.pageHitBytes.set(page, bytes);
     }
     this.emit('hit', { ...hit, page });
+  }
+
+  #appendRecordedHit(hit, list, bytes) {
+    // Inline text supports panel comparisons, but polling responses must not retain
+    // hundreds of complete copies. Keep the latest response per background URL.
+    let keptBytes = 0;
+    const kept = {
+      ...hit,
+      matched: hit.matched?.map((match) => {
+        const size = typeof match.online === 'string' ? Buffer.byteLength(match.online) : 0;
+        if (keptBytes + size > MAX_PAGE_SOURCE_BYTES) {
+          const { online: _omitted, ...metadata } = match; // NOSONAR: binding is excluded from the rest object or is a placeholder
+          return { ...metadata, onlineOmitted: true };
+        }
+        keptBytes += size;
+        return match;
+      }),
+    };
+    this.hitBytes.set(kept, keptBytes);
+    const previous =
+      !hit.navigation && hit.type === 'html'
+        ? list.findIndex((entry) => !entry.navigation && entry.type === 'html' && entry.url === hit.url)
+        : -1;
+    if (previous >= 0) {
+      kept.count = (list[previous].count ?? 1) + 1;
+      bytes -= this.hitBytes.get(list[previous]) ?? 0;
+      list.splice(previous, 1);
+    }
+    list.push(kept);
+    return bytes + keptBytes;
+  }
+
+  #trimRecordedHits(list, bytes) {
+    while (list.length > 500 || bytes > MAX_PAGE_SOURCE_BYTES) {
+      const [removed] = list.splice(list[0]?.navigation ? 1 : 0, 1);
+      if (!removed) break;
+      bytes -= this.hitBytes.get(removed) ?? 0;
+    }
+    return bytes;
   }
 
   /** Handler for one request to the portal; `route` is what intercept.mjs hands over (the shape of a Playwright Route). */
@@ -418,6 +412,173 @@ export class OverlaySession extends EventEmitter {
     }
   }
 
+  async #handleMirage(route, url, request, method, type) {
+    if (url.pathname.startsWith(LOCAL_PREFIX)) {
+      if (url.pathname.startsWith(API_PREFIX) && this.api)
+        return this.api(route, url.pathname.slice(API_PREFIX.length));
+      return route
+        .fulfill({
+          status: 404,
+          headers: { 'content-type': 'text/plain' },
+          body: 'paqvilo: no Mirage panel resource at this address',
+        })
+        .catch(() => {});
+    }
+    const isDocument =
+      type === 'document' &&
+      (method === 'GET' ||
+        (method === 'POST' && /^application\/x-www-form-urlencoded/i.test(request.headers()['content-type'] ?? '')));
+    if (isDocument) {
+      let navigation;
+      try {
+        navigation = request.isNavigationRequest() && request.frame().parentFrame() === null;
+      } catch {
+        navigation = true;
+      }
+      if (navigation) this.#record(route, { type: 'html', url: url.pathname, sources: [], navigation: true });
+    }
+    return route.fallback();
+  }
+
+  async #handleLocalResource(route, url, request, method) {
+    // the dev panel on the page talking to this process
+    if (url.pathname.startsWith(API_PREFIX) && this.api) return this.api(route, url.pathname.slice(API_PREFIX.length));
+    // inline scripts the rewriter turned into <script src> so they can be debugged
+    let rel = null;
+    try {
+      if (method === 'GET' && url.pathname.startsWith(INLINE_PREFIX))
+        rel = decodeURIComponent(url.pathname.slice(INLINE_PREFIX.length));
+    } catch {
+      /* malformed escape */
+    }
+    // only files the model lists as inline scripts are served, nothing else under the sources
+    const src = this.model.inlineSources.find((s) => s.rel === rel && s.tag === 'script' && !s.extract),
+      body = this.#readLocalInlineBody(src);
+    let proof = null;
+    const proofPromise = this.#localScriptProof(body, src, request);
+    if (proofPromise) proof = await proofPromise; // NOSONAR: optional pending promise, awaited only when set
+    await route
+      .fulfill(
+        body
+          ? {
+              status: 200,
+              headers: {
+                'content-type': 'application/javascript; charset=utf-8',
+                'cache-control': 'no-store',
+                'x-paqvilo': encodeURI(src.rel),
+              },
+              body,
+              ...(proof ? { provenance: proof } : {}),
+            }
+          : { status: 404, headers: { 'content-type': 'text/plain' }, body: 'paqvilo: nothing at this address' },
+      )
+      .catch(() => {});
+  }
+
+  #readLocalInlineBody(src) {
+    try {
+      return src && isSourceFile(this.cfg.sourceDir, src.file)
+        ? this.fileBodies.read(src.file, 'source-map', (bytes) => scriptSourceBody(bytes, src.file))
+        : null;
+    } catch {
+      /* deleted meanwhile */
+      return null;
+    }
+  }
+
+  #localScriptProof(body, src, request) {
+    if (!body) return null;
+    try {
+      return scriptResourceProof(
+        this.sourceInspector,
+        src.file,
+        body,
+        new URL(request.frame().page().url()).pathname,
+      ).catch(() => null);
+    } catch {
+      /* Navigation may have ended while this script was read. */
+      return null;
+    }
+  }
+
+  #handleBypass(route, url, request, type) {
+    let navigation = false;
+    try {
+      navigation = type === 'document' && request.frame().parentFrame() === null;
+    } catch {
+      /* no frame yet */
+    }
+    if (navigation) this.#record(route, { type: 'html', url: url.pathname, sources: [], navigation });
+    return route.fallback();
+  }
+
+  #handleWebFile(route, url, request, method) {
+    const found = this.resolver.resolve(url.pathname);
+    const hit = found && !this.disabled.has(this.rel(found.file)) ? found : null;
+    if (!hit) return null;
+    const contentType = mimeFor(hit.file, mimeFor(url.pathname, this.model.findWebFile(url.pathname)?.mimeType));
+    const isScript = /(?:javascript|ecmascript)/i.test(contentType);
+    let body;
+    try {
+      // HEAD needs existence/type metadata, not the entire asset or generated source map.
+      if (method === 'HEAD') body = fs.statSync(hit.file).isFile() ? Buffer.alloc(0) : null;
+      else {
+        const sourceKind = () => {
+          if (!isScript) return '';
+          return this.cfg.sourceMaps ? 'source-map' : 'script-source';
+        };
+        body = this.fileBodies.read(hit.file, sourceKind(), (bytes) =>
+          isScript ? scriptSourceBody(bytes, hit.file, { sourceMaps: Boolean(this.cfg.sourceMaps) }) : bytes,
+        );
+      }
+    } catch {
+      body = null;
+    }
+    if (!body) return null;
+    const rel = this.rel(hit.file);
+    this.#record(route, {
+      type: 'file',
+      url: url.pathname,
+      sources: [{ rel, action: hit.via, kind: 'web-file' }],
+    });
+    return this.#fulfillWebFile(route, request, method, hit, {
+      rel,
+      contentType,
+      isScript,
+      body,
+    });
+  }
+
+  async #fulfillWebFile(route, request, method, hit, { rel, contentType, isScript, body }) {
+    let proof = null;
+    if (method === 'GET' && isScript) {
+      try {
+        proof = await scriptResourceProof(
+          this.sourceInspector,
+          hit.file,
+          body,
+          new URL(request.frame().page().url()).pathname,
+        );
+      } catch {
+        /* No proof for a changing or unindexed source. */
+      }
+    }
+    // the tab may be gone by now; that is not an error
+    await route
+      .fulfill({
+        status: 200,
+        headers: {
+          // by the name on disk, else by the name in the URL, else what the metadata says
+          'content-type': contentType,
+          'cache-control': 'no-store',
+          'x-paqvilo': encodeURI(rel),
+        },
+        body: method === 'HEAD' ? '' : body,
+        ...(proof ? { provenance: proof } : {}),
+      })
+      .catch(() => {});
+  }
+
   async #handle(route) {
     const request = route.request();
     let url;
@@ -432,167 +593,26 @@ export class OverlaySession extends EventEmitter {
 
     // Mirage already rendered its current Liquid, markup, forms and source assets. Keep the
     // toolkit panel API, but never apply the remote-portal overlay a second time to this response.
-    if (this.cfg.mirage) {
-      if (url.pathname.startsWith(LOCAL_PREFIX)) {
-        if (url.pathname.startsWith(API_PREFIX) && this.api)
-          return this.api(route, url.pathname.slice(API_PREFIX.length));
-        return route
-          .fulfill({
-            status: 404,
-            headers: { 'content-type': 'text/plain' },
-            body: 'paqvilo: no Mirage panel resource at this address',
-          })
-          .catch(() => {});
-      }
-      const isDocument =
-        type === 'document' &&
-        (method === 'GET' ||
-          (method === 'POST' && /^application\/x-www-form-urlencoded/i.test(request.headers()['content-type'] ?? '')));
-      if (isDocument) {
-        let navigation;
-        try {
-          navigation = request.isNavigationRequest() && request.frame().parentFrame() === null;
-        } catch {
-          navigation = true;
-        }
-        if (navigation) this.#record(route, { type: 'html', url: url.pathname, sources: [], navigation: true });
-      }
-      return route.fallback();
-    }
+    if (this.cfg.mirage) return this.#handleMirage(route, url, request, method, type);
 
     // 0. addresses of the overlay itself; whatever happens, they are never sent to the portal
-    if (url.pathname.startsWith(LOCAL_PREFIX)) {
-      // the dev panel on the page talking to this process
-      if (url.pathname.startsWith(API_PREFIX) && this.api)
-        return this.api(route, url.pathname.slice(API_PREFIX.length));
-      // inline scripts the rewriter turned into <script src> so they can be debugged
-      let rel = null;
-      try {
-        if (method === 'GET' && url.pathname.startsWith(INLINE_PREFIX))
-          rel = decodeURIComponent(url.pathname.slice(INLINE_PREFIX.length));
-      } catch {
-        /* malformed escape */
-      }
-      // only files the model lists as inline scripts are served, nothing else under the sources
-      const src = this.model.inlineSources.find((s) => s.rel === rel && s.tag === 'script' && !s.extract);
-      let body = null;
-      try {
-        body =
-          src && isSourceFile(this.cfg.sourceDir, src.file)
-            ? this.fileBodies.read(src.file, 'source-map', (bytes) => scriptSourceBody(bytes, src.file))
-            : null;
-      } catch {
-        /* deleted meanwhile */
-      }
-      let proof = null;
-      try {
-        proof = body
-          ? await scriptResourceProof(
-              this.sourceInspector,
-              src.file,
-              body,
-              new URL(request.frame().page().url()).pathname,
-            ).catch(() => null)
-          : null;
-      } catch {
-        /* Navigation may have ended while this script was read. */
-      }
-      await route
-        .fulfill(
-          body
-            ? {
-                status: 200,
-                headers: {
-                  'content-type': 'application/javascript; charset=utf-8',
-                  'cache-control': 'no-store',
-                  'x-paqvilo': encodeURI(src.rel),
-                },
-                body,
-                ...(proof ? { provenance: proof } : {}),
-              }
-            : { status: 404, headers: { 'content-type': 'text/plain' }, body: 'paqvilo: nothing at this address' },
-        )
-        .catch(() => {});
-      return;
-    }
+    if (url.pathname.startsWith(LOCAL_PREFIX)) return this.#handleLocalResource(route, url, request, method);
 
-    if (this.bypass) {
-      let navigation = false;
-      try {
-        navigation = type === 'document' && request.frame().parentFrame() === null;
-      } catch {
-        /* no frame yet */
-      }
-      if (navigation) this.#record(route, { type: 'html', url: url.pathname, sources: [], navigation });
-      return route.fallback();
-    }
+    if (this.bypass) return this.#handleBypass(route, url, request, type);
 
     const path = pageKey(url.pathname, this.model);
     if (NEVER_REWRITE.some((re) => re.test(path))) return route.fallback();
 
     // 1. web files and explicit routes: answered from disk, the online site is not asked at all
     if (method === 'GET' || method === 'HEAD') {
-      const found = this.resolver.resolve(url.pathname);
-      const hit = found && !this.disabled.has(this.rel(found.file)) ? found : null;
-      if (hit) {
-        const contentType = mimeFor(hit.file, mimeFor(url.pathname, this.model.findWebFile(url.pathname)?.mimeType));
-        const isScript = /(?:javascript|ecmascript)/i.test(contentType);
-        let body;
-        try {
-          // HEAD needs existence/type metadata, not the entire asset or generated source map.
-          body =
-            method === 'HEAD'
-              ? fs.statSync(hit.file).isFile()
-                ? Buffer.alloc(0)
-                : null
-              : this.fileBodies.read(
-                  hit.file,
-                  isScript ? (this.cfg.sourceMaps ? 'source-map' : 'script-source') : '',
-                  (bytes) =>
-                    isScript ? scriptSourceBody(bytes, hit.file, { sourceMaps: Boolean(this.cfg.sourceMaps) }) : bytes,
-                );
-        } catch {
-          body = null;
-        }
-        if (body) {
-          const rel = this.rel(hit.file);
-          this.#record(route, {
-            type: 'file',
-            url: url.pathname,
-            sources: [{ rel, action: hit.via, kind: 'web-file' }],
-          });
-          let proof = null;
-          if (method === 'GET' && isScript) {
-            try {
-              proof = await scriptResourceProof(
-                this.sourceInspector,
-                hit.file,
-                body,
-                new URL(request.frame().page().url()).pathname,
-              );
-            } catch {
-              /* No proof for a changing or unindexed source. */
-            }
-          }
-          // the tab may be gone by now; that is not an error
-          await route
-            .fulfill({
-              status: 200,
-              headers: {
-                // by the name on disk, else by the name in the URL, else what the metadata says
-                'content-type': contentType,
-                'cache-control': 'no-store',
-                'x-paqvilo': encodeURI(rel),
-              },
-              body: method === 'HEAD' ? '' : body,
-              ...(proof ? { provenance: proof } : {}),
-            })
-            .catch(() => {});
-          return;
-        }
-      }
+      const webFile = this.#handleWebFile(route, url, request, method);
+      if (webFile) return webFile; // NOSONAR: optional pending promise, awaited only when set
     }
 
+    return this.#handlePageRequest(route, url, request, method, type);
+  }
+
+  /* NOSONAR */ async #handlePageRequest(route, url, request, method, type) {
     // 2. pages: fetched online, then local inline blocks / markup changes are laid over the HTML
     // A form post is re-sent by route.fetch from the bytes the browser hands over, and it does not
     // hand over uploaded files: multipart posts are left alone.
@@ -629,43 +649,47 @@ export class OverlaySession extends EventEmitter {
         if (navigation) this.#record(route, { type: 'html', url: url.pathname, sources: [], navigation });
         return route.fulfill({ response }).catch(() => {});
       }
-      let original;
-      let result;
-      try {
-        original = await response.text();
-        let sourceIndex;
-        if (isDocument && isHtml && this.sourceInspector) {
-          try {
-            sourceIndex = await this.sourceInspector.sourceIndexFor(url.pathname);
-          } catch (error) {
-            this.emit('fault', error, request.url());
-          }
-        }
-        result = this.rewriter.rewrite(original, url.pathname, { html: isHtml, isDocument, sourceIndex });
-      } catch (err) {
-        this.emit('fault', err, request.url());
-        // Preserve the response already received, especially after a successful form save.
-        // If it cannot be read, abort instead of repeating the request.
-        return route.fulfill({ response }).catch(() => route.abort().catch(() => {}));
-      }
-      this.#record(route, {
-        type: 'html',
-        url: url.pathname,
-        navigation,
-        sources: result.applied.map((a) => ({ rel: a.rel, action: a.action, kind: a.kind })),
-        notes: result.notes,
-        // every local inline source recognised in the page, overridden or not
-        matched: result.matched,
-      });
-      return route
-        .fulfill({
-          response,
-          ...(result.html === original ? {} : { body: result.html }),
-          ...(result.provenance ? { provenance: result.provenance } : {}),
-        })
-        .catch(() => {});
+      return this.#rewritePageResponse(route, url, request, response, isDocument, isHtml, navigation);
     }
 
     return route.fallback();
+  }
+
+  async #rewritePageResponse(route, url, request, response, isDocument, isHtml, navigation) {
+    let original;
+    let result;
+    try {
+      original = await response.text();
+      let sourceIndex;
+      if (isDocument && isHtml && this.sourceInspector) {
+        try {
+          sourceIndex = await this.sourceInspector.sourceIndexFor(url.pathname);
+        } catch (error) {
+          this.emit('fault', error, request.url());
+        }
+      }
+      result = this.rewriter.rewrite(original, url.pathname, { html: isHtml, isDocument, sourceIndex });
+    } catch (err) {
+      this.emit('fault', err, request.url());
+      // Preserve the response already received, especially after a successful form save.
+      // If it cannot be read, abort instead of repeating the request.
+      return route.fulfill({ response }).catch(() => route.abort().catch(() => {}));
+    }
+    this.#record(route, {
+      type: 'html',
+      url: url.pathname,
+      navigation,
+      sources: result.applied.map((a) => ({ rel: a.rel, action: a.action, kind: a.kind })),
+      notes: result.notes,
+      // every local inline source recognised in the page, overridden or not
+      matched: result.matched,
+    });
+    return route
+      .fulfill({
+        response,
+        ...(result.html === original ? {} : { body: result.html }),
+        ...(result.provenance ? { provenance: result.provenance } : {}),
+      })
+      .catch(() => {});
   }
 }

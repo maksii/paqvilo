@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 /** Stop one owned process tree and require its inherited output streams to close. */
 export async function stopCodeAppDevServer(child, closed) {
   if (child.pid && process.platform === 'win32' && child.exitCode === null && child.signalCode === null) {
-    const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
+    const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
     await new Promise((resolve) => {
       killer.once('error', resolve);
       killer.once('close', resolve);

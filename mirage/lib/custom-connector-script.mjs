@@ -33,7 +33,7 @@ export function dotnetSdk(command = 'dotnet') {
   if (!sdkCache.has(command)) {
     let version = null;
     try {
-      const answer = spawnSync(command, ['--version'], { encoding: 'utf8', timeout: 20000, windowsHide: true });
+      const answer = spawnSync(command, ['--version'], { encoding: 'utf8', timeout: 20000, windowsHide: true }); // NOSONAR: fixed tool name resolved through PATH by developer tooling
       if (answer.status === 0 && /^\d+\.\d+/.test(answer.stdout.trim())) version = answer.stdout.trim();
     } catch {
       version = null;
@@ -265,7 +265,7 @@ export function createScriptHost({ stateDirectory = null, command = 'dotnet', tr
                 line
                   .split(dir)
                   .join('')
-                  .replace(/\s*\[[^\]]*\.csproj\]$/, '')
+                  .replace(/\s*\[[^\]]*\.csproj\]$/, '') // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
                   .replace(/^[\\/]*Script\.cs/, 'script.csx')
                   .trim(),
               ),
@@ -342,12 +342,10 @@ export function createScriptHost({ stateDirectory = null, command = 'dotnet', tr
                 headers: message.headers ?? {},
                 body: message.body == null ? undefined : Buffer.from(message.body, 'base64'),
               });
-              const bytes =
-                answer.body == null
-                  ? null
-                  : Buffer.isBuffer(answer.body)
-                    ? answer.body
-                    : Buffer.from(typeof answer.body === 'string' ? answer.body : JSON.stringify(answer.body));
+              let bytes = null;
+              if (Buffer.isBuffer(answer.body)) bytes = answer.body;
+              else if (answer.body != null)
+                bytes = Buffer.from(typeof answer.body === 'string' ? answer.body : JSON.stringify(answer.body));
               write({
                 status: answer.statusCode,
                 headers: answer.headers ?? {},

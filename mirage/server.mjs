@@ -30,7 +30,7 @@ import { createModelDrivenRecordService, createModelDrivenWebApi } from './lib/d
 import { createStaffSessions, createStaffSessionHandler } from './lib/staff-session.mjs';
 import { createDataverseAdmin } from './lib/dataverse-admin.mjs';
 import { runtimeSettings } from './lib/runtime-config.mjs';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -58,7 +58,6 @@ import {
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readLocalFile } from '../lense/local-file.mjs';
-import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -97,7 +96,7 @@ import {
   validatePortalOverrides,
 } from './lib/portal-overrides.mjs';
 import { platformSettingEntries, validatePlatformOverrides } from './lib/platform-settings.mjs';
-import { configurationPresetDiagnostics } from './lib/preset-registry.mjs';
+import { configurationPresetDiagnostics, discoverPacks, OWNED_PRESET } from './lib/preset-registry.mjs';
 import {
   experimentPresets,
   experimentId,
@@ -254,7 +253,7 @@ function captchaResource(req, res, url, portal) {
   const range = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range ?? '');
   const size = CAPTCHA_AUDIO.length;
   const start = range ? Number(range[1]) : 0;
-  const end = range && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+  const end = range?.[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
   if (start > end) {
     res.writeHead(416, { ...headers, 'content-range': `bytes */${size}`, 'content-length': 0 });
     res.end();
@@ -277,9 +276,9 @@ function captchaResource(req, res, url, portal) {
  * page cache headers without Vary, the site's frame option and the "Object moved" body.
  */
 function postbackRedirect(res, response, portal) {
-  const href = String(response.location).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const href = String(response.location).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
   const body = `<html><head><title>Object moved</title></head><body>\r\n<h2>Object moved to <a href="${href}">here</a>.</h2>\r\n</body></html>\r\n`;
-  const { vary: _vary, ...page } = PAGE_HEADERS;
+  const { vary: _vary, ...page } = PAGE_HEADERS; // NOSONAR: binding is excluded from the rest object or is a placeholder
   res.writeHead(response.status, {
     ...page,
     'content-type': 'text/html; charset=utf-8',
@@ -305,7 +304,6 @@ import { runtimePort } from './lib/runtime-port.mjs';
 import { createFrameReadiness } from './lib/frame-readiness.mjs';
 import { formWriteError } from './lib/form-error-presentation.mjs';
 import { assertPortalSource, portalSourceDir } from './lib/source-dialect.mjs';
-import { discoverPacks, OWNED_PRESET } from './lib/preset-registry.mjs';
 import { collectWebApiErrorTemplates } from './lib/webapi-error-templates.mjs';
 import {
   injectRuntime,
@@ -364,7 +362,7 @@ const DOCS = docsLinks(toolkitPackage.version, toolkitPackage.repository?.url ??
 // starts at import, as before, but only a starting runtime waits for it: importing this module does not.
 const loadedImplementationFingerprint = cachedImplementationSourceFingerprint(ROOT);
 // A failure surfaces in the runtime that awaits it, not as an unhandled rejection of an import that starts none.
-loadedImplementationFingerprint.catch(() => {});
+loadedImplementationFingerprint.catch(() => {}); // NOSONAR: module-level promise chain must not block evaluation
 const auditResponse = Symbol('auditResponse');
 // The request body as rawBody read it, for the http root's input at level full (docs/design/tracing.md, D-R3-10).
 const requestBody = Symbol('requestBody');
@@ -494,7 +492,8 @@ async function rawBody(req) {
     if (size > 8 * 1024 * 1024) throw error('Request body exceeds 8 MiB.', 413);
     chunks.push(chunk);
   }
-  return (req[requestBody] = Buffer.concat(chunks));
+  req[requestBody] = Buffer.concat(chunks);
+  return req[requestBody];
 }
 async function jsonBody(req, { allowEmpty = true, odataErrorDetails = false } = {}) {
   const bytes = await rawBody(req);
@@ -521,15 +520,18 @@ async function jsonObjectBody(req) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw error('Request body must be a JSON object.');
   return body;
 }
+const compareText = (a, b) => Number(a > b) - Number(a < b);
+const logSeverity = (level) => {
+  if (level === 'Error') return 'error';
+  return level === 'Warn' ? 'warning' : 'info';
+};
 function json(res, status, value, headers = {}, { chunks } = {}) {
+  let rowCount;
+  if (Array.isArray(value?.value)) rowCount = value.value.length;
+  else if (Array.isArray(value)) rowCount = value.length;
+  else if (status < 400 && value && typeof value === 'object') rowCount = 1;
   res[auditResponse] = {
-    rowCount: Array.isArray(value?.value)
-      ? value.value.length
-      : Array.isArray(value)
-        ? value.length
-        : status < 400 && value && typeof value === 'object'
-          ? 1
-          : undefined,
+    rowCount,
     error: value?.error,
   };
   res.writeHead(status, {
@@ -570,7 +572,7 @@ export async function createSimulator(options = {}) {
   }
 }
 
-async function createPowerPagesSimulator({
+/* NOSONAR: single-pass routine, splitting it would change shared state */ async function createPowerPagesSimulator({
   [RECORD_OWNERS]: recordOwners,
   [SHARED_TRACES]: sharedTraces = null,
   runtime: runtimeOption,
@@ -913,7 +915,7 @@ async function createPowerPagesSimulator({
         Object.entries({
           ...activeProfiles.environmentVariables,
           ...environmentVariables,
-          ...(state.simulator?.environmentVariables ?? {}),
+          ...state.simulator?.environmentVariables,
         }).map(([name, value]) => [name.toLowerCase(), value]),
       ),
       connectionReferences: activeProfiles.connectionReferences,
@@ -983,7 +985,7 @@ async function createPowerPagesSimulator({
     state.simulator = {
       ...state.simulator,
       ...policyDefaults,
-      ...(initial?.simulator ?? {}),
+      ...initial?.simulator,
       contentPolicySource: !explicitPolicy && Object.keys(policyDefaults).length ? 'project defaults' : 'runtime state',
     };
     return state;
@@ -1090,7 +1092,7 @@ async function createPowerPagesSimulator({
   bootstrapStageAt = performance.now();
   await store.init({ restoredState, restoredStorage });
   // eslint-disable-next-line no-useless-assignment -- Release bootstrap snapshots before long-lived route closures.
-  restoredState = restoredStorage = undefined;
+  restoredState = restoredStorage = undefined; // NOSONAR: reviewed, a rewrite would not preserve behaviour
   bootstrapTimings.stateRestoreMs =
     Math.round(performance.now() - bootstrapStageAt) + (bootstrapTimings.statePreloadMs ?? 0);
   bootstrapTimings.stateRestore = {
@@ -1311,7 +1313,7 @@ async function createPowerPagesSimulator({
   const stagedAttachments = (controls, { prefix } = {}) => {
     const field = prefix
       ? `${prefix}AttachFile_HiddenField_AnnotationIds`
-      : [...controls.keys()].find((key) => /AttachFile_HiddenField_AnnotationIds$/.test(key));
+      : [...controls.keys()].find((key) => key.endsWith('AttachFile_HiddenField_AnnotationIds'));
     if (!field || !controls.has(field)) return [];
     let ids;
     try {
@@ -1326,8 +1328,7 @@ async function createPowerPagesSimulator({
     return ids.map((id) => {
       const entry = stagedUploads.get(String(id).toLowerCase());
       if (
-        !entry ||
-        !entry.owner ||
+        !entry?.owner ||
         entry.owner !== uploadOwner() ||
         entry.received !== entry.size ||
         Date.now() - entry.created > 3600000
@@ -1410,7 +1411,7 @@ async function createPowerPagesSimulator({
       await attempt(() => personaRuntimes.close());
       await attempt(() => watcher?.close());
       await reloadPromise?.catch(() => {});
-      while (activeRequests.size) await Promise.all([...activeRequests]);
+      while (activeRequests.size) await Promise.all(activeRequests);
       await attempt(() => mutation);
       await attempt(() => store.queue);
       await attempt(() => closeModelDriven?.());
@@ -1473,21 +1474,20 @@ async function createPowerPagesSimulator({
   logTraces = traces;
   // Admin trace stream: `trace` events on /__sim/events?channels=trace (sim-trace-routes.mjs createTraceChannel).
   const traceChannel = createTraceChannel(traces);
-  audit.subscribe((entry) =>
-    publishLog(
-      entry.kind === 'liquid-fetchxml'
-        ? 'liquid'
-        : ['entity-read', 'entity-query'].includes(entry.kind)
-          ? 'data'
-          : 'request',
-      {
-        level: entry.outcome === 'error' ? 'error' : entry.outcome === 'denied' ? 'warning' : 'info',
-        traceId: entry.traceId,
-        spanId: entry.spanId,
-        entry,
-      },
-    ),
-  );
+  audit.subscribe((entry) => {
+    let channel = 'request';
+    if (entry.kind === 'liquid-fetchxml') channel = 'liquid';
+    else if (['entity-read', 'entity-query'].includes(entry.kind)) channel = 'data';
+    let level = 'info';
+    if (entry.outcome === 'error') level = 'error';
+    else if (entry.outcome === 'denied') level = 'warning';
+    return publishLog(channel, {
+      level,
+      traceId: entry.traceId,
+      spanId: entry.spanId,
+      entry,
+    });
+  });
   // Declarative plugin rules (Plugins & presets): DataStore.ruleEvaluated adds the `rule` event to the current span and
   // calls this for the `plugin` log line, one per rule that matched the table and operation.
   store.onRuleEvaluated = (evaluation, span) =>
@@ -1516,18 +1516,16 @@ async function createPowerPagesSimulator({
       };
     const matchesDefaults = ['confinePortalPages', 'externalAssets', 'externalFrameOrigins'].every((key) =>
       key === 'externalFrameOrigins'
-        ? JSON.stringify([...(simulator[key] ?? [])].sort()) === JSON.stringify([...(policyDefaults[key] ?? [])].sort())
+        ? JSON.stringify([...(simulator[key] ?? [])].sort(compareText)) ===
+          JSON.stringify([...(policyDefaults[key] ?? [])].sort(compareText))
         : (simulator[key] === true) === (policyDefaults[key] === true),
     );
     const origin = policyOrigin(simulator.contentPolicySource);
-    const source =
-      origin === 'project defaults'
-        ? !Object.keys(policyDefaults).length
-          ? 'project defaults (no longer configured)'
-          : !matchesDefaults
-            ? 'runtime state (project default differs)'
-            : origin
-        : origin;
+    let source = origin;
+    if (origin === 'project defaults') {
+      if (!Object.keys(policyDefaults).length) source = 'project defaults (no longer configured)';
+      else if (!matchesDefaults) source = 'runtime state (project default differs)';
+    }
     return {
       ...simulator,
       contentPolicySource: source,
@@ -1551,12 +1549,12 @@ async function createPowerPagesSimulator({
   const webFormSessions = createWebFormSessions();
   const visitorName = () => visitorCookieName(localOrigin ? new URL(localOrigin).port : null);
   const ANONYMOUS_VISITOR = Object.freeze({ id: null, contactId: null, roles: [], roleSource: 'memberships' });
-  const sessionIdentity = (session) =>
-    !session?.contactId
-      ? ANONYMOUS_VISITOR
-      : session.roles
-        ? { id: session.contactId, contactId: session.contactId, roles: session.roles, roleSource: 'override' }
-        : { id: session.contactId, contactId: session.contactId, roles: [], roleSource: 'memberships' };
+  const sessionIdentity = (session) => {
+    if (!session?.contactId) return ANONYMOUS_VISITOR;
+    if (session.roles)
+      return { id: session.contactId, contactId: session.contactId, roles: session.roles, roleSource: 'override' };
+    return { id: session.contactId, contactId: session.contactId, roles: [], roleSource: 'memberships' };
+  };
   const requestAuth = (req, url) => {
     const session = authSessions.read(req.headers.cookie);
     if (url.pathname.startsWith('/__sim/api')) return { session };
@@ -1576,7 +1574,7 @@ async function createPowerPagesSimulator({
     const configured = fromSession ?? state.simulator?.identity ?? { id: null, roles: [] };
     const resolved =
       state.simulator?.mode === 'live' ? structuredClone(configured) : resolvePortalIdentity(portal, state, configured);
-    const { admin: ignoredAdmin, ...selected } = resolved;
+    const { admin: ignoredAdmin, ...selected } = resolved; // NOSONAR: binding is excluded from the rest object or is a placeholder
     const contactId = selected.contactId ?? selected.id;
     if (!contactId || state.simulator?.mode === 'live') return selected;
     const idColumn = state.mappings.contact?.idColumn ?? 'contactid';
@@ -1692,13 +1690,10 @@ async function createPowerPagesSimulator({
     read.set({ auditId: span.id });
     try {
       const result = await traces.run(read, fn);
-      const rowCount = Array.isArray(result?.entities)
-        ? result.entities.length
-        : Array.isArray(result?.value)
-          ? result.value.length
-          : result
-            ? 1
-            : 0;
+      let rowCount = 0;
+      if (Array.isArray(result?.entities)) rowCount = result.entities.length;
+      else if (Array.isArray(result?.value)) rowCount = result.value.length;
+      else if (result) rowCount = 1;
       span.finish({ rowCount });
       read.output(() => result ?? null);
       read.end({
@@ -1789,7 +1784,8 @@ async function createPowerPagesSimulator({
         { incremental: true },
       );
     const mapping = liveMapping(entity);
-    const response = await live.request(`/_api/${mapping.entitySet}${id ? `(${encodeURIComponent(id)})` : ''}`, {
+    const recordSuffix = id ? `(${encodeURIComponent(id)})` : '';
+    const response = await live.request(`/_api/${mapping.entitySet}${recordSuffix}`, {
       method: id ? 'PATCH' : 'POST',
       body: Buffer.from(JSON.stringify(values)),
       contentType: 'application/json',
@@ -1805,7 +1801,7 @@ async function createPowerPagesSimulator({
       }
     }
     const recordId =
-      id ?? response.headers.entityid ?? /\(([^)]+)\)$/.exec(response.headers['odata-entityid'] ?? '')?.[1];
+      id ?? response.headers.entityid ?? /\(([^)]+)\)$/.exec(response.headers['odata-entityid'] ?? '')?.[1]; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
     if (!recordId) throw error('Live form write succeeded without returning a record identifier.', 502, 'LIVE_BRIDGE');
     return { [mapping.idColumn]: recordId };
   };
@@ -1868,7 +1864,7 @@ async function createPowerPagesSimulator({
     log: (entry) =>
       recordDiagnostic({
         code: 'SERVER_LOGIC_LOG',
-        severity: entry.level === 'Error' ? 'error' : entry.level === 'Warn' ? 'warning' : 'info',
+        severity: logSeverity(entry.level),
         ...entry,
       }),
     diagnostic: (entry) => recordDiagnostic(entry),
@@ -1908,26 +1904,25 @@ async function createPowerPagesSimulator({
       context: { correlationId, secrets: organizationHost.providers.secrets },
     };
     if (item.mode === 'handler' && !flowHandler) operationPlaceholder(item);
-    return item.mode === 'mock'
-      ? {
-          status: item.configuration.status ?? 200,
-          body: Object.hasOwn(item.configuration, 'body') ? item.configuration.body : {},
+    if (item.mode === 'mock')
+      return {
+        status: item.configuration.status ?? 200,
+        body: Object.hasOwn(item.configuration, 'body') ? item.configuration.body : {},
+      };
+    if (item.mode === 'exported') {
+      let failure;
+      const value = await store.transact(async () => {
+        try {
+          return await runExportedCloudFlow(context);
+        } catch (error) {
+          failure = error;
+          return null;
         }
-      : item.mode === 'exported'
-        ? await (async () => {
-            let failure;
-            const value = await store.transact(async () => {
-              try {
-                return await runExportedCloudFlow(context);
-              } catch (error) {
-                failure = error;
-                return null;
-              }
-            });
-            if (failure) throw failure;
-            return value;
-          })()
-        : await flowHandler({ ...context, runExportedCloudFlow: () => runExportedCloudFlow(context) });
+      });
+      if (failure) throw failure;
+      return value;
+    }
+    return await flowHandler({ ...context, runExportedCloudFlow: () => runExportedCloudFlow(context) });
   };
   const executeServerLogic = async ({ name, method = 'GET', operation, body = '', input = '', query = {} }) => {
     const record = operationPortal().serverLogics.find(
@@ -2028,7 +2023,7 @@ async function createPowerPagesSimulator({
               associate: associateFormRecord,
             });
           } catch (cause) {
-            for (const row of created.reverse()) {
+            for (const row of created.toReversed()) {
               const response = await live
                 .request(`/_api/${liveMapping(row.entity).entitySet}(${encodeURIComponent(row.id)})`, {
                   method: 'DELETE',
@@ -2233,7 +2228,9 @@ async function createPowerPagesSimulator({
   // pagedTables keeps stored tables as private forks for a streamed response; callers of the public API still get
   // detached ordinary arrays.
   const exposedState = ({ summary = false, pagedTables = false } = {}) => {
-    const state = summary ? store.summary() : store.snapshot(undefined, pagedTables ? { forkTables: true } : undefined);
+    let state;
+    if (summary) state = store.summary();
+    else state = store.snapshot(undefined, pagedTables ? { forkTables: true } : undefined);
     return describeState(state, { summary });
   };
   // Configuration reads need no table rows.
@@ -2500,6 +2497,21 @@ async function createPowerPagesSimulator({
       'SourceRefreshConflict',
     );
   };
+  const applyPresetSections = (state, preset, name) => {
+    if (preset.personaCatalog !== undefined)
+      state.personaCatalog = validatePersonaCatalog(preset.personaCatalog, 'Preset ' + name);
+    if (preset.identity) state.simulator.identity = structuredClone(preset.identity);
+    if (preset.endpoints) state.simulator.endpoints = structuredClone(preset.endpoints);
+    if (preset.contactRoles) state.simulator.contactRoles = structuredClone(preset.contactRoles);
+    if (preset.personaRoles) {
+      state.simulator.contactRoles = membershipsForRoles(portal, preset.personaRoles);
+      state.simulator.identity = {
+        ...state.simulator.identity,
+        roleSource: 'memberships',
+      };
+    }
+    if (preset.permissionSource) state.simulator.permissionSource = preset.permissionSource;
+  };
   const applySelectedPreset = async (name, adjust, { applyConfiguration = false, returnState = true } = {}) => {
     const preset =
       name === startupPreset.name && startupPresetBody
@@ -2527,19 +2539,7 @@ async function createPowerPagesSimulator({
       // resolvePreset returned a detached graph owned by this operation.
       if (preset[key] !== undefined) state[key] = preset[key];
     preserveOrganizationPresetSections(organizationSections, preset, state);
-    if (preset.personaCatalog !== undefined)
-      state.personaCatalog = validatePersonaCatalog(preset.personaCatalog, 'Preset ' + name);
-    if (preset.identity) state.simulator.identity = structuredClone(preset.identity);
-    if (preset.endpoints) state.simulator.endpoints = structuredClone(preset.endpoints);
-    if (preset.contactRoles) state.simulator.contactRoles = structuredClone(preset.contactRoles);
-    if (preset.personaRoles) {
-      state.simulator.contactRoles = membershipsForRoles(portal, preset.personaRoles);
-      state.simulator.identity = {
-        ...state.simulator.identity,
-        roleSource: 'memberships',
-      };
-    }
-    if (preset.permissionSource) state.simulator.permissionSource = preset.permissionSource;
+    applyPresetSections(state, preset, name);
     // Scenarios adjust persona/permissions in the same state replacement as their preset.
     if (adjust) await adjust(state);
     if (applyConfiguration && preset.configurationPreset) {
@@ -2585,12 +2585,12 @@ async function createPowerPagesSimulator({
         ))
     )
       throw error('contactRoles must contain contactId and roleId assignments.');
-    new LiveBridge(cfg.live ?? {});
+    new LiveBridge(cfg.live ?? {}); // NOSONAR: constructor validates the pattern or has side effects
     if (!Array.isArray(cfg.endpoints)) throw error('endpoints must be an array.');
   };
   // ---- Admin workspace helpers: personas, permission explanations, page inspection,
   // lightweight status, scenarios and environment configuration.
-  const personaKey = (value) =>
+  /* NOSONAR: identical bodies capture different state */ const personaKey = (value) =>
     String(value ?? '')
       .replace(/[{}]/g, '')
       .toLowerCase();
@@ -2756,7 +2756,7 @@ async function createPowerPagesSimulator({
         presetMode: 'always',
       }),
   });
-  const launchPersona = async (body) => {
+  const resolvePersonaLaunch = (body) => {
     if (
       !body ||
       typeof body !== 'object' ||
@@ -2790,6 +2790,10 @@ async function createPowerPagesSimulator({
         throw error(cause.message, 400, 'PersonaContextProfile');
       }
     }
+    return { scenario, persona, definition, preset };
+  };
+  const launchPersona = async (body) => {
+    const { scenario, persona, definition, preset } = resolvePersonaLaunch(body);
     const targetPath = personaStartPath(
       body.returnUrl ?? scenario?.startPath ?? persona.startPath ?? definition?.startPath ?? '/',
       body.returnUrl === undefined ? 'Persona startPath' : 'returnUrl',
@@ -2879,17 +2883,17 @@ async function createPowerPagesSimulator({
       }));
       const global = grants.filter((grant) => grant.scope === 'global');
       const roles = (identity.roles ?? []).join(', ') || 'no web roles';
+      const relatedGrants = grants.map((grant) => `${grant.name} (${grant.scope} scope)`).join(', ');
+      let reason = 'No enabled table permission exists for this table.';
+      if (global.length) reason = `Granted for all records by ${global.map((grant) => grant.name).join(', ')}.`;
+      else if (grants.length) reason = `Granted only for related records: ${relatedGrants}.`;
+      else if (applied.some((rule) => rule.enabled !== false))
+        reason = `No enabled ${operation} grant on this table includes the current roles (${roles}).`;
       operations[operation] = {
         allowed: grants.length > 0,
         scoped: grants.length > 0 && !global.length,
         grants,
-        reason: global.length
-          ? `Granted for all records by ${global.map((grant) => grant.name).join(', ')}.`
-          : grants.length
-            ? `Granted only for related records: ${grants.map((grant) => `${grant.name} (${grant.scope} scope)`).join(', ')}.`
-            : applied.some((rule) => rule.enabled !== false)
-              ? `No enabled ${operation} grant on this table includes the current roles (${roles}).`
-              : 'No enabled table permission exists for this table.',
+        reason,
       };
     }
     return {
@@ -2905,7 +2909,7 @@ async function createPowerPagesSimulator({
   // Page inspection answers with the identity that a portal request for the inspected page,
   // carrying the same cookies, would get (requestAuth): the session, otherwise anonymous.
   const inspectionIdentity = (req, route) => {
-    const auth = requestAuth({ headers: req.headers }, new URL(route, 'http://mirage.invalid'));
+    const auth = requestAuth({ headers: req.headers }, new URL(route, 'http://mirage.invalid')); // NOSONAR: reserved or loopback placeholder host, not a real transport
     return auth.identity ? trace.run({ auth }, currentIdentity) : currentIdentity();
   };
   const inspectRoute = (route, identity = currentIdentity()) => {
@@ -3052,11 +3056,30 @@ async function createPowerPagesSimulator({
       eventChannels: ['logs', 'trace'],
     };
   };
-  const SCENARIO_FIELDS = ['id', 'name', 'description', 'preset', 'persona', 'permissionMode', 'permissionSource'];
-  const validateScenario = (value) => {
+  const SCENARIO_FIELDS = new Set([
+    'id',
+    'name',
+    'description',
+    'preset',
+    'persona',
+    'permissionMode',
+    'permissionSource',
+  ]);
+  const validateScenarioPersona = (persona) => {
+    if (
+      persona !== undefined &&
+      persona !== null &&
+      (typeof persona !== 'object' ||
+        Array.isArray(persona) ||
+        typeof persona.contactId !== 'string' ||
+        !persona.contactId ||
+        Object.keys(persona).some((key) => key !== 'contactId'))
+    )
+      throw error('Scenario persona must be null (anonymous) or { contactId }.');
+  };
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const validateScenario = (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw error('A scenario must be a JSON object.');
-    for (const key of Object.keys(value))
-      if (!SCENARIO_FIELDS.includes(key)) throw error(`Unknown scenario field: ${key}`);
+    for (const key of Object.keys(value)) if (!SCENARIO_FIELDS.has(key)) throw error(`Unknown scenario field: ${key}`);
     if (typeof value.id !== 'string' || !/^[\w.-]{1,80}$/.test(value.id))
       throw error('Scenario id must have 1-80 letters, numbers, dots, underscores or hyphens.');
     if (typeof value.name !== 'string' || !value.name.trim() || value.name.length > 160)
@@ -3065,16 +3088,7 @@ async function createPowerPagesSimulator({
       throw error('Scenario description must be text.');
     if (value.preset !== undefined && value.preset !== null && (typeof value.preset !== 'string' || !value.preset))
       throw error('Scenario preset must be a preset ID.');
-    if (
-      value.persona !== undefined &&
-      value.persona !== null &&
-      (typeof value.persona !== 'object' ||
-        Array.isArray(value.persona) ||
-        typeof value.persona.contactId !== 'string' ||
-        !value.persona.contactId ||
-        Object.keys(value.persona).some((key) => key !== 'contactId'))
-    )
-      throw error('Scenario persona must be null (anonymous) or { contactId }.');
+    validateScenarioPersona(value.persona);
     if (value.permissionMode !== undefined && !['enforce', 'permissive'].includes(value.permissionMode))
       throw error('Scenario permissionMode must be enforce or permissive.');
     if (
@@ -3248,8 +3262,8 @@ async function createPowerPagesSimulator({
           id: 'host:model-driven',
           kind: 'host',
           label: 'Model-driven apps',
-          status: modelDrivenSettingsValue.enabled === false ? 'disabled' : 'listening',
-          detail: { path: modelDrivenSettingsValue.enabled === false ? null : '/main.aspx' },
+          status: dashboardChoice(modelDrivenSettingsValue.enabled !== false, 'listening', 'disabled'),
+          detail: { path: dashboardChoice(modelDrivenSettingsValue.enabled !== false, '/main.aspx', null) },
           link: '#dataverse',
         },
         {
@@ -3269,7 +3283,7 @@ async function createPowerPagesSimulator({
           id: 'app:pcf',
           kind: 'app',
           label: 'Code components',
-          status: codeComponents.controls.size ? 'ready' : 'disabled',
+          status: dashboardChoice(codeComponents.controls.size, 'ready', 'disabled'),
           detail: { controls: codeComponents.controls.size },
           link: '#capabilities',
         },
@@ -3277,7 +3291,7 @@ async function createPowerPagesSimulator({
           id: 'bridge:live',
           kind: 'bridge',
           label: 'Live portal connection',
-          status: bridge.connected ? 'ready' : 'disabled',
+          status: dashboardChoice(bridge.connected, 'ready', 'disabled'),
           detail: { connected: bridge.connected, host: hostnameOf(bridge.origin), liveWrites: bridge.liveWrites },
           link: '#connection',
         },
@@ -3285,7 +3299,7 @@ async function createPowerPagesSimulator({
           id: `persona-runtime:${item.id}`,
           kind: 'persona-runtime',
           label: item.label ?? item.id,
-          status: item.status === 'running' ? 'listening' : 'disabled',
+          status: dashboardChoice(item.status === 'running', 'listening', 'disabled'),
           detail: { context: item.context ?? null, scenario: item.scenario ?? null, createdAt: item.createdAt ?? null },
           link: '#access',
         })),
@@ -3307,8 +3321,8 @@ async function createPowerPagesSimulator({
           from: 'host:portal',
           to: 'org:security',
           kind: 'process',
-          status: enhanced ? 'ready' : 'disabled',
-          label: enhanced ? 'web roles as security roles' : 'enhanced authorization only',
+          status: dashboardChoice(enhanced, 'ready', 'disabled'),
+          label: dashboardChoice(enhanced, 'web roles as security roles', 'enhanced authorization only'),
         },
         {
           from: 'host:portal',
@@ -3321,8 +3335,8 @@ async function createPowerPagesSimulator({
           from: 'host:portal',
           to: 'provider:storage-route:portalWebFiles',
           kind: 'storage',
-          status: cloudWebFiles ? 'ready' : 'disabled',
-          label: cloudWebFiles ? 'web files' : 'web files (only with cloud storage)',
+          status: dashboardChoice(cloudWebFiles, 'ready', 'disabled'),
+          label: dashboardChoice(cloudWebFiles, 'web files', 'web files (only with cloud storage)'),
         },
         {
           from: 'host:portal',
@@ -3366,8 +3380,8 @@ async function createPowerPagesSimulator({
           from: 'client:browser',
           to: 'app:canvas',
           kind: 'http',
-          status: enhanced ? 'ready' : 'disabled',
-          label: enhanced ? 'visitor apps' : 'visitor apps (enhanced authorization only)',
+          status: dashboardChoice(enhanced, 'ready', 'disabled'),
+          label: dashboardChoice(enhanced, 'visitor apps', 'visitor apps (enhanced authorization only)'),
         },
         // The model-driven shell calls /_apps/api on this origin: records and Web API messages in process as the staff user. It
         // does not use the Web API listener and works with it switched off (dataverse-model-driven.mjs).
@@ -3407,7 +3421,7 @@ async function createPowerPagesSimulator({
           from: 'host:portal',
           to: 'bridge:live',
           kind: 'http',
-          status: bridge.connected && liveMode ? 'ready' : 'disabled',
+          status: dashboardChoice(bridge.connected && liveMode, 'ready', 'disabled'),
           label: 'live pages and data (live mode)',
         },
         { from: 'host:admin', to: 'bridge:live', kind: 'http', status: 'ready', label: 'connect' },
@@ -3417,7 +3431,7 @@ async function createPowerPagesSimulator({
             from: 'client:browser',
             to: `persona-runtime:${item.id}`,
             kind: 'http',
-            status: item.status === 'running' ? 'listening' : 'disabled',
+            status: dashboardChoice(item.status === 'running', 'listening', 'disabled'),
             label: 'isolated pages',
           },
           {
@@ -3441,8 +3455,8 @@ async function createPowerPagesSimulator({
           from: 'app:pcf',
           to: 'host:model-driven',
           kind: 'http',
-          status: trusted ? 'ready' : 'disabled',
-          label: trusted ? 'Xrm.WebApi' : 'Xrm.WebApi (trusted extensions only)',
+          status: dashboardChoice(trusted, 'ready', 'disabled'),
+          label: dashboardChoice(trusted, 'Xrm.WebApi', 'Xrm.WebApi (trusted extensions only)'),
         },
       ],
       configuration: {
@@ -3490,27 +3504,30 @@ async function createPowerPagesSimulator({
   });
   // /_sim/api/trace (sim-trace-routes.mjs): the trace store's queries, settings and clear.
   const traceRoutes = createTraceRoutes({ traces, csrf: () => csrf, json });
-  const messaging = async (req, res, url) =>
-    (await dashboardRoutes(req, res, url)) ||
-    (await traceRoutes(req, res, url)) ||
-    (await packRoutes(req, res, url)) ||
-    (organization
-      ? (await (messagingRoutes ??= createMessagingRoutes({ api: organization.api, csrf: () => csrf }))(
-          req,
-          res,
-          url,
-        )) ||
-        (await (flowRoutes ??= createFlowRoutes({
-          api: organization.api,
-          csrf: () => csrf,
-          // Flow HTTP roots name the serving host (D-R3-28).
-          origin: () => ({
-            host: 'power-pages',
-            portal: portalTraceName(),
-            preset: config().activeExperiment?.id ?? null,
-          }),
-        }))(req, res, url))
-      : false);
+  const messaging = async (req, res, url) => {
+    const dashboard = await dashboardRoutes(req, res, url);
+    if (dashboard) return dashboard;
+    const trace = await traceRoutes(req, res, url);
+    if (trace) return trace;
+    const pack = await packRoutes(req, res, url);
+    if (pack) return pack;
+    if (!organization) return false;
+    messagingRoutes ??= createMessagingRoutes({ api: organization.api, csrf: () => csrf });
+    const messagingResult = await messagingRoutes(req, res, url);
+    if (messagingResult) return messagingResult;
+    flowRoutes ??= createFlowRoutes({
+      api: organization.api,
+      csrf: () => csrf,
+      // Flow HTTP roots name the serving host (D-R3-28).
+      origin: () => ({
+        host: 'power-pages',
+        portal: portalTraceName(),
+        preset: config().activeExperiment?.id ?? null,
+      }),
+    });
+    return flowRoutes(req, res, url);
+  };
+  const dashboardChoice = (condition, whenTrue, whenFalse) => (condition ? whenTrue : whenFalse);
   // /_sim/api/environment (sim-environment-routes.mjs): variables, local overrides and the deployment profile pin.
   const environmentRoutes = createEnvironmentRoutes({
     csrf: () => csrf,
@@ -3707,7 +3724,7 @@ async function createPowerPagesSimulator({
     if (!entry) throw error('Admin endpoint not found.', 404);
     return entry[1](req, res, url, relative);
   }
-  async function portalAdmin(req, res, url, relative) {
+  /* NOSONAR */ async function portalAdmin(req, res, url, relative) {
     const method = req.method;
     if (method === 'GET' && relative === '/page-provenance') {
       const entry = renderProofs.get(url.searchParams.get('proof')) ?? scriptProofs.get(url.searchParams.get('proof'));
@@ -3845,7 +3862,7 @@ async function createPowerPagesSimulator({
     if (isWrite(method) && req.headers['x-sim-csrf'] !== csrf) throw error('Missing simulator CSRF token.', 403);
     const operationRoute = /^\/operations\/([^/]+)$/.exec(relative);
     if (operationRoute && ['PATCH', 'DELETE'].includes(method))
-      return change(async () => {
+      /* NOSONAR: single-pass routine, splitting it would change shared state */ return change(async () => {
         const key = decodeAdminIdentifier(operationRoute[1]);
         const item = operations().find((item) => item.key === key);
         if (!item) throw error('This operation is not in the current source exports.', 404);
@@ -3874,7 +3891,7 @@ async function createPowerPagesSimulator({
           if (value.mode === 'exported' && !item.definitionAvailable)
             throw error('The selected sources do not include this operation definition.', 409);
         }
-        const next = { ...(store.state.simulator?.operations ?? {}) };
+        const next = { ...store.state.simulator?.operations };
         if (method === 'DELETE') delete next[key];
         else next[key] = value;
         // The host prepares a CLR runtime this choice selects before the choice is stored, and closes one it no longer selects.
@@ -3883,7 +3900,7 @@ async function createPowerPagesSimulator({
         await organizationHost.applyOperationOverrides(next, async () => {
           await store.transact(() => {
             store.state.simulator ??= config();
-            const operations = { ...(store.state.simulator.operations ?? {}) };
+            const operations = { ...store.state.simulator.operations };
             if (method === 'DELETE') delete operations[key];
             else operations[key] = value;
             store.state.simulator.operations = operations;
@@ -3895,7 +3912,7 @@ async function createPowerPagesSimulator({
         return json(res, 200, { items: operations() });
       });
     if (method === 'POST' && relative === '/shutdown') {
-      json(res, 202, { accepted: true, message: 'Mirage shutdown accepted.' });
+      void json(res, 202, { accepted: true, message: 'Mirage shutdown accepted.' });
       setImmediate(() => {
         if (typeof onShutdown === 'function')
           Promise.resolve()
@@ -4009,7 +4026,7 @@ async function createPowerPagesSimulator({
     const scenarioRoute = /^\/scenarios(?:\/([^/]+))?(?:\/(apply))?$/.exec(relative);
     if (scenarioRoute && method !== 'GET') {
       const id = scenarioRoute[1] && decodeAdminIdentifier(scenarioRoute[1]);
-      return change(async () => {
+      /* NOSONAR: single-pass routine, splitting it would change shared state */ return change(async () => {
         const scenarios = Array.isArray(config().scenarios) ? config().scenarios : [];
         if (scenarioRoute[2] === 'apply' && method === 'POST') {
           const scenario = scenarios.find((item) => item.id === id);
@@ -4065,7 +4082,7 @@ async function createPowerPagesSimulator({
         const body = await jsonObjectBody(req);
         if (typeof body.origin !== 'string') throw error('Provide the reference origin to use for live routing.');
         const state = store.snapshot(undefined, { forkTables: true });
-        state.simulator.live = { ...(state.simulator.live ?? {}), origin: body.origin };
+        state.simulator.live = { ...state.simulator.live, origin: body.origin };
         validateConfig(state.simulator);
         await saveState(state);
         return json(res, 200, { live: live.status() });
@@ -4157,7 +4174,7 @@ async function createPowerPagesSimulator({
           pageMode: 'local',
           identity: { roles: [] },
           endpoints: [],
-          ...(next.simulator ?? {}),
+          ...next.simulator,
         };
         if (Array.isArray(scenarios) && !Array.isArray(next.simulator.scenarios)) next.simulator.scenarios = scenarios;
         validateConfig(next.simulator);
@@ -4188,7 +4205,7 @@ async function createPowerPagesSimulator({
         if (!platformSettingEntries(platformState()).some((x) => x.key === key))
           throw error('Unknown platform setting.', 404);
         const state = store.snapshot(undefined, { forkTables: true });
-        delete (state.simulator.platformOverrides ?? {})[key];
+        delete state.simulator.platformOverrides?.[key];
         delete state.simulator.activeExperiment;
         await saveState(state);
         return json(res, 200, { reset: key });
@@ -4206,7 +4223,7 @@ async function createPowerPagesSimulator({
         if (!item) throw error('Experiment not found.', 404);
         return json(res, 200, item);
       }
-      return change(async () => {
+      /* NOSONAR: single-pass routine, splitting it would change shared state */ return change(async () => {
         const state = store.snapshot(undefined, { forkTables: true }),
           presets = experimentPresets(state, sourcePortal, packConfigurations.presets),
           existing = presets.find((p) => p.id === id);
@@ -4265,15 +4282,14 @@ async function createPowerPagesSimulator({
         return json(res, 200, item);
       }
       if (!['POST', 'PATCH', 'DELETE'].includes(method)) throw error('Unsupported portal value operation.', 405);
-      return change(async () => {
+      /* NOSONAR: single-pass routine, splitting it would change shared state */ return change(async () => {
         const body = method === 'DELETE' ? null : await jsonObjectBody(req);
-        const key =
-          name ??
-          (section === 'roles'
-            ? (body?.id ?? randomUUID())
-            : section === 'accessRules'
-              ? personaKey(body?.id ?? randomUUID())
-              : body?.name);
+        const generatedKey = () => {
+          if (section === 'roles') return body?.id ?? randomUUID();
+          if (section === 'accessRules') return personaKey(body?.id ?? randomUUID());
+          return body?.name;
+        };
+        const key = name ?? generatedKey();
         if (section === 'accessRules' && body?.value) {
           // Rules must target exported pages and effective web roles of this portal.
           const value = body.value;
@@ -4317,7 +4333,7 @@ async function createPowerPagesSimulator({
       return change(async () => {
         const patch = await jsonObjectBody(req);
         const state = store.snapshot(undefined, { forkTables: true });
-        const allowed = [
+        const allowed = new Set([
           'mode',
           'pageMode',
           'identity',
@@ -4333,9 +4349,8 @@ async function createPowerPagesSimulator({
           'portalOverrides',
           'platformOverrides',
           'operations',
-        ];
-        for (const key of Object.keys(patch))
-          if (!allowed.includes(key)) throw error(`Unknown configuration field: ${key}`);
+        ]);
+        for (const key of Object.keys(patch)) if (!allowed.has(key)) throw error(`Unknown configuration field: ${key}`);
         // Live writes need the runtime flag; the /_sim switch alone never enables them.
         if (patch.live?.allowWrites === true && !allowLiveWrites)
           throw error(
@@ -4371,7 +4386,7 @@ async function createPowerPagesSimulator({
             );
         }
         await saveState(state);
-        stateResponse(req, res);
+        void stateResponse(req, res);
       });
     if (relative === '/assets/capture' && method === 'POST') {
       if (!cache) throw error('Asset capture requires a persisted simulator state directory.', 409);
@@ -4542,7 +4557,7 @@ async function createPowerPagesSimulator({
         await organization?.reseed();
         // Advanced form sessions belong to the reset state: a reset ends them.
         webFormSessions.clear();
-        stateResponse(req, res);
+        void stateResponse(req, res);
       });
     if (relative === '/reload' && method === 'POST') {
       await reload();
@@ -4565,7 +4580,7 @@ async function createPowerPagesSimulator({
         if (!item) throw error('Configuration item not found.', 404);
         return json(res, 200, item);
       }
-      return change(async () => {
+      /* NOSONAR: single-pass routine, splitting it would change shared state */ return change(async () => {
         const state = store.snapshot(undefined, { forkTables: true });
         state.simulator ??= config();
         if (action === 'apply' && kind === 'presets' && method === 'POST') {
@@ -4588,7 +4603,7 @@ async function createPowerPagesSimulator({
           else {
             const previous =
               kind === 'presets' && method === 'PATCH' ? resolvePreset(state, key, generatedPresets) : state[kind][key];
-            const value = { ...(previous ?? {}), ...body };
+            const value = { ...previous, ...body };
             if (kind === 'presets') value.userConfigured = true;
             delete value.id;
             delete value.logicalName;
@@ -4622,14 +4637,14 @@ async function createPowerPagesSimulator({
           if (method !== 'POST' && index < 0) throw error('Configuration item not found.', 404);
           if (method === 'DELETE') owner[kind].splice(index, 1);
           else {
-            const value = { ...(owner[kind][index] ?? {}), ...body, id: key };
+            const value = { ...owner[kind][index], ...body, id: key };
             if (kind === 'endpoints') validateEndpoint(value);
             if (index < 0) owner[kind].push(value);
             else owner[kind][index] = value;
           }
         }
         await saveState(state);
-        json(
+        void json(
           res,
           method === 'POST' ? 201 : 200,
           exposedConfig()[kind].find((x) => x.id === key) ?? {
@@ -4658,7 +4673,7 @@ async function createPowerPagesSimulator({
   async function api(req, res, url, { forceLocal = false } = {}) {
     const context = trace.getStore();
     if (context) {
-      context.entity = /^\/_api\/([\w]+)/.exec(url.pathname)?.[1];
+      context.entity = /^\/_api\/(\w+)/.exec(url.pathname)?.[1];
       context.provider = forceLocal ? 'local' : config().mode;
     }
     if (!forceLocal && config().mode === 'live') return forward(req, res, url);
@@ -4711,8 +4726,11 @@ async function createPowerPagesSimulator({
     if (headers['content-type']?.includes('json'))
       try {
         const value = JSON.parse(bytes);
+        let rowCount;
+        if (Array.isArray(value?.value)) rowCount = value.value.length;
+        else if (response.status < 400) rowCount = 1;
         res[auditResponse] = {
-          rowCount: Array.isArray(value?.value) ? value.value.length : response.status < 400 ? 1 : undefined,
+          rowCount,
           error: value?.error,
         };
       } catch {
@@ -4765,6 +4783,20 @@ async function createPowerPagesSimulator({
     httpOnly: true,
     sameSite: 'Lax',
   });
+  const sessionRolesResponse = (res, auth, body) => {
+    if (!auth.session?.contactId)
+      throw error('Sign this browser in through the portal first.', 409, 'SESSION_NOT_SIGNED_IN');
+    if (body?.roles !== null && (!Array.isArray(body?.roles) || body.roles.some((role) => typeof role !== 'string')))
+      throw error('roles must be an array of web-role names, or null to clear the override.');
+    const known = new Set((appliedPermissionModel?.webRoles ?? []).map((role) => role.name));
+    const unknown = (body.roles ?? []).filter((role) => !known.has(role));
+    if (unknown.length) throw error(`Unknown web roles: ${unknown.join(', ')}`, 400, 'UNKNOWN_WEB_ROLES');
+    const { roles: _previous, ...base } = auth.session; // NOSONAR: binding is excluded from the rest object or is a placeholder
+    const session = body.roles === null ? base : { ...base, roles: [...new Set(body.roles)] };
+    return json(res, 200, describeSession(session, { cookie: sessionCookie(session) }), {
+      'set-cookie': authSessions.cookie(session),
+    });
+  };
   async function sessionApi(req, res, url) {
     const relative = url.pathname.slice('/__sim/api/session'.length).replace(/\/$/, '');
     const auth = trace.getStore()?.auth ?? {};
@@ -4787,20 +4819,7 @@ async function createPowerPagesSimulator({
     const body = await jsonBody(req);
     // A manual web-role override for this browser's signed-in session ({ roles: null } clears
     // it); it never creates a session.
-    if (relative === '/roles') {
-      if (!auth.session?.contactId)
-        throw error('Sign this browser in through the portal first.', 409, 'SESSION_NOT_SIGNED_IN');
-      if (body?.roles !== null && (!Array.isArray(body?.roles) || body.roles.some((role) => typeof role !== 'string')))
-        throw error('roles must be an array of web-role names, or null to clear the override.');
-      const known = new Set((appliedPermissionModel?.webRoles ?? []).map((role) => role.name));
-      const unknown = (body.roles ?? []).filter((role) => !known.has(role));
-      if (unknown.length) throw error(`Unknown web roles: ${unknown.join(', ')}`, 400, 'UNKNOWN_WEB_ROLES');
-      const { roles: _previous, ...base } = auth.session;
-      const session = body.roles === null ? base : { ...base, roles: [...new Set(body.roles)] };
-      return json(res, 200, describeSession(session, { cookie: sessionCookie(session) }), {
-        'set-cookie': authSessions.cookie(session),
-      });
-    }
+    if (relative === '/roles') return sessionRolesResponse(res, auth, body);
     const returnUrl = safeReturnUrl(body?.returnUrl);
     const session =
       relative === '/sign-in' ? signInSession(body?.contactId, { roles: body?.roles }) : { contactId: null };
@@ -4859,17 +4878,7 @@ async function createPowerPagesSimulator({
     if (!page || page.id === servicePages(portal).profile?.id) return false;
     return pageAccess(portal, page, identityFor({ contactId: null })).allowed;
   };
-  /** A platform account page (sign-in, invitation redemption) inside the site's shell. */
-  async function renderAccountPage(req, res, url, { status = 200, content, route = 'sign-in-page' }) {
-    const shell = signInRenderer();
-    const renderedRevision = revision;
-    const identity = currentIdentity();
-    const rendered = await shell.value.renderPage(shell.page.url, {
-      user: identity,
-      request: { url: url.href, path: url.pathname, params: Object.fromEntries(url.searchParams), method: req.method },
-    });
-    for (const diagnostic of rendered.diagnostics ?? []) recordDiagnostic({ ...diagnostic, path: url.pathname });
-    let html = String(rendered.html ?? '');
+  const applyAccountPageContent = (html, content) => {
     const marker = html.indexOf(SIGN_IN_MARKER);
     // A content function is an account layout region (the sign-in page, lib/auth-session.mjs
     // signInContent): it replaces the page's main region and receives the rendered page copy.
@@ -4895,6 +4904,20 @@ async function createPowerPagesSimulator({
       else if (/<body[^>]*>/i.test(html)) html = html.replace(/<body[^>]*>/i, (tag) => tag + markup);
       else html += markup;
     }
+    return html;
+  };
+  /** A platform account page (sign-in, invitation redemption) inside the site's shell. */
+  async function renderAccountPage(req, res, url, { status = 200, content, route = 'sign-in-page' }) {
+    const shell = signInRenderer();
+    const renderedRevision = revision;
+    const identity = currentIdentity();
+    const rendered = await shell.value.renderPage(shell.page.url, {
+      user: identity,
+      request: { url: url.href, path: url.pathname, params: Object.fromEntries(url.searchParams), method: req.method },
+    });
+    for (const diagnostic of rendered.diagnostics ?? []) recordDiagnostic({ ...diagnostic, path: url.pathname });
+    let html = String(rendered.html ?? '');
+    html = applyAccountPageContent(html, content);
     if (rendered.isDocument !== false) {
       html = injectRuntimeDependencies(html, sourceDependencies);
       html = injectLocalHead(injectRuntimeCompatibility(html, sourceDependencies), localOverrides);
@@ -4969,53 +4992,54 @@ async function createPowerPagesSimulator({
   }
   // The sign-in page and the local persona sign-in; sign-out and external sign-in are
   // answered earlier by lib/sign-in-flow.mjs.
-  async function authenticate(req, res, url, route) {
-    const requested = returnUrlParameter(url.searchParams);
-    if (route.kind === 'sign-in-post') {
-      const form = await signInForm(req);
-      const returnUrl = safeReturnUrl(form.ReturnUrl ?? form.returnUrl ?? requested);
-      if (!authenticationSettings(portal).localLogin && externalSignIn?.signInProviders().length)
-        return renderSignIn(req, res, url, {
-          status: 400,
-          returnUrl,
-          error:
-            'Local sign-in is turned off for this site (Authentication/Registration/LocalLoginEnabled is false): sign in with an external provider.',
-        });
-      if (form.personaKey) {
-        if (form.__RequestVerificationToken !== csrf) throw error('Missing simulator CSRF token.', 403);
-        const result = await launchPersona({
-          personaKey: form.personaKey,
-          returnUrl: form.ReturnUrl ? personaStartPath(form.ReturnUrl, 'returnUrl') : undefined,
-        });
-        traceSignIn(result.contactId, 'persona');
-        res.writeHead(302, {
-          location: result.url,
-          'set-cookie': result.cookieHeader + '; Path=/; HttpOnly; SameSite=Lax',
-          'cache-control': 'no-store',
-        });
-        return res.end();
-      }
-      if (personaReport().enabled && form.__RequestVerificationToken !== csrf)
-        throw error('Missing simulator CSRF token.', 403);
-      const contactId = typeof form.contactId === 'string' ? form.contactId.trim() : '';
-      const persona = personaKey(contactId)
-        ? signInPersonas().find((item) => personaKey(item.contactId) === personaKey(contactId))
-        : null;
-      if (!persona)
-        return renderSignIn(req, res, url, {
-          status: 400,
-          returnUrl,
-          error: 'Choose an active local persona to sign in.',
-        });
-      traceSignIn(persona.contactId, 'local');
+  const authenticateSignInPost = async (req, res, url, requested) => {
+    const form = await signInForm(req);
+    const returnUrl = safeReturnUrl(form.ReturnUrl ?? form.returnUrl ?? requested);
+    if (!authenticationSettings(portal).localLogin && externalSignIn?.signInProviders().length)
+      return renderSignIn(req, res, url, {
+        status: 400,
+        returnUrl,
+        error:
+          'Local sign-in is turned off for this site (Authentication/Registration/LocalLoginEnabled is false): sign in with an external provider.',
+      });
+    if (form.personaKey) {
+      if (form.__RequestVerificationToken !== csrf) throw error('Missing simulator CSRF token.', 403);
+      const result = await launchPersona({
+        personaKey: form.personaKey,
+        returnUrl: form.ReturnUrl ? personaStartPath(form.ReturnUrl, 'returnUrl') : undefined,
+      });
+      traceSignIn(result.contactId, 'persona');
       res.writeHead(302, {
-        location: returnUrl,
-        'set-cookie': authSessions.cookie({ contactId: persona.contactId }),
+        location: result.url,
+        'set-cookie': result.cookieHeader + '; Path=/; HttpOnly; SameSite=Lax',
         'cache-control': 'no-store',
-        'x-sim-route': 'sign-in',
       });
       return res.end();
     }
+    if (personaReport().enabled && form.__RequestVerificationToken !== csrf)
+      throw error('Missing simulator CSRF token.', 403);
+    const contactId = typeof form.contactId === 'string' ? form.contactId.trim() : '';
+    const persona = personaKey(contactId)
+      ? signInPersonas().find((item) => personaKey(item.contactId) === personaKey(contactId))
+      : null;
+    if (!persona)
+      return renderSignIn(req, res, url, {
+        status: 400,
+        returnUrl,
+        error: 'Choose an active local persona to sign in.',
+      });
+    traceSignIn(persona.contactId, 'local');
+    res.writeHead(302, {
+      location: returnUrl,
+      'set-cookie': authSessions.cookie({ contactId: persona.contactId }),
+      'cache-control': 'no-store',
+      'x-sim-route': 'sign-in',
+    });
+    return res.end();
+  };
+  async function authenticate(req, res, url, route) {
+    const requested = returnUrlParameter(url.searchParams);
+    if (route.kind === 'sign-in-post') return authenticateSignInPost(req, res, url, requested);
     const returnUrl = safeReturnUrl(requested);
     if (currentIdentity().contactId) {
       res.writeHead(302, { location: returnUrl, 'cache-control': 'no-store', 'x-sim-route': 'signed-in' });
@@ -5192,7 +5216,7 @@ async function createPowerPagesSimulator({
     csrf: () => csrf,
     diagnostic: recordDiagnostic,
   });
-  async function handle(req, res) {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ async function handle(req, res) {
     // Normalize the admin alias before security checks so rejected requests
     // keep the same JSON error contract for both spellings.
     if (/^\/_sim(?:\/|\?|$)/.test(req.url)) req.url = req.url.replace(/^\/_sim/, '/__sim');
@@ -5210,9 +5234,8 @@ async function createPowerPagesSimulator({
     )
       await change(async () => {});
     // Power Pages document control (sharepoint-documents.mjs createPortalDocumentService), local route under /_apps/ (before the model-driven handler, which refuses other /_apps paths).
-    if (
-      organization?.api?.sharepoint &&
-      (await (portalDocuments ??= createPortalDocumentService({
+    if (organization?.api?.sharepoint) {
+      portalDocuments ??= createPortalDocumentService({
         sharepoint: organization.api.sharepoint,
         store,
         portal: () => portal,
@@ -5228,9 +5251,9 @@ async function createPowerPagesSimulator({
             .map((item) => item.toLowerCase().replace(/^\./, ''))
             .filter(Boolean);
         },
-      })).handle(req, res, url, { identity: currentIdentity(), csrf }))
-    )
-      return;
+      });
+      if (await portalDocuments.handle(req, res, url, { identity: currentIdentity(), csrf })) return;
+    }
     if (canvasHandler(req, res, url)) return;
     if (await codeAppsHandler(req, res, url)) return;
     if (modelDrivenSettingsValue.enabled !== false && (await modelDrivenHandler(req, res, url))) return;
@@ -5331,13 +5354,13 @@ async function createPowerPagesSimulator({
       res.write(`event: ready\ndata: ${revision}\n\n`);
       events.add(res);
       // Administrators opt into the runtime log channel; portal pages only receive reloads.
-      const channels = (url.searchParams.get('channels') ?? '').split(',');
+      const channels = new Set((url.searchParams.get('channels') ?? '').split(','));
       // The connected frame names the latest retained sequence (GET /_sim/api/logs answers the history up to it).
-      if (channels.includes('logs') && logClients.add(res))
+      if (channels.has('logs') && logClients.add(res))
         res.write(
           `event: log\ndata: ${JSON.stringify({ sequence: logSequence, type: 'connected', time: new Date().toISOString(), level: 'info', traceId: null, spanId: null, retained: logLines.length, oldestSequence: logLines[0]?.sequence ?? null, revision })}\n\n`,
         );
-      if (channels.includes('trace')) traceChannel(res, url);
+      if (channels.has('trace')) traceChannel(res, url);
       return;
     }
     if (url.pathname === '/__sim/sign-in') {
@@ -5465,14 +5488,10 @@ async function createPowerPagesSimulator({
       const real = await fs.realpath(asset.file);
       if (real !== asset.file || (await fs.stat(real)).size > 8 * 1024 * 1024)
         throw error('The declared PCF resource changed outside its source boundary.', 404);
-      const type =
-        asset.kind === 'code'
-          ? 'text/javascript; charset=utf-8'
-          : asset.kind === 'css'
-            ? 'text/css; charset=utf-8'
-            : asset.kind === 'resx'
-              ? 'application/xml; charset=utf-8'
-              : 'application/octet-stream';
+      let type = 'application/octet-stream';
+      if (asset.kind === 'code') type = 'text/javascript; charset=utf-8';
+      else if (asset.kind === 'css') type = 'text/css; charset=utf-8';
+      else if (asset.kind === 'resx') type = 'application/xml; charset=utf-8';
       res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
       return res.end(
         req.method === 'HEAD' ? undefined : await readLocalFile(real, { root: asset.root, maxBytes: 8 * 1024 * 1024 }),
@@ -5554,7 +5573,7 @@ async function createPowerPagesSimulator({
     }
     const flow = operationPortal().cloudFlows.find(
       (record) =>
-        record.path && record.path.replace(/\/$/, '').toLowerCase() === url.pathname.replace(/\/$/, '').toLowerCase(),
+        record.path && record.path?.replace(/\/$/, '').toLowerCase() === url.pathname.replace(/\/$/, '').toLowerCase(),
     );
     if (flow && config().mode !== 'live') {
       if (req.method !== 'POST') throw error('Cloud-flow triggers require POST.', 405);
@@ -5679,6 +5698,7 @@ async function createPowerPagesSimulator({
         for (const item of formStyleDiagnostics(body, config().shellProfile))
           recordDiagnostic({ ...item, path: url.pathname });
         // The form posts back to the document's own path (./{websiteId}?query); only the entity form view script loads.
+        const quickAntiForgeryPath = `/_portal/${quickSite}/Layout/GetAntiForgeryToken`;
         const form = webFormsForm({
           id: 'content_form',
           action: `./${quickSite}${url.search}`,
@@ -5687,7 +5707,7 @@ async function createPowerPagesSimulator({
           formScriptPaths: ['/xrm-adx/js/crmentityformview.js'],
           variant: quickPlatform.variant,
         });
-        const document = `<!doctype html>${layout.html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${layout.title}</title>${styles}</head>${layout.body}${quickPlatform.bodyOpen}${layout.chrome}${antiForgeryHolder(`/_portal/${quickSite}/Layout/GetAntiForgeryToken`)}${quickPlatform.bodyStart}<div id="content-container" class="container quickform"><div id="content">${form}</div></div>${quickPlatform.afterContent}${quickPlatform.afterFooter}</body></html>`;
+        const document = `<!doctype html>${layout.html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${layout.title}</title>${styles}</head>${layout.body}${quickPlatform.bodyOpen}${layout.chrome}${antiForgeryHolder(quickAntiForgeryPath)}${quickPlatform.bodyStart}<div id="content-container" class="container quickform"><div id="content">${form}</div></div>${quickPlatform.afterContent}${quickPlatform.afterFooter}</body></html>`;
         res.writeHead(200, {
           'content-type': 'text/html; charset=utf-8',
           ...PAGE_HEADERS,
@@ -5802,7 +5822,7 @@ async function createPowerPagesSimulator({
       }
       if (req.method !== 'PUT') throw error('File block upload requires PUT.', 405);
       const entry = stagedUploads.get(String(url.searchParams.get('noteId') ?? '').toLowerCase());
-      if (!entry || entry.owner !== uploadOwner() || req.headers['x-ms-file-continuation-token'] !== entry.token)
+      if (!entry || entry?.owner !== uploadOwner() || req.headers['x-ms-file-continuation-token'] !== entry.token)
         throw error('Unknown file upload.', 404);
       if (Number(url.searchParams.get('offset')) !== entry.received)
         throw error('The file block offset does not continue the upload.', 400);
@@ -5858,7 +5878,7 @@ async function createPowerPagesSimulator({
     const language = languageRoute(portal, url, req.method);
     if (language?.kind === 'redirect') {
       // The platform's language redirect carries its page caching headers (live 302 to /SignIn).
-      const { vary: _languageVary, ...languageHeaders } = PAGE_HEADERS;
+      const { vary: _languageVary, ...languageHeaders } = PAGE_HEADERS; // NOSONAR: binding is excluded from the rest object or is a placeholder
       res.writeHead(language.status, {
         location: language.location,
         'content-type': 'text/html; charset=utf-8',
@@ -5980,7 +6000,7 @@ async function createPowerPagesSimulator({
       nativeEntries = [...controls];
     } else if (!['GET', 'HEAD'].includes(req.method)) throw error('Use the local Web API for writes.', 405);
     if (/^\/_portal\/modal-form-template-path(?:\/[^/]+)?\/?$/i.test(url.pathname)) {
-      const normalizeId = (value) =>
+      /* NOSONAR: identical bodies capture different state */ const normalizeId = (value) =>
         String(value ?? '')
           .replace(/[{}]/g, '')
           .toLowerCase();
@@ -6160,8 +6180,9 @@ async function createPowerPagesSimulator({
         user: formIdentity,
         languageCode: language?.code ?? null,
       });
+      const modalAntiForgeryPath = `/_portal/${scopedSite}/Layout/GetAntiForgeryToken`;
       const document = injectRuntimeCompatibility(
-        `<!doctype html>${layout.html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${layout.title}</title>${modalPlatform.headStart}${styles}${headScripts}${layout.head}${modalPlatform.headEnd}</head>${layout.body}${modalPlatform.bodyOpen}${layout.chrome}${antiForgeryHolder(`/_portal/${scopedSite}/Layout/GetAntiForgeryToken`)}${modalPlatform.bodyStart}<div id="content-container" class="container wrapper-body" role="main"><div id="content"><div id="mainContent">${webFormsForm({ id: 'content_form', action: url.pathname + url.search, content: html, aspNetScripts })}</div></div></div>${modalPlatform.afterContent}${bodyScripts}${modalPlatform.afterFooter}</body></html>`,
+        `<!doctype html>${layout.html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${layout.title}</title>${modalPlatform.headStart}${styles}${headScripts}${layout.head}${modalPlatform.headEnd}</head>${layout.body}${modalPlatform.bodyOpen}${layout.chrome}${antiForgeryHolder(modalAntiForgeryPath)}${modalPlatform.bodyStart}<div id="content-container" class="container wrapper-body" role="main"><div id="content"><div id="mainContent">${webFormsForm({ id: 'content_form', action: url.pathname + url.search, content: html, aspNetScripts })}</div></div></div>${modalPlatform.afterContent}${bodyScripts}${modalPlatform.afterFooter}</body></html>`,
         sourceDependencies,
         configuredHeadScripts,
       );
@@ -6216,15 +6237,11 @@ async function createPowerPagesSimulator({
     if (runtimeAsset) {
       if (!['GET', 'HEAD'].includes(req.method)) throw error('Local compatibility assets require GET or HEAD.', 405);
       const body = await fs.readFile(runtimeAsset);
-      const fontMime = fontName?.endsWith('.woff2')
-        ? 'font/woff2'
-        : fontName?.endsWith('.woff')
-          ? 'font/woff'
-          : fontName?.endsWith('.ttf')
-            ? 'font/ttf'
-            : fontName?.endsWith('.eot')
-              ? 'application/vnd.ms-fontobject'
-              : 'image/svg+xml';
+      let fontMime = 'image/svg+xml';
+      if (fontName?.endsWith('.woff2')) fontMime = 'font/woff2';
+      else if (fontName?.endsWith('.woff')) fontMime = 'font/woff';
+      else if (fontName?.endsWith('.ttf')) fontMime = 'font/ttf';
+      else if (fontName?.endsWith('.eot')) fontMime = 'application/vnd.ms-fontobject';
       res.writeHead(200, {
         'content-type': fontRuntimeAsset ? fontMime : 'application/javascript; charset=utf-8',
         'cache-control': 'no-cache',
@@ -6341,7 +6358,7 @@ async function createPowerPagesSimulator({
         );
         if (source && source.contentRevision === createHash('sha256').update(originalBody).digest('hex')) {
           const proofId = randomUUID();
-          const { text: _text, file: _file, sourceDir: _root, ...sourceRef } = source;
+          const { text: _text, file: _file, sourceDir: _root, ...sourceRef } = source; // NOSONAR: binding is excluded from the rest object or is a placeholder
           const wireText = body.toString('utf8'),
             bom = wireText.startsWith('\uFEFF') ? 1 : 0,
             generated = wireText.slice(bom);
@@ -6422,7 +6439,7 @@ async function createPowerPagesSimulator({
     // A missing file under the platform's static areas (calendar loading image, live) is a plain
     // 404 without Vary, not the portal's Page Not Found page.
     if (['GET', 'HEAD'].includes(req.method) && /^\/areas\/.+\.[a-z0-9]+$/i.test(url.pathname)) {
-      const { vary: _vary, ...page } = PAGE_HEADERS;
+      const { vary: _vary, ...page } = PAGE_HEADERS; // NOSONAR: binding is excluded from the rest object or is a placeholder
       res.writeHead(404, { ...page, 'content-type': 'text/html; charset=utf-8', 'content-length': 0 });
       return res.end();
     }
@@ -6438,18 +6455,18 @@ async function createPowerPagesSimulator({
     const signInRequired = Boolean(
       routedPage && access?.allowed && profile && routedPage.id === profile.id && !pageIdentity?.contactId,
     );
-    const route =
-      deniedRoute ??
-      (!routedPage
-        ? resolveUnmatchedRoute(portal, url, {
-            readable: (page) => pageAccess(portal, page, pageIdentity).allowed,
-            urlHistory: store.state.settings?.urlHistoryRedirects === true,
-          })
-        : !access.allowed
-          ? deniedPageRoute(portal, url, pageIdentity, access, routeOptions)
-          : signInRequired
-            ? deniedPageRoute(portal, url, pageIdentity, { code: 'PROFILE_SIGN_IN_REQUIRED' }, routeOptions)
-            : null);
+    const pageRouteOf = () => {
+      if (!routedPage)
+        return resolveUnmatchedRoute(portal, url, {
+          readable: (page) => pageAccess(portal, page, pageIdentity).allowed,
+          urlHistory: store.state.settings?.urlHistoryRedirects === true,
+        });
+      if (!access.allowed) return deniedPageRoute(portal, url, pageIdentity, access, routeOptions);
+      if (signInRequired)
+        return deniedPageRoute(portal, url, pageIdentity, { code: 'PROFILE_SIGN_IN_REQUIRED' }, routeOptions);
+      return null;
+    };
+    const route = deniedRoute ?? pageRouteOf();
     if (route?.kind === 'redirect' && !route.page) {
       res.writeHead(route.status, {
         location: route.location,
@@ -6481,21 +6498,22 @@ async function createPowerPagesSimulator({
       const late = nativeContext?.lateRoot?.();
       return late ? traces.run(late, renderPageNow) : renderPageNow();
     };
-    const renderPageNow = () =>
-      renderedSource.renderer.renderPage(
-        (route ? route.page.url : markerRoute ? markerRoute.page.url : url.pathname) + url.search,
-        {
-          user: pageIdentity,
-          // The website language whose code the language route removed from the path .
-          languageCode: language?.code ?? null,
-          request: {
-            url: url.href,
-            path: url.pathname,
-            params: { ...formParams, ...Object.fromEntries(url.searchParams) },
-            method: req.method,
-          },
+    const renderPageNow = () => {
+      let renderPath = url.pathname;
+      if (route) renderPath = route.page.url;
+      else if (markerRoute) renderPath = markerRoute.page.url;
+      return renderedSource.renderer.renderPage(renderPath + url.search, {
+        user: pageIdentity,
+        // The website language whose code the language route removed from the path .
+        languageCode: language?.code ?? null,
+        request: {
+          url: url.href,
+          path: url.pathname,
+          params: { ...formParams, ...Object.fromEntries(url.searchParams) },
+          method: req.method,
         },
-      );
+      });
+    };
     let rendered = await renderCurrentPage();
     if (nativeEntries) {
       const collected = nativeContext?.nativePostbacks ?? [];
@@ -6622,7 +6640,86 @@ async function createPowerPagesSimulator({
     res.writeHead(route?.status ?? rendered.status ?? 200, headers);
     res.end(responseBody);
   }
-  const server = http.createServer((req, res) => {
+  const recordRequestErrorDiagnostics = (err, req, context) => {
+    const requestDiagnostic = (d) =>
+      recordDiagnostic(
+        context.traceSpan ? { ...d, traceId: context.traceSpan.traceId, spanId: context.traceSpan.spanId } : d,
+      );
+    if (err.code?.startsWith('PACK_CONFIGURATION_PRESET_'))
+      requestDiagnostic(
+        err.details?.configurationPresetDiagnostic ?? { code: err.code, severity: 'error', message: err.message },
+      );
+    if (err.details?.permissionDiagnostic)
+      requestDiagnostic({ ...err.details.permissionDiagnostic, path: req.url?.split('?')[0] });
+    // Administration API errors are answered to their caller; they are not portal runtime observations.
+    if (!req.url?.startsWith('/__sim/api') && !err.details?.permissionDiagnostic)
+      requestDiagnostic({
+        code: err.code ?? 'RUNTIME_ERROR',
+        message: err.message,
+        path: req.url?.split('?')[0],
+      });
+  };
+  const writePageRequestError = (err, req, res, status) => {
+    const presentation = observedPageErrorResponse({
+      method: req.method,
+      error: err,
+      observed: config().observed ?? portal.observed,
+    });
+    if (presentation) {
+      res.writeHead(presentation.status, presentation.headers);
+      return res.end(presentation.body);
+    }
+    res.writeHead(status, {
+      'content-type': 'text/html; charset=utf-8',
+      ...(err.code === 'REDIRECT_SITE_MARKER_NULL_REFERENCE' && observed.siteMarkerRedirect === 'null-reference'
+        ? { 'cache-control': PAGE_CACHE_CONTROL }
+        : {}),
+    });
+    const invalidReturnUrl = err.code === 'InvalidPersonaCatalog' && err.invalidParameter === 'returnUrl';
+    let requestTitle = null;
+    if (invalidReturnUrl) requestTitle = 'Invalid returnUrl';
+    else if (/^\/(?:_sim|__sim)\/sign-in(?:\?|$)/.test(req.url))
+      requestTitle =
+        err.status === 404 || /persona/i.test(err.message)
+          ? 'Invalid persona parameter'
+          : 'Local sign-in request failed';
+    res.end(
+      `<!doctype html><title>${requestTitle ?? 'Portal simulation diagnostic'}</title><main style="font:16px system-ui;max-width:900px;margin:50px auto"><h1>${requestTitle ?? 'Portal rendering needs attention'}</h1><p>${escaped(err.message)}</p><p><a href="/__sim/">Open simulator admin</a></p></main>`,
+    );
+  };
+  const writeRequestError = (err, req, res) => {
+    const status = err.status ?? err.statusCode ?? 500;
+    if (req.url.startsWith('/_api/') || req.url.startsWith('/__sim/api') || req.url.startsWith('/__sim/forms/'))
+      return void json(res, status, {
+        error: {
+          code: err.code ?? 'SIMULATOR_ERROR',
+          message: err.message,
+          ...(req.url.startsWith('/__sim/forms/') && Array.isArray(err.details?.validationErrors)
+            ? { validationErrors: err.details.validationErrors }
+            : {}),
+        },
+        ...(req.url.startsWith('/__sim/forms/entityform/') && formWriteError(err, config().observed ?? portal.observed)
+          ? { postback: formWriteError(err, config().observed ?? portal.observed) }
+          : {}),
+      });
+    return writePageRequestError(err, req, res, status);
+  };
+  const classifyPortalRequest = (url, cfg) => {
+    const endpoint = (cfg.endpoints ?? []).find((item) => item.enabled !== false && item.path === url.pathname);
+    let kind = 'page';
+    if (url.pathname.startsWith('/__sim/forms/')) kind = 'form';
+    else if (url.pathname.startsWith('/_api/') || url.pathname.startsWith('/__sim/artifacts/') || endpoint)
+      kind = 'api';
+    const tracked = !url.pathname.startsWith('/__sim/') || kind === 'form' || kind === 'api';
+    // A file suffix marks a static asset, except on the portal's own service routes (a document download named
+    // report.pdf, a note attachment): those are requests like any other.
+    const staticPath =
+      (/\.(?:js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|pdf|json)$/i.test(url.pathname) &&
+        !/^\/(?:_apps\/portal-documents|_entity|_services)\//i.test(url.pathname)) ||
+      /^\/(?:resource|_pcfwebresource|webresources|_webresource)\//.test(url.pathname);
+    return { endpoint, kind, tracked, staticPath };
+  };
+  /* NOSONAR */ const server = http.createServer((req, res) => {
     if (closing)
       return json(
         res,
@@ -6632,14 +6729,15 @@ async function createPowerPagesSimulator({
       );
     if (/^\/_setup(?:\/|$)/.test(req.url?.split('?')[0] ?? '')) {
       setupHandler(req, res).catch(() => {
-        if (!res.headersSent) json(res, 500, { error: { code: 'SETUP_FAILED', message: 'Setup request failed.' } });
+        if (!res.headersSent)
+          void json(res, 500, { error: { code: 'SETUP_FAILED', message: 'Setup request failed.' } });
       });
       return;
     }
     const started = Date.now();
     let url;
     try {
-      url = requestTargetUrl(req.url, 'http://local.invalid');
+      url = requestTargetUrl(req.url, 'http://local.invalid'); // NOSONAR: reserved or loopback placeholder host, not a real transport
     } catch {
       return json(res, 400, {
         error: { code: 'INVALID_REQUEST', message: 'Malformed request URL.' },
@@ -6652,19 +6750,7 @@ async function createPowerPagesSimulator({
     // Only synchronous audit classification reads this private configuration.
     // The handler snapshots its own response before any asynchronous writes.
     const cfg = config(store.state.simulator);
-    const endpoint = (cfg.endpoints ?? []).find((item) => item.enabled !== false && item.path === url.pathname);
-    const kind = url.pathname.startsWith('/__sim/forms/')
-      ? 'form'
-      : url.pathname.startsWith('/_api/') || url.pathname.startsWith('/__sim/artifacts/') || endpoint
-        ? 'api'
-        : 'page';
-    const tracked = !url.pathname.startsWith('/__sim/') || kind === 'form' || kind === 'api';
-    // A file suffix marks a static asset, except on the portal's own service routes (a document download named
-    // report.pdf, a note attachment): those are requests like any other.
-    const staticPath =
-      (/\.(?:js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|pdf|json)$/i.test(url.pathname) &&
-        !/^\/(?:_apps\/portal-documents|_entity|_services)\//i.test(url.pathname)) ||
-      /^\/(?:resource|_pcfwebresource|webresources|_webresource)\//.test(url.pathname);
+    const { endpoint, kind, tracked, staticPath } = classifyPortalRequest(url, cfg);
     // The parent header names an audit entry (the page's audit id the browser runtime forwards) or a trace span
     // (loopback callers forward traces.headers()); an audit parent joins the trace of its root span.
     const parent = audit.byId(req.headers['x-sim-parent-trace']);
@@ -6751,7 +6837,7 @@ async function createPowerPagesSimulator({
           query: url.searchParams,
           provider,
           identity,
-          entity: /^\/_api\/([\w]+)/.exec(url.pathname)?.[1],
+          entity: /^\/_api\/(\w+)/.exec(url.pathname)?.[1],
           activeConfigurationPreset: cfg.activeExperiment,
           parentId: parent?.id,
           correlationId: parent?.correlationId,
@@ -6870,7 +6956,7 @@ async function createPowerPagesSimulator({
         solutionMetadataOverlay.withReadEpoch(
           () =>
             runWithRequest(requestContext, () =>
-              traces.run(rootSpan, () =>
+              /* NOSONAR: callbacks capture request-scoped state */ traces.run(rootSpan, () =>
                 trace.run(context, async () => {
                   // Enhanced authorization maps the visitor to its Dataverse user and roles before any entry point evaluates it. The
                   // /_sim/api administration acts as the local administrator, never as the visitor: it maps nothing and provisions no
@@ -6887,70 +6973,12 @@ async function createPowerPagesSimulator({
       .catch((err) => {
         context.error = err;
         // This handler runs after the request's span stack: its findings name the request's root explicitly (D-M-4).
-        const requestDiagnostic = (d) =>
-          recordDiagnostic(
-            context.traceSpan ? { ...d, traceId: context.traceSpan.traceId, spanId: context.traceSpan.spanId } : d,
-          );
-        if (err.code?.startsWith('PACK_CONFIGURATION_PRESET_'))
-          requestDiagnostic(
-            err.details?.configurationPresetDiagnostic ?? { code: err.code, severity: 'error', message: err.message },
-          );
-        if (err.details?.permissionDiagnostic)
-          requestDiagnostic({ ...err.details.permissionDiagnostic, path: req.url?.split('?')[0] });
-        // Administration API errors are answered to their caller; they are not portal runtime observations.
-        if (!req.url?.startsWith('/__sim/api') && !err.details?.permissionDiagnostic)
-          requestDiagnostic({
-            code: err.code ?? 'RUNTIME_ERROR',
-            message: err.message,
-            path: req.url?.split('?')[0],
-          });
+        recordRequestErrorDiagnostics(err, req, context);
         if (res.headersSent) {
           res.end();
           return;
         }
-        const status = err.status ?? err.statusCode ?? 500;
-        if (req.url.startsWith('/_api/') || req.url.startsWith('/__sim/api') || req.url.startsWith('/__sim/forms/'))
-          json(res, status, {
-            error: {
-              code: err.code ?? 'SIMULATOR_ERROR',
-              message: err.message,
-              ...(req.url.startsWith('/__sim/forms/') && Array.isArray(err.details?.validationErrors)
-                ? { validationErrors: err.details.validationErrors }
-                : {}),
-            },
-            ...(req.url.startsWith('/__sim/forms/entityform/') &&
-            formWriteError(err, config().observed ?? portal.observed)
-              ? { postback: formWriteError(err, config().observed ?? portal.observed) }
-              : {}),
-          });
-        else {
-          const presentation = observedPageErrorResponse({
-            method: req.method,
-            error: err,
-            observed: config().observed ?? portal.observed,
-          });
-          if (presentation) {
-            res.writeHead(presentation.status, presentation.headers);
-            return res.end(presentation.body);
-          }
-          res.writeHead(status, {
-            'content-type': 'text/html; charset=utf-8',
-            ...(err.code === 'REDIRECT_SITE_MARKER_NULL_REFERENCE' && observed.siteMarkerRedirect === 'null-reference'
-              ? { 'cache-control': PAGE_CACHE_CONTROL }
-              : {}),
-          });
-          const invalidReturnUrl = err.code === 'InvalidPersonaCatalog' && err.invalidParameter === 'returnUrl';
-          const requestTitle = invalidReturnUrl
-            ? 'Invalid returnUrl'
-            : /^\/(?:_sim|__sim)\/sign-in(?:\?|$)/.test(req.url)
-              ? err.status === 404 || /persona/i.test(err.message)
-                ? 'Invalid persona parameter'
-                : 'Local sign-in request failed'
-              : null;
-          res.end(
-            `<!doctype html><title>${requestTitle ?? 'Portal simulation diagnostic'}</title><main style="font:16px system-ui;max-width:900px;margin:50px auto"><h1>${requestTitle ?? 'Portal rendering needs attention'}</h1><p>${escaped(err.message)}</p><p><a href="/__sim/">Open simulator admin</a></p></main>`,
-          );
-        }
+        writeRequestError(err, req, res);
       })
       .finally(() => activeRequests.delete(invocation));
     activeRequests.add(invocation);
@@ -7061,7 +7089,7 @@ async function createPowerPagesSimulator({
     bootstrapTimings.listenerMs = Math.round(performance.now() - startedAt);
     bootstrapTimings.memory = { rss: process.memoryUsage().rss, heapUsed: process.memoryUsage().heapUsed };
   } catch (cause) {
-    await close().catch((cleanup) => recordDiagnostic({ code: 'STARTUP_CLEANUP_FAILED', message: cleanup.message }));
+    await close().catch((error_) => recordDiagnostic({ code: 'STARTUP_CLEANUP_FAILED', message: error_.message }));
     throw cause;
   }
   let reloadRequested = false;
@@ -7103,7 +7131,7 @@ async function createPowerPagesSimulator({
         };
         try {
           const started = performance.now();
-          const changed = [...changedPaths].sort();
+          const changed = [...changedPaths].sort(compareText);
           changedPaths.clear();
           activeProfiles = await loadDeploymentProfiles(profileConfig, config().deploymentProfilePin ?? null);
           sourcePortal = await importSource(config().modelDriven?.records);

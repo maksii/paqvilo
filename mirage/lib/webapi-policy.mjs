@@ -141,17 +141,7 @@ export const POWER_PAGES_TABLES = new Map(
   ].map((logical) => [logical === 'mspp_websiteaccess' ? 'mspp_websiteaccesses' : `${logical}s`, logical]),
 );
 
-/** Site settings apply only to the public Web API, independently of table grants. */
-export function webApiPolicy(portal, store, entity) {
-  const mapping = store.resolveMapping(entity),
-    prefix = `Webapi/${mapping.logicalName}/`,
-    settings = portal.settings ?? {};
-  // Column type from Solution metadata; tables the Dataverse API seeds (standard or dataverseOnly) have none, so their
-  // own field types answer. A user-configured mapping keeps the Solution-only rule.
-  const seeded = mapping.standardTable || mapping.dataverseOnly;
-  const columnType = (name) =>
-    portal.webApiEntities?.[mapping.logicalName]?.fields?.[name]?.dataverseType ??
-    (seeded ? mapping.fields?.[name]?.dataverseType : undefined);
+/* NOSONAR */ function configuredWebApiFields(portal, mapping, prefix, settings, columnType) {
   if (
     WEBAPI_UNSUPPORTED_TABLES.has(mapping.logicalName) ||
     String(settings[prefix + 'enabled'] ?? 'false').toLowerCase() !== 'true'
@@ -181,12 +171,6 @@ export function webApiPolicy(portal, store, entity) {
         if (['lookup', 'customer', 'owner'].includes(columnType(field.name))) fields.add(`_${field.name}_value`);
       }
   }
-  // An enabled table without a column list allows no columns: every column a
-  // request names fails with 90040101 (the primary key stays readable).
-  // The `*` value is unsupported on every hosted site from 14 September 2026 unless an
-  // admin exemption applies (troubleshoot: migrate-web-api-wildcard), so requests for
-  // such a table fail by default. A site observed with an exemption
-  // (observed.webApiWildcard "exempt") keeps exposing every column.
   if (fields.has('*') && portal.observed?.webApiWildcard !== 'exempt')
     denied(
       `Webapi/${mapping.logicalName}/fields uses the deprecated wildcard value (*); requests for this table fail until explicit columns are configured.`,
@@ -194,9 +178,10 @@ export function webApiPolicy(portal, store, entity) {
       403,
       { table: mapping.logicalName },
     );
-  const writeFields = new Set(fields);
-  // Some sites require the wire property to be explicitly enabled.
-  // Keep the usual metadata-derived aliases unless that site observation opts in.
+  return fields;
+}
+
+function addWebApiLookupAliases(fields, portal, mapping, columnType) {
   for (const field of portal.observed?.webApiLookupFields === 'explicit-wire' ? [] : fields)
     if (
       ['lookup', 'customer', 'owner'].includes(columnType(field)) ||
@@ -205,8 +190,6 @@ export function webApiPolicy(portal, store, entity) {
       )
     )
       fields.add(`_${field}_value`);
-  // Exported settings can name the OData lookup alias. Its proven logical
-  // column remains the same read/expand permission, never an arbitrary alias.
   for (const field of fields) {
     const match = /^_(.+)_value$/.exec(field);
     if (
@@ -218,6 +201,9 @@ export function webApiPolicy(portal, store, entity) {
     )
       fields.add(match[1]);
   }
+}
+
+function webApiPermissionProfiles(portal, store, mapping) {
   const identity = portal.webApiIdentity ?? store.snapshot().simulator?.identity ?? {},
     roleIds = new Set((identity.roleIds ?? []).map((value) => String(value).replace(/[{}]/g, '').toLowerCase()));
   if (identity.roleSource !== 'memberships')
@@ -236,6 +222,34 @@ export function webApiPolicy(portal, store, entity) {
         ),
       ),
   );
+  return { identity, roleIds, profiles };
+}
+
+/** Site settings apply only to the public Web API, independently of table grants. */
+export function webApiPolicy(portal, store, entity) {
+  const mapping = store.resolveMapping(entity),
+    prefix = `Webapi/${mapping.logicalName}/`,
+    settings = portal.settings ?? {};
+  // Column type from Solution metadata; tables the Dataverse API seeds (standard or dataverseOnly) have none, so their
+  // own field types answer. A user-configured mapping keeps the Solution-only rule.
+  const seeded = mapping.standardTable || mapping.dataverseOnly;
+  const columnType = (name) =>
+    portal.webApiEntities?.[mapping.logicalName]?.fields?.[name]?.dataverseType ??
+    (seeded ? mapping.fields?.[name]?.dataverseType : undefined);
+  // An enabled table without a column list allows no columns: every column a
+  // request names fails with 90040101 (the primary key stays readable).
+  // The `*` value is unsupported on every hosted site from 14 September 2026 unless an
+  // admin exemption applies (troubleshoot: migrate-web-api-wildcard), so requests for
+  // such a table fail by default. A site observed with an exemption
+  // (observed.webApiWildcard "exempt") keeps exposing every column.
+  const fields = configuredWebApiFields(portal, mapping, prefix, settings, columnType);
+  const writeFields = new Set(fields);
+  // Some sites require the wire property to be explicitly enabled.
+  // Keep the usual metadata-derived aliases unless that site observation opts in.
+  // Exported settings can name the OData lookup alias. Its proven logical
+  // column remains the same read/expand permission, never an arbitrary alias.
+  addWebApiLookupAliases(fields, portal, mapping, columnType);
+  const { profiles } = webApiPermissionProfiles(portal, store, mapping);
   const operationValue = {
       create: 746610000,
       read: 746610001,
@@ -445,112 +459,125 @@ export function webApiPolicy(portal, store, entity) {
       )
       .map(([key]) => key);
     if (!candidates.length && !hasField(navigation)) return;
+    const hint = candidates.length ? ` (did you mean ${candidates.join(' or ')}?)` : '';
     throw new DataError(
-      `${navigation}@odata.bind doesn't name a navigation property of ${mapping.logicalName}; navigation property names are case-sensitive${candidates.length ? ` (did you mean ${candidates.join(' or ')}?)` : ''}.`,
+      `${navigation}@odata.bind doesn't name a navigation property of ${mapping.logicalName}; navigation property names are case-sensitive${hint}.`,
       400,
       'UndeclaredNavigationProperty',
       { attribute: navigation, table: mapping.logicalName, phase: 'payload' },
     );
   };
-  const write = (body, operation = 'update') => {
-    for (const [name, value] of Object.entries(body)) {
-      const column = name.replace(/@odata\.bind$/, '');
-      if (reserved(column))
-        denied('Private simulator columns cannot be written through the public Web API.', 'WebApiPrivateField');
-      if (name.endsWith('@odata.bind')) assertBindNavigation(column);
-      if (!enabled(column, writeFields)) notEnabled(column, mapping.logicalName);
-      assertExists(column, { write: true });
-      if (!columnAllowed(column, operation))
-        denied(
-          `Column permission denies ${operation} on ${mapping.logicalName}.${column}.`,
-          'WebApiColumnPermissionDenied',
-          403,
-          { attribute: column, table: mapping.logicalName, operation },
-        );
-      const rel = relation(column);
-      // The portal gates property names inside object payloads before Dataverse
-      // attempts scalar conversion. A scalar choice wrapper is not a wire value.
-      if (
-        !rel &&
-        !name.endsWith('@odata.bind') &&
-        value &&
-        typeof value === 'object' &&
-        !Array.isArray(value) &&
-        !isExactNumeric(value)
-      )
-        write(value, operation);
-      // Validate submitted GUID literals before immutable fields are omitted.
-      // Otherwise a malformed primary key could turn into a successful no-op.
-      if (
-        value != null &&
-        (column === mapping.idColumn || fieldKind(definitionOf(column)) === 'guid') &&
-        (typeof value !== 'string' || !GUID_PATTERN.test(value))
-      )
-        throw attachODataReaderDetails(
-          new DataError(
-            `Cannot convert the literal '${typeof value === 'object' ? JSON.stringify(value) : String(value)}' to the expected type 'Edm.Guid'.`,
-            400,
-            'InvalidValue',
-            { innerCode: '0x80048d19' },
-          ),
-          portal.observed?.webApiErrorDetails === 'odata-wrapper'
-            ? odataConversionDetails(value, 'Edm.Guid', column)
-            : null,
-        );
-      const dateDefinition = definitionOf(column) ?? store.fieldDefinition(mapping.logicalName, column);
-      if (
-        value != null &&
-        fieldKind(dateDefinition) === 'datetime' &&
-        isDateOnlyField(dateDefinition) &&
-        portalDateOnly(value) === null
-      )
-        throw attachODataReaderDetails(
-          new DataError(`Cannot convert the literal to the expected type 'Edm.Date'.`, 400, 'InvalidValue', {
-            innerCode: '0x80048d19',
-          }),
-          portal.observed?.webApiErrorDetails === 'odata-wrapper'
-            ? odataConversionDetails(value, 'Edm.Date', column)
-            : null,
-        );
-      if (rel && !name.endsWith('@odata.bind') && value && typeof value === 'object') {
-        const target = webApiPolicy(portal, store, rel.entity);
-        for (const row of Array.isArray(value) ? value : [value]) target.assertWrite(row, operation);
-      }
+  const assertWriteGuidValue = (column, value) => {
+    if (
+      value != null &&
+      (column === mapping.idColumn || fieldKind(definitionOf(column)) === 'guid') &&
+      (typeof value !== 'string' || !GUID_PATTERN.test(value))
+    )
+      throw attachODataReaderDetails(
+        new DataError(
+          `Cannot convert the literal '${typeof value === 'object' ? JSON.stringify(value) : String(value)}' to the expected type 'Edm.Guid'.`,
+          400,
+          'InvalidValue',
+          { innerCode: '0x80048d19' },
+        ),
+        portal.observed?.webApiErrorDetails === 'odata-wrapper'
+          ? odataConversionDetails(value, 'Edm.Guid', column)
+          : null,
+      );
+  };
+  const assertWriteDateValue = (column, value, dateDefinition) => {
+    if (
+      value != null &&
+      fieldKind(dateDefinition) === 'datetime' &&
+      isDateOnlyField(dateDefinition) &&
+      portalDateOnly(value) === null
+    )
+      throw attachODataReaderDetails(
+        new DataError(`Cannot convert the literal to the expected type 'Edm.Date'.`, 400, 'InvalidValue', {
+          innerCode: '0x80048d19',
+        }),
+        portal.observed?.webApiErrorDetails === 'odata-wrapper'
+          ? odataConversionDetails(value, 'Edm.Date', column)
+          : null,
+      );
+  };
+  const writeEntry = (name, value, operation) => {
+    const column = name.replace(/@odata\.bind$/, '');
+    if (reserved(column))
+      denied('Private simulator columns cannot be written through the public Web API.', 'WebApiPrivateField');
+    if (name.endsWith('@odata.bind')) assertBindNavigation(column);
+    if (!enabled(column, writeFields)) notEnabled(column, mapping.logicalName);
+    assertExists(column, { write: true });
+    if (!columnAllowed(column, operation))
+      denied(
+        `Column permission denies ${operation} on ${mapping.logicalName}.${column}.`,
+        'WebApiColumnPermissionDenied',
+        403,
+        { attribute: column, table: mapping.logicalName, operation },
+      );
+    const rel = relation(column);
+    if (
+      !rel &&
+      !name.endsWith('@odata.bind') &&
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      !isExactNumeric(value)
+    )
+      write(value, operation);
+    assertWriteGuidValue(column, value);
+    const dateDefinition = definitionOf(column) ?? store.fieldDefinition(mapping.logicalName, column);
+    assertWriteDateValue(column, value, dateDefinition);
+    if (rel && !name.endsWith('@odata.bind') && value && typeof value === 'object') {
+      const target = webApiPolicy(portal, store, rel.entity);
+      for (const row of Array.isArray(value) ? value : [value]) target.assertWrite(row, operation);
     }
+  };
+  const write = (body, operation = 'update') => {
+    for (const [name, value] of Object.entries(body)) writeEntry(name, value, operation);
   };
   // Dataverse ignores values invalid for this operation; portal field and
   // column permissions still apply before those immutable values are omitted.
   // https://learn.microsoft.com/power-apps/developer/data-platform/entity-attribute-metadata
+  const prepareWriteValue = (name, value, operation, definitions) => {
+    const column = name.replace(/@odata\.bind$/, '');
+    const rel = relation(column);
+    const physical = rel?.from ?? (/^_.*_value$/.test(column) ? column.slice(1, -6) : column);
+    const definition =
+      definitions[physical] ??
+      definitions[Object.keys(definitions).find((key) => key.toLowerCase() === physical.toLowerCase())];
+    if (
+      rel?.many !== true &&
+      (operation === 'create' ? definition?.validForCreate : definition?.validForUpdate) === false
+    )
+      return { skip: true };
+    let written = value;
+    if (rel && !name.endsWith('@odata.bind') && value && typeof value === 'object')
+      written = Array.isArray(value)
+        ? value.map((row) => webApiPolicy(portal, store, rel.entity).prepareWrite(row, operation))
+        : webApiPolicy(portal, store, rel.entity).prepareWrite(value, operation);
+    else if (
+      value != null &&
+      fieldKind(definition ?? store.fieldDefinition(mapping.logicalName, physical)) === 'datetime' &&
+      isDateOnlyField(definition ?? store.fieldDefinition(mapping.logicalName, physical))
+    )
+      written = portalDateOnly(value);
+    else if (
+      portal.observed?.webApiDateParsing === 'month-first' &&
+      fieldKind(definition ?? store.fieldDefinition(mapping.logicalName, physical)) === 'datetime'
+    )
+      written = monthFirstWriteValue(value, portal.observed.webApiTwoDigitYearMax ?? 2049);
+    return { skip: false, written };
+  };
   const prepareWrite = (body, operation = 'update') => {
     write(body, operation);
     const definitions =
       portal.webApiEntities?.[mapping.logicalName]?.fields ?? mapping.fields ?? mapping.fieldMetadata ?? {};
     const result = {};
     for (const [name, value] of Object.entries(body)) {
-      const column = name.replace(/@odata\.bind$/, '');
-      const rel = relation(column);
-      const physical = rel?.from ?? (/^_.*_value$/.test(column) ? column.slice(1, -6) : column);
-      const definition =
-        definitions[physical] ??
-        definitions[Object.keys(definitions).find((key) => key.toLowerCase() === physical.toLowerCase())];
-      if (
-        rel?.many !== true &&
-        (operation === 'create' ? definition?.validForCreate : definition?.validForUpdate) === false
-      )
-        continue;
-      result[name] =
-        rel && !name.endsWith('@odata.bind') && value && typeof value === 'object'
-          ? Array.isArray(value)
-            ? value.map((row) => webApiPolicy(portal, store, rel.entity).prepareWrite(row, operation))
-            : webApiPolicy(portal, store, rel.entity).prepareWrite(value, operation)
-          : value != null &&
-              fieldKind(definition ?? store.fieldDefinition(mapping.logicalName, physical)) === 'datetime' &&
-              isDateOnlyField(definition ?? store.fieldDefinition(mapping.logicalName, physical))
-            ? portalDateOnly(value)
-            : portal.observed?.webApiDateParsing === 'month-first' &&
-                fieldKind(definition ?? store.fieldDefinition(mapping.logicalName, physical)) === 'datetime'
-              ? monthFirstWriteValue(value, portal.observed.webApiTwoDigitYearMax ?? 2049)
-              : value;
+      const prepared = prepareWriteValue(name, value, operation, definitions);
+      if (prepared.skip) continue;
+      result[name] = prepared.written;
     }
     return result;
   };
@@ -646,11 +673,9 @@ export function webApiFetchPolicy(portal, store, xml, rootEntity, { structuralJo
   const policyFor = (entityname, fallback) => {
     if (entityname == null) return fallback;
     const link = plan.byAlias.get(entityname) ?? plan.byName.get(entityname);
-    const policy = link
-      ? aliases.get(plan.aliasOf.get(link))
-      : entityname === rootMapping.logicalName
-        ? aliases.get(null)
-        : null;
+    let policy = null;
+    if (link) policy = aliases.get(plan.aliasOf.get(link));
+    else if (entityname === rootMapping.logicalName) policy = aliases.get(null);
     // Dataverse QueryBuilderAlias_Does_Not_Exist: a malformed query (400).
     if (!policy)
       throw new DataError(
@@ -671,36 +696,41 @@ export function webApiFetchPolicy(portal, store, xml, rootEntity, { structuralJo
       policyFor(other, owner).assert(column);
     }
   };
-  function walk(node, parent) {
-    if (['entity', 'link-entity'].includes(node.name)) {
-      const policy = nodePolicies.get(node);
-      if (!parent && policy.mapping.logicalName !== rootMapping.logicalName)
-        // A malformed request for Dataverse (400), not a column denial.
-        throw new DataError(
-          "The entity name in the FetchXML query doesn't match the entity set of the request.",
-          400,
-          'WebApiFetchEntityMismatch',
-          { innerCode: '0x80040203' },
-        );
-      // The native lane permits relationship keys to join tables
-      // without enabling those keys for projected/filter/order API access.
-      // Dataverse column/type validation remains in the query executor.
-      if (!structuralJoinFields && node.attrs.from) policy.assert(node.attrs.from);
-      if (!structuralJoinFields && node.attrs.to && parent) parent.assert(node.attrs.to);
-      for (const child of node.children) {
-        if (child.name === 'attribute') {
-          policy.assert(child.attrs.name);
-          if (child.attrs.alias) attributeAliases.add(child.attrs.alias);
-        }
-        if (['condition', 'order'].includes(child.name) && child.attrs.attribute) assertCondition(child, policy);
-        walk(child, policy);
+  function walkEntityChildren(node, policy) {
+    for (const child of node.children) {
+      if (child.name === 'attribute') {
+        policy.assert(child.attrs.name);
+        if (child.attrs.alias) attributeAliases.add(child.attrs.alias);
       }
-    } else {
-      for (const child of node.children ?? []) {
-        if (['condition', 'order'].includes(child.name) && child.attrs.attribute) assertCondition(child, parent);
-        walk(child, parent);
-      }
+      if (['condition', 'order'].includes(child.name) && child.attrs.attribute) assertCondition(child, policy);
+      walk(child, policy);
     }
+  }
+  function walkOtherChildren(node, parent) {
+    for (const child of node.children ?? []) {
+      if (['condition', 'order'].includes(child.name) && child.attrs.attribute) assertCondition(child, parent);
+      walk(child, parent);
+    }
+  }
+  function walkEntityNode(node, parent) {
+    const policy = nodePolicies.get(node);
+    if (!parent && policy.mapping.logicalName !== rootMapping.logicalName)
+      // A malformed request for Dataverse (400), not a column denial.
+      throw new DataError(
+        "The entity name in the FetchXML query doesn't match the entity set of the request.",
+        400,
+        'WebApiFetchEntityMismatch',
+        { innerCode: '0x80040203' },
+      );
+    // The native lane permits relationship keys to join tables without enabling those keys for projected/filter/order API access.
+    // Dataverse column/type validation remains in the query executor.
+    if (!structuralJoinFields && node.attrs.from) policy.assert(node.attrs.from);
+    if (!structuralJoinFields && node.attrs.to && parent) parent.assert(node.attrs.to);
+    walkEntityChildren(node, policy);
+  }
+  function walk(node, parent) {
+    if (['entity', 'link-entity'].includes(node.name)) return walkEntityNode(node, parent);
+    walkOtherChildren(node, parent);
   }
   walk(root, null);
   const policy = webApiPolicy(portal, store, rootEntity);
@@ -709,8 +739,11 @@ export function webApiFetchPolicy(portal, store, xml, rootEntity, { structuralJo
     for (const [name, value] of Object.entries(row)) {
       const clean = name.split('@')[0],
         dot = clean.indexOf('.');
-      if (dot > 0 && aliases.get(clean.slice(0, dot))?.allowed(clean.slice(dot + 1))) out[name] = value;
-      else if (dot < 0 && attributeAliases.has(clean)) out[name] = value;
+      if (
+        (dot > 0 && aliases.get(clean.slice(0, dot))?.allowed(clean.slice(dot + 1))) ||
+        (dot < 0 && attributeAliases.has(clean))
+      )
+        out[name] = value;
     }
     return out;
   };

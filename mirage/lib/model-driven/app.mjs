@@ -157,7 +157,7 @@ function reflowSectionFields(host) {
   ].sort((left, right) => left - right);
   for (const element of host.children) {
     const cell = formCellLayouts.get(element);
-    if (!cell || cell.row === undefined) continue;
+    if (cell?.row === undefined) continue;
     if (cell.spacer) element.hidden = cell.visible === false || !rows.includes(cell.row);
     const row = rows.indexOf(cell.row);
     if (row < 0) continue;
@@ -165,7 +165,8 @@ function reflowSectionFields(host) {
       1,
       rows.filter((index) => index >= cell.row && index < cell.row + (cell.rowspan ?? 1)).length,
     );
-    element.style.gridRow = `${row + 1}${span > 1 ? ` / span ${span}` : ''}`;
+    const spanSuffix = span > 1 ? ' / span ' + span : '';
+    element.style.gridRow = `${row + 1}${spanSuffix}`;
   }
 }
 const disposeControls = () => {
@@ -245,15 +246,18 @@ async function api(path = '', options = {}) {
   if (
     response.ok &&
     offlineState?.mode === 'offline' &&
-    /^\/tables\//.test(path) &&
+    path.startsWith('/tables/') &&
     options.method &&
     options.method !== 'GET'
   )
     loadOffline().catch(() => {});
   if (!response.ok) {
     const code = body.error?.code,
-      errorCode =
-        typeof code === 'number' ? code : /^0x[\da-f]+$/i.test(code ?? '') ? Number.parseInt(code, 16) : undefined;
+      errorCode = (() => {
+        if (typeof code === 'number') return code;
+        if (/^0x[\da-f]+$/i.test(code ?? '')) return Number.parseInt(code, 16);
+        return undefined;
+      })();
     throw Object.assign(new Error(body.error?.message ?? `Request failed (${response.status}).`), {
       status: response.status,
       code,
@@ -416,18 +420,25 @@ function renderOffline() {
   const offline = offlineState?.mode === 'offline',
     pending = offlineState?.queue?.length ?? 0,
     problems = (offlineState?.conflicts?.length ?? 0) + (offlineState?.errors?.length ?? 0);
-  toggle.textContent = `${offline ? 'Offline' : 'Online'}${pending ? ` · ${pending} pending` : ''}${problems ? ` · ${problems} sync issues` : ''}`;
+  const pendingText = pending ? ' · ' + pending + ' pending' : '',
+    problemText = problems ? ' · ' + problems + ' sync issues' : '';
+  toggle.textContent = `${offline ? 'Offline' : 'Online'}${pendingText}${problemText}`;
   toggle.setAttribute('aria-pressed', String(offline));
   toggle.dataset.mode = offline ? 'offline' : 'online';
-  toggle.title =
-    offlineState?.error ??
-    `Mobile offline profile ${offlineState?.profile ?? ''}${offlineState?.lastSync ? ` · last sync ${offlineState.lastSync}` : ' · not synced'}`;
+  toggle.title = offlineState?.error ?? offlineTitle();
   // The sync interval is how often a connected device syncs.
   if (!offline && offlineState?.nextSync)
     offlineTimer = setTimeout(
       () => offlineAction({ action: 'sync' }).catch((error) => notice(error.message, true)),
       Math.max(1000, Date.parse(offlineState.nextSync) - Date.now()),
     );
+}
+function offlineTitle() {
+  const profile = offlineState?.profile ?? '';
+  const profileText = `${profile}`;
+  const lastSync = offlineState?.lastSync;
+  const syncText = lastSync ? ` · last sync ${lastSync}` : ' · not synced';
+  return `Mobile offline profile ${profileText}${syncText}`;
 }
 async function loadOffline() {
   const token = ++offlineGeneration,
@@ -460,17 +471,23 @@ async function offlineDialog() {
   await loadOffline();
   const state = offlineState ?? {},
     offline = state.mode === 'offline';
-  const list = (title, rows, line) =>
-    rows?.length ? `<h3>${esc(title)}</h3><ul>${rows.map((row) => `<li>${esc(line(row))}</li>`).join('')}</ul>` : '';
+  const list = (title, rows, line) => {
+    if (!rows?.length) return '';
+    const items = rows.map((row) => '<li>' + esc(line(row)) + '</li>').join('');
+    return `<h3>${esc(title)}</h3><ul>${items}</ul>`;
+  };
   const body = document.createElement('div');
+  const description = () => {
+    if (state.error != null) return state.error;
+    if (state.lastSync) return 'Last sync ' + state.lastSync;
+    return 'Not synchronized yet.';
+  };
   body.innerHTML =
-    `<p><strong>${esc(state.profile ?? 'Mobile offline')}</strong> · ${offline ? 'Offline' : 'Online'}</p><p>${esc(state.error ?? (state.lastSync ? `Last sync ${state.lastSync}` : 'Not synchronized yet.'))}</p>` +
-    list(
-      'Available offline',
-      state.tables,
-      (row) =>
-        `${row.entity}: ${row.rows} rows${row.syncIntervalMinutes ? `, sync every ${row.syncIntervalMinutes} minutes` : ''}`,
-    ) +
+    `<p><strong>${esc(state.profile ?? 'Mobile offline')}</strong> · ${offline ? 'Offline' : 'Online'}</p><p>${esc(description())}</p>` +
+    list('Available offline', state.tables, (row) => {
+      const interval = row.syncIntervalMinutes ? `, sync every ${row.syncIntervalMinutes} minutes` : '';
+      return `${row.entity}: ${row.rows} rows${interval}`;
+    }) +
     list('Pending changes', state.queue, (row) => `${row.operation} ${row.entity} ${row.id}`) +
     list('Sync conflicts', state.conflicts, (row) => `${row.operation} ${row.entity} ${row.id}: ${row.message}`) +
     list('Sync errors', state.errors, (row) => `${row.operation} ${row.entity} ${row.id}: ${row.message}`) +
@@ -745,7 +762,11 @@ function picker(trigger, choices, { label, selected, choose, search = false, men
   const position = () => {
     const rect = trigger.getBoundingClientRect(),
       above = menuClass === 'area-picker';
-    menu.style.minWidth = `${Math.min(menuClass === 'form-picker' ? 203 : above ? 200 : Math.max(rect.width, 280), innerWidth - 24)}px`;
+    let minimumWidth;
+    if (menuClass === 'form-picker') minimumWidth = 203;
+    else if (above) minimumWidth = 200;
+    else minimumWidth = Math.max(rect.width, 280);
+    menu.style.minWidth = `${Math.min(minimumWidth, innerWidth - 24)}px`;
     menu.style.maxHeight = `${Math.max(100, above ? rect.top - 12 : innerHeight - rect.bottom - 12)}px`;
     menu.style.left = `${Math.max(above ? 0 : 12, Math.min(rect.left, innerWidth - menu.offsetWidth - (above ? 0 : 12)))}px`;
     menu.style.top = `${above ? Math.max(12, rect.top - menu.offsetHeight) : rect.bottom}px`;
@@ -756,12 +777,10 @@ function picker(trigger, choices, { label, selected, choose, search = false, men
       index = items.indexOf(document.activeElement);
     if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
       event.preventDefault();
-      const next =
-        event.key === 'Home'
-          ? 0
-          : event.key === 'End'
-            ? items.length - 1
-            : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      let next;
+      if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = items.length - 1;
+      else next = (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
       items[next]?.focus();
     } else if (event.key === 'Escape') {
       event.preventDefault();
@@ -873,7 +892,13 @@ function chooseApplication() {
       const name = application.name ?? application.uniqueName ?? application.id;
       card.setAttribute('aria-label', name);
       if (application.id === app?.id) card.setAttribute('aria-current', 'true');
-      card.innerHTML = `<span class="app-card-art">${application.iconUrl?.startsWith('/_apps/resources/') ? `<img src="${esc(application.iconUrl)}" alt="">` : icon('pageGrid')}</span><span class="app-card-info"><strong>${esc(name)}</strong>${application.description ? `<span class="app-card-description">${esc(application.description)}</span>` : ''}<span class="app-card-footer">UNIFIED INTERFACE</span></span>`;
+      const art = application.iconUrl?.startsWith('/_apps/resources/')
+          ? `<img src="${esc(application.iconUrl)}" alt="">`
+          : icon('pageGrid'),
+        description = application.description
+          ? '<span class="app-card-description">' + esc(application.description) + '</span>'
+          : '';
+      card.innerHTML = `<span class="app-card-art">${art}</span><span class="app-card-info"><strong>${esc(name)}</strong>${description}<span class="app-card-footer">UNIFIED INTERFACE</span></span>`;
       list.append(card);
     }
     heading.textContent = `Published Apps (${list.children.length})`;
@@ -1003,8 +1028,12 @@ async function navigate(
   const url = targetUrl(entity, { id, view, application, defaults, form });
   const selectedPage =
     navigation ?? (application === app && entity === table?.entity ? activeNavigationItem?.id : undefined);
+  let routeState;
+  if (id) routeState = { returnGrid: origin };
+  else if (grid) routeState = { grid };
+  else routeState = {};
   history[replace ? 'replaceState' : 'pushState'](
-    { ...(id ? { returnGrid: origin } : grid ? { grid } : {}), ...(selectedPage ? { navigation: selectedPage } : {}) },
+    { ...routeState, ...(selectedPage ? { navigation: selectedPage } : {}) },
     '',
     url,
   );
@@ -1024,6 +1053,27 @@ function renderNavigation() {
   });
   home.setAttribute('aria-label', 'Home');
   nav.append(home);
+  renderNavigationHistory(nav);
+  const routeParams = new URLSearchParams(location.search),
+    requestedView = (routeParams.get('viewid') ?? (!routeParams.has('etn') ? firstPage(app)?.view : undefined))
+      ?.replace(/[{}]/g, '')
+      .toLowerCase(),
+    view = !table
+      ? undefined
+      : (appViews().find((view) => view.id === requestedView)?.id ??
+        appViews().find((view) => view.isDefault)?.id ??
+        appViews()[0]?.id);
+  const areaItems = activeArea?.groups.flatMap((group) => group.items) ?? [],
+    activeItem =
+      areaItems.find((item) => item === activeNavigationItem) ??
+      areaItems.find((item) => item.supported && item.entity === table?.entity && item.view === view) ??
+      areaItems.find((item) => item.supported && item.entity === table?.entity && !item.view);
+  renderAreaNavigation(nav, activeItem);
+  $('#area-selector')?.remove();
+  renderAreaPicker();
+}
+
+function renderNavigationHistory(nav) {
   for (const [label, entries] of [
     ['Recent', recent],
     ['Pinned', pinned],
@@ -1042,7 +1092,7 @@ function renderNavigation() {
       history.append(
         button(entry.label, async () => {
           if (!(await canLeave())) return;
-          window.history.pushState({}, '', entry.url);
+          globalThis.history.pushState({}, '', entry.url);
           await loadRoute();
         }),
       );
@@ -1054,50 +1104,21 @@ function renderNavigation() {
     }
     nav.append(details);
   }
-  const routeParams = new URLSearchParams(location.search),
-    requestedView = (routeParams.get('viewid') ?? (!routeParams.has('etn') ? firstPage(app)?.view : undefined))
-      ?.replace(/[{}]/g, '')
-      .toLowerCase(),
-    view = !table
-      ? undefined
-      : (appViews().find((view) => view.id === requestedView)?.id ??
-        appViews().find((view) => view.isDefault)?.id ??
-        appViews()[0]?.id);
-  const areaItems = activeArea?.groups.flatMap((group) => group.items) ?? [],
-    activeItem =
-      areaItems.find((item) => item === activeNavigationItem) ??
-      areaItems.find((item) => item.supported && item.entity === table?.entity && item.view === view) ??
-      areaItems.find((item) => item.supported && item.entity === table?.entity && !item.view);
+}
+
+function renderAreaNavigation(nav, activeItem) {
   for (const group of activeArea?.groups ?? []) {
     const heading = document.createElement('h2');
     heading.textContent = group.title;
     if (!nav.querySelector('h2')) heading.className = 'first-group';
     nav.append(heading);
     for (const item of group.items) {
-      const entry = button(
-        item.title,
-        () => {
-          if (item.kind === 'webresource')
-            return openPage({ pageType: 'webresource', webresourceName: item.webresource }, { target: 1 }, item);
-          if (item.kind === 'dashboard')
-            return openPage({ pageType: 'dashboard', dashboardId: item.dashboard }, { target: 1 }, item);
-          if (item.kind === 'custom') return openPage({ pageType: 'custom', name: item.page }, { target: 1 }, item);
-          const destinationApp =
-            catalogue.apps.find((application) => application.id === item.targetApplicationId) ?? app;
-          return navigate(item.entity, {
-            view: item.view,
-            navigation: item.id,
-            application: destinationApp,
-            ...(destinationApp === app ? { area: activeArea.id } : {}),
-          });
-        },
-        {
-          iconName: navigationIcon(item),
-          disabled: !item.supported,
-          title: item.reason ?? item.title,
-          className: item === activeItem ? 'active' : '',
-        },
-      );
+      const entry = button(item.title, () => activateNavigationItem(item), {
+        iconName: navigationIcon(item),
+        disabled: !item.supported,
+        title: item.reason ?? item.title,
+        className: item === activeItem ? 'active' : '',
+      });
       entry.setAttribute('aria-label', item.title);
       bindModel(entry, modelBinding('navigation', `${app.id ?? app.uniqueName}:${item.id}`, { entity: item.entity }), {
         lifetime: 'document',
@@ -1107,7 +1128,24 @@ function renderNavigation() {
       nav.append(entry);
     }
   }
-  $('#area-selector')?.remove();
+}
+
+function activateNavigationItem(item) {
+  if (item.kind === 'webresource')
+    return openPage({ pageType: 'webresource', webresourceName: item.webresource }, { target: 1 }, item);
+  if (item.kind === 'dashboard')
+    return openPage({ pageType: 'dashboard', dashboardId: item.dashboard }, { target: 1 }, item);
+  if (item.kind === 'custom') return openPage({ pageType: 'custom', name: item.page }, { target: 1 }, item);
+  const destinationApp = catalogue.apps.find((application) => application.id === item.targetApplicationId) ?? app;
+  return navigate(item.entity, {
+    view: item.view,
+    navigation: item.id,
+    application: destinationApp,
+    ...(destinationApp === app ? { area: activeArea.id } : {}),
+  });
+}
+
+function renderAreaPicker() {
   if (app.navigation.length > 1) {
     const footer = document.createElement('div');
     footer.id = 'area-selector';
@@ -1161,182 +1199,8 @@ function renderCommands(mode) {
     }),
   );
   separator();
-  if (mode === 'form') {
-    commands.append(
-      button('Open in new window', null, {
-        iconName: 'open',
-        iconOnly: true,
-        disabled: true,
-        title: 'Opening a separate record window is not supported locally.',
-      }),
-    );
-    separator();
-    const canSave = loadedFormType !== 4 && capability(record?.[table.idColumn] ? 'update' : 'create');
-    const firstFormActionIndex = commands.children.length;
-    commands.append(
-      button('▣ Save', () => saveRecord(false), {
-        disabled: !canSave,
-        title: canSave ? undefined : capabilityReason(recordCapabilities ?? table.capabilities),
-      }),
-      button('Save & Close', () => saveRecord(true), { disabled: !canSave }),
-      button('＋ New', () => navigate(table.entity, { id: 'new' }), {
-        disabled: !capability('create', table.capabilities),
-        title: capability('create', table.capabilities) ? undefined : capabilityReason(table.capabilities),
-      }),
-      button(loadedFormType === 4 ? 'Activate' : 'Deactivate', null, {
-        iconName: 'deactivate',
-        disabled: true,
-        title: 'Record activation commands are not supported locally yet.',
-      }),
-    );
-    if (loadedFormType === 4)
-      for (const node of [...commands.children])
-        if (['Save', 'Save & Close'].includes(node.textContent.trim())) node.remove();
-    firstFormAction = commands.children[firstFormActionIndex];
-    if (record?.[table.idColumn])
-      commands.append(
-        button('Delete', () => deleteRecords([{ id: record[table.idColumn], etag }]), {
-          disabled: !capability('delete') || table.protectedIds?.includes(record[table.idColumn]),
-          title: table.protectedIds?.includes(record[table.idColumn])
-            ? 'The source website cannot be deleted from its own running instance.'
-            : !capability('delete')
-              ? capabilityReason(recordCapabilities ?? table.capabilities)
-              : undefined,
-        }),
-      );
-    commands.append(
-      button('↻ Refresh', async () => {
-        if (await canLeave()) await loadRoute({ preserveContent: true });
-      }),
-      button('Check Access', null, {
-        iconName: 'key',
-        disabled: true,
-        title: 'Access inspection command is not supported locally.',
-      }),
-    );
-    if (Object.values(table.fields).some((field) => field.dataverseType === 'owner'))
-      commands.append(
-        button('Assign', null, {
-          iconName: 'person',
-          disabled: true,
-          title: 'Assigning record ownership is not supported locally.',
-        }),
-      );
-    commands.append(
-      button('Flow', null, { disabled: true, chevron: true, title: 'Flow is not supported locally.' }),
-      button('Word Templates', null, {
-        iconName: 'pageForm',
-        disabled: true,
-        chevron: true,
-        title: 'Word template generation is not supported locally.',
-      }),
-      button('Run Report', null, { disabled: true, chevron: true, title: 'Reports are not supported locally.' }),
-    );
-    const recordCommands = () => {
-      const isPinned = pinned.some((item) => item.url === location.pathname + location.search);
-      dialog('Record commands', '<p>Keep this local record in your pinned navigation.</p>', [
-        ['Close', closeDialog],
-        [
-          isPinned ? 'Unpin' : 'Pin',
-          () => {
-            const url = location.pathname + location.search;
-            pinned = isPinned
-              ? pinned.filter((item) => item.url !== url)
-              : [...pinned, { url, label: record?.[table.nameColumn] ?? table.singular, app: app.uniqueName }];
-            storage.set('pinned', pinned);
-            closeDialog();
-            renderNavigation();
-          },
-        ],
-      ]);
-    };
-    const more = button(
-      'More commands',
-      () => {
-        const hidden = [...commands.querySelectorAll('button[data-command-overflow]')];
-        if (!hidden.length) return recordCommands();
-        picker(
-          more,
-          [
-            ...hidden.map((node, index) => ({
-              label: node.getAttribute('aria-label') ?? node.textContent.trim(),
-              value: index,
-              role: 'menuitem',
-              disabled: node.disabled,
-              reason: node.title,
-            })),
-            { label: 'Record commands', value: 'record', role: 'menuitem', separatorBefore: true },
-          ],
-          {
-            label: 'More commands',
-            menuClass: 'column-picker',
-            choose: (value) => (value === 'record' ? recordCommands() : hidden[value]?.click()),
-          },
-        );
-      },
-      { iconName: 'more', iconOnly: true },
-    );
-    more.setAttribute('aria-haspopup', 'menu');
-    more.setAttribute('aria-expanded', 'false');
-    commands.append(more);
-  } else {
-    if (table.grid?.control === 'Microsoft.PowerApps.PowerAppsOneGrid')
-      commands.append(
-        button('Show As', null, {
-          disabled: true,
-          iconName: 'gridModes',
-          chevron: true,
-          title: 'Switching grid visualization modes is not supported locally.',
-        }),
-      );
-    commands.append(
-      button('Show Chart', null, { disabled: true, title: 'Charts are not supported locally yet.' }),
-      button('＋ New', () => navigate(table.entity, { id: 'new' }), {
-        className: 'new-command',
-        disabled: !capability('create', current?.capabilities ?? table.capabilities),
-        title: capability('create', current?.capabilities ?? table.capabilities)
-          ? 'Create a local record'
-          : capabilityReason(current?.capabilities ?? table.capabilities),
-      }),
-      button(
-        'Delete',
-        async () => {
-          const rows = await Promise.all(
-            [...selected].map((id) => api(tablePath(table.entity, id)).then((value) => ({ id, etag: value.etag }))),
-          );
-          await deleteRecords(rows);
-        },
-        {
-          disabled:
-            !selected.size ||
-            !capability('delete', current?.capabilities ?? table.capabilities) ||
-            [...selected].some(
-              (id) => table.protectedIds?.includes(id) || current?.rowCapabilities?.[id]?.delete === false,
-            ),
-          title:
-            !capability('delete', current?.capabilities ?? table.capabilities) ||
-            [...selected].some((id) => current?.rowCapabilities?.[id]?.delete === false)
-              ? capabilityReason(current?.capabilities ?? table.capabilities)
-              : [...selected].some((id) => table.protectedIds?.includes(id))
-                ? 'The source website cannot be deleted from its own running instance.'
-                : undefined,
-        },
-      ),
-      button('↻ Refresh', () => refreshGrid()),
-    );
-    commands.append(
-      button('Visualize this view', null, { disabled: true, title: 'Power BI is not supported locally.' }),
-      button('Email a Link', null, { disabled: true, chevron: true, title: 'Email links are not supported locally.' }),
-      button('Flow', null, { disabled: true, chevron: true, title: 'Flow is not supported locally.' }),
-      button('Run Report', null, { disabled: true, chevron: true, title: 'Reports are not supported locally.' }),
-      button('More commands', null, {
-        disabled: true,
-        iconName: 'more',
-        iconOnly: true,
-        title: 'Additional ribbon commands are not supported locally.',
-      }),
-    );
-  }
+  if (mode === 'form') firstFormAction = appendFormCommands(commands, separator);
+  else appendGridCommands(commands);
   commands.append(
     button('Share', null, {
       disabled: true,
@@ -1345,6 +1209,211 @@ function renderCommands(mode) {
       title: 'Sharing is not supported locally.',
     }),
   );
+  appendSolutionCommands(mode, commands, firstFormAction);
+  if (mode === 'form') {
+    commandObserver = new ResizeObserver(() => fitFormCommands(commands));
+    commandObserver.observe(commands);
+    fitFormCommands(commands);
+  }
+  for (const [index, entry] of [...commands.querySelectorAll('button')].entries())
+    if (!entry.dataset.solutionCommand)
+      bindModel(entry, modelBinding('platform-command', `${mode}:${index}`, { sourceKind: 'platform' }));
+}
+
+function appendFormCommands(commands, separator) {
+  commands.append(
+    button('Open in new window', null, {
+      iconName: 'open',
+      iconOnly: true,
+      disabled: true,
+      title: 'Opening a separate record window is not supported locally.',
+    }),
+  );
+  separator();
+  const canSave = loadedFormType !== 4 && capability(record?.[table.idColumn] ? 'update' : 'create');
+  const firstFormActionIndex = commands.children.length;
+  commands.append(
+    button('▣ Save', () => saveRecord(false), {
+      disabled: !canSave,
+      title: canSave ? undefined : capabilityReason(recordCapabilities ?? table.capabilities),
+    }),
+    button('Save & Close', () => saveRecord(true), { disabled: !canSave }),
+    button('＋ New', () => navigate(table.entity, { id: 'new' }), {
+      disabled: !capability('create', table.capabilities),
+      title: capability('create', table.capabilities) ? undefined : capabilityReason(table.capabilities),
+    }),
+    button(loadedFormType === 4 ? 'Activate' : 'Deactivate', null, {
+      iconName: 'deactivate',
+      disabled: true,
+      title: 'Record activation commands are not supported locally yet.',
+    }),
+  );
+  if (loadedFormType === 4)
+    /* NOSONAR: snapshot copy guards against mutation while iterating */ for (const node of [...commands.children])
+      if (['Save', 'Save & Close'].includes(node.textContent.trim())) node.remove();
+  const firstFormAction = commands.children[firstFormActionIndex];
+  if (record?.[table.idColumn])
+    commands.append(
+      button('Delete', () => deleteRecords([{ id: record[table.idColumn], etag }]), {
+        disabled: !capability('delete') || table.protectedIds?.includes(record[table.idColumn]),
+        title: formDeleteTitle(),
+      }),
+    );
+  commands.append(
+    button('↻ Refresh', async () => {
+      if (await canLeave()) await loadRoute({ preserveContent: true });
+    }),
+    button('Check Access', null, {
+      iconName: 'key',
+      disabled: true,
+      title: 'Access inspection command is not supported locally.',
+    }),
+  );
+  if (Object.values(table.fields).some((field) => field.dataverseType === 'owner'))
+    commands.append(
+      button('Assign', null, {
+        iconName: 'person',
+        disabled: true,
+        title: 'Assigning record ownership is not supported locally.',
+      }),
+    );
+  commands.append(
+    button('Flow', null, { disabled: true, chevron: true, title: 'Flow is not supported locally.' }),
+    button('Word Templates', null, {
+      iconName: 'pageForm',
+      disabled: true,
+      chevron: true,
+      title: 'Word template generation is not supported locally.',
+    }),
+    button('Run Report', null, { disabled: true, chevron: true, title: 'Reports are not supported locally.' }),
+  );
+  commands.append(createFormMoreCommand(commands));
+  return firstFormAction;
+}
+
+function formDeleteTitle() {
+  if (table.protectedIds?.includes(record[table.idColumn]))
+    return 'The source website cannot be deleted from its own running instance.';
+  if (!capability('delete')) return capabilityReason(recordCapabilities ?? table.capabilities);
+  return undefined;
+}
+
+function createFormMoreCommand(commands) {
+  const more = button(
+    'More commands',
+    () => {
+      const hidden = [...commands.querySelectorAll('button[data-command-overflow]')];
+      if (!hidden.length) return showRecordCommands();
+      picker(
+        more,
+        [
+          ...hidden.map((node, index) => ({
+            label: node.getAttribute('aria-label') ?? node.textContent.trim(),
+            value: index,
+            role: 'menuitem',
+            disabled: node.disabled,
+            reason: node.title,
+          })),
+          { label: 'Record commands', value: 'record', role: 'menuitem', separatorBefore: true },
+        ],
+        {
+          label: 'More commands',
+          menuClass: 'column-picker',
+          choose: (value) => (value === 'record' ? showRecordCommands() : hidden[value]?.click()),
+        },
+      );
+    },
+    { iconName: 'more', iconOnly: true },
+  );
+  more.setAttribute('aria-haspopup', 'menu');
+  more.setAttribute('aria-expanded', 'false');
+  return more;
+}
+
+function showRecordCommands() {
+  const isPinned = pinned.some((item) => item.url === location.pathname + location.search);
+  dialog('Record commands', '<p>Keep this local record in your pinned navigation.</p>', [
+    ['Close', closeDialog],
+    [
+      isPinned ? 'Unpin' : 'Pin',
+      () => {
+        const url = location.pathname + location.search;
+        pinned = isPinned
+          ? pinned.filter((item) => item.url !== url)
+          : [...pinned, { url, label: record?.[table.nameColumn] ?? table.singular, app: app.uniqueName }];
+        storage.set('pinned', pinned);
+        closeDialog();
+        renderNavigation();
+      },
+    ],
+  ]);
+}
+
+function appendGridCommands(commands) {
+  if (table.grid?.control === 'Microsoft.PowerApps.PowerAppsOneGrid')
+    commands.append(
+      button('Show As', null, {
+        disabled: true,
+        iconName: 'gridModes',
+        chevron: true,
+        title: 'Switching grid visualization modes is not supported locally.',
+      }),
+    );
+  commands.append(
+    button('Show Chart', null, { disabled: true, title: 'Charts are not supported locally yet.' }),
+    button('＋ New', () => navigate(table.entity, { id: 'new' }), {
+      className: 'new-command',
+      disabled: !capability('create', current?.capabilities ?? table.capabilities),
+      title: capability('create', current?.capabilities ?? table.capabilities)
+        ? 'Create a local record'
+        : capabilityReason(current?.capabilities ?? table.capabilities),
+    }),
+    button(
+      'Delete',
+      async () => {
+        const rows = await Promise.all(
+          [...selected].map((id) => api(tablePath(table.entity, id)).then((value) => ({ id, etag: value.etag }))),
+        );
+        await deleteRecords(rows);
+      },
+      {
+        disabled:
+          !selected.size ||
+          !capability('delete', current?.capabilities ?? table.capabilities) ||
+          [...selected].some(
+            (id) => table.protectedIds?.includes(id) || current?.rowCapabilities?.[id]?.delete === false,
+          ),
+        title: selectedDeleteTitle(),
+      },
+    ),
+    button('↻ Refresh', () => refreshGrid()),
+  );
+  commands.append(
+    button('Visualize this view', null, { disabled: true, title: 'Power BI is not supported locally.' }),
+    button('Email a Link', null, { disabled: true, chevron: true, title: 'Email links are not supported locally.' }),
+    button('Flow', null, { disabled: true, chevron: true, title: 'Flow is not supported locally.' }),
+    button('Run Report', null, { disabled: true, chevron: true, title: 'Reports are not supported locally.' }),
+    button('More commands', null, {
+      disabled: true,
+      iconName: 'more',
+      iconOnly: true,
+      title: 'Additional ribbon commands are not supported locally.',
+    }),
+  );
+}
+
+function selectedDeleteTitle() {
+  if (
+    !capability('delete', current?.capabilities ?? table.capabilities) ||
+    [...selected].some((id) => current?.rowCapabilities?.[id]?.delete === false)
+  )
+    return capabilityReason(current?.capabilities ?? table.capabilities);
+  if ([...selected].some((id) => table.protectedIds?.includes(id)))
+    return 'The source website cannot be deleted from its own running instance.';
+  return undefined;
+}
+
+function appendSolutionCommands(mode, commands, firstFormAction) {
   for (const command of table?.commands ?? []) {
     if (!command.locations?.includes(mode)) continue;
     const context = {
@@ -1373,8 +1442,6 @@ function renderCommands(mode) {
           : 'Exported Solution command · local data only',
       },
     );
-    // An exported zero-sequence modern form action precedes standard actions.
-    // Other positions retain their fallback until their native slots are known.
     entry.dataset.solutionCommand = command.id;
     bindModel(
       entry,
@@ -1387,14 +1454,6 @@ function renderCommands(mode) {
         : commands.lastChild,
     );
   }
-  if (mode === 'form') {
-    commandObserver = new ResizeObserver(() => fitFormCommands(commands));
-    commandObserver.observe(commands);
-    fitFormCommands(commands);
-  }
-  for (const [index, entry] of [...commands.querySelectorAll('button')].entries())
-    if (!entry.dataset.solutionCommand)
-      bindModel(entry, modelBinding('platform-command', `${mode}:${index}`, { sourceKind: 'platform' }));
 }
 function fitFormCommands(commands) {
   const children = [...commands.children],
@@ -1402,9 +1461,9 @@ function fitFormCommands(commands) {
     share = commands.querySelector('.share-command');
   if (!more || !share) return;
   for (const node of children) {
-    if (node.hasAttribute('data-command-overflow')) {
+    if ('commandOverflow' in node.dataset) {
       node.hidden = false;
-      node.removeAttribute('data-command-overflow');
+      delete node.dataset.commandOverflow;
     }
   }
   const pinned = new Set([...children.slice(0, 4), more, share]),
@@ -1418,7 +1477,7 @@ function fitFormCommands(commands) {
     overflow ||= needed > remaining;
     if (overflow) {
       node.hidden = true;
-      node.setAttribute('data-command-overflow', '');
+      node.dataset.commandOverflow = '';
     } else remaining -= needed;
   }
 }
@@ -1477,41 +1536,45 @@ function gridCell(source, row, name, context = modelContexts()) {
           'link' + (source.grid?.control === 'Microsoft.PowerApps.PowerAppsOneGrid' ? ' primary-grid-link' : ''),
       }),
     );
-  else if (field?.type === 'lookup' && raw != null && text) {
-    const entity =
-        raw?.entity ??
-        row[name + '@Microsoft.Dynamics.CRM.lookuplogicalname'] ??
-        row[`_${name}_value@Microsoft.Dynamics.CRM.lookuplogicalname`] ??
-        (field.targets?.length === 1 ? field.targets[0] : undefined),
-      id = raw?.id ?? raw?.value ?? raw;
-    const target = entity && Object.hasOwn(catalogue.tables, entity) ? catalogue.tables[entity] : undefined;
-    const available = Boolean(target && typeof id !== 'object' && target.capabilities?.read !== false);
-    const link = button(text, available ? () => navigate(entity, { id: String(id).replace(/[{}]/g, '') }) : null, {
-      className: 'link lookup-grid-link',
-      disabled: !available,
-      title: available ? undefined : 'The lookup target is not available to this local application.',
-    });
-    if (field.dataverseType === 'owner' || ['systemuser', 'team'].includes(entity)) {
-      const avatar = document.createElement('span');
-      avatar.className = 'grid-persona';
-      avatar.setAttribute('aria-hidden', 'true');
-      avatar.textContent = text
-        .replace(/^[^\p{L}\p{N}]+/u, '')
-        .split(/\s+/)
-        .map((word) => word[0])
-        .slice(0, 2)
-        .join('')
-        .toUpperCase();
-      link.prepend(avatar);
-    }
-    cell.append(link);
-  } else cell.textContent = text;
+  else if (field?.type === 'lookup' && raw != null && text)
+    appendLookupGridCell(cell, source, row, name, field, raw, text);
+  else cell.textContent = text;
   cell.addEventListener('dblclick', (event) => {
     if (event.target.closest('button,input,select,textarea,a,[contenteditable]')) return;
     event.preventDefault();
-    run(() => navigate(source.entity, { id: row[source.idColumn] }));
+    void run(() => navigate(source.entity, { id: row[source.idColumn] }));
   });
   return cell;
+}
+
+function appendLookupGridCell(cell, source, row, name, field, raw, text) {
+  const entity =
+      raw?.entity ??
+      row[name + '@Microsoft.Dynamics.CRM.lookuplogicalname'] ??
+      row[`_${name}_value@Microsoft.Dynamics.CRM.lookuplogicalname`] ??
+      (field.targets?.length === 1 ? field.targets[0] : undefined),
+    id = raw?.id ?? raw?.value ?? raw;
+  const target = entity && Object.hasOwn(catalogue.tables, entity) ? catalogue.tables[entity] : undefined;
+  const available = Boolean(target && typeof id !== 'object' && target.capabilities?.read !== false);
+  const link = button(text, available ? () => navigate(entity, { id: String(id).replace(/[{}]/g, '') }) : null, {
+    className: 'link lookup-grid-link',
+    disabled: !available,
+    title: available ? undefined : 'The lookup target is not available to this local application.',
+  });
+  if (field.dataverseType === 'owner' || ['systemuser', 'team'].includes(entity)) {
+    const avatar = document.createElement('span');
+    avatar.className = 'grid-persona';
+    avatar.setAttribute('aria-hidden', 'true');
+    avatar.textContent = text
+      .replace(/^[^\p{L}\p{N}]+/u, '')
+      .split(/\s+/)
+      .map((word) => word[0])
+      .slice(0, 2)
+      .join('')
+      .toUpperCase();
+    link.prepend(avatar);
+  }
+  cell.append(link);
 }
 async function refreshGrid() {
   // Refresh only this list's metadata; open dialogs retain their draft context.
@@ -1610,7 +1673,7 @@ function renderGrid() {
   search.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       clearTimeout(gridSearchTimer);
-      run(applySearch);
+      void run(applySearch);
     }
   });
   const searchBox = document.createElement('div');
@@ -1619,25 +1682,77 @@ function renderGrid() {
   searchBox.append(search);
   header.append(searchBox);
   content.append(header);
-  if (query.filters?.length) {
-    const summary = document.createElement('div');
-    summary.className = 'filter-summary';
-    summary.textContent = query.filters
-      .map((filter) => `${table.fields[filter.field]?.label ?? filter.field} ${filter.operator} ${filter.value ?? ''}`)
-      .join(' AND ');
-    summary.append(
-      button('Clear filters', () => {
-        query.filters = [];
-        query.page = 1;
-        savePreferences();
-        return loadGrid();
-      }),
-    );
-    content.append(summary);
-  }
+  appendGridFilterSummary(content);
   const scroll = document.createElement('div');
   scroll.className = 'grid-scroll';
   scroll.dataset.paging = table.grid?.pagination === false ? 'infinite' : 'paged';
+  const { grid, all } = buildGridTable(renderRows);
+  scroll.append(grid);
+  content.append(scroll);
+  function renderRows() {
+    const body = grid.querySelector('tbody');
+    body.replaceChildren();
+    for (const row of current.rows) {
+      const id = String(row[table.idColumn]),
+        tr = document.createElement('tr');
+      tr.classList.toggle('selected', selected.has(id));
+      const selectCell = document.createElement('td');
+      bindModel(selectCell, modelBinding('platform-control', 'grid-row-selection', { sourceKind: 'platform' }));
+      selectCell.className = 'selection';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = selected.has(id);
+      checkbox.setAttribute('aria-label', `Select ${display(row[table.nameColumn]) || id}`);
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked) selected.add(id);
+        else selected.delete(id);
+        tr.classList.toggle('selected', checkbox.checked);
+        all.checked = selected.size === current.rows.length;
+        all.indeterminate = selected.size > 0 && !all.checked;
+        renderCommands('grid');
+      });
+      selectCell.append(checkbox);
+      tr.append(selectCell);
+      for (const name of current.columns) tr.append(gridCell(table, row, name));
+      body.append(tr);
+    }
+    grid.classList.toggle('empty-grid', !current.rows.length);
+    if (!current.rows.length) {
+      const tr = document.createElement('tr'),
+        cell = document.createElement('td');
+      cell.colSpan = current.columns.length + 1;
+      cell.className = 'empty-state';
+      const emptyGridRects = [50, 86, 122]
+        .flatMap((y) => [37, 81, 125].map((x) => '<rect x="' + x + '" y="' + y + '" width="39" height="32" rx="1"/>'))
+        .join('');
+      cell.innerHTML = `<div class="empty-grid-panel"><svg viewBox="0 0 200 200" width="200" height="200" aria-hidden="true"><circle cx="100" cy="100" r="100" fill="#c9c9c9"/><g fill="#f7f7f7" stroke="#e6e6e6">${emptyGridRects}</g><g fill="#f7f7f7"><path d="m100 12 3 5 5 2-5 3-3 5-3-5-5-3 5-2zm13 12 4 7 7 4-7 4-4 7-4-7-7-4 7-4zm-25 0 2 4 4 2-4 2-2 4-2-4-4-2 4-2z"/></g></svg><p>We didn't find anything to show here</p></div>`;
+      tr.append(cell);
+      body.append(tr);
+    }
+  }
+  renderRows();
+  appendGridFooter(content, scroll, all, renderRows);
+}
+
+function appendGridFilterSummary(content) {
+  if (!query.filters?.length) return;
+  const summary = document.createElement('div');
+  summary.className = 'filter-summary';
+  summary.textContent = query.filters
+    .map((filter) => `${table.fields[filter.field]?.label ?? filter.field} ${filter.operator} ${filter.value ?? ''}`)
+    .join(' AND ');
+  summary.append(
+    button('Clear filters', () => {
+      query.filters = [];
+      query.page = 1;
+      savePreferences();
+      return loadGrid();
+    }),
+  );
+  content.append(summary);
+}
+
+function buildGridTable(renderRows) {
   const grid = document.createElement('table');
   grid.setAttribute('aria-label', table.label);
   const columnGroup = document.createElement('colgroup'),
@@ -1674,7 +1789,8 @@ function renderGrid() {
     const th = document.createElement('th');
     th.scope = 'col';
     th.dataset.id = name;
-    const direction = current.sort === name ? (current.direction === 'desc' ? ' ↓' : ' ↑') : '';
+    let direction = '';
+    if (current.sort === name) direction = current.direction === 'desc' ? ' ↓' : ' ↑';
     const heading = button((table.fields[name]?.label ?? name) + direction, () => columnMenu(heading, name), {
       disabled: !table.fields[name],
       chevron: true,
@@ -1688,47 +1804,10 @@ function renderGrid() {
   }
   head.append(headings);
   grid.append(head, document.createElement('tbody'));
-  scroll.append(grid);
-  content.append(scroll);
-  function renderRows() {
-    const body = grid.querySelector('tbody');
-    body.replaceChildren();
-    for (const row of current.rows) {
-      const id = String(row[table.idColumn]),
-        tr = document.createElement('tr');
-      tr.classList.toggle('selected', selected.has(id));
-      const selectCell = document.createElement('td');
-      bindModel(selectCell, modelBinding('platform-control', 'grid-row-selection', { sourceKind: 'platform' }));
-      selectCell.className = 'selection';
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.checked = selected.has(id);
-      checkbox.setAttribute('aria-label', `Select ${display(row[table.nameColumn]) || id}`);
-      checkbox.addEventListener('change', () => {
-        if (checkbox.checked) selected.add(id);
-        else selected.delete(id);
-        tr.classList.toggle('selected', checkbox.checked);
-        all.checked = selected.size === current.rows.length;
-        all.indeterminate = selected.size > 0 && !all.checked;
-        renderCommands('grid');
-      });
-      selectCell.append(checkbox);
-      tr.append(selectCell);
-      for (const name of current.columns) tr.append(gridCell(table, row, name));
-      body.append(tr);
-    }
-    grid.classList.toggle('empty-grid', !current.rows.length);
-    if (!current.rows.length) {
-      const tr = document.createElement('tr'),
-        cell = document.createElement('td');
-      cell.colSpan = current.columns.length + 1;
-      cell.className = 'empty-state';
-      cell.innerHTML = `<div class="empty-grid-panel"><svg viewBox="0 0 200 200" width="200" height="200" aria-hidden="true"><circle cx="100" cy="100" r="100" fill="#c9c9c9"/><g fill="#f7f7f7" stroke="#e6e6e6">${[50, 86, 122].flatMap((y) => [37, 81, 125].map((x) => `<rect x="${x}" y="${y}" width="39" height="32" rx="1"/>`)).join('')}</g><g fill="#f7f7f7"><path d="m100 12 3 5 5 2-5 3-3 5-3-5-5-3 5-2zm13 12 4 7 7 4-7 4-4 7-4-7-7-4 7-4zm-25 0 2 4 4 2-4 2-2 4-2-4-4-2 4-2z"/></g></svg><p>We didn't find anything to show here</p></div>`;
-      tr.append(cell);
-      body.append(tr);
-    }
-  }
-  renderRows();
+  return { grid, all };
+}
+
+function appendGridFooter(content, scroll, all, renderRows) {
   const footer = document.createElement('div');
   footer.className = 'grid-footer';
   const count = document.createElement('span');
@@ -1748,110 +1827,120 @@ function renderGrid() {
     }),
   );
   footer.append(count);
-  if (table.grid?.pagination === true) {
-    const first = current.rows.length ? (current.page - 1) * (query.pageSize ?? 50) + 1 : 0,
-      last = first ? first + current.rows.length - 1 : 0;
-    count.textContent = `Rows: ${first} - ${last}${current.total >= 0 ? ` of ${totalLabel(current)}` : ''}`;
-    const pager = document.createElement('div');
-    pager.className = 'native-grid-pager';
-    pager.setAttribute('role', 'group');
-    pager.setAttribute('aria-label', 'Grid pages');
-    const firstPage = button(
-      'Load first page',
+  if (table.grid?.pagination === true) appendPagedGridFooter(footer, count, info);
+  else if (table.grid?.pagination !== false && (current.more || current.page > 1 || current.total > 25))
+    appendDefaultGridFooter(footer, info, size);
+  content.append(footer);
+  if (table.grid?.pagination === false) enableInfiniteGrid(scroll, footer, all, count, renderRows);
+}
+
+function appendPagedGridFooter(footer, count, info) {
+  const first = current.rows.length ? (current.page - 1) * (query.pageSize ?? 50) + 1 : 0,
+    last = first ? first + current.rows.length - 1 : 0;
+  const totalText = current.total >= 0 ? ' of ' + totalLabel(current) : '';
+  count.textContent = `Rows: ${first} - ${last}${totalText}`;
+  const pager = document.createElement('div');
+  pager.className = 'native-grid-pager';
+  pager.setAttribute('role', 'group');
+  pager.setAttribute('aria-label', 'Grid pages');
+  const firstPage = button(
+    'Load first page',
+    () => {
+      query.page = 1;
+      return loadGrid();
+    },
+    { iconName: 'back', iconOnly: true, disabled: current.page <= 1, className: 'first-page' },
+  );
+  pager.append(
+    firstPage,
+    button(
+      'Previous page',
       () => {
-        query.page = 1;
+        query.page--;
         return loadGrid();
       },
-      { iconName: 'back', iconOnly: true, disabled: current.page <= 1, className: 'first-page' },
-    );
-    pager.append(
-      firstPage,
-      button(
-        'Previous page',
+      { iconName: 'back', iconOnly: true, disabled: current.page <= 1 },
+    ),
+    info,
+    button(
+      'Next page',
+      () => {
+        query.page++;
+        return loadGrid();
+      },
+      { iconName: 'back', iconOnly: true, disabled: !current.more, className: 'next-page' },
+    ),
+  );
+  footer.append(pager);
+}
+
+function appendDefaultGridFooter(footer, info, size) {
+  footer.append(
+    info,
+    size,
+    button(
+      '‹ Previous',
+      () => {
+        query.page--;
+        return loadGrid();
+      },
+      { disabled: current.page <= 1 },
+    ),
+    button(
+      'Next ›',
+      () => {
+        query.page++;
+        return loadGrid();
+      },
+      { disabled: !current.more },
+    ),
+  );
+}
+
+function enableInfiniteGrid(scroll, footer, all, count, renderRows) {
+  const token = generation;
+  let loading = false,
+    failed = false;
+  const loadMore = async () => {
+    if (loading || failed || !current.more || token !== generation || !scroll.isConnected) return;
+    loading = true;
+    scroll.setAttribute('aria-busy', 'true');
+    try {
+      const result = await api(
+        tablePath() + '?query=' + encodeURIComponent(JSON.stringify({ ...query, page: current.page + 1 })),
+      );
+      if (token !== generation || !scroll.isConnected) return;
+      const ids = new Set(current.rows.map((row) => String(row[table.idColumn])));
+      current = {
+        ...result,
+        rows: [...current.rows, ...result.rows.filter((row) => !ids.has(String(row[table.idColumn])))],
+        more: result.more && result.rows.length > 0,
+      };
+      renderRows();
+      all.checked = selected.size === current.rows.length;
+      all.indeterminate = selected.size > 0 && !all.checked;
+      count.textContent = current.total >= 0 ? `Rows: ${totalLabel(current)}` : `Rows loaded: ${current.rows.length}`;
+    } catch (error) {
+      if (token !== generation || !scroll.isConnected) return;
+      failed = true;
+      const retry = button(
+        'Retry loading records',
         () => {
-          query.page--;
-          return loadGrid();
+          failed = false;
+          retry.remove();
+          return loadMore();
         },
-        { iconName: 'back', iconOnly: true, disabled: current.page <= 1 },
-      ),
-      info,
-      button(
-        'Next page',
-        () => {
-          query.page++;
-          return loadGrid();
-        },
-        { iconName: 'back', iconOnly: true, disabled: !current.more, className: 'next-page' },
-      ),
-    );
-    footer.append(pager);
-  } else if (table.grid?.pagination !== false && (current.more || current.page > 1 || current.total > 25))
-    footer.append(
-      info,
-      size,
-      button(
-        '‹ Previous',
-        () => {
-          query.page--;
-          return loadGrid();
-        },
-        { disabled: current.page <= 1 },
-      ),
-      button(
-        'Next ›',
-        () => {
-          query.page++;
-          return loadGrid();
-        },
-        { disabled: !current.more },
-      ),
-    );
-  content.append(footer);
-  if (table.grid?.pagination === false) {
-    const token = generation;
-    let loading = false,
-      failed = false;
-    const loadMore = async () => {
-      if (loading || failed || !current.more || token !== generation || !scroll.isConnected) return;
-      loading = true;
-      scroll.setAttribute('aria-busy', 'true');
-      try {
-        const result = await api(
-          tablePath() + '?query=' + encodeURIComponent(JSON.stringify({ ...query, page: current.page + 1 })),
-        );
-        if (token !== generation || !scroll.isConnected) return;
-        const ids = new Set(current.rows.map((row) => String(row[table.idColumn])));
-        current = {
-          ...result,
-          rows: [...current.rows, ...result.rows.filter((row) => !ids.has(String(row[table.idColumn])))],
-          more: result.more && result.rows.length > 0,
-        };
-        renderRows();
-        all.checked = selected.size === current.rows.length;
-        all.indeterminate = selected.size > 0 && !all.checked;
-        count.textContent = current.total >= 0 ? `Rows: ${totalLabel(current)}` : `Rows loaded: ${current.rows.length}`;
-      } catch (error) {
-        if (token !== generation || !scroll.isConnected) return;
-        failed = true;
-        const retry = button(
-          'Retry loading records',
-          () => {
-            failed = false;
-            retry.remove();
-            return loadMore();
-          },
-          { title: error.message },
-        );
-        footer.append(retry);
-      } finally {
-        loading = false;
-        scroll.removeAttribute('aria-busy');
-      }
-    };
-    scroll.addEventListener('scroll', () => {
-      if (scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop < 100) run(loadMore);
-    });
-  }
+        { title: error.message },
+      );
+      footer.append(retry);
+    } finally {
+      loading = false;
+      scroll.removeAttribute('aria-busy');
+    }
+  };
+  scroll.addEventListener('scroll', () => {
+    if (scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop < 100) void run(loadMore);
+  });
 }
 function editColumns() {
   let chosen = [...current.columns],
@@ -1864,7 +1953,7 @@ function editColumns() {
   list.className = 'columns-list';
   list.setAttribute('aria-label', 'View columns');
   body.append(toolbar, list);
-  let apply, reset, addColumns;
+  let apply, reset;
   const defaults = (table.views.find((view) => view.id === query.view)?.fields ?? []).map((field) => field.name);
   const changed = () => {
     if (apply) apply.disabled = !resetWidths && JSON.stringify(chosen) === JSON.stringify(current.columns);
@@ -1947,111 +2036,113 @@ function editColumns() {
     }
     changed();
   }
-  toolbar.append(
-    (addColumns = button(
-      'Add columns',
-      () => {
-        const panel = document.createElement('dialog');
-        panel.className = 'add-column-browser';
-        panel.setAttribute('aria-labelledby', 'add-columns-title');
-        const title = document.createElement('h3');
-        title.id = 'add-columns-title';
-        title.textContent = 'Add columns';
-        const close = () => {
-          lifetime.signal.removeEventListener('abort', close);
-          panel.close();
-          panel.remove();
-          if (!lifetime.signal.aborted && addColumns.isConnected) addColumns.focus();
-        };
-        const lifetime = dialogLifetime;
-        lifetime.signal.addEventListener('abort', close, { once: true });
-        panel.addEventListener('keydown', (event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault();
-            event.stopPropagation();
-            close();
-          }
-        });
-        panel.addEventListener('cancel', (event) => {
+  const addColumns = button(
+    'Add columns',
+    () => {
+      const panel = document.createElement('dialog');
+      panel.className = 'add-column-browser';
+      panel.setAttribute('aria-labelledby', 'add-columns-title');
+      const title = document.createElement('h3');
+      title.id = 'add-columns-title';
+      title.textContent = 'Add columns';
+      const close = () => {
+        lifetime.signal.removeEventListener('abort', close);
+        panel.close();
+        panel.remove();
+        if (!lifetime.signal.aborted && addColumns.isConnected) addColumns.focus();
+      };
+      const lifetime = dialogLifetime;
+      lifetime.signal.addEventListener('abort', close, { once: true });
+      panel.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
           event.preventDefault();
+          event.stopPropagation();
           close();
-        });
-        const tabs = document.createElement('div');
-        tabs.className = 'add-column-tabs';
-        tabs.setAttribute('role', 'tablist');
-        const primary = button(table.singular, null);
-        primary.setAttribute('role', 'tab');
-        primary.setAttribute('aria-selected', 'true');
-        const related = button('Related', null, {
-          disabled: true,
-          title: 'Adding columns from related tables is not supported locally.',
-        });
-        related.setAttribute('role', 'tab');
-        related.setAttribute('aria-selected', 'false');
-        tabs.append(primary, related);
-        const searchBox = document.createElement('div');
-        searchBox.className = 'add-column-search';
-        const search = document.createElement('input');
-        search.type = 'search';
-        search.placeholder = 'Search';
-        search.setAttribute('aria-label', 'Search columns');
-        searchBox.innerHTML = icon('search');
-        searchBox.append(
-          search,
-          button('All', null, { disabled: true, chevron: true, title: 'All available local columns are shown.' }),
-        );
-        const options = document.createElement('div');
-        options.className = 'add-column-options';
-        const renderOptions = () => {
-          options.replaceChildren();
-          for (const field of Object.values(table.fields)
-            .filter(
-              (field) =>
-                field.validForGrid !== false &&
-                !chosen.includes(field.name) &&
-                (field.label ?? field.name).toLocaleLowerCase().includes(search.value.toLocaleLowerCase()),
-            )
-            .sort((left, right) => (left.label ?? left.name).localeCompare(right.label ?? right.name)))
-            options.append(
-              button(
-                field.label ?? field.name,
-                () => {
-                  chosen.push(field.name);
-                  render();
-                  renderOptions();
-                },
-                { iconName: columnIcon(field) },
-              ),
-            );
-        };
-        const footer = document.createElement('div');
-        footer.className = 'add-column-footer';
-        footer.append(button('Close', close, { className: 'secondary' }));
-        search.addEventListener('input', renderOptions);
-        panel.append(
-          title,
-          button('Close', close, { iconName: 'close', iconOnly: true, className: 'side-panel-close' }),
-          tabs,
-          searchBox,
-          options,
-          footer,
-        );
-        $('#dialog').append(panel);
-        renderOptions();
-        panel.showModal();
-        search.focus();
-      },
-      { iconName: 'add' },
-    )),
-    (reset = button(
-      'Reset to default',
-      () => {
-        chosen = [...defaults];
-        resetWidths = Boolean(query.widths);
-        render();
-      },
-      { iconName: 'reset' },
-    )),
+        }
+      });
+      panel.addEventListener('cancel', (event) => {
+        event.preventDefault();
+        close();
+      });
+      const tabs = document.createElement('div');
+      tabs.className = 'add-column-tabs';
+      tabs.setAttribute('role', 'tablist');
+      const primary = button(table.singular, null);
+      primary.setAttribute('role', 'tab');
+      primary.setAttribute('aria-selected', 'true');
+      const related = button('Related', null, {
+        disabled: true,
+        title: 'Adding columns from related tables is not supported locally.',
+      });
+      related.setAttribute('role', 'tab');
+      related.setAttribute('aria-selected', 'false');
+      tabs.append(primary, related);
+      const searchBox = document.createElement('div');
+      searchBox.className = 'add-column-search';
+      const search = document.createElement('input');
+      search.type = 'search';
+      search.placeholder = 'Search';
+      search.setAttribute('aria-label', 'Search columns');
+      searchBox.innerHTML = icon('search');
+      searchBox.append(
+        search,
+        button('All', null, { disabled: true, chevron: true, title: 'All available local columns are shown.' }),
+      );
+      const options = document.createElement('div');
+      options.className = 'add-column-options';
+      const renderOptions = () => {
+        options.replaceChildren();
+        for (const field of Object.values(table.fields)
+          .filter(
+            (field) =>
+              field.validForGrid !== false &&
+              !chosen.includes(field.name) &&
+              (field.label ?? field.name).toLocaleLowerCase().includes(search.value.toLocaleLowerCase()),
+          )
+          .sort((left, right) => (left.label ?? left.name).localeCompare(right.label ?? right.name)))
+          options.append(
+            button(
+              field.label ?? field.name,
+              () => {
+                chosen.push(field.name);
+                render();
+                renderOptions();
+              },
+              { iconName: columnIcon(field) },
+            ),
+          );
+      };
+      const footer = document.createElement('div');
+      footer.className = 'add-column-footer';
+      footer.append(button('Close', close, { className: 'secondary' }));
+      search.addEventListener('input', renderOptions);
+      panel.append(
+        title,
+        button('Close', close, { iconName: 'close', iconOnly: true, className: 'side-panel-close' }),
+        tabs,
+        searchBox,
+        options,
+        footer,
+      );
+      $('#dialog').append(panel);
+      renderOptions();
+      panel.showModal();
+      search.focus();
+    },
+    { iconName: 'add' },
+  );
+  reset = button(
+    'Reset to default',
+    () => {
+      chosen = [...defaults];
+      resetWidths = Boolean(query.widths);
+      render();
+    },
+    { iconName: 'reset' },
+  );
+  toolbar.append(
+    addColumns,
+    reset,
     button('Download LayoutXML', null, {
       iconName: 'download',
       disabled: true,
@@ -2279,21 +2370,21 @@ function editFilters(initialField) {
       value.className = 'filter-value';
       // Filter values use the same source-typed scalar editors as the record form.
       // Query bounds are independent of the table's write bounds and required level.
-      const typed = definition && ['number', 'boolean', 'date'].includes(definition.type),
-        control = typed
-          ? renderControl(
-              {
-                ...definition,
-                name: `filter-${index + 1}-value`,
-                label: `Filter ${index + 1} value`,
-                required: !noValue,
-                minValue: undefined,
-                maxValue: undefined,
-              },
-              filter.value === '' ? null : filter.value,
-              { disabled: noValue },
-            )
-          : undefined;
+      const typed = definition && ['number', 'boolean', 'date'].includes(definition.type);
+      let control;
+      if (typed)
+        control = renderControl(
+          {
+            ...definition,
+            name: `filter-${index + 1}-value`,
+            label: `Filter ${index + 1} value`,
+            required: !noValue,
+            minValue: undefined,
+            maxValue: undefined,
+          },
+          filter.value === '' ? null : filter.value,
+          { disabled: noValue },
+        );
       if (control) {
         valueControls.push(control);
         value.append(control.element);
@@ -2455,72 +2546,9 @@ async function loadRecord(id) {
     record = result.row;
     touchedFields = new Set();
     recordCapabilities = result.capabilities ?? table.capabilities;
-    // Match the observed disabled form for exported two-state Active/Inactive
-    // tables. Bind this to the loaded row so editing an active draft's state
-    // does not disable it before the transition can be saved.
-    const stateField = Object.values(table.fields).find(
-      (field) =>
-        field.dataverseType === 'state' &&
-        field.options?.length === 2 &&
-        field.options.every((option) => [0, 1].includes(Number(option.value))),
-    );
-    loadedFormType = !id ? 1 : stateField && Number(record[stateField.name]) === 1 ? 4 : 2;
-    if (!id) {
-      const principal = staffSession?.current,
-        principalId = principal?.principalId ?? principal?.id;
-      if (principalId && Object.hasOwn(catalogue.tables, 'systemuser'))
-        for (const field of Object.values(table.fields)) {
-          if (
-            field.dataverseType === 'owner' &&
-            field.defaultValue === undefined &&
-            !Object.hasOwn(record, field.name) &&
-            field.targets?.includes('systemuser')
-          )
-            record[field.name] = { id: principalId, entity: 'systemuser', name: principal.name ?? principalId };
-        }
-      const defaults = new Map(new URLSearchParams(new URLSearchParams(location.search).get('extraqs') ?? ''));
-      const initialValues = Object.values(table.fields)
-        .filter(
-          (field) =>
-            defaults.has(field.name) && !field.isPrimaryId && field.validForCreate !== false && hasControl(field),
-        )
-        .map((field) => {
-          const value = defaults.get(field.name);
-          return [
-            field.name,
-            field.type === 'number' ? Number(value) : field.type === 'boolean' ? value === 'true' : value,
-          ];
-        });
-      // Creating own data properties avoids invoking inherited setters from URL-supplied defaults.
-      record = { ...record, ...Object.fromEntries(initialValues) };
-    }
-    const requestedForm = new URLSearchParams(location.search).get('formid')?.replace(/[{}]/g, '').toLowerCase();
-    const availableForms = appForms(),
-      preferredForm = requestedForm === undefined ? storage.get(preferredFormKey()) : requestedForm;
-    const matchesPreferredForm = (form) =>
-      String(form.id).replace(/[{}]/g, '').toLowerCase() ===
-      String(preferredForm ?? '')
-        .replace(/[{}]/g, '')
-        .toLowerCase();
-    const selectedForm = availableForms.find(matchesPreferredForm);
-    // Source availability and app eligibility differ: a known excluded form
-    // keeps the app's existing first-eligible fallback; a missing source cannot.
-    if (requestedForm && !selectedForm && !table.forms.some(matchesPreferredForm))
-      throw Object.assign(new Error('The requested form is unavailable in the selected exported app.'), {
-        code: 'FormUnavailable',
-      });
-    etag = result.etag;
-    formId = selectedForm?.id ?? availableForms[0]?.id;
-    if (formId) rememberForm(formId);
-    const requestedTab = new URLSearchParams(location.search).get('tabname');
-    if (
-      requestedTab &&
-      !availableForms
-        .find((form) => form.id === formId)
-        ?.tabs.some((tab) => tab.id === requestedTab && tab.visible !== false)
-    )
-      throw new Error('The requested form tab is unavailable in the selected exported form.');
-    activeTab = requestedTab;
+    setLoadedFormType(id);
+    if (!id) applyNewRecordDefaults();
+    const requestedTab = selectRecordForm(result.etag);
     await renderRecord();
     if (token !== generation) return;
     if (id)
@@ -2540,8 +2568,127 @@ async function loadRecord(id) {
       });
   }
 }
+
+function setLoadedFormType(id) {
+  const stateField = Object.values(table.fields).find(
+    (field) =>
+      field.dataverseType === 'state' &&
+      field.options?.length === 2 &&
+      field.options.every((option) => [0, 1].includes(Number(option.value))),
+  );
+  if (!id) loadedFormType = 1;
+  else if (stateField && Number(record[stateField.name]) === 1) loadedFormType = 4;
+  else loadedFormType = 2;
+}
+
+function applyNewRecordDefaults() {
+  const principal = staffSession?.current,
+    principalId = principal?.principalId ?? principal?.id;
+  if (principalId && Object.hasOwn(catalogue.tables, 'systemuser'))
+    for (const field of Object.values(table.fields)) {
+      if (
+        field.dataverseType === 'owner' &&
+        field.defaultValue === undefined &&
+        !Object.hasOwn(record, field.name) &&
+        field.targets?.includes('systemuser')
+      )
+        record[field.name] = { id: principalId, entity: 'systemuser', name: principal.name ?? principalId };
+    }
+  const defaults = new Map(new URLSearchParams(new URLSearchParams(location.search).get('extraqs') ?? ''));
+  const initialValues = Object.values(table.fields)
+    .filter(
+      (field) => defaults.has(field.name) && !field.isPrimaryId && field.validForCreate !== false && hasControl(field),
+    )
+    .map((field) => {
+      const value = defaults.get(field.name);
+      let initialValue;
+      if (field.type === 'number') initialValue = Number(value);
+      else if (field.type === 'boolean') initialValue = value === 'true';
+      else initialValue = value;
+      return [field.name, initialValue];
+    });
+  record = { ...record, ...Object.fromEntries(initialValues) };
+}
+
+function selectRecordForm(resultEtag) {
+  const requestedForm = new URLSearchParams(location.search).get('formid')?.replace(/[{}]/g, '').toLowerCase();
+  const availableForms = appForms(),
+    preferredForm = requestedForm === undefined ? storage.get(preferredFormKey()) : requestedForm;
+  const matchesPreferredForm = (form) =>
+    String(form.id).replace(/[{}]/g, '').toLowerCase() ===
+    String(preferredForm ?? '')
+      .replace(/[{}]/g, '')
+      .toLowerCase();
+  const selectedForm = availableForms.find(matchesPreferredForm);
+  if (requestedForm && !selectedForm && !table.forms.some(matchesPreferredForm))
+    throw Object.assign(new Error('The requested form is unavailable in the selected exported app.'), {
+      code: 'FormUnavailable',
+    });
+  etag = resultEtag;
+  formId = selectedForm?.id ?? availableForms[0]?.id;
+  if (formId) rememberForm(formId);
+  const requestedTab = new URLSearchParams(location.search).get('tabname');
+  if (
+    requestedTab &&
+    !availableForms
+      .find((form) => form.id === formId)
+      ?.tabs.some((tab) => tab.id === requestedTab && tab.visible !== false)
+  )
+    throw new Error('The requested form tab is unavailable in the selected exported form.');
+  activeTab = requestedTab;
+  return requestedTab;
+}
 async function renderRecord() {
   provenance.beginUI();
+  renderRecordStatus();
+  const {
+    renderGeneration,
+    content,
+    existing,
+    recordCard,
+    header,
+    availableForms,
+    selectedForm,
+    actualForm,
+    renderingForm,
+    renderingLifetime,
+  } = prepareRecordSurface();
+  await ensureRecordSubgridMetadata(selectedForm);
+  if (renderGeneration !== generation || renderingForm !== formId || renderingLifetime.signal.aborted) return;
+  provenance.setContext({
+    pageType: 'entityrecord',
+    entity: table.entity,
+    formId: selectedForm.id,
+    appId: app.id,
+    state: 'ready',
+  });
+  normalizeRecordFormUrl(selectedForm);
+  appendRecordFormPicker(header, availableForms, selectedForm);
+  appendRecordScriptWarning(header, selectedForm);
+  const availableTabs = createRecordTabs(selectedForm, recordCard, content);
+  const { form, tab, columns } = createRecordForm(actualForm, availableTabs);
+  renderRecordSections(tab, columns, selectedForm, existing);
+  attachRecordFormEvents(form);
+  content.append(form);
+  recordCard.title =
+    selectedForm.source === 'solution'
+      ? 'Exported solution form · unsupported controls remain read-only.'
+      : 'Form generated from available metadata.';
+  const initializing = !clientRuntime;
+  if (initializing) clientRuntime = createShellClient(selectedForm);
+  const runtime = clientRuntime;
+  const ready = Promise.all(controls.map((entry) => entry.control.ready));
+  if (initializing && catalogue.clientExtensions?.trusted === true)
+    clientReady = ready.then(() => runtime.prepare()).then(() => runtime.dispatch('onload'));
+  else await ready;
+  await clientReady;
+  if (runtime !== clientRuntime || renderGeneration !== generation) return;
+  for (const [name, states] of clientControlState)
+    for (const [key, value] of states) applyControlState(name, key, value);
+  renderCommands('form');
+}
+
+function renderRecordStatus() {
   if (loadedFormType === 4) {
     let banner = $('#record-status');
     if (!banner) {
@@ -2559,6 +2706,9 @@ async function renderRecord() {
     glyph.setAttribute('aria-hidden', 'true');
     banner.replaceChildren(glyph, document.createTextNode(`Read-only This record’s status: ${label}`));
   } else $('#record-status')?.remove();
+}
+
+function prepareRecordSurface() {
   const renderGeneration = generation;
   formLifetime?.abort();
   formLifetime = new AbortController();
@@ -2575,7 +2725,12 @@ async function renderRecord() {
   content.append(recordCard);
   const header = document.createElement('div');
   header.className = 'record-header';
-  header.innerHTML = `<div class="record-identity"><div class="record-title"><h1>${esc(existing ? (record[table.nameColumn] ?? '(No name)') : 'New ' + table.singular)}</h1><span class="record-saved" id="save-status"> - ${dirty ? 'Unsaved changes' : existing ? 'Saved' : 'New record'}</span></div><div class="record-subtitle"><small>${esc(table.singular)}</small></div></div>`;
+  const recordTitle = esc(existing ? (record[table.nameColumn] ?? '(No name)') : 'New ' + table.singular);
+  let savedState;
+  if (dirty) savedState = 'Unsaved changes';
+  else if (existing) savedState = 'Saved';
+  else savedState = 'New record';
+  header.innerHTML = `<div class="record-identity"><div class="record-title"><h1>${recordTitle}</h1><span class="record-saved" id="save-status"> - ${savedState}</span></div><div class="record-subtitle"><small>${esc(table.singular)}</small></div></div>`;
   recordCard.append(header);
   const availableForms = appForms();
   const selectedForm = availableForms.find((form) => form.id === formId) ?? availableForms[0];
@@ -2588,7 +2743,22 @@ async function renderRecord() {
   bindModel(header, modelBinding('platform-shell', 'record-header', { sourceKind: 'platform' }));
   const renderingForm = formId,
     renderingLifetime = formLifetime;
-  await Promise.all(
+  return {
+    renderGeneration,
+    content,
+    existing,
+    recordCard,
+    header,
+    availableForms,
+    selectedForm,
+    actualForm,
+    renderingForm,
+    renderingLifetime,
+  };
+}
+
+function ensureRecordSubgridMetadata(selectedForm) {
+  return Promise.all(
     [
       ...new Set(
         selectedForm.tabs
@@ -2598,19 +2768,17 @@ async function renderRecord() {
       ),
     ].map((entity) => ensureMetadata(entity)),
   );
-  if (renderGeneration !== generation || renderingForm !== formId || renderingLifetime.signal.aborted) return;
-  provenance.setContext({
-    pageType: 'entityrecord',
-    entity: table.entity,
-    formId: selectedForm.id,
-    appId: app.id,
-    state: 'ready',
-  });
+}
+
+function normalizeRecordFormUrl(selectedForm) {
   if (new URLSearchParams(location.search).has('formid')) {
     const url = new URL(location.href);
     url.searchParams.set('formid', selectedForm.id);
     history.replaceState(history.state, '', url);
   }
+}
+
+function appendRecordFormPicker(header, availableForms, selectedForm) {
   if (availableForms.length > 1) {
     const separator = document.createElement('span');
     separator.textContent = '·';
@@ -2643,6 +2811,9 @@ async function renderRecord() {
       ),
     );
   }
+}
+
+function appendRecordScriptWarning(header, selectedForm) {
   if (selectedForm.hasScripts) {
     const warning = document.createElement('span');
     warning.className = 'script-indicator';
@@ -2652,6 +2823,9 @@ async function renderRecord() {
       : 'Trust local Solution client extensions in configuration to run exported form events.';
     header.append(warning);
   }
+}
+
+function createRecordTabs(selectedForm, recordCard, content) {
   const tabs = document.createElement('div');
   tabs.className = 'tabs';
   tabs.setAttribute('role', 'tablist');
@@ -2696,19 +2870,7 @@ async function renderRecord() {
   moreTabs.setAttribute('aria-haspopup', 'dialog');
   moreTabs.setAttribute('aria-expanded', 'false');
   moreTabs.hidden = true;
-  tabs.addEventListener('keydown', (event) => {
-    if (event.target.getAttribute('role') !== 'tab' || !['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key))
-      return;
-    event.preventDefault();
-    const index = availableTabs.findIndex((tab) => tab.id === activeTab);
-    const next =
-      event.key === 'Home'
-        ? 0
-        : event.key === 'End'
-          ? availableTabs.length - 1
-          : (index + (event.key === 'ArrowRight' ? 1 : -1) + availableTabs.length) % availableTabs.length;
-    run(() => chooseTab(availableTabs[next], true));
-  });
+  tabs.addEventListener('keydown', (event) => handleRecordTabKeydown(event, availableTabs, chooseTab));
   const assist = button('Form assist', null, {
     iconName: 'pageForm',
     disabled: true,
@@ -2717,39 +2879,57 @@ async function renderRecord() {
   });
   tabs.append(moreTabs, assist);
   recordCard.append(tabs);
-  tabObserver = new ResizeObserver(() => {
-    tabButtons.forEach((button) => {
-      button.hidden = false;
-    });
-    moreTabs.hidden = true;
-    const gap = 22,
-      budget = tabs.clientWidth - 42 - assist.offsetWidth - gap;
-    const selected = tabButtons.find((entry) => entry.getAttribute('aria-selected') === 'true');
-    let used = (selected?.offsetWidth ?? 0) + gap,
-      overflow = false;
-    for (const entry of tabButtons) {
-      if (entry === selected) continue;
-      const width = entry.offsetWidth + gap;
-      const fits = innerWidth > 650 && used + width <= budget - 45;
-      entry.hidden = !fits;
-      if (fits) used += width;
-      else overflow = true;
-    }
-    moreTabs.hidden = !overflow;
-    const form = content.querySelector('.form-layout');
-    if (form)
-      form.style.setProperty(
-        '--form-usable-height',
-        Math.max(
-          0,
-          content.clientHeight -
-            (form.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop) -
-            20,
-        ) + 'px',
-      );
-  });
+  tabObserver = new ResizeObserver(() => fitRecordTabLayout({ tabButtons, moreTabs, tabs, assist, content }));
   tabObserver.observe(tabs);
   tabObserver.observe(content);
+  return availableTabs;
+}
+
+function handleRecordTabKeydown(event, availableTabs, chooseTab) {
+  if (event.target.getAttribute('role') !== 'tab' || !['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key))
+    return;
+  event.preventDefault();
+  const index = availableTabs.findIndex((tab) => tab.id === activeTab);
+  let next;
+  if (event.key === 'Home') next = 0;
+  else if (event.key === 'End') next = availableTabs.length - 1;
+  else next = (index + (event.key === 'ArrowRight' ? 1 : -1) + availableTabs.length) % availableTabs.length;
+  void run(() => chooseTab(availableTabs[next], true));
+}
+
+function fitRecordTabLayout({ tabButtons, moreTabs, tabs, assist, content }) {
+  tabButtons.forEach((button) => {
+    button.hidden = false;
+  });
+  moreTabs.hidden = true;
+  const gap = 22,
+    budget = tabs.clientWidth - 42 - assist.offsetWidth - gap;
+  const selected = tabButtons.find((entry) => entry.getAttribute('aria-selected') === 'true');
+  let used = (selected?.offsetWidth ?? 0) + gap,
+    overflow = false;
+  for (const entry of tabButtons) {
+    if (entry === selected) continue;
+    const width = entry.offsetWidth + gap;
+    const fits = innerWidth > 650 && used + width <= budget - 45;
+    entry.hidden = !fits;
+    if (fits) used += width;
+    else overflow = true;
+  }
+  moreTabs.hidden = !overflow;
+  const form = content.querySelector('.form-layout');
+  if (form)
+    form.style.setProperty(
+      '--form-usable-height',
+      Math.max(
+        0,
+        content.clientHeight -
+          (form.getBoundingClientRect().top - content.getBoundingClientRect().top + content.scrollTop) -
+          20,
+      ) + 'px',
+    );
+}
+
+function createRecordForm(actualForm, availableTabs) {
   const form = document.createElement('form');
   form.id = 'record-form';
   bindModel(form, actualForm, { coverage: 'self' });
@@ -2758,7 +2938,7 @@ async function renderRecord() {
   form.setAttribute('aria-labelledby', `record-tab-${availableTabs.findIndex((tab) => tab.id === activeTab)}`);
   form.addEventListener('submit', (event) => {
     event.preventDefault();
-    run(() => saveRecord(false));
+    void run(() => saveRecord(false));
   });
   const tab = availableTabs.find((tab) => tab.id === activeTab);
   const widths = tab?.columnWidths?.length ? tab.columnWidths : [100];
@@ -2771,6 +2951,10 @@ async function renderRecord() {
     form.append(column);
     return column;
   });
+  return { form, tab, columns };
+}
+
+function renderRecordSections(tab, columns, selectedForm, existing) {
   for (const section of tab?.sections ?? []) {
     if (!layoutVisible(section)) continue;
     // Native-style markers (data-id) name each section, field and subgrid as the exported form does, for tools such as Lense X-ray.
@@ -2797,72 +2981,76 @@ async function renderRecord() {
     fields.className = 'section-fields';
     fields.dataset.columns = String(section.columns ?? 1);
     panel.append(fields);
-    for (const cell of section.fields) {
-      const position = (element) => {
-        element.hidden =
-          clientControlState.get(cell.sourceControl?.id ?? cell.name)?.get('hidden') ?? cell.visible === false;
-        if (cell.column !== undefined)
-          element.style.gridColumn = `${cell.column + 1} / span ${Math.min(cell.colspan ?? 1, section.columns ?? 1)}`;
-        formCellLayouts.set(element, cell);
-        fields.append(element);
-      };
-      if (cell.spacer) {
-        const spacer = document.createElement('div');
-        spacer.className = 'form-spacer';
-        spacer.setAttribute('aria-hidden', 'true');
-        position(spacer);
-        continue;
-      }
-      if (cell.subgrid) {
-        position(renderSubgrid(cell));
-        continue;
-      }
-      if (!cell.supported || !table.fields[cell.name]) {
-        const unsupported = document.createElement('p');
-        unsupported.className = 'unsupported';
-        unsupported.textContent = `${cell.label ?? 'Control'}: ${cell.reason ?? 'Unsupported control'}`;
-        bindModel(unsupported, controlBinding(cell), {
-          availability: [{ capability: 'control-rendering', reason: 'unsupported-local-control' }],
-        });
-        position(unsupported);
-        continue;
-      }
-      const field = { ...table.fields[cell.name], label: cell.label ?? table.fields[cell.name].label };
-      const disabled = controlDisabled(
-        cell,
-        field,
-        clientControlState.get(cell.sourceControl?.id ?? field.name)?.get('disabled'),
-      );
-      const wrapper = document.createElement('div');
-      wrapper.className = 'field';
-      bindModel(wrapper, controlBinding(cell));
-      const label = document.createElement('label');
-      label.htmlFor = 'field-' + (cell.sourceControl?.id ?? field.name);
-      label.textContent = field.label;
-      if (field.required) {
-        const required = document.createElement('span');
-        required.className = 'required';
-        required.setAttribute('aria-hidden', 'true');
-        required.textContent = '*';
-        label.append(required);
-      }
-      if (cell.showLabel === false) label.className = 'sr-only';
-      setFieldLock(
-        label,
-        disabled &&
-          (cell.disabled || field.isPrimaryId || field[existing ? 'validForUpdate' : 'validForCreate'] === false),
-      );
-      const name = cell.sourceControl?.id ?? field.name;
-      const control = renderFieldControl(cell, field, disabled);
-      wrapper.dataset.id = name;
-      control.element.dataset.id ??= `${name}.fieldControl-${field.type}`;
-      wrapper.append(label, control.element);
-      position(wrapper);
-      controls.push({ name: field.name, controlName: name, cell, wrapper, label, control, disabled });
-    }
+    for (const cell of section.fields) appendRecordCell(cell, section, fields, existing);
     reflowSectionFields(fields);
     columns[Math.max(0, section.column ?? 0)]?.append(panel);
   }
+}
+
+function appendRecordCell(cell, section, fields, existing) {
+  const position = (element) => {
+    element.hidden =
+      clientControlState.get(cell.sourceControl?.id ?? cell.name)?.get('hidden') ?? cell.visible === false;
+    if (cell.column !== undefined)
+      element.style.gridColumn = `${cell.column + 1} / span ${Math.min(cell.colspan ?? 1, section.columns ?? 1)}`;
+    formCellLayouts.set(element, cell);
+    fields.append(element);
+  };
+  if (cell.spacer) {
+    const spacer = document.createElement('div');
+    spacer.className = 'form-spacer';
+    spacer.setAttribute('aria-hidden', 'true');
+    position(spacer);
+    return;
+  }
+  if (cell.subgrid) {
+    position(renderSubgrid(cell));
+    return;
+  }
+  if (!cell.supported || !table.fields[cell.name]) {
+    const unsupported = document.createElement('p');
+    unsupported.className = 'unsupported';
+    unsupported.textContent = `${cell.label ?? 'Control'}: ${cell.reason ?? 'Unsupported control'}`;
+    bindModel(unsupported, controlBinding(cell), {
+      availability: [{ capability: 'control-rendering', reason: 'unsupported-local-control' }],
+    });
+    position(unsupported);
+    return;
+  }
+  const field = { ...table.fields[cell.name], label: cell.label ?? table.fields[cell.name].label };
+  const disabled = controlDisabled(
+    cell,
+    field,
+    clientControlState.get(cell.sourceControl?.id ?? field.name)?.get('disabled'),
+  );
+  const wrapper = document.createElement('div');
+  wrapper.className = 'field';
+  bindModel(wrapper, controlBinding(cell));
+  const label = document.createElement('label');
+  label.htmlFor = 'field-' + (cell.sourceControl?.id ?? field.name);
+  label.textContent = field.label;
+  if (field.required) {
+    const required = document.createElement('span');
+    required.className = 'required';
+    required.setAttribute('aria-hidden', 'true');
+    required.textContent = '*';
+    label.append(required);
+  }
+  if (cell.showLabel === false) label.className = 'sr-only';
+  setFieldLock(
+    label,
+    disabled && (cell.disabled || field.isPrimaryId || field[existing ? 'validForUpdate' : 'validForCreate'] === false),
+  );
+  const name = cell.sourceControl?.id ?? field.name;
+  const control = renderFieldControl(cell, field, disabled);
+  wrapper.dataset.id = name;
+  control.element.dataset.id ??= `${name}.fieldControl-${field.type}`;
+  wrapper.append(label, control.element);
+  position(wrapper);
+  controls.push({ name: field.name, controlName: name, cell, wrapper, label, control, disabled });
+}
+
+function attachRecordFormEvents(form) {
   const markDirty = (event) => {
     const entry = controls.find(
       (entry) => entry.control.element === event.target || entry.control.element.contains(event.target),
@@ -2874,42 +3062,27 @@ async function renderRecord() {
     $('#save-status').textContent = ' - Unsaved changes';
   };
   form.addEventListener('input', markDirty);
-  form.addEventListener('change', (event) => {
-    markDirty(event);
-    const entry = controls.find(
-      (entry) => entry.control.element === event.target || entry.control.element.contains(event.target),
-    );
-    if (!entry || entry.disabled) return;
-    const runtime = clientRuntime,
-      ready = clientReady;
-    clientChanges = clientChanges
-      .catch(() => {})
-      .then(async () => {
-        await ready;
-        if (runtime !== clientRuntime) return;
-        captureDraft();
-        await runtime?.dispatch('onchange', entry.name);
-        refreshCommandRules('form');
-      });
-    clientChanges.catch((error) => notice(error.message, true));
-  });
-  content.append(form);
-  recordCard.title =
-    selectedForm.source === 'solution'
-      ? 'Exported solution form · unsupported controls remain read-only.'
-      : 'Form generated from available metadata.';
-  const initializing = !clientRuntime;
-  if (initializing) clientRuntime = createShellClient(selectedForm);
-  const runtime = clientRuntime;
-  const ready = Promise.all(controls.map((entry) => entry.control.ready));
-  if (initializing && catalogue.clientExtensions?.trusted === true)
-    clientReady = ready.then(() => runtime.prepare()).then(() => runtime.dispatch('onload'));
-  else await ready;
-  await clientReady;
-  if (runtime !== clientRuntime || renderGeneration !== generation) return;
-  for (const [name, states] of clientControlState)
-    for (const [key, value] of states) applyControlState(name, key, value);
-  renderCommands('form');
+  form.addEventListener('change', (event) => handleRecordFormChange(event, markDirty));
+}
+
+function handleRecordFormChange(event, markDirty) {
+  markDirty(event);
+  const entry = controls.find(
+    (entry) => entry.control.element === event.target || entry.control.element.contains(event.target),
+  );
+  if (!entry || entry.disabled) return;
+  const runtime = clientRuntime,
+    ready = clientReady;
+  clientChanges = clientChanges
+    .catch(() => {})
+    .then(async () => {
+      await ready;
+      if (runtime !== clientRuntime) return;
+      captureDraft();
+      await runtime?.dispatch('onchange', entry.name);
+      refreshCommandRules('form');
+    });
+  clientChanges.catch((error) => notice(error.message, true));
 }
 function bindPcfState(
   { element, state, componentName, formFactor, constructorName, viewId },
@@ -2992,72 +3165,95 @@ function renderFieldControl(cell, field, disabled) {
 function applyControlState(name, key, value) {
   const entry = controls.find((entry) => entry.controlName === name);
   if (!entry) return;
-  if (key === 'hidden') {
-    entry.wrapper.hidden = value;
-    reflowSectionFields(entry.wrapper.parentElement);
-  } else if (key === 'options') {
-    entry.control.setOptions(value.map((option) => ({ label: option.text, value: option.value })));
-  } else if (key === 'label') {
-    const locked = Boolean(entry.label.querySelector('.field-lock')),
-      required = entry.label.querySelector('.required');
-    entry.label.textContent = value;
-    if (required) entry.label.append(required);
-    setFieldLock(entry.label, locked);
-    (entry.control.primary ?? entry.control.element).setAttribute('aria-label', value);
-  } else if (key === 'focus') (entry.control.primary ?? entry.control.element).focus();
-  else if (key === 'required') {
-    (entry.control.primary ?? entry.control.element).required = value === 'required';
-    if (value !== 'required') entry.label.querySelector('.required')?.remove();
-    else if (!entry.label.querySelector('.required')) {
-      const marker = document.createElement('span');
-      marker.className = 'required';
-      marker.setAttribute('aria-hidden', 'true');
-      marker.textContent = '*';
-      entry.label.append(marker);
-    }
-  } else if (key === 'disabled') {
-    // Client scripts can restrict a control, never enable a field denied by its source or staff policy.
-    entry.disabled = controlDisabled(entry.cell, table.fields[entry.name], value);
-    if (entry.control.setDisabled) entry.control.setDisabled(entry.disabled);
-    else
-      for (const node of [
-        entry.control.element,
-        ...entry.control.element.querySelectorAll('input,textarea,select,button'),
-      ])
-        if ('disabled' in node) node.disabled = entry.disabled;
-    const field = table.fields[entry.name];
-    setFieldLock(
-      entry.label,
-      entry.disabled &&
-        (entry.cell.disabled ||
-          field.isPrimaryId ||
-          field[record?.[table.idColumn] ? 'validForUpdate' : 'validForCreate'] === false),
-    );
-  } else if (key.startsWith('notification:')) {
-    const id = key.slice(13);
-    let message = [...entry.wrapper.querySelectorAll('[data-client-notification]')].find(
-      (element) => element.dataset.clientNotification === id,
-    );
-    if (value == null) message?.remove();
-    else {
-      if (!message) {
-        message = document.createElement('p');
-        message.className = 'unsupported';
-        message.dataset.clientNotification = id;
-        entry.wrapper.append(message);
-      }
-      message.textContent = value;
-    }
-    const primary =
-      entry.control.primary ??
-      (entry.control.element.matches('input,select,textarea')
-        ? entry.control.element
-        : entry.control.element.querySelector('input,select,textarea'));
-    const messages = [...(clientControlState.get(name) ?? [])]
-      .filter(([key, value]) => key.startsWith('notification:') && value != null)
-      .map(([, value]) => value);
-    primary?.setCustomValidity?.(messages.join('\n'));
+  switch (key) {
+    case 'hidden':
+      entry.wrapper.hidden = value;
+      reflowSectionFields(entry.wrapper.parentElement);
+      break;
+    case 'options':
+      entry.control.setOptions(value.map((option) => ({ label: option.text, value: option.value })));
+      break;
+    case 'label':
+      applyLabelState(entry, value);
+      break;
+    case 'focus':
+      (entry.control.primary ?? entry.control.element).focus();
+      break;
+    case 'required':
+      applyRequiredState(entry, value);
+      break;
+    case 'disabled':
+      applyDisabledState(entry, value);
+      break;
+    default:
+      if (key.startsWith('notification:')) applyClientNotification(name, entry, key, value);
   }
+}
+
+function applyLabelState(entry, value) {
+  const locked = Boolean(entry.label.querySelector('.field-lock')),
+    required = entry.label.querySelector('.required');
+  entry.label.textContent = value;
+  if (required) entry.label.append(required);
+  setFieldLock(entry.label, locked);
+  (entry.control.primary ?? entry.control.element).setAttribute('aria-label', value);
+}
+
+function applyRequiredState(entry, value) {
+  (entry.control.primary ?? entry.control.element).required = value === 'required';
+  if (value !== 'required') entry.label.querySelector('.required')?.remove();
+  else if (!entry.label.querySelector('.required')) {
+    const marker = document.createElement('span');
+    marker.className = 'required';
+    marker.setAttribute('aria-hidden', 'true');
+    marker.textContent = '*';
+    entry.label.append(marker);
+  }
+}
+
+function applyDisabledState(entry, value) {
+  entry.disabled = controlDisabled(entry.cell, table.fields[entry.name], value);
+  if (entry.control.setDisabled) entry.control.setDisabled(entry.disabled);
+  else
+    for (const node of [
+      entry.control.element,
+      ...entry.control.element.querySelectorAll('input,textarea,select,button'),
+    ])
+      if ('disabled' in node) node.disabled = entry.disabled;
+  const field = table.fields[entry.name];
+  setFieldLock(
+    entry.label,
+    entry.disabled &&
+      (entry.cell.disabled ||
+        field.isPrimaryId ||
+        field[record?.[table.idColumn] ? 'validForUpdate' : 'validForCreate'] === false),
+  );
+}
+
+function applyClientNotification(name, entry, key, value) {
+  const id = key.slice(13);
+  let message = [...entry.wrapper.querySelectorAll('[data-client-notification]')].find(
+    (element) => element.dataset.clientNotification === id,
+  );
+  if (value == null) message?.remove();
+  else {
+    if (!message) {
+      message = document.createElement('p');
+      message.className = 'unsupported';
+      message.dataset.clientNotification = id;
+      entry.wrapper.append(message);
+    }
+    message.textContent = value;
+  }
+  const primary =
+    entry.control.primary ??
+    (entry.control.element.matches('input,select,textarea')
+      ? entry.control.element
+      : entry.control.element.querySelector('input,select,textarea'));
+  const messages = [...(clientControlState.get(name) ?? [])]
+    .filter(([key, value]) => key.startsWith('notification:') && value != null)
+    .map(([, value]) => value);
+  primary?.setCustomValidity?.(messages.join('\n'));
 }
 function createShellClient(selectedForm) {
   const requiredLevels = new Map();
@@ -3099,7 +3295,7 @@ function createShellClient(selectedForm) {
       requestAnimationFrame(() => {
         if (runtime === clientRuntime && record) {
           captureDraft();
-          renderRecord();
+          void renderRecord();
         }
       });
     },
@@ -3166,14 +3362,11 @@ function createShellClient(selectedForm) {
           applyControlState(controlName(cell), 'required', value);
         }
       }
-      return (
-        requiredLevels.get(name) ??
-        (table.fields[name]?.required
-          ? 'required'
-          : table.fields[name]?.requiredLevel === 'recommended'
-            ? 'recommended'
-            : 'none')
-      );
+      const current = requiredLevels.get(name);
+      if (current != null) return current;
+      if (table.fields[name]?.required) return 'required';
+      if (table.fields[name]?.requiredLevel === 'recommended') return 'recommended';
+      return 'none';
     },
     controlNames: (name) => [
       ...cells.filter((cell) => !name || cell.name === name).map(controlName),
@@ -3182,44 +3375,7 @@ function createShellClient(selectedForm) {
     controlField: (name) =>
       cells.find((cell) => controlName(cell) === name)?.name ??
       regionControls.find((control) => control.id === name)?.name,
-    controlState: (name, key, value) => {
-      const region = regionControls.find((control) => control.id === name);
-      if (region) {
-        if (value !== undefined)
-          throw new Error(
-            `Mirage client API does not support changing the ${region.region} control ${name}: header and footer controls are not rendered locally.`,
-          );
-        return key === 'disabled'
-          ? true
-          : key === 'hidden'
-            ? false
-            : key === 'label'
-              ? table.fields[region.name]?.label
-              : undefined;
-      }
-      const entry = controls.find((entry) => entry.controlName === name);
-      if (value === undefined) {
-        const cell = cells.find((cell) => controlName(cell) === name);
-        return key === 'disabled'
-          ? (entry?.disabled ?? controlDisabled(cell, table.fields[cell?.name], clientControlState.get(name)?.get(key)))
-          : (clientControlState.get(name)?.get(key) ??
-              (key === 'hidden'
-                ? (entry?.wrapper.hidden ?? cell?.visible === false)
-                : key === 'label'
-                  ? (cell?.label ?? table.fields[cell?.name]?.label)
-                  : undefined));
-      }
-      if (key === 'options') {
-        const cell = cells.find((cell) => controlName(cell) === name);
-        if (cell?.pcf || cell?.readOnlyText || (entry && typeof entry.control.setOptions !== 'function'))
-          throw new Error(`Mirage client API does not support changing options for control ${name}.`);
-      }
-      const states = clientControlState.get(name) ?? new Map();
-      states.set(key, value);
-      clientControlState.set(name, states);
-      applyControlState(name, key, value);
-      return true;
-    },
+    controlState: (name, key, value) => readClientControlState(name, key, value, regionControls, cells, controlName),
     notification: (message, level, id) => {
       let host = $('#form-notifications'),
         element = [...(host?.children ?? [])].find((element) => element.dataset.formNotification === id);
@@ -3238,7 +3394,9 @@ function createShellClient(selectedForm) {
         element.setAttribute('role', 'status');
         host.append(element);
       }
-      element.className = level === 'ERROR' ? 'error' : level === 'WARNING' ? 'warning' : 'info';
+      if (level === 'ERROR') element.className = 'error';
+      else if (level === 'WARNING') element.className = 'warning';
+      else element.className = 'info';
       element.replaceChildren();
       const glyph = document.createElement('span');
       glyph.innerHTML = icon('info');
@@ -3287,6 +3445,43 @@ function createShellClient(selectedForm) {
   globalThis.Xrm = runtime.Xrm;
   return runtime;
 }
+
+function readClientControlState(name, key, value, regionControls, cells, controlName) {
+  const region = regionControls.find((control) => control.id === name);
+  if (region) {
+    if (value !== undefined)
+      throw new Error(
+        `Mirage client API does not support changing the ${region.region} control ${name}: header and footer controls are not rendered locally.`,
+      );
+    if (key === 'disabled') return true;
+    if (key === 'hidden') return false;
+    if (key === 'label') return table.fields[region.name]?.label;
+    return undefined;
+  }
+  const entry = controls.find((entry) => entry.controlName === name);
+  if (value === undefined) return readCurrentControlState(name, key, entry, cells, controlName);
+  if (key === 'options') {
+    const cell = cells.find((cell) => controlName(cell) === name);
+    if (cell?.pcf || cell?.readOnlyText || (entry && typeof entry.control.setOptions !== 'function'))
+      throw new Error(`Mirage client API does not support changing options for control ${name}.`);
+  }
+  const states = clientControlState.get(name) ?? new Map();
+  states.set(key, value);
+  clientControlState.set(name, states);
+  applyControlState(name, key, value);
+  return true;
+}
+
+function readCurrentControlState(name, key, entry, cells, controlName) {
+  const cell = cells.find((cell) => controlName(cell) === name);
+  if (key === 'disabled')
+    return entry?.disabled ?? controlDisabled(cell, table.fields[cell?.name], clientControlState.get(name)?.get(key));
+  const current = clientControlState.get(name)?.get(key);
+  if (current != null) return current;
+  if (key === 'hidden') return entry?.wrapper.hidden ?? cell?.visible === false;
+  if (key === 'label') return cell?.label ?? table.fields[cell?.name]?.label;
+  return undefined;
+}
 /** A form sub-grid, or a dashboard list (`cell.dashboard`: the same grid over the view query without a parent record). */
 function renderSubgrid(cell) {
   const panel = document.createElement('section');
@@ -3311,38 +3506,11 @@ function renderSubgrid(cell) {
   headingRow.className = 'subgrid-heading';
   headingRow.append(heading);
   panel.append(headingRow);
-  const unavailable = (message) => {
-    const text = document.createElement('p');
-    text.className = 'unsupported';
-    text.textContent = message;
-    panel.append(text);
-    return panel;
-  };
+  const unavailable = (message) => subgridUnavailable(panel, message);
   if (!parentId && !cell.dashboard) return unavailable('Save this record to view related records.');
   if (!target) return unavailable('The related table metadata is unavailable.');
-  let field;
-  if (!cell.dashboard) {
-    const candidates = Object.values(target.fields).filter(
-      (field) => field.type === 'lookup' && field.targets?.includes(table.entity),
-    );
-    const relationshipName = cell.subgrid.relationship?.toLowerCase();
-    const relationship =
-      relationshipName &&
-      Object.entries(table.relationships ?? {}).find(
-        ([name, relation]) =>
-          (name.toLowerCase() === relationshipName || relation.schemaName?.toLowerCase() === relationshipName) &&
-          relation.entity === target.entity &&
-          relation.many === true &&
-          relation.from === table.idColumn,
-      )?.[1];
-    const boundField = relationshipName
-      ? candidates.find((field) => field.name === relationship?.to)
-      : candidates.length === 1
-        ? candidates[0]
-        : undefined;
-    if (!boundField) return unavailable('The related table has no unambiguous exported lookup to this record.');
-    field = boundField.name;
-  }
+  const { field, error: fieldError } = resolveSubgridField(cell, target);
+  if (fieldError) return unavailable(fieldError);
   const parentFilters = field ? [{ field, operator: 'eq', value: parentId }] : [];
   let view =
     target.views.find((view) => view.id === cell.subgrid.view) ??
@@ -3366,27 +3534,8 @@ function renderSubgrid(cell) {
       lease,
     );
   bindView();
-  if (cell.pcf) {
-    const component = renderPcfDataset(cell, {
-      provenance: (event) => {
-        bindView(event.state === 'mounted' ? 'ready' : event.state);
-        bindPcfState(event, placement, lease, { context: enclosing, viewTable: target });
-      },
-      clientExtensions: catalogue.clientExtensions,
-      staffContext: staffSession?.current?.context,
-      webAPI: () => clientRuntime?.Xrm.WebApi,
-      isOffline: () => offlineState?.mode === 'offline',
-      table: target,
-      tables: catalogue.tables,
-      view,
-      baseFilters: parentFilters,
-      query: (input) => api(tablePath(target.entity) + '?query=' + encodeURIComponent(JSON.stringify(input))),
-      openRecord: (entity, id) => navigate(entity, { id }),
-    });
-    formLifetime.signal.addEventListener('abort', () => component.destroy(), { once: true });
-    panel.append(component.element);
-    return panel;
-  }
+  if (cell.pcf)
+    return renderPcfSubgrid({ cell, panel, placement, lease, enclosing, target, view, parentFilters, bindView });
   let page = 1,
     sort,
     direction = 'asc',
@@ -3475,21 +3624,15 @@ function renderSubgrid(cell) {
   search.type = 'search';
   search.placeholder = 'Filter by keyword';
   search.setAttribute('aria-label', `Filter ${label} by keyword`);
-  if (cell.subgrid.searchEnabled) {
-    const searchRow = document.createElement('div');
-    searchRow.className = 'subgrid-search';
-    const searchBox = document.createElement('div');
-    searchBox.className = 'search-box';
-    searchBox.innerHTML = icon('search');
-    searchBox.append(search);
-    searchRow.append(searchBox);
-    panel.append(searchRow);
-    search.addEventListener('input', () => {
-      clearTimeout(timer);
-      page = 1;
-      timer = setTimeout(() => run(load), 250);
-    });
-  }
+  addSubgridSearch({
+    enabled: cell.subgrid.searchEnabled,
+    panel,
+    search,
+    clearTimer: () => clearTimeout(timer),
+    resetPage: () => (page = 1),
+    setTimer: (value) => (timer = value),
+    load,
+  });
   panel.append(results, footer);
   async function load() {
     const token = ++sequence;
@@ -3515,142 +3658,30 @@ function renderSubgrid(cell) {
           ),
       );
       if (!panel.isConnected || token !== sequence) return;
-      selectedRelated.clear();
-      deleteRelated.hidden = true;
-      results.replaceChildren();
-      bindView();
-      const grid = document.createElement('table');
-      grid.setAttribute('aria-label', label);
-      const columnGroup = document.createElement('colgroup'),
-        selectionColumn = document.createElement('col');
-      selectionColumn.className = 'selection-column';
-      columnGroup.append(selectionColumn);
-      const weights = result.columns.map((name) => view.fields.find((field) => field.name === name)?.width ?? 150),
-        total = weights.reduce((sum, width) => sum + width, 0);
-      grid.style.minWidth = `${total + 48}px`;
-      for (const width of weights) {
-        const column = document.createElement('col');
-        column.style.width = `${(width / total) * 100}%`;
-        columnGroup.append(column);
-      }
-      grid.append(columnGroup);
-      const head = document.createElement('thead'),
-        headings = document.createElement('tr'),
-        selectHeading = document.createElement('th');
-      selectHeading.className = 'selection';
-      const gridContext = [
-        ...enclosing,
-        modelBinding('table', target.entity),
-        { ...viewBinding(target, view.id), relationship: 'current-view' },
-      ];
-      bindModel(selectHeading, modelBinding('platform-control', 'subgrid-selection', { sourceKind: 'platform' }), {
-        context: gridContext,
+      renderSubgridResult({
+        result,
+        label,
+        target,
+        view,
+        enclosing,
+        results,
+        footer,
+        deleteRelated,
+        selectedRelated,
+        page,
+        load,
+        previousPage: () => {
+          page--;
+          return load();
+        },
+        nextPage: () => {
+          page++;
+          return load();
+        },
+        setDirection: (value) => (direction = value),
+        setSort: (value) => (sort = value),
+        bindView,
       });
-      const all = document.createElement('input');
-      all.type = 'checkbox';
-      all.setAttribute('aria-label', `Select all ${label}`);
-      selectHeading.append(all);
-      headings.append(selectHeading);
-      for (const name of result.columns) {
-        const th = document.createElement('th'),
-          arrow = result.sort === name ? (result.direction === 'desc' ? ' ↓' : ' ↑') : '';
-        th.dataset.id = name;
-        const binding = modelBinding('column', `${target.entity}:${name}`, { entity: target.entity, attribute: name });
-        bindModel(th, binding, {
-          context: gridContext,
-          sourceRefs: (target.provenanceRefs ?? []).filter((ref) => ref.componentKey === binding.key),
-        });
-        th.append(
-          button(
-            (target.fields[name]?.label ?? name) + arrow,
-            () => {
-              direction = result.sort === name && result.direction !== 'desc' ? 'desc' : 'asc';
-              sort = name;
-              return load();
-            },
-            { chevron: true, disabled: !target.fields[name] },
-          ),
-        );
-        headings.append(th);
-      }
-      head.append(headings);
-      grid.append(head);
-      const body = document.createElement('tbody');
-      const updateSelection = () => {
-        deleteRelated.hidden = !selectedRelated.size;
-        deleteRelated.disabled =
-          result.capabilities?.delete === false ||
-          [...selectedRelated].some(
-            (id) => result.rowCapabilities?.[id]?.delete === false || target.protectedIds?.includes(id),
-          );
-        deleteRelated.title = deleteRelated.disabled
-          ? capabilityReason(result.capabilities ?? target.capabilities)
-          : '';
-        all.checked = Boolean(result.rows.length && selectedRelated.size === result.rows.length);
-        all.indeterminate = selectedRelated.size > 0 && !all.checked;
-      };
-      for (const row of result.rows) {
-        const tr = document.createElement('tr');
-        const id = String(row[target.idColumn]),
-          selection = document.createElement('td');
-        selection.className = 'selection';
-        bindModel(selection, modelBinding('platform-control', 'subgrid-row-selection', { sourceKind: 'platform' }), {
-          context: gridContext,
-        });
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.setAttribute('aria-label', `Select ${display(row[target.nameColumn]) || id}`);
-        checkbox.addEventListener('change', () => {
-          if (checkbox.checked) selectedRelated.add(id);
-          else selectedRelated.delete(id);
-          tr.classList.toggle('selected', checkbox.checked);
-          updateSelection();
-        });
-        selection.append(checkbox);
-        tr.append(selection);
-        for (const name of result.columns) tr.append(gridCell(target, row, name, gridContext));
-        body.append(tr);
-      }
-      all.addEventListener('change', () => {
-        selectedRelated.clear();
-        for (const [index, row] of result.rows.entries()) {
-          if (all.checked) selectedRelated.add(String(row[target.idColumn]));
-          const tr = body.children[index];
-          tr.classList.toggle('selected', all.checked);
-          tr.querySelector('input').checked = all.checked;
-        }
-        updateSelection();
-      });
-      if (!result.rows.length) {
-        const empty = document.createElement('p');
-        empty.textContent = 'No related records.';
-        results.append(empty);
-      } else {
-        grid.append(body);
-        results.append(grid);
-      }
-      footer.replaceChildren(
-        document.createTextNode(`Rows: ${result.total >= 0 ? totalLabel(result) : result.rows.length}`),
-      );
-      if (result.more || page > 1)
-        footer.append(
-          button(
-            '‹ Previous related records',
-            () => {
-              page--;
-              return load();
-            },
-            { disabled: page === 1 },
-          ),
-          button(
-            'Next related records ›',
-            () => {
-              page++;
-              return load();
-            },
-            { disabled: !result.more },
-          ),
-        );
     } catch (error) {
       if (panel.isConnected && token === sequence) {
         bindView('error');
@@ -3666,6 +3697,235 @@ function renderSubgrid(cell) {
   }
   queueMicrotask(() => run(load));
   return panel;
+}
+
+function addSubgridSearch({ enabled, panel, search, clearTimer, resetPage, setTimer, load }) {
+  if (!enabled) return;
+  const searchRow = document.createElement('div');
+  searchRow.className = 'subgrid-search';
+  const searchBox = document.createElement('div');
+  searchBox.className = 'search-box';
+  searchBox.innerHTML = icon('search');
+  searchBox.append(search);
+  searchRow.append(searchBox);
+  panel.append(searchRow);
+  search.addEventListener('input', () => {
+    clearTimer();
+    resetPage();
+    setTimer(setTimeout(() => run(load), 250));
+  });
+}
+
+function subgridUnavailable(panel, message) {
+  const text = document.createElement('p');
+  text.className = 'unsupported';
+  text.textContent = message;
+  panel.append(text);
+  return panel;
+}
+
+function resolveSubgridField(cell, target) {
+  if (cell.dashboard) return { field: undefined };
+  const candidates = Object.values(target.fields).filter(
+    (field) => field.type === 'lookup' && field.targets?.includes(table.entity),
+  );
+  const relationshipName = cell.subgrid.relationship?.toLowerCase();
+  const relationship =
+    relationshipName &&
+    Object.entries(table.relationships ?? {}).find(
+      ([name, relation]) =>
+        (name.toLowerCase() === relationshipName || relation.schemaName?.toLowerCase() === relationshipName) &&
+        relation.entity === target.entity &&
+        relation.many === true &&
+        relation.from === table.idColumn,
+    )?.[1];
+  let boundField;
+  if (relationshipName) boundField = candidates.find((field) => field.name === relationship?.to);
+  else if (candidates.length === 1) boundField = candidates[0];
+  if (!boundField) return { error: 'The related table has no unambiguous exported lookup to this record.' };
+  return { field: boundField.name };
+}
+
+function renderPcfSubgrid({ cell, panel, placement, lease, enclosing, target, view, parentFilters, bindView }) {
+  const component = renderPcfDataset(cell, {
+    provenance: (event) => {
+      bindView(event.state === 'mounted' ? 'ready' : event.state);
+      bindPcfState(event, placement, lease, { context: enclosing, viewTable: target });
+    },
+    clientExtensions: catalogue.clientExtensions,
+    staffContext: staffSession?.current?.context,
+    webAPI: () => clientRuntime?.Xrm.WebApi,
+    isOffline: () => offlineState?.mode === 'offline',
+    table: target,
+    tables: catalogue.tables,
+    view,
+    baseFilters: parentFilters,
+    query: (input) => api(tablePath(target.entity) + '?query=' + encodeURIComponent(JSON.stringify(input))),
+    openRecord: (entity, id) => navigate(entity, { id }),
+  });
+  formLifetime.signal.addEventListener('abort', () => component.destroy(), { once: true });
+  panel.append(component.element);
+  return panel;
+}
+
+function renderSubgridResult({
+  result,
+  label,
+  target,
+  view,
+  enclosing,
+  results,
+  footer,
+  deleteRelated,
+  selectedRelated,
+  page,
+  load,
+  previousPage,
+  nextPage,
+  setDirection,
+  setSort,
+  bindView,
+}) {
+  selectedRelated.clear();
+  deleteRelated.hidden = true;
+  results.replaceChildren();
+  bindView();
+  const grid = document.createElement('table');
+  grid.setAttribute('aria-label', label);
+  appendSubgridColumns(grid, result, view);
+  const head = document.createElement('thead'),
+    headings = document.createElement('tr'),
+    selection = document.createElement('th');
+  selection.className = 'selection';
+  const gridContext = [
+    ...enclosing,
+    modelBinding('table', target.entity),
+    { ...viewBinding(target, view.id), relationship: 'current-view' },
+  ];
+  bindModel(selection, modelBinding('platform-control', 'subgrid-selection', { sourceKind: 'platform' }), {
+    context: gridContext,
+  });
+  const all = document.createElement('input');
+  all.type = 'checkbox';
+  all.setAttribute('aria-label', `Select all ${label}`);
+  selection.append(all);
+  headings.append(selection);
+  appendSubgridHeadings(headings, result, target, gridContext, load, setDirection, setSort);
+  head.append(headings);
+  grid.append(head);
+  const body = renderSubgridRows(result, { target, gridContext, selectedRelated, deleteRelated, all });
+  if (!result.rows.length) {
+    const empty = document.createElement('p');
+    empty.textContent = 'No related records.';
+    results.append(empty);
+  } else {
+    grid.append(body);
+    results.append(grid);
+  }
+  appendSubgridFooter(footer, result, page, previousPage, nextPage);
+}
+
+function appendSubgridColumns(grid, result, view) {
+  const columnGroup = document.createElement('colgroup'),
+    selectionColumn = document.createElement('col');
+  selectionColumn.className = 'selection-column';
+  columnGroup.append(selectionColumn);
+  const weights = result.columns.map((name) => view.fields.find((field) => field.name === name)?.width ?? 150),
+    total = weights.reduce((sum, width) => sum + width, 0);
+  grid.style.minWidth = `${total + 48}px`;
+  for (const width of weights) {
+    const column = document.createElement('col');
+    column.style.width = `${(width / total) * 100}%`;
+    columnGroup.append(column);
+  }
+  grid.append(columnGroup);
+}
+
+function appendSubgridHeadings(headings, result, target, gridContext, load, setDirection, setSort) {
+  for (const name of result.columns) {
+    const th = document.createElement('th');
+    let arrow = '';
+    if (result.sort === name) arrow = result.direction === 'desc' ? ' ↓' : ' ↑';
+    th.dataset.id = name;
+    const binding = modelBinding('column', `${target.entity}:${name}`, { entity: target.entity, attribute: name });
+    bindModel(th, binding, {
+      context: gridContext,
+      sourceRefs: (target.provenanceRefs ?? []).filter((ref) => ref.componentKey === binding.key),
+    });
+    th.append(
+      button(
+        (target.fields[name]?.label ?? name) + arrow,
+        () => {
+          setDirection(result.sort === name && result.direction !== 'desc' ? 'desc' : 'asc');
+          setSort(name);
+          return load();
+        },
+        { chevron: true, disabled: !target.fields[name] },
+      ),
+    );
+    headings.append(th);
+  }
+}
+
+function renderSubgridRows(result, { target, gridContext, selectedRelated, deleteRelated, all }) {
+  const body = document.createElement('tbody');
+  const updateSelection = () => updateRelatedSelection(result, target, selectedRelated, deleteRelated, all);
+  for (const row of result.rows) {
+    const tr = document.createElement('tr');
+    const id = String(row[target.idColumn]),
+      selection = document.createElement('td');
+    selection.className = 'selection';
+    bindModel(selection, modelBinding('platform-control', 'subgrid-row-selection', { sourceKind: 'platform' }), {
+      context: gridContext,
+    });
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.setAttribute('aria-label', `Select ${display(row[target.nameColumn]) || id}`);
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) selectedRelated.add(id);
+      else selectedRelated.delete(id);
+      tr.classList.toggle('selected', checkbox.checked);
+      updateSelection();
+    });
+    selection.append(checkbox);
+    tr.append(selection);
+    for (const name of result.columns) tr.append(gridCell(target, row, name, gridContext));
+    body.append(tr);
+  }
+  all.addEventListener('change', () => {
+    selectedRelated.clear();
+    for (const [index, row] of result.rows.entries()) {
+      if (all.checked) selectedRelated.add(String(row[target.idColumn]));
+      const tr = body.children[index];
+      tr.classList.toggle('selected', all.checked);
+      tr.querySelector('input').checked = all.checked;
+    }
+    updateSelection();
+  });
+  return body;
+}
+
+function updateRelatedSelection(result, target, selectedRelated, deleteRelated, all) {
+  deleteRelated.hidden = !selectedRelated.size;
+  deleteRelated.disabled =
+    result.capabilities?.delete === false ||
+    [...selectedRelated].some(
+      (id) => result.rowCapabilities?.[id]?.delete === false || target.protectedIds?.includes(id),
+    );
+  deleteRelated.title = deleteRelated.disabled ? capabilityReason(result.capabilities ?? target.capabilities) : '';
+  all.checked = Boolean(result.rows.length && selectedRelated.size === result.rows.length);
+  all.indeterminate = selectedRelated.size > 0 && !all.checked;
+}
+
+function appendSubgridFooter(footer, result, page, previousPage, nextPage) {
+  footer.replaceChildren(
+    document.createTextNode(`Rows: ${result.total >= 0 ? totalLabel(result) : result.rows.length}`),
+  );
+  if (result.more || page > 1)
+    footer.append(
+      button('‹ Previous related records', previousPage, { disabled: page === 1 }),
+      button('Next related records ›', nextPage, { disabled: !result.more }),
+    );
 }
 function captureDraft() {
   for (const entry of controls)
@@ -3692,8 +3952,13 @@ async function saveRecord(close) {
       $('#commands').classList.remove('busy');
       $('#commands').setAttribute('aria-busy', 'false');
       if (form?.isConnected) form.inert = false;
-      if (status?.isConnected)
-        status.textContent = ' - ' + (dirty ? 'Unsaved changes' : record?.[table.idColumn] ? 'Saved' : 'New record');
+      if (status?.isConnected) {
+        let savedState;
+        if (dirty) savedState = 'Unsaved changes';
+        else if (record?.[table.idColumn]) savedState = 'Saved';
+        else savedState = 'New record';
+        status.textContent = ' - ' + savedState;
+      }
     }
   }
 }
@@ -3715,8 +3980,64 @@ async function persistRecord(close) {
   form.inert = true;
   notice('');
   captureDraft();
-  const existing = Boolean(record[table.idColumn]),
-    values = {};
+  const existing = Boolean(record[table.idColumn]);
+  return persistRecordChanges(saveGeneration, close, existing);
+}
+
+async function persistRecordChanges(saveGeneration, close, existing) {
+  const values = collectPersistedValues(existing);
+  const unsaved = [...touchedFields].filter((name) => !Object.hasOwn(values, name));
+  if (existing && !Object.keys(values).length) {
+    await handleEmptyRecordSave(unsaved, close);
+    return;
+  }
+  pending = true;
+  $('#commands').classList.add('busy');
+  try {
+    const result = await api(tablePath(table.entity, existing ? record[table.idColumn] : undefined), {
+      method: existing ? 'PATCH' : 'POST',
+      headers: existing ? { 'if-match': etag } : {},
+      body: JSON.stringify(values),
+    });
+    await completeRecordSave(result, saveGeneration, close, unsaved);
+  } finally {
+    pending = false;
+  }
+}
+
+async function handleEmptyRecordSave(unsaved, close) {
+  if (unsaved.length) {
+    notice(`These changed columns cannot be saved locally: ${unsaved.join(', ')}.`, true);
+    return;
+  }
+  dirty = false;
+  touchedFields.clear();
+  if (close) await returnToGrid();
+  else notice('No record changes to save.');
+}
+
+async function completeRecordSave(result, saveGeneration, close, unsaved) {
+  if (saveGeneration !== generation) return;
+  const notCarried = unsaved.length ? ` These changed columns cannot be saved locally: ${unsaved.join(', ')}.` : '';
+  dirty = false;
+  touchedFields.clear();
+  record = result.row;
+  etag = result.etag;
+  const refreshed = await api();
+  if (saveGeneration !== generation) return;
+  catalogue = refreshed;
+  table = catalogue.tables[table.entity];
+  if (close) {
+    await returnToGrid();
+    if (notCarried) notice(`Record saved locally.${notCarried}`, true);
+  } else {
+    await navigate(table.entity, { id: record[table.idColumn], form: formId, replace: true });
+    notice(`Record saved locally.${notCarried}`, Boolean(notCarried));
+  }
+}
+
+function collectPersistedValues(existing) {
+  const values = {};
   // Client scripts may explicitly write source-disabled presentation controls.
   // Column permissions and staff capabilities still govern the resulting write.
   // Header and footer columns are form attributes like body columns (formContext.data.entity.attributes: every
@@ -3743,49 +4064,7 @@ async function persistRecord(close) {
     )
       values[name] = value;
   }
-  // Dirty state clears only for the values persisted: a changed column the save could not carry stays unsaved and named.
-  const unsaved = [...touchedFields].filter((name) => !Object.hasOwn(values, name));
-  if (existing && !Object.keys(values).length) {
-    if (unsaved.length) {
-      notice(`These changed columns cannot be saved locally: ${unsaved.join(', ')}.`, true);
-      return;
-    }
-    dirty = false;
-    touchedFields.clear();
-    if (close) await returnToGrid();
-    else notice('No record changes to save.');
-    return;
-  }
-  pending = true;
-  $('#commands').classList.add('busy');
-  try {
-    const result = await api(tablePath(table.entity, existing ? record[table.idColumn] : undefined), {
-      method: existing ? 'PATCH' : 'POST',
-      headers: existing ? { 'if-match': etag } : {},
-      body: JSON.stringify(values),
-    });
-    if (saveGeneration !== generation) return;
-    // A partial save still runs the normal path (Save & Close navigation, the post-save form refresh from the stored row);
-    // the notice then names the changed columns the save could not carry.
-    const notCarried = unsaved.length ? ` These changed columns cannot be saved locally: ${unsaved.join(', ')}.` : '';
-    dirty = false;
-    touchedFields.clear();
-    record = result.row;
-    etag = result.etag;
-    const refreshed = await api();
-    if (saveGeneration !== generation) return;
-    catalogue = refreshed;
-    table = catalogue.tables[table.entity];
-    if (close) {
-      await returnToGrid();
-      if (notCarried) notice(`Record saved locally.${notCarried}`, true);
-    } else {
-      await navigate(table.entity, { id: record[table.idColumn], form: formId, replace: true });
-      notice(`Record saved locally.${notCarried}`, Boolean(notCarried));
-    }
-  } finally {
-    pending = false;
-  }
+  return values;
 }
 async function deleteRecords(rows) {
   if (!rows.length || pending || requestingSave) return;
@@ -3824,42 +4103,46 @@ async function deleteRecords(rows) {
 /** The local address of a navigateTo page input (the native main.aspx page types). */
 function pageUrl(input) {
   const params = new URLSearchParams({ appname: app.uniqueName ?? app.id, pagetype: input.pageType });
-  if (input.pageType === 'webresource') {
-    params.set('webresourceName', input.webresourceName);
-    if (input.data !== undefined) params.set('data', input.data);
-  } else if (input.pageType === 'dashboard') params.set('id', input.dashboardId);
-  // The native main.aspx address of an inline custom page is not known; Mirage keeps name, entityName, recordId.
-  else if (input.pageType === 'custom') {
-    params.set('name', input.name);
-    if (input.entityName) params.set('entityName', input.entityName);
-    if (input.recordId) params.set('recordId', input.recordId);
-  } else {
-    params.set('etn', input.entityName);
-    if (input.entityId) params.set('id', input.entityId);
-    if (input.formId) params.set('formid', input.formId);
-    if (input.tabName !== undefined) params.set('tabname', input.tabName);
-    if (input.viewId) params.set('viewid', input.viewId);
-    if (input.pageType === 'entitylist' && (input.viewId || input.viewType))
-      // main.aspx carries the view's object type code: 1039 savedquery, 4230 userquery.
-      params.set(
-        'viewtype',
-        { savedquery: '1039', userquery: '4230' }[input.viewType ?? 'savedquery'] ?? input.viewType,
-      );
-    if (input.data && typeof input.data === 'object')
-      params.set(
-        'extraqs',
-        new URLSearchParams(
-          Object.entries(input.data)
-            .filter(([, value]) => value == null || typeof value !== 'object')
-            .map(([key, value]) => [key, value ?? '']),
-        ).toString(),
-      );
+  switch (input.pageType) {
+    case 'webresource':
+      params.set('webresourceName', input.webresourceName);
+      if (input.data !== undefined) params.set('data', input.data);
+      break;
+    case 'dashboard':
+      params.set('id', input.dashboardId);
+      break;
+    case 'custom':
+      params.set('name', input.name);
+      if (input.entityName) params.set('entityName', input.entityName);
+      if (input.recordId) params.set('recordId', input.recordId);
+      break;
+    default:
+      appendEntityPageParams(params, input);
   }
   return '/main.aspx?' + params;
 }
+
+function appendEntityPageParams(params, input) {
+  params.set('etn', input.entityName);
+  if (input.entityId) params.set('id', input.entityId);
+  if (input.formId) params.set('formid', input.formId);
+  if (input.tabName !== undefined) params.set('tabname', input.tabName);
+  if (input.viewId) params.set('viewid', input.viewId);
+  if (input.pageType === 'entitylist' && (input.viewId || input.viewType))
+    params.set('viewtype', { savedquery: '1039', userquery: '4230' }[input.viewType ?? 'savedquery'] ?? input.viewType);
+  if (input.data && typeof input.data === 'object')
+    params.set(
+      'extraqs',
+      new URLSearchParams(
+        Object.entries(input.data)
+          .filter(([, value]) => value == null || typeof value !== 'object')
+          .map(([key, value]) => [key, value ?? '']),
+      ).toString(),
+    );
+}
 /** Xrm.Navigation.navigateTo and SiteMap web resource pages: inline pages replace the workspace; dialogs (center or
  * side) host the same local page in a frame and resolve when closed. */
-async function openPage(input, options = { target: 1 }, navigationItem) {
+/* NOSONAR */ async function openPage(input, options = { target: 1 }, navigationItem) {
   if (input.pageType === 'custom') await customPageExists(input.name);
   if (input.pageType === 'webresource') {
     const page = webResourcePage(catalogue.clientExtensions, input.webresourceName);
@@ -3882,12 +4165,12 @@ async function openPage(input, options = { target: 1 }, navigationItem) {
         app.dashboards?.find((dashboard) => dashboard.id === input.dashboardId)?.name ??
         'Dashboard',
     );
-    const size = (value) =>
-      typeof value === 'number'
-        ? `${value}px`
-        : value && typeof value === 'object' && Number.isFinite(value.value) && ['px', '%'].includes(value.unit)
-          ? `${value.value}${value.unit}`
-          : null;
+    const size = (value) => {
+      if (typeof value === 'number') return `${value}px`;
+      if (value && typeof value === 'object' && Number.isFinite(value.value) && ['px', '%'].includes(value.unit))
+        return `${value.value}${value.unit}`;
+      return null;
+    };
     if (size(options.width)) element.style.width = size(options.width);
     if (size(options.height)) element.style.height = size(options.height);
     const heading = document.createElement('div');
@@ -3897,11 +4180,12 @@ async function openPage(input, options = { target: 1 }, navigationItem) {
     const frame = document.createElement('iframe');
     if (input.pageType === 'webresource') bindModel(frame, modelBinding('resource', input.webresourceName));
     frame.title = element.getAttribute('aria-label');
-    frame.src =
-      input.pageType === 'webresource'
-        ? webResourcePage(catalogue.clientExtensions, input.webresourceName).url +
-          (input.data !== undefined ? '?data=' + encodeURIComponent(input.data) : '')
-        : pageUrl(input);
+    const frameSource = () => {
+      if (input.pageType !== 'webresource') return pageUrl(input);
+      const url = webResourcePage(catalogue.clientExtensions, input.webresourceName).url;
+      return input.data !== undefined ? url + '?data=' + encodeURIComponent(input.data) : url;
+    };
+    frame.src = frameSource();
     const close = () => element.close();
     heading.append(title, button('Close', close, { iconName: 'close', iconOnly: true, className: 'side-panel-close' }));
     element.append(heading, frame);
@@ -4284,10 +4568,13 @@ const sidePanes = {
     return Promise.resolve(pane);
   },
   getAllPanes: () => ({
-    get: (key) =>
-      key === undefined ? [...panes] : typeof key === 'number' ? panes[key] : panes.find((pane) => pane.paneId === key),
+    get: (key) => {
+      if (key === undefined) return [...panes];
+      if (typeof key === 'number') return panes[key];
+      return panes.find((pane) => pane.paneId === key);
+    },
     getLength: () => panes.length,
-    forEach: (callback) => panes.forEach(callback),
+    forEach: (callback) => panes.forEach(callback), // NOSONAR: the native forEach validates the callback even for an empty list
   }),
   getPane: (paneId) => panes.find((pane) => pane.paneId === paneId),
   getSelectedPane: () => selectedPane,
@@ -4305,8 +4592,12 @@ async function loadRoute({ identityChange = false, preserveContent = false } = {
   dirty = false;
   touchedFields.clear();
   notice('');
-  const params = new URLSearchParams(location.search),
-    application = params.get('appname') ?? params.get('appid');
+  const params = new URLSearchParams(location.search);
+  return continueLoadRoute(params, routeGeneration, routeCatalogue);
+}
+
+async function continueLoadRoute(params, routeGeneration, routeCatalogue) {
+  const application = params.get('appname') ?? params.get('appid');
   app = application
     ? catalogue.apps.find((app) => app.id === application || app.uniqueName === application)
     : catalogue.apps.find((app) => app.id === catalogue.defaultApp);
@@ -4326,6 +4617,10 @@ async function loadRoute({ identityChange = false, preserveContent = false } = {
         ['entityName', 'recordId'].filter((key) => params.get(key)).map((key) => [key, params.get(key)]),
       ),
     );
+  return loadEntityRoute(params, routeGeneration, routeCatalogue);
+}
+
+async function loadEntityRoute(params, routeGeneration, routeCatalogue) {
   const entity = params.get('etn') ?? firstEntity(app);
   contentLoading('Loading table metadata…');
   let nextTable;
@@ -4339,26 +4634,10 @@ async function loadRoute({ identityChange = false, preserveContent = false } = {
   }
   if (routeGeneration !== generation || routeCatalogue !== catalogue) return;
   table = nextTable;
-  const preferredArea = storage.get(`area.${app.uniqueName}`, undefined),
-    requestedViewId = (params.get('viewid') ?? (!params.has('etn') ? firstPage(app)?.view : undefined))
-      ?.replace(/[{}]/g, '')
-      .toLowerCase(),
-    containsEntity = (area) =>
-      area.groups.some((group) => group.items.some((item) => item.supported && item.entity === entity));
-  const containsView = (area) =>
-    Boolean(
-      requestedViewId &&
-      area.groups.some((group) =>
-        group.items.some((item) => item.supported && item.entity === entity && item.view === requestedViewId),
-      ),
-    );
-  activeArea =
-    app.navigation.find((area) => area.id === preferredArea && containsView(area)) ??
-    app.navigation.find(containsView) ??
-    app.navigation.find((area) => area.id === preferredArea && containsEntity(area)) ??
-    app.navigation.find(containsEntity) ??
-    app.navigation.find((area) => area.id === preferredArea) ??
-    app.navigation[0];
+  const requestedViewId = (params.get('viewid') ?? (!params.has('etn') ? firstPage(app)?.view : undefined))
+    ?.replace(/[{}]/g, '')
+    .toLowerCase();
+  selectRouteArea(entity, requestedViewId);
   if (activeArea) storage.set(`area.${app.uniqueName}`, activeArea.id);
   const pageItems =
     activeArea?.groups.flatMap((group) => group.items).filter((item) => item.supported && item.entity === entity) ?? [];
@@ -4373,30 +4652,58 @@ async function loadRoute({ identityChange = false, preserveContent = false } = {
   current = null;
   etag = null;
   if (params.get('pagetype') === 'entityrecord') await loadRecord(params.get('id'));
-  else {
-    const availableViews = appViews(),
-      requestedView = requestedViewId;
-    if (
-      params.has('viewtype') &&
-      (!['1039', 'savedquery'].includes(params.get('viewtype')) ||
-        (requestedView && !availableViews.some((view) => view.id === requestedView)))
-    ) {
-      loadFailed(new Error('The selected view is not available in the imported saved-view catalogue.'), loadRoute);
-      return;
-    }
-    const view =
-      availableViews.find((view) => view.id === requestedView)?.id ??
-      availableViews.find((view) => view.isDefault)?.id ??
-      availableViews[0].id;
-    const saved = history.state?.grid,
-      restore =
-        saved?.application === app.id && saved?.entity === entity && saved?.query?.view === view ? saved.query : {};
-    query = { page: 1, pageSize: 50, ...storage.get(`view.${app.uniqueName}.${entity}.${view}`, {}), ...restore, view };
-    if (!(await loadGrid())) return;
-    remember({ label: table.label, app: app.uniqueName, url: targetUrl(entity, { view }) });
-    // A list page has its own client: the closed form's Xrm.Page never answers here, and getPageContext says entitylist.
-    if (!clientRuntime) clientRuntime = createShellClient({ clientEvents: [], tabs: [] });
+  else await loadListRoute(params, requestedViewId, entity);
+}
+
+function selectRouteArea(entity, requestedViewId) {
+  const preferredArea = storage.get(`area.${app.uniqueName}`, undefined);
+  activeArea = chooseRouteArea(app.navigation, preferredArea, entity, requestedViewId);
+}
+
+/* NOSONAR */ function chooseRouteArea(areas, preferredArea, entity, requestedViewId) {
+  for (const area of areas)
+    if (area.id === preferredArea && areaContainsView(area, entity, requestedViewId)) return area;
+  for (const area of areas) if (areaContainsView(area, entity, requestedViewId)) return area;
+  for (const area of areas) if (area.id === preferredArea && areaContainsEntity(area, entity)) return area;
+  for (const area of areas) if (areaContainsEntity(area, entity)) return area;
+  for (const area of areas) if (area.id === preferredArea) return area;
+  return areas[0];
+}
+
+function areaContainsEntity(area, entity) {
+  return area.groups.some((group) => group.items.some((item) => item.supported && item.entity === entity));
+}
+
+function areaContainsView(area, entity, requestedViewId) {
+  if (!requestedViewId) return false;
+  return area.groups.some((group) =>
+    group.items.some((item) => item.supported && item.entity === entity && item.view === requestedViewId),
+  );
+}
+
+async function loadListRoute(params, requestedViewId, entity) {
+  const availableViews = appViews(),
+    requestedView = requestedViewId;
+  if (
+    params.has('viewtype') &&
+    (!['1039', 'savedquery'].includes(params.get('viewtype')) ||
+      (requestedView && !availableViews.some((view) => view.id === requestedView)))
+  ) {
+    loadFailed(new Error('The selected view is not available in the imported saved-view catalogue.'), loadRoute);
+    return;
   }
+  const view =
+    availableViews.find((view) => view.id === requestedView)?.id ??
+    availableViews.find((view) => view.isDefault)?.id ??
+    availableViews[0].id;
+  const saved = history.state?.grid,
+    restore =
+      saved?.application === app.id && saved?.entity === entity && saved?.query?.view === view ? saved.query : {};
+  query = { page: 1, pageSize: 50, ...storage.get(`view.${app.uniqueName}.${entity}.${view}`, {}), ...restore, view };
+  if (!(await loadGrid())) return;
+  remember({ label: table.label, app: app.uniqueName, url: targetUrl(entity, { view }) });
+  // A list page has its own client: the closed form's Xrm.Page never answers here, and getPageContext says entitylist.
+  if (!clientRuntime) clientRuntime = createShellClient({ clientEvents: [], tabs: [] });
 }
 $('#mobile-navigation').addEventListener('click', () => {
   const sidebar = $('#sidebar');
@@ -4409,7 +4716,7 @@ $('#collapse').addEventListener('click', () => {
 });
 for (const element of document.querySelectorAll('[data-icon]')) element.innerHTML = icon(element.dataset.icon);
 $('#apps').addEventListener('click', chooseApplication);
-window.addEventListener('popstate', () =>
+globalThis.addEventListener('popstate', () =>
   run(async () => {
     if (await canLeave()) await loadRoute();
     else history.forward();
@@ -4418,7 +4725,7 @@ window.addEventListener('popstate', () =>
 window.addEventListener('beforeunload', (event) => {
   if (dirty) {
     event.preventDefault();
-    event.returnValue = '';
+    event.returnValue = ''; // NOSONAR: deprecated API kept for compatibility
   }
 });
 $('#staff-profile').addEventListener('click', () => runButton($('#staff-profile'), staffProfile));

@@ -103,7 +103,7 @@ function orderedMembers(object, type) {
   return Object.keys(object)
     .filter((n) => n !== '@odata.type')
     .map((name) => ({ name, ...place(name) }))
-    .sort((a, b) => a.level - b.level || a.index - b.index || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    .sort((a, b) => a.level - b.level || a.index - b.index || Number(a.name > b.name) - Number(a.name < b.name));
 }
 
 // Member value as the DataContract reads it. A plain value on a ManagedProperty<T> member becomes the
@@ -187,7 +187,7 @@ const deletedXml = (deleted) =>
     .map(
       (key, index) =>
         `<q:KeyValuePairOfDeletedMetadataFiltersArrayOfguidPlUv_PKtF><b:key>${key === 'Default' ? 'Entity' : esc(key)}</b:key>` +
-        `<b:value>${deleted.Values[index].map((id) => `<f:guid>${esc(id)}</f:guid>`).join('')}</b:value>` +
+        `<b:value>${deleted.Values[index].map((id) => '<f:guid>' + esc(id) + '</f:guid>').join('')}</b:value>` +
         '</q:KeyValuePairOfDeletedMetadataFiltersArrayOfguidPlUv_PKtF>',
     )
     .join('') +

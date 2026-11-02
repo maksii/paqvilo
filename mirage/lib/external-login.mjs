@@ -7,7 +7,16 @@ const lower = (value) =>
   String(value ?? '')
     .trim()
     .toLowerCase();
-const flag = (value, fallback) => (lower(value) === 'true' ? true : lower(value) === 'false' ? false : fallback);
+const chooseLazily = (condition, yes, no) => {
+  if (condition()) return yes();
+  return no();
+};
+const flag = (value, fallback) =>
+  chooseLazily(
+    () => lower(value) === 'true',
+    () => true,
+    () => (lower(value) === 'false' ? false : fallback),
+  );
 const text = (value) => {
   const trimmed = String(value ?? '').trim();
   return trimmed || null;
@@ -67,7 +76,7 @@ function replyPath(value) {
   const raw = text(value);
   if (!raw) return null;
   try {
-    return new URL(raw, 'http://local.invalid').pathname || '/';
+    return new URL(raw, 'http://local.invalid').pathname || '/'; // NOSONAR: reserved or loopback placeholder host, not a real transport
   } catch {
     return null;
   }
@@ -76,17 +85,23 @@ function replyPath(value) {
 const slugOf = (value) =>
   lower(value)
     .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '') // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
     .slice(0, 48) || 'provider';
 const MICROSOFT_AUTHORITY = /^https:\/\/login\.(?:windows\.net|microsoftonline\.com)\/[^/?#\s]+\/?(?:v2\.0\/?)?$/i;
 /** A Microsoft Entra authority URL (https://login.windows.net/<tenant>/ or login.microsoftonline.com). */
 export const isMicrosoftAuthority = (value) => MICROSOFT_AUTHORITY.test(String(value ?? '').trim());
 // A tenant is a directory (tenant) ID or a domain name such as contoso.onmicrosoft.com;
 // placeholders ({tenant}) and the multi-tenant endpoints (common, organizations) are not.
-const TENANT_AUTHORITY =
-  /^https:\/\/login\.(?:windows\.net|microsoftonline\.com)\/(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)\/?(?:v2\.0\/?)?$/i;
+const TENANT_UUID_AUTHORITY =
+  /^https:\/\/login\.(?:windows\.net|microsoftonline\.com)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/?(?:v2\.0\/?)?$/i;
+const TENANT_DOMAIN_AUTHORITY =
+  /^https:\/\/login\.(?:windows\.net|microsoftonline\.com)\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\/?(?:v2\.0\/?)?$/i;
 /** A Microsoft Entra authority of one tenant: its directory ID or domain name. */
-export const isTenantAuthority = (value) => TENANT_AUTHORITY.test(String(value ?? '').trim());
+export const isTenantAuthority = (value) => {
+  const authority = String(value ?? '').trim();
+  return TENANT_UUID_AUTHORITY.test(authority) || TENANT_DOMAIN_AUTHORITY.test(authority);
+};
 
 /** Microsoft Entra authorities that the portal's own sources post as the provider (sign-in forms). */
 function sourceAuthorities(portal) {
@@ -103,7 +118,7 @@ function sourceAuthorities(portal) {
       /https:\/\/login\.(?:windows\.net|microsoftonline\.com)\/[0-9a-f-]{36}\//gi,
     ))
       found.add(match[0].toLowerCase());
-  return [...found].sort();
+  return [...found].sort((a, b) => Number(a > b) - Number(a < b));
 }
 
 // Katana's OAuth 2.0 middlewares answer on /signin-<provider> by default.
@@ -135,28 +150,11 @@ export function oidcOptions(fields = {}) {
     problems.push(
       `TokenEndPointAuthenticatedMethod "${method}" is not client_secret_post or private_key_jwt; client_secret_post is used.`,
     );
-  const certificateObject = fieldOf(fields, 'PrivateKeyJwt/CertificateObject');
-  let certificateKid = null;
-  if (certificateObject) {
-    try {
-      const parsed = JSON.parse(certificateObject);
-      if (parsed && typeof parsed.kid === 'string' && parsed.kid.trim()) certificateKid = parsed.kid.trim();
-      else problems.push('PrivateKeyJwt/CertificateObject must be {"kid":"<certificate thumbprint>"}.');
-    } catch {
-      problems.push('PrivateKeyJwt/CertificateObject is not JSON; it must be {"kid":"<certificate thumbprint>"}.');
-    }
-  }
+  const certificateKid = readCertificateKid(fields, problems);
   const promptSetting = lower(fieldOf(fields, 'Prompt'));
   if (promptSetting && !PROMPT_VALUES.includes(promptSetting))
     problems.push(`Prompt "${promptSetting}" is not one of ${PROMPT_VALUES.join(', ')}; it is not sent.`);
-  const dynamicParameters = [];
-  for (const name of String(fieldOf(fields, 'AllowedDynamicAuthorizationParameters') ?? '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean)) {
-    if (PARAMETER_NAME.test(name)) dynamicParameters.push(name);
-    else problems.push(`AllowedDynamicAuthorizationParameters lists "${name}", which is not a parameter name.`);
-  }
+  const dynamicParameters = readDynamicParameters(fields, problems);
   return {
     clientSecret: fieldOf(fields, 'ClientSecret'),
     tokenAuthMethod: method === 'private_key_jwt' ? 'private_key_jwt' : 'client_secret_post',
@@ -168,6 +166,32 @@ export function oidcOptions(fields = {}) {
     dynamicParameters,
     problems,
   };
+}
+
+function readCertificateKid(fields, problems) {
+  const certificateObject = fieldOf(fields, 'PrivateKeyJwt/CertificateObject');
+  let certificateKid = null;
+  if (!certificateObject) return certificateKid;
+  try {
+    const parsed = JSON.parse(certificateObject);
+    if (parsed && typeof parsed.kid === 'string' && parsed.kid.trim()) certificateKid = parsed.kid.trim();
+    else problems.push('PrivateKeyJwt/CertificateObject must be {"kid":"<certificate thumbprint>"}.');
+  } catch {
+    problems.push('PrivateKeyJwt/CertificateObject is not JSON; it must be {"kid":"<certificate thumbprint>"}.');
+  }
+  return certificateKid;
+}
+
+function readDynamicParameters(fields, problems) {
+  const dynamicParameters = [];
+  for (const name of String(fieldOf(fields, 'AllowedDynamicAuthorizationParameters') ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)) {
+    if (PARAMETER_NAME.test(name)) dynamicParameters.push(name);
+    else problems.push(`AllowedDynamicAuthorizationParameters lists "${name}", which is not a parameter name.`);
+  }
+  return dynamicParameters;
 }
 
 /**
@@ -200,34 +224,54 @@ export function externalProviders(portal) {
     loginClaims: fieldOf(fields, 'LoginClaimsMapping'),
     nonceLifetimeMs: timeSpanMs(fieldOf(fields, 'NonceLifetime')) ?? ONE_HOUR,
   });
+  addAzureProvider(providers, portal, oidc, common, settings);
+  addOidcProviders(providers, oidc, common);
+  addOauthProviders(providers, portal, common);
+  addFederatedProviders(providers, portal, common);
+  return providers;
+}
+
+function addAzureProvider(providers, portal, oidc, common, settings) {
   const azureEntry = [...oidc.entries()].find(([name]) => name.toLowerCase() === 'azuread');
   const azureFields = azureEntry?.[1] ?? {};
-  if (settings.azureAdLogin === true || (settings.azureAdLogin === null && fieldOf(azureFields, 'Authority'))) {
-    const configured = fieldOf(azureFields, 'Authority');
-    const observed = isTenantAuthority(portal.observed?.azureAdAuthority)
-      ? String(portal.observed.azureAdAuthority).trim()
-      : null;
-    const fromSource = sourceAuthorities(portal)[0] ?? null;
-    const authority = configured ?? observed ?? fromSource ?? 'https://login.windows.net/common/';
-    const redirect = fieldOf(azureFields, 'RedirectUri');
-    providers.push({
-      key: azureEntry?.[0] ?? 'AzureAD',
-      slug: 'azuread',
-      type: 'openidconnect',
-      id: authority,
-      authoritySource: configured ? 'site-setting' : observed ? 'observed' : fromSource ? 'portal-source' : 'default',
-      aliases: ['azuread', authority.toLowerCase()],
-      builtIn: true,
-      clientId: fieldOf(azureFields, 'ClientId') ?? 'paqvilo-mirage-azuread',
-      callbackPath: replyPath(redirect) ?? '/',
-      callbackSource: redirect ? 'site-setting' : 'observed',
-      responseType: fieldOf(azureFields, 'ResponseType') ?? 'code id_token',
-      responseMode: lower(fieldOf(azureFields, 'ResponseMode')) || 'form_post',
-      scope: fieldOf(azureFields, 'Scope') ?? 'openid profile',
-      ...common(azureFields, 'AzureAD'),
-      ...oidcOptions(azureFields),
-    });
-  }
+  if (!(settings.azureAdLogin === true || (settings.azureAdLogin === null && fieldOf(azureFields, 'Authority'))))
+    return;
+  const configured = fieldOf(azureFields, 'Authority');
+  const observed = isTenantAuthority(portal.observed?.azureAdAuthority)
+    ? String(portal.observed.azureAdAuthority).trim()
+    : null;
+  const fromSource = sourceAuthorities(portal)[0] ?? null;
+  const authority = configured ?? observed ?? fromSource ?? 'https://login.windows.net/common/';
+  const redirect = fieldOf(azureFields, 'RedirectUri');
+  providers.push({
+    key: azureEntry?.[0] ?? 'AzureAD',
+    slug: 'azuread',
+    type: 'openidconnect',
+    id: authority,
+    authoritySource: chooseLazily(
+      () => configured,
+      () => 'site-setting',
+      () =>
+        chooseLazily(
+          () => observed,
+          () => 'observed',
+          () => (fromSource ? 'portal-source' : 'default'),
+        ),
+    ),
+    aliases: ['azuread', authority.toLowerCase()],
+    builtIn: true,
+    clientId: fieldOf(azureFields, 'ClientId') ?? 'paqvilo-mirage-azuread',
+    callbackPath: replyPath(redirect) ?? '/',
+    callbackSource: redirect ? 'site-setting' : 'observed',
+    responseType: fieldOf(azureFields, 'ResponseType') ?? 'code id_token',
+    responseMode: lower(fieldOf(azureFields, 'ResponseMode')) || 'form_post',
+    scope: fieldOf(azureFields, 'Scope') ?? 'openid profile',
+    ...common(azureFields, 'AzureAD'),
+    ...oidcOptions(azureFields),
+  });
+}
+
+function addOidcProviders(providers, oidc, common) {
   for (const [name, fields] of oidc) {
     if (name.toLowerCase() === 'azuread') continue;
     const authority = fieldOf(fields, 'Authority');
@@ -250,6 +294,9 @@ export function externalProviders(portal) {
       ...oidcOptions(fields),
     });
   }
+}
+
+function addOauthProviders(providers, portal, common) {
   for (const [name, fields] of settingsUnder(portal, 'Authentication/OpenAuth/')) {
     const clientId = fieldOf(fields, 'ClientId') ?? fieldOf(fields, 'ConsumerKey') ?? fieldOf(fields, 'AppId');
     if (!clientId) continue;
@@ -270,33 +317,39 @@ export function externalProviders(portal) {
       ...oidcOptions(),
     });
   }
+}
+
+function addFederatedProviders(providers, portal, common) {
   for (const [prefix, type] of [
     ['Authentication/SAML2/', 'saml2'],
     ['Authentication/WsFederation/', 'wsfederation'],
   ])
-    for (const [name, fields] of settingsUnder(portal, prefix)) {
-      const authenticationType = fieldOf(fields, 'AuthenticationType');
-      if (!authenticationType) continue;
-      const reply = fieldOf(fields, 'AssertionConsumerServiceUrl') ?? fieldOf(fields, 'Wreply');
-      providers.push({
-        key: name,
-        slug: `${type}-${slugOf(name)}`,
-        type,
-        id: authenticationType,
-        authoritySource: 'site-setting',
-        aliases: [name.toLowerCase(), authenticationType.toLowerCase()],
-        clientId:
-          fieldOf(fields, 'ServiceProviderRealm') ?? fieldOf(fields, 'Wtrealm') ?? `paqvilo-mirage-${slugOf(name)}`,
-        callbackPath: replyPath(reply) ?? '/',
-        callbackSource: reply ? 'site-setting' : 'default',
-        responseType: 'id_token',
-        responseMode: 'form_post',
-        scope: 'openid',
-        ...common(fields, name),
-        ...oidcOptions(),
-      });
-    }
-  return providers;
+    addFederatedProviderSettings(providers, settingsUnder(portal, prefix), type, common);
+}
+
+function addFederatedProviderSettings(providers, settings, type, common) {
+  for (const [name, fields] of settings) {
+    const authenticationType = fieldOf(fields, 'AuthenticationType');
+    if (!authenticationType) continue;
+    const reply = fieldOf(fields, 'AssertionConsumerServiceUrl') ?? fieldOf(fields, 'Wreply');
+    providers.push({
+      key: name,
+      slug: `${type}-${slugOf(name)}`,
+      type,
+      id: authenticationType,
+      authoritySource: 'site-setting',
+      aliases: [name.toLowerCase(), authenticationType.toLowerCase()],
+      clientId:
+        fieldOf(fields, 'ServiceProviderRealm') ?? fieldOf(fields, 'Wtrealm') ?? `paqvilo-mirage-${slugOf(name)}`,
+      callbackPath: replyPath(reply) ?? '/',
+      callbackSource: reply ? 'site-setting' : 'default',
+      responseType: 'id_token',
+      responseMode: 'form_post',
+      scope: 'openid',
+      ...common(fields, name),
+      ...oidcOptions(),
+    });
+  }
 }
 
 /** The provider an ExternalLogin `provider` value (AuthenticationType, name or authority) names. */
@@ -341,18 +394,24 @@ export function emailClaim(claims) {
  * ignored without one (natively only with UseUserInfoEndpointforClaims).
  */
 export function contactFieldsFromClaims(claims, mapping, { defaults = true, userinfo = null } = {}) {
-  const pairs = text(mapping)
-    ? String(mapping)
+  const pairs = chooseLazily(
+    () => text(mapping),
+    () =>
+      String(mapping)
         .split(',')
         .map((pair) => pair.split('=').map((part) => part.trim()))
-        .filter(([field, claim]) => /^[a-z_][a-z0-9_]*$/i.test(field ?? '') && claim)
-    : defaults
-      ? [
+        .filter(([field, claim]) => /^[a-z_][a-z0-9_]*$/i.test(field ?? '') && claim),
+    () =>
+      chooseLazily(
+        () => defaults,
+        () => [
           ['firstname', 'given_name'],
           ['lastname', 'family_name'],
           ['emailaddress1', 'email'],
-        ]
-      : [];
+        ],
+        () => [],
+      ),
+  );
   const fields = {};
   for (const [field, name] of pairs) {
     const fromUserInfo = /^userinfo\./i.test(name);

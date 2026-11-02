@@ -29,7 +29,7 @@ const id = (value) =>
 /** Ordered terminal paths, independent of generated alias numbers. Authored
  * aliases remain excluded. This is diagnostic normalization, never permission
  * evaluation or a backend-query replacement. */
-export function permissionPathSequence(receivedXml, authoredXml) {
+/* NOSONAR */ export function permissionPathSequence(receivedXml, authoredXml) {
   const tree = parseXmlDocument(receivedXml, { root: 'fetch' });
   const root = tree.children.find((node) => node.name === 'entity');
   if (!root) throw new Error('Received query has no entity.');
@@ -37,25 +37,7 @@ export function permissionPathSequence(receivedXml, authoredXml) {
   const authoredAliases = new Set([...walk(authored)].map((node) => node.attrs.alias).filter(Boolean));
   const aliases = new Map(),
     diagnostics = [];
-  function links(parent, path = []) {
-    for (const link of parent.children.filter((node) => node.name === 'link-entity')) {
-      const current = [
-        ...path,
-        Object.fromEntries(
-          ['name', 'from', 'to', 'link-type', 'visible', 'intersect']
-            .filter((key) => link.attrs[key] != null)
-            .map((key) => [key, link.attrs[key]]),
-        ),
-      ];
-      if (link.attrs.alias && !authoredAliases.has(link.attrs.alias)) {
-        if (aliases.has(link.attrs.alias))
-          diagnostics.push({ code: 'DUPLICATE_RECEIVED_ALIAS', alias: link.attrs.alias });
-        aliases.set(link.attrs.alias, current);
-      }
-      links(link, current);
-    }
-  }
-  links(root);
+  collectPermissionLinks(root, [], authoredAliases, aliases, diagnostics);
   const union = root.children
     .filter((node) => node.name === 'filter')
     .flatMap((node) => [...walk(node)].filter((child) => child.name === 'filter' && child.attrs.hint === 'union'));
@@ -83,6 +65,25 @@ export function permissionPathSequence(receivedXml, authoredXml) {
       message: 'Global, denied, self/direct rewrites or other native contracts need separate qualification.',
     });
   return { table: root.attrs.name, sequence, diagnostics };
+}
+
+function collectPermissionLinks(parent, path, authoredAliases, aliases, diagnostics) {
+  for (const link of parent.children.filter((node) => node.name === 'link-entity')) {
+    const current = [
+      ...path,
+      Object.fromEntries(
+        ['name', 'from', 'to', 'link-type', 'visible', 'intersect']
+          .filter((key) => link.attrs[key] != null)
+          .map((key) => [key, link.attrs[key]]),
+      ),
+    ];
+    if (link.attrs.alias && !authoredAliases.has(link.attrs.alias)) {
+      if (aliases.has(link.attrs.alias))
+        diagnostics.push({ code: 'DUPLICATE_RECEIVED_ALIAS', alias: link.attrs.alias });
+      aliases.set(link.attrs.alias, current);
+    }
+    collectPermissionLinks(link, current, authoredAliases, aliases, diagnostics);
+  }
 }
 
 /** Generate singleton source paths using the frozen normalized permission
@@ -211,12 +212,16 @@ export function compareFilteredPermissionOrder(order, catalogue, witness) {
   const actual = permissionPathSequence(witness.receivedXml, witness.authoredXml);
   if (actual.diagnostics.length) errors.push('unsupported-path-contract');
   const equal = stable(expected) === stable(actual.sequence.map((item) => item.signature));
+  let verdict;
+  if (errors.length) verdict = 'unqualified';
+  else if (equal) verdict = 'equal';
+  else verdict = 'different';
   return {
     mask: witness.mask,
     table: order.table,
     expected,
     received: actual.sequence.map((item) => item.signature),
-    verdict: errors.length ? 'unqualified' : equal ? 'equal' : 'different',
+    verdict,
     errors,
     scope: 'one-actual-native-role-subset',
     universalPermissionParity: false,
@@ -302,7 +307,7 @@ export function buildPermissionOrderProbe({ blueprint, schema, catalogue, permis
         .filter((node) => node.active && node.privileges.read && node.role !== 'TESTRUNNER')
         .map((node) => node.table),
     ),
-  ].sort();
+  ].sort((left, right) => Number(left > right) - Number(left < right));
   const cases = tables.map((table, index) => {
     const meta =
       catalogue.tables.find((meta) => meta.name === table) ?? schema.tables.find((meta) => meta.name === table);

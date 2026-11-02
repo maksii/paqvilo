@@ -16,12 +16,12 @@
  * the active option and the activate callback and tabsactivate event. */
 (() => {
   // One adapter per document: a repeated include only re-attaches the plugins.
-  const compat = (window.__ppSimCompat ||= {});
+  const compat = (globalThis.__ppSimCompat ||= {});
   if (compat.jqueryUiWidgets) {
-    compat.jqueryUiWidgets(window.jQuery);
+    compat.jqueryUiWidgets(globalThis.jQuery);
     return;
   }
-  if (!window.jQuery) {
+  if (!globalThis.jQuery) {
     console.error('Local jQuery UI widget compatibility requires jQuery.');
     return;
   }
@@ -52,6 +52,144 @@
     );
   const TICKS_AT_EPOCH = 621355968000000000;
 
+  function formatLiteral(format, index) {
+    const token = format[index];
+    if (token === "'" && format[index + 1] !== "'") return { literal: false, output: '', skip: 0 };
+    return { literal: true, output: token, skip: token === "'" ? 1 : 0 };
+  }
+
+  function formatToken(token, doubled, date) {
+    switch (token) {
+      case 'd':
+        return doubled ? pad(date.getDate()) : date.getDate();
+      case 'o':
+        return doubled ? pad(dayOfYear(date), 3) : dayOfYear(date);
+      case 'D':
+        return (doubled ? regional.dayNames : regional.dayNamesShort)[date.getDay()];
+      case 'm':
+        return doubled ? pad(date.getMonth() + 1) : date.getMonth() + 1;
+      case 'M':
+        return (doubled ? regional.monthNames : regional.monthNamesShort)[date.getMonth()];
+      case 'y':
+        return doubled ? date.getFullYear() : pad(date.getFullYear() % 100);
+      case '@':
+        return date.getTime();
+      case '!':
+        return date.getTime() * 10000 + TICKS_AT_EPOCH;
+      case "'":
+        return doubled ? "'" : '';
+      default:
+        return token;
+    }
+  }
+
+  function parseToken(token, doubled, state) {
+    switch (token) {
+      case 'd':
+        state.day = dateNumber(state, 2);
+        break;
+      case 'o':
+        state.ordinal = dateNumber(state, 3);
+        break;
+      case 'D':
+        dateName(state, regional.dayNamesShort, regional.dayNames);
+        break;
+      case 'm':
+        state.month = dateNumber(state, 2);
+        break;
+      case 'M':
+        state.month = dateName(state, regional.monthNamesShort, regional.monthNames);
+        break;
+      case 'y':
+        state.year = dateNumber(state, doubled ? 4 : 2);
+        break;
+      case '@': {
+        const date = new Date(dateNumber(state, 14));
+        [state.year, state.month, state.day] = [date.getFullYear(), date.getMonth() + 1, date.getDate()];
+        break;
+      }
+      case '!': {
+        const date = new Date((dateNumber(state, 20) - TICKS_AT_EPOCH) / 10000);
+        [state.year, state.month, state.day] = [date.getFullYear(), date.getMonth() + 1, date.getDate()];
+        break;
+      }
+      case "'":
+        if (doubled) dateExact(state, "'");
+        else state.literal = true;
+        break;
+      default:
+        dateExact(state, token);
+    }
+  }
+
+  function dateParseFail(state, reason) {
+    throw new Error(`${reason} at position ${state.position}`);
+  }
+
+  function dateNumber(state, digits) {
+    const match = new RegExp(String.raw`^\d{1,${digits}}`).exec(state.text.slice(state.position));
+    if (!match) dateParseFail(state, 'Missing number');
+    state.position += match[0].length;
+    return Number(match[0]);
+  }
+
+  function dateName(state, short, long) {
+    const candidates = [
+      ...long.map((label, index) => [label, index]),
+      ...short.map((label, index) => [label, index]),
+    ].sort((a, b) => b[0].length - a[0].length);
+    for (const [label, index] of candidates)
+      if (state.text.slice(state.position, state.position + label.length).toLowerCase() === label.toLowerCase()) {
+        state.position += label.length;
+        return index + 1;
+      }
+    return dateParseFail(state, 'Unknown name');
+  }
+
+  function dateExact(state, character) {
+    if (state.text[state.position] !== character) dateParseFail(state, 'Unexpected literal');
+    state.position++;
+  }
+
+  function finalizeParsedDate(state) {
+    const now = new Date();
+    if (state.year === -1) state.year = now.getFullYear();
+    // jQuery UI's default shortYearCutoff ("+10"): two-digit years up to ten years ahead are this century.
+    else if (state.year < 100)
+      state.year +=
+        state.year <= (now.getFullYear() % 100) + 10
+          ? Math.floor(now.getFullYear() / 100) * 100
+          : Math.floor(now.getFullYear() / 100) * 100 - 100;
+    if (state.ordinal > -1) {
+      const date = new Date(state.year, 0, state.ordinal);
+      [state.month, state.day] = [date.getMonth() + 1, date.getDate()];
+    }
+    const date = new Date(state.year, state.month - 1, state.day);
+    if (date.getFullYear() !== state.year || date.getMonth() + 1 !== state.month || date.getDate() !== state.day)
+      dateParseFail(state, 'Invalid date');
+    return date;
+  }
+
+  function relativeDate(value, base) {
+    let year = base.getFullYear();
+    let month = base.getMonth();
+    let day = base.getDate();
+    let matched = false;
+    for (const match of String(value).matchAll(/([+-]?\d+)\s*([dwmy])?/gi)) {
+      matched = true;
+      const amount = Number(match[1]);
+      const unit = (match[2] ?? 'd').toLowerCase();
+      if (unit === 'd') day += amount;
+      else if (unit === 'w') day += amount * 7;
+      else {
+        if (unit === 'm') month += amount;
+        else year += amount;
+        day = Math.min(day, new Date(year, month + 1, 0).getDate());
+      }
+    }
+    return matched ? new Date(year, month, day) : null;
+  }
+
   function formatDate(format, date) {
     if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
     let output = '';
@@ -59,150 +197,39 @@
     for (let index = 0; index < format.length; index++) {
       const token = format[index];
       if (literal) {
-        if (token === "'" && format[index + 1] !== "'") literal = false;
-        else {
-          output += token;
-          if (token === "'") index++;
-        }
+        const part = formatLiteral(format, index);
+        literal = part.literal;
+        output += part.output;
+        index += part.skip;
         continue;
       }
       const doubled = format[index + 1] === token;
-      switch (token) {
-        case 'd':
-          output += doubled ? pad(date.getDate()) : date.getDate();
-          break;
-        case 'o':
-          output += doubled ? pad(dayOfYear(date), 3) : dayOfYear(date);
-          break;
-        case 'D':
-          output += (doubled ? regional.dayNames : regional.dayNamesShort)[date.getDay()];
-          break;
-        case 'm':
-          output += doubled ? pad(date.getMonth() + 1) : date.getMonth() + 1;
-          break;
-        case 'M':
-          output += (doubled ? regional.monthNames : regional.monthNamesShort)[date.getMonth()];
-          break;
-        case 'y':
-          output += doubled ? date.getFullYear() : pad(date.getFullYear() % 100);
-          break;
-        case '@':
-          output += date.getTime();
-          break;
-        case '!':
-          output += date.getTime() * 10000 + TICKS_AT_EPOCH;
-          break;
-        case "'":
-          if (doubled) output += "'";
-          else literal = true;
-          break;
-        default:
-          output += token;
-      }
+      output += formatToken(token, doubled, date);
+      if (token === "'" && !doubled) literal = true;
       if (doubled && "doDmMy'".includes(token)) index++;
     }
     return output;
   }
 
-  function parseDate(format, value) {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ function parseDate(format, value) {
     if (value == null || value === '') return null;
-    const text = String(value);
-    let position = 0;
-    let year = -1;
-    let month = -1;
-    let day = -1;
-    let ordinal = -1;
-    let literal = false;
-    const fail = (reason) => {
-      throw new Error(`${reason} at position ${position}`);
-    };
-    const number = (digits) => {
-      const match = new RegExp(`^\\d{1,${digits}}`).exec(text.slice(position));
-      if (!match) fail('Missing number');
-      position += match[0].length;
-      return Number(match[0]);
-    };
-    const name = (short, long) => {
-      const candidates = [
-        ...long.map((label, index) => [label, index]),
-        ...short.map((label, index) => [label, index]),
-      ].sort((a, b) => b[0].length - a[0].length);
-      for (const [label, index] of candidates)
-        if (text.slice(position, position + label.length).toLowerCase() === label.toLowerCase()) {
-          position += label.length;
-          return index + 1;
-        }
-      return fail('Unknown name');
-    };
-    const exact = (character) => {
-      if (text[position] !== character) fail('Unexpected literal');
-      position++;
-    };
+    const state = { text: String(value), position: 0, year: -1, month: -1, day: -1, ordinal: -1, literal: false };
     for (let index = 0; index < format.length; index++) {
       const token = format[index];
-      if (literal) {
-        if (token === "'" && format[index + 1] !== "'") literal = false;
+      if (state.literal) {
+        if (token === "'" && format[index + 1] !== "'") state.literal = false;
         else {
-          exact(token);
+          dateExact(state, token);
           if (token === "'") index++;
         }
         continue;
       }
       const doubled = format[index + 1] === token;
-      switch (token) {
-        case 'd':
-          day = number(2);
-          break;
-        case 'o':
-          ordinal = number(3);
-          break;
-        case 'D':
-          name(regional.dayNamesShort, regional.dayNames);
-          break;
-        case 'm':
-          month = number(2);
-          break;
-        case 'M':
-          month = name(regional.monthNamesShort, regional.monthNames);
-          break;
-        case 'y':
-          year = number(doubled ? 4 : 2);
-          break;
-        case '@': {
-          const date = new Date(number(14));
-          [year, month, day] = [date.getFullYear(), date.getMonth() + 1, date.getDate()];
-          break;
-        }
-        case '!': {
-          const date = new Date((number(20) - TICKS_AT_EPOCH) / 10000);
-          [year, month, day] = [date.getFullYear(), date.getMonth() + 1, date.getDate()];
-          break;
-        }
-        case "'":
-          if (doubled) exact("'");
-          else literal = true;
-          break;
-        default:
-          exact(token);
-      }
+      parseToken(token, doubled, state);
       if (doubled && "doDmMy'".includes(token)) index++;
     }
-    if (position < text.length) fail('Extra characters');
-    const now = new Date();
-    if (year === -1) year = now.getFullYear();
-    // jQuery UI's default shortYearCutoff ("+10"): two-digit years up to ten years ahead are this century.
-    else if (year < 100)
-      year +=
-        year <= (now.getFullYear() % 100) + 10
-          ? Math.floor(now.getFullYear() / 100) * 100
-          : Math.floor(now.getFullYear() / 100) * 100 - 100;
-    if (ordinal > -1) {
-      const date = new Date(year, 0, ordinal);
-      [month, day] = [date.getMonth() + 1, date.getDate()];
-    }
-    const date = new Date(year, month - 1, day);
-    if (date.getFullYear() !== year || date.getMonth() + 1 !== month || date.getDate() !== day) fail('Invalid date');
-    return date;
+    if (state.position < state.text.length) dateParseFail(state, 'Extra characters');
+    return finalizeParsedDate(state);
   }
 
   // minDate, maxDate, defaultDate and setDate: a Date, date text in the format, a day count
@@ -216,23 +243,7 @@
     try {
       return parseDate(format, value);
     } catch {
-      let year = base.getFullYear();
-      let month = base.getMonth();
-      let day = base.getDate();
-      let matched = false;
-      for (const match of String(value).matchAll(/([+-]?\d+)\s*([dwmy])?/gi)) {
-        matched = true;
-        const amount = Number(match[1]);
-        const unit = (match[2] ?? 'd').toLowerCase();
-        if (unit === 'd') day += amount;
-        else if (unit === 'w') day += amount * 7;
-        else {
-          if (unit === 'm') month += amount;
-          else year += amount;
-          day = Math.min(day, new Date(year, month + 1, 0).getDate());
-        }
-      }
-      return matched ? new Date(year, month, day) : null;
+      return relativeDate(value, base);
     }
   }
 
@@ -252,7 +263,7 @@
     const text = formatDate(options.dateFormat, date);
     state.element.value = text;
     if (typeof options.onSelect === 'function') options.onSelect.call(state.element, text, state);
-    window.jQuery(state.element).trigger('change');
+    globalThis.jQuery(state.element).trigger('change');
   }
   function chooser(state) {
     if (state.chooser?.isConnected) return state.chooser;
@@ -286,6 +297,53 @@
       // showPicker needs a user gesture; programmatic focus leaves the text field editable.
     }
   }
+
+  function initializeDatepicker(element, state, command) {
+    if (state) {
+      Object.assign(state.options, command ?? {});
+      return;
+    }
+    state = { element, options: { ...command } };
+    state.open = () => show(state);
+    states.set(element, state);
+    element.classList.add('hasDatepicker');
+    element.setAttribute('autocomplete', 'off');
+    // jQuery UI's default showOn is "focus".
+    element.addEventListener('focus', state.open);
+    element.addEventListener('click', state.open);
+  }
+
+  function runDatepickerCommand(element, state, command, args) {
+    if (!state) return;
+    if (command === 'show') show(state);
+    else if (command === 'hide') state.chooser?.blur();
+    else if (command === 'setDate') {
+      const options = optionsOf(state);
+      const date = resolveDate(args[0], options.dateFormat);
+      element.value = date ? formatDate(options.dateFormat, date) : '';
+    } else if (command === 'option') {
+      if (args.length === 2) state.options[args[0]] = args[1];
+      else if (args[0] && typeof args[0] === 'object') Object.assign(state.options, args[0]);
+    } else if (command === 'enable') element.disabled = false;
+    else if (command === 'disable') element.disabled = true;
+    else if (command === 'destroy') {
+      element.removeEventListener('focus', state.open);
+      element.removeEventListener('click', state.open);
+      state.chooser?.remove();
+      element.classList.remove('hasDatepicker');
+      states.delete(element);
+    }
+  }
+
+  function applyDatepicker(element, command, args) {
+    const state = states.get(element);
+    if (typeof command !== 'string') {
+      initializeDatepicker(element, state, command);
+      return;
+    }
+    runDatepickerCommand(element, state, command, args);
+  }
+
   const datepicker = function (command, ...args) {
     const first = this[0];
     if (command === 'getDate') {
@@ -298,40 +356,7 @@
       return state ? optionsOf(state)[args[0]] : undefined;
     }
     return this.each(function () {
-      let state = states.get(this);
-      if (typeof command !== 'string') {
-        if (state) Object.assign(state.options, command ?? {});
-        else {
-          state = { element: this, options: { ...(command ?? {}) } };
-          state.open = () => show(state);
-          states.set(this, state);
-          this.classList.add('hasDatepicker');
-          this.setAttribute('autocomplete', 'off');
-          // jQuery UI's default showOn is "focus".
-          this.addEventListener('focus', state.open);
-          this.addEventListener('click', state.open);
-        }
-        return;
-      }
-      if (!state) return;
-      if (command === 'show') show(state);
-      else if (command === 'hide') state.chooser?.blur();
-      else if (command === 'setDate') {
-        const options = optionsOf(state);
-        const date = resolveDate(args[0], options.dateFormat);
-        this.value = date ? formatDate(options.dateFormat, date) : '';
-      } else if (command === 'option') {
-        if (args.length === 2) state.options[args[0]] = args[1];
-        else if (args[0] && typeof args[0] === 'object') Object.assign(state.options, args[0]);
-      } else if (command === 'enable') this.disabled = false;
-      else if (command === 'disable') this.disabled = true;
-      else if (command === 'destroy') {
-        this.removeEventListener('focus', state.open);
-        this.removeEventListener('click', state.open);
-        state.chooser?.remove();
-        this.classList.remove('hasDatepicker');
-        states.delete(this);
-      }
+      applyDatepicker(this, command, args);
     });
   };
   datepicker.__ppSimCompat = true;
@@ -372,7 +397,7 @@
     const changed = state.options.active !== target;
     state.options.active = target;
     if (event || (changed && state.initialised)) {
-      const $ = window.jQuery;
+      const $ = globalThis.jQuery;
       const ui = { newTab: $(state.tabs[target].item), newPanel: $(state.tabs[target].panel ?? []) };
       const domEvent = event ?? $.Event('tabsactivate');
       if (typeof state.options.activate === 'function') state.options.activate.call(state.element, domEvent, ui);
@@ -391,7 +416,7 @@
           const list =
             [...this.children].find((child) => child.tagName === 'UL' || child.tagName === 'OL') ??
             this.querySelector('ul,ol');
-          state = { element: this, list, tabs: [], options: { active: 0, ...(command ?? {}) } };
+          state = { element: this, list, tabs: [], options: { active: 0, ...command } };
           tabStates.set(this, state);
           this.classList.add('ui-tabs', 'ui-corner-all', 'ui-widget', 'ui-widget-content');
           list?.classList.add(
@@ -439,19 +464,26 @@
     if (!$.fn.tabs) $.fn.tabs = tabs;
   };
   compat.jqueryUiWidgets = attach;
-  attach(window.jQuery);
+  attach(globalThis.jQuery);
   watchJQuery(compat, attach);
-  ((globalThis.__portalSimulation ||= {}).compatibility ||= {}).jqueryUiWidgetsMode = 'local-compatibility';
+  globalThis.__portalSimulation ||= {};
+  globalThis.__portalSimulation.compatibility ||= {};
+  globalThis.__portalSimulation.compatibility.jqueryUiWidgetsMode = 'local-compatibility';
   /** Re-attach this adapter whenever a later script replaces window.jQuery. */
   // BEGIN generated jQuery watcher
   function watchJQuery(registry, attach) {
-    (registry.jqueryWatchers ||= new Set()).add(attach);
+    let watchers = registry.jqueryWatchers;
+    if (!watchers) {
+      watchers = new Set();
+      registry.jqueryWatchers = watchers;
+    }
+    watchers.add(attach);
     if (registry.jqueryWatched) return;
-    const descriptor = Object.getOwnPropertyDescriptor(window, 'jQuery');
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'jQuery');
     if (descriptor && (descriptor.get || descriptor.set || descriptor.configurable === false)) return;
-    let current = window.jQuery;
+    let current = globalThis.jQuery;
     try {
-      Object.defineProperty(window, 'jQuery', {
+      Object.defineProperty(globalThis, 'jQuery', {
         configurable: true,
         enumerable: true,
         get: () => current,

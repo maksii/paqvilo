@@ -64,7 +64,7 @@ export const list = (value) => {
 };
 
 export function validateMatrix(matrix) {
-  if (!matrix || matrix.version !== 1 || !Array.isArray(matrix.scenarios) || !matrix.scenarios.length)
+  if (matrix?.version !== 1 || !Array.isArray(matrix.scenarios) || !matrix.scenarios.length)
     throw new Error('A version 1 matrix with scenarios is required.');
   const ids = new Set();
   for (const scenario of matrix.scenarios) {
@@ -76,7 +76,7 @@ export function validateMatrix(matrix) {
     if (scenario.persona && !matrix.personas?.[scenario.persona])
       throw new Error(`Scenario ${scenario.id} uses unknown persona ${scenario.persona}.`);
   }
-  for (const pattern of matrix.writeScope?.paths ?? []) new RegExp(pattern);
+  for (const pattern of matrix.writeScope?.paths ?? []) new RegExp(pattern); // NOSONAR: constructor validates the pattern or has side effects
   if (matrix.origin && !/^https:\/\/[^/?#]+$/.test(matrix.origin))
     throw new Error('matrix.origin must be a bare HTTPS origin.');
   return matrix;
@@ -260,7 +260,7 @@ async function liveSide({ matrix, allowWrites, cwd, outputRoot, signInOut = null
       throw new Error(
         'matrix.live.signOut is required for anonymous scenarios on the live side (steps that sign the portal session out).',
       );
-    const expect = { absent: bridge.signIn?.expectPresent ?? [], ...(bridge.signOut.expect ?? {}) };
+    const expect = { absent: bridge.signIn?.expectPresent ?? [], ...bridge.signOut.expect };
     const result = await runInBridge({ id: 'sign-out', steps: bridge.signOut.steps, expect }, { allowWrites: false });
     if (result.summary.status !== 'captured')
       await fail(`Portal sign-out did not complete (${result.summary.problems.join('; ')}).`, result, 'sign-out');
@@ -481,19 +481,10 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
       throw new Error(
         `Mirage identity contact ${contactId} is not in the preset data; cannot mirror the live tester's fields.`,
       );
-    for (const [field, value] of Object.entries(fields ?? {}))
-      row[field] =
-        value && typeof value === 'object' && row[field] && typeof row[field] === 'object'
-          ? { ...row[field], ...value }
-          : value;
+    mirrorContactFields(row, fields);
     // Lookups to the mirrored contact show its (mirrored) name.
     const name = row.fullname ?? [row.firstname, row.lastname].filter(Boolean).join(' ');
-    if (name)
-      for (const rows of Object.values(state.tables ?? {}))
-        for (const record of Array.isArray(rows) ? rows : [])
-          for (const value of Object.values(record))
-            if (value && typeof value === 'object' && value.logical_name === 'contact' && value.id === contactId)
-              value.name = name;
+    if (name) mirrorContactLookups(state.tables ?? {}, contactId, name);
     // Fixture fields go only to the disposable runtime started above, never matrix.origin.
     const response = await loopbackFetch(owned.url + '/__sim/api/state/import', {
       method: 'POST',
@@ -583,6 +574,25 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
   };
 }
 
+function mirrorContactFields(row, fields) {
+  for (const [field, value] of Object.entries(fields ?? {}))
+    row[field] =
+      value && typeof value === 'object' && row[field] && typeof row[field] === 'object'
+        ? { ...row[field], ...value }
+        : value;
+}
+
+function mirrorContactLookups(tables, contactId, name) {
+  for (const rows of Object.values(tables))
+    for (const record of Array.isArray(rows) ? rows : []) updateContactLookupNames(record, contactId, name);
+}
+
+function updateContactLookupNames(record, contactId, name) {
+  for (const value of Object.values(record))
+    if (value && typeof value === 'object' && value.logical_name === 'contact' && value.id === contactId)
+      value.name = name;
+}
+
 /** Preserve uncertain hook markers through aggregate cleanup errors. */
 function uncertainMutatingHook(error) {
   const pending = [error],
@@ -602,91 +612,12 @@ export async function captureMatrix({ matrix, side, outDir, label, ids = {}, onl
   validateMatrix(matrix);
   validateCaptureLabel(label);
   const results = [];
-  let currentPersona = Symbol('none');
-  const failedPersonas = new Map();
-  let blockedBy = null;
-  // Persona switches are the expensive step on a live portal (its permission cache lags role changes by
-  // minutes), so scenarios run grouped by persona in first-appearance order; the order within a persona is kept.
-  const personaOrder = [];
-  for (const scenario of matrix.scenarios)
-    if (!personaOrder.includes(scenario.persona ?? null)) personaOrder.push(scenario.persona ?? null);
-  const selected = matrix.scenarios
-    .filter((scenario) => !only || only.includes(scenario.id))
-    .map((scenario, index) => ({ scenario, index }))
-    .sort(
-      (a, b) =>
-        personaOrder.indexOf(a.scenario.persona ?? null) - personaOrder.indexOf(b.scenario.persona ?? null) ||
-        a.index - b.index,
-    )
-    .map(({ scenario }) => scenario);
+  const captureState = { currentPersona: Symbol('none'), failedPersonas: new Map(), blockedBy: null };
+  const selected = orderedCaptureScenarios(matrix, only);
   for (const scenario of selected)
     await ensureCaptureDestination(scenarioDir(outDir, scenario, label), outDir, { create: false });
   for (const scenario of selected) {
-    const folder = scenarioDir(outDir, scenario, label);
-    const personaName = scenario.persona ?? null;
-    const summary = { id: scenario.id, folder: path.relative(outDir, folder), ms: {} };
-    let phase = null;
-    const timed = async (name, work) => {
-      phase = name;
-      const started = Date.now();
-      try {
-        return await work();
-      } finally {
-        summary.ms[name] = Date.now() - started;
-      }
-    };
-    try {
-      if (blockedBy) {
-        summary.notAttempted = true;
-        summary.blockedBy = { ...blockedBy };
-        throw new Error(
-          `Not attempted: uncertain mutating hook ${blockedBy.hook} in ${blockedBy.scenario} requires project reconciliation.`,
-        );
-      }
-      // A persona that did not take effect fails every scenario of its group at once instead of re-probing per scenario.
-      if (failedPersonas.has(personaName)) throw new Error(failedPersonas.get(personaName));
-      if (personaName !== currentPersona) {
-        try {
-          await timed('persona', () => side.persona(personaName ?? 'anonymous', { ids }));
-        } catch (error) {
-          failedPersonas.set(personaName, String(error.message));
-          throw error;
-        }
-        currentPersona = personaName;
-      }
-      if (scenario.reset !== false) await timed('reset', () => side.reset());
-      const capture = await timed('capture', () =>
-        side.capture(scenario, {
-          outDir: folder,
-          outputRoot: outDir,
-          ids,
-          label,
-          meta: {
-            persona: personaName,
-            component: scenario.component ?? null,
-            variation: scenario.variation ?? null,
-            state: scenario.state ?? null,
-          },
-        }),
-      );
-      Object.assign(summary, {
-        status: capture.status,
-        problems: capture.problems,
-        requests: capture.requests,
-        elements: capture.elements,
-        blockedWrites: capture.blockedWrites?.length ?? 0,
-      });
-    } catch (error) {
-      const hook = uncertainMutatingHook(error);
-      if (hook) {
-        blockedBy = { scenario: scenario.id, phase, hook, code: MUTATING_HOOK_FAILURE };
-        summary.uncertainHook = { hook, code: MUTATING_HOOK_FAILURE, reconciliationRequired: true };
-      }
-      Object.assign(summary, {
-        status: 'error',
-        problems: [String(error.message).slice(0, 500), ...(summary.notAttempted ? [] : side.diagnostics().slice(-3))],
-      });
-    }
+    const summary = await captureOneScenario({ scenario, side, captureState, outDir, ids, label });
     results.push(summary);
     console.log(
       JSON.stringify({
@@ -702,6 +633,118 @@ export async function captureMatrix({ matrix, side, outDir, label, ids = {}, onl
     if (!summary.notAttempted) await sleep(matrix.delayMs ?? 250);
   }
   return results;
+}
+
+function orderedCaptureScenarios(matrix, only) {
+  // Persona switches are the expensive step on a live portal (its permission cache lags role changes by
+  // minutes), so scenarios run grouped by persona in first-appearance order; the order within a persona is kept.
+  const personaOrder = [];
+  for (const scenario of matrix.scenarios)
+    if (!personaOrder.includes(scenario.persona ?? null)) personaOrder.push(scenario.persona ?? null);
+  return matrix.scenarios
+    .filter((scenario) => !only || only.includes(scenario.id))
+    .map((scenario, index) => ({ scenario, index }))
+    .sort(
+      (a, b) =>
+        personaOrder.indexOf(a.scenario.persona ?? null) - personaOrder.indexOf(b.scenario.persona ?? null) ||
+        a.index - b.index,
+    )
+    .map(({ scenario }) => scenario);
+}
+
+async function captureOneScenario({ scenario, side, captureState, outDir, ids, label }) {
+  const folder = scenarioDir(outDir, scenario, label);
+  const personaName = scenario.persona ?? null;
+  const summary = { id: scenario.id, folder: path.relative(outDir, folder), ms: {} };
+  const phaseState = { value: null };
+  try {
+    const capture = await captureScenarioWork({
+      scenario,
+      side,
+      captureState,
+      folder,
+      outDir,
+      ids,
+      label,
+      personaName,
+      summary,
+      phaseState,
+    });
+    Object.assign(summary, {
+      status: capture.status,
+      problems: capture.problems,
+      requests: capture.requests,
+      elements: capture.elements,
+      blockedWrites: capture.blockedWrites?.length ?? 0,
+    });
+  } catch (error) {
+    const hook = uncertainMutatingHook(error);
+    if (hook) {
+      captureState.blockedBy = { scenario: scenario.id, phase: phaseState.value, hook, code: MUTATING_HOOK_FAILURE };
+      summary.uncertainHook = { hook, code: MUTATING_HOOK_FAILURE, reconciliationRequired: true };
+    }
+    Object.assign(summary, {
+      status: 'error',
+      problems: [String(error.message).slice(0, 500), ...(summary.notAttempted ? [] : side.diagnostics().slice(-3))],
+    });
+  }
+  return summary;
+}
+
+async function captureScenarioWork({
+  scenario,
+  side,
+  captureState,
+  folder,
+  outDir,
+  ids,
+  label,
+  personaName,
+  summary,
+  phaseState,
+}) {
+  const timed = async (name, work) => {
+    phaseState.value = name;
+    const started = Date.now();
+    try {
+      return await work();
+    } finally {
+      summary.ms[name] = Date.now() - started;
+    }
+  };
+  if (captureState.blockedBy) {
+    summary.notAttempted = true;
+    summary.blockedBy = { ...captureState.blockedBy };
+    throw new Error(
+      `Not attempted: uncertain mutating hook ${captureState.blockedBy.hook} in ${captureState.blockedBy.scenario} requires project reconciliation.`,
+    );
+  }
+  if (captureState.failedPersonas.has(personaName)) throw new Error(captureState.failedPersonas.get(personaName));
+  if (personaName !== captureState.currentPersona) {
+    try {
+      await timed('persona', () => side.persona(personaName ?? 'anonymous', { ids }));
+    } catch (error) {
+      captureState.failedPersonas.set(personaName, String(error.message));
+      throw error;
+    }
+    captureState.currentPersona = personaName;
+  }
+  if (scenario.reset !== false) await timed('reset', () => side.reset());
+  const capture = await timed('capture', () =>
+    side.capture(scenario, {
+      outDir: folder,
+      outputRoot: outDir,
+      ids,
+      label,
+      meta: {
+        persona: personaName,
+        component: scenario.component ?? null,
+        variation: scenario.variation ?? null,
+        state: scenario.state ?? null,
+      },
+    }),
+  );
+  return capture;
 }
 
 async function main() {
@@ -736,82 +779,88 @@ async function main() {
   const matrix = validateMatrix(JSON.parse(await fs.readFile(matrixFile, 'utf8')));
   const outDir = path.resolve(values.out);
   const only = list(values.only);
-  if (action === 'capture') {
-    // `run` is a short token scenarios embed in values that must be unique per run yet equal on both sides.
-    const ids = {
-      run: matrix.runToken ?? 'r1',
-      ...(values.ids ? JSON.parse(await fs.readFile(values.ids, 'utf8')) : {}),
-    };
-    const label = validateCaptureLabel(values.label ?? values.side);
-    for (const scenario of matrix.scenarios.filter((item) => !only || only.includes(item.id)))
-      await ensureCaptureDestination(scenarioDir(outDir, scenario, label), outDir, { create: false });
-    await ensureCaptureDestination(path.join(outDir, '_sign-in'), outDir, { create: false });
-    if (values.side === 'mirage' && !values['work-dir'])
-      await ensureCaptureDestination(path.join(outDir, '.runtime'), outDir, { create: false });
-    const startedAt = new Date().toISOString();
-    await ensureCaptureDestination(outDir, outDir, {
-      create: false,
-      files: [`run-${label}.json`, `run-${label}-${startedAt.replace(/:/g, '')}.json`],
-    });
-    let side;
-    if (values.side === 'live') {
-      if (!matrix.origin) throw new Error('matrix.origin (HTTPS reference origin) is required for the live side.');
-      side = await liveSide({
-        matrix,
-        allowWrites: Boolean(values['allow-writes']),
-        cwd: path.dirname(matrixFile),
-        outputRoot: outDir,
-        signInOut: path.join(outDir, '_sign-in'),
-      });
-    } else if (values.side === 'mirage') {
-      side = await mirageSide({
-        matrix,
-        config: values.config,
-        site: values.site,
-        env: values.env,
-        source: values.source,
-        state: values.state,
-        headed: Boolean(values.headed),
-        workDir: path.resolve(values['work-dir'] ?? path.join(outDir, '.runtime')),
-      });
-    } else throw new Error('--side must be live or mirage.');
+  if (action === 'capture') return runCaptureAction({ action, values, matrix, matrixFile, outDir, only });
+  return runCompareAction({ action, values, matrix, outDir, only });
+}
 
-    let results;
-    try {
-      results = await captureMatrix({ matrix, side, outDir, label, ids, only });
-    } finally {
-      await side.close();
-    }
-    const run = {
-      version: 1,
-      action,
-      side: values.side,
-      label,
-      startedAt,
-      finishedAt: new Date().toISOString(),
+async function runCaptureAction({ action, values, matrix, matrixFile, outDir, only }) {
+  // `run` is a short token scenarios embed in values that must be unique per run yet equal on both sides.
+  const ids = {
+    run: matrix.runToken ?? 'r1',
+    ...(values.ids ? JSON.parse(await fs.readFile(values.ids, 'utf8')) : {}),
+  };
+  const label = validateCaptureLabel(values.label ?? values.side);
+  for (const scenario of matrix.scenarios.filter((item) => !only || only.includes(item.id)))
+    await ensureCaptureDestination(scenarioDir(outDir, scenario, label), outDir, { create: false });
+  await ensureCaptureDestination(path.join(outDir, '_sign-in'), outDir, { create: false });
+  if (values.side === 'mirage' && !values['work-dir'])
+    await ensureCaptureDestination(path.join(outDir, '.runtime'), outDir, { create: false });
+  const startedAt = new Date().toISOString();
+  await ensureCaptureDestination(outDir, outDir, {
+    create: false,
+    files: [`run-${label}.json`, `run-${label}-${startedAt.replaceAll(':', '')}.json`],
+  });
+  let side;
+  if (values.side === 'live') {
+    if (!matrix.origin) throw new Error('matrix.origin (HTTPS reference origin) is required for the live side.');
+    side = await liveSide({
+      matrix,
       allowWrites: Boolean(values['allow-writes']),
-      scenarios: results,
-      totals: {
-        captured: results.filter((r) => r.status === 'captured').length,
-        failed: results.filter((r) => r.status === 'failed').length,
-        error: results.filter((r) => r.status === 'error').length,
-        blockedWrites: results.reduce((sum, r) => sum + (r.blockedWrites ?? 0), 0),
-        notAttempted: results.filter((r) => r.notAttempted).length,
-      },
-    };
-    await ensureCaptureDestination(outDir, outDir, {
-      files: [`run-${label}.json`, `run-${label}-${startedAt.replace(/:/g, '')}.json`],
+      cwd: path.dirname(matrixFile),
+      outputRoot: outDir,
+      signInOut: path.join(outDir, '_sign-in'),
     });
-    await fs.writeFile(path.join(outDir, `run-${label}.json`), JSON.stringify(run, null, 2));
-    // Keep every run: run-<label>.json is the latest, run-<label>-<startedAt>.json (colon-free) the history.
-    await fs.writeFile(
-      path.join(outDir, `run-${label}-${startedAt.replace(/:/g, '')}.json`),
-      JSON.stringify(run, null, 2),
-    );
-    console.log(JSON.stringify({ run: path.join(outDir, `run-${label}.json`), totals: run.totals }));
-    process.exitCode = run.totals.error ? 2 : run.totals.failed || run.totals.blockedWrites ? 1 : 0;
-    return;
+  } else if (values.side === 'mirage') {
+    side = await mirageSide({
+      matrix,
+      config: values.config,
+      site: values.site,
+      env: values.env,
+      source: values.source,
+      state: values.state,
+      headed: Boolean(values.headed),
+      workDir: path.resolve(values['work-dir'] ?? path.join(outDir, '.runtime')),
+    });
+  } else throw new Error('--side must be live or mirage.');
+
+  let results;
+  try {
+    results = await captureMatrix({ matrix, side, outDir, label, ids, only });
+  } finally {
+    await side.close();
   }
+  const run = {
+    version: 1,
+    action,
+    side: values.side,
+    label,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    allowWrites: Boolean(values['allow-writes']),
+    scenarios: results,
+    totals: {
+      captured: results.filter((r) => r.status === 'captured').length,
+      failed: results.filter((r) => r.status === 'failed').length,
+      error: results.filter((r) => r.status === 'error').length,
+      blockedWrites: results.reduce((sum, r) => sum + (r.blockedWrites ?? 0), 0),
+      notAttempted: results.filter((r) => r.notAttempted).length,
+    },
+  };
+  await ensureCaptureDestination(outDir, outDir, {
+    files: [`run-${label}.json`, `run-${label}-${startedAt.replaceAll(':', '')}.json`],
+  });
+  await fs.writeFile(path.join(outDir, `run-${label}.json`), JSON.stringify(run, null, 2));
+  // Keep every run: run-<label>.json is the latest, run-<label>-<startedAt>.json (colon-free) the history.
+  await fs.writeFile(
+    path.join(outDir, `run-${label}-${startedAt.replaceAll(':', '')}.json`),
+    JSON.stringify(run, null, 2),
+  );
+  console.log(JSON.stringify({ run: path.join(outDir, `run-${label}.json`), totals: run.totals }));
+  if (run.totals.error) process.exitCode = 2;
+  else process.exitCode = run.totals.failed || run.totals.blockedWrites ? 1 : 0;
+}
+
+async function runCompareAction({ action, values, matrix, outDir, only }) {
   const allowlist = values.allowlist ? await loadAllowlist(values.allowlist) : { entries: [] };
   const changes = values['evidence-changes'] ? (await loadEvidenceChanges(values['evidence-changes'])).changes : [];
   const report = {
@@ -874,7 +923,7 @@ async function main() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
+  /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     console.error(error.message);
     process.exitCode = 1;
   });

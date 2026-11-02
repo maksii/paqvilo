@@ -8,6 +8,25 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { importPortal } from './lib/importer.mjs';
 
+function literalLinkMetrics(body) {
+  let depth = 0,
+    linkCount = 0,
+    linkDepth = 0;
+  const tag = /<\/?(?:entity|link-entity)\b[^>]*>/gi;
+  for (const token of body.matchAll(tag)) {
+    if (token[0].startsWith('</')) {
+      depth = Math.max(0, depth - 1);
+    } else if (/^<link-entity\b/i.test(token[0])) {
+      linkCount++;
+      if (!/\/\s*>$/.test(token[0])) {
+        depth++;
+        linkDepth = Math.max(linkDepth, depth - 1);
+      }
+    } else if (!/\/\s*>$/.test(token[0])) depth++;
+  }
+  return { linkCount, linkDepth };
+}
+
 function inventoryBlock(source) {
   const roots = new Set();
   let queryBlocks = 0,
@@ -26,27 +45,13 @@ function inventoryBlock(source) {
 
     // Count only literal XML links. Liquid-generated markup is separately
     // reported as unresolved and is never presented as a complete inventory.
-    let depth = 0,
-      linkCount = 0,
-      linkDepth = 0;
-    const tag = /<\/?(?:entity|link-entity)\b[^>]*>/gi;
-    for (const token of body.matchAll(tag)) {
-      if (/^<\//.test(token[0])) {
-        depth = Math.max(0, depth - 1);
-      } else if (/^<link-entity\b/i.test(token[0])) {
-        linkCount++;
-        if (!/\/\s*>$/.test(token[0])) {
-          depth++;
-          linkDepth = Math.max(linkDepth, depth - 1);
-        }
-      } else if (!/\/\s*>$/.test(token[0])) depth++;
-    }
+    const { linkCount, linkDepth } = literalLinkMetrics(body);
     maxLinks = Math.max(maxLinks, linkCount);
     maxLinkDepth = Math.max(maxLinkDepth, linkDepth);
     if (
-      /(?:\{\{[\s\S]{0,300}(?:<\s*(?:entity|link-entity)\b)|<(?:entity|link-entity)\b[^>]*\b(?:name|from|to)\s*=\s*["']\s*\{\{|\{%\s*(?:include|render)\b)/i.test(
-        body,
-      )
+      /\{\{[\s\S]{0,300}(?:<\s*(?:entity|link-entity)\b)/i.test(body) ||
+      /<(?:entity|link-entity)\b[^>]*\b(?:name|from|to)\s*=\s*["']\s*\{\{/i.test(body) ||
+      /\{%\s*(?:include|render)\b/i.test(body)
     )
       unresolved = true;
     if (unresolved) unresolvedBlocks++;
@@ -133,7 +138,7 @@ async function main(args) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  main(process.argv.slice(2)).catch((error) => {
+  /* NOSONAR: module-level promise chain must not block evaluation */ main(process.argv.slice(2)).catch((error) => {
     reportCliError(error);
     process.exitCode = 1;
   });

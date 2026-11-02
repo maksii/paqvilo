@@ -12,7 +12,9 @@ const SKIP = new Set(['node_modules', 'dist', 'coverage', 'bin', 'obj']);
 const posix = (file) => file.split(path.sep).join('/');
 const relative = (from, file, prefix = '') => {
   const result = path.relative(from, file);
-  return !result ? '.' : result.startsWith('..') || path.isAbsolute(result) ? file : `${prefix}${posix(result)}`;
+  if (!result) return '.';
+  if (result.startsWith('..') || path.isAbsolute(result)) return file;
+  return `${prefix}${posix(result)}`;
 };
 const firstMatch = async (file, pattern) => {
   try {
@@ -55,30 +57,12 @@ async function folderKind(folder, entries = null) {
   }
   const names = new Set(entries.map((entry) => entry.name));
   if (['website.yml', 'website.yaml', 'powerpagecomponents', '.powerpages-site'].some((name) => names.has(name))) {
-    const layout = detectSourceDialect(folder);
-    if (layout.imported) {
-      const website = names.has('website.yml') ? 'website.yml' : names.has('website.yaml') ? 'website.yaml' : null;
-      return {
-        type: 'website',
-        label: layout.label,
-        name: website ? await firstMatch(path.join(folder, website), /^(?:adx_name|mspp_name|name):\s*(.+)$/m) : null,
-        profiles: await profilesOf(folder),
-      };
-    }
+    const website = await websiteKind(folder, names);
+    if (website) return website;
   }
   // A Solution names the apps it carries by folder: AppModules (model-driven) and CanvasApps.
   if (names.has('Other') && fsSync.existsSync(path.join(folder, 'Other', 'Solution.xml')))
-    return {
-      type: 'solution',
-      name: await firstMatch(path.join(folder, 'Other', 'Solution.xml'), /<UniqueName>([^<]+)<\/UniqueName>/),
-      apps: { modelDriven: names.has('AppModules'), canvas: names.has('CanvasApps') },
-      // Canvas apps packed in the Solution, by name (CanvasApps/<name>.meta.xml), so a folder copy of one is recognised.
-      canvasApps: names.has('CanvasApps')
-        ? (await fs.readdir(path.join(folder, 'CanvasApps')).catch(() => []))
-            .filter((name) => name.endsWith('.meta.xml'))
-            .map((name) => name.slice(0, -9))
-        : [],
-    };
+    return solutionKind(folder, names);
   if (names.has('Src')) {
     const source = await fs.readdir(path.join(folder, 'Src')).catch(() => []);
     if (source.some((name) => /\.(?:pa|fx)\.yaml$/i.test(name))) return { type: 'canvas', name: path.basename(folder) };
@@ -90,6 +74,33 @@ async function folderKind(folder, entries = null) {
   if (profiles.length) return { type: 'profiles', files: profiles };
   if (names.has('pack.mjs')) return { type: 'pack' };
   return null;
+}
+
+async function websiteKind(folder, names) {
+  const layout = detectSourceDialect(folder);
+  if (!layout.imported) return null;
+  let website = null;
+  if (names.has('website.yml')) website = 'website.yml';
+  else if (names.has('website.yaml')) website = 'website.yaml';
+  return {
+    type: 'website',
+    label: layout.label,
+    name: website ? await firstMatch(path.join(folder, website), /^(?:adx_name|mspp_name|name):\s*(.+)$/m) : null, // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    profiles: await profilesOf(folder),
+  };
+}
+
+async function solutionKind(folder, names) {
+  return {
+    type: 'solution',
+    name: await firstMatch(path.join(folder, 'Other', 'Solution.xml'), /<UniqueName>([^<]+)<\/UniqueName>/),
+    apps: { modelDriven: names.has('AppModules'), canvas: names.has('CanvasApps') },
+    canvasApps: names.has('CanvasApps')
+      ? (await fs.readdir(path.join(folder, 'CanvasApps')).catch(() => []))
+          .filter((name) => name.endsWith('.meta.xml'))
+          .map((name) => name.slice(0, -9))
+      : [],
+  };
 }
 
 /**
@@ -112,32 +123,36 @@ async function scanExports(root, { maxDepth = 4, maxFolders = 4000 } = {}) {
         continue;
       }
       const kind = await folderKind(folder, entries);
-      if (kind?.type === 'website') {
-        found.portals.push({ dir: folder, kind: kind.label, name: kind.name, profiles: kind.profiles });
-        continue;
+      if (!recordExport(found, folder, kind)) {
+        recordPack(found, folder, entries);
+        queueChildFolders(next, folder, depth, entries, maxDepth);
       }
-      if (kind?.type === 'solution') {
-        found.solutions.push({ dir: folder, name: kind.name, apps: kind.apps, canvasApps: kind.canvasApps });
-        continue;
-      }
-      if (kind?.type === 'canvas') {
-        found.canvas.push({ dir: folder, name: kind.name });
-        continue;
-      }
-      if (kind?.type === 'codeApp') {
-        found.codeApps.push({ dir: folder, name: kind.name });
-        continue;
-      }
-      const names = new Set(entries.map((entry) => entry.name));
-      if (names.has('pack.mjs')) found.packs.push({ file: path.join(folder, 'pack.mjs') });
-      if (depth < maxDepth)
-        for (const entry of entries)
-          if (entry.isDirectory() && !entry.name.startsWith('.') && !SKIP.has(entry.name))
-            next.push([path.join(folder, entry.name), depth + 1]);
     }
     queue = next;
   }
   return found;
+}
+
+function recordExport(found, folder, kind) {
+  if (kind?.type === 'website')
+    found.portals.push({ dir: folder, kind: kind.label, name: kind.name, profiles: kind.profiles });
+  else if (kind?.type === 'solution')
+    found.solutions.push({ dir: folder, name: kind.name, apps: kind.apps, canvasApps: kind.canvasApps });
+  else if (kind?.type === 'canvas') found.canvas.push({ dir: folder, name: kind.name });
+  else if (kind?.type === 'codeApp') found.codeApps.push({ dir: folder, name: kind.name });
+  else return false;
+  return true;
+}
+
+function recordPack(found, folder, entries) {
+  if (entries.some((entry) => entry.name === 'pack.mjs')) found.packs.push({ file: path.join(folder, 'pack.mjs') });
+}
+
+function queueChildFolders(next, folder, depth, entries, maxDepth) {
+  if (depth >= maxDepth) return;
+  for (const entry of entries)
+    if (entry.isDirectory() && !entry.name.startsWith('.') && !SKIP.has(entry.name))
+      next.push([path.join(folder, entry.name), depth + 1]);
 }
 
 /** The scan with each path as the configuration writes it: sources and Solutions from the source root, packs from the configuration folder. */

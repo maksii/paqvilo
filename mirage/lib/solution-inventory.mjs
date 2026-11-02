@@ -351,7 +351,7 @@ const json = (text) => {
     return null;
   }
 };
-const connectorName = (id) => (id ? String(id).split('/').filter(Boolean).at(-1) : null);
+const connectorName = (id) => (id ? String(id).split('/').findLast(Boolean) : null);
 
 // Canvas app ConnectionReferences / DatabaseReferences JSON columns → dependencies.
 function canvasDependencies(node) {
@@ -669,35 +669,34 @@ export function missingDependencies(manifest) {
 // Connector definition files: OpenAPI (swagger 2.0 / openapi 3) operations, connection parameters and policies. The
 // compiled parts (custom-connector.mjs: `compiled`, `policyInstances`, `connectionParameters`, `scriptOperations`, `script`)
 // let the connector runtime serve the connector at contract level (customConnectorsOf).
-function connectorFacts(text, file) {
-  if (/\.csx$/i.test(file)) return { script: true };
-  const document = json(text);
-  if (!document || typeof document !== 'object') return {};
-  if (/openapidefinition\.json$|swagger\.json$|openapi\.json$/i.test(file) || document.swagger || document.openapi) {
-    const operations = [],
-      extensions = new Set();
-    const note = (object) => {
-      for (const key of Object.keys(object ?? {})) if (key.startsWith('x-ms-')) extensions.add(key);
-    };
-    note(document);
-    note(document.info);
-    for (const methods of Object.values(document.paths ?? {}))
-      for (const operation of Object.values(methods ?? {})) {
-        if (!operation || typeof operation !== 'object') continue;
-        note(operation);
-        if (operation.operationId) operations.push(String(operation.operationId));
-      }
-    return {
-      openapi: {
-        version: String(document.swagger ?? document.openapi ?? ''),
-        title: document.info?.title ?? null,
-        operations: operations.sort(),
-        extensions: [...extensions].sort(),
-      },
-      compiled: compileOpenApi(document),
-    };
-  }
-  const instances = (policy) => ({
+function collectConnectorExtensions(object, extensions) {
+  for (const key of Object.keys(object ?? {})) if (key.startsWith('x-ms-')) extensions.add(key);
+}
+
+function openApiFacts(document) {
+  const operations = [],
+    extensions = new Set();
+  collectConnectorExtensions(document, extensions);
+  collectConnectorExtensions(document.info, extensions);
+  for (const methods of Object.values(document.paths ?? {}))
+    for (const operation of Object.values(methods ?? {})) {
+      if (!operation || typeof operation !== 'object') continue;
+      collectConnectorExtensions(operation, extensions);
+      if (operation.operationId) operations.push(String(operation.operationId));
+    }
+  return {
+    openapi: {
+      version: String(document.swagger ?? document.openapi ?? ''),
+      title: document.info?.title ?? null,
+      operations: operations.toSorted((a, b) => Number(a > b) - Number(a < b)),
+      extensions: [...extensions].sort((a, b) => Number(a > b) - Number(a < b)),
+    },
+    compiled: compileOpenApi(document),
+  };
+}
+
+function connectorPolicyInstances(policy) {
+  return {
     policies: policy
       .map((item) => item?.templateId)
       .filter(Boolean)
@@ -705,27 +704,43 @@ function connectorFacts(text, file) {
     policyInstances: policy
       .filter((item) => item && typeof item === 'object')
       .map((item) => ({ templateId: item.templateId ?? null, parameters: item.parameters ?? {} })),
-  });
-  const parameterTypes = (value) =>
-    Object.fromEntries(
-      Object.entries(value ?? {})
-        .filter(([, entry]) => entry && typeof entry === 'object')
-        .map(([name, entry]) => [name, String(entry.type ?? '')]),
-    );
-  if (/policytemplateinstances\.json$/i.test(file) && Array.isArray(document)) return instances(document);
-  if (/connectionparameters\.json$/i.test(file)) return { connectionParameters: parameterTypes(document) };
-  if (/apiproperties\.json$/i.test(file) && document.properties && typeof document.properties === 'object') {
-    const properties = document.properties;
-    return {
-      ...(Array.isArray(properties.policyTemplateInstances) ? instances(properties.policyTemplateInstances) : {}),
-      ...(properties.connectionParameters
-        ? { connectionParameters: parameterTypes(properties.connectionParameters) }
-        : {}),
-      ...(Array.isArray(properties.scriptOperations)
-        ? { scriptOperations: properties.scriptOperations.map(String) }
-        : {}),
-    };
+  };
+}
+
+function connectorParameterTypes(value) {
+  return Object.fromEntries(
+    Object.entries(value ?? {})
+      .filter(([, entry]) => entry && typeof entry === 'object')
+      .map(([name, entry]) => [name, String(entry.type ?? '')]),
+  );
+}
+
+function apiPropertiesFacts(properties) {
+  return {
+    ...(Array.isArray(properties.policyTemplateInstances)
+      ? connectorPolicyInstances(properties.policyTemplateInstances)
+      : {}),
+    ...(properties.connectionParameters
+      ? { connectionParameters: connectorParameterTypes(properties.connectionParameters) }
+      : {}),
+    ...(Array.isArray(properties.scriptOperations)
+      ? { scriptOperations: properties.scriptOperations.map(String) }
+      : {}),
+  };
+}
+
+function connectorFacts(text, file) {
+  if (/\.csx$/i.test(file)) return { script: true };
+  const document = json(text);
+  if (!document || typeof document !== 'object') return {};
+  if (/openapidefinition\.json$|swagger\.json$|openapi\.json$/i.test(file) || document.swagger || document.openapi) {
+    return openApiFacts(document);
   }
+  if (/policytemplateinstances\.json$/i.test(file) && Array.isArray(document))
+    return connectorPolicyInstances(document);
+  if (/connectionparameters\.json$/i.test(file)) return { connectionParameters: connectorParameterTypes(document) };
+  if (/apiproperties\.json$/i.test(file) && document.properties && typeof document.properties === 'object')
+    return apiPropertiesFacts(document.properties);
   return {};
 }
 
@@ -774,69 +789,78 @@ function dataFacts(text, file) {
  * Inventory records of one component file (`info` from classifyInventoryPath). `text` is its UTF-8 content when the
  * file is small enough to read; binary payloads (`.msapp`) are listed by name and size only and never inflated here.
  */
+function customControlInventoryRecord(root, component, name) {
+  const control = root.name === 'manifest' ? root.children.find((item) => item.name === 'control') : null;
+  const attribute = (key) => (control && Object.hasOwn(control.attrs, key) ? control.attrs[key] : null);
+  return inventoryRecord({
+    component,
+    name:
+      attribute('namespace') && attribute('constructor')
+        ? `${attribute('namespace')}.${attribute('constructor')}`
+        : name,
+    version: attribute('version'),
+    controlType: attribute('control-type'),
+  });
+}
+
+function parsedInventoryEntry(file, text, component, name, size) {
+  const yamlRoot = SECURITY_YAML_ROOTS[component];
+  const xml = /\.xml$/i.test(file);
+  if (text == null || !(xml || (yamlRoot && /\.ya?ml$/i.test(file)))) return null;
+  let root;
+  try {
+    root = xml ? parseSolutionXml(text, { recover: true }) : yamlNode(text, yamlRoot);
+  } catch {
+    return [inventoryRecord({ component, name, size })];
+  }
+  const records = inventoryFacts(root, { component, componentName: name }).filter(
+    (record) => record.component === component,
+  );
+  for (const record of records) record.name ||= name;
+  if (component === 'customcontrol') return [customControlInventoryRecord(root, component, name)];
+  return records.length ? records : [inventoryRecord({ component, name })];
+}
+
+function populateDataEntryFacts(extra, text, file, component, name, size) {
+  if (text == null || size > TEXT_LIMIT) return null;
+  if (component === 'connector') {
+    Object.assign(extra, connectorFacts(text, file));
+    return null;
+  }
+  if (!DATA.test(file)) return null;
+  const { fields, dependencies } = dataFacts(text, file);
+  if (dependencies.length) extra.dependencies = dependencies;
+  // A modern flow file with its workflow id and/or client data definition (flow-yaml.mjs): together they make it runnable.
+  // A file that does not parse carries MODERNFLOW_YAML_INVALID (file and parser line) as an error: never a silent skip.
+  if (component === 'modernflow') {
+    const facts = modernFlowFacts(text, file);
+    if (facts.workflowId) extra.flowWorkflowId = true;
+    if (facts.definition) extra.flowDefinition = true;
+    if (facts.invalid) extra.diagnostics = [facts.invalid];
+  }
+  if (component !== 'connectionreference') return null;
+  const connectorId = fields.connectorid ?? null;
+  Object.assign(extra, {
+    id: fields.connectionreferenceid,
+    displayName: fields.connectionreferencedisplayname,
+    connectorId,
+    dependencies: connectorId ? [{ component: 'connector', name: connectorName(connectorId) }] : [],
+  });
+  return [inventoryRecord({ component, name: fields.connectionreferencelogicalname ?? name, ...extra })];
+}
+
 export function inventoryEntry(file, { size = null, text = null, component, componentName } = {}) {
   const name = componentName ?? stem(String(file).split('/').at(-1));
   if (component === 'canvasapp' && /\.msapp$/i.test(file))
     return [inventoryRecord({ component, name, msapp: { size } })];
-  const yamlRoot = SECURITY_YAML_ROOTS[component],
-    xml = /\.xml$/i.test(file);
-  if (text != null && (xml || (yamlRoot && /\.ya?ml$/i.test(file)))) {
-    let root;
-    try {
-      root = xml ? parseSolutionXml(text, { recover: true }) : yamlNode(text, yamlRoot);
-    } catch {
-      return [inventoryRecord({ component, name, size })];
-    }
-    const records = inventoryFacts(root, { component, componentName: name }).filter(
-      (record) => record.component === component,
-    );
-    for (const record of records) record.name ||= name;
-    if (component === 'customcontrol') {
-      const control = root.name === 'manifest' ? root.children.find((item) => item.name === 'control') : null;
-      const attribute = (key) => (control && Object.hasOwn(control.attrs, key) ? control.attrs[key] : null);
-      return [
-        inventoryRecord({
-          component,
-          name:
-            attribute('namespace') && attribute('constructor')
-              ? `${attribute('namespace')}.${attribute('constructor')}`
-              : name,
-          version: attribute('version'),
-          controlType: attribute('control-type'),
-        }),
-      ];
-    }
-    return records.length ? records : [inventoryRecord({ component, name })];
-  }
+  const parsed = parsedInventoryEntry(file, text, component, name, size);
+  if (parsed) return parsed;
   // The C# script text is kept (Learn: at most 1 MB): the connector runtime runs it through the local .NET SDK.
   if (component === 'connector' && /\.csx$/i.test(file))
     return [inventoryRecord({ component, name, script: true, ...(text != null ? { scriptText: text } : {}) })];
   const extra = {};
-  if (text != null && size <= TEXT_LIMIT) {
-    if (component === 'connector') Object.assign(extra, connectorFacts(text, file));
-    else if (DATA.test(file)) {
-      const { fields, dependencies } = dataFacts(text, file);
-      if (dependencies.length) extra.dependencies = dependencies;
-      // A modern flow file with its workflow id and/or client data definition (flow-yaml.mjs): together they make it runnable.
-      // A file that does not parse carries MODERNFLOW_YAML_INVALID (file and parser line) as an error: never a silent skip.
-      if (component === 'modernflow') {
-        const facts = modernFlowFacts(text, file);
-        if (facts.workflowId) extra.flowWorkflowId = true;
-        if (facts.definition) extra.flowDefinition = true;
-        if (facts.invalid) extra.diagnostics = [facts.invalid];
-      }
-      if (component === 'connectionreference') {
-        const connectorId = fields.connectorid ?? null;
-        Object.assign(extra, {
-          id: fields.connectionreferenceid,
-          displayName: fields.connectionreferencedisplayname,
-          connectorId,
-          dependencies: connectorId ? [{ component: 'connector', name: connectorName(connectorId) }] : [],
-        });
-        return [inventoryRecord({ component, name: fields.connectionreferencelogicalname ?? name, ...extra })];
-      }
-    }
-  }
+  const dataEntry = populateDataEntryFacts(extra, text, file, component, name, size);
+  if (dataEntry) return dataEntry;
   return [inventoryRecord({ component, name, ...extra })];
 }
 
@@ -859,6 +883,86 @@ export const connectionReferenceFacts = (records) =>
  * One record per component and name in a layer: later facts fill fields earlier ones left empty, dependencies are
  * united (a classic canvas app is described by Customizations.xml, its .meta.xml and its .msapp).
  */
+function mergeCanvasInventory(current, record) {
+  if (record.component !== 'canvasapp' || !(record.msapp || record.canvas || record.tree || current.tree)) return false;
+  // A metadata declaration completes identity, never downgrades parsed logic.
+  // A subsequent payload remains authoritative, including a failed parse.
+  if (record.msapp || record.canvas) {
+    current.level = record.level;
+    current.reason = record.reason;
+    current.tree = record.tree;
+    current.unsupported = record.unsupported;
+    current.sourceDiagnostics = record.sourceDiagnostics;
+    current[CANVAS_ASSETS] = record[CANVAS_ASSETS];
+    current.canvas = record.canvas;
+    current.msapp = record.msapp;
+    current.diagnostics = record.diagnostics;
+    current.source = record.source ?? current.source;
+    current.sourceMissing = record.sourceMissing === true;
+  } else if (current.tree) {
+    current.level = 'behaviour';
+    current.reason = null;
+  }
+  return true;
+}
+
+function mergeInventoryFields(current, record) {
+  for (const [field, entry] of Object.entries(record))
+    if (field !== 'dependencies' && (current[field] == null || current[field] === '')) current[field] = entry;
+  // A role file's privileges and a profile's permissions complete an empty declaration of the same component.
+  for (const field of ['privileges', 'permissions'])
+    if (Array.isArray(record[field]) && record[field].length && !current[field]?.length) current[field] = record[field];
+}
+
+function mergeInventoryDependencies(current, dependencies) {
+  for (const dependency of dependencies)
+    if (!current.dependencies.some((item) => item.component === dependency.component && item.name === dependency.name))
+      current.dependencies.push(dependency);
+}
+
+function mergeInventoryRecord(current, record) {
+  mergeInventoryFields(current, record);
+  const canvasHandled = mergeCanvasInventory(current, record);
+  if (!canvasHandled && record.level === 'inventory') current.level = 'inventory';
+  mergeInventoryDependencies(current, record.dependencies);
+  if (record.canvas) current.canvas = record.canvas;
+}
+
+function upgradeModernFlowRecords(merged) {
+  // A modern flow whose files carry its workflow id and definition is imported into the flow interpreter (flow-yaml.mjs).
+  for (const record of merged.values())
+    if (record.component === 'modernflow' && record.flowWorkflowId && record.flowDefinition)
+      Object.assign(record, { level: 'behaviour', reason: 'MODERNFLOW_YAML_IMPORTED' });
+}
+
+function upgradeConnectorRecord(record) {
+  if (record.component !== 'connector' || !record.compiled) return;
+  const { blocked, diagnostics, script } = compileConnector(record);
+  const sdk =
+    script && !dotnetSdk()
+      ? {
+          code: SDK_MISSING,
+          message:
+            'The connector runs C# custom code (script.csx); install the .NET SDK (dotnet on PATH) to run it locally.',
+        }
+      : null;
+  if (!diagnostics.length && !sdk) Object.assign(record, { level: 'contract', reason: 'CONNECTOR_COMPILED_CONTRACT' });
+  else if (blocked ?? sdk)
+    record.diagnostics = [...(record.diagnostics ?? []), { ...(blocked ?? sdk), severity: 'error' }];
+}
+
+function upgradeConnectorRecords(merged) {
+  // A connector with an OpenAPI definition is compiled (custom-connector.mjs): without diagnostics it runs at contract; a
+  // blocking diagnostic (unsupported policy, auth, script) is attached as an error, so its preflight row names it. A C# script
+  // without the .NET SDK on PATH is that gap (CONNECTOR_SCRIPT_SDK_MISSING): its operations refuse until the SDK is installed.
+  for (const record of merged.values()) upgradeConnectorRecord(record);
+}
+
+function upgradeMergedInventory(merged) {
+  upgradeModernFlowRecords(merged);
+  upgradeConnectorRecords(merged);
+}
+
 export function mergeInventory(records) {
   const merged = new Map();
   for (const record of records) {
@@ -868,62 +972,9 @@ export function mergeInventory(records) {
       merged.set(key, { ...record, dependencies: [...record.dependencies] });
       continue;
     }
-    for (const [field, entry] of Object.entries(record))
-      if (field !== 'dependencies' && (current[field] == null || current[field] === '')) current[field] = entry;
-    // A role file's privileges and a profile's permissions complete an empty declaration of the same component.
-    for (const field of ['privileges', 'permissions'])
-      if (Array.isArray(record[field]) && record[field].length && !current[field]?.length)
-        current[field] = record[field];
-    if (record.component === 'canvasapp' && (record.msapp || record.canvas || record.tree || current.tree)) {
-      // A metadata declaration completes identity, never downgrades parsed logic.
-      // A subsequent payload remains authoritative, including a failed parse.
-      if (record.msapp || record.canvas) {
-        current.level = record.level;
-        current.reason = record.reason;
-        current.tree = record.tree;
-        current.unsupported = record.unsupported;
-        current.sourceDiagnostics = record.sourceDiagnostics;
-        current[CANVAS_ASSETS] = record[CANVAS_ASSETS];
-        current.canvas = record.canvas;
-        current.msapp = record.msapp;
-        current.diagnostics = record.diagnostics;
-        current.source = record.source ?? current.source;
-        current.sourceMissing = record.sourceMissing === true;
-      } else if (current.tree) {
-        current.level = 'behaviour';
-        current.reason = null;
-      }
-    } else if (record.level === 'inventory') current.level = 'inventory';
-    for (const dependency of record.dependencies)
-      if (
-        !current.dependencies.some((item) => item.component === dependency.component && item.name === dependency.name)
-      )
-        current.dependencies.push(dependency);
-    if (record.canvas) current.canvas = record.canvas;
+    mergeInventoryRecord(current, record);
   }
-  // A modern flow whose files carry its workflow id and definition is imported into the flow interpreter (flow-yaml.mjs).
-  for (const record of merged.values())
-    if (record.component === 'modernflow' && record.flowWorkflowId && record.flowDefinition)
-      Object.assign(record, { level: 'behaviour', reason: 'MODERNFLOW_YAML_IMPORTED' });
-  // A connector with an OpenAPI definition is compiled (custom-connector.mjs): without diagnostics it runs at contract; a
-  // blocking diagnostic (unsupported policy, auth, script) is attached as an error, so its preflight row names it. A C# script
-  // without the .NET SDK on PATH is that gap (CONNECTOR_SCRIPT_SDK_MISSING): its operations refuse until the SDK is installed.
-  for (const record of merged.values())
-    if (record.component === 'connector' && record.compiled) {
-      const { blocked, diagnostics, script } = compileConnector(record);
-      const sdk =
-        script && !dotnetSdk()
-          ? {
-              code: SDK_MISSING,
-              message:
-                'The connector runs C# custom code (script.csx); install the .NET SDK (dotnet on PATH) to run it locally.',
-            }
-          : null;
-      if (!diagnostics.length && !sdk)
-        Object.assign(record, { level: 'contract', reason: 'CONNECTOR_COMPILED_CONTRACT' });
-      else if (blocked ?? sdk)
-        record.diagnostics = [...(record.diagnostics ?? []), { ...(blocked ?? sdk), severity: 'error' }];
-    }
+  upgradeMergedInventory(merged);
   return [...merged.values()];
 }
 

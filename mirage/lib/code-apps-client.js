@@ -19,6 +19,32 @@ let appName = null;
 // The getContext() answer's trace (X-Trace-Id, X-Sim-Span-Id): every later call joins it (docs/design/tracing.md).
 let trace = null;
 
+function requestHeaders(body, binaryBody, headers) {
+  return {
+    accept: 'application/json',
+    'x-paqvilo-code-app-session': sessionId,
+    ...(csrf ? { 'x-sim-csrf': csrf } : {}),
+    ...(trace ? { 'x-trace-id': trace.traceId, 'x-sim-parent-trace': trace.spanId } : {}),
+    ...(body === undefined ? {} : { 'content-type': binaryBody ? 'application/octet-stream' : 'application/json' }),
+    ...headers,
+  };
+}
+
+function parseCallResponse(response, bytes, text) {
+  let data;
+  try {
+    data = text ? JSON.parse(text) : undefined;
+  } catch {
+    if (response.ok) throw new Error(`Mirage returned invalid JSON (HTTP ${response.status}).`);
+  }
+  if (!response.ok)
+    throw Object.assign(new Error(data?.error?.message || response.statusText || `HTTP ${response.status}`), {
+      status: response.status,
+      code: data?.error?.code,
+    });
+  return { data: bytes ?? data, response };
+}
+
 export function configure({ app, origin = '', onEvent } = {}) {
   if (typeof app !== 'string' || !app.trim()) throw new Error('A non-empty app name is required.');
   if (typeof origin !== 'string')
@@ -75,14 +101,7 @@ async function call(path, { method = 'GET', body, headers = {}, binaryBody = fal
     const response = await fetch(base + path, {
       method,
       credentials: 'same-origin',
-      headers: {
-        accept: 'application/json',
-        'x-paqvilo-code-app-session': sessionId,
-        ...(csrf ? { 'x-sim-csrf': csrf } : {}),
-        ...(trace ? { 'x-trace-id': trace.traceId, 'x-sim-parent-trace': trace.spanId } : {}),
-        ...(body === undefined ? {} : { 'content-type': binaryBody ? 'application/octet-stream' : 'application/json' }),
-        ...headers,
-      },
+      headers: requestHeaders(body, binaryBody, headers),
       ...(body === undefined ? {} : { body: binaryBody ? body : JSON.stringify(body) }),
     });
     status = response.status;
@@ -90,19 +109,9 @@ async function call(path, { method = 'GET', body, headers = {}, binaryBody = fal
     const text = bytes === null ? await response.text() : '';
     // Reject stale results; an already-sent write cannot be rolled back by reconfiguration.
     if (generation !== configured) throw new Error('Mirage code app configuration changed during the request.');
-    let data;
-    try {
-      data = text ? JSON.parse(text) : undefined;
-    } catch {
-      if (response.ok) throw new Error(`Mirage returned invalid JSON (HTTP ${response.status}).`);
-    }
-    if (!response.ok)
-      throw Object.assign(new Error(data?.error?.message || response.statusText || `HTTP ${response.status}`), {
-        status: response.status,
-        code: data?.error?.code,
-      });
+    const result = parseCallResponse(response, bytes, text);
     notify('request');
-    return { data: bytes ?? data, response };
+    return result;
   } catch (error) {
     notify('request-error');
     throw error;
@@ -157,6 +166,69 @@ const query = (options = {}) => {
   return text ? '?' + text : '';
 };
 const representation = { prefer: 'return=representation,odata.include-annotations="*"' };
+
+function validateMetadataOptionsShape(options) {
+  if (
+    !options ||
+    typeof options !== 'object' ||
+    Array.isArray(options) ||
+    Object.keys(options).some((name) => !['metadata', 'schema'].includes(name))
+  )
+    throw new Error('Unsupported metadata options.');
+}
+
+function validateMetadataSelections(options) {
+  if (
+    options.metadata !== undefined &&
+    (!Array.isArray(options.metadata) ||
+      options.metadata.some((name) => typeof name !== 'string' || !/^[a-z][a-z0-9_]*$/i.test(name)))
+  )
+    throw new Error('Metadata selections must be an array of identifiers.');
+}
+
+function validateMetadataSchemaShape(schema) {
+  if (
+    !schema ||
+    typeof schema !== 'object' ||
+    Array.isArray(schema) ||
+    Object.keys(schema).some((name) => !['columns', 'oneToMany', 'manyToOne', 'manyToMany'].includes(name))
+  )
+    throw new Error('Unsupported metadata schema options.');
+}
+
+function validateMetadataSchemaDetails(schema) {
+  if (
+    schema.columns !== undefined &&
+    schema.columns !== 'all' &&
+    (!Array.isArray(schema.columns) ||
+      schema.columns.some((name) => typeof name !== 'string' || !/^[a-z][a-z0-9_]*$/i.test(name)))
+  )
+    throw new Error('Metadata columns must be all or an array of identifiers.');
+  for (const name of ['oneToMany', 'manyToOne', 'manyToMany'])
+    if (schema[name] !== undefined && typeof schema[name] !== 'boolean')
+      throw new Error('Metadata relationship options must be boolean.');
+}
+
+function validateMetadataOptions(options) {
+  validateMetadataOptionsShape(options);
+  const schema = options.schema ?? {};
+  validateMetadataSchemaShape(schema);
+  validateMetadataSelections(options);
+  validateMetadataSchemaDetails(schema);
+  return schema;
+}
+
+function metadataQuery(options, schema) {
+  const params = new URLSearchParams();
+  if (options.metadata?.length) params.set('$select', options.metadata.join(','));
+  const expand = [];
+  if (schema.columns !== undefined) expand.push('Attributes');
+  if (schema.oneToMany) expand.push('OneToManyRelationships');
+  if (schema.manyToOne) expand.push('ManyToOneRelationships');
+  if (schema.manyToMany) expand.push('ManyToManyRelationships');
+  if (expand.length) params.set('$expand', expand.join(','));
+  return params.toString();
+}
 
 /** Minimal data-service client over the Dataverse proxy; methods resolve to `{ data }` like generated services. */
 export const dataClient = {
@@ -232,46 +304,8 @@ export const dataClient = {
   // SDK table metadata, routed through the local Dataverse metadata API.
   getEntityMetadata: async (tableName, options = {}) => {
     const logical = entityPath(tableName);
-    if (
-      !options ||
-      typeof options !== 'object' ||
-      Array.isArray(options) ||
-      Object.keys(options).some((name) => !['metadata', 'schema'].includes(name))
-    )
-      throw new Error('Unsupported metadata options.');
-    const schema = options.schema ?? {};
-    if (
-      !schema ||
-      typeof schema !== 'object' ||
-      Array.isArray(schema) ||
-      Object.keys(schema).some((name) => !['columns', 'oneToMany', 'manyToOne', 'manyToMany'].includes(name))
-    )
-      throw new Error('Unsupported metadata schema options.');
-    if (
-      options.metadata !== undefined &&
-      (!Array.isArray(options.metadata) ||
-        options.metadata.some((name) => typeof name !== 'string' || !/^[a-z][a-z0-9_]*$/i.test(name)))
-    )
-      throw new Error('Metadata selections must be an array of identifiers.');
-    if (
-      schema.columns !== undefined &&
-      schema.columns !== 'all' &&
-      (!Array.isArray(schema.columns) ||
-        schema.columns.some((name) => typeof name !== 'string' || !/^[a-z][a-z0-9_]*$/i.test(name)))
-    )
-      throw new Error('Metadata columns must be all or an array of identifiers.');
-    for (const name of ['oneToMany', 'manyToOne', 'manyToMany'])
-      if (schema[name] !== undefined && typeof schema[name] !== 'boolean')
-        throw new Error('Metadata relationship options must be boolean.');
-    const params = new URLSearchParams();
-    if (options.metadata?.length) params.set('$select', options.metadata.join(','));
-    const expand = [];
-    if (schema.columns !== undefined) expand.push('Attributes');
-    if (schema.oneToMany) expand.push('OneToManyRelationships');
-    if (schema.manyToOne) expand.push('ManyToOneRelationships');
-    if (schema.manyToMany) expand.push('ManyToManyRelationships');
-    if (expand.length) params.set('$expand', expand.join(','));
-    const search = params.toString();
+    const schema = validateMetadataOptions(options);
+    const search = metadataQuery(options, schema);
     const { data } = await call(`dataverse/EntityDefinitions(LogicalName='${logical}')${search ? '?' + search : ''}`);
     if (Array.isArray(schema.columns) && Array.isArray(data?.Attributes)) {
       const selected = new Set(schema.columns.map((name) => name.toLowerCase()));

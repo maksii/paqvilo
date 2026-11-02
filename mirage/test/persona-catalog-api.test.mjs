@@ -1,3 +1,4 @@
+// @test-kind contract: persona catalogue administration and testing API designed by this project; no native counterpart.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -223,6 +224,7 @@ test('context variables override all casing variants and a child refuses a diffe
   assert.match((await refused.json()).error.message, /parent runtime/);
 });
 
+// @test-kind contract: checks inherited source-watch behavior in simulated runtimes.
 test('isolated setups follow the parent source-watch setting without losing local overrides', async (t) => {
   const { app, call, sourceDir } = await personaFixture(t, { watch: true });
   const { value: opened } = await call('/personas/launch', 'POST', { personaKey: 'person-2' });
@@ -244,15 +246,17 @@ test('isolated setups follow the parent source-watch setting without losing loca
       path.join(sourceDir, 'web-templates/Main.webtemplate.source.html'),
       '<html><body><h1>Updated {{ snippets.Greeting }}</h1></body></html>',
     );
-    await Promise.all(
+    const headings = await Promise.all(
       runtimes.map(async ({ origin, expected, events }) => {
         let heading;
         do {
           await events.next('reload');
           heading = (await fetch(origin).then((r) => r.text())).match(/<h1>(.*?)<\/h1>/)?.[1];
         } while (!expected.test(heading ?? ''));
+        return { heading, expected };
       }),
     );
+    for (const { heading, expected } of headings) assert.match(heading, expected);
   } finally {
     controller.abort();
   }

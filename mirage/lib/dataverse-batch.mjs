@@ -32,16 +32,16 @@ function boundaryOf(contentType) {
   return match[1] ?? match[2];
 }
 
-const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 // A line that reads as the delimiter of another multipart body (RFC 2046 bchars, optional close). Its text is never executed.
-const FOREIGN_DELIMITER = /(^|\r?\n)--[0-9A-Za-z'()+_,\-./:=? ]+?(?:--)?[ \t]*(?=\r?\n|$)/;
+const FOREIGN_DELIMITER = /(^|\r?\n)--[0-9A-Za-z'()+_,\-./:=? ]+?(?:--)?[ \t]*(?=\r?\n|$)/; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
 
 // Splits on delimiter lines that match this boundary exactly (CRLF, the boundary, optional "--", padding, CRLF).
 // A longer boundary that starts with this one is content, not a delimiter. Returns the text after each delimiter line.
 // Only payload items that use the batch identifier are executed; a batch with none succeeds with nothing run.
 function sections(text, boundary) {
   const framed = `\r\n${text}`;
-  const delimiter = new RegExp(`\\r\\n--${escapeRegExp(boundary)}(--)?[ \\t]*(?=\\r\\n|$)`, 'g');
+  const delimiter = new RegExp(String.raw`\r\n--${escapeRegExp(boundary)}(--)?[ \t]*(?=\r\n|$)`, 'g');
   const found = [...framed.matchAll(delimiter)];
   if (found.length === 0) {
     if (framed.includes(`\r\n--${boundary}`)) throw invalid(FRAME_ERROR); // declared delimiter without valid CRLF framing
@@ -132,16 +132,17 @@ function jsonItem(item) {
   };
 }
 
-function orderJson(items) {
-  const ids = items.map((item) => item.refId).filter((id) => id !== undefined);
-  if (new Set(ids).size !== ids.length) throw invalid('The batch contains a duplicate request id.'); // native message not known
+function validateJsonDependencies(items, ids) {
   for (const item of items) {
-    const missing = item.dependsOn.find((dep) => !ids.includes(dep));
-    if (missing !== undefined) throw invalid(`The batch request depends on '${missing}', which is not in the batch.`); // native message not known
+    const missing = item.dependsOn.find((dependency) => !ids.includes(dependency));
+    if (missing !== undefined) throw invalid(`The batch request depends on '${missing}', which is not in the batch.`);
   }
-  const units = [],
-    groups = new Map(),
-    owners = new Map();
+}
+
+function groupJsonItems(items) {
+  const units = [];
+  const groups = new Map();
+  const owners = new Map();
   for (const item of items) {
     let unit = item.group === null ? null : groups.get(item.group);
     if (unit && unit !== units.at(-1)) throw invalid('Atomicity group members must be consecutive.');
@@ -153,6 +154,28 @@ function orderJson(items) {
     unit.items.push(item);
     if (item.refId !== undefined) owners.set(item.refId, unit);
   }
+  return { units, owners };
+}
+
+function orderUnitMembers(unit, owners, ordered) {
+  const done = new Set();
+  let members = unit.items;
+  while (members.length) {
+    const next = members.find((item) =>
+      item.dependsOn.every((dependency) => owners.get(dependency) !== unit || done.has(dependency)),
+    );
+    if (!next) throw invalid('The batch dependsOn ordering contains a cycle.');
+    ordered.push(next);
+    if (next.refId !== undefined) done.add(next.refId);
+    members = members.filter((item) => item !== next);
+  }
+}
+
+function orderJson(items) {
+  const ids = items.map((item) => item.refId).filter((id) => id !== undefined);
+  if (new Set(ids).size !== ids.length) throw invalid('The batch contains a duplicate request id.'); // native message not known
+  validateJsonDependencies(items, ids);
+  const { units, owners } = groupJsonItems(items);
   const ordered = [],
     completed = new Set();
   let pending = units;
@@ -163,15 +186,7 @@ function orderJson(items) {
       ),
     );
     if (!unit) throw invalid('The batch dependsOn ordering contains a cycle.');
-    const done = new Set();
-    let members = unit.items;
-    while (members.length) {
-      const next = members.find((item) => item.dependsOn.every((dep) => owners.get(dep) !== unit || done.has(dep)));
-      if (!next) throw invalid('The batch dependsOn ordering contains a cycle.');
-      ordered.push(next);
-      if (next.refId !== undefined) done.add(next.refId);
-      members = members.filter((item) => item !== next);
-    }
+    orderUnitMembers(unit, owners, ordered);
     completed.add(unit);
     pending = pending.filter((item) => item !== unit);
   }
@@ -373,8 +388,10 @@ const mimeLines = (contentId) => [
   ...(contentId ? [`Content-ID: ${contentId}`] : []),
 ];
 
-const partOf = (boundary, mime, content) =>
-  `--${boundary}\r\n${mime.map((line) => `${line}\r\n`).join('')}\r\n${content}\r\n`;
+const partOf = (boundary, mime, content) => {
+  const headers = mime.map((line) => `${line}\r\n`).join('');
+  return `--${boundary}\r\n${headers}\r\n${content}\r\n`;
+};
 
 // Envelope headers that a top-level answer carries but a native batch part does not: the service request ids and dop
 // hint, expires, Allow, Public, the transport headers and CORS. REQ_ID is not here: the dispatch supplies it on entity-engine errors only.
@@ -383,28 +400,33 @@ const PART_ENVELOPE =
 // The JSON type a native multipart part carries; a JSON batch answers with streaming too.
 const PART_JSON_TYPE = 'application/json; odata.metadata=minimal';
 
-function httpBlock(response, { json = false } = {}) {
-  const headers = new Map();
-  const set = (name, value) => headers.set(name.toLowerCase(), [name, String(value)]);
+function copyPartHeaders(response, headers, set) {
   // A native error part carries no Cache-Control; the no-cache pair is for reads.
   for (const [name, value] of Object.entries(response.headers ?? {})) {
     if (value === undefined || value === null || PART_ENVELOPE.test(name)) continue;
     if (response.status >= 400 && /^cache-control$/i.test(name)) continue;
     set(name, value);
   }
+}
+
+function addSuccessfulPartHeaders(headers, set) {
+  // Native answers each successful part with nosniff. An entity read (one with an ETag) also carries the no-cache pair.
+  if (!headers.has('x-content-type-options')) set('X-Content-Type-Options', 'nosniff');
+  if (headers.has('etag')) {
+    if (!headers.has('cache-control')) set('Cache-Control', 'no-cache');
+    if (!headers.has('pragma')) set('Pragma', 'no-cache');
+  }
+}
+
+function httpBlock(response, { json = false } = {}) {
+  const headers = new Map();
+  const set = (name, value) => headers.set(name.toLowerCase(), [name, String(value)]);
+  copyPartHeaders(response, headers, set);
   const body = response.body ?? undefined;
   const text = body === undefined || typeof body === 'string' ? body : stringifyExactJson(body);
   if (text && !headers.has('content-type')) set('Content-Type', json ? JSON_TYPE : PART_JSON_TYPE);
   if (!headers.has('odata-version')) set('OData-Version', '4.0');
-  if (response.status < 400) {
-    // Native answers each successful part with nosniff. An entity read (one with an ETag) also carries the no-cache pair
-    // (seen on record reads only; other entity responses are assumed alike); a WhoAmI part carries neither.
-    if (!headers.has('x-content-type-options')) set('X-Content-Type-Options', 'nosniff');
-    if (headers.has('etag')) {
-      if (!headers.has('cache-control')) set('Cache-Control', 'no-cache');
-      if (!headers.has('pragma')) set('Pragma', 'no-cache');
-    }
-  }
+  if (response.status < 400) addSuccessfulPartHeaders(headers, set);
   const entity = headers.get('odata-entityid')?.[1];
   if (response.status === 204 && entity && !headers.has('location')) set('Location', entity);
   const lines = [

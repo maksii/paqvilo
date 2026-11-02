@@ -1,6 +1,5 @@
-import { connectionPath } from './registration.mjs';
+import { connectionPath, id } from './registration.mjs';
 import { loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
-import { id } from './registration.mjs';
 const connection = await loadConnection(connectionPath());
 const c = connectedClient(connection);
 await c.verify(connection.organisationId);

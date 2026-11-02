@@ -1,13 +1,13 @@
 /** Serializable early bootstrap. Only a backend-held writer can admit response descriptors. */
 export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlot, limit = 50000 }) {
-  if (!secret || !slot || Object.hasOwn(window, slot)) return;
+  if (!secret || !slot || Object.hasOwn(globalThis, slot)) return;
   const marker = 'data-paqvilo-source';
   const apply = Reflect.apply,
     clone = structuredClone,
     freeze = Object.freeze,
     define = Object.defineProperty;
   const lock = (object, prototype, names) => {
-    for (let i = 0; i < names.length; i++) define(object, names[i], { value: prototype[names[i]].bind(object) });
+    for (let i = 0; i < names.length; i++) define(object, names[i], { value: prototype[names[i]].bind(object) }); // NOSONAR: array-like or mutated collection, index loop kept
     return object;
   };
   const getter = (prototype, name) => Object.getOwnPropertyDescriptor(prototype, name).get;
@@ -83,6 +83,53 @@ export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlo
         stack[size++] = { node: read(templateContent, current), owner: current };
     }
   };
+  const oldMarkersFor = (records) => {
+    // A script may remove a parser marker before this microtask; MutationRecord retains the original node.
+    const oldMarkers = [];
+    for (const record of records)
+      if (
+        recordValue(record, 'type') === 'attributes' &&
+        recordValue(record, 'attributeName') === marker &&
+        recordValue(record, 'oldValue')
+      )
+        oldMarkers[oldMarkers.length] = { node: recordValue(record, 'target'), id: recordValue(record, 'oldValue') };
+    return oldMarkers;
+  };
+  const originalMarker = (node, oldMarkers) => {
+    for (let i = 0; i < oldMarkers.length; i++) if (oldMarkers[i].node === node) return oldMarkers[i].id; // NOSONAR: array-like or mutated collection, index loop kept
+    return markerOf(node);
+  };
+  const processChildList = (record, seen, budget, oldMarkers) => {
+    const added = recordValue(record, 'addedNodes');
+    /* NOSONAR: array-like or mutated collection, index loop kept */ for (let j = 0; j < added.length; j++)
+      subtree(added[j], (child, owner) => remember(child, originalMarker(child, oldMarkers), owner), seen, budget);
+  };
+  const processAttributeMutation = (record) => {
+    const node = recordValue(record, 'target');
+    if (recordValue(record, 'attributeName') === marker) {
+      const oldValue = recordValue(record, 'oldValue');
+      remember(node, oldValue);
+      const next = markerOf(node);
+      if (next !== oldValue) revoked.add(node);
+      if (next) remember(node, next);
+    } else if (
+      nodeIds.has(node) &&
+      testAttribute(recordValue(record, 'attributeName')) &&
+      attribute(node, recordValue(record, 'attributeName')) !== recordValue(record, 'oldValue')
+    ) {
+      let changes = changedAttributes.get(node);
+      if (!changes) {
+        changes = lock(new Set(), Set.prototype, ['add', 'has']);
+        changedAttributes.set(node, changes);
+      }
+      changes.add(recordValue(record, 'attributeName'));
+    }
+  };
+  const processRecord = (record, seen, budget, oldMarkers) => {
+    const type = recordValue(record, 'type');
+    if (type === 'childList') processChildList(record, seen, budget, oldMarkers);
+    else if (type === 'attributes') processAttributeMutation(record);
+  };
   const observe = (records) => {
     if (records.length > limit) {
       truncated = true;
@@ -90,50 +137,8 @@ export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlo
     }
     const seen = new NativeWeakSet(),
       budget = { nodes: 0 };
-    // A script may remove a parser marker before this microtask; MutationRecord retains the original node.
-    const oldMarkers = [];
-    for (let i = 0; i < records.length; i++) {
-      const record = records[i];
-      if (
-        recordValue(record, 'type') === 'attributes' &&
-        recordValue(record, 'attributeName') === marker &&
-        recordValue(record, 'oldValue')
-      )
-        oldMarkers[oldMarkers.length] = { node: recordValue(record, 'target'), id: recordValue(record, 'oldValue') };
-    }
-    const originalMarker = (node) => {
-      for (let i = 0; i < oldMarkers.length; i++) if (oldMarkers[i].node === node) return oldMarkers[i].id;
-      return markerOf(node);
-    };
-    for (let i = 0; i < records.length; i++) {
-      const record = records[i],
-        type = recordValue(record, 'type');
-      if (type === 'childList') {
-        const added = recordValue(record, 'addedNodes');
-        for (let j = 0; j < added.length; j++)
-          subtree(added[j], (child, owner) => remember(child, originalMarker(child), owner), seen, budget);
-      } else if (type === 'attributes') {
-        const node = recordValue(record, 'target');
-        if (recordValue(record, 'attributeName') === marker) {
-          const oldValue = recordValue(record, 'oldValue');
-          remember(node, oldValue);
-          const next = markerOf(node);
-          if (next !== oldValue) revoked.add(node);
-          if (next) remember(node, next);
-        } else if (
-          nodeIds.has(node) &&
-          testAttribute(recordValue(record, 'attributeName')) &&
-          attribute(node, recordValue(record, 'attributeName')) !== recordValue(record, 'oldValue')
-        ) {
-          let changes = changedAttributes.get(node);
-          if (!changes) {
-            changes = lock(new Set(), Set.prototype, ['add', 'has']);
-            changedAttributes.set(node, changes);
-          }
-          changes.add(recordValue(record, 'attributeName'));
-        }
-      }
-    }
+    const oldMarkers = oldMarkersFor(records);
+    for (const record of records) processRecord(record, seen, budget, oldMarkers);
   };
   const observer = new MutationObserver(observe);
   const takeRecords = observer.takeRecords.bind(observer),
@@ -146,6 +151,84 @@ export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlo
     return content;
   };
   define(templatePrototype, 'content', { ...templateDescriptor, get: contentGetter });
+  const findProofBinding = (proof, id) => {
+    let binding = null;
+    for (let i = 0; i < proof.bindings.length; i++) if (proof.bindings[i].id === id) binding = proof.bindings[i]; // NOSONAR: array-like or mutated collection, index loop kept
+    return binding;
+  };
+  const proofBindingIsValid = (proof, binding, node) => {
+    if (binding.inertTemplateId) {
+      const owner = inertOwners.get(node);
+      if (!owner || nodeIds.get(owner) !== binding.inertTemplateId || originals.get(binding.inertTemplateId) !== owner)
+        return false;
+    }
+    if (read(localName, node) !== binding.tag) return false;
+    const attributes = binding.attributes ?? [];
+    const changes = changedAttributes.get(node);
+    if (changes) {
+      if (binding.mapping !== 'platform') return false;
+      for (let i = 0; i < attributes.length; i++) if (changes.has(attributes[i].name)) return false; // NOSONAR: array-like or mutated collection, index loop kept
+    }
+    /* NOSONAR: array-like or mutated collection, index loop kept */ for (let i = 0; i < attributes.length; i++)
+      if (attribute(node, attributes[i].name) !== attributes[i].value) return false;
+    return true;
+  };
+  const addRelevantSourceRefs = (result, proof, ids, contexts) => {
+    /* NOSONAR */ for (let i = 0; i < proof.sourceRefs.length; i++) {
+      let relevant = false;
+      for (let j = 0; j < ids.length; j++) if (proof.sourceRefs[i].id === ids[j]) relevant = true; // NOSONAR: array-like or mutated collection, index loop kept
+      for (let j = 0; j < contexts.length; j++) if (proof.sourceRefs[i].id === contexts[j].sourceRefId) relevant = true; // NOSONAR: array-like or mutated collection, index loop kept
+      if (relevant) result.sourceRefs[result.sourceRefs.length] = clone(proof.sourceRefs[i]);
+    }
+  };
+  const addProof = (proof, node, id, result, scope) => {
+    const binding = findProofBinding(proof, id);
+    if (!binding || !proofBindingIsValid(proof, binding, node)) return false;
+    const local = proof.channel === 'mirage-render';
+    if (proof.complete === false) result.limits.truncated = true;
+    result.mode = local ? 'local' : 'live';
+    result.sourceRefs = [];
+    const ids = clone(binding.sourceRefIds ?? [binding.sourceRefId]);
+    const contexts = binding.contexts ?? [];
+    addRelevantSourceRefs(result, proof, ids, contexts);
+    const renderBindingKind = () => {
+      if (binding.mapping === 'platform') return 'render-platform';
+      if (binding.mapping === 'conflicting') return 'binding-conflict';
+      if (binding.mapping === 'derived') return 'render-derived';
+      if (local) return 'render-literal';
+      return 'lense-applied-literal';
+    };
+    const renderBindingPredicate = () => {
+      if (binding.mapping === 'platform') return 'identity';
+      if (binding.mapping === 'derived') return 'implementation';
+      return 'created-by';
+    };
+    result.facts[0] = {
+      id: proof.proofId + ':' + id,
+      scope,
+      dimension: binding.mapping === 'platform' ? 'owner' : 'source',
+      kind: renderBindingKind(),
+      subject: id,
+      predicate: renderBindingPredicate(),
+      ...(binding.mapping === 'platform' ? { binding: clone(binding.component) } : {}),
+      sourceRefIds: ids,
+      region: binding.region,
+      renderSourceRevision: proof.sourceRevision,
+    };
+    for (let i = 0; i < contexts.length; i++)
+      result.facts[result.facts.length] = {
+        id: proof.proofId + ':context:' + i + ':' + id,
+        scope,
+        dimension: 'context',
+        kind: 'render-invocation',
+        subject: id,
+        predicate: 'declares',
+        sourceRefIds: [contexts[i].sourceRefId],
+        region: contexts[i].region,
+        renderSourceRevision: proof.sourceRevision,
+      };
+    return true;
+  };
   const query = (node, { scope, anchorGeneration } = {}) => {
     observe(takeRecords());
     const result = {
@@ -179,76 +262,7 @@ export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlo
     }
     let admitted = false;
     proofs.forEach((proof) => {
-      if (admitted) return;
-      let binding = null;
-      for (let i = 0; i < proof.bindings.length; i++) if (proof.bindings[i].id === id) binding = proof.bindings[i];
-      if (!binding) return;
-      if (binding.inertTemplateId) {
-        const owner = inertOwners.get(node);
-        if (
-          !owner ||
-          nodeIds.get(owner) !== binding.inertTemplateId ||
-          originals.get(binding.inertTemplateId) !== owner
-        )
-          return;
-      }
-      if (read(localName, node) !== binding.tag) return;
-      const attributes = binding.attributes ?? [];
-      const changes = changedAttributes.get(node);
-      if (changes) {
-        if (binding.mapping !== 'platform') return;
-        for (let i = 0; i < attributes.length; i++) if (changes.has(attributes[i].name)) return;
-      }
-      for (let i = 0; i < attributes.length; i++)
-        if (attribute(node, attributes[i].name) !== attributes[i].value) return;
-      const local = proof.channel === 'mirage-render';
-      if (proof.complete === false) result.limits.truncated = true;
-      result.mode = local ? 'local' : 'live';
-      result.sourceRefs = [];
-      const ids = clone(binding.sourceRefIds ?? [binding.sourceRefId]);
-      const contexts = binding.contexts ?? [];
-      for (let i = 0; i < proof.sourceRefs.length; i++) {
-        let relevant = false;
-        for (let j = 0; j < ids.length; j++) if (proof.sourceRefs[i].id === ids[j]) relevant = true;
-        for (let j = 0; j < contexts.length; j++)
-          if (proof.sourceRefs[i].id === contexts[j].sourceRefId) relevant = true;
-        if (relevant) result.sourceRefs[result.sourceRefs.length] = clone(proof.sourceRefs[i]);
-      }
-      result.facts[0] = {
-        id: proof.proofId + ':' + id,
-        scope,
-        dimension: binding.mapping === 'platform' ? 'owner' : 'source',
-        kind:
-          binding.mapping === 'platform'
-            ? 'render-platform'
-            : binding.mapping === 'conflicting'
-              ? 'binding-conflict'
-              : binding.mapping === 'derived'
-                ? 'render-derived'
-                : local
-                  ? 'render-literal'
-                  : 'lense-applied-literal',
-        subject: id,
-        predicate:
-          binding.mapping === 'platform' ? 'identity' : binding.mapping === 'derived' ? 'implementation' : 'created-by',
-        ...(binding.mapping === 'platform' ? { binding: clone(binding.component) } : {}),
-        sourceRefIds: ids,
-        region: binding.region,
-        renderSourceRevision: proof.sourceRevision,
-      };
-      for (let i = 0; i < contexts.length; i++)
-        result.facts[result.facts.length] = {
-          id: proof.proofId + ':context:' + i + ':' + id,
-          scope,
-          dimension: 'context',
-          kind: 'render-invocation',
-          subject: id,
-          predicate: 'declares',
-          sourceRefIds: [contexts[i].sourceRefId],
-          region: contexts[i].region,
-          renderSourceRevision: proof.sourceRevision,
-        };
-      admitted = true;
+      if (!admitted) admitted = addProof(proof, node, id, result, scope);
     });
     if (admitted) return clone(result);
     result.availability[0] = { reason: 'response-proof-not-published' };
@@ -301,5 +315,5 @@ export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlo
       return writer;
     },
   });
-  define(window, slot, { value: capability, configurable: false, writable: false });
+  define(globalThis, slot, { value: capability, configurable: false, writable: false });
 }

@@ -98,27 +98,65 @@ export async function archiveOwnedRun(client, { intentJournalFile, captureFile, 
   await writeFile(receiptFile, JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx' });
   return receipt;
 }
-export async function cleanupArchivedRun(client, { receiptFile, journalFile, resume = false }) {
-  const receipt = JSON.parse(await readFile(receiptFile, 'utf8')),
-    packed = await readFile(receipt.archiveFile);
-  if (receipt.kind !== 'OwnedNativeCampaignArchive' || sha(packed) !== receipt.archiveSha256)
-    throw new Error('Cleanup requires a verified immutable archive.');
-  const bytes = await expand(packed);
+
+function verifiedArchiveContent(receipt, bytes) {
   if (sha(bytes) !== receipt.contentSha256) throw new Error('Archived content checksum mismatch.');
   const archive = JSON.parse(bytes);
   if (archive.runId !== receipt.runId || archive.intent.runId !== receipt.runId)
     throw new Error('Archived provenance mismatch.');
-  if (!resume) {
-    const current = await readOwnedRows(client, archive.intent);
-    if (snapshotHash(current) !== receipt.rowHash)
-      throw new Error('Native owned rows changed after archival; cleanup refused.');
-  }
+  return archive;
+}
+
+function cleanupPlans(archive, receipt) {
   const plans = [
     ...archive.rows.events.map((row) => ({ table: 'pqvd_pluginevents', id: row.pqvd_plugineventid, row })),
     ...archive.rows.operations.map((row) => ({ table: 'pqvd_testoperations', id: row.pqvd_testoperationid, row })),
     { table: 'pqvd_testruns', id: receipt.runId, row: archive.rows.run },
   ];
   if (plans.some((plan) => !guid(plan.id))) throw new Error('Cleanup refuses unsafe record identity.');
+  return plans;
+}
+
+function validateCleanupJournal(journal, receipt, plans) {
+  if (
+    journal.kind !== 'OwnedNativeCampaignCleanup' ||
+    journal.runId !== receipt.runId ||
+    journal.archiveSha256 !== receipt.archiveSha256 ||
+    JSON.stringify(journal.entries.map(({ table, id }) => ({ table, id }))) !==
+      JSON.stringify(plans.map(({ table, id }) => ({ table, id })))
+  )
+    throw new Error('Cleanup resume provenance mismatch.');
+}
+
+function markMissingCleanupEntry(entry) {
+  if (!['pending', 'deleted'].includes(entry.status))
+    throw new Error('Owned row disappeared before cleanup reached it.');
+  entry.status = 'deleted';
+}
+
+function assertCleanupRowUnchanged(entry, actual, plans, archive, endpoint) {
+  if (
+    entry.status === 'deleted' ||
+    snapshotHash(canonical([actual])[0]) !==
+      snapshotHash(plans.find((plan) => plan.table === entry.table && plan.id === entry.id).row) ||
+    actual['@odata.etag'] !== archive.rows.rowVersions[endpoint]
+  )
+    throw new Error('Owned row changed during cleanup; deletion refused.');
+}
+
+export async function cleanupArchivedRun(client, { receiptFile, journalFile, resume = false }) {
+  const receipt = JSON.parse(await readFile(receiptFile, 'utf8')),
+    packed = await readFile(receipt.archiveFile);
+  if (receipt.kind !== 'OwnedNativeCampaignArchive' || sha(packed) !== receipt.archiveSha256)
+    throw new Error('Cleanup requires a verified immutable archive.');
+  const bytes = await expand(packed);
+  const archive = verifiedArchiveContent(receipt, bytes);
+  if (!resume) {
+    const current = await readOwnedRows(client, archive.intent);
+    if (snapshotHash(current) !== receipt.rowHash)
+      throw new Error('Native owned rows changed after archival; cleanup refused.');
+  }
+  const plans = cleanupPlans(archive, receipt);
   const journal = resume
     ? JSON.parse(await readFile(journalFile, 'utf8'))
     : {
@@ -130,33 +168,18 @@ export async function cleanupArchivedRun(client, { receiptFile, journalFile, res
         startedAt: new Date().toISOString(),
         entries: plans.map(({ table, id }) => ({ table, id, status: 'planned' })),
       };
-  if (
-    journal.kind !== 'OwnedNativeCampaignCleanup' ||
-    journal.runId !== receipt.runId ||
-    journal.archiveSha256 !== receipt.archiveSha256 ||
-    JSON.stringify(journal.entries.map(({ table, id }) => ({ table, id }))) !==
-      JSON.stringify(plans.map(({ table, id }) => ({ table, id })))
-  )
-    throw new Error('Cleanup resume provenance mismatch.');
+  validateCleanupJournal(journal, receipt, plans);
   if (!resume) await writeFile(journalFile, JSON.stringify(journal, null, 2) + '\n', { flag: 'wx' });
   const save = () => writeFile(journalFile, JSON.stringify(journal, null, 2) + '\n');
   for (const entry of journal.entries) {
     const endpoint = `${entry.table}(${entry.id})`,
       actual = await client.optional(endpoint);
     if (!actual) {
-      if (!['pending', 'deleted'].includes(entry.status))
-        throw new Error('Owned row disappeared before cleanup reached it.');
-      entry.status = 'deleted';
+      markMissingCleanupEntry(entry);
       await save();
       continue;
     }
-    if (
-      entry.status === 'deleted' ||
-      snapshotHash(canonical([actual])[0]) !==
-        snapshotHash(plans.find((plan) => plan.table === entry.table && plan.id === entry.id).row) ||
-      actual['@odata.etag'] !== archive.rows.rowVersions[endpoint]
-    )
-      throw new Error('Owned row changed during cleanup; deletion refused.');
+    assertCleanupRowUnchanged(entry, actual, plans, archive, endpoint);
     entry.status = 'pending';
     await save();
     await client.request(endpoint, { method: 'DELETE', ifMatch: actual['@odata.etag'] });

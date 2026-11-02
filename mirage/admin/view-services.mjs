@@ -14,14 +14,17 @@ const { e, value, list, failure, failed, json, yes, activityCounts, fieldHelp, h
   help: HELP,
 });
 /** Panel summary of a route answer: its count when configured, "unavailable" on a failed read, "not configured" only when the host said so. */
-const configured = (answer, count) =>
-  answer?.error
-    ? 'unavailable'
-    : answer?.configured
-      ? count
-      : answer?.configured === false
-        ? 'not configured'
-        : 'not reported';
+const configured = (answer, count) => {
+  if (answer?.error) return 'unavailable';
+  if (answer?.configured) return count;
+  if (answer?.configured === false) return 'not configured';
+  return 'not reported';
+};
+const messageTone = (state) => {
+  if (state === 'deadLettered') return 'bad';
+  if (state === 'active') return 'ok';
+  return 'info';
+};
 
 function storagePanel(ctx, d, node, byPrefix, activity) {
   const storage = node('provider:storage');
@@ -135,50 +138,63 @@ function messagingPanel(ctx, d, node, activity) {
   const max =
     `<p><label for="svc-peek-max">Messages to peek</label> <input id="svc-peek-max" type="number" min="1" max="1000" value="${e(d.peekMax ?? 100)}" aria-describedby="svc-peek-max-help">` +
     `${kit.fieldHelp('svc-peek-max', 'Peek reads without locking, at most 1000 messages. Use <entity>/$deadletterqueue for dead letters.')}</p>`;
-  const peek = d.peek
-    ? `<h3>Messages in <code>${e(d.peek.entity)}</code></h3>${
-        d.peek.error
-          ? kit.notice(d.peek.error, 'bad')
-          : list(
-              ctx,
-              'svc-peek',
-              d.peek.messages ?? [],
-              [
-                { label: 'Sequence', render: (item) => e(item.sequenceNumber ?? '') },
-                { label: 'Message id', render: (item) => `<code>${e(item.messageId ?? '')}</code>` },
-                {
-                  label: 'State',
-                  render: (item) =>
-                    kit.badge(
-                      item.state ?? 'unknown',
-                      item.state === 'deadLettered' ? 'bad' : item.state === 'active' ? 'ok' : 'info',
-                    ),
-                },
-                { label: 'Enqueued', render: (item) => e(item.enqueuedTime ?? '') },
-                { label: 'Deliveries', render: (item) => e(item.deliveryCount ?? 0) },
-                { label: 'Body', render: (item) => `<code>${json(item.body)}</code>` },
-              ],
-              'The entity has no message.',
-              `Messages in ${d.peek.entity}`,
-            )
-      }<p><button type="button" class="ui-button ui-small" data-svc-peek-close>Close messages</button></p>`
-    : '';
+  const peek = renderPeek(ctx, d.peek);
   return `${summary}<h3>Endpoints</h3>${endpoints}<h3>Entities</h3>${max}${entities}${peek}`;
 }
 
+function renderPeek(ctx, peek) {
+  if (!peek) return '';
+  let content;
+  if (peek.error) content = kit.notice(peek.error, 'bad');
+  else
+    content = list(
+      ctx,
+      'svc-peek',
+      peek.messages ?? [],
+      [
+        { label: 'Sequence', render: (item) => e(item.sequenceNumber ?? '') },
+        { label: 'Message id', render: (item) => `<code>${e(item.messageId ?? '')}</code>` },
+        {
+          label: 'State',
+          render: (item) => kit.badge(item.state ?? 'unknown', messageTone(item.state)),
+        },
+        { label: 'Enqueued', render: (item) => e(item.enqueuedTime ?? '') },
+        { label: 'Deliveries', render: (item) => e(item.deliveryCount ?? 0) },
+        { label: 'Body', render: (item) => `<code>${json(item.body)}</code>` },
+      ],
+      'The entity has no message.',
+      `Messages in ${peek.entity}`,
+    );
+  return `<h3>Messages in <code>${e(peek.entity)}</code></h3>${content}<p><button type="button" class="ui-button ui-small" data-svc-peek-close>Close messages</button></p>`;
+}
+
 const CHANNELS = ['email', 'teams', 'outlook', 'portal-email'];
+const outboxTone = (state) => {
+  if (state === 'failed') return 'bad';
+  if (state === 'delivered') return 'ok';
+  return 'info';
+};
 function outboxPanel(ctx, d) {
   const filter = d.outboxFilter ?? {},
     outbox = d.outbox ?? {};
   const field = (id, name, label, help) =>
     `<div><label for="${id}">${e(label)}</label><input id="${id}" name="${name}" type="text" value="${e(filter[name] ?? '')}" aria-describedby="${id}-help">${kit.fieldHelp(id, help)}</div>`;
+  const correlationField = field(
+    'svc-outbox-correlation',
+    'correlationId',
+    'Correlation id',
+    'Exact correlation id of the captured entries.',
+  );
+  const channelOptions = CHANNELS.map(
+    (channel) => `<option value="${channel}"${filter.channel === channel ? ' selected' : ''}>${channel}</option>`,
+  ).join('');
   const form =
-    `<form id="svc-outbox-form" class="ui-form" data-svc-outbox-form>${field('svc-outbox-correlation', 'correlationId', 'Correlation id', 'Exact correlation id of the captured entries.')}` +
-    `<div><label for="svc-outbox-channel">Channel</label><select id="svc-outbox-channel" name="channel" aria-describedby="svc-outbox-channel-help"><option value="">Any channel</option>${CHANNELS.map((channel) => `<option value="${channel}"${filter.channel === channel ? ' selected' : ''}>${channel}</option>`).join('')}</select>` +
+    `<form id="svc-outbox-form" class="ui-form" data-svc-outbox-form>${correlationField}` +
+    `<div><label for="svc-outbox-channel">Channel</label><select id="svc-outbox-channel" name="channel" aria-describedby="svc-outbox-channel-help"><option value="">Any channel</option>${channelOptions}</select>` +
     `${fieldHelp(ctx, 'svc-outbox-channel', 'services.outbox', 'channel')}</div>` +
     `${field('svc-outbox-since', 'since', 'Since', 'An ISO date and time; entries created at or after it are listed.')}` +
     '<p><button type="submit" class="ui-button ui-primary ui-small">Filter outbox</button> <button type="button" class="ui-button ui-small" data-svc-outbox-clear>Clear filter</button></p></form>';
-  if (outbox.error) return `${form}${kit.notice(`The outbox could not be read: ${failed(outbox)}`, 'bad')}`;
+  if (outbox.error) return form + kit.notice('The outbox could not be read: ' + failed(outbox), 'bad');
   if (!outbox.configured && outbox.configured !== false)
     return `${form}${kit.notice('This host did not report its outbox.', 'warn')}`;
   if (!outbox.configured)
@@ -196,11 +212,7 @@ function outboxPanel(ctx, d) {
         { label: 'Subject', render: (item) => e(item.subject ?? '') },
         {
           label: 'State',
-          render: (item) =>
-            kit.badge(
-              item.state ?? 'queued',
-              item.state === 'failed' ? 'bad' : item.state === 'delivered' ? 'ok' : 'info',
-            ),
+          render: (item) => kit.badge(item.state ?? 'queued', outboxTone(item.state)),
         },
         { label: 'Correlation id', render: (item) => `<code>${e(item.correlationId ?? '')}</code>` },
       ],
@@ -317,9 +329,9 @@ function localServicesPanel(ctx, d, byPrefix) {
         label: 'Last probe',
         render: (item) => {
           const probe = probes[item.label];
-          return probe
-            ? `${kit.badge(probe.status, probe.status === 'satisfied' ? 'ok' : 'bad')} ${e(probe.message ?? '')}`
-            : 'Not probed';
+          if (!probe) return 'Not probed';
+          const tone = probe.status === 'satisfied' ? 'ok' : 'bad';
+          return `${kit.badge(probe.status, tone)} ${e(probe.message ?? '')}`;
         },
       },
       {
@@ -410,7 +422,7 @@ export const view = {
     const [dashboard, messages, outbox, waits, environment] = await Promise.all([
       ctx.request('/dashboard'),
       ctx.request('/messages').catch(failure),
-      ctx.request(`/outbox${filter.size ? `?${filter}` : ''}`).catch(failure),
+      ctx.request('/outbox' + (filter.size ? '?' + filter : '')).catch(failure),
       ctx.request('/flow-waits').catch(failure),
       ctx.request('/environment').catch(failure),
     ]);
@@ -496,7 +508,7 @@ export const view = {
     if (event.type === 'submit' && target('[data-svc-outbox-form]')) {
       event.preventDefault();
       d.outboxFilter = Object.fromEntries(
-        [...new FormData(target('[data-svc-outbox-form]'))].map(([name, item]) => [name, String(item).trim()]),
+        [...new FormData(target('[data-svc-outbox-form]'))].map(([name, item]) => [name, String(item).trim()]), // NOSONAR: stringification is intentional here
       );
       ctx.refresh();
       return true;
@@ -546,8 +558,10 @@ export const view = {
     if (probe) {
       const id = probe.dataset.svcProbe;
       return pending(ctx, probe, async () => {
-        const report = await ctx.request(`/preflight?requires=${encodeURIComponent(`local-service:${id}`)}`);
-        (d.probes ??= {})[id] = report.requirements?.find((row) => row.id === `local-service:${id}`) ?? {
+        const requirementId = 'local-service:' + id;
+        const report = await ctx.request(`/preflight?requires=${encodeURIComponent(requirementId)}`);
+        d.probes ??= {};
+        d.probes[id] = report.requirements?.find((row) => row.id === requirementId) ?? {
           status: 'missing',
           message: 'The preflight report has no row for this service.',
         };

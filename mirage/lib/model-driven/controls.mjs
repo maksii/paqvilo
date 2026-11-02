@@ -22,11 +22,11 @@ const input = (type, field, value) => {
 };
 registerControl('text', (field, value) => {
   const format = String(field.format ?? '').toLowerCase();
-  const control = input(
-    format === 'email' ? 'email' : format === 'url' ? 'url' : format === 'phone' ? 'tel' : 'text',
-    field,
-    value,
-  );
+  let inputType = 'text';
+  if (format === 'email') inputType = 'email';
+  else if (format === 'url') inputType = 'url';
+  else if (format === 'phone') inputType = 'tel';
+  const control = input(inputType, field, value);
   const action = {
     email: ['Send email', 'mail'],
     phone: ['Call phone number', 'phone'],
@@ -87,7 +87,10 @@ registerControl('number', (field, value, context = {}) => {
   formatted.setAttribute('aria-hidden', 'true');
   const integer = /^(?:int|integer|bigint)$/.test(field.dataverseType ?? ''),
     money = /^(?:money|currency)$/.test(field.dataverseType ?? '');
-  const precision = Number.isInteger(field.precision) ? Math.max(0, Math.min(20, field.precision)) : integer ? 0 : 2;
+  let precision;
+  if (Number.isInteger(field.precision)) precision = Math.max(0, Math.min(20, field.precision));
+  else if (integer) precision = 0;
+  else precision = 2;
   // Reuse the record's own formatted currency symbol; no site-specific symbol
   // belongs in the control host. The organization adapter supplies annotations.
   const symbol = money ? String(context.formatted ?? '').replace(/[\d\s,.+\-−]/g, '') : '';
@@ -95,12 +98,10 @@ registerControl('number', (field, value, context = {}) => {
   let original = value;
   const refresh = () => {
     const raw = control.element.value;
-    formatted.textContent =
-      raw === ''
-        ? ''
-        : Object.is(Number(raw), Number(original)) && context.formatted != null
-          ? String(context.formatted)
-          : symbol + format.format(Number(raw));
+    if (raw === '') formatted.textContent = '';
+    else if (Object.is(Number(raw), Number(original)) && context.formatted != null)
+      formatted.textContent = String(context.formatted);
+    else formatted.textContent = symbol + format.format(Number(raw));
     element.classList.toggle('has-number', raw !== '');
   };
   control.element.addEventListener('input', refresh);

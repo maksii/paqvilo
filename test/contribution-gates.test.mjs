@@ -868,9 +868,10 @@ test('Windows examples require the verified CLR fixture independently of Mirage 
   for (const suite of ['mirage', 'examples', 'all']) assert.equal(requiresClrFixture(suite, 'linux'), false);
   const source = fs.readFileSync(new URL('../scripts/ci.mjs', import.meta.url), 'utf8');
   assert.match(source, /if \(requiresClrFixture\(suite\)\) await clrFixture\(\)/);
+  assert.match(source, /if \(requiresClrFixture\(suite\)\) requireClrFixtureFile\(\);/);
   assert.match(
     source,
-    /if \(requiresClrFixture\(suite\)\) \{[\s\S]*?verifyClrSdk\(sdk\);[\s\S]*?environment\('PAQ_TEST_XRM_SDK', sdk\)/,
+    /function requireClrFixtureFile\(\) \{[\s\S]*?verifyClrSdk\(sdk\);[\s\S]*?environment\('PAQ_TEST_XRM_SDK', sdk\)/,
   );
 });
 
@@ -953,7 +954,7 @@ test('Git status probes fail closed without refreshing the index with optional l
   assert.equal(fs.readFileSync(lock, 'utf8'), 'another operation owns this lock');
   for (const file of ['scripts/ci.mjs', 'scripts/git-hooks.mjs', '.github/scripts/change-scope.mjs']) {
     const source = fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
-    const calls = [...source.matchAll(/spawnSync\(\s*'git',\s*([^\n]+)/g)];
+    const calls = [...source.matchAll(/spawnSync\(\s*'git',(?:[ \t]*\/\/[^\n]*)?\s*([^\n]+)/g)];
     assert.ok(calls.length > 0, file);
     for (const call of calls) assert.match(call[1], /^\['--no-optional-locks'/, file);
   }

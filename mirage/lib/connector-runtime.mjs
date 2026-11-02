@@ -66,9 +66,9 @@ const providerFailure = (error, mapped, secure) => ({
 // message } } or a flat { code, message }); a sealed call (secure) keeps only the status.
 function answerError(answer, secure) {
   const status = answer.statusCode,
-    body = answer.body,
-    inner =
-      body && typeof body === 'object' ? (body.error && typeof body.error === 'object' ? body.error : body) : null;
+    body = answer.body;
+  let inner = null;
+  if (body && typeof body === 'object') inner = body.error && typeof body.error === 'object' ? body.error : body;
   const generic = { code: 'Http' + status, message: `The connector answered status ${status}.` };
   if (secure || !inner) return generic;
   return {
@@ -84,8 +84,7 @@ const clone = (value) => (value === undefined ? null : structuredClone(value));
 export const connectorOf = (apiId) =>
   String(apiId ?? '')
     .split('/')
-    .filter(Boolean)
-    .pop() ?? '';
+    .findLast(Boolean) ?? '';
 /** The connection reference logical name a flow's connectionReferences entry names, or null. */
 export const referenceOf = (connectionReferences, connectionName) => {
   const entry = connectionName == null ? null : connectionReferences?.[connectionName];
@@ -177,7 +176,7 @@ function relatedRow(store, value) {
       bad('The related row URL names another organization; only this local organization is related.');
     path = url.pathname;
   }
-  const match = /(?:^|\/)([A-Za-z_][\w]*)\(\{?([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\}?\)\/?$/i.exec(path);
+  const match = /(?:^|\/)([a-z_]\w*)\(\{?([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\}?\)\/?$/i.exec(path);
   if (!match) bad('The related row URL must end with <entity set>(<row id>).');
   return { logicalName: store.resolveMapping(match[1]).logicalName, id: match[2].toLowerCase() };
 }
@@ -291,13 +290,223 @@ function dataverseFacts(store, entity, answer) {
     } catch {
       id = null;
     }
+  let rowCount = null;
+  if (rows) rowCount = rows.length;
+  else if (Array.isArray(body?.responses)) rowCount = body.responses.length;
   return {
     statusCode: answer?.statusCode ?? null,
     id,
-    rowCount: rows ? rows.length : Array.isArray(body?.responses) ? body.responses.length : null,
+    rowCount,
     ...(rows ? { moreRecords: Boolean(answer?.nextLink ?? body?.['@odata.nextLink']) } : {}),
   };
 }
+
+function updateDataverseRecord(service, store, entity, p, values) {
+  let exists = true;
+  try {
+    service.get(entity, p.recordId);
+  } catch (error) {
+    if (error.code !== 'NotFound') throw error;
+    exists = false;
+  }
+  if (exists)
+    return service.updateAsync(entity, p.recordId, values).then((row) => ({ statusCode: 200, body: clone(row) }));
+  return service
+    .createAsync(entity, { ...values, [store.resolveMapping(entity).idColumn]: p.recordId })
+    .then((row) => ({ statusCode: 201, body: clone(row) }));
+}
+
+function getDataverseItem(service, entity, p) {
+  if (p.$select != null && typeof p.$select !== 'string')
+    throw new DataError('GetItem select columns require a comma-separated string.', 400, 'LocalFlowExpression');
+  const selected = parseSelect(p.$select);
+  if (selected?.some((name) => /^_(.+)_value$/.test(name)))
+    throw new DataError(
+      'GetItem lookup aliases require an explicit connector projection adapter.',
+      501,
+      'LocalFlowUnsupported',
+    );
+  return {
+    statusCode: 200,
+    body: service.get(
+      entity,
+      p.recordId,
+      selected ? { allColumns: false, columns: selected } : undefined,
+      p.partitionId != null ? { partitionId: p.partitionId } : {},
+    ),
+  };
+}
+
+function listDataverseRecords(store, service, entity, p) {
+  const page = p.$skiptoken == null ? 1 : Number(/pagenumber="(\d+)"/.exec(String(p.$skiptoken))?.[1]);
+  /* NOSONAR: operand can be NaN or undefined, the negated test differs */ if (!(page >= 1))
+    throw new DataError('The skip token is not one a List rows answer issued.', 400, 'LocalFlowExpression');
+  const answer = (rows, more, rest = {}) => {
+    const cookie = `<cookie pagenumber="${page + 1}" />`;
+    const link = more ? `${store.resolveMapping(entity).entitySet}?$skiptoken=${encodeURIComponent(cookie)}` : null;
+    return {
+      statusCode: 200,
+      body: { ...rest, value: rows, ...(link ? { '@odata.nextLink': link } : {}) },
+      ...(link ? { nextLink: link } : {}),
+    };
+  };
+  if (p.fetchXml != null) {
+    if (['$select', '$filter', '$orderby', '$top', '$expand'].some((key) => p[key] !== undefined))
+      throw new DataError(
+        'A FetchXML query is not combined with $select, $filter, $orderby, $top or $expand.',
+        400,
+        'LocalFlowExpression',
+      );
+    const xml = String(p.fetchXml).replace(
+      /<fetch\b([^>]*?)(\/?)>/i,
+      (_, attrs, close) => `<fetch${attrs.replace(/\s+page\s*=\s*(["'])[^"']*\1/i, '')} page="${page}"${close}>`, // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    );
+    const fetched = service.fetch(xml);
+    return answer(fetched.entities, fetched.more_records === true);
+  }
+  const q = {};
+  for (const key of ['$filter', '$orderby', '$top', ...(p.$expand ? [] : ['$select'])])
+    if (p[key] !== undefined) q[key] = p[key];
+  const { value: all, ...rest } = service.query(entity, q);
+  const rows = all.slice((page - 1) * LIST_PAGE, page * LIST_PAGE);
+  if (p.$expand) expandRows(store, service, entity, rows, parseExpand(p.$expand), p.$select);
+  return answer(rows, all.length > page * LIST_PAGE, rest);
+}
+
+function associateDataverseEntities(store, service, operationId, entity, p) {
+  const related = relatedRow(store, operationId === 'AssociateEntities' ? p['@odata.id'] : p.$id);
+  if (typeof p.associationEntityRelationship !== 'string' || !p.associationEntityRelationship)
+    throw new DataError('The relationship name is missing.', 400, 'LocalFlowExpression');
+  return service[operationId === 'AssociateEntities' ? 'associateAsync' : 'disassociateAsync'](
+    entity,
+    String(p.recordId ?? ''),
+    { $type: 'Relationship', schemaName: p.associationEntityRelationship },
+    {
+      $type: 'EntityReferenceCollection',
+      values: [{ $type: 'EntityReference', logicalName: related.logicalName, id: related.id }],
+    },
+  ).then(() => ({ statusCode: 204, body: {} }));
+}
+
+function runDataverseFileAction(store, operationId, context, entity, p, notWired) {
+  const entry = store.recordPipeline?.fileContentInternal;
+  if (typeof entry !== 'function') notWired('A Dataverse file or image column action');
+  return entry({
+    principal: context.principal,
+    operation: operationId === 'GetEntityFileImageFieldContent' ? 'download' : 'upload',
+    entity,
+    id: p.recordId,
+    column: p.fileImageFieldName,
+    size: p.size ?? null,
+    content: p.item ?? null,
+    fileName: p['x-ms-file-name'] ?? null,
+  });
+}
+
+function runDataverseBoundAction(store, operationId, context, entity, p, values, notWired) {
+  const entry = store.recordPipeline?.executeMessageInternal;
+  if (typeof entry !== 'function') notWired('A Dataverse bound or unbound action');
+  if (typeof p.actionName !== 'string' || !p.actionName)
+    throw new DataError('The action name is missing.', 400, 'LocalFlowExpression');
+  return entry({
+    principal: context.principal,
+    name: p.actionName,
+    target: operationId === 'PerformBoundAction' ? { entity, id: p.recordId } : null,
+    parameters: values,
+  });
+}
+
+function executeDataverseChangeset(store, service, p, context, run) {
+  const requests = p.requests;
+  if (
+    !Array.isArray(requests) ||
+    !requests.length ||
+    requests.some((request) => !isMap(request) || !CHANGESET_OPERATIONS.includes(request.operationId))
+  )
+    throw new DataError(
+      'A changeset holds only Add, Update, Upsert and Delete row requests.',
+      400,
+      'LocalFlowExpression',
+    );
+  return store
+    .sdkMutationAsync(async () => {
+      store.promoteRowTransaction();
+      const joined = store.pluginInTransaction;
+      store.pluginInTransaction = true;
+      try {
+        const responses = [];
+        for (const request of requests)
+          responses.push({
+            name: request.name ?? null,
+            ...(await run(service, request.operationId, request.parameters ?? {}, context)),
+          });
+        return responses;
+      } finally {
+        store.pluginInTransaction = joined;
+      }
+    })
+    .then((responses) => ({ statusCode: 200, body: { responses } }));
+}
+
+function traceDataverseCall(traces, operationId, p, context, call, store, entity) {
+  return traces.wrap(
+    {
+      kind: 'dataverse',
+      name: `${operationId}${entity ? ' ' + entity : ''}`,
+      module: 'dataverse',
+      operation: DATAVERSE_SPAN_OPERATION[operationId] ?? 'action',
+      entity,
+      recordId: p.recordId == null ? null : String(p.recordId),
+      attributes: {
+        operationId,
+        connector: 'commondataserviceforapps',
+        ...(p.fetchXml != null ? { query: 'fetchxml' } : {}),
+        ...(p.actionName ? { message: String(p.actionName) } : {}),
+      },
+      ...(context.secure ? {} : { input: () => dataverseInput(p) }),
+    },
+    (span) => {
+      markConnectorDataverseSpan(span);
+      const answered = (answer) => {
+        const facts = dataverseFacts(store, entity, answer);
+        if (facts.id && !span.recordId) span.setEntity(span.entity, facts.id);
+        span.set({
+          statusCode: facts.statusCode,
+          ...(facts.rowCount == null ? {} : { rowCount: facts.rowCount }),
+          ...(operationId === 'UpdateRecord' && facts.statusCode === 201 ? { created: true } : {}),
+        });
+        if (!context.secure) span.output(() => facts);
+        return answer;
+      };
+      const answer = call();
+      return typeof answer?.then === 'function' ? answer.then(answered) : answered(answer);
+    },
+  );
+}
+
+function invokeDataverseFlow(store, diagnostic, run, { operationId, parameters, nextLink }, context) {
+  if (!context.principal)
+    throw new DataError(
+      'Dataverse flow actions require an explicit project backend identity/security profile.',
+      409,
+      'LocalBackendIdentityRequired',
+    );
+  const spec = dataverseParameters(operationId);
+  const p = nextLink
+    ? { ...parameters, $skiptoken: new URL(nextLink, 'http://localhost/').searchParams.get('$skiptoken') }
+    : (parameters ?? {});
+  if (!spec) throw new DataError('Unsupported local Dataverse flow operation.', 501, 'LocalFlowUnsupported');
+  for (const key of Object.keys(p))
+    if (!spec.allowed(key))
+      throw new DataError(`Unsupported Dataverse parameter ${operationId}/${key}.`, 501, 'LocalFlowUnsupported');
+  const call = () =>
+    run(localOrganizationService(store, context.principal, undefined, { diagnostic }), operationId, p, context);
+  const traces = store?.traces;
+  if (!traces?.enabled) return call();
+  const entity = dataverseLogicalName(store, p.entityName);
+  return traceDataverseCall(traces, operationId, p, context, call, store, entity);
+}
+
 function dataverseProvider(store, diagnostic) {
   const notWired = (what) => {
     throw new DataError(
@@ -327,161 +536,39 @@ function dataverseProvider(store, diagnostic) {
         return service.updateAsync(entity, p.recordId, values).then((row) => ({ statusCode: 200, body: clone(row) }));
       case 'UpdateRecord': {
         // Assumed: the status codes of the upsert answers (201 created, 200 updated).
-        let exists = true;
-        try {
-          service.get(entity, p.recordId);
-        } catch (error) {
-          if (error.code !== 'NotFound') throw error;
-          exists = false;
-        }
-        if (exists)
-          return service.updateAsync(entity, p.recordId, values).then((row) => ({ statusCode: 200, body: clone(row) }));
-        return service
-          .createAsync(entity, { ...values, [store.resolveMapping(entity).idColumn]: p.recordId })
-          .then((row) => ({ statusCode: 201, body: clone(row) }));
+        return updateDataverseRecord(service, store, entity, p, values);
       }
       case 'DeleteRecord':
         return service
           .removeAsync(entity, p.recordId, p.partitionId != null ? { partitionId: p.partitionId } : {})
           .then(() => ({ statusCode: 204, body: {} }));
       case 'GetItem': {
-        if (p.$select != null && typeof p.$select !== 'string')
-          throw new DataError('GetItem select columns require a comma-separated string.', 400, 'LocalFlowExpression');
-        const selected = parseSelect(p.$select);
-        if (selected?.some((name) => /^_(.+)_value$/.test(name)))
-          throw new DataError(
-            'GetItem lookup aliases require an explicit connector projection adapter.',
-            501,
-            'LocalFlowUnsupported',
-          );
-        return {
-          statusCode: 200,
-          body: service.get(
-            entity,
-            p.recordId,
-            selected ? { allColumns: false, columns: selected } : undefined,
-            p.partitionId != null ? { partitionId: p.partitionId } : {},
-          ),
-        };
+        return getDataverseItem(service, entity, p);
       }
       case 'ListRecords': {
         // 5,000 rows per page; without the pagination setting the answer carries
         // @odata.nextLink, whose skip token ($skiptoken) the next List rows call passes back.
         // Assumed: the skip token's format (a paging cookie with the page number) and the nextLink's host (relative here).
-        const page = p.$skiptoken == null ? 1 : Number(/pagenumber="(\d+)"/.exec(String(p.$skiptoken))?.[1]);
-        if (!(page >= 1))
-          throw new DataError('The skip token is not one a List rows answer issued.', 400, 'LocalFlowExpression');
-        const answer = (rows, more, rest = {}) => {
-          const link = more
-            ? `${store.resolveMapping(entity).entitySet}?$skiptoken=${encodeURIComponent(`<cookie pagenumber="${page + 1}" />`)}`
-            : null;
-          return {
-            statusCode: 200,
-            body: { ...rest, value: rows, ...(link ? { '@odata.nextLink': link } : {}) },
-            ...(link ? { nextLink: link } : {}),
-          };
-        };
-        if (p.fetchXml != null) {
-          // Native behaviour when FetchXML is combined with the OData options is not known; refused here.
-          if (['$select', '$filter', '$orderby', '$top', '$expand'].some((key) => p[key] !== undefined))
-            throw new DataError(
-              'A FetchXML query is not combined with $select, $filter, $orderby, $top or $expand.',
-              400,
-              'LocalFlowExpression',
-            );
-          const xml = String(p.fetchXml).replace(
-            /<fetch\b([^>]*?)(\/?)>/i,
-            (_, attrs, close) => `<fetch${attrs.replace(/\s+page\s*=\s*(["'])[^"']*\1/i, '')} page="${page}"${close}>`,
-          );
-          const fetched = service.fetch(xml);
-          return answer(fetched.entities, fetched.more_records === true);
-        }
-        const q = {};
-        for (const key of ['$filter', '$orderby', '$top', ...(p.$expand ? [] : ['$select'])])
-          if (p[key] !== undefined) q[key] = p[key];
-        const { value: all, ...rest } = service.query(entity, q);
-        // ponytail: every page re-reads the whole filtered list; store keyset paging when lists outgrow memory.
-        const rows = all.slice((page - 1) * LIST_PAGE, page * LIST_PAGE);
-        if (p.$expand) expandRows(store, service, entity, rows, parseExpand(p.$expand), p.$select);
-        return answer(rows, all.length > page * LIST_PAGE, rest);
+        return listDataverseRecords(store, service, entity, p);
       }
       case 'AssociateEntities':
       case 'DisassociateEntities': {
-        const related = relatedRow(store, operationId === 'AssociateEntities' ? p['@odata.id'] : p.$id);
-        if (typeof p.associationEntityRelationship !== 'string' || !p.associationEntityRelationship)
-          throw new DataError('The relationship name is missing.', 400, 'LocalFlowExpression');
-        return service[operationId === 'AssociateEntities' ? 'associateAsync' : 'disassociateAsync'](
-          entity,
-          String(p.recordId ?? ''),
-          { $type: 'Relationship', schemaName: p.associationEntityRelationship },
-          {
-            $type: 'EntityReferenceCollection',
-            values: [{ $type: 'EntityReference', logicalName: related.logicalName, id: related.id }],
-          },
-        ).then(() => ({ statusCode: 204, body: {} }));
+        return associateDataverseEntities(store, service, operationId, entity, p);
       }
       case 'GetEntityFileImageFieldContent':
       case 'UpdateEntityFileImageFieldContent': {
-        const entry = store.recordPipeline?.fileContentInternal;
-        if (typeof entry !== 'function') notWired('A Dataverse file or image column action');
-        return entry({
-          principal: context.principal,
-          operation: operationId === 'GetEntityFileImageFieldContent' ? 'download' : 'upload',
-          entity,
-          id: p.recordId,
-          column: p.fileImageFieldName,
-          size: p.size ?? null,
-          content: p.item ?? null,
-          fileName: p['x-ms-file-name'] ?? null,
-        });
+        return runDataverseFileAction(store, operationId, context, entity, p, notWired);
       }
       case 'PerformBoundAction':
       case 'PerformUnboundAction': {
-        const entry = store.recordPipeline?.executeMessageInternal;
-        if (typeof entry !== 'function') notWired('A Dataverse bound or unbound action');
-        if (typeof p.actionName !== 'string' || !p.actionName)
-          throw new DataError('The action name is missing.', 400, 'LocalFlowExpression');
-        return entry({
-          principal: context.principal,
-          name: p.actionName,
-          target: operationId === 'PerformBoundAction' ? { entity, id: p.recordId } : null,
-          parameters: values,
-        });
+        return runDataverseBoundAction(store, operationId, context, entity, p, values, notWired);
       }
       case 'ExecuteChangeset': {
-        const requests = p.requests;
-        if (
-          !Array.isArray(requests) ||
-          !requests.length ||
-          requests.some((r) => !isMap(r) || !CHANGESET_OPERATIONS.includes(r.operationId))
-        )
-          throw new DataError(
-            'A changeset holds only Add, Update, Upsert and Delete row requests.',
-            400,
-            'LocalFlowExpression',
-          );
         // One SDK savepoint: a failed request rolls back every earlier request of the changeset. The savepoint is promoted to
         // a full state copy because each request is itself a nested SDK call whose row journal ends with it.
         // ponytail: O(state) copy per changeset; a nested row journal in DataStore.sdkMutation would make it O(rows written).
         // Each request joins that savepoint (pluginInTransaction) instead of committing on its own.
-        return store
-          .sdkMutationAsync(async () => {
-            store.promoteRowTransaction();
-            const joined = store.pluginInTransaction;
-            store.pluginInTransaction = true;
-            try {
-              const responses = [];
-              for (const r of requests)
-                responses.push({
-                  name: r.name ?? null,
-                  ...(await run(service, r.operationId, r.parameters ?? {}, context)),
-                });
-              return responses;
-            } finally {
-              store.pluginInTransaction = joined;
-            }
-          })
-          .then((responses) => ({ statusCode: 200, body: { responses } }));
+        return executeDataverseChangeset(store, service, p, context, run);
       }
       default:
         throw new DataError('Unsupported local Dataverse flow operation.', 501, 'LocalFlowUnsupported');
@@ -500,75 +587,32 @@ function dataverseProvider(store, diagnostic) {
       principal: 'required',
       stateOwner: 'store',
     }),
-    invoke({ operationId, parameters, nextLink }, context) {
-      if (!context.principal)
-        throw new DataError(
-          'Dataverse flow actions require an explicit project backend identity/security profile.',
-          409,
-          'LocalBackendIdentityRequired',
-        );
-      const spec = dataverseParameters(operationId);
-      // A later page (pagination policy) is the same List rows call with the nextLink's skip token.
-      const p = nextLink
-        ? { ...parameters, $skiptoken: new URL(nextLink, 'http://localhost/').searchParams.get('$skiptoken') }
-        : (parameters ?? {});
-      if (!spec) throw new DataError('Unsupported local Dataverse flow operation.', 501, 'LocalFlowUnsupported');
-      for (const key of Object.keys(p))
-        if (!spec.allowed(key))
-          throw new DataError(`Unsupported Dataverse parameter ${operationId}/${key}.`, 501, 'LocalFlowUnsupported');
-      const call = () =>
-        run(localOrganizationService(store, context.principal, undefined, { diagnostic }), operationId, p, context);
-      const traces = store?.traces;
-      if (!traces?.enabled) return call();
+    invoke(request, context) {
       // Tracing (docs/design/tracing.md): one dataverse span per call, under the connector span. Its store reads (pre-images,
       // projections) and the organization's internal entries it drives open none of their own (data.mjs COVERED_READS,
       // dataverse-records.mjs traced), so a changeset or an upsert is one span too.
       // Module dataverse with the canonical operation (D-R3-9), so module/operation/entity filters find flow writes; the
       // connector span above it stays module connectors. At level full the written values and the query are its input and
       // { statusCode, id, rowCount, moreRecords } its output (none for a sealed run: context.secure).
-      const entity = dataverseLogicalName(store, p.entityName);
-      return traces.wrap(
-        {
-          kind: 'dataverse',
-          name: `${operationId}${entity ? ' ' + entity : ''}`,
-          module: 'dataverse',
-          operation: DATAVERSE_SPAN_OPERATION[operationId] ?? 'action',
-          entity,
-          recordId: p.recordId == null ? null : String(p.recordId),
-          attributes: {
-            operationId,
-            connector: 'commondataserviceforapps',
-            ...(p.fetchXml != null ? { query: 'fetchxml' } : {}),
-            ...(p.actionName ? { message: String(p.actionName) } : {}),
-          },
-          ...(context.secure ? {} : { input: () => dataverseInput(p) }),
-        },
-        (span) => {
-          markConnectorDataverseSpan(span);
-          const answered = (answer) => {
-            const facts = dataverseFacts(store, entity, answer);
-            if (facts.id && !span.recordId) span.setEntity(span.entity, facts.id);
-            span.set({
-              statusCode: facts.statusCode,
-              ...(facts.rowCount == null ? {} : { rowCount: facts.rowCount }),
-              ...(operationId === 'UpdateRecord' && facts.statusCode === 201 ? { created: true } : {}),
-            });
-            if (!context.secure) span.output(() => facts);
-            return answer;
-          };
-          const answer = call();
-          return typeof answer?.then === 'function' ? answer.then(answered) : answered(answer);
-        },
-      );
+      return invokeDataverseFlow(store, diagnostic, run, request, context);
     },
   };
 }
 
 // URL rewrites (custom-connector.mjs): the longest matching prefix wins, applied before the loopback check.
 export { rewrite };
+function appendHttpQueries(url, queries) {
+  try {
+    const parsed = new URL(url);
+    for (const [key, value] of Object.entries(queries)) parsed.searchParams.append(key, String(value));
+    return parsed.href;
+  } catch {
+    fail('ProviderFailed', 'The http request uri is invalid.');
+  }
+}
 // The Http action request: method, uri, headers, body, queries (nextLink replaces uri for later pages, on the uri's host
 // only: assertContinuationOrigin, the rule custom connector pages use).
-function httpRequest({ parameters, nextLink }, settings) {
+/* NOSONAR */ function httpRequest({ parameters, nextLink }, settings) {
   const p = parameters ?? {};
   let raw = p.uri ?? p.url;
   if (typeof raw !== 'string' || !raw) fail('ProviderFailed', 'The http request uri is missing.');
@@ -579,24 +623,18 @@ function httpRequest({ parameters, nextLink }, settings) {
       fail(CODES[error.code] ? error.code : 'ProviderFailed', error.message);
     }
   let url = rewrite(raw, settings?.rewrites);
-  if (!nextLink && isMap(p.queries)) {
-    try {
-      const parsed = new URL(url);
-      for (const [k, v] of Object.entries(p.queries)) parsed.searchParams.append(k, String(v));
-      url = parsed.href;
-    } catch {
-      fail('ProviderFailed', 'The http request uri is invalid.');
-    }
-  }
+  if (!nextLink && isMap(p.queries)) url = appendHttpQueries(url, p.queries);
   const headers = isMap(p.headers) ? Object.fromEntries(Object.entries(p.headers).map(([k, v]) => [k, String(v)])) : {};
   const json = p.body !== undefined && p.body !== null && typeof p.body !== 'string';
   if (json && !Object.keys(headers).some((k) => k.toLowerCase() === 'content-type'))
     headers['content-type'] = 'application/json';
+  let requestBody;
+  if (p.body != null) requestBody = json ? JSON.stringify(p.body) : p.body;
   return {
     method: String(nextLink ? 'GET' : (p.method ?? 'GET')).toUpperCase(),
     url,
     headers,
-    body: p.body == null ? undefined : json ? JSON.stringify(p.body) : p.body,
+    body: requestBody,
   };
 }
 const nextLinkOf = (body) => (isMap(body) ? (body['@odata.nextLink'] ?? body.nextLink ?? undefined) : undefined);
@@ -719,6 +757,85 @@ async function fixtureAnswer(fixtures, req) {
 // The preflight note of a trusted script: its host build reaches the network once (custom-connector-script.mjs).
 const SCRIPT_RESTORE =
   'CONNECTOR_SCRIPT_NUGET_RESTORE: the first build of the trusted script host restores Newtonsoft.Json and Microsoft.Extensions.Logging.Abstractions from nuget.org (not loopback; offline it fails); the host runs with your user rights, unsandboxed.';
+async function refreshCustomConnectorToken(
+  credentials,
+  context,
+  { connector, tokens, time, tokenRequest, form, scope },
+) {
+  const key = context.connectionId ?? connector.name,
+    current = tokens.get(key);
+  if (!current) return credentials;
+  if (current.expiresAt == null || current.expiresAt > time + 5000)
+    return { ...credentials, token: current.access_token };
+  if (!current.refresh_token || credentials.clientId == null) {
+    await tokens.set(key, null);
+    return credentials;
+  }
+  const body = await tokenRequest(
+    form('refresh_token', credentials, { refresh_token: current.refresh_token, ...scope() }),
+    context,
+  );
+  await tokens.set(key, {
+    access_token: body.access_token,
+    refresh_token: body.refresh_token ?? current.refresh_token,
+    expiresAt: body.expires_in ? time + Number(body.expires_in) * 1000 : null,
+  });
+  return { ...credentials, token: body.access_token };
+}
+
+async function clientCredentialsToken(credentials, context, { connector, time, tokenRequest, form, scope, cached }) {
+  if (credentials.clientId == null || credentials.clientSecret == null)
+    fail(
+      'ConnectionUnauthorized',
+      'The OAuth client credentials flow needs clientId and clientSecret references and a tokenUrl in the definition.',
+    );
+  const key = connector.auth.tokenUrl + '\n' + credentials.clientId,
+    hit = cached.get(key);
+  if (hit && hit.expires > time) return { ...credentials, token: hit.token };
+  const body = await tokenRequest(form('client_credentials', credentials, scope()), context);
+  cached.set(key, { token: body.access_token, expires: time + (Number(body.expires_in) || 0) * 1000 });
+  return { ...credentials, token: body.access_token };
+}
+
+function customConnectorToken(credentials, context, dependencies) {
+  const { connector, tokens, now, tokenRequest, form, scope, cached } = dependencies;
+  const auth = connector.auth;
+  if (auth.type !== 'oauth' || credentials.token != null || !OAUTH_FLOWS.includes(auth.flow)) return credentials;
+  if (!auth.tokenUrl) fail('ConnectionUnauthorized', 'The OAuth flow needs a tokenUrl in the definition.');
+  const time = context.clock?.now?.() ?? now();
+  if (auth.flow === 'accessCode')
+    return refreshCustomConnectorToken(credentials, context, { connector, tokens, time, tokenRequest, form, scope });
+  return clientCredentialsToken(credentials, context, { connector, time, tokenRequest, form, scope, cached });
+}
+
+function customConnectorCapability(connector, level, sdkMissing, scripted, gapMessage, reasonField) {
+  return {
+    ...capability('custom-connector:' + connector.name, {
+      level,
+      operations: [
+        ...Object.keys(connector.operations).map((name) => ({
+          name,
+          level: sdkMissing && scripted(name) ? 'inventory' : level,
+        })),
+        ...connector.policies.map((policy) => ({
+          name: 'policy:' + policy.templateId,
+          level: policy.supported ? 'contract' : 'inventory',
+        })),
+        ...(connector.script
+          ? [
+              {
+                name: 'script',
+                level: sdkMissing ? 'inventory' : level,
+                reason: sdkMissing ? gapMessage() : SCRIPT_RESTORE,
+              },
+            ]
+          : []),
+      ],
+      requires: ['loopback-network', ...(connector.script ? ['dotnet-sdk'] : [])],
+    }),
+    ...reasonField,
+  };
+}
 function customConnectorProvider(connector, fixtures, store, { tokens, scripts, now, diagnostic = () => {} }) {
   const cached = new Map();
   const send = (req, context) =>
@@ -743,45 +860,6 @@ function customConnectorProvider(connector, fixtures, store, { tokens, scripts, 
     return answer.body;
   }
   const scope = () => (connector.auth.scopes.length ? { scope: connector.auth.scopes.join(' ') } : {});
-  async function withToken(credentials, context) {
-    const auth = connector.auth;
-    if (auth.type !== 'oauth' || credentials.token != null || !OAUTH_FLOWS.includes(auth.flow)) return credentials;
-    if (!auth.tokenUrl) fail('ConnectionUnauthorized', 'The OAuth flow needs a tokenUrl in the definition.');
-    const time = context.clock?.now?.() ?? now();
-    if (auth.flow === 'accessCode') {
-      const key = context.connectionId ?? connector.name,
-        current = tokens.get(key);
-      if (!current) return credentials;
-      if (current.expiresAt == null || current.expiresAt > time + 5000)
-        return { ...credentials, token: current.access_token };
-      if (!current.refresh_token || credentials.clientId == null) {
-        await tokens.set(key, null);
-        return credentials;
-      }
-      // The refresh token grant (RFC 6749 section 6); a rotated refresh token replaces the old one.
-      const body = await tokenRequest(
-        form('refresh_token', credentials, { refresh_token: current.refresh_token, ...scope() }),
-        context,
-      );
-      await tokens.set(key, {
-        access_token: body.access_token,
-        refresh_token: body.refresh_token ?? current.refresh_token,
-        expiresAt: body.expires_in ? time + Number(body.expires_in) * 1000 : null,
-      });
-      return { ...credentials, token: body.access_token };
-    }
-    if (credentials.clientId == null || credentials.clientSecret == null)
-      fail(
-        'ConnectionUnauthorized',
-        'The OAuth client credentials flow needs clientId and clientSecret references and a tokenUrl in the definition.',
-      );
-    const key = auth.tokenUrl + '\n' + credentials.clientId,
-      hit = cached.get(key);
-    if (hit && hit.expires > time) return { ...credentials, token: hit.token };
-    const body = await tokenRequest(form('client_credentials', credentials, scope()), context);
-    cached.set(key, { token: body.access_token, expires: time + (Number(body.expires_in) || 0) * 1000 });
-    return { ...credentials, token: body.access_token };
-  }
   const variables = () => (store?.state ? effectiveEnvironmentVariables(store.state) : {});
   const reference = (value) => {
     if (typeof value !== 'string' || !REFERENCE.test(value)) return value;
@@ -803,16 +881,17 @@ function customConnectorProvider(connector, fixtures, store, { tokens, scripts, 
   // Script operations run only for a script the project trusts (connectorScripts) and with the .NET SDK: otherwise they are not
   // served and name the gap (CONNECTOR_SCRIPT_UNTRUSTED before CONNECTOR_SCRIPT_SDK_MISSING); nothing is built for them.
   const scripted = (operationId) => scriptRuns(connector, operationId);
-  const gap = !connector.script
-    ? null
-    : !scripts.trusts(connector.name, connector.script)
-      ? UNTRUSTED
-      : !scripts.available()
-        ? SDK_MISSING
-        : null;
+  let gap = null;
+  if (connector.script) {
+    if (!scripts.trusts(connector.name, connector.script)) gap = UNTRUSTED;
+    else if (!scripts.available()) gap = SDK_MISSING;
+  }
   const gapMessage = () =>
     gap === UNTRUSTED ? scripts.untrusted(connector.name, connector.script) : scripts.missing();
   const sdkMissing = gap !== null;
+  let reasonField = {};
+  if (connector.blocked) reasonField = { reason: connector.blocked.code };
+  else if (sdkMissing) reasonField = { reason: gap };
   const operations = connector.blocked
     ? []
     : Object.keys(connector.operations).filter((id) => !(sdkMissing && scripted(id)));
@@ -831,7 +910,15 @@ function customConnectorProvider(connector, fixtures, store, { tokens, scripts, 
       connection = {
         parameters: resolved(context.settings?.parameters),
         environment,
-        credentials: await withToken(resolved(context.settings?.auth), context),
+        credentials: await customConnectorToken(resolved(context.settings?.auth), context, {
+          connector,
+          tokens,
+          now,
+          tokenRequest,
+          form,
+          scope,
+          cached,
+        }),
       };
       req = nextLink
         ? buildContinuation(connector, operationId, nextLink, parameters ?? {}, connection, context.settings?.rewrites)
@@ -870,32 +957,7 @@ function customConnectorProvider(connector, fixtures, store, { tokens, scripts, 
           }
         : null,
     reason: (operationId) => (sdkMissing && scripted(operationId) && !connector.blocked ? gapMessage() : null),
-    capability: {
-      ...capability('custom-connector:' + connector.name, {
-        level,
-        operations: [
-          ...Object.keys(connector.operations).map((name) => ({
-            name,
-            level: sdkMissing && scripted(name) ? 'inventory' : level,
-          })),
-          ...connector.policies.map((p) => ({
-            name: 'policy:' + p.templateId,
-            level: p.supported ? 'contract' : 'inventory',
-          })),
-          ...(connector.script
-            ? [
-                {
-                  name: 'script',
-                  level: sdkMissing ? 'inventory' : level,
-                  reason: sdkMissing ? gapMessage() : SCRIPT_RESTORE,
-                },
-              ]
-            : []),
-        ],
-        requires: ['loopback-network', ...(connector.script ? ['dotnet-sdk'] : [])],
-      }),
-      ...(connector.blocked ? { reason: connector.blocked.code } : sdkMissing ? { reason: gap } : {}),
-    },
+    capability: customConnectorCapability(connector, level, sdkMissing, scripted, gapMessage, reasonField),
     async invoke({ operationId, parameters, nextLink }, context) {
       const { req, connection } = await request(operationId, parameters, nextLink, context);
       // The script replaces the backend request; Context.SendAsync goes through the same rewrites, fixtures and loopback rule.
@@ -1061,8 +1123,12 @@ const levelled = (operations, parity) => [
   ...operations.map((name) => ({ name, level: 'behaviour' })),
   { name: parity, level: 'contract' },
 ];
-const param = (p, key, wrapper) =>
-  p[key] ?? (wrapper ? (p[`${wrapper}/${key}`] ?? (isMap(p[wrapper]) ? p[wrapper][key] : undefined)) : undefined);
+const param = (p, key, wrapper) => {
+  const value = p[key];
+  if (value != null) return value;
+  if (!wrapper) return undefined;
+  return p[`${wrapper}/${key}`] ?? (isMap(p[wrapper]) ? p[wrapper][key] : undefined);
+};
 
 // Approvals (shared_approvals): CreateAnApproval (approvalType + ApprovalCreationInput), StartAndWaitForAnApproval
 // (approvalType + WebhookApprovalCreationInput), WaitForAnApproval (approvalName). Output field names follow the documented
@@ -1076,7 +1142,11 @@ const APPROVAL_OPERATIONS = ['CreateAnApproval', 'StartAndWaitForAnApproval', 'W
 // Power Automate runs end after 30 days.
 const DEFAULT_WAIT_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
 const APPROVAL_STATUS = { Approve: 'Approved', Reject: 'Rejected' };
-const approvalsOf = (store) => ((store.state.simulator ??= {}).approvals ??= {});
+const approvalsOf = (store) => {
+  store.state.simulator ??= {};
+  store.state.simulator.approvals ??= {};
+  return store.state.simulator.approvals;
+};
 const approvalOutputs = (a) => ({
   statusCode: 200,
   body: {
@@ -1322,7 +1392,7 @@ function childFlowProvider() {
 
 // Action retryPolicy: type fixed | exponential | none, count, interval as an ISO 8601 duration. Locally count is at most 4.
 // ponytail: exponential waits interval * 2^(attempt-1) without the native random range or minimum/maximumInterval.
-const DURATION = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/;
+const DURATION = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/; // NOSONAR: regex kept: a rewrite would change matches or captures
 /** Milliseconds of an ISO 8601 day-time duration (PnDTnHnMnS), or null. */
 export function durationMs(value) {
   const parts = typeof value === 'string' && value !== 'P' && !value.endsWith('T') ? DURATION.exec(value) : null;
@@ -1378,6 +1448,109 @@ function principals(packs) {
     for (const [name, profile] of Object.entries(pack.connectionPrincipals ?? {}))
       result.push({ pack: pack.id, name, profile });
   return result;
+}
+
+function packFlowTriggers(packs) {
+  const flowTriggers = {};
+  for (const pack of packs)
+    for (const [connectorId, ops] of Object.entries(pack.flowTriggers ?? {}))
+      for (const [operationId, entry] of Object.entries(ops)) {
+        if (flowTriggers[connectorId]?.[operationId])
+          throw new Error(
+            `Data pack ${pack.id}: flowTriggers.${connectorId}.${operationId} is declared by more than one pack`,
+          );
+        flowTriggers[connectorId] ??= {};
+        flowTriggers[connectorId][operationId] = { pack: pack.id, ...entry };
+      }
+  return flowTriggers;
+}
+
+function connectorCallOnce(provider, request, ctx, context, followAsync) {
+  return typeof provider.poll === 'function' && context.asyncPattern !== false
+    ? () => Promise.resolve(provider.invoke(request, ctx)).then((first) => followAsync(provider, request, ctx, first))
+    : () => provider.invoke(request, ctx);
+}
+
+function dispatchConnectorResponse({ provider, request, ctx, pagination, retry, span, retried, paginate, once }) {
+  const first = retry?.count ? retried(once, retry, ctx, span) : once();
+  if (!pagination?.minimumItemCount) return first;
+  return typeof first?.then === 'function'
+    ? first.then((value) => paginate(provider, request, ctx, value, pagination, span))
+    : paginate(provider, request, ctx, first, pagination, span);
+}
+
+function dispatchConnectorCall({
+  connectorId,
+  operationId,
+  method,
+  path,
+  parameters,
+  connection,
+  context,
+  pagination,
+  retry,
+  span,
+  traces,
+  setResolved,
+  setOperationId,
+  validateOperation,
+  definitions,
+  connections,
+  defaultProvider,
+  resolve,
+  registry,
+  supportsOperation,
+  clock,
+  now,
+  followAsync,
+  retried,
+  paginate,
+}) {
+  const operation = validateOperation(connectorId, { operationId, method, path, parameters });
+  if (operation) {
+    operationId = operation.operationId;
+    setOperationId(operationId);
+  }
+  if (
+    !connection &&
+    definitions.has(connectorId) &&
+    !Object.hasOwn(connections, connectorId) &&
+    !defaultProvider(connectorId)
+  )
+    fail('ConnectorNotSimulated', 'The connector operation has a definition but no simulated behaviour.');
+  const resolved = connection ?? resolve({ connectorId, principal: context.principal });
+  setResolved(resolved);
+  const provider = registry.get(resolved.provider);
+  if (!provider) fail('ConnectorNotConfigured', 'The connection names a provider that is not registered.');
+  if (!supportsOperation(provider, connectorId, operationId))
+    fail(
+      definitions.has(connectorId) ? 'ConnectorNotSimulated' : 'OperationUnsupported',
+      provider.reason?.(operationId) ?? 'The provider does not implement this connector operation.',
+    );
+  const ctx = {
+    ...context,
+    principal: resolved.principal,
+    settings: resolved.settings ?? {},
+    clock: clock ?? { now },
+    connectionId: resolved.connectionId ?? null,
+    ...(span ? { traceHeaders: traces.headers(span) } : {}),
+  };
+  const request = { connectorId, operationId, parameters };
+  const once = connectorCallOnce(provider, request, ctx, context, followAsync);
+  const dispatch = () =>
+    dispatchConnectorResponse({ provider, request, ctx, pagination, retry, span, retried, paginate, once });
+  return span ? traces.run(span, dispatch) : dispatch();
+}
+
+// The merged body: every page's items, and the body's continuation key(s) naming `link` (the latest page's), or none.
+function linked(body, items, link) {
+  const { '@odata.nextLink': odata, nextLink, ...rest } = body;
+  return {
+    ...rest,
+    value: items,
+    ...(link && odata !== undefined ? { '@odata.nextLink': link } : {}),
+    ...(link && nextLink !== undefined ? { nextLink: link } : {}),
+  };
 }
 
 /**
@@ -1438,7 +1611,9 @@ export function createConnectorRuntime({
       }
       return store.transact(
         () => {
-          const all = ((store.state.simulator ??= {}).connectionTokens ??= {});
+          store.state.simulator ??= {};
+          store.state.simulator.connectionTokens ??= {};
+          const all = store.state.simulator.connectionTokens;
           if (value) all[id] = vault.seal(value);
           else delete all[id];
         },
@@ -1456,8 +1631,12 @@ export function createConnectorRuntime({
     childFlowProvider(),
   ].forEach(add);
   let ownScheduler = null;
-  const tasks = () =>
-    scheduler ?? (store ? storeScheduler(store) : (ownScheduler ??= createScheduler({ clock: { now } })));
+  const tasks = () => {
+    if (scheduler != null) return scheduler;
+    if (store) return storeScheduler(store);
+    ownScheduler ??= createScheduler({ clock: { now } });
+    return ownScheduler;
+  };
   // A wait on the scheduler that the caller's signal (a run cancellation) ends at once.
   const pause = (ms, signal = null, name = 'connector-retry') =>
     new Promise((resolve, reject) => {
@@ -1477,6 +1656,8 @@ export function createConnectorRuntime({
       if (handle === null) return reject(connectorError('ProviderUnavailable', 'The runtime is closing.'));
       signal?.addEventListener('abort', onAbort, { once: true });
     });
+  const retryDelay = (policy, attempt) =>
+    policy.type === 'exponential' ? policy.intervalMs * 2 ** (attempt - 1) : policy.intervalMs;
   // Retries a provider call on ProviderUnavailable/ProviderTimeout or an HTTP 429/5xx answer; each attempt is reported
   // through context.onAttempt and the waits run on the scheduler (the store's one by default), never a bare timer.
   async function retried(call, policy, ctx, span = null) {
@@ -1503,10 +1684,7 @@ export function createConnectorRuntime({
           ...(error ? { code: error.code ?? 'ProviderFailed' } : { statusCode: answer?.statusCode ?? null }),
         },
       });
-      await pause(
-        policy.type === 'exponential' ? policy.intervalMs * 2 ** (attempt - 1) : policy.intervalMs,
-        ctx.signal,
-      );
+      await pause(retryDelay(policy, attempt), ctx.signal);
     }
   }
   // The asynchronous operation pattern of HTTP-based providers (http, fixture, custom connectors): an answer of 202 with a
@@ -1520,7 +1698,7 @@ export function createConnectorRuntime({
     const started = Date.now(),
       budget = Math.max(1, ctx.timeoutMs ?? 2000);
     let base = null;
-    for (let polls = 0; answer?.statusCode === 202 && header(answer.headers, 'location'); polls++) {
+    /* NOSONAR */ for (let polls = 0; answer?.statusCode === 202 && header(answer.headers, 'location'); polls++) {
       if (polls >= MAX_POLLS)
         fail('ProviderTimeout', 'The asynchronous operation did not finish within ' + MAX_POLLS + ' status polls.');
       const wait = retryAfterMs(header(answer.headers, 'retry-after'), Date.now()) ?? 1000;
@@ -1542,16 +1720,7 @@ export function createConnectorRuntime({
   for (const provider of providers) add(provider);
   const named = principals(packs);
   const flowActions = Object.freeze(packFlowActions(packs));
-  const flowTriggers = {};
-  for (const pack of packs)
-    for (const [connectorId, ops] of Object.entries(pack.flowTriggers ?? {}))
-      for (const [operationId, entry] of Object.entries(ops)) {
-        if (flowTriggers[connectorId]?.[operationId])
-          throw new Error(
-            `Data pack ${pack.id}: flowTriggers.${connectorId}.${operationId} is declared by more than one pack`,
-          );
-        (flowTriggers[connectorId] ??= {})[operationId] = { pack: pack.id, ...entry };
-      }
+  const flowTriggers = packFlowTriggers(packs);
   // Compiled custom connectors follow the current sources: their providers are replaced when the compiled list changes.
   let customSource = customConnectors,
     customList = null,
@@ -1633,34 +1802,43 @@ export function createConnectorRuntime({
       if (principal && connectorId === DATAVERSE_CONNECTOR) return result('dataverse', null, null); // flowIdentities override
       fail('ConnectionNotBound', message);
     };
-    if (connectionId == null && connectionName != null) {
-      if (!referenceLogicalName)
-        return unbound('The action connection is not declared in the flow connectionReferences.');
-      const row = (store?.state?.tables?.connectionreference ?? []).find((r) =>
-        same(r.connectionreferencelogicalname, referenceLogicalName),
-      );
-      if (!row?.connectionid) return unbound('The connection reference has no bound connection id.');
-      connectionId = row.connectionid;
-    } else if (connectionId == null && Object.hasOwn(connections, connectorId)) connectionId = connectorId;
-    if (connectionId != null) {
-      const connection = Object.hasOwn(connections, connectionId) ? connections[connectionId] : null;
-      if (!connection) return unbound('The bound connection id is not declared in the project connections.');
-      if (connection.connector && connection.connector !== connectorId)
-        return unbound('The bound connection belongs to another connector.');
-      return result(
-        connection.provider ??
-          defaultProvider(connectorId)?.id ??
-          fail(
-            definitions.has(connectorId) ? 'ConnectorNotSimulated' : 'ConnectorNotConfigured',
-            'No provider serves this connector.',
-          ),
-        connection,
-        connectionId,
-      );
-    }
+    const selection = selectConnectionId(connectionId, connectionName, referenceLogicalName, connectorId, unbound);
+    if (selection.result) return selection.result;
+    connectionId = selection.connectionId;
+    if (connectionId != null) return resolveBoundConnection(connectionId, connectorId, result, unbound);
     const provider = defaultProvider(connectorId);
     if (!provider) fail('ConnectorNotConfigured', 'No local provider or project connection serves this connector.');
     return result(provider.id, null, null);
+  }
+
+  function selectConnectionId(connectionId, connectionName, referenceLogicalName, connectorId, unbound) {
+    if (connectionId == null && connectionName != null) {
+      if (!referenceLogicalName)
+        return { result: unbound('The action connection is not declared in the flow connectionReferences.') };
+      const row = (store?.state?.tables?.connectionreference ?? []).find((item) =>
+        same(item.connectionreferencelogicalname, referenceLogicalName),
+      );
+      if (!row?.connectionid) return { result: unbound('The connection reference has no bound connection id.') };
+      connectionId = row.connectionid;
+    } else if (connectionId == null && Object.hasOwn(connections, connectorId)) connectionId = connectorId;
+    return { connectionId };
+  }
+
+  function resolveBoundConnection(connectionId, connectorId, result, unbound) {
+    const connection = Object.hasOwn(connections, connectionId) ? connections[connectionId] : null;
+    if (!connection) return unbound('The bound connection id is not declared in the project connections.');
+    if (connection.connector && connection.connector !== connectorId)
+      return unbound('The bound connection belongs to another connector.');
+    return result(
+      connection.provider ??
+        defaultProvider(connectorId)?.id ??
+        fail(
+          definitions.has(connectorId) ? 'ConnectorNotSimulated' : 'ConnectorNotConfigured',
+          'No provider serves this connector.',
+        ),
+      connection,
+      connectionId,
+    );
   }
 
   const supports = (connectorId, operationId, providerId) => {
@@ -1675,11 +1853,10 @@ export function createConnectorRuntime({
     const custom = customIds.map((id) => registry.get(id)).find((p) => p.connectors.includes(connectorId));
     if (!custom) {
       const definition = definitions.get(connectorId);
-      return definition
-        ? definition.operations.has(operationId)
-          ? 'ConnectorNotSimulated: the operation has no simulated behaviour.'
-          : 'CONNECTOR_OPERATION_UNKNOWN: the connector definition has no such operation.'
-        : null;
+      if (!definition) return null;
+      return definition.operations.has(operationId)
+        ? 'ConnectorNotSimulated: the operation has no simulated behaviour.'
+        : 'CONNECTOR_OPERATION_UNKNOWN: the connector definition has no such operation.';
     }
     if (custom.blocked) return `${custom.blocked.code}: ${custom.blocked.message}`;
     return custom.operations.includes(operationId)
@@ -1729,13 +1906,14 @@ export function createConnectorRuntime({
       connectionId: resolved?.connectionId ?? null,
       status,
     });
+    const errorDetail = (error) => (error?.message ? `: ${error.message}` : '');
     const note = (status, error) =>
       diagnostic({
         code: 'CONNECTOR_INVOKE',
         // Human facts (D-M-2 Findings): the operation, the Dataverse table it names (entityName), a sentence.
         name: operationId ?? connectorId,
         entity: typeof parameters?.entityName === 'string' ? parameters.entityName : null,
-        message: `${operationId ?? 'An operation'} of ${connectorId} answered ${status}${error?.message ? `: ${error.message}` : ''}.`,
+        message: `${operationId ?? 'An operation'} of ${connectorId} answered ${status}${errorDetail(error)}.`,
         connectorId,
         operationId,
         reference: resolved?.referenceLogicalName ?? null,
@@ -1752,12 +1930,11 @@ export function createConnectorRuntime({
     // cause; the span keeps the provider's own code (else the mapped one), message and cause (D-R3-4) and names the mapped
     // code. A sealed call (context.secure) keeps the mapped message, since the provider's may echo a sealed value.
     const failed = (error) => {
-      const mapped =
-        error instanceof DataError
-          ? error
-          : ['TimeoutError', 'AbortError'].includes(error?.name)
-            ? connectorError('ProviderTimeout', 'The connector provider timed out.')
-            : connectorError('ProviderFailed', 'The connector provider failed.');
+      let mapped;
+      if (error instanceof DataError) mapped = error;
+      else if (['TimeoutError', 'AbortError'].includes(error?.name))
+        mapped = connectorError('ProviderTimeout', 'The connector provider timed out.');
+      else mapped = connectorError('ProviderFailed', 'The connector provider failed.');
       if (mapped !== error)
         Object.defineProperty(mapped, 'cause', { value: error, configurable: true, writable: true });
       note(mapped.status, mapped.code);
@@ -1779,45 +1956,33 @@ export function createConnectorRuntime({
     };
     let answer;
     try {
-      const operation = validateOperation(connectorId, { operationId, method, path, parameters });
-      if (operation) operationId = operation.operationId;
-      if (
-        !connection &&
-        definitions.has(connectorId) &&
-        !Object.hasOwn(connections, connectorId) &&
-        !defaultProvider(connectorId)
-      )
-        fail('ConnectorNotSimulated', 'The connector operation has a definition but no simulated behaviour.');
-      resolved = connection ?? resolve({ connectorId, principal: context.principal });
-      const provider = registry.get(resolved.provider);
-      if (!provider) fail('ConnectorNotConfigured', 'The connection names a provider that is not registered.');
-      if (!supportsOperation(provider, connectorId, operationId))
-        fail(
-          definitions.has(connectorId) ? 'ConnectorNotSimulated' : 'OperationUnsupported',
-          provider.reason?.(operationId) ?? 'The provider does not implement this connector operation.',
-        );
-      const ctx = {
-        ...context,
-        principal: resolved.principal,
-        settings: resolved.settings ?? {},
-        clock: clock ?? { now },
-        connectionId: resolved.connectionId ?? null,
-        ...(span ? { traceHeaders: traces.headers(span) } : {}),
-      };
-      const request = { connectorId, operationId, parameters };
-      const once =
-        typeof provider.poll === 'function' && context.asyncPattern !== false
-          ? () =>
-              Promise.resolve(provider.invoke(request, ctx)).then((first) => followAsync(provider, request, ctx, first))
-          : () => provider.invoke(request, ctx);
-      const dispatch = () => {
-        const first = retry?.count ? retried(once, retry, ctx, span) : once();
-        if (!pagination?.minimumItemCount) return first;
-        return typeof first?.then === 'function'
-          ? first.then((value) => paginate(provider, request, ctx, value, pagination, span))
-          : paginate(provider, request, ctx, first, pagination, span);
-      };
-      answer = span ? traces.run(span, dispatch) : dispatch();
+      answer = dispatchConnectorCall({
+        connectorId,
+        operationId,
+        method,
+        path,
+        parameters,
+        connection,
+        context,
+        pagination,
+        retry,
+        span,
+        traces,
+        setResolved: (value) => (resolved = value),
+        setOperationId: (value) => (operationId = value),
+        validateOperation,
+        definitions,
+        connections,
+        defaultProvider,
+        resolve,
+        registry,
+        supportsOperation,
+        clock,
+        now,
+        followAsync,
+        retried,
+        paginate,
+      });
     } catch (error) {
       return failed(error);
     }
@@ -1856,17 +2021,6 @@ export function createConnectorRuntime({
       return { ...rest, body: linked(first.body, items, null) };
     })();
   }
-  // The merged body: every page's items, and the body's continuation key(s) naming `link` (the latest page's), or none.
-  function linked(body, items, link) {
-    const { '@odata.nextLink': odata, nextLink, ...rest } = body;
-    return {
-      ...rest,
-      value: items,
-      ...(link && odata !== undefined ? { '@odata.nextLink': link } : {}),
-      ...(link && nextLink !== undefined ? { nextLink: link } : {}),
-    };
-  }
-
   const flowActionRecord = () =>
     Object.keys(flowActions).length
       ? [
@@ -1985,8 +2139,81 @@ function credentialFree(value, label, depth = 0) {
 }
 const PROVIDER = /^(?:dataverse|http|fixture|memory-queue|approvals|pack:[\w.-]+|custom-connector:[\w.-]+)$/;
 const AUTH_KEYS = ['apiKey', 'username', 'password', 'token', 'clientId', 'clientSecret'];
+function validateConnectionPrincipalAndEvidence(entry, at) {
+  const principal = entry.principal;
+  if (
+    principal !== undefined &&
+    !(typeof principal === 'string' && principal.trim()) &&
+    !(
+      isMap(principal) &&
+      Object.keys(principal).every((key) => ['pack', 'identity'].includes(key)) &&
+      typeof principal.identity === 'string' &&
+      principal.identity.trim() &&
+      (principal.pack === undefined || typeof principal.pack === 'string')
+    )
+  )
+    throw new Error(`${at}.principal must name a pack connection principal ({ pack, identity } or a name)`);
+  if (entry.evidence !== undefined && typeof entry.evidence !== 'string')
+    throw new Error(`${at}.evidence must be text`);
+}
+
+function validateConnectionAuth(at, auth) {
+  if (
+    auth !== undefined &&
+    (!isMap(auth) ||
+      Object.entries(auth).some(
+        ([key, value]) => !AUTH_KEYS.includes(key) || typeof value !== 'string' || !REFERENCE.test(value),
+      ))
+  )
+    throw new Error(`${at}.settings.auth takes ${AUTH_KEYS.join(', ')} as env:NAME or variable:NAME references only`);
+}
+
+function validateConnectionParameters(at, parameters) {
+  if (
+    parameters !== undefined &&
+    (!isMap(parameters) ||
+      Object.values(parameters).some((value) => !['string', 'number', 'boolean'].includes(typeof value)))
+  )
+    throw new Error(`${at}.settings.parameters must map connection parameter names to text, numbers or booleans`);
+}
+
+function validateConnectionRewrites(at, rewrites) {
+  if (!isMap(rewrites)) throw new Error(`${at}.settings.rewrites must map URL prefixes to local URL prefixes`);
+  for (const [from, to] of Object.entries(rewrites))
+    for (const url of [from, to]) {
+      let parsed;
+      try {
+        parsed = new URL(url);
+      } catch {
+        throw new Error(`${at}.settings.rewrites needs absolute http(s) URL prefixes`);
+      }
+      if (
+        !['http:', 'https:'].includes(parsed.protocol) ||
+        parsed.username ||
+        parsed.password ||
+        parsed.search ||
+        parsed.hash
+      )
+        throw new Error(
+          `${at}.settings.rewrites prefixes must be plain http(s) URLs without credentials, query or fragment`,
+        );
+    }
+}
+
+function validateConnectionSettings(entry, at) {
+  const settings = entry.settings ?? {};
+  if (!isMap(settings)) throw new Error(`${at}.settings must be an object`);
+  for (const key of Object.keys(settings))
+    if (!['rewrites', 'auth', 'parameters'].includes(key))
+      throw new Error(`${at}.settings.${key} is not a connection setting`);
+  validateConnectionAuth(at, settings.auth);
+  validateConnectionParameters(at, settings.parameters);
+  validateConnectionRewrites(at, settings.rewrites ?? {});
+  return settings;
+}
+
 /** Validates the project `connections` map; returns a plain copy. Credentials are never accepted as literals. */
-export function connectionSettings(value, label = 'connections') {
+/* NOSONAR */ export function connectionSettings(value, label = 'connections') {
   if (value === undefined) return {};
   if (!isMap(value)) throw new Error(`${label} must map connection ids to local connections`);
   const result = {};
@@ -2007,62 +2234,8 @@ export function connectionSettings(value, label = 'connections') {
       throw new Error(
         `${at}.provider must be dataverse, http, fixture, memory-queue, approvals, pack:<id> or custom-connector:<name>`,
       );
-    const principal = entry.principal;
-    if (
-      principal !== undefined &&
-      !(typeof principal === 'string' && principal.trim()) &&
-      !(
-        isMap(principal) &&
-        Object.keys(principal).every((k) => ['pack', 'identity'].includes(k)) &&
-        typeof principal.identity === 'string' &&
-        principal.identity.trim() &&
-        (principal.pack === undefined || typeof principal.pack === 'string')
-      )
-    )
-      throw new Error(`${at}.principal must name a pack connection principal ({ pack, identity } or a name)`);
-    if (entry.evidence !== undefined && typeof entry.evidence !== 'string')
-      throw new Error(`${at}.evidence must be text`);
-    const settings = entry.settings ?? {};
-    if (!isMap(settings)) throw new Error(`${at}.settings must be an object`);
-    for (const key of Object.keys(settings))
-      if (!['rewrites', 'auth', 'parameters'].includes(key))
-        throw new Error(`${at}.settings.${key} is not a connection setting`);
-    // Custom connector credentials (auth) are always env:NAME or variable:NAME references; parameters are plain values or references.
-    if (
-      settings.auth !== undefined &&
-      (!isMap(settings.auth) ||
-        Object.entries(settings.auth).some(
-          ([k, v]) => !AUTH_KEYS.includes(k) || typeof v !== 'string' || !REFERENCE.test(v),
-        ))
-    )
-      throw new Error(`${at}.settings.auth takes ${AUTH_KEYS.join(', ')} as env:NAME or variable:NAME references only`);
-    if (
-      settings.parameters !== undefined &&
-      (!isMap(settings.parameters) ||
-        Object.values(settings.parameters).some((v) => !['string', 'number', 'boolean'].includes(typeof v)))
-    )
-      throw new Error(`${at}.settings.parameters must map connection parameter names to text, numbers or booleans`);
-    const rewrites = settings.rewrites ?? {};
-    if (!isMap(rewrites)) throw new Error(`${at}.settings.rewrites must map URL prefixes to local URL prefixes`);
-    for (const [from, to] of Object.entries(rewrites))
-      for (const url of [from, to]) {
-        let parsed;
-        try {
-          parsed = new URL(url);
-        } catch {
-          throw new Error(`${at}.settings.rewrites needs absolute http(s) URL prefixes`);
-        }
-        if (
-          !['http:', 'https:'].includes(parsed.protocol) ||
-          parsed.username ||
-          parsed.password ||
-          parsed.search ||
-          parsed.hash
-        )
-          throw new Error(
-            `${at}.settings.rewrites prefixes must be plain http(s) URLs without credentials, query or fragment`,
-          );
-      }
+    validateConnectionPrincipalAndEvidence(entry, at);
+    const settings = validateConnectionSettings(entry, at);
     credentialFree({ principal: entry.principal, evidence: entry.evidence, parameters: settings.parameters }, at);
     result[id] = structuredClone(entry);
   }

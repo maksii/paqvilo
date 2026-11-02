@@ -68,7 +68,7 @@ const item = (key, name, code, extra = {}) => ({
     statuscode: 1,
     ...extra.fields,
   },
-  refs: { [p('parentid')]: 'parent1', ...(extra.refs ?? {}) },
+  refs: { [p('parentid')]: 'parent1', ...extra.refs },
 });
 
 /** Fixture rows in dependency order. `tester` is the signed-in contact of the side being reset. */
@@ -377,7 +377,8 @@ export function mirageTables(tester = TESTER_CONTACT) {
       record.transactioncurrencyid = { id: CURRENCY, logical_name: 'transactioncurrency', name: 'Euro' };
     for (const [field, key] of Object.entries(row.refs))
       record[field] = key ? { id: resolved[key].id, logical_name: resolved[key].table, name: nameOf(key) } : null;
-    (tables[row.table] ??= []).push(record);
+    tables[row.table] ??= [];
+    tables[row.table].push(record);
   }
   tables.contact = [
     {
@@ -406,6 +407,34 @@ export function mirageTables(tester = TESTER_CONTACT) {
   return tables;
 }
 
+function recordDeletionCandidate(row, table, fixtureIds, summary, idField = `${table}id`, preserveId = false) {
+  const originalId = String(row[idField]);
+  const id = originalId.toLowerCase();
+  if (fixtureIds.has(id)) return null;
+  summary.deleted.push({ table, id: preserveId ? row[idField] : id });
+  return preserveId ? true : id;
+}
+
+function* deletionRequests(rows, { table, fixtureIds, summary, idField, preserveId, apply, urlOf }) {
+  for (const row of rows) {
+    const id = recordDeletionCandidate(row, table, fixtureIds, summary, idField, preserveId);
+    if (id === null || !apply) continue;
+    yield urlOf(id, row);
+  }
+}
+
+function liveUpsertBody(row, resolved) {
+  const body = { ...row.fields };
+  for (const [field, key] of Object.entries(row.refs)) {
+    const navigation = NAVIGATION[field];
+    if (!navigation) throw new Error(`No navigation property for ${field}`);
+    body[`${navigation.nav}@odata.bind`] = key ? `/${navigation.set}(${resolved[key].id})` : null;
+  }
+  if (row.table === ITEM) body['transactioncurrencyid@odata.bind'] = `/transactioncurrencies(${CURRENCY})`;
+  const { statecode, statuscode, ...rest } = body;
+  return { rest, statecode, statuscode };
+}
+
 /** Live reset: upsert every fixture row, remove every other row of the three fixture tables. */
 export async function resetLive(client, { apply = false, tester, log = () => {} }) {
   if (!tester) throw new Error('The live tester contact id is required (--tester).');
@@ -415,30 +444,30 @@ export async function resetLive(client, { apply = false, tester, log = () => {} 
   for (const table of [CHILD, ITEM, PARENT]) {
     const set = entitySet(table);
     const existing = await client.list(`${set}?$select=${table}id`);
-    for (const row of existing) {
-      const id = String(row[`${table}id`]).toLowerCase();
-      if (fixtureIds.has(id)) continue;
-      summary.deleted.push({ table, id });
-      if (apply) await client.request(`${set}(${id})`, { method: 'DELETE' });
-    }
+    for (const url of deletionRequests(existing, {
+      table,
+      fixtureIds,
+      summary,
+      apply,
+      urlOf: (id) => `${set}(${id})`,
+    }))
+      await client.request(url, { method: 'DELETE' });
   }
   const notes = await client
     .list(`annotations?$select=annotationid&$filter=objecttypecode eq '${ITEM}'`)
     .catch(() => []);
-  for (const note of notes)
-    if (!fixtureIds.has(String(note.annotationid).toLowerCase())) {
-      summary.deleted.push({ table: 'annotation', id: note.annotationid });
-      if (apply) await client.request(`annotations(${note.annotationid})`, { method: 'DELETE' });
-    }
+  for (const url of deletionRequests(notes, {
+    table: 'annotation',
+    fixtureIds,
+    summary,
+    idField: 'annotationid',
+    preserveId: true,
+    apply,
+    urlOf: (_id, note) => `annotations(${note.annotationid})`,
+  }))
+    await client.request(url, { method: 'DELETE' });
   for (const row of rows) {
-    const body = { ...row.fields };
-    for (const [field, key] of Object.entries(row.refs)) {
-      const navigation = NAVIGATION[field];
-      if (!navigation) throw new Error(`No navigation property for ${field}`);
-      body[`${navigation.nav}@odata.bind`] = key ? `/${navigation.set}(${resolved[key].id})` : null;
-    }
-    if (row.table === ITEM) body['transactioncurrencyid@odata.bind'] = `/transactioncurrencies(${CURRENCY})`;
-    const { statecode, statuscode, ...rest } = body;
+    const { rest, statecode, statuscode } = liveUpsertBody(row, resolved);
     summary.upserted.push({ table: row.table, id: row.id });
     if (apply) {
       await client.request(`${entitySet(row.table)}(${row.id})`, { method: 'PATCH', body: rest });
@@ -510,7 +539,7 @@ async function main() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  main().catch((error) => {
+  /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     console.error(error.message);
     process.exitCode = 1;
   });

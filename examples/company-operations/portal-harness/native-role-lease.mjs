@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { savePrivateJson } from './private-journal.mjs';
 import { snapshotHash } from './native-capture.mjs';
-const sort = (ids) => [...new Set(ids)].sort();
+const sort = (ids) => [...new Set(ids)].sort((a, b) => Number(a > b) - Number(a < b));
 const equal = (a, b) => JSON.stringify(sort(a)) === JSON.stringify(sort(b));
 const readRoles = async (client, contactId) =>
   client.list(
@@ -73,13 +73,11 @@ export async function setLeasedRoles(client, journalFile, selectedIds) {
     };
     journal.entries.push(entry);
     await save();
-    await client.request(
-      `contacts(${journal.contactId})/powerpagecomponent_mspp_webrole_contact${action.method === 'DELETE' ? `(${action.id})` : ''}/$ref`,
-      {
-        method: action.method,
-        ...(action.method === 'POST' ? { body: { '@odata.id': client.url(`powerpagecomponents(${action.id})`) } } : {}),
-      },
-    );
+    const reference = action.method === 'DELETE' ? `(${action.id})` : '';
+    await client.request(`contacts(${journal.contactId})/powerpagecomponent_mspp_webrole_contact${reference}/$ref`, {
+      method: action.method,
+      ...(action.method === 'POST' ? { body: { '@odata.id': client.url(`powerpagecomponents(${action.id})`) } } : {}),
+    });
     const readback = sort((await readRoles(client, journal.contactId)).map((row) => row.powerpagecomponentid));
     if (!equal(readback, next)) throw new Error('Role lease readback mismatch.');
     entry.status = 'verified';

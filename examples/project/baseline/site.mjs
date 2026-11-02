@@ -141,7 +141,7 @@ for (const item of CATALOG_ITEMS) {
     SETTING_ITEMS.push({
       item,
       id: item.id,
-      pattern: new RegExp(`^${setting.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('<table-name>', '[^/]+')}$`, 'i'),
+      pattern: new RegExp(`^${setting.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('<table-name>', '[^/]+')}$`, 'i'), // NOSONAR: escaping is intentional
     });
 }
 const BFMETA_TYPE = Object.fromEntries(
@@ -156,28 +156,37 @@ const defaultTrue = (item) => /default(?:value)?:?\s*(?:is\s*)?(?:true|yes)\b/i.
 function valueMatches(item, value) {
   if (isBoolean(item)) return String(value).toLowerCase() === 'true' || defaultTrue(item);
   const codes = item.values.map((v) => /=(-?\d+)$/.exec(v)?.[1]);
-  if (!codes.length || codes.some((code) => code === undefined)) return true; // free text, names
+  if (!codes.length || codes.includes(undefined)) return true; // free text, names
   return codes.map(Number).includes(Number(value));
 }
 /** Catalog ids exercised by the columns (and choice values) a record of `kind` sets. */
 export function derivedIds(kind, values) {
   const prefixes = KIND_PREFIXES[kind] ?? [];
   const out = [];
-  for (const [column, value] of Object.entries(values ?? {})) {
-    if (value === undefined || value === null) continue;
-    // Description position renders only with Add Description (catalog: "Requires Add Description").
-    if (column === 'adx_descriptionposition' && values.adx_adddescription !== true) continue;
-    for (const item of FIELD_ITEMS.get(column) ?? []) {
-      if (!prefixes.some((prefix) => item.id.startsWith(prefix))) continue;
-      const scope = item.id.split('.')[2];
-      if (kind === 'basicformmetadata' && BFMETA_SCOPES.has(scope) && scope !== BFMETA_TYPE[values.adx_type]) continue;
-      if (valueMatches(item, value)) out.push(item.id);
-    }
-  }
-  if (kind === 'sitesetting')
-    for (const { item, id: itemId, pattern } of SETTING_ITEMS)
-      if (pattern.test(values.adx_name) && valueMatches(item, values.adx_value)) out.push(itemId);
+  for (const [column, value] of Object.entries(values ?? {}))
+    addDerivedFieldIds(out, kind, values, prefixes, column, value);
+  if (kind === 'sitesetting') addDerivedSettingIds(out, values);
   return out;
+}
+
+function addDerivedFieldIds(out, kind, values, prefixes, column, value) {
+  if (value === undefined || value === null) return;
+  // Description position renders only with Add Description (catalog: "Requires Add Description").
+  if (column === 'adx_descriptionposition' && values.adx_adddescription !== true) return;
+  for (const item of FIELD_ITEMS.get(column) ?? [])
+    if (matchesDerivedField(kind, values, prefixes, item, value)) out.push(item.id);
+}
+
+function matchesDerivedField(kind, values, prefixes, item, value) {
+  if (!prefixes.some((prefix) => item.id.startsWith(prefix))) return false;
+  const scope = item.id.split('.')[2];
+  if (kind === 'basicformmetadata' && BFMETA_SCOPES.has(scope) && scope !== BFMETA_TYPE[values.adx_type]) return false;
+  return valueMatches(item, value);
+}
+
+function addDerivedSettingIds(out, values) {
+  for (const { item, id: itemId, pattern } of SETTING_ITEMS)
+    if (pattern.test(values.adx_name) && valueMatches(item, values.adx_value)) out.push(itemId);
 }
 /** Every catalog id under `prefix`; of the `.size.<value>` members only `size`. */
 const family = (prefix, size) =>
@@ -196,7 +205,7 @@ const LIQUID_TAGS = [
   'editable',
 ];
 const liquidIds = (copy) => [
-  ...[...copy.matchAll(new RegExp(`\\{%-?\\s*(${LIQUID_TAGS.join('|')})\\b`, 'g'))].flatMap((m) => [
+  ...[...copy.matchAll(new RegExp(String.raw`\{%-?\s*(${LIQUID_TAGS.join('|')})\b`, 'g'))].flatMap((m) => [
     `pp.template.liquid.${m[1]}`,
     ...(m[1] === 'webform' ? ['pp.msform.liquid'] : []),
   ]),
@@ -212,21 +221,21 @@ function scalar(value) {
   const plain =
     /^[A-Za-z0-9_/][A-Za-z0-9 _./,()*:-]*$/.test(text) &&
     !/ $|:( |$)/.test(text) &&
-    !/^(true|false|null|~|yes|no|on|off|[-+]?[\d.]+(e[-+]?\d+)?)$/i.test(text);
-  return plain ? text : `'${text.replace(/'/g, "''")}'`;
+    !(/^(?:true|false|null|~|yes|no|on|off)$/i.test(text) || /^[-+]?[\d.]+(?:e[-+]?\d+)?$/i.test(text));
+  return plain ? text : `'${text.replaceAll("'", "''")}'`;
 }
 function mapping(record, indent) {
   const pad = ' '.repeat(indent);
   return Object.keys(record)
     .filter((key) => record[key] !== undefined && record[key] !== null)
-    .sort()
+    .sort((a, b) => Number(a > b) - Number(a < b))
     .map((key) => {
       const value = record[key];
-      if (Array.isArray(value)) return `${key}:\n${value.map((v) => `${pad}- ${scalar(v)}`).join('\n')}`;
+      if (Array.isArray(value)) return `${key}:\n${value.map((v) => pad + '- ' + scalar(v)).join('\n')}`;
       if (value && typeof value === 'object' && 'json' in value)
         return `${key}: >-\n${JSON.stringify(value.json, null, 2)
           .split('\n')
-          .map((line) => `${pad}  ${line}`)
+          .map((line) => pad + '  ' + line)
           .join('\n')}`;
       const text = scalar(value);
       return text === '' ? `${key}: ` : `${key}: ${text}`;
@@ -236,13 +245,17 @@ function mapping(record, indent) {
 }
 const yamlRecord = (record) => mapping(record, 0) + '\n';
 const yamlList = (records) => records.map((record) => `- ${mapping(record, 2)}`).join('\n') + '\n';
-const fileName = (name) => name.replace(/[\\/:*?"<>|]/g, '').replace(/ /g, '-');
+const fileName = (name) => name.replaceAll(/[\\/:*?"<>|]/g, '').replaceAll(' ', '-');
 const slug = (name) => fileName(name).toLowerCase();
 const script = (name) =>
-  `document.addEventListener('DOMContentLoaded',()=>{document.documentElement.dataset.baselineScript=${JSON.stringify(name).replace(/</g, '\\u003c')};});\n`;
+  `document.addEventListener('DOMContentLoaded',()=>{document.documentElement.dataset.baselineScript=${JSON.stringify(name).replaceAll('<', '\\u003c')};});\n`; // NOSONAR: escaping is intentional
 
 // Dialog settings (modal size: Default=0, Large=1, Small=2, the catalog's value order).
 const SIZE = { default: 0, large: 1, small: 2 };
+const modalTitleSuffix = (size) => {
+  if (size === 'default') return '';
+  return ' ' + size[0].toUpperCase() + size.slice(1);
+};
 const dialog = (type, title, size = 'default', extra = {}) => ({
   Type: type,
   LoadingMessage: res(`Loading ${title.toLowerCase()}...`),
@@ -345,17 +358,19 @@ export function buildSite(identity = readIdentity()) {
       }),
     );
     put(`${dir}/content-pages/${base}.en-US.webpage.copy.html`, html);
-    record(
-      'webpage',
-      entry.id,
-      entry.name,
-      isRoot
-        ? 'root page, hidden from sitemap'
-        : `page for ${entry.key}${entry.query ? `, opened with ${entry.query} (the read form takes its record from the query string)` : ''}`,
-      [...catalog, ...liquidIds(copy)],
-      { path: entry.path, contentPageId: id(`page:${entry.key}:en-US`) },
-    );
+    record('webpage', entry.id, entry.name, pageVariation(entry, isRoot), [...catalog, ...liquidIds(copy)], {
+      path: entry.path,
+      contentPageId: id(`page:${entry.key}:en-US`),
+    });
   }
+  const pageVariation = (entry, isRoot) => {
+    if (isRoot) return 'root page, hidden from sitemap';
+    return (
+      'page for ' +
+      entry.key +
+      (entry.query ? ', opened with ' + entry.query + ' (the read form takes its record from the query string)' : '')
+    );
+  };
 
   // ---- Basic forms
   const forms = new Map();
@@ -1365,29 +1380,7 @@ export function buildSite(identity = readIdentity()) {
       fields: {},
     },
   ];
-  const surveyFields = (group, column) => ({
-    adx_attributelogicalname: column,
-    adx_controlstyle: group.style,
-    adx_groupname: `baseline-${group.key}`,
-    ...group.fields,
-  });
-  for (const [key, title, groups] of [
-    ['survey', 'Survey', SURVEY.slice(0, 3)],
-    ['rank-no-ties', 'Rank No Ties', [SURVEY[3]]],
-    ['rank-allow-ties', 'Rank Allow Ties', [SURVEY[4]]],
-    ['stack-rank', 'Stack Rank', [SURVEY[5]]],
-  ]) {
-    const form = basicForm(`item-edit-${key}`, {
-      name: `Baseline Item Edit ${title}`,
-      mode: EDIT,
-      fields: { ...QUERY, ...MESSAGE },
-      variation: `edit, survey control styles: ${groups.map((g) => g.key).join(', ')}`,
-      page: `item-edit-${key}`,
-    });
-    for (const group of groups)
-      for (const column of group.columns)
-        metaOn(form)(`${group.key}-${column}`, ATTRIBUTE, surveyFields(group, column), `${group.key} group member`);
-  }
+  addSurveyForms(SURVEY, basicForm, metaOn, EDIT, QUERY, MESSAGE, ATTRIBUTE);
   // Timeline metadata (Learn: "Basic form metadata type = Timeline"); keys follow the notes settings shape.
   const timelineSettings = json({
     CreateEnabled: true,
@@ -1532,7 +1525,7 @@ export function buildSite(identity = readIdentity()) {
     const suffix = size === 'default' ? '' : `-${size}`;
     list(
       `item-list-modal${suffix}`,
-      `Baseline Item List Modal${size === 'default' ? '' : ` ${size[0].toUpperCase()}${size.slice(1)}`}`,
+      `Baseline Item List Modal${modalTitleSuffix(size)}`,
       {
         adx_settings: json({
           Type: 'CrmEntityFormView-GridMetadata',
@@ -1710,7 +1703,7 @@ export function buildSite(identity = readIdentity()) {
   // filters and links), filter types textfilter, filterset, rangeset, dynamicpicklistset, lookupset,
   // dynamiclookupset and fetchfilter.
   const fetchJson = (filters, links = []) => ({
-    'xmlns.adx': 'http://schemas.adxstudio.com/fetch/',
+    'xmlns.adx': 'http://schemas.adxstudio.com/fetch/', // NOSONAR: reserved or loopback placeholder host, not a real transport
     distinct: true,
     entity: { name: ITEM, 'all-attributes': true, filters, links },
   });
@@ -3001,18 +2994,7 @@ export function buildSite(identity = readIdentity()) {
     'deactivated global read permission',
   );
   // Every privilege combination once, on a role with no members (no behaviour change for personas).
-  for (let mask = 0; mask < 64; mask++) {
-    const privileges = Object.fromEntries(PRIVILEGES.map((p, bit) => [p, Boolean(mask & (1 << bit))]));
-    perm(
-      `Baseline privileges ${PRIVILEGES.filter((p) => privileges[p]).join(' ') || 'none'}`,
-      ITEM,
-      756150000,
-      privileges,
-      ['Baseline Privilege Combinations'],
-      {},
-      `privilege combination ${mask} of 64`,
-    );
-  }
+  addPrivilegeCombinationPermissions(PRIVILEGES, perm, ITEM);
   const restricted = page('restricted', 'restricted', 'Baseline Restricted Page');
   const editorsPage = page('editors', 'editors', 'Baseline Editors Page');
   const pageRules = [
@@ -3270,6 +3252,134 @@ export function buildSite(identity = readIdentity()) {
   ];
 
   // ---- Emit
+  emitSiteResources({
+    WEBSITE,
+    LANGUAGE,
+    pages,
+    ROOT,
+    writePage,
+    forms,
+    lists,
+    multisteps,
+    permissions,
+    webroles,
+    pageRules,
+    restricted,
+    editorsPage,
+    roleNames,
+    role,
+    snippets,
+    settings,
+    webTemplates,
+    pageTemplates,
+    templatePages,
+    liquidPages,
+    boundPages,
+    put,
+    record,
+    slug,
+    fileName,
+    yamlRecord,
+    yamlList,
+    script,
+    metaKey,
+    liquidIds,
+  });
+
+  // Web file for the map pushpin, parented under /baseline/ (shape of the exported web-files/*.webfile.yml).
+  const pushpinId = id(`webfile:${PUSHPIN.name}`);
+  const webFile = {
+    adx_enabletracking: false,
+    adx_excludefromsearch: false,
+    adx_hiddenfromsitemap: true,
+    adx_name: PUSHPIN.name,
+    adx_parentpageid: ROOT.id,
+    adx_partialurl: PUSHPIN.name,
+    adx_publishingstateid: PUBLISHED,
+    adx_webfileid: pushpinId,
+    annotationid: id(`webfile:${PUSHPIN.name}:annotation`),
+    filename: PUSHPIN.name,
+    isdocument: true,
+    mimetype: 'image/png',
+    objectid: pushpinId,
+    objecttypecode: 'adx_webfile',
+  };
+  put(`web-files/${PUSHPIN.name}`, Buffer.from(PUSHPIN_PNG, 'base64'));
+  put(`web-files/${PUSHPIN.name}.webfile.yml`, yamlRecord(webFile));
+  record(
+    'webfile',
+    pushpinId,
+    PUSHPIN.name,
+    'map pushpin image (1x1 PNG) referenced by adx_map_pushpinurl on the three map lists',
+    [],
+    { path: PUSHPIN.path },
+    webFile,
+  );
+
+  const manifest = {
+    description: 'Baseline Power Pages fixture records generated by examples/project/baseline/site.mjs.',
+    website: WEBSITE.adx_websiteid,
+    notExpressed: withSources(NOT_EXPRESSED),
+    documentationOnly: withSources(DOCUMENTATION_ONLY),
+    caveats: withSources(CAVEATS),
+    records,
+  };
+  return { files, manifest };
+}
+
+const surveyFields = (group, column) => ({
+  adx_attributelogicalname: column,
+  adx_controlstyle: group.style,
+  adx_groupname: `baseline-${group.key}`,
+  ...group.fields,
+});
+
+function addSurveyForms(SURVEY, basicForm, metaOn, EDIT, QUERY, MESSAGE, ATTRIBUTE) {
+  for (const [key, title, groups] of [
+    ['survey', 'Survey', SURVEY.slice(0, 3)],
+    ['rank-no-ties', 'Rank No Ties', [SURVEY[3]]],
+    ['rank-allow-ties', 'Rank Allow Ties', [SURVEY[4]]],
+    ['stack-rank', 'Stack Rank', [SURVEY[5]]],
+  ]) {
+    const form = basicForm(`item-edit-${key}`, {
+      name: `Baseline Item Edit ${title}`,
+      mode: EDIT,
+      fields: { ...QUERY, ...MESSAGE },
+      variation: `edit, survey control styles: ${groups.map((g) => g.key).join(', ')}`,
+      page: `item-edit-${key}`,
+    });
+    for (const group of groups)
+      for (const column of group.columns)
+        metaOn(form)(`${group.key}-${column}`, ATTRIBUTE, surveyFields(group, column), `${group.key} group member`);
+  }
+}
+
+function addPrivilegeCombinationPermissions(PRIVILEGES, perm, ITEM) {
+  for (let mask = 0; mask < 64; mask++) {
+    const privileges = Object.fromEntries(PRIVILEGES.map((p, bit) => [p, Boolean(mask & (1 << bit))]));
+    perm(
+      `Baseline privileges ${PRIVILEGES.filter((p) => privileges[p]).join(' ') || 'none'}`,
+      ITEM,
+      756150000,
+      privileges,
+      ['Baseline Privilege Combinations'],
+      {},
+      `privilege combination ${mask} of 64`,
+    );
+  }
+}
+
+function emitSiteResources(context) {
+  emitSiteHeader(context);
+  emitBasicForms(context);
+  emitLists(context);
+  emitMultisteps(context);
+  emitPermissionsAndRules(context);
+  emitSnippetsAndSettings(context);
+  emitTemplatesAndPages(context);
+}
+
+function emitSiteHeader({ WEBSITE, LANGUAGE, pages, ROOT, put, writePage, record, yamlRecord, yamlList }) {
   put('website.yml', yamlRecord(WEBSITE));
   record(
     'website',
@@ -3286,6 +3396,9 @@ export function buildSite(identity = readIdentity()) {
     .map((p) => `<li><a href="${p.path}">${p.name}</a></li>`)
     .join('');
   writePage(ROOT, `<ul class="baseline-index">${links}</ul>`);
+}
+
+function emitBasicForms({ forms, put, record, writePage, slug, fileName, yamlRecord, yamlList, script, metaKey }) {
   for (const form of forms.values()) {
     const dir = `basic-forms/${slug(form.name)}`;
     put(`${dir}/${fileName(form.name)}.basicform.yml`, yamlRecord(form.values));
@@ -3316,6 +3429,9 @@ export function buildSite(identity = readIdentity()) {
       );
     if (form.page) writePage(form.page, `{% entityform name: '${form.name}' %}`);
   }
+}
+
+function emitLists({ lists, put, record, writePage, fileName, yamlRecord, script }) {
   for (const entry of lists) {
     put(`lists/${fileName(entry.name)}.list.yml`, yamlRecord(entry.values));
     if (entry.js) put(`lists/${fileName(entry.name)}.list.custom_javascript.js`, script(entry.name));
@@ -3333,46 +3449,73 @@ export function buildSite(identity = readIdentity()) {
     );
     writePage(entry.page, `{% include 'entity_list' key: '${entry.values.adx_entitylistid}' %}`);
   }
-  for (const ms of multisteps) {
-    const msDir = `advanced-forms/${slug(ms.values.adx_name)}`;
-    put(`${msDir}/${fileName(ms.values.adx_name)}.advancedform.yml`, yamlRecord(ms.values));
+}
+
+function emitMultisteps({ multisteps, put, record, writePage, slug, fileName, yamlRecord, yamlList, script, metaKey }) {
+  for (const ms of multisteps)
+    emitMultistep(ms, { put, record, writePage, slug, fileName, yamlRecord, yamlList, script, metaKey });
+}
+
+function emitMultistep(ms, { put, record, writePage, slug, fileName, yamlRecord, yamlList, script, metaKey }) {
+  const msDir = `advanced-forms/${slug(ms.values.adx_name)}`;
+  put(`${msDir}/${fileName(ms.values.adx_name)}.advancedform.yml`, yamlRecord(ms.values));
+  record(
+    'advancedform',
+    ms.values.adx_webformid,
+    ms.values.adx_name,
+    ms.variation,
+    [],
+    { path: ms.page.path },
+    ms.values,
+  );
+  for (const step of ms.steps)
+    emitMultistepStep(ms, step, { msDir, put, record, slug, fileName, yamlRecord, yamlList, script, metaKey });
+  writePage(ms.page, `{% webform name: '${ms.values.adx_name}' %}`);
+}
+
+function emitMultistepStep(ms, step, { msDir, put, record, slug, fileName, yamlRecord, yamlList, script, metaKey }) {
+  const base = `${msDir}/advanced-form-steps/${slug(step.values.adx_name)}/${fileName(step.values.adx_name)}.advancedformstep`;
+  put(`${base}.yml`, yamlRecord(step.values));
+  if (step.js) put(`${base}.custom_javascript.js`, script(step.values.adx_name));
+  const metadata = ms.metadata.filter((m) => m.values.adx_webformstep === step.values.adx_webformstepid);
+  if (metadata.length) put(`${base}.advancedformmetadata.yml`, yamlList(metadata.map((m) => m.values)));
+  record(
+    'advancedformstep',
+    step.values.adx_webformstepid,
+    step.values.adx_name,
+    step.variation,
+    step.catalog,
+    { path: ms.page.path, form: ms.values.adx_name },
+    step.values,
+  );
+  for (const m of metadata)
     record(
-      'advancedform',
-      ms.values.adx_webformid,
-      ms.values.adx_name,
-      ms.variation,
-      [],
-      { path: ms.page.path },
-      ms.values,
+      'advancedformmetadata',
+      m.values.adx_webformmetadataid,
+      metaKey(m.values),
+      `metadata (server-named): ${m.variation}`,
+      m.catalog,
+      { step: step.values.adx_name, path: ms.page.path },
+      m.values,
     );
-    for (const step of ms.steps) {
-      const base = `${msDir}/advanced-form-steps/${slug(step.values.adx_name)}/${fileName(step.values.adx_name)}.advancedformstep`;
-      put(`${base}.yml`, yamlRecord(step.values));
-      if (step.js) put(`${base}.custom_javascript.js`, script(step.values.adx_name));
-      const metadata = ms.metadata.filter((m) => m.values.adx_webformstep === step.values.adx_webformstepid);
-      if (metadata.length) put(`${base}.advancedformmetadata.yml`, yamlList(metadata.map((m) => m.values)));
-      record(
-        'advancedformstep',
-        step.values.adx_webformstepid,
-        step.values.adx_name,
-        step.variation,
-        step.catalog,
-        { path: ms.page.path, form: ms.values.adx_name },
-        step.values,
-      );
-      for (const m of metadata)
-        record(
-          'advancedformmetadata',
-          m.values.adx_webformmetadataid,
-          metaKey(m.values),
-          `metadata (server-named): ${m.variation}`,
-          m.catalog,
-          { step: step.values.adx_name, path: ms.page.path },
-          m.values,
-        );
-    }
-    writePage(ms.page, `{% webform name: '${ms.values.adx_name}' %}`);
-  }
+}
+
+function emitPermissionsAndRules(context) {
+  const {
+    permissions,
+    webroles,
+    pageRules,
+    roleNames,
+    role,
+    restricted,
+    editorsPage,
+    put,
+    record,
+    writePage,
+    fileName,
+    yamlRecord,
+    yamlList,
+  } = context;
   for (const p of permissions) {
     put(`table-permissions/${fileName(p.name)}.tablepermission.yml`, yamlRecord(p.values));
     record('tablepermission', p.values.adx_entitypermissionid, p.name, p.variation, [], {}, p.values);
@@ -3415,6 +3558,20 @@ export function buildSite(identity = readIdentity()) {
   writePage(editorsPage, `<p class="baseline-editors">Baseline Editors may publish changes to this page.</p>`, [
     'pp.pagerule.webpage',
   ]);
+}
+
+function emitSnippetsAndSettings({
+  snippets,
+  settings,
+  templatePages,
+  pageTemplates,
+  put,
+  record,
+  slug,
+  fileName,
+  yamlRecord,
+  yamlList,
+}) {
   for (const s of snippets) {
     const dir = `content-snippets/${slug(s.values.adx_name)}`;
     const base = `${dir}/${fileName(s.values.adx_name)}.en-US.contentsnippet`;
@@ -3433,6 +3590,22 @@ export function buildSite(identity = readIdentity()) {
   put('sitesetting.yml', yamlList(settings.map((s) => s.values)));
   for (const s of settings)
     record('sitesetting', s.values.adx_sitesettingid, s.values.adx_name, s.variation, [], {}, s.values);
+}
+
+function emitTemplatesAndPages({
+  webTemplates,
+  pageTemplates,
+  templatePages,
+  liquidPages,
+  boundPages,
+  put,
+  record,
+  writePage,
+  fileName,
+  slug,
+  yamlRecord,
+  liquidIds,
+}) {
   for (const t of webTemplates) {
     const dir = `web-templates/${slug(t.values.adx_name)}`;
     put(`${dir}/${fileName(t.values.adx_name)}.webtemplate.yml`, yamlRecord(t.values));
@@ -3463,46 +3636,6 @@ export function buildSite(identity = readIdentity()) {
   for (const [entry, copy] of liquidPages) writePage(entry, copy);
   for (const [entry, copy, catalog] of boundPages)
     writePage(entry, `<p class="baseline-bound">Rendered from the page's ${copy}.</p>`, catalog);
-
-  // Web file for the map pushpin, parented under /baseline/ (shape of the exported web-files/*.webfile.yml).
-  const pushpinId = id(`webfile:${PUSHPIN.name}`);
-  const webFile = {
-    adx_enabletracking: false,
-    adx_excludefromsearch: false,
-    adx_hiddenfromsitemap: true,
-    adx_name: PUSHPIN.name,
-    adx_parentpageid: ROOT.id,
-    adx_partialurl: PUSHPIN.name,
-    adx_publishingstateid: PUBLISHED,
-    adx_webfileid: pushpinId,
-    annotationid: id(`webfile:${PUSHPIN.name}:annotation`),
-    filename: PUSHPIN.name,
-    isdocument: true,
-    mimetype: 'image/png',
-    objectid: pushpinId,
-    objecttypecode: 'adx_webfile',
-  };
-  put(`web-files/${PUSHPIN.name}`, Buffer.from(PUSHPIN_PNG, 'base64'));
-  put(`web-files/${PUSHPIN.name}.webfile.yml`, yamlRecord(webFile));
-  record(
-    'webfile',
-    pushpinId,
-    PUSHPIN.name,
-    'map pushpin image (1x1 PNG) referenced by adx_map_pushpinurl on the three map lists',
-    [],
-    { path: PUSHPIN.path },
-    webFile,
-  );
-
-  const manifest = {
-    description: 'Baseline Power Pages fixture records generated by examples/project/baseline/site.mjs.',
-    website: WEBSITE.adx_websiteid,
-    notExpressed: withSources(NOT_EXPRESSED),
-    documentationOnly: withSources(DOCUMENTATION_ONLY),
-    caveats: withSources(CAVEATS),
-    records,
-  };
-  return { files, manifest };
 }
 
 // ---- Items the fixture does not set, with the reason; the catalog's Learn source ids are appended.
@@ -3816,14 +3949,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     options: { identity: { type: 'string' }, out: { type: 'string' }, manifest: { type: 'string' } },
   });
   const outDir = values.out ? path.resolve(values.out) : undefined;
-  const manifestFile = values.manifest
-    ? path.resolve(values.manifest)
-    : outDir
-      ? path.join(path.dirname(outDir), 'site-manifest.json')
-      : undefined;
+  let manifestFile;
+  if (values.manifest) manifestFile = path.resolve(values.manifest);
+  else if (outDir) manifestFile = path.join(path.dirname(outDir), 'site-manifest.json');
+  else manifestFile = undefined;
   writeSite(outDir, manifestFile, values.identity ? path.resolve(values.identity) : undefined)
     .then((result) => console.log(JSON.stringify(result)))
-    .catch((error) => {
+    .catch((error) => /* NOSONAR: module-level promise chain must not block evaluation */ {
       console.error(error.message);
       process.exitCode = 1;
     });

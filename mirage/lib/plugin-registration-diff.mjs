@@ -32,7 +32,7 @@ const attributes = (value, charge) => {
     throw new Error('Registration attributes must be a bounded string array.');
   charge(value.length);
   for (const item of value) charge(item.length);
-  return [...new Set(value.map(normalized).filter(Boolean))].sort();
+  return [...new Set(value.map(normalized).filter(Boolean))].sort((a, b) => Number(a > b) - Number(a < b));
 };
 function facts(kind, row, charge) {
   charge();
@@ -101,6 +101,57 @@ function facts(kind, row, charge) {
 }
 const evidence = (kind, id, row) => ({ kind, id, name: text(row.name), sourceFile: text(row.sourceFile) });
 
+function registrationMap(kind, side, inventory, state) {
+  const rows = inventory[kind] ?? [];
+  if (!Array.isArray(rows) || (state.count.value += rows.length) > 20000)
+    throw new Error('Registration comparison exceeds its record limit.');
+  const map = new Map();
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index];
+    if (!plain(row)) throw new Error('Registration records must be plain objects.');
+    state.charge(typeof row.id === 'string' ? row.id.length : 1);
+    const id = identity(row.id);
+    if (!id) {
+      state.diagnostics.push({ code: 'REGISTRATION_ID_UNRESOLVED', side, kind, index });
+      continue;
+    }
+    if (map.has(id)) {
+      state.ambiguous.add(id);
+      state.diagnostics.push({ code: 'REGISTRATION_ID_AMBIGUOUS', side, kind, id });
+    } else map.set(id, row);
+  }
+  return map;
+}
+
+function compareRegistration(kind, id, left, right, state) {
+  if (state.ambiguous.has(id)) return;
+  const a = left.get(id),
+    b = right.get(id);
+  if (!a) {
+    state.added.push({ ...evidence(kind, id, b), facts: facts(kind, b, state.charge) });
+    return;
+  }
+  if (!b) {
+    state.removed.push({ ...evidence(kind, id, a), facts: facts(kind, a, state.charge) });
+    return;
+  }
+  const original = facts(kind, a, state.charge),
+    next = facts(kind, b, state.charge);
+  const fields = Object.keys(original)
+    .filter((key) => !isDeepStrictEqual(original[key], next[key]))
+    .map((field) => ({ field, before: original[field], after: next[field] }));
+  if (fields.length) state.changed.push({ ...evidence(kind, id, b), beforeSourceFile: text(a.sourceFile), fields });
+  else state.unchanged[kind]++;
+}
+
+function compareRegistrationKind(kind, before, after, state) {
+  state.ambiguous = new Set();
+  const left = registrationMap(kind, 'before', before, state);
+  const right = registrationMap(kind, 'after', after, state);
+  const ids = [...new Set([...left.keys(), ...right.keys()])].sort((a, b) => Number(a > b) - Number(a < b));
+  for (const id of ids) compareRegistration(kind, id, left, right, state);
+}
+
 /** Compare importSolutionPlugins inventories by stable IDs; ambiguity stays explicit. No runtime or remote writes. */
 export function comparePluginRegistrations(before, after) {
   if (!plain(before) || !plain(after)) throw new Error('Two parsed registration inventories are required.');
@@ -109,56 +160,8 @@ export function comparePluginRegistrations(before, after) {
     removed = [],
     changed = [],
     unchanged = { assemblies: 0, types: 0, steps: 0 };
-  let count = 0;
   const charge = inspectionBudget(2000000, 'Registration comparison');
-  for (const kind of ['assemblies', 'types', 'steps']) {
-    const maps = [],
-      ambiguous = new Set();
-    for (const [side, inventory] of [
-      ['before', before],
-      ['after', after],
-    ]) {
-      const rows = inventory[kind] ?? [];
-      if (!Array.isArray(rows) || (count += rows.length) > 20000)
-        throw new Error('Registration comparison exceeds its record limit.');
-      const map = new Map();
-      for (let index = 0; index < rows.length; index++) {
-        const row = rows[index];
-        if (!plain(row)) throw new Error('Registration records must be plain objects.');
-        charge(typeof row.id === 'string' ? row.id.length : 1);
-        const id = identity(row.id);
-        if (!id) {
-          diagnostics.push({ code: 'REGISTRATION_ID_UNRESOLVED', side, kind, index });
-          continue;
-        }
-        if (map.has(id)) {
-          ambiguous.add(id);
-          diagnostics.push({ code: 'REGISTRATION_ID_AMBIGUOUS', side, kind, id });
-        } else map.set(id, row);
-      }
-      maps.push(map);
-    }
-    const [left, right] = maps;
-    for (const id of [...new Set([...left.keys(), ...right.keys()])].sort()) {
-      if (ambiguous.has(id)) continue;
-      const a = left.get(id),
-        b = right.get(id);
-      if (!a) {
-        added.push({ ...evidence(kind, id, b), facts: facts(kind, b, charge) });
-        continue;
-      }
-      if (!b) {
-        removed.push({ ...evidence(kind, id, a), facts: facts(kind, a, charge) });
-        continue;
-      }
-      const original = facts(kind, a, charge),
-        next = facts(kind, b, charge);
-      const fields = Object.keys(original)
-        .filter((key) => !isDeepStrictEqual(original[key], next[key]))
-        .map((field) => ({ field, before: original[field], after: next[field] }));
-      if (fields.length) changed.push({ ...evidence(kind, id, b), beforeSourceFile: text(a.sourceFile), fields });
-      else unchanged[kind]++;
-    }
-  }
+  const state = { count: { value: 0 }, charge, diagnostics, added, removed, changed, unchanged, ambiguous: null };
+  for (const kind of ['assemblies', 'types', 'steps']) compareRegistrationKind(kind, before, after, state);
   return { schemaVersion: 1, complete: diagnostics.length === 0, added, removed, changed, unchanged, diagnostics };
 }

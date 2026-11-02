@@ -64,7 +64,7 @@ const idOf = (value) =>
 const GUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const notFound = (logical, id) =>
   new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id, innerCode: '0x80040217' });
-const xmlEscape = (value) => String(value).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+const xmlEscape = (value) => String(value).replace(/[&<>"']/g, (ch) => `&#${ch.codePointAt(0)};`);
 
 function seed(store) {
   for (const [logical, def] of Object.entries(SEEDED)) {

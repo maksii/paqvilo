@@ -5,7 +5,7 @@
  */
 export async function mountRichTextEditors(settings, purifier) {
   const base = '/webresources/msdyn_/RichTextEditorControl/';
-  const state = (window.__portalSimulation ||= {});
+  const state = (globalThis.__portalSimulation ||= {});
   const loadJson = async (url) => {
     const response = await fetch(url);
     if (!response.ok) throw new Error('Rich text configuration unavailable: ' + url + ' (' + response.status + ')');
@@ -13,11 +13,11 @@ export async function mountRichTextEditors(settings, purifier) {
   };
   const loadEditor = () =>
     (state.richTextLibrary ||= new Promise((resolve, reject) => {
-      if (window.CKEDITOR) return resolve(window.CKEDITOR);
-      window.CKEDITOR_BASEPATH = base + 'libs/ckeditor_latest/';
+      if (globalThis.CKEDITOR) return resolve(globalThis.CKEDITOR);
+      globalThis.CKEDITOR_BASEPATH = base + 'libs/ckeditor_latest/';
       const script = document.createElement('script');
-      script.src = window.CKEDITOR_BASEPATH + 'ckeditor.js';
-      script.onload = () => resolve(window.CKEDITOR);
+      script.src = globalThis.CKEDITOR_BASEPATH + 'ckeditor.js';
+      script.onload = () => resolve(globalThis.CKEDITOR);
       script.onerror = () => reject(new Error('The managed rich text editor dependency is unavailable.'));
       document.head.append(script);
     }));
@@ -65,7 +65,7 @@ export async function mountRichTextEditors(settings, purifier) {
       button.setAttribute('aria-label', label);
       button.addEventListener('mousedown', (event) => event.preventDefault());
       button.addEventListener('click', () => {
-        frame.contentDocument.execCommand(command, false, null);
+        frame.contentDocument.execCommand(command, false, null); // NOSONAR: deprecated API kept for compatibility
         frame.contentWindow.focus();
       });
       toolbar.append(button);
@@ -150,18 +150,18 @@ export async function mountRichTextEditors(settings, purifier) {
         frame.remove();
         toolbar.remove();
         badge.remove();
-        delete window.CKEDITOR.instances[editor.name];
+        delete globalThis.CKEDITOR.instances[editor.name];
         return editor;
       },
     };
-    window.CKEDITOR ||= {
+    globalThis.CKEDITOR ||= {
       instances: {},
       replace() {
         throw new Error('Native CKEditor is unavailable in compatibility mode.');
       },
     };
-    window.CKEDITOR.instances ||= {};
-    window.CKEDITOR.instances[editor.name] = editor;
+    globalThis.CKEDITOR.instances ||= {};
+    globalThis.CKEDITOR.instances[editor.name] = editor;
     const bind = () => {
       const current = body();
       if (frame.contentDocument?.URL !== 'about:srcdoc' || !current || current.__ppSimBound) return;
@@ -191,9 +191,15 @@ export async function mountRichTextEditors(settings, purifier) {
       container.dataset.mounted = 'loading';
       try {
         if (configuration.compatibility) return await compatibilityEditor(id, input, container);
+        const libraryPromise = loadEditor();
+        let globalConfigurationPromise = state.richTextGlobalConfiguration;
+        if (!globalConfigurationPromise) {
+          globalConfigurationPromise = loadJson(base + 'RTEGlobalConfiguration.json');
+          state.richTextGlobalConfiguration = globalConfigurationPromise;
+        }
         const [library, globalConfiguration, fieldConfiguration] = await Promise.all([
-          loadEditor(),
-          (state.richTextGlobalConfiguration ||= loadJson(base + 'RTEGlobalConfiguration.json')),
+          libraryPromise,
+          globalConfigurationPromise,
           configuration.configUrl ? loadJson(configuration.configUrl) : configuration.configuration,
         ]);
         library.timestamp = '';
@@ -218,7 +224,7 @@ export async function mountRichTextEditors(settings, purifier) {
         if (!alert) {
           alert = document.createElement('p');
           alert.setAttribute('role', 'alert');
-          alert.setAttribute('data-sim-richtext-error', '');
+          alert.dataset.simRichtextError = '';
           container.append(alert);
         }
         alert.hidden = false;

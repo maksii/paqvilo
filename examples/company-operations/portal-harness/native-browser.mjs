@@ -53,17 +53,14 @@ export async function openNativeBrowser(config) {
           ?.filter((block) => block.type === 'text')
           .map((block) => block.text)
           .join('\n') ?? '';
-      const match = text.match(/### Result\s*([\s\S]*?)(?:\n### |$)/);
+      const match = text.match(/### Result\s*([\s\S]*?)(?:\n### |$)/); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
       try {
         return JSON.parse(match?.[1]);
       } catch {
-        const diagnostic = /timeout/i.test(text)
-          ? 'BROWSER_TIMEOUT'
-          : /dialog/i.test(text)
-            ? 'BROWSER_DIALOG'
-            : /error/i.test(text)
-              ? 'BROWSER_ERROR'
-              : 'BROWSER_RESULT';
+        let diagnostic = 'BROWSER_RESULT';
+        if (/timeout/i.test(text)) diagnostic = 'BROWSER_TIMEOUT';
+        else if (/dialog/i.test(text)) diagnostic = 'BROWSER_DIALOG';
+        else if (/error/i.test(text)) diagnostic = 'BROWSER_ERROR';
         throw Object.assign(new Error('Native browser result unavailable; extension output withheld.'), {
           code: diagnostic,
         });

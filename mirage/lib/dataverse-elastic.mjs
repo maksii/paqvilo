@@ -226,7 +226,7 @@ function installCosmosQuery(api) {
     csdl: `<ComplexType Name="ParameterCollection"><Property Name="Keys" Type="Collection(Edm.String)" /><Property Name="Values" Type="Collection(mscrm.Object)" /></ComplexType>
 <Function Name="ExecuteCosmosSqlQuery"><Parameter Name="QueryText" Type="Edm.String" Nullable="false" /><Parameter Name="EntityLogicalName" Type="Edm.String" Nullable="false" /><Parameter Name="QueryParameters" Type="mscrm.ParameterCollection" /><Parameter Name="PageSize" Type="Edm.Int64" /><Parameter Name="PagingCookie" Type="Edm.String" /><Parameter Name="PartitionId" Type="Edm.String" /><ReturnType Type="mscrm.crmbaseentity" Nullable="false" /></Function>`,
     handle: (ctx) => {
-      const args = { ...(ctx.body ?? {}), ...(ctx.params ?? {}) };
+      const args = { ...ctx.body, ...ctx.params };
       const mapping = api.store.resolveMapping(String(args.EntityLogicalName ?? ''));
       if (!isElastic(mapping)) throw refuse('ExecuteCosmosSqlQuery requires an elastic table.');
       api.principals.authorize({ user: ctx.user, entity: mapping.logicalName, operation: 'read', mapping });
@@ -254,7 +254,7 @@ function installCosmosQuery(api) {
         .map((row) => {
           const props = { ...(api.fieldSecurity?.mask?.(ctx.user, mapping.logicalName, row, { view }) ?? row) };
           for (const [name, value] of Object.entries(props)) {
-            if (typeof value !== 'string' || !/^[\s]*[[{]/.test(value)) continue;
+            if (typeof value !== 'string' || !/^\s*[[{]/.test(value)) continue;
             const definition = api.store.fieldDefinition(mapping.logicalName, name, api.metadataFields);
             const format =
               definition?.columnMetadata?.formatName ??

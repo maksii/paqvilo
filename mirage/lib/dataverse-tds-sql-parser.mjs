@@ -122,32 +122,38 @@ const ALIAS_STOP = new Set(['ON', 'EXCEPT', 'INTERSECT']);
 export function parseBatch(sql) {
   if (typeof sql !== 'string') throw new TypeError('parseBatch expects a SQL string.');
   const statements = [];
-  for (const batch of splitBatches(sql)) {
-    let tokens = [];
-    try {
-      tokens = prepareTokens(tokenize(batch.sql));
-      const s = { tokens, pos: 0, quantified: new Map() };
-      while (s.pos < tokens.length) {
-        if (eatPunct(s, ';')) continue;
-        const line = peek(s).line;
-        const first = s.pos;
-        const statement = parseStatement(s);
-        statement.line = batch.line + line - 1;
-        // The statement's own text, read only when a trace asks for it (not enumerable: the AST shape is unchanged).
-        const last = s.pos - 1;
-        Object.defineProperty(statement, 'source', { get: () => statementSource(batch.sql, tokens, first, last) });
-        statements.push(statement);
-        if (!eatPunct(s, ';') && s.pos < tokens.length) checkSeparator(s);
-      }
-    } catch (err) {
-      if (err instanceof TdsSqlError) {
-        const local = err.line ?? tokens.at(-1)?.line ?? 1;
-        err.line = batch.line + local - 1;
-      }
-      throw err;
-    }
-  }
+  for (const batch of splitBatches(sql)) parseBatchPart(batch, statements);
   return { statements };
+}
+
+function parseBatchPart(batch, statements) {
+  let tokens = [];
+  try {
+    tokens = prepareTokens(tokenize(batch.sql));
+    parseBatchStatements(batch, tokens, statements);
+  } catch (err) {
+    if (err instanceof TdsSqlError) {
+      const local = err.line ?? tokens.at(-1)?.line ?? 1;
+      err.line = batch.line + local - 1;
+    }
+    throw err;
+  }
+}
+
+function parseBatchStatements(batch, tokens, statements) {
+  const s = { tokens, pos: 0, quantified: new Map() };
+  while (s.pos < tokens.length) {
+    if (eatPunct(s, ';')) continue;
+    const line = peek(s).line;
+    const first = s.pos;
+    const statement = parseStatement(s);
+    statement.line = batch.line + line - 1;
+    // The statement's own text, read only when a trace asks for it (not enumerable: the AST shape is unchanged).
+    const last = s.pos - 1;
+    Object.defineProperty(statement, 'source', { get: () => statementSource(batch.sql, tokens, first, last) });
+    statements.push(statement);
+    if (!eatPunct(s, ';') && s.pos < tokens.length) checkSeparator(s);
+  }
 }
 
 // A statement's text from its first to its last token: { text, redacted }, where redacted has every string and number
@@ -177,43 +183,52 @@ function prepareTokens(tokens) {
     const tok = tokens[i];
     const next = tokens[i + 1];
     const word = wordOf(tok);
-    if (
-      tok.type === 'keyword' &&
-      REJECTED_KEYWORDS.has(tok.value) &&
-      !(tok.value === 'INTO' && isKeyword(tokens[i - 1], 'INSERT'))
-    ) {
-      throw notSupported(tok, `The ${tok.value} clause is not supported by the Dataverse SQL endpoint.`);
-    }
-    if (
-      tok.type === 'keyword' &&
-      QUANTIFIERS.has(tok.value) &&
-      tokens[i - 1]?.type === 'operator' &&
-      COMPARISONS.has(tokens[i - 1].value) &&
-      isPunct(next, '(') &&
-      isKeyword(tokens[i + 2], 'SELECT')
-    ) {
-      next.quantifier = tok.value === 'ALL' ? 'ALL' : 'ANY';
-      tokens.splice(i, 1);
+    rejectKeywordClause(tok, tokens, i);
+    if (markQuantifier(tok, next, tokens, i)) {
       i -= 1;
       continue;
     }
-    if ((word === 'FREETEXT' || word === 'FREETEXTTABLE') && isPunct(next, '(')) {
-      throw notSupported(tok, `${word} is not supported by the Dataverse SQL endpoint.`);
-    }
-    if ((word === 'PIVOT' || word === 'UNPIVOT') && isPunct(next, '(')) {
-      throw notSupported(tok, `${word} is not supported by the Dataverse SQL endpoint.`);
-    }
-    if (word === 'AT' && isWord(next, 'TIME') && isWord(tokens[i + 2], 'ZONE')) {
-      throw notSupported(tok, 'AT TIME ZONE is not supported by the Dataverse SQL endpoint.');
-    }
-    if (word === 'OFFSET' && (next?.type === 'number' || next?.type === 'variable')) {
-      throw notSupported(tok, 'The OFFSET clause is not supported by the Dataverse SQL endpoint.');
-    }
-    if (word === 'FETCH' && (isWord(next, 'NEXT') || isWord(next, 'FIRST'))) {
-      throw notSupported(tok, 'The FETCH clause is not supported by the Dataverse SQL endpoint.');
-    }
+    rejectUnsupportedToken(tok, next, tokens, i, word);
   }
   return tokens;
+}
+
+function rejectKeywordClause(tok, tokens, index) {
+  if (
+    tok.type === 'keyword' &&
+    REJECTED_KEYWORDS.has(tok.value) &&
+    !(tok.value === 'INTO' && isKeyword(tokens[index - 1], 'INSERT'))
+  )
+    throw notSupported(tok, `The ${tok.value} clause is not supported by the Dataverse SQL endpoint.`);
+}
+
+function markQuantifier(tok, next, tokens, index) {
+  if (
+    tok.type === 'keyword' &&
+    QUANTIFIERS.has(tok.value) &&
+    tokens[index - 1]?.type === 'operator' &&
+    COMPARISONS.has(tokens[index - 1].value) &&
+    isPunct(next, '(') &&
+    isKeyword(tokens[index + 2], 'SELECT')
+  ) {
+    next.quantifier = tok.value === 'ALL' ? 'ALL' : 'ANY';
+    tokens.splice(index, 1);
+    return true;
+  }
+  return false;
+}
+
+function rejectUnsupportedToken(tok, next, tokens, index, word) {
+  if ((word === 'FREETEXT' || word === 'FREETEXTTABLE') && isPunct(next, '('))
+    throw notSupported(tok, `${word} is not supported by the Dataverse SQL endpoint.`);
+  if ((word === 'PIVOT' || word === 'UNPIVOT') && isPunct(next, '('))
+    throw notSupported(tok, `${word} is not supported by the Dataverse SQL endpoint.`);
+  if (word === 'AT' && isWord(next, 'TIME') && isWord(tokens[index + 2], 'ZONE'))
+    throw notSupported(tok, 'AT TIME ZONE is not supported by the Dataverse SQL endpoint.');
+  if (word === 'OFFSET' && (next?.type === 'number' || next?.type === 'variable'))
+    throw notSupported(tok, 'The OFFSET clause is not supported by the Dataverse SQL endpoint.');
+  if (word === 'FETCH' && (isWord(next, 'NEXT') || isWord(next, 'FIRST')))
+    throw notSupported(tok, 'The FETCH clause is not supported by the Dataverse SQL endpoint.');
 }
 
 // ---- statements

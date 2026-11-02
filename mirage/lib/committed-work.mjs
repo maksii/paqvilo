@@ -58,6 +58,55 @@ const indexOf = (store, rows, id) => {
   return positions ? (positions[0] ?? -1) : rows.findIndex((row) => row.asyncoperationid === id);
 };
 
+function finishCommittedJobTick({ store, queued, started, seen, retry, clearTick, nextWait, readyJob, kick }) {
+  const rows = store.state.tables?.asyncoperation ?? [];
+  for (const id of queued) if (!started.has(id) && (seen.has(id) || !readyJob(rows, id))) queued.delete(id);
+  for (const id of retry) queued.add(id);
+  retry.clear();
+  clearTick();
+  const wait = nextWait(rows);
+  if (wait !== null) kick(wait);
+}
+
+function startQueuedCommittedJob(job, kinds, running, execute) {
+  const kind = kinds.get(job.payload.kind);
+  if (!kind) return null;
+  const run = execute(job);
+  if (!kind.concurrent) return run;
+  running.add(run);
+  void run.finally(() => running.delete(run));
+  return null;
+}
+
+const shouldWaitForAutomaticTick = (ticking, manual) => ticking && !manual();
+const hasImmediateCommittedJobs = (autoRuns, nextWait) => autoRuns() && nextWait() === 0;
+const hasStartLatencyWait = (autoRuns, latencyWait) => autoRuns() && latencyWait() !== null;
+const hasQueuedWorkAfterTick = (ticking, running, enqueues, queued) =>
+  !ticking && !running.size && !enqueues.size && queued.size;
+
+function selectCommittedWorkDrainAction({
+  enqueues,
+  running,
+  ticking,
+  manual,
+  autoRuns,
+  nextWait,
+  latencyWait,
+  scheduler,
+  kick,
+}) {
+  if (enqueues.size) return { type: 'enqueues', work: Promise.allSettled(enqueues) };
+  if (running.size) return { type: 'running', work: Promise.all(running) };
+  if (shouldWaitForAutomaticTick(ticking, manual)) return { type: 'automatic', work: ticking };
+  if (ticking) return { type: 'manual', current: ticking, work: scheduler().drain() };
+  if (hasImmediateCommittedJobs(autoRuns, nextWait)) {
+    kick();
+    return { type: 'immediate', work: scheduler().drain() };
+  }
+  if (hasStartLatencyWait(autoRuns, latencyWait)) return { type: 'latency' };
+  return null;
+}
+
 /** The one durable runner of committed-event work for a store: async plug-in runs, async web hooks and row-triggered flows.
  * stage() writes Ready asyncoperation rows (System Event unless the entry's columns say otherwise) whose `data` keeps the
  * job kind, its chain and the committed event, so a restart finds them; a single tick on the store's scheduler runs the Ready rows of the registered kinds in
@@ -85,8 +134,10 @@ export function committedJobs(store) {
   // A Ready row waits until its start time: the job's internal start latency (data startAfter, plugin-async.mjs; its
   // postponeuntil stays null as natively) or a postponeuntil; 0 when it is due.
   const waitOf = (row) => {
-    const after = jobOf(row)?.startAfter,
-      until = Number.isFinite(after) ? after : row?.postponeuntil ? Date.parse(row.postponeuntil) : NaN;
+    const after = jobOf(row)?.startAfter;
+    let until = Number.NaN;
+    if (Number.isFinite(after)) until = after;
+    else if (row?.postponeuntil) until = Date.parse(row.postponeuntil);
     return Number.isFinite(until) ? Math.max(0, until - nowMs()) : 0;
   };
   const autoRuns = () => {
@@ -229,35 +280,30 @@ export function committedJobs(store) {
           if (!jobs.length) {
             await store.flushCommittedEvents();
             if (enqueues.size) {
-              await Promise.allSettled([...enqueues]);
+              await Promise.allSettled(enqueues);
               continue;
             }
             jobs = scan(seen);
-            if (!jobs.length) break;
           }
+          if (!jobs.length) break;
           for (const job of jobs) {
             seen.add(job.id);
-            if (!kinds.has(job.payload.kind)) continue;
-            const run = execute(job);
-            if (kinds.get(job.payload.kind).concurrent) {
-              running.add(run);
-              run.finally(() => running.delete(run));
-            } else await run;
+            const run = startQueuedCommittedJob(job, kinds, running, execute);
+            if (run) await run;
           }
         }
       } finally {
-        // Rows tried in this tick or gone from the table stop counting; rows enqueued after its last scan start the next tick.
-        const rows = store.state.tables?.asyncoperation ?? [];
-        for (const id of queued) if (!started.has(id) && (seen.has(id) || !readyJob(rows, id))) queued.delete(id);
-        // A rolled-back attempt runs again on the next tick, until MAX_ATTEMPTS finishes it.
-        for (const id of retry) queued.add(id);
-        retry.clear();
-        ticking = null;
-        // A concurrent delivery remains queued until it finishes, but cannot
-        // run twice. Only new Ready work needs another tick; repeatedly kicking
-        // for an in-flight delivery starves I/O on a manual scheduler. A postponed row gets a tick when it is due.
-        const wait = nextWait(rows);
-        if (wait !== null) kick(wait);
+        finishCommittedJobTick({
+          store,
+          queued,
+          started,
+          seen,
+          retry,
+          clearTick: () => (ticking = null),
+          nextWait,
+          readyJob,
+          kick,
+        });
       }
     })());
   const jobs = (store.committedJobs = {
@@ -359,22 +405,38 @@ export function committedJobs(store) {
     async drain() {
       for (;;) {
         await store.flushCommittedEvents();
-        if (enqueues.size) await Promise.allSettled([...enqueues]);
-        else if (running.size) await Promise.all([...running]);
-        else if (ticking && !manual()) await ticking;
         // The manual scheduler's drain returns once its running tasks settled or are blocked; a tick still running is blocked.
-        else if (ticking) {
-          const current = ticking;
-          await scheduler().drain();
-          if (ticking === current) return;
-        } else if (autoRuns() && nextWait() === 0) {
-          kick();
-          await scheduler().drain();
-          if (!ticking && !running.size && !enqueues.size && queued.size)
-            await new Promise((resolve) => setImmediate(resolve));
-        } else if (autoRuns() && latencyWait() !== null)
-          await new Promise((resolve) => setTimeout(resolve, latencyWait()));
-        else return;
+        const action = selectCommittedWorkDrainAction({
+          enqueues,
+          running,
+          ticking,
+          manual,
+          autoRuns,
+          nextWait,
+          latencyWait,
+          scheduler,
+          kick,
+        });
+        if (!action) return;
+        switch (action.type) {
+          case 'enqueues':
+          case 'running':
+          case 'automatic':
+            await action.work;
+            continue;
+          case 'manual':
+            await action.work;
+            if (ticking === action.current) return;
+            continue;
+          case 'immediate':
+            await action.work;
+            if (hasQueuedWorkAfterTick(ticking, running, enqueues, queued))
+              await new Promise((resolve) => setImmediate(resolve));
+            continue;
+          case 'latency':
+            await new Promise((resolve) => setTimeout(resolve, latencyWait()));
+            continue;
+        }
       }
     },
   });
@@ -395,19 +457,21 @@ export function stageCommittedJobs(
 ) {
   if (!entries.length && !diagnostics.length) return null; // nothing staged: the commit is not forced to save
   const start = committedJobs(store).stage(kind ? entries.map((entry) => ({ kind, ...entry })) : entries);
-  return () => {
-    if (ledger) {
-      for (const [id, count] of counts ?? []) {
-        ledger.runs.set(id, count);
-        ledger.accepted.add(id);
-        if (ledger.accepted.size > 2000) ledger.accepted.delete(ledger.accepted.values().next().value);
-        if (ledger.runs.size > 1000) ledger.runs.delete(ledger.runs.keys().next().value);
-      }
-      for (const entry of entries) ledger.own.add(entry.id);
+  return () => applyCommittedJobStage({ entries, counts, ledger, diagnostics, report, start });
+}
+
+function applyCommittedJobStage({ entries, counts, ledger, diagnostics, report, start }) {
+  if (ledger) {
+    for (const [id, count] of counts ?? []) {
+      ledger.runs.set(id, count);
+      ledger.accepted.add(id);
+      if (ledger.accepted.size > 2000) ledger.accepted.delete(ledger.accepted.values().next().value);
+      if (ledger.runs.size > 1000) ledger.runs.delete(ledger.runs.keys().next().value);
     }
-    for (const note of diagnostics) report(note);
-    start?.();
-  };
+    for (const entry of entries) ledger.own.add(entry.id);
+  }
+  for (const note of diagnostics) report(note);
+  start?.();
 }
 
 /** Runs fn outside every trace and request context (a scheduler tick, a timer), so nothing it starts inherits the span of

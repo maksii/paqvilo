@@ -16,7 +16,7 @@ export function packageDependencyEvidence(sourceLock, consumerLock, packageName)
   const toolkitPath = `node_modules/${packageName}`;
   const differences = [...new Set([...source.keys(), ...consumer.keys()])]
     .filter((location) => location !== toolkitPath)
-    .sort()
+    .sort((a, b) => Number(a > b) - Number(a < b))
     .flatMap((location) => {
       const expected = source.get(location),
         actual = consumer.get(location);

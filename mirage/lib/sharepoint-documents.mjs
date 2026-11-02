@@ -97,7 +97,7 @@ function assertName(name) {
 // A new file or folder name also follows SharePoint's naming rules: no " * : < > ? / \ |, no leading or trailing space,
 // no trailing dot, none of the reserved names. The exact SharePoint Online set is a guess (Learn documents these
 // characters and the Windows reserved names; .lock, _vti_, desktop.ini, ~$ prefixes and _private are the SharePoint list).
-const RESERVED_NAME = /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\..*)?$|^\.lock$|^desktop\.ini$|^_private$|^~\$|_vti_/i;
+const RESERVED_NAME = /^(?:con|prn|aux|nul|com\d|lpt\d)(?:\..*)?$|^\.lock$|^desktop\.ini$|^_private$|^~\$|_vti_/i;
 function assertNewName(name) {
   assertName(name);
   if (/["*:<>?/\\|]/.test(name) || name !== name.trim() || name.endsWith('.') || RESERVED_NAME.test(name))
@@ -258,7 +258,7 @@ function createApi(api) {
         relativeUrl ??
         `${String(name)
           .replace(/["*:<>?/\\|]/g, '')
-          .trim()}_${String(regarding.id).replace(/-/g, '').toUpperCase()}`;
+          .trim()}_${String(regarding.id).replaceAll('-', '').toUpperCase()}`;
       if (!String(folder).split('/').filter(Boolean).length)
         throw new DataError('The relative URL is not valid.', 400, 'SharePointInvalidName');
       const siteRef = lookup(SITE, site.sharepointsiteid, site.name);
@@ -474,7 +474,8 @@ function createApi(api) {
 function install(api, options = {}) {
   const state = stateOf(api);
   const storage = options.storage ?? api.providers?.storage ?? null;
-  state.storage = storage ? (typeof storage.forRoute === 'function' ? storage : guardProvider(storage)) : null;
+  if (storage) state.storage = typeof storage.forRoute === 'function' ? storage : guardProvider(storage);
+  else state.storage = null;
   state.diagnostic = options.diagnostic ?? api.diagnostic ?? null;
   api.sharepoint = createApi(api);
   return api.store.transact(() => seed(api.store));
@@ -543,6 +544,13 @@ const answer = (res, status, body, headers = {}) => {
   return true;
 };
 const failureBody = (error) => ({ error: { code: error.code ?? 'PortalDocumentsFailed', message: error.message } });
+const decodeDocumentPathPart = (part) => {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    return part;
+  }
+};
 
 /**
  * createPortalDocumentService({ sharepoint, store, portal, access, blockedExtensions }) -> { handle(req, res, url, { identity, csrf }) }.
@@ -566,50 +574,242 @@ export function createPortalDocumentService({
   blockedExtensions = () => [],
 }) {
   const system = { admin: true }; // the portal's own permission check runs first; the organization call acts as the site
+  const unsupportedDocumentMember = (res) =>
+    answer(
+      res,
+      501,
+      failureBody({
+        code: 'PortalDocumentMemberUnsupported',
+        message: 'This document control member is not available locally.',
+      }),
+    );
+  const missingDocumentFolder = (res, path) =>
+    answer(
+      res,
+      404,
+      failureBody({
+        code: 'NotFound',
+        message: `The folder '${path.join('/')}' does not exist in this location.`,
+      }),
+    );
+  function validatePortalDocumentRequest(req, res, parts, path, csrf) {
+    if (parts.length < 2 || parts.length > 3) return unsupportedDocumentMember(res);
+    if (
+      !['GET', 'POST', 'DELETE'].includes(req.method) ||
+      (req.method === 'POST' && parts.length !== 2) ||
+      (req.method === 'DELETE' && parts.length !== 3 && !path.length)
+    )
+      return unsupportedDocumentMember(res);
+    if (path.length > MAX_FOLDER_DEPTH)
+      throw new DataError('The folder path is not valid.', 400, 'SharePointInvalidName');
+    for (const segment of path) assertName(segment);
+    if (req.method !== 'GET' && (!csrf || req.headers.__requestverificationtoken !== csrf))
+      return answer(res, 403, failureBody({ code: 'Forbidden', message: 'Missing portal verification token.' }));
+    return false;
+  }
+  function portalDocumentParent(res, table, id) {
+    let mapping;
+    try {
+      mapping = store.resolveMapping(table);
+    } catch {
+      return {
+        response: answer(res, 404, failureBody({ code: 'NotFound', message: `The table ${table} is not known.` })),
+      };
+    }
+    const row = store.tableRows(mapping.logicalName).find((item) => sameId(item[mapping.idColumn], id));
+    if (!row)
+      return {
+        response: answer(
+          res,
+          404,
+          failureBody({ code: 'NotFound', message: `${mapping.logicalName} With Id = ${id} Does Not Exist` }),
+        ),
+      };
+    return { mapping, row };
+  }
+  const documentTransferKind = (method, name, newFolder) => {
+    let kind = 'upload';
+    if (method === 'GET') kind = name ? 'download' : 'list';
+    else if (method === 'DELETE') kind = 'delete';
+    else if (newFolder != null) kind = 'create-folder';
+    return kind;
+  };
+  const portalDocumentLocation = (regarding, logicalName) =>
+    activeLocations(
+      store,
+      (item) =>
+        sameId(refId(item.regardingobjectid), regarding.id) &&
+        lower(item.regardingobjectid?.logical_name) === logicalName,
+    )[0] ?? null;
+  async function listPortalDocuments(res, allowed, location, path) {
+    if (!allowed.list)
+      return answer(
+        res,
+        403,
+        failureBody({
+          code: 'PermissionDenied',
+          message: "Table permissions do not allow reading this record's documents.",
+        }),
+      );
+    if (!location && path.length) return missingDocumentFolder(res, path);
+    const entries = location
+      ? await sharepoint.listDocuments(location.sharepointdocumentlocationid, system, { path })
+      : [];
+    return answer(res, 200, {
+      folder: path.join('/'),
+      folders: entries
+        .filter((entry) => entry.folder)
+        .map(({ name: folder, lastModified }) => ({ name: folder, lastModified })),
+      documents: entries
+        .filter((entry) => !entry.folder)
+        .map(({ name: file, size, contentType, lastModified }) => ({
+          name: file,
+          size,
+          contentType,
+          lastModified,
+        })),
+      canUpload: allowed.upload,
+      canCreateFolder: allowed.upload,
+      canDelete: allowed.delete,
+    });
+  }
+  async function downloadPortalDocument(res, allowed, location, name, path, transfer) {
+    if (!allowed.list || !location)
+      return answer(
+        res,
+        allowed.list ? 404 : 403,
+        failureBody({
+          code: allowed.list ? 'NotFound' : 'PermissionDenied',
+          message: allowed.list
+            ? 'The record has no documents.'
+            : "Table permissions do not allow reading this record's documents.",
+        }),
+      );
+    const file = await sharepoint.download(location.sharepointdocumentlocationid, name, system, { path });
+    transfer({ fileName: file.name, fileSize: file.bytes?.length ?? null, mimetype: file.contentType ?? null });
+    res.writeHead(200, {
+      'content-type': file.contentType,
+      'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+      'cache-control': 'no-store',
+      'x-sim-route': 'portal-documents',
+    });
+    res.end(Buffer.from(file.bytes ?? []));
+    return true;
+  }
+  async function deletePortalDocument(res, allowed, location, name, path) {
+    if (!allowed.delete || !location)
+      return answer(
+        res,
+        allowed.delete ? 404 : 403,
+        failureBody({
+          code: allowed.delete ? 'NotFound' : 'PermissionDenied',
+          message: allowed.delete
+            ? 'The record has no documents.'
+            : "Table permissions do not allow deleting this record's documents.",
+        }),
+      );
+    if (name) await sharepoint.delete(location.sharepointdocumentlocationid, name, { path }, system);
+    else await sharepoint.deleteFolder(location.sharepointdocumentlocationid, path, system);
+    res.writeHead(204, { 'cache-control': 'no-store', 'x-sim-route': 'portal-documents' });
+    res.end();
+    return true;
+  }
+  async function createPortalDocumentFolder(res, newFolder, location, path, regarding) {
+    assertNewName(newFolder);
+    if (path.length >= MAX_FOLDER_DEPTH)
+      throw new DataError(`Folders nest at most ${MAX_FOLDER_DEPTH} levels.`, 400, 'SharePointInvalidName');
+    if (!location && path.length) return missingDocumentFolder(res, path);
+    const target = location ?? (await sharepoint.ensureLocation(regarding, {}, system));
+    return answer(
+      res,
+      201,
+      await sharepoint.createFolder(target.sharepointdocumentlocationid, { path, name: newFolder }, system),
+    );
+  }
+  async function uploadPortalDocument({ req, res, url, newFolder, allowed, location, path, regarding, transfer }) {
+    if (!allowed.upload)
+      return answer(
+        res,
+        403,
+        failureBody({
+          code: 'PermissionDenied',
+          message: 'Table permissions do not allow uploading documents to this record.',
+        }),
+      );
+    if (newFolder != null) return createPortalDocumentFolder(res, newFolder, location, path, regarding);
+    if (!location && path.length) return missingDocumentFolder(res, path);
+    const fileName = url.searchParams.get('name') ?? '';
+    assertNewName(fileName);
+    const extension = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+    if (extension && blockedExtensions().includes(extension))
+      return answer(
+        res,
+        400,
+        failureBody({
+          code: 'AttachmentTypeBlocked',
+          message: 'Attachment extension is blocked by the organization.',
+        }),
+      );
+    const settings = portal();
+    const maxBytes = megabytes(siteSetting(settings, 'SharePoint/MaxUploadSize'), 10, 50);
+    const totalBytes = megabytes(siteSetting(settings, 'SharePoint/MaxTotalUploadSize'), Infinity);
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > Math.min(maxBytes, totalBytes))
+      return answer(
+        res,
+        413,
+        failureBody({
+          code: 'SharePointFileTooLarge',
+          message: `The file exceeds the maximum upload size of ${Math.round(Math.min(maxBytes, totalBytes) / MB)} MB.`,
+        }),
+      );
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > Math.min(maxBytes, totalBytes))
+        return answer(
+          res,
+          413,
+          failureBody({
+            code: 'SharePointFileTooLarge',
+            message: `The file exceeds the maximum upload size of ${Math.round(Math.min(maxBytes, totalBytes) / MB)} MB.`,
+          }),
+        );
+      chunks.push(chunk);
+    }
+    const target = location ?? (await sharepoint.ensureLocation(regarding, {}, system));
+    const stored = await sharepoint.upload(
+      target.sharepointdocumentlocationid,
+      {
+        name: fileName,
+        bytes: Buffer.concat(chunks),
+        contentType: String(req.headers['content-type'] ?? 'application/octet-stream'),
+        maxBytes,
+        path,
+      },
+      system,
+    );
+    transfer({ fileName: stored.name, fileSize: stored.size, mimetype: stored.contentType ?? null });
+    return answer(res, 201, {
+      name: stored.name,
+      size: stored.size,
+      contentType: stored.contentType,
+      lastModified: stored.lastModified,
+    });
+  }
   async function handle(req, res, url, { identity = {}, csrf = null } = {}) {
     if (!url.pathname.toLowerCase().startsWith(PORTAL_DOCUMENTS_ROUTE)) return false;
     const parts = url.pathname
       .slice(PORTAL_DOCUMENTS_ROUTE.length)
       .split('/')
       .filter(Boolean)
-      .map((part) => {
-        try {
-          return decodeURIComponent(part);
-        } catch {
-          return part;
-        }
-      });
+      .map(decodeDocumentPathPart);
     try {
       // ?folder=a/b addresses a subfolder of the record folder; each name is checked (assertName: no "..", no separators).
       const path = (url.searchParams.get('folder') ?? '').split('/').filter(Boolean);
       const newFolder = url.searchParams.get('newFolder');
-      if (parts.length < 2 || parts.length > 3)
-        return answer(
-          res,
-          501,
-          failureBody({
-            code: 'PortalDocumentMemberUnsupported',
-            message: 'This document control member is not available locally.',
-          }),
-        );
-      if (
-        !['GET', 'POST', 'DELETE'].includes(req.method) ||
-        (req.method === 'POST' && parts.length !== 2) ||
-        (req.method === 'DELETE' && parts.length !== 3 && !path.length)
-      )
-        return answer(
-          res,
-          501,
-          failureBody({
-            code: 'PortalDocumentMemberUnsupported',
-            message: 'This document control member is not available locally.',
-          }),
-        );
-      if (path.length > MAX_FOLDER_DEPTH)
-        throw new DataError('The folder path is not valid.', 400, 'SharePointInvalidName');
-      for (const segment of path) assertName(segment);
-      if (req.method !== 'GET' && (!csrf || req.headers.__requestverificationtoken !== csrf))
-        return answer(res, 403, failureBody({ code: 'Forbidden', message: 'Missing portal verification token.' }));
+      if (validatePortalDocumentRequest(req, res, parts, path, csrf)) return true;
       // Without storage every operation answers 501, never an empty list.
       if (sharepoint.describe().level !== 'behaviour')
         return answer(
@@ -621,223 +821,26 @@ export function createPortalDocumentService({
           }),
         );
       const [table, id, name] = parts;
-      let mapping;
-      try {
-        mapping = store.resolveMapping(table);
-      } catch {
-        return answer(res, 404, failureBody({ code: 'NotFound', message: `The table ${table} is not known.` }));
-      }
-      const row = store.tableRows(mapping.logicalName).find((item) => sameId(item[mapping.idColumn], id));
+      const parent = portalDocumentParent(res, table, id);
+      if (parent.response) return parent.response;
+      const { mapping, row } = parent;
       // Learn: upload requires the parent record to exist (a create-mode form has none).
-      if (!row)
-        return answer(
-          res,
-          404,
-          failureBody({ code: 'NotFound', message: `${mapping.logicalName} With Id = ${id} Does Not Exist` }),
-        );
       const regarding = { logicalName: mapping.logicalName, id: row[mapping.idColumn] };
       // The document transfer on the request's span (D-R3-10): the regarding record, the operation and the file facts.
       const span = store.traces?.enabled ? store.traces.current() : null;
       const transfer = (facts) => span?.set({ documents: 'sharepoint', ...facts });
       span?.setEntity(mapping.logicalName, String(regarding.id));
       transfer({
-        transfer:
-          req.method === 'GET'
-            ? name
-              ? 'download'
-              : 'list'
-            : req.method === 'DELETE'
-              ? 'delete'
-              : newFolder != null
-                ? 'create-folder'
-                : 'upload',
+        transfer: documentTransferKind(req.method, name, newFolder),
         ...(name ? { fileName: name } : {}),
         ...(path.length ? { folder: path.join('/') } : {}),
       });
-      const location =
-        activeLocations(
-          store,
-          (item) =>
-            sameId(refId(item.regardingobjectid), regarding.id) &&
-            lower(item.regardingobjectid?.logical_name) === mapping.logicalName,
-        )[0] ?? null;
+      const location = portalDocumentLocation(regarding, mapping.logicalName);
       const allowed = access(store, { entity: mapping.logicalName, row, location }, identity);
-      if (req.method === 'GET' && !name) {
-        if (!allowed.list)
-          return answer(
-            res,
-            403,
-            failureBody({
-              code: 'PermissionDenied',
-              message: "Table permissions do not allow reading this record's documents.",
-            }),
-          );
-        if (!location && path.length)
-          return answer(
-            res,
-            404,
-            failureBody({
-              code: 'NotFound',
-              message: `The folder '${path.join('/')}' does not exist in this location.`,
-            }),
-          );
-        const entries = location
-          ? await sharepoint.listDocuments(location.sharepointdocumentlocationid, system, { path })
-          : [];
-        // New folder follows the upload rule (Create, Write and Append on Document Location); Learn names no separate privilege.
-        return answer(res, 200, {
-          folder: path.join('/'),
-          folders: entries
-            .filter((entry) => entry.folder)
-            .map(({ name: folder, lastModified }) => ({ name: folder, lastModified })),
-          documents: entries
-            .filter((entry) => !entry.folder)
-            .map(({ name: file, size, contentType, lastModified }) => ({
-              name: file,
-              size,
-              contentType,
-              lastModified,
-            })),
-          canUpload: allowed.upload,
-          canCreateFolder: allowed.upload,
-          canDelete: allowed.delete,
-        });
-      }
-      if (req.method === 'GET') {
-        if (!allowed.list || !location)
-          return answer(
-            res,
-            allowed.list ? 404 : 403,
-            failureBody({
-              code: allowed.list ? 'NotFound' : 'PermissionDenied',
-              message: allowed.list
-                ? 'The record has no documents.'
-                : "Table permissions do not allow reading this record's documents.",
-            }),
-          );
-        const file = await sharepoint.download(location.sharepointdocumentlocationid, name, system, { path });
-        transfer({ fileName: file.name, fileSize: file.bytes?.length ?? null, mimetype: file.contentType ?? null });
-        res.writeHead(200, {
-          'content-type': file.contentType,
-          'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
-          'cache-control': 'no-store',
-          'x-sim-route': 'portal-documents',
-        });
-        res.end(Buffer.from(file.bytes ?? []));
-        return true;
-      }
-      if (req.method === 'DELETE') {
-        if (!allowed.delete || !location)
-          return answer(
-            res,
-            allowed.delete ? 404 : 403,
-            failureBody({
-              code: allowed.delete ? 'NotFound' : 'PermissionDenied',
-              message: allowed.delete
-                ? 'The record has no documents.'
-                : "Table permissions do not allow deleting this record's documents.",
-            }),
-          );
-        if (name) await sharepoint.delete(location.sharepointdocumentlocationid, name, { path }, system);
-        else await sharepoint.deleteFolder(location.sharepointdocumentlocationid, path, system);
-        res.writeHead(204, { 'cache-control': 'no-store', 'x-sim-route': 'portal-documents' });
-        res.end();
-        return true;
-      }
-      if (!allowed.upload)
-        return answer(
-          res,
-          403,
-          failureBody({
-            code: 'PermissionDenied',
-            message: 'Table permissions do not allow uploading documents to this record.',
-          }),
-        );
-      if (newFolder != null) {
-        assertNewName(newFolder);
-        if (path.length >= MAX_FOLDER_DEPTH)
-          throw new DataError(`Folders nest at most ${MAX_FOLDER_DEPTH} levels.`, 400, 'SharePointInvalidName');
-        if (!location && path.length)
-          return answer(
-            res,
-            404,
-            failureBody({
-              code: 'NotFound',
-              message: `The folder '${path.join('/')}' does not exist in this location.`,
-            }),
-          );
-        const target = location ?? (await sharepoint.ensureLocation(regarding, {}, system));
-        return answer(
-          res,
-          201,
-          await sharepoint.createFolder(target.sharepointdocumentlocationid, { path, name: newFolder }, system),
-        );
-      }
-      if (!location && path.length)
-        return answer(
-          res,
-          404,
-          failureBody({ code: 'NotFound', message: `The folder '${path.join('/')}' does not exist in this location.` }),
-        );
-      const fileName = url.searchParams.get('name') ?? '';
-      assertNewName(fileName);
-      const extension = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
-      if (extension && blockedExtensions().includes(extension))
-        return answer(
-          res,
-          400,
-          failureBody({
-            code: 'AttachmentTypeBlocked',
-            message: 'Attachment extension is blocked by the organization.',
-          }),
-        );
-      const settings = portal();
-      const maxBytes = megabytes(siteSetting(settings, 'SharePoint/MaxUploadSize'), 10, 50);
-      const totalBytes = megabytes(siteSetting(settings, 'SharePoint/MaxTotalUploadSize'), Infinity);
-      const declared = Number(req.headers['content-length']);
-      if (Number.isFinite(declared) && declared > Math.min(maxBytes, totalBytes))
-        return answer(
-          res,
-          413,
-          failureBody({
-            code: 'SharePointFileTooLarge',
-            message: `The file exceeds the maximum upload size of ${Math.round(Math.min(maxBytes, totalBytes) / MB)} MB.`,
-          }),
-        );
-      const chunks = [];
-      let size = 0;
-      for await (const chunk of req) {
-        size += chunk.length;
-        if (size > Math.min(maxBytes, totalBytes))
-          return answer(
-            res,
-            413,
-            failureBody({
-              code: 'SharePointFileTooLarge',
-              message: `The file exceeds the maximum upload size of ${Math.round(Math.min(maxBytes, totalBytes) / MB)} MB.`,
-            }),
-          );
-        chunks.push(chunk);
-      }
-      const target = location ?? (await sharepoint.ensureLocation(regarding, {}, system));
-      const stored = await sharepoint.upload(
-        target.sharepointdocumentlocationid,
-        {
-          name: fileName,
-          bytes: Buffer.concat(chunks),
-          contentType: String(req.headers['content-type'] ?? 'application/octet-stream'),
-          maxBytes,
-          path,
-        },
-        system,
-      );
-      transfer({ fileName: stored.name, fileSize: stored.size, mimetype: stored.contentType ?? null });
-      return answer(res, 201, {
-        name: stored.name,
-        size: stored.size,
-        contentType: stored.contentType,
-        lastModified: stored.lastModified,
-      });
+      if (req.method === 'GET' && !name) return await listPortalDocuments(res, allowed, location, path);
+      if (req.method === 'GET') return await downloadPortalDocument(res, allowed, location, name, path, transfer);
+      if (req.method === 'DELETE') return await deletePortalDocument(res, allowed, location, name, path);
+      return await uploadPortalDocument({ req, res, url, newFolder, allowed, location, path, regarding, transfer });
     } catch (error) {
       return answer(res, error.status ?? 500, failureBody(error));
     }

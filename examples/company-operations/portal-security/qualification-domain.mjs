@@ -1,16 +1,16 @@
 import { createHash } from 'node:crypto';
 
 const stable = (value) => JSON.stringify(order(value));
-const order = (value) =>
-  Array.isArray(value)
-    ? value.map(order)
-    : value && typeof value === 'object'
-      ? Object.fromEntries(
-          Object.keys(value)
-            .sort()
-            .map((key) => [key, order(value[key])]),
-        )
-      : value;
+const order = (value) => {
+  if (Array.isArray(value)) return value.map(order);
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort((left, right) => Number(left > right) - Number(left < right))
+        .map((key) => [key, order(value[key])]),
+    );
+  return value;
+};
 const digest = (value) => createHash('sha256').update(stable(value)).digest('hex');
 const hashPattern = /^[a-f0-9]{64}$/;
 export const privilegeNames = ['read', 'create', 'write', 'delete', 'append', 'appendTo'];
@@ -143,38 +143,47 @@ export function* qualificationRoleMasks(domain) {
   }
 }
 
-export function* qualificationReadCells(domain, { masks, afterCellId } = {}) {
+function validateRoleMaskSelection(domain, masks) {
   const selection = masks == null ? null : new Set(masks);
   if (selection && [...selection].some((mask) => !Number.isInteger(mask) || mask < 0 || mask >= domain.roleMaskCount))
     throw new Error('Every selected role mask must belong to the finite source-role lattice.');
-  let waiting = afterCellId != null;
+  return selection;
+}
+
+function* readCellsForRole(domain, roles, waiting) {
+  for (const query of domain.queries)
+    for (const lane of query.lanes) {
+      const id = `${domain.domainHash}:m${roles.mask}:${query.id}:${lane}`;
+      if (waiting.value) {
+        if (id === waiting.afterCellId) waiting.value = false;
+        continue;
+      }
+      yield {
+        id,
+        domainHash: domain.domainHash,
+        inputHash: domain.inputHash,
+        mask: roles.mask,
+        roleCodes: roles.roleCodes,
+        roleIds: roles.roleIds,
+        roleNames: roles.roleNames,
+        queryId: query.id,
+        table: query.table,
+        lane,
+        authoredQueryHash: query.authoredQueryHash,
+        maxPages: query.maxPages,
+        requiredFragments: query.fragments,
+      };
+    }
+}
+
+export function* qualificationReadCells(domain, { masks, afterCellId } = {}) {
+  const selection = validateRoleMaskSelection(domain, masks);
+  const waiting = { value: afterCellId != null, afterCellId };
   for (const roles of qualificationRoleMasks(domain)) {
     if (selection && !selection.has(roles.mask)) continue;
-    for (const query of domain.queries)
-      for (const lane of query.lanes) {
-        const id = `${domain.domainHash}:m${roles.mask}:${query.id}:${lane}`;
-        if (waiting) {
-          if (id === afterCellId) waiting = false;
-          continue;
-        }
-        yield {
-          id,
-          domainHash: domain.domainHash,
-          inputHash: domain.inputHash,
-          mask: roles.mask,
-          roleCodes: roles.roleCodes,
-          roleIds: roles.roleIds,
-          roleNames: roles.roleNames,
-          queryId: query.id,
-          table: query.table,
-          lane,
-          authoredQueryHash: query.authoredQueryHash,
-          maxPages: query.maxPages,
-          requiredFragments: query.fragments,
-        };
-      }
+    yield* readCellsForRole(domain, roles, waiting);
   }
-  if (waiting) throw new Error('The resume cell does not belong to this selected campaign domain.');
+  if (waiting.value) throw new Error('The resume cell does not belong to this selected campaign domain.');
 }
 
 /** Independent blueprint expectation used to reject stale role/security caches.
@@ -328,15 +337,16 @@ export function scopeHierarchyVariantDomain() {
   };
 }
 
-export function* scopeHierarchyVariantCases(domain = scopeHierarchyVariantDomain()) {
-  function* product(entries, index = 0, values = {}) {
-    if (index === entries.length) {
-      yield values;
-      return;
-    }
-    const [name, alternatives] = entries[index];
-    for (const value of alternatives) yield* product(entries, index + 1, { ...values, [name]: value });
+function* product(entries, index = 0, values = {}) {
+  if (index === entries.length) {
+    yield values;
+    return;
   }
+  const [name, alternatives] = entries[index];
+  for (const value of alternatives) yield* product(entries, index + 1, { ...values, [name]: value });
+}
+
+export function* scopeHierarchyVariantCases(domain = scopeHierarchyVariantDomain()) {
   for (const family of domain.families)
     for (const parameters of product(Object.entries(family.dimensions)))
       yield {
@@ -367,6 +377,270 @@ const guidFor = (value) => {
 const decodePrivileges = (mask) =>
   Object.fromEntries(privilegeNames.map((right, bit) => [right, Boolean(mask & (1 << bit))]));
 
+function rootScopeLeaf(parameters, add) {
+  const tableName = parameters.scope === 'Self' ? 'contact' : 'pqvd_orgcontact';
+  let relation;
+  if (parameters.scope === 'Contact') relation = 'pqvd_contact_orgcontacts';
+  else if (parameters.scope === 'Account') relation = 'pqvd_account_orgcontacts';
+  return add(tableName, parameters.scope, null, relation, 63);
+}
+
+function contactRelationshipLeaf(direction, add, ensureContactNn) {
+  if (direction === 'child-lookup') return add('pqvd_orgcontact', 'Contact', null, 'pqvd_contact_orgcontacts', 63);
+  if (direction === 'reverse-lookup') return add('account', 'Contact', null, 'contact_customer_accounts', 63);
+  return add('pqvd_orgcontact', 'Contact', null, ensureContactNn(), 63);
+}
+
+function accountRelationshipLeaf(direction, add) {
+  if (direction === 'child-lookup') return add('pqvd_orgcontact', 'Account', null, 'pqvd_account_orgcontacts', 63);
+  if (direction === 'reverse-lookup') return add('contact', 'Account', null, 'contact_customer_accounts', 63);
+  return add('pqvd_accesspermission', 'Account', null, 'pqvd_access_accounts', 63);
+}
+
+function alternativeGrantRights(parameters, grant) {
+  if (parameters.overlap === 'identical') return parameters.leafPrivileges;
+  return privilegeNames.reduce(
+    (mask, _, bit) =>
+      mask |
+      (parameters.leafPrivileges & (1 << bit) &&
+      (bit % parameters.grants === grant ||
+        (parameters.overlap === 'overlapping' && (bit + 1) % parameters.grants === grant))
+        ? 1 << bit
+        : 0),
+    0,
+  );
+}
+
+function makeAlternativeGrant(parameters, grant, roles, add) {
+  const rightMask = alternativeGrantRights(parameters, grant);
+  const ownRoles = [roles[grant].id],
+    name = `alternative-${grant}`;
+  if (parameters.shape === 'global-plus-scoped' && grant === 0)
+    return add('account', 'Global', null, null, rightMask, ownRoles, name);
+  const principal = parameters.shape === 'same-path' ? 'grantee' : ['it', 'hr', 'cto'][grant];
+  const root = add('pqvd_accesspermission', 'Contact', null, `pqvd_contact_access_${principal}`, 1, ownRoles, name);
+  const rel =
+    parameters.shape === 'different-branch' && grant === 1 ? 'pqvd_access_referenceaccounts' : 'pqvd_access_accounts';
+  return add('account', 'Parent', root, rel, rightMask, ownRoles, name);
+}
+
+function relationshipLeaf(parameters, add, ensureContactNn) {
+  if (parameters.scope === 'Contact') return contactRelationshipLeaf(parameters.direction, add, ensureContactNn);
+  if (parameters.scope === 'Account') return accountRelationshipLeaf(parameters.direction, add);
+  if (parameters.direction === 'many-to-many') {
+    const root = add('pqvd_accesspermission', 'Contact', null, 'pqvd_contact_access_grantee');
+    return add('account', 'Parent', root, 'pqvd_access_accounts', 63);
+  }
+  if (parameters.direction === 'reverse-lookup') {
+    const root = add('pqvd_orgcontact', 'Contact', null, 'pqvd_contact_orgcontacts');
+    return add('account', 'Parent', root, 'pqvd_account_orgcontacts', 63);
+  }
+  const root = add('pqvd_orgcontact', 'Contact', null, 'pqvd_contact_orgcontacts');
+  return add('pqvd_employment', 'Parent', root, 'pqvd_orgcontact_employments', 63);
+}
+
+function alternativeGrantLeaf(parameters, roles, add) {
+  let leaf;
+  for (let grant = 0; grant < parameters.grants; grant++) leaf = makeAlternativeGrant(parameters, grant, roles, add);
+  return leaf;
+}
+
+function materializeVariantLeaf(family, parameters, { add, makePath, ensureContactNn, roles, permissions }) {
+  switch (family) {
+    case 'root-scope':
+      return rootScopeLeaf(parameters, add);
+    case 'parent-depth':
+      return makePath(parameters.depth, parameters);
+    case 'activation': {
+      const leaf = makePath(parameters.depth, { childRoles: parameters.childRoles, leafPrivileges: 63 });
+      if (parameters.state === 'whole-subtree-inactive')
+        for (const permission of permissions) permission.active = false;
+      if (parameters.state === 'inactive-parent-active-child') permissions.at(-2).active = false;
+      return leaf;
+    }
+    case 'relationship':
+      return relationshipLeaf(parameters, add, ensureContactNn);
+    case 'alternative-grants':
+      return alternativeGrantLeaf(parameters, roles, add);
+  }
+}
+
+function validateScopeVariant(variant, family, parameters) {
+  if (
+    !family ||
+    variant.id !== `${family.id}:${digest(parameters)}` ||
+    Object.keys(parameters).length !== Object.keys(family.dimensions).length ||
+    Object.entries(family.dimensions).some(([name, values]) => !values.includes(parameters[name]))
+  )
+    throw new Error('Variant is not a member of the declared finite configuration grammar.');
+}
+
+function scopeVariantRoleCount(family, parameters) {
+  if (family.id === 'alternative-grants') return parameters.grants;
+  if (family.id === 'activation' && ['additional-explicit', 'disjoint-explicit'].includes(parameters.childRoles))
+    return 2;
+  return 1;
+}
+
+function makeQualificationBinding(query, escape) {
+  return {
+    bindRecordIds(ids) {
+      if (
+        !Array.isArray(ids) ||
+        !ids.length ||
+        ids.length > 500 ||
+        ids.some((id) => !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id))
+      )
+        throw new Error('Qualification queries require one to 500 verified native fixture GUIDs.');
+      return {
+        ...query,
+        fixtureBindings: [],
+        fetchXml: query.fetchXml.replace(
+          '{{qualificationRecordIdValues}}',
+          ids.map((id) => `<value>${escape(id.toLowerCase())}</value>`).join(''),
+        ),
+      };
+    },
+  };
+}
+
+function makeConfigurationCells(variantId, roleCount) {
+  const cells = [];
+  for (let mask = 0; mask < 2 ** roleCount; mask++) {
+    for (const lane of ['liquid', 'webapi'])
+      cells.push({
+        id: `${variantId}:m${mask}:read:${lane}`,
+        variantId,
+        roleMask: mask,
+        operation: 'read',
+        lane,
+        regions: ['own-scope', 'same-company-other-branch', 'foreign-company'],
+        wholeFixturePartition: true,
+        nativeQualification: 'unrecorded',
+      });
+    for (const operation of privilegeNames.filter((right) => right !== 'read'))
+      for (const region of ['own-scope', 'same-company-other-branch', 'foreign-company'])
+        cells.push({
+          id: `${variantId}:m${mask}:${operation}:${region}:webapi`,
+          variantId,
+          roleMask: mask,
+          operation,
+          lane: 'webapi',
+          region,
+          nativeQualification: 'unrecorded',
+          requiresDisposableCanary: true,
+        });
+  }
+  return cells;
+}
+
+function addConditionalFixtureRequirements(permissions, metadataRequirements, fixtureRequirements, relationship) {
+  if (permissions.some((permission) => permission.scope === 'Account'))
+    fixtureRequirements.push({
+      kind: 'temporary-contact-parent-account',
+      contact: 'actorContactId',
+      field: 'parentcustomerid',
+      value: 'qualification-own-account',
+      readbackAndRestoreRequired: true,
+    });
+  if (metadataRequirements.length)
+    fixtureRequirements.push({
+      kind: 'contact-many-to-many-positive-and-negative-edges',
+      relationship,
+      actorContactRef: 'actorContactId',
+      rowRegions: ['own-scope', 'foreign-company'],
+      immutablePortal: true,
+    });
+}
+
+function verifyPermissionParents(permissions, permissionById) {
+  for (const permission of permissions)
+    if (permission.parentId && !permissionById.has(permission.parentId))
+      throw new Error('The materialized graph has an unresolved parent.');
+}
+
+function qualificationPermissionPath(
+  depth,
+  { parentRead = true, leafPrivileges = 1, childRoles } = {},
+  roles,
+  add,
+  longPath,
+) {
+  let previous = add('contact', 'Self', null, null, parentRead ? 1 : 0);
+  for (let index = 0; index < depth; index++) {
+    let assigned = [roles[0].id];
+    if (index === depth - 1 && childRoles === 'inherited-only') assigned = [];
+    if (index === depth - 1 && childRoles === 'additional-explicit') assigned = roles.map((role) => role.id);
+    if (index === depth - 1 && childRoles === 'disjoint-explicit') assigned = [roles[1].id];
+    previous = add(
+      longPath[index][0],
+      'Parent',
+      previous,
+      longPath[index][1],
+      index === depth - 1 ? leafPrivileges : 1,
+      assigned,
+    );
+  }
+  return previous;
+}
+
+function requireQualificationRelationship(relationships, name) {
+  if (!relationships.has(name)) throw new Error(`The source schema lacks '${name}'.`);
+  return name;
+}
+
+function addQualificationPermission(context, table, scope, options = {}) {
+  const { parent = null, relation = null, rights = 1, roleIds = [context.roleId], path = 'main' } = options;
+  const index = context.permissions.length;
+  const permission = {
+    id: guidFor([context.variantId, 'permission', index]),
+    name: `CO Qualification ${context.short} ${path} ${index}`,
+    table,
+    scope,
+    parentId: parent?.id ?? null,
+    relationship: relation,
+    privileges: decodePrivileges(rights),
+    roleIds,
+    active: true,
+    path,
+  };
+  if (relation) requireQualificationRelationship(context.relationships, relation);
+  context.permissions.push(permission);
+  return permission;
+}
+
+function ensureQualificationContactRelationship(relationships, qualifiedContactNn, metadataRequirements) {
+  if (!relationships.has(qualifiedContactNn)) {
+    const definition = {
+      name: qualifiedContactNn,
+      kind: 'manyToMany',
+      parent: 'contact',
+      child: 'pqvd_orgcontact',
+      intersectName: qualifiedContactNn,
+      intersectColumns: ['contactid', 'pqvd_orgcontactid'],
+    };
+    relationships.set(qualifiedContactNn, definition);
+    metadataRequirements.push({
+      kind: 'create-many-to-many-relationship',
+      definition,
+      nativeBody: {
+        '@odata.type': 'Microsoft.Dynamics.CRM.ManyToManyRelationshipMetadata',
+        SchemaName: qualifiedContactNn,
+        IntersectEntityName: qualifiedContactNn,
+        Entity1LogicalName: 'contact',
+        Entity2LogicalName: 'pqvd_orgcontact',
+        Entity1IntersectAttribute: 'contactid',
+        Entity2IntersectAttribute: 'pqvd_orgcontactid',
+        Entity1AssociatedMenuConfiguration: { Behavior: 'DoNotDisplay', Group: 'Details', Order: 10000 },
+        Entity2AssociatedMenuConfiguration: { Behavior: 'DoNotDisplay', Group: 'Details', Order: 10000 },
+      },
+      requiredReadback: ['SchemaName', 'IntersectEntityName', 'Entity1IntersectAttribute', 'Entity2IntersectAttribute'],
+      publishAndExportRequired: true,
+    });
+  }
+  return qualifiedContactNn;
+}
+
 /** Materialize actual table/relationship/permission definitions for one finite
  * variant. This remains a plan until the sole live coordinator binds the actor,
  * installs isolated fixture recipes, deploys its templates and records results.
@@ -382,13 +656,7 @@ export function materializeScopeHierarchyVariant(
   const grammar = scopeHierarchyVariantDomain(),
     family = grammar.families.find((family) => family.id === variant.family);
   const parameters = variant.parameters;
-  if (
-    !family ||
-    variant.id !== `${family.id}:${digest(parameters)}` ||
-    Object.keys(parameters).length !== Object.keys(family.dimensions).length ||
-    Object.entries(family.dimensions).some(([name, values]) => !values.includes(parameters[name]))
-  )
-    throw new Error('Variant is not a member of the declared finite configuration grammar.');
+  validateScopeVariant(variant, family, parameters);
   const relationships = new Map(schema.relationships.map((relationship) => [relationship.name, relationship]));
   relationships.set('contact_customer_accounts', {
     name: 'contact_customer_accounts',
@@ -397,16 +665,7 @@ export function materializeScopeHierarchyVariant(
     child: 'contact',
     lookup: { name: 'parentcustomerid' },
   });
-  const relationship = (name) => {
-    if (!relationships.has(name)) throw new Error(`The source schema lacks '${name}'.`);
-    return name;
-  };
-  const roleCount =
-    family.id === 'alternative-grants'
-      ? parameters.grants
-      : family.id === 'activation' && ['additional-explicit', 'disjoint-explicit'].includes(parameters.childRoles)
-        ? 2
-        : 1;
+  const roleCount = scopeVariantRoleCount(family, parameters);
   const short = digest(variant.id).slice(0, 20);
   const roles = Array.from({ length: roleCount }, (_, index) => ({
     id: guidFor([variant.id, 'role', index]),
@@ -420,61 +679,12 @@ export function materializeScopeHierarchyVariant(
     metadataRequirements = [],
     fixtureRequirements = [],
     runtimeRequirements = [];
-  const add = (table, scope, parent = null, relation = null, rights = 1, roleIds = [roles[0].id], path = 'main') => {
-    const index = permissions.length;
-    const permission = {
-      id: guidFor([variant.id, 'permission', index]),
-      name: `CO Qualification ${short} ${path} ${index}`,
-      table,
-      scope,
-      parentId: parent?.id ?? null,
-      relationship: relation,
-      privileges: decodePrivileges(rights),
-      roleIds,
-      active: true,
-      path,
-    };
-    if (relation) relationship(relation);
-    permissions.push(permission);
-    return permission;
-  };
+  const permissionContext = { variantId: variant.id, short, permissions, relationships, roleId: roles[0].id };
+  const add = (table, scope, parent = null, relation = null, rights = 1, roleIds = [roles[0].id], path = 'main') =>
+    addQualificationPermission(permissionContext, table, scope, { parent, relation, rights, roleIds, path });
   const qualifiedContactNn = 'pqvd_qfcontactorgcontacts';
-  const ensureContactNn = () => {
-    if (!relationships.has(qualifiedContactNn)) {
-      const definition = {
-        name: qualifiedContactNn,
-        kind: 'manyToMany',
-        parent: 'contact',
-        child: 'pqvd_orgcontact',
-        intersectName: qualifiedContactNn,
-        intersectColumns: ['contactid', 'pqvd_orgcontactid'],
-      };
-      relationships.set(qualifiedContactNn, definition);
-      metadataRequirements.push({
-        kind: 'create-many-to-many-relationship',
-        definition,
-        nativeBody: {
-          '@odata.type': 'Microsoft.Dynamics.CRM.ManyToManyRelationshipMetadata',
-          SchemaName: qualifiedContactNn,
-          IntersectEntityName: qualifiedContactNn,
-          Entity1LogicalName: 'contact',
-          Entity2LogicalName: 'pqvd_orgcontact',
-          Entity1IntersectAttribute: 'contactid',
-          Entity2IntersectAttribute: 'pqvd_orgcontactid',
-          Entity1AssociatedMenuConfiguration: { Behavior: 'DoNotDisplay', Group: 'Details', Order: 10000 },
-          Entity2AssociatedMenuConfiguration: { Behavior: 'DoNotDisplay', Group: 'Details', Order: 10000 },
-        },
-        requiredReadback: [
-          'SchemaName',
-          'IntersectEntityName',
-          'Entity1IntersectAttribute',
-          'Entity2IntersectAttribute',
-        ],
-        publishAndExportRequired: true,
-      });
-    }
-    return qualifiedContactNn;
-  };
+  const ensureContactNn = () =>
+    ensureQualificationContactRelationship(relationships, qualifiedContactNn, metadataRequirements);
   // Eleven Parent edges on existing source relationships, including an actual
   // N:N hop. The permission graph is acyclic even when table types repeat.
   const longPath = [
@@ -490,105 +700,14 @@ export function materializeScopeHierarchyVariant(
     ['pqvd_inspection', 'pqvd_checklistitem_inspections'],
     ['pqvd_finding', 'pqvd_inspection_findings'],
   ];
-  const path = (depth, { parentRead = true, leafPrivileges = 1, childRoles } = {}) => {
-    let previous = add('contact', 'Self', null, null, parentRead ? 1 : 0);
-    for (let index = 0; index < depth; index++) {
-      let assigned = [roles[0].id];
-      if (index === depth - 1 && childRoles === 'inherited-only') assigned = [];
-      if (index === depth - 1 && childRoles === 'additional-explicit') assigned = roles.map((role) => role.id);
-      if (index === depth - 1 && childRoles === 'disjoint-explicit') assigned = [roles[1].id];
-      previous = add(
-        longPath[index][0],
-        'Parent',
-        previous,
-        longPath[index][1],
-        index === depth - 1 ? leafPrivileges : 1,
-        assigned,
-      );
-    }
-    return previous;
-  };
-  let leaf;
-  if (family.id === 'root-scope') {
-    leaf = add(
-      parameters.scope === 'Self' ? 'contact' : 'pqvd_orgcontact',
-      parameters.scope,
-      null,
-      parameters.scope === 'Contact'
-        ? 'pqvd_contact_orgcontacts'
-        : parameters.scope === 'Account'
-          ? 'pqvd_account_orgcontacts'
-          : null,
-      63,
-    );
-  } else if (family.id === 'parent-depth') leaf = path(parameters.depth, parameters);
-  else if (family.id === 'activation') {
-    leaf = path(parameters.depth, { childRoles: parameters.childRoles, leafPrivileges: 63 });
-    if (parameters.state === 'whole-subtree-inactive') for (const permission of permissions) permission.active = false;
-    if (parameters.state === 'inactive-parent-active-child') permissions.at(-2).active = false;
-  } else if (family.id === 'relationship') {
-    if (parameters.scope === 'Contact')
-      leaf =
-        parameters.direction === 'child-lookup'
-          ? add('pqvd_orgcontact', 'Contact', null, 'pqvd_contact_orgcontacts', 63)
-          : parameters.direction === 'reverse-lookup'
-            ? add('account', 'Contact', null, 'contact_customer_accounts', 63)
-            : add('pqvd_orgcontact', 'Contact', null, ensureContactNn(), 63);
-    else if (parameters.scope === 'Account')
-      leaf =
-        parameters.direction === 'child-lookup'
-          ? add('pqvd_orgcontact', 'Account', null, 'pqvd_account_orgcontacts', 63)
-          : parameters.direction === 'reverse-lookup'
-            ? add('contact', 'Account', null, 'contact_customer_accounts', 63)
-            : add('pqvd_accesspermission', 'Account', null, 'pqvd_access_accounts', 63);
-    else if (parameters.direction === 'many-to-many') {
-      const root = add('pqvd_accesspermission', 'Contact', null, 'pqvd_contact_access_grantee');
-      leaf = add('account', 'Parent', root, 'pqvd_access_accounts', 63);
-    } else if (parameters.direction === 'reverse-lookup') {
-      const root = add('pqvd_orgcontact', 'Contact', null, 'pqvd_contact_orgcontacts');
-      leaf = add('account', 'Parent', root, 'pqvd_account_orgcontacts', 63);
-    } else {
-      const root = add('pqvd_orgcontact', 'Contact', null, 'pqvd_contact_orgcontacts');
-      leaf = add('pqvd_employment', 'Parent', root, 'pqvd_orgcontact_employments', 63);
-    }
-  } else if (family.id === 'alternative-grants') {
-    for (let grant = 0; grant < parameters.grants; grant++) {
-      const rightMask =
-        parameters.overlap === 'identical'
-          ? parameters.leafPrivileges
-          : privilegeNames.reduce(
-              (mask, _, bit) =>
-                mask |
-                (parameters.leafPrivileges & (1 << bit) &&
-                (bit % parameters.grants === grant ||
-                  (parameters.overlap === 'overlapping' && (bit + 1) % parameters.grants === grant))
-                  ? 1 << bit
-                  : 0),
-              0,
-            );
-      const ownRoles = [roles[grant].id],
-        name = `alternative-${grant}`;
-      if (parameters.shape === 'global-plus-scoped' && grant === 0)
-        leaf = add('account', 'Global', null, null, rightMask, ownRoles, name);
-      else {
-        const principal = parameters.shape === 'same-path' ? 'grantee' : ['it', 'hr', 'cto'][grant];
-        const root = add(
-          'pqvd_accesspermission',
-          'Contact',
-          null,
-          `pqvd_contact_access_${principal}`,
-          1,
-          ownRoles,
-          name,
-        );
-        const rel =
-          parameters.shape === 'different-branch' && grant === 1
-            ? 'pqvd_access_referenceaccounts'
-            : 'pqvd_access_accounts';
-        leaf = add('account', 'Parent', root, rel, rightMask, ownRoles, name);
-      }
-    }
-  }
+  const makePath = (depth, options) => qualificationPermissionPath(depth, options, roles, add, longPath);
+  const leaf = materializeVariantLeaf(family.id, parameters, {
+    add,
+    makePath,
+    ensureContactNn,
+    roles,
+    permissions,
+  });
   const table = schema.tables.find((table) => table.name === leaf.table);
   if (!table) throw new Error('The planned leaf table is absent from the source schema.');
   const primaryName =
@@ -645,22 +764,7 @@ export function materializeScopeHierarchyVariant(
       exclusiveToQualificationFixtureAccounts: true,
     },
   );
-  if (permissions.some((permission) => permission.scope === 'Account'))
-    fixtureRequirements.push({
-      kind: 'temporary-contact-parent-account',
-      contact: 'actorContactId',
-      field: 'parentcustomerid',
-      value: 'qualification-own-account',
-      readbackAndRestoreRequired: true,
-    });
-  if (metadataRequirements.length)
-    fixtureRequirements.push({
-      kind: 'contact-many-to-many-positive-and-negative-edges',
-      relationship: qualifiedContactNn,
-      actorContactRef: 'actorContactId',
-      rowRegions: ['own-scope', 'foreign-company'],
-      immutablePortal: true,
-    });
+  addConditionalFixtureRequirements(permissions, metadataRequirements, fixtureRequirements, qualifiedContactNn);
   const anonymous = roles.some((role) => role.anonymous);
   runtimeRequirements.push(
     {
@@ -745,9 +849,7 @@ export function materializeScopeHierarchyVariant(
       },
     })),
   ];
-  for (const permission of permissions)
-    if (permission.parentId && !permissionById.has(permission.parentId))
-      throw new Error('The materialized graph has an unresolved parent.');
+  verifyPermissionParents(permissions, permissionById);
   const caseId = `QF-${short}-R`;
   const escape = (value) =>
     String(value).replace(
@@ -765,53 +867,11 @@ export function materializeScopeHierarchyVariant(
     fields: fields.map((field) => ({ ...field, source: field.name, nullable: false })),
     variant: `qualification-${family.id}`,
     fixtureBindings: ['qualificationRecordIds', 'actorContactId'],
-    fetchXml: `<fetch count="{{pageSize}}" page="{{page}}" returntotalrecordcount="true"><entity name="${leaf.table}">${fields.map((field) => `<attribute name="${field.name}"></attribute>`).join('')}<order attribute="${leaf.table}id"></order><filter type="and"><condition attribute="${leaf.table}id" operator="in">{{qualificationRecordIdValues}}</condition></filter><filter type="or"><condition attribute="${primaryName}" operator="null"></condition><filter type="and"><condition attribute="${primaryName}" operator="ne" value="{{markerUtc}}"></condition><condition attribute="${primaryName}" operator="ne" value="{{markerOperation}}"></condition></filter></filter></entity></fetch>`,
   };
-  const bindingContract = {
-    bindRecordIds(ids) {
-      if (
-        !Array.isArray(ids) ||
-        !ids.length ||
-        ids.length > 500 ||
-        ids.some((id) => !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id))
-      )
-        throw new Error('Qualification queries require one to 500 verified native fixture GUIDs.');
-      return {
-        ...query,
-        fixtureBindings: [],
-        fetchXml: query.fetchXml.replace(
-          '{{qualificationRecordIdValues}}',
-          ids.map((id) => `<value>${escape(id.toLowerCase())}</value>`).join(''),
-        ),
-      };
-    },
-  };
-  const configurationCells = [];
-  for (let mask = 0; mask < 2 ** roleCount; mask++) {
-    for (const lane of ['liquid', 'webapi'])
-      configurationCells.push({
-        id: `${variant.id}:m${mask}:read:${lane}`,
-        variantId: variant.id,
-        roleMask: mask,
-        operation: 'read',
-        lane,
-        regions: ['own-scope', 'same-company-other-branch', 'foreign-company'],
-        wholeFixturePartition: true,
-        nativeQualification: 'unrecorded',
-      });
-    for (const operation of privilegeNames.filter((right) => right !== 'read'))
-      for (const region of ['own-scope', 'same-company-other-branch', 'foreign-company'])
-        configurationCells.push({
-          id: `${variant.id}:m${mask}:${operation}:${region}:webapi`,
-          variantId: variant.id,
-          roleMask: mask,
-          operation,
-          lane: 'webapi',
-          region,
-          nativeQualification: 'unrecorded',
-          requiresDisposableCanary: true,
-        });
-  }
+  const attributeXml = fields.map((field) => `<attribute name="${field.name}"></attribute>`).join('');
+  query.fetchXml = `<fetch count="{{pageSize}}" page="{{page}}" returntotalrecordcount="true"><entity name="${leaf.table}">${attributeXml}<order attribute="${leaf.table}id"></order><filter type="and"><condition attribute="${leaf.table}id" operator="in">{{qualificationRecordIdValues}}</condition></filter><filter type="or"><condition attribute="${primaryName}" operator="null"></condition><filter type="and"><condition attribute="${primaryName}" operator="ne" value="{{markerUtc}}"></condition><condition attribute="${primaryName}" operator="ne" value="{{markerOperation}}"></condition></filter></filter></entity></fetch>`;
+  const bindingContract = makeQualificationBinding(query, escape);
+  const configurationCells = makeConfigurationCells(variant.id, roleCount);
   return {
     schemaVersion: 1,
     kind: 'materialized-finite-configuration-requirement',

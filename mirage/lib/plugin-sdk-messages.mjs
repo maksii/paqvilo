@@ -14,11 +14,11 @@ import { systemIds } from './runtime-clock.mjs';
 // The organization modules load after this one: a static import would close a module cycle through plugin-clr.mjs
 // (exported-plugins.mjs and the settings registry load it while they initialize). SDK calls run long after startup.
 let dataverseError, metadataRequests, notifyServiceEndpoint;
-Promise.all([
+void Promise.all([
   import('./dataverse-odata.mjs'),
   import('./dataverse-soap-metadata.mjs'),
   import('./dataverse-webhooks.mjs'),
-]).then(([odata, metadata, webhooks]) => {
+]).then(([odata, metadata, webhooks]) => /* NOSONAR: module-level promise chain must not block evaluation */ {
   ({ dataverseError } = odata);
   ({ metadataRequests } = metadata);
   ({ notifyServiceEndpoint } = webhooks);
@@ -33,12 +33,12 @@ const refId = (value) => (value && typeof value === 'object' ? value.id : value)
 const guid = (value) => (value == null ? null : { $type: 'Guid', value });
 // ExecuteMultiple runs at most this many requests (SDK documentation: the default batch size limit of 1,000).
 const MAX_BATCH = 1000;
-const OPTIONAL = [
+const OPTIONAL = new Set([
   'tag',
   'BypassCustomPluginExecution',
   'BypassBusinessLogicExecution',
   'BypassBusinessLogicExecutionStepIds',
-];
+]);
 const response = (responseName, results = {}) => ({ $type: 'OrganizationResponse', responseName, results });
 const sdkObject = (type, members) => ({ $type: 'Object', type, members });
 const sdkCollection = (type, values) => ({ $type: 'Collection', type, values });
@@ -58,7 +58,7 @@ export function sdkFault(cause) {
   if (!/^0x[a-f\d]{1,8}$/i.test(hex ?? '')) return null;
   return {
     $type: 'OrganizationServiceFault',
-    errorCode: parseInt(hex, 16) | 0,
+    errorCode: Number.parseInt(hex, 16) | 0, // NOSONAR: bitwise coercion wraps to signed 32 bits on purpose
     message: cause.message,
     timestamp: new Date().toISOString(),
     errorDetails: cause.details?.sourceException?.exceptionDetails ?? {},
@@ -68,7 +68,7 @@ export function sdkFault(cause) {
 }
 
 const onlyParameters = (name, parameters, allowed) => {
-  const extra = Object.keys(parameters).find((key) => !allowed.includes(key) && !OPTIONAL.includes(key));
+  const extra = Object.keys(parameters).find((key) => !allowed.includes(key) && !OPTIONAL.has(key));
   if (extra) fail(`Unsupported SDK ${name} parameter: ${extra}`);
 };
 const requestsOf = (value, name) => {
@@ -104,7 +104,7 @@ function metadataResponse(api, name, parameters) {
     fail('RetrieveMetadataChanges with an EntityQueryExpression is not read on the plug-in SDK drive.');
   const params = new Map(
     Object.entries(parameters)
-      .filter(([key]) => !OPTIONAL.includes(key))
+      .filter(([key]) => !OPTIONAL.has(key))
       .map(([key, value]) => [key, soapParameter(value)]),
   );
   const descriptor = handler(params, { api });
@@ -163,94 +163,110 @@ function inCallerOperation(store, run) {
 export function executeSdkOrganizationMessage({ store, userId, request, parameters, dispatch }) {
   const name = request.requestName;
   switch (name) {
-    case 'WhoAmI': {
-      onlyParameters(name, parameters, []);
-      const user = store.tableRows('systemuser').find((row) => same(row.systemuserid, userId));
-      if (!user) fail(`systemuser With Id = ${userId} Does Not Exist`, 'NotFound', 404, { innerCode: '0x80040217' });
-      const organizationId = refId(user.organizationid) ?? organizationRecord(store)?.organizationid ?? null;
-      return response(name, {
-        UserId: guid(user.systemuserid),
-        BusinessUnitId: guid(refId(user.businessunitid)),
-        OrganizationId: guid(organizationId),
-      });
-    }
-    case 'RetrieveVersion': {
-      onlyParameters(name, parameters, []);
-      const api = organizationApiOf(store);
-      if (!api) return undefined;
-      return response(name, { Version: String(api.settings?.version ?? '') });
-    }
-    case 'ExecuteMultiple': {
-      onlyParameters(name, parameters, ['Requests', 'Settings']);
-      const requests = requestsOf(parameters.Requests, name);
-      if (requests.length > MAX_BATCH)
-        invalid(`The ExecuteMultiple request has ${requests.length} requests; the maximum is ${MAX_BATCH}.`);
-      const settings = parameters.Settings;
-      const continueOnError = flag(memberOf(settings, 'ContinueOnError'), 'ContinueOnError');
-      const returnResponses = flag(memberOf(settings, 'ReturnResponses'), 'ReturnResponses');
-      const items = [];
-      let faulted = false;
-      for (const [index, inner] of requests.entries()) {
-        let answer, fault;
-        try {
-          if (inner.requestName === 'ExecuteMultiple')
-            invalid('An ExecuteMultiple request cannot contain another ExecuteMultiple request.');
-          answer = asRootOperation(store, () => dispatch(inner, { sdkFromSandbox: false }));
-        } catch (cause) {
-          fault = sdkFault(cause);
-          if (!fault) throw cause;
-        }
-        if (fault) faulted = true;
-        if (fault || returnResponses)
-          items.push(
-            sdkObject('Microsoft.Xrm.Sdk.ExecuteMultipleResponseItem', {
-              RequestIndex: index,
-              ...(fault ? { Fault: fault } : { Response: answer }),
-            }),
-          );
-        // Without ContinueOnError processing stops at the faulted item, which is still returned.
-        if (fault && !continueOnError) break;
-      }
-      return response(name, {
-        IsFaulted: faulted,
-        Responses: sdkCollection('Microsoft.Xrm.Sdk.ExecuteMultipleResponseItemCollection', items),
-      });
-    }
-    case 'ExecuteTransaction': {
-      onlyParameters(name, parameters, ['Requests', 'ReturnResponses']);
-      const requests = requestsOf(parameters.Requests, name);
-      const returnResponses = flag(parameters.ReturnResponses, 'ReturnResponses');
-      // One savepoint: a failed request rolls back the requests before it and faults with its index. Its requests run
-      // inside that transaction (they join it instead of committing on their own, and their steps see IsInTransaction).
-      const responses = store.sdkMutation(() => {
-        const previous = store.pluginInTransaction;
-        store.pluginInTransaction = true;
-        try {
-          return run();
-        } finally {
-          store.pluginInTransaction = previous;
-        }
-      });
-      function run() {
-        return requests.map((inner, index) => {
-          if (['ExecuteMultiple', 'ExecuteTransaction'].includes(inner.requestName))
-            invalid('An ExecuteTransaction cannot contain another ExecuteMultiple or ExecuteTransaction.');
-          try {
-            return inCallerOperation(store, () => dispatch(inner, { sdkFromSandbox: false }));
-          } catch (cause) {
-            if (cause && typeof cause === 'object') cause.faultedRequestIndex = index;
-            throw cause;
-          }
-        });
-      }
-      return response(name, {
-        Responses: sdkCollection('Microsoft.Xrm.Sdk.OrganizationResponseCollection', returnResponses ? responses : []),
-      });
-    }
+    case 'WhoAmI':
+      return whoAmIResponse(name, store, userId, parameters);
+    case 'RetrieveVersion':
+      return retrieveVersionResponse(name, store, parameters);
+    case 'ExecuteMultiple':
+      return executeMultipleResponse(name, store, parameters, dispatch);
+    case 'ExecuteTransaction':
+      return executeTransactionResponse(name, store, parameters, dispatch);
     default: {
       const api = organizationApiOf(store);
       return api ? (metadataResponse(api, name, parameters) ?? undefined) : undefined;
     }
+  }
+}
+
+function whoAmIResponse(name, store, userId, parameters) {
+  onlyParameters(name, parameters, []);
+  const user = store.tableRows('systemuser').find((row) => same(row.systemuserid, userId));
+  if (!user) fail(`systemuser With Id = ${userId} Does Not Exist`, 'NotFound', 404, { innerCode: '0x80040217' });
+  const organizationId = refId(user.organizationid) ?? organizationRecord(store)?.organizationid ?? null;
+  return response(name, {
+    UserId: guid(user.systemuserid),
+    BusinessUnitId: guid(refId(user.businessunitid)),
+    OrganizationId: guid(organizationId),
+  });
+}
+
+function retrieveVersionResponse(name, store, parameters) {
+  onlyParameters(name, parameters, []);
+  const api = organizationApiOf(store);
+  if (!api) return undefined;
+  return response(name, { Version: String(api.settings?.version ?? '') });
+}
+
+function executeMultipleResponse(name, store, parameters, dispatch) {
+  onlyParameters(name, parameters, ['Requests', 'Settings']);
+  const requests = requestsOf(parameters.Requests, name);
+  if (requests.length > MAX_BATCH)
+    invalid(`The ExecuteMultiple request has ${requests.length} requests; the maximum is ${MAX_BATCH}.`);
+  const settings = parameters.Settings;
+  const continueOnError = flag(memberOf(settings, 'ContinueOnError'), 'ContinueOnError');
+  const returnResponses = flag(memberOf(settings, 'ReturnResponses'), 'ReturnResponses');
+  const items = [];
+  let faulted = false;
+  for (const [index, inner] of requests.entries()) {
+    const { answer, fault } = executeMultipleItem(store, inner, dispatch);
+    if (fault) faulted = true;
+    if (fault || returnResponses)
+      items.push(
+        sdkObject('Microsoft.Xrm.Sdk.ExecuteMultipleResponseItem', {
+          RequestIndex: index,
+          ...(fault ? { Fault: fault } : { Response: answer }),
+        }),
+      );
+    // Without ContinueOnError processing stops at the faulted item, which is still returned.
+    if (fault && !continueOnError) break;
+  }
+  return response(name, {
+    IsFaulted: faulted,
+    Responses: sdkCollection('Microsoft.Xrm.Sdk.ExecuteMultipleResponseItemCollection', items),
+  });
+}
+
+function executeMultipleItem(store, inner, dispatch) {
+  let answer, fault;
+  try {
+    if (inner.requestName === 'ExecuteMultiple')
+      invalid('An ExecuteMultiple request cannot contain another ExecuteMultiple request.');
+    answer = asRootOperation(store, () => dispatch(inner, { sdkFromSandbox: false }));
+  } catch (cause) {
+    fault = sdkFault(cause);
+    if (!fault) throw cause;
+  }
+  return { answer, fault };
+}
+
+function executeTransactionResponse(name, store, parameters, dispatch) {
+  onlyParameters(name, parameters, ['Requests', 'ReturnResponses']);
+  const requests = requestsOf(parameters.Requests, name);
+  const returnResponses = flag(parameters.ReturnResponses, 'ReturnResponses');
+  // One savepoint: a failed request rolls back the requests before it and faults with its index. Its requests run
+  // inside that transaction (they join it instead of committing on their own, and their steps see IsInTransaction).
+  const responses = store.sdkMutation(() => {
+    const previous = store.pluginInTransaction;
+    store.pluginInTransaction = true;
+    try {
+      return requests.map((inner, index) => executeTransactionItem(store, inner, index, dispatch));
+    } finally {
+      store.pluginInTransaction = previous;
+    }
+  });
+  return response(name, {
+    Responses: sdkCollection('Microsoft.Xrm.Sdk.OrganizationResponseCollection', returnResponses ? responses : []),
+  });
+}
+
+function executeTransactionItem(store, inner, index, dispatch) {
+  if (['ExecuteMultiple', 'ExecuteTransaction'].includes(inner.requestName))
+    invalid('An ExecuteTransaction cannot contain another ExecuteMultiple or ExecuteTransaction.');
+  try {
+    return inCallerOperation(store, () => dispatch(inner, { sdkFromSandbox: false }));
+  } catch (cause) {
+    if (cause && typeof cause === 'object') cause.faultedRequestIndex = index;
+    throw cause;
   }
 }
 

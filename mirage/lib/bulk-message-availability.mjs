@@ -1,5 +1,14 @@
 const messages = ['CreateMultiple', 'UpdateMultiple'];
 const equal = (left, right) => String(left ?? '').toLowerCase() === String(right ?? '').toLowerCase();
+const profileAssertsMessage = (profile, entity, message) =>
+  (profile?.bulkTables ?? []).some(
+    (table) =>
+      equal(table.entity, entity) &&
+      equal(table.tableType, 'standard') &&
+      typeof table.evidence === 'string' &&
+      table.evidence.trim() &&
+      table.messages?.some((name) => equal(name, message)),
+  );
 
 /** A synthetic registration filter describes the local pipeline, not native
  * table/message availability. Only source registrations with a native filter
@@ -25,26 +34,16 @@ export function bulkMessageAvailabilityRecord({ store, plugins = {}, profiles = 
                 (record) => equal(record.id, filter.messageId) && equal(record.name, message),
               ),
           );
-        const asserted = profiles.some((profile) =>
-          (profile?.bulkTables ?? []).some(
-            (table) =>
-              equal(table.entity, entity) &&
-              equal(table.tableType, 'standard') &&
-              typeof table.evidence === 'string' &&
-              table.evidence.trim() &&
-              table.messages?.some((name) => equal(name, message)),
-          ),
-        );
+        const asserted = profiles.some((profile) => profileAssertsMessage(profile, entity, message));
+        let sourceName;
+        if (source) sourceName = 'solution-registration-filter';
+        else if (observed) sourceName = 'observed-message-filter';
+        else if (asserted) sourceName = 'evidenced-service-profile';
+        else sourceName = 'synthetic-local-support';
         return {
           message,
           availability: source || observed || asserted ? 'qualified-metadata' : 'unqualified',
-          source: source
-            ? 'solution-registration-filter'
-            : observed
-              ? 'observed-message-filter'
-              : asserted
-                ? 'evidenced-service-profile'
-                : 'synthetic-local-support',
+          source: sourceName,
         };
       }),
     }));

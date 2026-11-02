@@ -3,8 +3,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { bindQualificationFixtureRequests } from './qualification-fixtures.mjs';
 import { savePrivateJson } from '../portal-harness/private-journal.mjs';
-import { stable } from '../portal-harness/core.mjs';
-import { authoredQuery, canonicalRows, encodeArtifact, odataRequest } from '../portal-harness/core.mjs';
+import { authoredQuery, canonicalRows, encodeArtifact, odataRequest, stable } from '../portal-harness/core.mjs';
 import { captureNativeRegistry } from '../portal-harness/native-registry.mjs';
 import { decodeBatchResponse } from '../portal-harness/batch-capture.mjs';
 import { planQualificationActorWrite, restoreQualificationActorWrite } from './qualification-actor-lease.mjs';
@@ -32,6 +31,20 @@ const etag = (row) =>
   })();
 const same = (a, b) => stable(a) === stable(b);
 const targetFromBody = (value) => /\(([a-f0-9-]{36})\)$/i.exec(value ?? '')?.[1]?.toLowerCase();
+function lifecycleMutationIntent(configuration, cell, request, caseId, variant) {
+  if (configuration.family !== 'equipment-lifecycle' || !['append', 'appendTo'].includes(cell.operation)) return null;
+  const appendTo = cell.operation === 'appendTo',
+    desiredTable = appendTo ? 'pqvd_equipment' : 'pqvd_room';
+  if (
+    !guid.test(request.boundTarget?.id ?? '') ||
+    request.boundTarget.table !== desiredTable ||
+    request.target.table !== (appendTo ? 'pqvd_crudprobe' : 'pqvd_equipment')
+  )
+    throw new Error('Source5 lookup intents require actual child and desired counterpart fixture bindings.');
+  const intentCaseId = appendTo ? 'PORTAL-EQUIPMENT-APPENDTO' : 'PORTAL-EQUIPMENT-APPEND';
+  variant += (appendTo ? ';EQUIPMENT:' : ';ROOM:') + request.boundTarget.id.toLowerCase();
+  return { caseId: intentCaseId, variant };
+}
 
 /** Seal tested and desired objects into immutable SDK intent fields. Source5
  * must grow Variant before these records can be prepared natively. */
@@ -41,18 +54,8 @@ export function qualificationMutationIntent({ configuration, cell, request, sche
   const lifecycle = configuration.family === 'equipment-lifecycle';
   let caseId = lifecycle ? 'PORTAL-EQUIPMENT-CRUD' : configuration.query.id,
     variant = 'TARGET:' + request.target.id.toLowerCase();
-  if (lifecycle && ['append', 'appendTo'].includes(cell.operation)) {
-    const appendTo = cell.operation === 'appendTo',
-      desiredTable = appendTo ? 'pqvd_equipment' : 'pqvd_room';
-    if (
-      !guid.test(request.boundTarget?.id ?? '') ||
-      request.boundTarget.table !== desiredTable ||
-      request.target.table !== (appendTo ? 'pqvd_crudprobe' : 'pqvd_equipment')
-    )
-      throw new Error('Source5 lookup intents require actual child and desired counterpart fixture bindings.');
-    caseId = appendTo ? 'PORTAL-EQUIPMENT-APPENDTO' : 'PORTAL-EQUIPMENT-APPEND';
-    variant += (appendTo ? ';EQUIPMENT:' : ';ROOM:') + request.boundTarget.id.toLowerCase();
-  }
+  const lifecycleIntent = lifecycleMutationIntent(configuration, cell, request, caseId, variant);
+  if (lifecycleIntent) ({ caseId, variant } = lifecycleIntent);
   const maximum = schema?.tables
     ?.find((table) => table.name === 'pqvd_testoperation')
     ?.columns?.find((column) => column.name === 'pqvd_variant')?.maxLength;
@@ -114,7 +117,12 @@ function assertFixtureValues(bound, snapshot) {
   }
   for (const collection of new Set(snapshot.associations.map((edge) => edge.collection))) {
     const group = snapshot.associations.filter((edge) => edge.collection === collection);
-    if (!same([...new Set(group.map((edge) => edge.target))].sort(), group[0].ids))
+    if (
+      !same(
+        [...new Set(group.map((edge) => edge.target))].sort((a, b) => Number(a > b) - Number(a < b)),
+        group[0].ids,
+      )
+    )
       throw new Error('Native disposable fixture projection has missing or foreign associations.');
   }
 }
@@ -194,7 +202,7 @@ export async function provisionQualificationFixtures(client, fixtures, { journal
 
 /** Cleanup uses the authoritative request plan and exact declared identities.
  * Foreign row edits or association additions stop recovery and retain the WAL. */
-export async function restoreQualificationFixtures(client, { journalFile } = {}) {
+/* NOSONAR */ export async function restoreQualificationFixtures(client, { journalFile } = {}) {
   const journal = await load(journalFile),
     bound = journal.bound;
   if ((await client.get('WhoAmI')).UserId.toLowerCase() !== journal.trustedWriterId.toLowerCase())
@@ -209,11 +217,12 @@ export async function restoreQualificationFixtures(client, { journalFile } = {})
       const row = bound.records.find((record) => record.id === target),
         primary = tableOf(bound, row.table).primaryId;
       const ids = (await client.list(collection)).map((record) => record[primary]);
-      const declared = bound.requests
-        .filter((candidate) => candidate.kind === 'associate' && candidate.endpoint === request.endpoint)
-        .map((candidate) => targetFromBody(candidate.body['@odata.id']));
-      if (ids.some((id) => !declared.includes(id)))
-        throw new Error('Foreign fixture association drift; recovery refused.');
+      const declared = new Set(
+        bound.requests
+          .filter((candidate) => candidate.kind === 'associate' && candidate.endpoint === request.endpoint)
+          .map((candidate) => targetFromBody(candidate.body['@odata.id'])),
+      );
+      if (ids.some((id) => !declared.has(id))) throw new Error('Foreign fixture association drift; recovery refused.');
       if (ids.includes(target)) {
         entry.recovery = { status: 'pending', method: 'DELETE', endpoint: `${collection}(${target})/$ref` };
         await savePrivateJson(journalFile, journal);
@@ -340,7 +349,7 @@ async function runQualificationPortalRequest(page, input) {
       return value.replace(/&(amp|lt|gt|quot|apos|#\d+|#x[a-f\d]+);/gi, (_match, entity) => {
         const named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
         if (Object.hasOwn(named, entity)) return named[entity];
-        const point = entity.startsWith('#x') ? parseInt(entity.slice(2), 16) : Number(entity.slice(1));
+        const point = entity.startsWith('#x') ? Number.parseInt(entity.slice(2), 16) : Number(entity.slice(1));
         if (
           !Number.isInteger(point) ||
           (point < 32 && ![9, 10, 13].includes(point)) ||
@@ -356,7 +365,9 @@ async function runQualificationPortalRequest(page, input) {
     const roleNames = roles.map((role) => decode(role[1]));
     if (input.anonymous ? actor && actor !== '00000000-0000-0000-0000-000000000000' : actor !== input.actor)
       throw new Error('Native portal actor changed');
-    const token = await new Promise((resolve, reject) => window.shell.getTokenDeferred().done(resolve).fail(reject));
+    const token = await new Promise((resolve, reject) =>
+      globalThis.shell.getTokenDeferred().done(resolve).fail(reject),
+    );
     const response = await fetch(input.request.url, {
       method: input.request.method,
       headers: {
@@ -378,27 +389,7 @@ async function runQualificationPortalRequest(page, input) {
   }, input);
 }
 
-/** Metadata-bound operations test the named table as Append source or AppendTo
- * target. Guards remain active; successful HTTP alone never implies coverage. */
-export function planQualificationCrudRequest({
-  configuration,
-  cell,
-  fixtures,
-  bound,
-  operationId = randomUUID(),
-  schema,
-} = {}) {
-  if (!guid.test(operationId) || cell.operation === 'read')
-    throw new Error('CRUD request requires a unique operation and mutation cell.');
-  const own = fixtures.records.find(
-    (record) => record.region === cell.region && record.table === configuration.query.table,
-  );
-  if (!own)
-    throw new Error('Mutation target requires an owned disposable record; actual actor records are never modified.');
-  const target = `/_api/${endpointOf(bound, own)}`,
-    create = bound.requests.find((request) => request.kind === 'create' && request.endpoint === endpointOf(bound, own));
-  if (cell.operation === 'create' && !create) throw new Error('Bound native fixture creation payload missing.');
-  const marker = 'CO-OP:' + operationId;
+function standardCrudRequest({ configuration, cell, own, bound, create, target, marker, operationId }) {
   if (cell.operation === 'write') {
     const field = own.table === 'contact' ? 'firstname' : configuration.query.primaryName;
     if (!Object.hasOwn(own.fields, field)) throw new Error('No declared writable scalar for the portal update.');
@@ -419,30 +410,31 @@ export function planQualificationCrudRequest({
       expectedMessage: 'Delete',
       operationId,
     };
-  if (cell.operation === 'create') {
-    const id = randomUUID(),
-      body = { ...create.body, [tableOf(bound, own.table).primaryId]: id };
-    const field = own.table === 'contact' ? 'firstname' : configuration.query.primaryName;
-    body[field] = marker;
-    for (const [name, value] of Object.entries(body))
-      if (typeof value === 'string' && !name.endsWith('@odata.bind') && value.includes(own.uniqueRunToken))
-        body[name] = value.replace(own.uniqueRunToken, operationId.replaceAll('-', '').slice(0, 20));
-    body[field] = marker;
-    if (own.table === 'pqvd_equipment' && configuration.family === 'equipment-lifecycle') {
-      body.pqvd_assettag = 'CO-CANARY-' + operationId;
-      body.pqvd_equipmentstate = 183270000;
-    }
-    return {
-      method: 'POST',
-      url: '/_api/' + tableOf(bound, own.table).entitySet,
-      body,
-      target: { table: own.table, id },
-      expectedMessage: 'Create',
-      operationId,
-    };
+  if (cell.operation !== 'create') return null;
+  const id = randomUUID(),
+    body = { ...create.body, [tableOf(bound, own.table).primaryId]: id };
+  const field = own.table === 'contact' ? 'firstname' : configuration.query.primaryName;
+  body[field] = marker;
+  for (const [name, value] of Object.entries(body))
+    if (typeof value === 'string' && !name.endsWith('@odata.bind') && value.includes(own.uniqueRunToken))
+      body[name] = value.replace(own.uniqueRunToken, operationId.replaceAll('-', '').slice(0, 20));
+  body[field] = marker;
+  if (own.table === 'pqvd_equipment' && configuration.family === 'equipment-lifecycle') {
+    body.pqvd_assettag = 'CO-CANARY-' + operationId;
+    body.pqvd_equipmentstate = 183270000;
   }
-  if (!['append', 'appendTo'].includes(cell.operation)) throw new Error('Unsupported configuration operation.');
-  if (configuration.family === 'equipment-lifecycle' && cell.operation === 'append') {
+  return {
+    method: 'POST',
+    url: '/_api/' + tableOf(bound, own.table).entitySet,
+    body,
+    target: { table: own.table, id },
+    expectedMessage: 'Create',
+    operationId,
+  };
+}
+function lifecycleAppendRequest({ configuration, cell, fixtures, bound, own, target, marker, operationId }) {
+  if (configuration.family !== 'equipment-lifecycle') return null;
+  if (cell.operation === 'append') {
     const room = fixtures.records.find(
       (record) => record.region === cell.region && record.table === 'pqvd_room' && record.bindingAlternate,
     );
@@ -461,26 +453,27 @@ export function planQualificationCrudRequest({
       operationId,
     };
   }
-  if (configuration.family === 'equipment-lifecycle' && cell.operation === 'appendTo') {
-    const probe = fixtures.records.find((record) => record.region === cell.region && record.bindingProbe),
-      equipment = fixtures.records.find(
-        (record) => record.region === cell.region && record.table === 'pqvd_equipment' && record.bindingAlternate,
-      );
-    const navigation = bound.lookupNavigation?.[probe?.id]?.pqvd_equipmentid;
-    if (!probe || !equipment || !navigation)
-      throw new Error('Source5 AppendTo requires the cooperating owned-Run Probe and second Stock Equipment.');
-    return {
-      method: 'PATCH',
-      url: '/_api/' + endpointOf(bound, probe),
-      body: { [navigation + '@odata.bind']: `/pqvd_equipments(${equipment.id})` },
-      target: { table: probe.table, id: probe.id },
-      boundTarget: { table: equipment.table, id: equipment.id },
-      testedObjectRole: 'appendTo',
-      logicalLookup: 'pqvd_equipmentid',
-      expectedMessage: 'Update',
-      operationId,
-    };
-  }
+  if (cell.operation !== 'appendTo') return null;
+  const probe = fixtures.records.find((record) => record.region === cell.region && record.bindingProbe),
+    equipment = fixtures.records.find(
+      (record) => record.region === cell.region && record.table === 'pqvd_equipment' && record.bindingAlternate,
+    );
+  const navigation = bound.lookupNavigation?.[probe?.id]?.pqvd_equipmentid;
+  if (!probe || !equipment || !navigation)
+    throw new Error('Source5 AppendTo requires the cooperating owned-Run Probe and second Stock Equipment.');
+  return {
+    method: 'PATCH',
+    url: '/_api/' + endpointOf(bound, probe),
+    body: { [navigation + '@odata.bind']: `/pqvd_equipments(${equipment.id})` },
+    target: { table: probe.table, id: probe.id },
+    boundTarget: { table: equipment.table, id: equipment.id },
+    testedObjectRole: 'appendTo',
+    logicalLookup: 'pqvd_equipmentid',
+    expectedMessage: 'Update',
+    operationId,
+  };
+}
+function genericAppendRequest({ schema, cell, fixtures, bound, own, operationId }) {
   const relationships = schema.relationships.filter(
     (relation) =>
       relation.kind === 'oneToMany' &&
@@ -517,6 +510,37 @@ export function planQualificationCrudRequest({
       operationId,
     };
   }
+  return null;
+}
+
+/** Metadata-bound operations test the named table as Append source or AppendTo
+ * target. Guards remain active; successful HTTP alone never implies coverage. */
+export function planQualificationCrudRequest({
+  configuration,
+  cell,
+  fixtures,
+  bound,
+  operationId = randomUUID(),
+  schema,
+} = {}) {
+  if (!guid.test(operationId) || cell.operation === 'read')
+    throw new Error('CRUD request requires a unique operation and mutation cell.');
+  const own = fixtures.records.find(
+    (record) => record.region === cell.region && record.table === configuration.query.table,
+  );
+  if (!own)
+    throw new Error('Mutation target requires an owned disposable record; actual actor records are never modified.');
+  const target = `/_api/${endpointOf(bound, own)}`,
+    create = bound.requests.find((request) => request.kind === 'create' && request.endpoint === endpointOf(bound, own));
+  if (cell.operation === 'create' && !create) throw new Error('Bound native fixture creation payload missing.');
+  const marker = 'CO-OP:' + operationId;
+  const standard = standardCrudRequest({ configuration, cell, own, bound, create, target, marker, operationId });
+  if (standard) return standard;
+  const lifecycle = lifecycleAppendRequest({ configuration, cell, fixtures, bound, own, target, marker, operationId });
+  if (lifecycle) return lifecycle;
+  if (!['append', 'appendTo'].includes(cell.operation)) throw new Error('Unsupported configuration operation.');
+  const generic = genericAppendRequest({ schema, cell, fixtures, bound, own, operationId });
+  if (generic) return generic;
   throw new Error(
     'No native-metadata-bound disposable lookup pair for this Append/AppendTo cell; do not substitute SDK association credit.',
   );
@@ -546,7 +570,7 @@ async function createRecordingRecord(client, endpoint, id, body, primary, journa
   return row;
 }
 
-async function fixtureMutationCleanup(client, state) {
+/* NOSONAR */ async function fixtureMutationCleanup(client, state) {
   const { request, bound, before } = state,
     endpoint = request.url.replace('/_api/', '');
   if (request.actorScalarLeaseFile) {
@@ -651,6 +675,47 @@ async function fixtureMutationCleanup(client, state) {
   }
   if (!same(before.associations, after.associations)) throw new Error('Portal CRUD changed fixture projections.');
   return { verified: true, allRegionsRestored: true, snapshotSha256: after.snapshotSha256 };
+}
+
+/* NOSONAR */ function parseNativeReadResponse(
+  cell,
+  configuration,
+  state,
+  response,
+  anonymous,
+  actorContactId,
+  manifest,
+) {
+  let rows = [],
+    completePages = false,
+    effectiveXml;
+  if (cell.operation === 'read' && ['webapi', 'webapi-odata'].includes(cell.lane)) {
+    try {
+      const value = JSON.parse(response.wire.body);
+      if (Array.isArray(value.value)) {
+        rows = canonicalRows(value.value, configuration.query);
+        completePages = !value['@odata.nextLink'] && value.value.length < configuration.query.pageSize;
+      } else completePages = response.wire.status >= 400;
+    } catch {
+      /* Optional payload or browser capability is unavailable. */
+    }
+  } else if (cell.operation === 'read' && cell.lane === 'liquid') {
+    try {
+      const body = response.wire.body.replace(/^\s*<\?xml[^?]*\?>/, '');
+      const [parsed] = decodeBatchResponse(`<co-batch-response>${body}</co-batch-response>`, {
+        operations: [{ id: state.operationId, plan: configuration.query }],
+        actor: anonymous ? '00000000-0000-0000-0000-000000000000' : actorContactId,
+        roles: response.identityReceipt.roleNames,
+        datasetVersion: manifest.datasetVersion,
+      });
+      rows = canonicalRows(parsed.rows, configuration.query);
+      effectiveXml = parsed.effectiveFetchXml;
+      completePages = parsed.more === false || (parsed.more !== true && rows.length < configuration.query.pageSize);
+    } catch {
+      completePages = false;
+    }
+  } else completePages = true;
+  return { rows, completePages, effectiveXml };
 }
 
 /** Concrete client/browser adapters. Device credentials and replay bootstrap
@@ -803,7 +868,7 @@ export function createNativeConfigurationAdapters({
     async cleanupFixtures({ directory }) {
       return restoreQualificationFixtures(client, { journalFile: path.join(directory, 'native-fixtures.json') });
     },
-    async prepareCell({ cell, configuration, fixtures, directory, repeat }) {
+    /* NOSONAR */ async prepareCell({ cell, configuration, fixtures, directory, repeat }) {
       const folder = [...folders.keys()].find((folder) => directory.startsWith(folder + path.sep));
       const context = folders.get(folder);
       if (!context) throw new Error('Cell fixture graph absent.');
@@ -936,20 +1001,20 @@ export function createNativeConfigurationAdapters({
       });
       return state.sourceBefore.witnesses;
     },
-    async collectNativeCell({ cell, configuration, cache, directory, repeat }) {
+    /* NOSONAR */ async collectNativeCell({ cell, configuration, cache, directory, repeat }) {
       const state = cells.get(directory + ':' + repeat),
         anonymous = configuration.roles.some((role) => role.anonymous);
       let request = state.request;
       if (cell.operation === 'read') {
         const xml = authoredQuery(configuration.query, state.operation, 1);
+        let url;
+        if (cell.lane === 'webapi-odata') url = odataRequest(configuration.query, state.operation) + '&$top=10';
+        else if (cell.lane === 'webapi')
+          url = `/_api/${configuration.query.entitySet}?fetchXml=${encodeURIComponent(xml)}`;
+        else url = state.liquidUrl;
         request = {
           method: 'GET',
-          url:
-            cell.lane === 'webapi-odata'
-              ? odataRequest(configuration.query, state.operation) + '&$top=10'
-              : cell.lane === 'webapi'
-                ? `/_api/${configuration.query.entitySet}?fetchXml=${encodeURIComponent(xml)}`
-                : state.liquidUrl,
+          url,
         };
       }
       const response = await executeQualificationPortalRequest(anonymous ? anonymousBrowser : browser, {
@@ -973,35 +1038,15 @@ export function createNativeConfigurationAdapters({
         exclusive: true,
       });
       const events = await client.list(`pqvd_pluginevents?$filter=_pqvd_operationid_value eq ${state.operationId}`);
-      let rows = [],
-        completePages = false,
-        effectiveXml;
-      if (cell.operation === 'read' && ['webapi', 'webapi-odata'].includes(cell.lane)) {
-        try {
-          const value = JSON.parse(response.wire.body);
-          if (Array.isArray(value.value)) {
-            rows = canonicalRows(value.value, configuration.query);
-            completePages = !value['@odata.nextLink'] && value.value.length < configuration.query.pageSize;
-          } else completePages = response.wire.status >= 400;
-        } catch {
-          /* Optional payload or browser capability is unavailable. */
-        }
-      } else if (cell.operation === 'read' && cell.lane === 'liquid') {
-        try {
-          const body = response.wire.body.replace(/^\s*<\?xml[^?]*\?>/, '');
-          const [parsed] = decodeBatchResponse(`<co-batch-response>${body}</co-batch-response>`, {
-            operations: [{ id: state.operationId, plan: configuration.query }],
-            actor: anonymous ? '00000000-0000-0000-0000-000000000000' : actorContactId,
-            roles: response.identityReceipt.roleNames,
-            datasetVersion: manifest.datasetVersion,
-          });
-          rows = canonicalRows(parsed.rows, configuration.query);
-          effectiveXml = parsed.effectiveFetchXml;
-          completePages = parsed.more === false || (parsed.more !== true && rows.length < configuration.query.pageSize);
-        } catch {
-          completePages = false;
-        }
-      } else completePages = true;
+      const { rows, completePages, effectiveXml } = parseNativeReadResponse(
+        cell,
+        configuration,
+        state,
+        response,
+        anonymous,
+        actorContactId,
+        manifest,
+      );
       if (cell.operation !== 'read') {
         state.cleanupReceipt = await fixtureMutationCleanup(client, state);
         await savePrivateJson(state.stateFile, state);

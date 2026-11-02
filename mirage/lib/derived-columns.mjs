@@ -17,8 +17,10 @@ export function validateDerivedColumns(map, exportName) {
 const enumerableOwn = (value, key) =>
   value !== null && typeof value === 'object' && Object.prototype.propertyIsEnumerable.call(value, key);
 // A property of { ...definition, ...columnMetadata } without building the merged copy of every column.
-const merged = (definition, metadata, key) =>
-  enumerableOwn(metadata, key) ? metadata[key] : enumerableOwn(definition, key) ? definition[key] : undefined;
+const merged = (definition, metadata, key) => {
+  if (enumerableOwn(metadata, key)) return metadata[key];
+  return enumerableOwn(definition, key) ? definition[key] : undefined;
+};
 
 /** Formula text of the columns whose effective metadata has the requested source type. */
 export function derivedColumnsOf(api, logical, sourceType) {

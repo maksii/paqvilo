@@ -161,7 +161,7 @@ export function runStorageContract(
       'a/./b',
       'a//b',
       'a/.',
-      'a\\b',
+      String.raw`a\b`,
       'nul\0key',
       '-dash-first',
       'space key',

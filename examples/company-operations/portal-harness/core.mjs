@@ -6,15 +6,14 @@ export const escapeXml = (value) =>
   );
 export const stable = (value) => JSON.stringify(sortObject(value));
 function sortObject(value) {
-  return Array.isArray(value)
-    ? value.map(sortObject)
-    : value && typeof value === 'object'
-      ? Object.fromEntries(
-          Object.keys(value)
-            .sort()
-            .map((k) => [k, sortObject(value[k])]),
-        )
-      : value;
+  if (Array.isArray(value)) return value.map(sortObject);
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort((a, b) => Number(a > b) - Number(a < b))
+        .map((k) => [k, sortObject(value[k])]),
+    );
+  return value;
 }
 export async function sha256(value) {
   return [
@@ -31,7 +30,7 @@ export async function sha256(value) {
 export async function encodeArtifact(text, contentType = 'application/json') {
   const bytes = new TextEncoder().encode(text);
   let binary = '';
-  for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
+  for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCodePoint(...bytes.subarray(i, i + 32768));
   return stable({
     artifactFormat: 'paqvilo-utf8-base64-v1',
     contentType,
@@ -51,7 +50,7 @@ export async function decodeArtifact(text) {
   if (typeof envelope.base64 !== 'string' || !Number.isSafeInteger(envelope.byteLength) || envelope.byteLength < 0)
     throw new Error('Invalid encoded artifact metadata.');
   const binary = atob(envelope.base64),
-    bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+    bytes = Uint8Array.from(binary, (c) => c.codePointAt(0));
   if (bytes.length !== envelope.byteLength) throw new Error('Encoded artifact byte length mismatch.');
   const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   if ((await sha256(decoded)) !== envelope.payloadSha256) throw new Error('Decoded artifact checksum mismatch.');
@@ -77,49 +76,54 @@ export function authoredQuery(plan, operation, page = 1) {
 export function odataRequest(plan, operation) {
   authoredQuery(plan, operation); // The same immutable marker validation applies to the native variant.
   const literal = (value) => `'${String(value).replaceAll("'", "''")}'`;
-  const filter = `(${plan.fixtureIds.map((id) => `${plan.primaryId} eq ${guid(id)}`).join(' or ')}) and (${plan.primaryName} eq null or (${plan.primaryName} ne ${literal(operation.pqvd_markerutc)} and ${plan.primaryName} ne ${literal(operation.pqvd_markeroperation)}))`;
+  const fixtureFilter = plan.fixtureIds.map((id) => `${plan.primaryId} eq ${guid(id)}`).join(' or ');
+  const filter = `(${fixtureFilter}) and (${plan.primaryName} eq null or (${plan.primaryName} ne ${literal(operation.pqvd_markerutc)} and ${plan.primaryName} ne ${literal(operation.pqvd_markeroperation)}))`;
   return `/_api/${plan.entitySet}?$select=${plan.fields.map((f) => f.source).join(',')}&$filter=${encodeURIComponent(filter)}&$orderby=${plan.primaryId}&$count=true`;
 }
 export function normalize(value, field) {
   if (value === undefined) return null; // Documented FetchXML null attributes are omitted by API.
   if (value === null) return null;
   if (field.type === 'guid') return guid(typeof value === 'object' ? (value.id ?? value.Id) : value);
-  if (field.type === 'integer' || field.type === 'choice') {
-    const literal = typeof value === 'object' ? value.value : value,
-      parts = numericParts(literal);
-    if (!parts || parts.scale !== 0) throw new Error(`Invalid integer ${field.name}`);
-    const n = Number(parts.coefficient);
-    return Number.isSafeInteger(n) ? n : parts.coefficient.toString();
-  }
-  if (['decimal', 'money', 'double'].includes(field.type)) {
-    const parts = numericParts(typeof value === 'object' ? value.value : value),
-      precision = Number(field.precision ?? 0);
-    if (!parts || !Number.isInteger(precision) || precision < 0 || precision > 28)
-      throw new Error(`Invalid decimal ${field.name}`);
-    let coefficient = parts.coefficient;
-    if (parts.scale > precision) {
-      const divisor = 10n ** BigInt(parts.scale - precision),
-        negative = coefficient < 0n,
-        absolute = negative ? -coefficient : coefficient;
-      coefficient = (absolute / divisor + ((absolute % divisor) * 2n >= divisor ? 1n : 0n)) * (negative ? -1n : 1n);
-    } else coefficient *= 10n ** BigInt(precision - parts.scale);
-    const negative = coefficient < 0n,
-      digits = (negative ? -coefficient : coefficient).toString().padStart(precision + 1, '0');
-    return (negative ? '-' : '') + (precision ? digits.slice(0, -precision) + '.' + digits.slice(-precision) : digits);
-  }
-  if (field.type === 'dateonly') {
-    const text = String(value);
-    if (!/^\d{4}-\d\d-\d\d/.test(text)) throw new Error(`Invalid DateOnly ${field.name}`);
-    return text.slice(0, 10);
-  }
+  if (field.type === 'integer' || field.type === 'choice') return normalizeInteger(value, field);
+  if (['decimal', 'money', 'double'].includes(field.type)) return normalizeDecimal(value, field);
+  if (field.type === 'dateonly') return normalizeDateOnly(value, field);
   if (field.type === 'datetime') return new Date(value).toISOString();
-  if (field.type === 'boolean') {
-    if (value === true || value === false) return value;
-    if (value === 1 || value === 0) return value === 1;
-    if (typeof value === 'string' && /^(?:true|false|0|1)$/i.test(value)) return /^(?:true|1)$/i.test(value);
-    throw new Error(`Invalid boolean ${field.name}`);
-  }
+  if (field.type === 'boolean') return normalizeBoolean(value, field);
   return String(value);
+}
+function normalizeInteger(value, field) {
+  const literal = typeof value === 'object' ? value.value : value,
+    parts = numericParts(literal);
+  if (parts?.scale !== 0) throw new Error(`Invalid integer ${field.name}`);
+  const n = Number(parts.coefficient);
+  return Number.isSafeInteger(n) ? n : parts.coefficient.toString();
+}
+function normalizeDecimal(value, field) {
+  const parts = numericParts(typeof value === 'object' ? value.value : value),
+    precision = Number(field.precision ?? 0);
+  if (!parts || !Number.isInteger(precision) || precision < 0 || precision > 28)
+    throw new Error(`Invalid decimal ${field.name}`);
+  let coefficient = parts.coefficient;
+  if (parts.scale > precision) {
+    const divisor = 10n ** BigInt(parts.scale - precision),
+      negative = coefficient < 0n,
+      absolute = negative ? -coefficient : coefficient;
+    coefficient = (absolute / divisor + ((absolute % divisor) * 2n >= divisor ? 1n : 0n)) * (negative ? -1n : 1n);
+  } else coefficient *= 10n ** BigInt(precision - parts.scale);
+  const negative = coefficient < 0n,
+    digits = (negative ? -coefficient : coefficient).toString().padStart(precision + 1, '0');
+  return (negative ? '-' : '') + (precision ? digits.slice(0, -precision) + '.' + digits.slice(-precision) : digits);
+}
+function normalizeDateOnly(value, field) {
+  const text = String(value);
+  if (!/^\d{4}-\d\d-\d\d/.test(text)) throw new Error(`Invalid DateOnly ${field.name}`);
+  return text.slice(0, 10);
+}
+function normalizeBoolean(value, field) {
+  if (value === true || value === false) return value;
+  if (value === 1 || value === 0) return value === 1;
+  if (typeof value === 'string' && /^(?:true|false|0|1)$/i.test(value)) return /^(?:true|1)$/i.test(value);
+  throw new Error(`Invalid boolean ${field.name}`);
 }
 function numericParts(value) {
   const text = String(value);
@@ -207,7 +211,7 @@ export function assessScenario(scenario, observations, manifest) {
       const observation = observations.find(
         (o) => o.caseId === manifest.cases.find((c) => c.table === expected.table)?.id,
       );
-      if (!observation || !observation.complete || observation.outcome !== 'success')
+      if (!observation?.complete || observation.outcome !== 'success')
         return { ...expected, actual: 'unknown', verdict: 'incomplete' };
       const actual = observation.ids.includes(guid(expected.id));
       return { ...expected, actual, verdict: actual === expected.allowed ? 'pass' : 'fail' };
@@ -268,9 +272,13 @@ export function parseLiquid(text, plan, DOMParserClass = globalThis.DOMParser) {
     ),
   );
   const more = root.querySelector('paging')?.getAttribute('more')?.toLowerCase();
+  let moreValue;
+  if (more === 'true') moreValue = true;
+  else if (more === 'false') moreValue = false;
+  else moreValue = null;
   return {
     rows,
-    more: more === 'true' ? true : more === 'false' ? false : null,
+    more: moreValue,
     cookie: root.querySelector('cookie')?.textContent || null,
     authoredFetchXml: root.querySelector('authored-fetchxml')?.textContent,
     effectiveFetchXml: root.querySelector('effective-fetchxml')?.textContent,
@@ -287,7 +295,7 @@ export function splitPayload(text, max = 240000) {
     let end = Math.min(text.length, i + max);
     if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1])) end--;
     parts.push(text.slice(i, end));
-    i = end - max;
+    i = end - max; // NOSONAR: loop cursor is advanced in the body on purpose
   }
   return parts.length ? parts : [''];
 }

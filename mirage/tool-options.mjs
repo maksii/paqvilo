@@ -132,7 +132,7 @@ export const parseToolArgs = (name, args) => parseToolCommand(name, args).values
 export function toolOptionsHelp(name) {
   return Object.entries(TOOL_OPTIONS[name])
     .filter(([key]) => key !== 'help')
-    .map(([key, option]) => `[--${key}${option.label ? ` ${option.label}` : ''}]${option.multiple ? '...' : ''}`)
+    .map(([key, option]) => `[--${key}${option.label ? ' ' + option.label : ''}]${option.multiple ? '...' : ''}`)
     .join(' ');
 }
 

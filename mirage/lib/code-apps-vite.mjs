@@ -15,9 +15,51 @@ const browserFile = (name) => '/@fs/' + source(name);
 const publicId = (id) => '/@id/__x00__' + id;
 // A page's script URL becomes a string literal in generated module code; escaping markup and line-terminator
 // characters keeps it one inert literal.
-const unsafeLiteralCharacters = { '<': '\\u003C', '>': '\\u003E', '\u2028': '\\u2028', '\u2029': '\\u2029' };
+const unsafeLiteralCharacters = {
+  '<': String.raw`\u003C`,
+  '>': String.raw`\u003E`,
+  '\u2028': String.raw`\u2028`,
+  '\u2029': String.raw`\u2029`,
+};
 const moduleString = (value) =>
   JSON.stringify(String(value)).replace(/[<>\u2028\u2029]/g, (char) => unsafeLiteralCharacters[char]);
+
+function rewriteModuleScript(node, html, context, root, entries, inlineSources, edits) {
+  if (node.tagName !== 'script' || !node.attrs?.some((attr) => attr.name === 'type' && attr.value === 'module')) return;
+  const src = node.attrs.find((attr) => attr.name === 'src')?.value;
+  if (src && /^(?:\/@vite\/|\/@id\/)/.test(src)) return;
+  const location = node.sourceCodeLocation;
+  const code = !src && html.slice(location.startTag.endOffset, location.endTag.startOffset);
+  const url = src && new URL(src, 'http://paqvilo.local' + context.path); // NOSONAR: reserved or loopback placeholder host, not a real transport
+  const inlineId =
+    INLINE +
+    createHash('sha256')
+      .update(context.path + ':' + location.startOffset + ':' + code)
+      .digest('hex')
+      .slice(0, 16);
+  let target;
+  if (src) {
+    if (url.origin === 'http://paqvilo.local' /* NOSONAR: reserved placeholder host, not a real transport */)
+      target = url.pathname + url.search + url.hash;
+    else target = url.href;
+  } else target = inlineId;
+  const id = ENTRY + createHash('sha256').update(target).digest('hex').slice(0, 16);
+  entries.set(id, target);
+  if (src) {
+    edits.push([location.attrs.src.startOffset, location.attrs.src.endOffset, `src="${publicId(id)}"`]);
+  } else {
+    inlineSources.set(inlineId, {
+      code,
+      file: context.filename ?? path.join(root ?? '.', context.path.slice(1)),
+    });
+    edits.push([location.startTag.endOffset - 1, location.endTag.startOffset, ` src="${publicId(id)}">`]);
+  }
+}
+
+function visitHtmlNode(node, html, context, root, entries, inlineSources, edits) {
+  rewriteModuleScript(node, html, context, root, entries, inlineSources, edits);
+  for (const child of node.childNodes ?? []) visitHtmlNode(child, html, context, root, entries, inlineSources, edits);
+}
 
 function localOrigin(value) {
   let url;
@@ -170,7 +212,7 @@ export function codeApps(options = {}) {
     },
     load(id) {
       if (id === '\0' + BOOTSTRAP)
-        return `
+        return String.raw`
 import { configure, getStatus } from ${JSON.stringify(browserFile('./code-apps-client.js'))};
 import { createCodeAppSdkExecutor } from ${JSON.stringify(browserFile('./code-apps-sdk.js'))};
 import { setDataOperationExecutor } from '@microsoft/power-apps/internal/data';
@@ -179,7 +221,7 @@ const report = event => {
 };
 configure({app:${JSON.stringify(app)},onEvent:event=>{
   report(event);
-  if(event.kind==='request' && /\\/context$/.test(event.path) && event.status===200) report({kind:'bridge-ready'});
+  if(event.kind==='request' && /\/context$/.test(event.path) && event.status===200) report({kind:'bridge-ready'});
 }});
 try {
   const status = await getStatus();
@@ -223,44 +265,16 @@ export { setConfig } from ${JSON.stringify('/@fs/' + nativeApp)};
       order: 'post',
       handler(html, context) {
         const edits = [];
-        const visit = (node) => {
-          if (
-            node.tagName === 'script' &&
-            node.attrs?.some((attr) => attr.name === 'type' && attr.value === 'module')
-          ) {
-            const src = node.attrs.find((attr) => attr.name === 'src')?.value;
-            if (!src || !/^(?:\/@vite\/|\/@id\/)/.test(src)) {
-              const location = node.sourceCodeLocation;
-              const code = !src && html.slice(location.startTag.endOffset, location.endTag.startOffset);
-              const url = src && new URL(src, 'http://paqvilo.local' + context.path);
-              const inlineId =
-                INLINE +
-                createHash('sha256')
-                  .update(context.path + ':' + location.startOffset + ':' + code)
-                  .digest('hex')
-                  .slice(0, 16);
-              const target = src
-                ? url.origin === 'http://paqvilo.local'
-                  ? url.pathname + url.search + url.hash
-                  : url.href
-                : inlineId;
-              const id = ENTRY + createHash('sha256').update(target).digest('hex').slice(0, 16);
-              entries.set(id, target);
-              if (src) {
-                edits.push([location.attrs.src.startOffset, location.attrs.src.endOffset, `src="${publicId(id)}"`]);
-              } else {
-                inlineSources.set(inlineId, {
-                  code,
-                  file: context.filename ?? path.join(root ?? '.', context.path.slice(1)),
-                });
-                edits.push([location.startTag.endOffset - 1, location.endTag.startOffset, ` src="${publicId(id)}">`]);
-              }
-            }
-          }
-          for (const child of node.childNodes ?? []) visit(child);
-        };
-        visit(parse(html, { sourceCodeLocationInfo: true }));
-        for (const [start, end, replacement] of edits.sort((a, b) => b[0] - a[0]))
+        visitHtmlNode(
+          parse(html, { sourceCodeLocationInfo: true }),
+          html,
+          context,
+          root,
+          entries,
+          inlineSources,
+          edits,
+        );
+        for (const [start, end, replacement] of edits.toSorted((a, b) => b[0] - a[0]))
           html = html.slice(0, start) + replacement + html.slice(end);
         return {
           html,

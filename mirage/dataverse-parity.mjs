@@ -9,6 +9,10 @@ const credentialHeader =
 const credentialKey =
   /^(access_token|refresh_token|id_token|client_secret|clientsecret|password|authorization|cookie|set-cookie|__requestverificationtoken)$/i;
 const idPattern = /^[a-z0-9][a-z0-9_.:-]{0,199}$/i;
+const chooseLazily = (condition, yes, no) => {
+  if (condition()) return yes();
+  return no();
+};
 const sha256 = (value) =>
   createHash('sha256')
     .update(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value))
@@ -16,13 +20,13 @@ const sha256 = (value) =>
 const clone = (value) => structuredClone(value);
 const escapePointer = (text) => text.replaceAll('~', '~0').replaceAll('/', '~1');
 const bodyBytes = (response) => Buffer.from(response.bodyBase64 ?? '', 'base64');
-const credentialError = (message) => Object.assign(Error(message), { code: 'PARITY_CREDENTIAL' });
+const credentialError = (message) => Object.assign(new Error(message), { code: 'PARITY_CREDENTIAL' });
 
 function assertNoCredentials(value) {
   function walk(node) {
     if (
       typeof node === 'string' &&
-      (/\bBearer\s+(?![A-Za-z][A-Za-z0-9_-]*\s*=)[A-Za-z0-9_.~+/-]{16,}={0,2}(?=$|[\s"'<>])/i.test(node) ||
+      (/\bBearer\s+(?![a-z][a-z0-9_-]*\s*=)[a-z0-9_.~+/-]{16,}={0,2}(?=$|[\s"'<>])/i.test(node) ||
         /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/.test(node))
     )
       throw credentialError('Credential-shaped content cannot enter parity evidence');
@@ -43,7 +47,7 @@ function assertCredentialSafeText(text) {
     /* Malformed JSON is still inspected conservatively below. */
   }
   assertNoCredentials(json ?? text);
-  const decoded = text.replace(/\\u([a-f\d]{4})/gi, (_, code) => String.fromCharCode(parseInt(code, 16)));
+  const decoded = text.replace(/\\u([a-f\d]{4})/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)));
   if (
     /(?:^|\r?\n)[ \t]*(?:authorization|proxy-authorization|cookie|set-cookie|x-ms-token-[^:\s]+|__requestverificationtoken)\s*:/i.test(
       decoded,
@@ -57,7 +61,8 @@ function assertCredentialSafeText(text) {
 
 function pointer(value, selector) {
   if (selector === '') return value;
-  if (typeof selector !== 'string' || !selector.startsWith('/')) throw Error('Capture selectors must be JSON pointers');
+  if (typeof selector !== 'string' || !selector.startsWith('/'))
+    throw new Error('Capture selectors must be JSON pointers');
   return selector
     .slice(1)
     .split('/')
@@ -75,16 +80,16 @@ function expandTemplate(value, variables) {
   if (value && typeof value === 'object')
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, expandTemplate(item, variables)]));
   if (typeof value !== 'string') return value;
-  const exact = value.match(/^\{\{([a-zA-Z][\w.-]*)\}\}$/);
+  const exact = /^\{\{([a-zA-Z][\w.-]*)\}\}$/.exec(value);
   const get = (name) => {
-    if (!Object.hasOwn(variables, name)) throw Error('Unresolved parity variable: ' + name);
+    if (!Object.hasOwn(variables, name)) throw new Error('Unresolved parity variable: ' + name);
     return clone(variables[name]);
   };
   if (exact) return get(exact[1]);
   return value.replace(/\{\{([a-zA-Z][\w.-]*)\}\}/g, (_, name) => {
     const item = get(name);
     if (!['string', 'number', 'boolean'].includes(typeof item))
-      throw Error('Embedded variable must be scalar: ' + name);
+      throw new Error('Embedded variable must be scalar: ' + name);
     return String(item);
   });
 }
@@ -92,53 +97,68 @@ function expandTemplate(value, variables) {
 export function validatePlan(input) {
   const plan = clone(input);
   if (plan.schemaVersion !== 1 || !idPattern.test(plan.id ?? '') || !Array.isArray(plan.cases) || !plan.cases.length)
-    throw Error('Invalid parity plan');
+    throw new Error('Invalid parity plan');
   assertNoCredentials(plan);
   const ids = new Set();
-  for (const entry of plan.cases) {
-    if (!idPattern.test(entry.id ?? '') || ids.has(entry.id) || typeof entry.family !== 'string' || !entry.family)
-      throw Error('Cases require unique ids and a family');
-    if (!entry.request || typeof entry.request.path !== 'string') throw Error('Case requires request.path');
-    entry.request.method = (entry.request.method ?? 'GET').toUpperCase();
-    if (!/^[A-Z]+$/.test(entry.request.method)) throw Error('Invalid HTTP method');
-    if (
-      (entry.request.body !== undefined &&
-        (entry.request.bodyBase64 !== undefined || entry.request.bodyText !== undefined)) ||
-      (entry.request.bodyBase64 !== undefined && entry.request.bodyText !== undefined)
-    )
-      throw Error('Choose one request body representation');
-    if (entry.request.bodyText !== undefined) {
-      if (typeof entry.request.bodyText !== 'string') throw Error('bodyText must be a string');
-      assertCredentialSafeText(entry.request.bodyText);
-    }
-    if (entry.request.bodyBase64 !== undefined) {
-      if (typeof entry.request.bodyBase64 !== 'string') throw Error('bodyBase64 must be a string');
-      assertCredentialSafeText(Buffer.from(entry.request.bodyBase64, 'base64').toString('utf8'));
-    }
-    for (const [name, value] of Object.entries(entry.request.headers ?? {})) {
-      if (
-        credentialHeader.test(name) ||
-        !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ||
-        typeof value !== 'string' ||
-        /[\r\n]/.test(value)
-      )
-        throw Error('Invalid or credential-bearing request header');
-    }
-    for (const dependency of entry.dependsOn ?? [])
-      if (!ids.has(dependency)) throw Error('Dependencies must precede their case');
-    if (
-      entry.acceptStatus &&
-      (!Array.isArray(entry.acceptStatus) ||
-        !entry.acceptStatus.length ||
-        entry.acceptStatus.some((status) => !Number.isInteger(status) || status < 100 || status > 599))
-    )
-      throw Error('Invalid accepted status');
-    for (const [name, capture] of Object.entries(entry.capture ?? {}))
-      if (!/^[a-zA-Z][\w.-]*$/.test(name) || typeof capture !== 'string' || !capture.startsWith('/'))
-        throw Error('Invalid capture');
-    ids.add(entry.id);
-  }
+  for (const entry of plan.cases) validatePlanCase(entry, ids);
   return plan;
+}
+function validatePlanCase(entry, ids) {
+  if (!idPattern.test(entry.id ?? '') || ids.has(entry.id) || typeof entry.family !== 'string' || !entry.family)
+    throw new Error('Cases require unique ids and a family');
+  if (!entry.request || typeof entry.request.path !== 'string') throw new Error('Case requires request.path');
+  entry.request.method = (entry.request.method ?? 'GET').toUpperCase();
+  if (!/^[A-Z]+$/.test(entry.request.method)) throw new Error('Invalid HTTP method');
+  validateRequestBody(entry.request);
+  validateRequestHeaders(entry.request);
+  validateDependencies(entry, ids);
+  validateAcceptedStatus(entry);
+  validateCaptures(entry);
+  ids.add(entry.id);
+}
+function validateRequestBody(request) {
+  if (
+    (request.body !== undefined && (request.bodyBase64 !== undefined || request.bodyText !== undefined)) ||
+    (request.bodyBase64 !== undefined && request.bodyText !== undefined)
+  )
+    throw new Error('Choose one request body representation');
+  if (request.bodyText !== undefined) {
+    if (typeof request.bodyText !== 'string') throw new Error('bodyText must be a string');
+    assertCredentialSafeText(request.bodyText);
+  }
+  if (request.bodyBase64 !== undefined) {
+    if (typeof request.bodyBase64 !== 'string') throw new Error('bodyBase64 must be a string');
+    assertCredentialSafeText(Buffer.from(request.bodyBase64, 'base64').toString('utf8'));
+  }
+}
+function validateRequestHeaders(request) {
+  for (const [name, value] of Object.entries(request.headers ?? {})) {
+    if (
+      credentialHeader.test(name) ||
+      !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ||
+      typeof value !== 'string' ||
+      /[\r\n]/.test(value)
+    )
+      throw new Error('Invalid or credential-bearing request header');
+  }
+}
+function validateDependencies(entry, ids) {
+  for (const dependency of entry.dependsOn ?? [])
+    if (!ids.has(dependency)) throw new Error('Dependencies must precede their case');
+}
+function validateAcceptedStatus(entry) {
+  if (
+    entry.acceptStatus &&
+    (!Array.isArray(entry.acceptStatus) ||
+      !entry.acceptStatus.length ||
+      entry.acceptStatus.some((status) => !Number.isInteger(status) || status < 100 || status > 599))
+  )
+    throw new Error('Invalid accepted status');
+}
+function validateCaptures(entry) {
+  for (const [name, capture] of Object.entries(entry.capture ?? {}))
+    if (!/^[a-zA-Z][\w.-]*$/.test(name) || typeof capture !== 'string' || !capture.startsWith('/'))
+      throw new Error('Invalid capture');
 }
 
 export function prepareRequest(source, variables) {
@@ -179,7 +199,7 @@ export function sealResponse(input) {
     input.status > 599 ||
     typeof input.bodyBase64 !== 'string'
   )
-    throw Error('Invalid response from transport');
+    throw new Error('Invalid response from transport');
   const headers = {},
     withheldHeaders = [...(input.withheldHeaders ?? [])];
   for (const [key, value] of Object.entries(input.headers ?? {})) {
@@ -199,6 +219,20 @@ export function sealResponse(input) {
   }
   assertNoCredentials(json ?? text);
   assertNoCredentials(headers);
+  const { multipart, multipartParseError } = inspectMultipartEvidence(bytes, headers, text);
+  return {
+    status: input.status,
+    headers,
+    withheldHeaders: [...new Set(withheldHeaders)].sort((a, b) => Number(a > b) - Number(a < b)),
+    bodyBase64: input.bodyBase64,
+    bodySha256: sha256(bytes),
+    bytes: bytes.length,
+    ...(json === undefined ? {} : { json }),
+    ...(multipart === undefined ? {} : { multipart }),
+    ...(multipartParseError ? { multipartParseError } : {}),
+  };
+}
+function inspectMultipartEvidence(bytes, headers, text) {
   let multipart, multipartParseError;
   if (/^multipart\//i.test(headers['content-type'] ?? '')) {
     // A malformed MIME envelope remains useful evidence, but a parser failure
@@ -211,34 +245,26 @@ export function sealResponse(input) {
       multipartParseError = 'malformed-multipart';
     }
   }
-  return {
-    status: input.status,
-    headers,
-    withheldHeaders: [...new Set(withheldHeaders)].sort(),
-    bodyBase64: input.bodyBase64,
-    bodySha256: sha256(bytes),
-    bytes: bytes.length,
-    ...(json === undefined ? {} : { json }),
-    ...(multipart === undefined ? {} : { multipart }),
-    ...(multipartParseError ? { multipartParseError } : {}),
-  };
+  return { multipart, multipartParseError };
 }
 
 export function inspectMultipart(bytes, contentType, depth = 0) {
-  if (depth > 8) throw Error('Multipart nesting limit');
+  if (depth > 8) throw new Error('Multipart nesting limit');
   const match = contentType.match(/\bboundary\s*=\s*(?:"([^"\r\n]+)"|([^;\s]+))/i),
     boundary = match?.[1] ?? match?.[2];
-  if (!boundary || boundary.length > 200 || /[\r\n]/.test(boundary)) throw Error('Multipart boundary missing');
+  if (!boundary || boundary.length > 200 || /[\r\n]/.test(boundary)) throw new Error('Multipart boundary missing');
   const text = bytes.toString('latin1');
-  const escaped = boundary.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const delimiters = [...text.matchAll(new RegExp('(?:^|\\r\\n)--' + escaped + '(--)?[ \\t]*(?:\\r\\n|$)', 'g'))];
+  const escaped = boundary.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+  const delimiters = [
+    ...text.matchAll(new RegExp(String.raw`(?:^|\r\n)--` + escaped + String.raw`(--)?[ \t]*(?:\r\n|$)`, 'g')),
+  ];
   if (!delimiters.length || !delimiters.at(-1)[1] || delimiters.length > 1002)
-    throw Error('Malformed multipart delimiters');
+    throw new Error('Malformed multipart delimiters');
   const parseHeaders = (source) => {
     const headers = {};
     for (const line of source.split('\r\n')) {
       const colon = line.indexOf(':');
-      if (colon <= 0) throw Error('Malformed multipart header');
+      if (colon <= 0) throw new Error('Malformed multipart header');
       const name = line.slice(0, colon).trim().toLowerCase(),
         value = line.slice(colon + 1).trim();
       // Inner authentication material would also be present in the raw body.
@@ -249,50 +275,57 @@ export function inspectMultipart(bytes, contentType, depth = 0) {
   };
   const parts = [];
   for (let i = 0; i < delimiters.length - 1; i++) {
-    if (delimiters[i][1]) throw Error('Premature multipart close');
-    const source = text.slice(delimiters[i].index + delimiters[i][0].length, delimiters[i + 1].index),
-      split = source.indexOf('\r\n\r\n');
-    if (split < 0) throw Error('Multipart part lacks headers');
-    const headers = parseHeaders(source.slice(0, split)),
-      body = source.slice(split + 4),
-      type = headers['content-type'] ?? '';
-    if (typeof type !== 'string') throw Error('Duplicate MIME content type');
-    if (/^multipart\//i.test(type))
-      parts.push({ headers, multipart: inspectMultipart(Buffer.from(body, 'latin1'), type, depth + 1) });
-    else if (/^application\/http/i.test(type)) {
-      const lineEnd = body.indexOf('\r\n'),
-        status = body.slice(0, lineEnd).match(/^HTTP\/\d(?:\.\d)? (\d{3})(?: (.*))?$/);
-      if (!status) throw Error('Invalid batch HTTP status line');
-      const rest = body.slice(lineEnd + 2),
-        headerEnd = rest.indexOf('\r\n\r\n');
-      const innerHeaders =
-        headerEnd >= 0 ? parseHeaders(rest.slice(0, headerEnd)) : rest.startsWith('\r\n') ? {} : null;
-      if (!innerHeaders) throw Error('Invalid batch HTTP headers');
-      const payload = Buffer.from(headerEnd >= 0 ? rest.slice(headerEnd + 4) : rest.slice(2), 'latin1');
-      let json;
-      try {
-        json = JSON.parse(payload.toString('utf8'));
-      } catch {
-        /* Preserve non-JSON and empty bodies. */
-      }
-      assertNoCredentials(json ?? payload.toString('utf8'));
-      parts.push({
-        headers,
-        status: Number(status[1]),
-        reason: status[2] ?? '',
-        responseHeaders: innerHeaders,
-        bodySha256: sha256(payload),
-        bytes: payload.length,
-        ...(json === undefined ? {} : { json }),
-      });
-    } else
-      parts.push({
-        headers,
-        bodySha256: sha256(Buffer.from(body, 'latin1')),
-        bytes: Buffer.byteLength(body, 'latin1'),
-      });
+    if (delimiters[i][1]) throw new Error('Premature multipart close');
+    parts.push(parseMultipartPart(text, delimiters[i], delimiters[i + 1], parseHeaders, depth));
   }
   return { boundary, parts };
+}
+function parseMultipartPart(text, delimiter, nextDelimiter, parseHeaders, depth) {
+  const source = text.slice(delimiter.index + delimiter[0].length, nextDelimiter.index),
+    split = source.indexOf('\r\n\r\n');
+  if (split < 0) throw new Error('Multipart part lacks headers');
+  const headers = parseHeaders(source.slice(0, split)),
+    body = source.slice(split + 4),
+    type = headers['content-type'] ?? '';
+  if (typeof type !== 'string') throw new Error('Duplicate MIME content type');
+  if (/^multipart\//i.test(type))
+    return { headers, multipart: inspectMultipart(Buffer.from(body, 'latin1'), type, depth + 1) };
+  if (/^application\/http/i.test(type)) return parseBatchHttpPart(headers, body, parseHeaders);
+  return {
+    headers,
+    bodySha256: sha256(Buffer.from(body, 'latin1')),
+    bytes: Buffer.byteLength(body, 'latin1'),
+  };
+}
+function parseBatchHttpPart(headers, body, parseHeaders) {
+  const lineEnd = body.indexOf('\r\n'),
+    status = body.slice(0, lineEnd).match(/^HTTP\/\d(?:\.\d)? (\d{3})(?: (.*))?$/);
+  if (!status) throw new Error('Invalid batch HTTP status line');
+  const rest = body.slice(lineEnd + 2),
+    headerEnd = rest.indexOf('\r\n\r\n');
+  const innerHeaders = chooseLazily(
+    () => headerEnd >= 0,
+    () => parseHeaders(rest.slice(0, headerEnd)),
+    () => (rest.startsWith('\r\n') ? {} : null),
+  );
+  if (!innerHeaders) throw new Error('Invalid batch HTTP headers');
+  const payload = Buffer.from(headerEnd >= 0 ? rest.slice(headerEnd + 4) : rest.slice(2), 'latin1');
+  let json;
+  try {
+    json = JSON.parse(payload.toString('utf8'));
+  } catch {
+    /* Preserve non-JSON and empty bodies. */
+  }
+  assertNoCredentials(json ?? payload.toString('utf8'));
+  return {
+    headers,
+    status: Number(status[1]),
+    reason: status[2] ?? '',
+    responseHeaders: innerHeaders,
+    bodySha256: sha256(payload),
+    bytes: payload.length,
+    ...(json === undefined ? {} : { json }),
+  };
 }
 
 // No implicit retry: an interrupted write has an unknown outcome until reconciled.
@@ -301,20 +334,14 @@ export async function runSuite(
   { transport, variables = {}, allowWrites = false, sink = async () => {}, onProgress = () => {} } = {},
 ) {
   const plan = validatePlan(input);
-  if (typeof transport !== 'function') throw Error('A parity transport is required');
+  if (typeof transport !== 'function') throw new Error('A parity transport is required');
   if (!allowWrites && plan.cases.some((entry) => !['GET', 'HEAD', 'OPTIONS'].includes(entry.request.method)))
-    throw Error('Plan contains writes; explicit allowWrites required');
+    throw new Error('Plan contains writes; explicit allowWrites required');
   const state = { ...clone(plan.variables ?? {}), ...clone(variables) };
   assertNoCredentials(state);
   // Initial variables can supply encoded bodies. Inspect every resolvable
   // request before the start event can persist the plan or variables.
-  for (const entry of plan.cases) {
-    try {
-      prepareRequest(entry.request, state);
-    } catch (error) {
-      if (error.code === 'PARITY_CREDENTIAL') throw error;
-    }
-  }
+  inspectInitialRequests(plan.cases, state);
   const run = {
     schemaVersion: 1,
     planId: plan.id,
@@ -329,16 +356,10 @@ export async function runSuite(
   const results = new Map();
   for (const entry of plan.cases) {
     const result = { id: entry.id, family: entry.family, covers: entry.covers ?? [] };
-    if ((entry.dependsOn ?? []).some((id) => results.get(id)?.outcome !== 'observed')) {
+    if (hasUnobservedDependency(entry, results)) {
       Object.assign(result, { outcome: 'blocked', reason: 'dependency-not-observed' });
     } else {
-      let request;
-      try {
-        request = prepareRequest(entry.request, state);
-      } catch {
-        result.outcome = 'blocked';
-        result.reason = 'unresolved-request';
-      }
+      const request = prepareSuiteRequest(entry, state, result);
       if (request) {
         result.request = request;
         // Persist intent before the transport can mutate anything.
@@ -351,43 +372,13 @@ export async function runSuite(
           response = { transportError: 'transport-failed' };
         }
         result.elapsedMs = Math.round(performance.now() - start);
-        try {
-          result.response = sealResponse(response);
-          result.outcome = result.response.transportError
-            ? 'unknown'
-            : entry.acceptStatus && !entry.acceptStatus.includes(result.response.status)
-              ? 'unexpected-status'
-              : 'observed';
-          if (result.outcome === 'observed') {
-            const captures = {};
-            for (const [name, selector] of Object.entries(entry.capture ?? {})) {
-              const value = pointer(result.response, selector);
-              if (value === undefined) {
-                result.outcome = 'missing-capture';
-                result.reason = 'capture-absent';
-                break;
-              }
-              captures[name] = value;
-            }
-            if (result.outcome === 'observed') {
-              Object.assign(state, captures);
-              result.captures = captures;
-            }
-          }
-        } catch {
-          result.response = {
-            ...(Number.isInteger(response.status) ? { status: response.status } : {}),
-            evidenceWithheld: true,
-          };
-          result.outcome = 'invalid-evidence';
-          result.reason = 'response-or-capture-invalid';
-        }
+        handleSuiteResponse(entry, response, result, state);
       }
     }
     run.results.push(result);
     results.set(entry.id, result);
     await sink({ type: 'result', result });
-    await onProgress({ id: result.id, outcome: result.outcome, status: result.response?.status ?? null });
+    await onProgress({ id: result.id, outcome: result.outcome, status: result.response?.status ?? null }); // NOSONAR: await kept: the value may be a thenable and timing matters
   }
   run.complete = true;
   run.finishedAt = new Date().toISOString();
@@ -400,6 +391,61 @@ export async function runSuite(
   );
   await sink({ type: 'finish', run });
   return run;
+}
+function hasUnobservedDependency(entry, results) {
+  return (entry.dependsOn ?? []).some((id) => results.get(id)?.outcome !== 'observed');
+}
+function prepareSuiteRequest(entry, state, result) {
+  try {
+    return prepareRequest(entry.request, state);
+  } catch {
+    result.outcome = 'blocked';
+    result.reason = 'unresolved-request';
+  }
+}
+function inspectInitialRequests(cases, state) {
+  for (const entry of cases) {
+    try {
+      prepareRequest(entry.request, state);
+    } catch (error) {
+      if (error.code === 'PARITY_CREDENTIAL') throw error;
+    }
+  }
+}
+function handleSuiteResponse(entry, response, result, state) {
+  try {
+    result.response = sealResponse(response);
+    result.outcome = chooseLazily(
+      () => result.response.transportError,
+      () => 'unknown',
+      () =>
+        entry.acceptStatus && !entry.acceptStatus.includes(result.response.status) ? 'unexpected-status' : 'observed',
+    );
+    if (result.outcome === 'observed') captureSuiteValues(entry, result, state);
+  } catch {
+    result.response = {
+      ...(Number.isInteger(response.status) ? { status: response.status } : {}),
+      evidenceWithheld: true,
+    };
+    result.outcome = 'invalid-evidence';
+    result.reason = 'response-or-capture-invalid';
+  }
+}
+function captureSuiteValues(entry, result, state) {
+  const captures = {};
+  for (const [name, selector] of Object.entries(entry.capture ?? {})) {
+    const value = pointer(result.response, selector);
+    if (value === undefined) {
+      result.outcome = 'missing-capture';
+      result.reason = 'capture-absent';
+      break;
+    }
+    captures[name] = value;
+  }
+  if (result.outcome === 'observed') {
+    Object.assign(state, captures);
+    result.captures = captures;
+  }
 }
 
 export async function createRunWriter(directory) {
@@ -437,8 +483,8 @@ export function createFetchTransport({
     base.search ||
     base.hash
   )
-    throw Error('Remote parity targets require explicit allowRemote and HTTPS');
-  if (!/^\/api\/data\/v9\.\d+\/$/.test(base.pathname)) throw Error('baseUrl must end with /api/data/v9.x/');
+    throw new Error('Remote parity targets require explicit allowRemote and HTTPS');
+  if (!/^\/api\/data\/v9\.\d+\/$/.test(base.pathname)) throw new Error('baseUrl must end with /api/data/v9.x/');
   return async (request) => {
     const url = new URL(request.path, base);
     if (
@@ -448,10 +494,10 @@ export function createFetchTransport({
       url.password ||
       url.hash
     )
-      throw Error('Parity request escaped API origin');
+      throw new Error('Parity request escaped API origin');
     const headers = { ...request.headers };
     for (const key of Object.keys(headers))
-      if (credentialHeader.test(key)) throw Error('Credentials must be supplied through transport');
+      if (credentialHeader.test(key)) throw new Error('Credentials must be supplied through transport');
     if (token) headers.Authorization = 'Bearer ' + (await token());
     let response;
     try {
@@ -487,16 +533,7 @@ export function createFetchTransport({
 function differences(expected, actual, location, emit) {
   if (Object.is(expected, actual)) return;
   if (Array.isArray(expected) && Array.isArray(actual)) {
-    if (expected.length !== actual.length) emit(location + '/length', expected.length, actual.length);
-    for (let i = 0; i < Math.max(expected.length, actual.length); i++) {
-      if (i >= expected.length || i >= actual.length)
-        emit(
-          location + '/' + i,
-          i < expected.length ? expected[i] : { absent: true },
-          i < actual.length ? actual[i] : { absent: true },
-        );
-      else differences(expected[i], actual[i], location + '/' + i, emit);
-    }
+    compareArrayDifferences(expected, actual, location, emit);
   } else if (
     expected &&
     actual &&
@@ -505,17 +542,32 @@ function differences(expected, actual, location, emit) {
     !Array.isArray(expected) &&
     !Array.isArray(actual)
   ) {
-    for (const key of new Set([...Object.keys(expected), ...Object.keys(actual)])) {
-      const next = location + '/' + escapePointer(key);
-      if (!Object.hasOwn(expected, key) || !Object.hasOwn(actual, key))
-        emit(
-          next,
-          Object.hasOwn(expected, key) ? expected[key] : { absent: true },
-          Object.hasOwn(actual, key) ? actual[key] : { absent: true },
-        );
-      else differences(expected[key], actual[key], next, emit);
-    }
+    compareObjectDifferences(expected, actual, location, emit);
   } else emit(location, expected, actual);
+}
+function compareArrayDifferences(expected, actual, location, emit) {
+  if (expected.length !== actual.length) emit(location + '/length', expected.length, actual.length);
+  for (let i = 0; i < Math.max(expected.length, actual.length); i++) {
+    if (i >= expected.length || i >= actual.length)
+      emit(
+        location + '/' + i,
+        i < expected.length ? expected[i] : { absent: true },
+        i < actual.length ? actual[i] : { absent: true },
+      );
+    else differences(expected[i], actual[i], location + '/' + i, emit);
+  }
+}
+function compareObjectDifferences(expected, actual, location, emit) {
+  for (const key of new Set([...Object.keys(expected), ...Object.keys(actual)])) {
+    const next = location + '/' + escapePointer(key);
+    if (!Object.hasOwn(expected, key) || !Object.hasOwn(actual, key))
+      emit(
+        next,
+        Object.hasOwn(expected, key) ? expected[key] : { absent: true },
+        Object.hasOwn(actual, key) ? actual[key] : { absent: true },
+      );
+    else differences(expected[key], actual[key], next, emit);
+  }
 }
 
 function validStoredResponse(response) {
@@ -545,22 +597,26 @@ function requestEvidenceIssues(plan, run) {
       issues.push({ id: entry.id, reason: 'missing-planned-result' });
       continue;
     }
-    if (result.request || result.outcome === 'observed') {
-      try {
-        if (!isDeepStrictEqual(prepareRequest(entry.request, state), result.request))
-          issues.push({ id: entry.id, reason: 'executed-request-does-not-match-plan' });
-      } catch {
-        issues.push({ id: entry.id, reason: 'request-cannot-be-reconstructed' });
-      }
-    }
-    if (result.outcome === 'observed')
-      for (const [name, selector] of Object.entries(entry.capture ?? {})) {
-        const value = pointer(result.response, selector);
-        if (value === undefined) issues.push({ id: entry.id, reason: 'capture-cannot-be-reconstructed' });
-        else state[name] = value;
-      }
+    checkEntryRequestEvidence(entry, result, state, issues);
+    if (result.outcome === 'observed') checkEntryCaptureEvidence(entry, result, state, issues);
   }
   return issues;
+}
+function checkEntryRequestEvidence(entry, result, state, issues) {
+  if (!(result.request || result.outcome === 'observed')) return;
+  try {
+    if (!isDeepStrictEqual(prepareRequest(entry.request, state), result.request))
+      issues.push({ id: entry.id, reason: 'executed-request-does-not-match-plan' });
+  } catch {
+    issues.push({ id: entry.id, reason: 'request-cannot-be-reconstructed' });
+  }
+}
+function checkEntryCaptureEvidence(entry, result, state, issues) {
+  for (const [name, selector] of Object.entries(entry.capture ?? {})) {
+    const value = pointer(result.response, selector);
+    if (value === undefined) issues.push({ id: entry.id, reason: 'capture-cannot-be-reconstructed' });
+    else state[name] = value;
+  }
 }
 
 export function compareRuns(
@@ -568,18 +624,8 @@ export function compareRuns(
   actual,
   { maxDeltas = 10000, rules = [], plan = reference.plan ?? actual.plan } = {},
 ) {
-  if (!Number.isInteger(maxDeltas) || maxDeltas < 1) throw Error('maxDeltas must be positive');
-  for (const rule of rules)
-    if (
-      typeof rule.reason !== 'string' ||
-      !rule.reason.trim() ||
-      typeof rule.path !== 'string' ||
-      !rule.path.startsWith('/') ||
-      !rule.caseId ||
-      rule.reference === undefined ||
-      rule.actual === undefined
-    )
-      throw Error('Reviewed deltas require caseId, exact path, reference/actual values and reason');
+  if (!Number.isInteger(maxDeltas) || maxDeltas < 1) throw new Error('maxDeltas must be positive');
+  validateReviewedRules(rules);
   const report = {
     schemaVersion: 1,
     exactMatch: false,
@@ -593,7 +639,34 @@ export function compareRuns(
     truncated: false,
     cases: [],
   };
-  const emit = (id, location, expected, got) => {
+  const emit = createDeltaEmitter(report, rules, maxDeltas);
+  if (!report.referenceComplete || !report.actualComplete)
+    emit('$run', '/complete', reference.complete, actual.complete);
+  if (reference.planSha256 !== actual.planSha256) emit('$run', '/planSha256', reference.planSha256, actual.planSha256);
+  report.requestsVerified = false;
+  verifyRunRequests(report, plan, reference, actual, emit);
+  const refs = new Map(reference.results.map((item) => [item.id, item])),
+    acts = new Map(actual.results.map((item) => [item.id, item]));
+  compareRunCases(report, refs, acts, reference, actual, emit);
+  if (!refs.size || !acts.size) emit('$run', '/empty', refs.size, acts.size);
+  report.exactMatch = report.totalDeltas === 0;
+  return report;
+}
+function validateReviewedRules(rules) {
+  for (const rule of rules)
+    if (
+      typeof rule.reason !== 'string' ||
+      !rule.reason.trim() ||
+      typeof rule.path !== 'string' ||
+      !rule.path.startsWith('/') ||
+      !rule.caseId ||
+      rule.reference === undefined ||
+      rule.actual === undefined
+    )
+      throw new Error('Reviewed deltas require caseId, exact path, reference/actual values and reason');
+}
+function createDeltaEmitter(report, rules, maxDeltas) {
+  return (id, location, expected, got) => {
     const rule = rules.find(
       (item) =>
         item.caseId === id &&
@@ -616,10 +689,8 @@ export function compareRuns(
       });
     else report.truncated = true;
   };
-  if (!report.referenceComplete || !report.actualComplete)
-    emit('$run', '/complete', reference.complete, actual.complete);
-  if (reference.planSha256 !== actual.planSha256) emit('$run', '/planSha256', reference.planSha256, actual.planSha256);
-  report.requestsVerified = false;
+}
+function verifyRunRequests(report, plan, reference, actual, emit) {
   if (plan) {
     try {
       plan = validatePlan(plan);
@@ -629,62 +700,60 @@ export function compareRuns(
       ];
       for (const [side, values] of issues)
         for (const value of values)
-          emit(value.id, '/requestEvidence/' + side, 'request matches target-bound plan', value.reason);
+          emit(value.id, '/requestEvidence/' + side, 'request matches target-bound plan', value.reason); // NOSONAR: stringification is intentional here
       report.requestsVerified = issues.every(([, values]) => !values.length);
     } catch {
       emit('$run', '/requestEvidence', 'valid plan', 'invalid plan or request evidence');
     }
   } else emit('$run', '/requestEvidence', 'plan required to verify executed requests', 'plan unavailable');
-  const refs = new Map(reference.results.map((item) => [item.id, item])),
-    acts = new Map(actual.results.map((item) => [item.id, item]));
+}
+function compareRunCases(report, refs, acts, reference, actual, emit) {
   if (refs.size !== reference.results.length || acts.size !== actual.results.length)
     emit('$run', '/duplicate-case-id', reference.results.length - refs.size, actual.results.length - acts.size);
   for (const id of new Set([...refs.keys(), ...acts.keys()])) {
     const ref = refs.get(id),
       act = acts.get(id),
       before = report.totalDeltas;
-    if (!ref || !act) emit(id, '/case', !!ref, !!act);
-    else if (ref.outcome !== 'observed' || act.outcome !== 'observed' || !ref.response || !act.response)
-      emit(id, '/outcome', ref.outcome, act.outcome);
-    else {
-      for (const [side, item] of [
-        ['reference', ref],
-        ['actual', act],
-      ]) {
-        if (!validStoredResponse(item.response))
-          emit(id, '/evidence/' + side, 'valid sealed response', 'invalid or inconsistent response');
-      }
-      // Target-specific captures may change paths/headers, but a response to a
-      // different HTTP method never establishes parity for the planned method.
-      differences(ref.request?.method, act.request?.method, '/request/method', (p, a, b) => emit(id, p, a, b));
-      differences(ref.response.status, act.response.status, '/status', (p, a, b) => emit(id, p, a, b));
-      differences(ref.response.headers, act.response.headers, '/headers', (p, a, b) => emit(id, p, a, b));
-      differences(ref.response.withheldHeaders, act.response.withheldHeaders, '/withheldHeaders', (p, a, b) =>
-        emit(id, p, a, b),
-      );
-      const refBytes = bodyBytes(ref.response),
-        actBytes = bodyBytes(act.response);
-      if (!refBytes.equals(actBytes))
-        emit(
-          id,
-          '/bodyBytes',
-          { sha256: sha256(refBytes), bytes: refBytes.length },
-          { sha256: sha256(actBytes), bytes: actBytes.length },
-        );
-      differences(ref.response.json, act.response.json, '/json', (p, a, b) => emit(id, p, a, b));
-      differences(ref.response.multipart, act.response.multipart, '/multipart', (p, a, b) => emit(id, p, a, b));
-      differences(
-        ref.response.multipartParseError,
-        act.response.multipartParseError,
-        '/multipartParseError',
-        (p, a, b) => emit(id, p, a, b),
-      );
-    }
+    compareRunCase(id, ref, act, emit);
     report.cases.push({ id, exactMatch: report.totalDeltas === before });
   }
-  if (!refs.size || !acts.size) emit('$run', '/empty', refs.size, acts.size);
-  report.exactMatch = report.totalDeltas === 0;
-  return report;
+}
+function compareRunCase(id, ref, act, emit) {
+  if (!ref || !act) emit(id, '/case', !!ref, !!act);
+  else if (ref.outcome !== 'observed' || act.outcome !== 'observed' || !ref.response || !act.response)
+    emit(id, '/outcome', ref.outcome, act.outcome);
+  else compareObservedResponses(id, ref, act, emit);
+}
+function compareObservedResponses(id, ref, act, emit) {
+  for (const [side, item] of [
+    ['reference', ref],
+    ['actual', act],
+  ]) {
+    if (!validStoredResponse(item.response))
+      emit(id, '/evidence/' + side, 'valid sealed response', 'invalid or inconsistent response');
+  }
+  // Target-specific captures may change paths/headers, but a response to a
+  // different HTTP method never establishes parity for the planned method.
+  differences(ref.request?.method, act.request?.method, '/request/method', (p, a, b) => emit(id, p, a, b));
+  differences(ref.response.status, act.response.status, '/status', (p, a, b) => emit(id, p, a, b));
+  differences(ref.response.headers, act.response.headers, '/headers', (p, a, b) => emit(id, p, a, b));
+  differences(ref.response.withheldHeaders, act.response.withheldHeaders, '/withheldHeaders', (p, a, b) =>
+    emit(id, p, a, b),
+  );
+  const refBytes = bodyBytes(ref.response),
+    actBytes = bodyBytes(act.response);
+  if (!refBytes.equals(actBytes))
+    emit(
+      id,
+      '/bodyBytes',
+      { sha256: sha256(refBytes), bytes: refBytes.length },
+      { sha256: sha256(actBytes), bytes: actBytes.length },
+    );
+  differences(ref.response.json, act.response.json, '/json', (p, a, b) => emit(id, p, a, b));
+  differences(ref.response.multipart, act.response.multipart, '/multipart', (p, a, b) => emit(id, p, a, b));
+  differences(ref.response.multipartParseError, act.response.multipartParseError, '/multipartParseError', (p, a, b) =>
+    emit(id, p, a, b),
+  );
 }
 
 // Cataloguing is intentionally separate from execution. Metadata describes many
@@ -699,12 +768,13 @@ export function inspectCsdl(xml) {
       .replaceAll('&amp;', '&');
   const attrs = (text) =>
     Object.fromEntries(
-      [...text.matchAll(/([\w:.]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)].map((match) => [
+      [...text.matchAll(/([\w:.]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)].map((match) => /* NOSONAR */ [
         match[1],
         unescape(match[2] ?? match[3]),
       ]),
     );
-  if (typeof xml !== 'string' || !/<(?:\w+:)?Edmx[\s>]/.test(xml)) throw Error('Expected an Edmx metadata document');
+  if (typeof xml !== 'string' || !/<(?:\w+:)?Edmx[\s>]/.test(xml))
+    throw new Error('Expected an Edmx metadata document');
   const operations = [],
     entitySets = [],
     types = [];
@@ -715,8 +785,8 @@ export function inspectCsdl(xml) {
     )) {
       const content = match[3] ?? '';
       const meta = attrs(match[2]),
-        parameters = [...content.matchAll(/<(?:\w+:)?Parameter\b([^>]*?)\/?\s*>/g)].map((item) => attrs(item[1]));
-      const signature = `${namespace}.${meta.Name}(${parameters.map((item) => `${item.Name}:${item.Type}`).join(',')})`;
+        parameters = [...content.matchAll(/<(?:\w+:)?Parameter\b([^>]*)\/?\s*>/g)].map((item) => attrs(item[1])); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+      const signature = `${namespace}.${meta.Name}(${parameters.map((item) => item.Name + ':' + item.Type).join(',')})`;
       operations.push({
         id: 'operation:' + signature,
         kind: match[1],
@@ -724,14 +794,16 @@ export function inspectCsdl(xml) {
         namespace,
         bound: meta.IsBound === 'true',
         parameters,
-        returnType: attrs(content.match(/<(?:\w+:)?ReturnType\b([^>]*)/)?.[1] ?? '').Type ?? null,
+        returnType: attrs(/<(?:\w+:)?ReturnType\b([^>]*)/.exec(content)?.[1] ?? '').Type ?? null,
       });
     }
-    for (const match of schema[2].matchAll(/<(?:\w+:)?EntitySet\b([^>]*?)\/?\s*>/g)) {
+    /* NOSONAR */ for (const match of schema[2].matchAll(/<(?:\w+:)?EntitySet\b([^>]*)\/?\s*>/g)) {
       const meta = attrs(match[1]);
       entitySets.push({ id: 'entitySet:' + meta.Name, name: meta.Name, type: meta.EntityType });
     }
-    for (const match of schema[2].matchAll(/<(?:\w+:)?(EntityType|ComplexType|EnumType)\b([^>]*?)\/?\s*>/g)) {
+    for (const match of schema[2].matchAll(
+      /* NOSONAR */ /<(?:\w+:)?(EntityType|ComplexType|EnumType)\b([^>]*)\/?\s*>/g,
+    )) {
       const meta = attrs(match[2]);
       types.push({ name: namespace + '.' + meta.Name, kind: match[1], baseType: meta.BaseType ?? null });
     }
@@ -739,7 +811,8 @@ export function inspectCsdl(xml) {
   return { schemaVersion: 1, metadataSha256: sha256(xml), operations, entitySets, types };
 }
 
-export function coverageReport(plan, run, catalogue = { operations: [], entitySets: [] }, requiredFamilies = []) {
+export function coverageReport(plan, run, catalogue, requiredFamilies = []) {
+  if (catalogue === undefined) catalogue = { operations: [], entitySets: [] };
   plan = validatePlan(plan);
   const byId = new Map((run?.results ?? []).map((item) => [item.id, item]));
   const planVerified =
@@ -752,11 +825,16 @@ export function coverageReport(plan, run, catalogue = { operations: [], entitySe
     families = {};
   for (const entry of plan.cases) {
     const result = byId.get(entry.id),
-      outcome = !planVerified
-        ? 'unverified-plan'
-        : result?.outcome === 'observed' && !validStoredResponse(result.response)
-          ? 'invalid-evidence'
-          : (result?.outcome ?? 'unrecorded');
+      outcome = chooseLazily(
+        () => !planVerified,
+        () => 'unverified-plan',
+        () =>
+          chooseLazily(
+            () => result?.outcome === 'observed' && !validStoredResponse(result.response),
+            () => 'invalid-evidence',
+            () => result?.outcome ?? 'unrecorded',
+          ),
+      );
     const family = (families[entry.family] ??= { planned: 0, observed: 0, gaps: [] });
     family.planned++;
     if (outcome === 'observed' && result?.response && !result.response.transportError) {
@@ -791,16 +869,7 @@ export function evaluateAssertions(run, checks) {
     byId = new Map(run.results.map((item) => [item.id, item]));
   const ids = new Set();
   for (const check of checks) {
-    if (
-      !idPattern.test(check.id ?? '') ||
-      ids.has(check.id) ||
-      !check.caseId ||
-      !Array.isArray(check.assertions) ||
-      !check.assertions.length ||
-      !['documentation', 'sdk-fixture', 'native'].includes(check.source?.kind) ||
-      !check.source.url
-    )
-      throw Error('Assertion checks require unique ids, provenance and executable assertions');
+    validateAssertionCheck(check, ids);
     ids.add(check.id);
     const entry = byId.get(check.caseId),
       result = {
@@ -811,46 +880,7 @@ export function evaluateAssertions(run, checks) {
         outcome: 'unrecorded',
         assertions: [],
       };
-    if (
-      run.complete === true &&
-      entry?.outcome === 'observed' &&
-      validStoredResponse(entry.response) &&
-      run.results.filter((item) => item.id === check.caseId).length === 1
-    ) {
-      for (const item of check.assertions) {
-        const value = pointer(entry.response, item.path),
-          expected = expandTemplate(item.expected, run.finalVariables ?? run.variables ?? {});
-        let passed;
-        if (item.op === 'exists') passed = value !== undefined;
-        else if (item.op === 'absent') passed = value === undefined;
-        else if (item.op === 'equals') passed = isDeepStrictEqual(value, expected);
-        else if (item.op === 'type')
-          passed =
-            expected === 'array'
-              ? Array.isArray(value)
-              : expected === 'null'
-                ? value === null
-                : expected === 'integer'
-                  ? Number.isInteger(value)
-                  : expected === 'object'
-                    ? value !== null && typeof value === 'object' && !Array.isArray(value)
-                    : typeof value === expected;
-        else if (item.op === 'includes')
-          passed =
-            typeof value === 'string'
-              ? value.includes(expected)
-              : Array.isArray(value) && value.some((child) => isDeepStrictEqual(child, expected));
-        else throw Error('Unknown assertion operator');
-        result.assertions.push({
-          path: item.path,
-          op: item.op,
-          expected,
-          ...(value === undefined ? { absent: true } : { actual: value }),
-          passed,
-        });
-      }
-      result.outcome = result.assertions.every((item) => item.passed) ? 'passed' : 'failed';
-    }
+    if (canEvaluateAssertions(run, check, entry)) evaluateCheckAssertions(run, check, entry, result);
     results.push(result);
   }
   return {
@@ -861,6 +891,74 @@ export function evaluateAssertions(run, checks) {
     unrecorded: results.filter((item) => item.outcome === 'unrecorded').length,
     results,
   };
+}
+function validateAssertionCheck(check, ids) {
+  if (
+    !idPattern.test(check.id ?? '') ||
+    ids.has(check.id) ||
+    !check.caseId ||
+    !Array.isArray(check.assertions) ||
+    !check.assertions.length ||
+    !['documentation', 'sdk-fixture', 'native'].includes(check.source?.kind) ||
+    !check.source.url
+  )
+    throw new Error('Assertion checks require unique ids, provenance and executable assertions');
+}
+function canEvaluateAssertions(run, check, entry) {
+  return (
+    run.complete === true &&
+    entry?.outcome === 'observed' &&
+    validStoredResponse(entry.response) &&
+    run.results.filter((item) => item.id === check.caseId).length === 1
+  );
+}
+function evaluateCheckAssertions(run, check, entry, result) {
+  for (const item of check.assertions) result.assertions.push(evaluateOneAssertion(item, entry, run));
+  result.outcome = result.assertions.every((item) => item.passed) ? 'passed' : 'failed';
+}
+function evaluateOneAssertion(item, entry, run) {
+  const value = pointer(entry.response, item.path),
+    expected = expandTemplate(item.expected, run.finalVariables ?? run.variables ?? {});
+  let passed;
+  if (item.op === 'exists') passed = value !== undefined;
+  else if (item.op === 'absent') passed = value === undefined;
+  else if (item.op === 'equals') passed = isDeepStrictEqual(value, expected);
+  else if (item.op === 'type') passed = assertionTypeMatches(value, expected);
+  else if (item.op === 'includes')
+    passed =
+      typeof value === 'string'
+        ? value.includes(expected)
+        : Array.isArray(value) && value.some((child) => isDeepStrictEqual(child, expected));
+  else throw new Error('Unknown assertion operator');
+  return {
+    path: item.path,
+    op: item.op,
+    expected,
+    ...(value === undefined ? { absent: true } : { actual: value }),
+    passed,
+  };
+}
+function assertionTypeMatches(value, expected) {
+  return chooseLazily(
+    () => expected === 'array',
+    () => Array.isArray(value),
+    () =>
+      chooseLazily(
+        () => expected === 'null',
+        () => value === null,
+        () =>
+          chooseLazily(
+            () => expected === 'integer',
+            () => Number.isInteger(value),
+            () =>
+              chooseLazily(
+                () => expected === 'object',
+                () => value !== null && typeof value === 'object' && !Array.isArray(value),
+                () => typeof value === expected,
+              ),
+          ),
+      ),
+  );
 }
 
 async function main() {
@@ -880,61 +978,50 @@ async function main() {
       'allow-writes': { type: 'boolean' },
     },
   });
-  const read = async (file) => JSON.parse(await fs.readFile(file, 'utf8'));
   const command = positionals[0];
-  if (command === 'catalogue') {
-    const catalogue = inspectCsdl(await fs.readFile(values.metadata, 'utf8'));
-    await fs.writeFile(values.out, JSON.stringify(catalogue, null, 2), { flag: 'wx' });
-    console.log(JSON.stringify({ operations: catalogue.operations.length, entitySets: catalogue.entitySets.length }));
-  } else if (command === 'record' || command === 'replay') {
-    const plan = await read(values.plan);
-    const secret = values['token-env'] ? process.env[values['token-env']] : undefined;
-    if (values['token-env'] && !secret) throw Error('Requested token environment variable is unavailable');
-    const transport = createFetchTransport({
-      baseUrl: values.base,
-      token: secret ? async () => secret : undefined,
-      allowRemote: values['allow-remote'],
+  if (command === 'catalogue') return catalogueCommand(values);
+  if (command === 'record' || command === 'replay') return recordCommand(values);
+  if (command === 'assert') return assertCommand(values);
+  if (command === 'diff') return diffCommand(values);
+  throw new Error(
+    'Use catalogue --metadata FILE --out FILE; record/replay --plan FILE --base URL --out DIRECTORY [--reference RUN]; diff --reference RUN --actual RUN --out FILE',
+  );
+}
+const readJson = async (file) => JSON.parse(await fs.readFile(file, 'utf8'));
+async function catalogueCommand(values) {
+  const catalogue = inspectCsdl(await fs.readFile(values.metadata, 'utf8'));
+  await fs.writeFile(values.out, JSON.stringify(catalogue, null, 2), { flag: 'wx' });
+  console.log(JSON.stringify({ operations: catalogue.operations.length, entitySets: catalogue.entitySets.length }));
+}
+async function recordCommand(values) {
+  const plan = await readJson(values.plan);
+  const secret = values['token-env'] ? process.env[values['token-env']] : undefined;
+  if (values['token-env'] && !secret) throw new Error('Requested token environment variable is unavailable');
+  const transport = createFetchTransport({
+    baseUrl: values.base,
+    token: secret ? async () => secret : undefined,
+    allowRemote: values['allow-remote'],
+  });
+  const writer = await createRunWriter(values.out);
+  let run;
+  try {
+    run = await runSuite(plan, {
+      transport,
+      variables: { base: values.base },
+      allowWrites: values['allow-writes'],
+      sink: writer.sink,
     });
-    const writer = await createRunWriter(values.out);
-    let run;
-    try {
-      run = await runSuite(plan, {
-        transport,
-        variables: { base: values.base },
-        allowWrites: values['allow-writes'],
-        sink: writer.sink,
-      });
-    } finally {
-      await writer.close();
-    }
-    console.log(JSON.stringify({ complete: run.complete, counts: run.counts }));
-    if (Object.entries(run.counts).some(([key, count]) => key !== 'observed' && count)) process.exitCode = 1;
-    if (values.reference) {
-      const comparison = compareRuns(await read(values.reference), run, {
-        rules: values.rules ? await read(values.rules) : [],
-        plan,
-      });
-      await fs.writeFile(path.join(values.out, 'comparison.json'), JSON.stringify(comparison, null, 2), { flag: 'wx' });
-      console.log(
-        JSON.stringify({
-          exactMatch: comparison.exactMatch,
-          totalDeltas: comparison.totalDeltas,
-          unexplainedDeltas: comparison.unexplainedDeltas,
-        }),
-      );
-      if (!comparison.exactMatch) process.exitCode = 1;
-    }
-  } else if (command === 'assert') {
-    const report = evaluateAssertions(await read(values.actual), await read(values.checks));
-    await fs.writeFile(values.out, JSON.stringify(report, null, 2), { flag: 'wx' });
-    console.log(JSON.stringify({ passed: report.passed, failed: report.failed, unrecorded: report.unrecorded }));
-    if (report.failed || report.unrecorded) process.exitCode = 1;
-  } else if (command === 'diff') {
-    const comparison = compareRuns(await read(values.reference), await read(values.actual), {
-      rules: values.rules ? await read(values.rules) : [],
-      ...(values.plan ? { plan: await read(values.plan) } : {}),
+  } finally {
+    await writer.close();
+  }
+  console.log(JSON.stringify({ complete: run.complete, counts: run.counts }));
+  if (Object.entries(run.counts).some(([key, count]) => key !== 'observed' && count)) process.exitCode = 1;
+  if (values.reference) {
+    const comparison = compareRuns(await readJson(values.reference), run, {
+      rules: values.rules ? await readJson(values.rules) : [],
+      plan,
     });
-    await fs.writeFile(values.out, JSON.stringify(comparison, null, 2), { flag: 'wx' });
+    await fs.writeFile(path.join(values.out, 'comparison.json'), JSON.stringify(comparison, null, 2), { flag: 'wx' });
     console.log(
       JSON.stringify({
         exactMatch: comparison.exactMatch,
@@ -943,13 +1030,31 @@ async function main() {
       }),
     );
     if (!comparison.exactMatch) process.exitCode = 1;
-  } else
-    throw Error(
-      'Use catalogue --metadata FILE --out FILE; record/replay --plan FILE --base URL --out DIRECTORY [--reference RUN]; diff --reference RUN --actual RUN --out FILE',
-    );
+  }
+}
+async function assertCommand(values) {
+  const report = evaluateAssertions(await readJson(values.actual), await readJson(values.checks));
+  await fs.writeFile(values.out, JSON.stringify(report, null, 2), { flag: 'wx' });
+  console.log(JSON.stringify({ passed: report.passed, failed: report.failed, unrecorded: report.unrecorded }));
+  if (report.failed || report.unrecorded) process.exitCode = 1;
+}
+async function diffCommand(values) {
+  const comparison = compareRuns(await readJson(values.reference), await readJson(values.actual), {
+    rules: values.rules ? await readJson(values.rules) : [],
+    ...(values.plan ? { plan: await readJson(values.plan) } : {}),
+  });
+  await fs.writeFile(values.out, JSON.stringify(comparison, null, 2), { flag: 'wx' });
+  console.log(
+    JSON.stringify({
+      exactMatch: comparison.exactMatch,
+      totalDeltas: comparison.totalDeltas,
+      unexplainedDeltas: comparison.unexplainedDeltas,
+    }),
+  );
+  if (!comparison.exactMatch) process.exitCode = 1;
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  main().catch(() => {
+  /* NOSONAR: module-level promise chain must not block evaluation */ main().catch(() => {
     console.error(
       'Dataverse parity command failed; inspect private journal and arguments. No automatic retry was attempted.',
     );

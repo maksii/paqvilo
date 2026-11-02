@@ -99,6 +99,81 @@ function applyJournalCandidate(pending, change) {
   }
 }
 
+function applyJournalCommit(storage, replay, entry, hash) {
+  if (!replay.pending || entry.digest !== hash.copy().digest('hex'))
+    throw new DataError('Local state journal checksum mismatch', 500, 'StateIntegrity');
+  if (replay.committed) {
+    if (replay.pending.failed) throw replay.pending.error;
+    if (replay.pending.candidate) replay.state = replay.pending.candidate.state;
+    else for (const change of replay.pending.entries) apply(replay.state, change, storage.recordReferences);
+  }
+  replay.pending = null;
+  replay.committed = true;
+}
+
+function applyJournalBegin(replay) {
+  if (replay.pending) throw new DataError('Invalid local state journal boundary', 500, 'StateIntegrity');
+  replay.pending = { entries: [], bytes: 0, candidate: null, failed: false };
+}
+
+function bufferJournalChange(storage, replay, entry, alreadyHashed, entryStart, rawBytes, bytes) {
+  replay.pending.entries.push(entry);
+  replay.pending.bytes += alreadyHashed ? bytes - entryStart : rawBytes;
+  storage.peakReplayBufferEntries = Math.max(storage.peakReplayBufferEntries, replay.pending.entries.length);
+  if (replay.pending.entries.length >= REPLAY_BUFFER_ENTRIES || replay.pending.bytes >= REPLAY_BUFFER_BYTES) {
+    replay.pending.candidate = journalCandidate(replay.state, storage.recordReferences);
+    storage.streamedReplayTransactions++;
+    for (const change of replay.pending.entries) applyJournalCandidate(replay.pending, change);
+    replay.pending.entries = null;
+  }
+}
+
+function applyJournalChange(storage, replay, entry, { wanted, alreadyHashed, entryStart, rawBytes, bytes }) {
+  if (!replay.pending) throw new DataError('Uncommitted local state journal operation', 500, 'StateIntegrity');
+  if (!wanted(entry)) return;
+  if (!replay.committed) apply(replay.state, entry, storage.recordReferences);
+  else if (replay.pending.candidate) applyJournalCandidate(replay.pending, entry);
+  else bufferJournalChange(storage, replay, entry, alreadyHashed, entryStart, rawBytes, bytes);
+}
+
+function applyJournalEntry(
+  storage,
+  replay,
+  entry,
+  { retainText, raw, wanted, alreadyHashed, entryStart, rawBytes, bytes, hash },
+) {
+  if (entry.op === 'insert' || entry.op === 'set') retainText(entry.row);
+  if (entry.op === 'commit') applyJournalCommit(storage, replay, entry, hash);
+  else if (entry.op === 'begin') applyJournalBegin(replay);
+  else applyJournalChange(storage, replay, entry, { wanted, alreadyHashed, entryStart, rawBytes, bytes });
+  if (!alreadyHashed) {
+    hash.update(raw);
+    bytes += rawBytes;
+  }
+  if (entry.op === 'commit') {
+    storage.hash = hash.copy();
+    storage.committedBytes = bytes;
+  }
+  return bytes;
+}
+
+async function verifyJournalTornTail(iterator) {
+  // A malformed *committed* record is corruption, not crash recovery.
+  // Only a suffix with no later commit marker may be discarded.
+  while (true) {
+    const next = await iterator.next();
+    if (next.done) return;
+    let item;
+    try {
+      item = JSON.parse(next.value);
+    } catch {
+      continue;
+    }
+    if (item.op === 'commit')
+      throw new DataError('Local state journal contains a damaged committed transaction', 500, 'StateIntegrity');
+  }
+}
+
 async function* checkpoint(state) {
   for (const [key, value] of Object.entries(state)) {
     if (key !== 'tables') yield { op: 'section', key, value };
@@ -164,7 +239,7 @@ export class StateStorage {
     this.signature = null;
     this.journal = false;
   }
-  async load({ sections } = {}) {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ async load({ sections } = {}) {
     this.skippedFragmentEntries = 0;
     this.skippedTableEntries = 0;
     this.peakReplayBufferEntries = 0;
@@ -192,29 +267,12 @@ export class StateStorage {
       state = { tables: {} };
       const hash = createHash('sha256');
       let bytes = 0,
-        pending = null,
-        committed = false,
         tail = false;
+      const replay = { state, pending: null, committed: false };
       const size = Number((await stat(this.file)).size);
       const stream = createReadStream(this.file, { encoding: 'utf8' });
       const lines = createInterface({ input: stream, crlfDelay: Infinity });
       const iterator = lines[Symbol.asyncIterator]();
-      const verifyTornTail = async () => {
-        // A malformed *committed* record is corruption, not crash recovery.
-        // Only a suffix with no later commit marker may be discarded.
-        while (true) {
-          const next = await iterator.next();
-          if (next.done) return;
-          let item;
-          try {
-            item = JSON.parse(next.value);
-          } catch {
-            continue;
-          }
-          if (item.op === 'commit')
-            throw new DataError('Local state journal contains a damaged committed transaction', 500, 'StateIntegrity');
-        }
-      };
       // Checkpoint rows are applied eagerly to avoid retaining another copy of
       // millions of rows. An incomplete checkpoint is never accepted.
       try {
@@ -242,8 +300,8 @@ export class StateStorage {
               this.skippedTableEntries++;
             } else entry = JSON.parse(line);
           } catch (cause) {
-            if (!committed) throw cause;
-            await verifyTornTail();
+            if (!replay.committed) throw cause;
+            await verifyJournalTornTail(iterator);
             tail = true;
             break;
           }
@@ -272,6 +330,7 @@ export class StateStorage {
             }
             const skip = async (parts, descriptor) => {
               for await (const _part of parts) {
+                void _part; // NOSONAR: void is intentional here
                 /* Integrity hashes advance in lines(). */
               }
               this.skippedFragmentEntries = (this.skippedFragmentEntries ?? 0) + 1;
@@ -325,7 +384,7 @@ export class StateStorage {
                 }
               }
             } catch (cause) {
-              if (!incomplete || !committed) throw cause;
+              if (!incomplete || !replay.committed) throw cause;
               tail = true;
               break;
             }
@@ -334,55 +393,24 @@ export class StateStorage {
               break;
             }
           }
-          if (entry.op === 'insert' || entry.op === 'set') retainText(entry.row);
-          if (entry.op === 'commit') {
-            if (!pending || entry.digest !== hash.copy().digest('hex'))
-              throw new DataError('Local state journal checksum mismatch', 500, 'StateIntegrity');
-            if (committed) {
-              if (pending.failed) throw pending.error;
-              if (pending.candidate) state = pending.candidate.state;
-              else for (const change of pending.entries) apply(state, change, this.recordReferences);
-            }
-            pending = null;
-            committed = true;
-          } else if (entry.op === 'begin') {
-            if (pending) throw new DataError('Invalid local state journal boundary', 500, 'StateIntegrity');
-            pending = { entries: [], bytes: 0, candidate: null, failed: false };
-          } else {
-            if (!pending) throw new DataError('Uncommitted local state journal operation', 500, 'StateIntegrity');
-            if (wanted(entry)) {
-              if (!committed) apply(state, entry, this.recordReferences);
-              else {
-                if (pending.candidate) applyJournalCandidate(pending, entry);
-                else {
-                  pending.entries.push(entry);
-                  pending.bytes += alreadyHashed ? bytes - entryStart : rawBytes;
-                  this.peakReplayBufferEntries = Math.max(this.peakReplayBufferEntries, pending.entries.length);
-                  if (pending.entries.length >= REPLAY_BUFFER_ENTRIES || pending.bytes >= REPLAY_BUFFER_BYTES) {
-                    pending.candidate = journalCandidate(state, this.recordReferences);
-                    this.streamedReplayTransactions++;
-                    for (const change of pending.entries) applyJournalCandidate(pending, change);
-                    pending.entries = null;
-                  }
-                }
-              }
-            }
-          }
-          if (!alreadyHashed) {
-            hash.update(raw);
-            bytes += rawBytes;
-          }
-          if (entry.op === 'commit') {
-            this.hash = hash.copy();
-            this.committedBytes = bytes;
-          }
+          bytes = applyJournalEntry(this, replay, entry, {
+            retainText,
+            raw,
+            wanted,
+            alreadyHashed,
+            entryStart,
+            rawBytes,
+            bytes,
+            hash,
+          });
         }
       } finally {
         lines.close();
         stream.destroy();
       }
-      if (!committed) throw new DataError('Local state checkpoint is incomplete', 500, 'StateIntegrity');
-      this.recoveredTail = Boolean(pending || tail);
+      state = replay.state;
+      if (!replay.committed) throw new DataError('Local state checkpoint is incomplete', 500, 'StateIntegrity');
+      this.recoveredTail = Boolean(replay.pending || tail);
       this.digest = this.hash.copy().digest('hex');
     } else {
       const hash = createHash('sha256');

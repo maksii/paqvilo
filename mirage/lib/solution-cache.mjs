@@ -44,21 +44,28 @@ function coalesceSourceText(results) {
     visited = new WeakSet(),
     pending = [results];
   while (pending.length) {
-    const item = pending.pop();
-    if (!item || typeof item !== 'object' || types.isProxy(item) || visited.has(item)) continue;
-    const prototype = Object.getPrototypeOf(item);
-    if (!Array.isArray(item) && prototype !== Object.prototype && prototype !== null) continue;
-    visited.add(item);
-    for (const key of Object.keys(item)) {
-      const descriptor = Object.getOwnPropertyDescriptor(item, key);
-      if (!descriptor || !Object.hasOwn(descriptor, 'value')) continue;
-      const value = descriptor.value;
-      if (typeof value === 'string' && value.length >= 256) {
-        if (!strings.has(value)) strings.set(value, value);
-        else if (descriptor.writable) Object.defineProperty(item, key, { ...descriptor, value: strings.get(value) });
-      } else if (value && typeof value === 'object') pending.push(value);
-    }
+    coalesceSourceItem(pending.pop(), { strings, visited, pending });
   }
+}
+
+function coalesceSourceItem(item, context) {
+  const { visited } = context;
+  if (!item || typeof item !== 'object' || types.isProxy(item) || visited.has(item)) return;
+  const prototype = Object.getPrototypeOf(item);
+  if (!Array.isArray(item) && prototype !== Object.prototype && prototype !== null) return;
+  visited.add(item);
+  for (const key of Object.keys(item)) coalesceSourceProperty(item, key, context);
+}
+
+function coalesceSourceProperty(item, key, context) {
+  const { strings, pending } = context;
+  const descriptor = Object.getOwnPropertyDescriptor(item, key);
+  if (!descriptor || !Object.hasOwn(descriptor, 'value')) return;
+  const value = descriptor.value;
+  if (typeof value === 'string' && value.length >= 256) {
+    if (!strings.has(value)) strings.set(value, value);
+    else if (descriptor.writable) Object.defineProperty(item, key, { ...descriptor, value: strings.get(value) });
+  } else if (value && typeof value === 'object') pending.push(value);
 }
 
 /** Run an async mapper with bounded concurrency while preserving input order. */
@@ -364,8 +371,12 @@ export class SolutionFileCache {
       ([...this.entries.keys()].some((key) => !this.used.has(key)) ||
         [...this.derived.keys()].some((key) => !this.usedDerived.has(key)));
     if (!this.dirty && !pruned) return false;
-    const names = [...(prune ? this.used : this.entries.keys())].filter((key) => this.entries.has(key)).sort();
-    const derived = [...(prune ? this.usedDerived : this.derived.keys())].filter((key) => this.derived.has(key)).sort();
+    const names = [...(prune ? this.used : this.entries.keys())]
+      .filter((key) => this.entries.has(key))
+      .sort((a, b) => Number(a > b) - Number(a < b));
+    const derived = [...(prune ? this.usedDerived : this.derived.keys())]
+      .filter((key) => this.derived.has(key))
+      .sort((a, b) => Number(a > b) - Number(a < b));
     const temp = `${this.file}.${randomUUID()}.tmp`;
     let handle;
     try {

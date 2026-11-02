@@ -29,7 +29,7 @@ export function withPluginRequestTag(store, parameters, invoke) {
  * SharedVariables dictionary remains writable inside a plug-in. */
 export function canonicalTagVariables(parameters, tag) {
   if (tag === undefined) return parameters;
-  return { ...(parameters ?? {}), $type: 'ParameterCollection', values: { ...(parameters?.values ?? {}), tag } };
+  return { ...parameters, $type: 'ParameterCollection', values: { ...parameters?.values, tag } };
 }
 
 /** A child sees the canonical request tag in its immediate parent snapshot,

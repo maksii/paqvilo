@@ -254,7 +254,7 @@ test('injected pages load the client API right after the runtime; a page with th
   );
   assert.match(
     bundled,
-    /<script data-paqvilo-mirage-runtime>[\s\S]*window\.__paqviloPages = \$pages[\s\S]*?<\/script><title>/,
+    /<script data-paqvilo-mirage-runtime>[\s\S]*(?:window|globalThis)\.__paqviloPages = \$pages[\s\S]*?<\/script><title>/,
   );
   assert.doesNotMatch(bundled, /__sim-static/);
 });

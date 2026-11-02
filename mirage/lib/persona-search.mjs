@@ -18,7 +18,12 @@ export const foldPersonaText = (value) =>
     .replace(/\p{M}/gu, '')
     .toLowerCase()
     .replace(/[øæœßđðłþ]/g, (letter) => transliterations[letter]);
-const values = (value) => (Array.isArray(value) ? value : value ? [value] : []).map(foldPersonaText);
+const values = (value) => {
+  let list = [];
+  if (Array.isArray(value)) list = value;
+  else if (value) list = [value];
+  return list.map(foldPersonaText);
+};
 export const personaRowKey = (persona) => persona.key ?? `@contact:${persona.contactId}`;
 
 export function personaFilters(parameters) {

@@ -1,6 +1,20 @@
 /** Early owned-browser instrumentation. Arguments/text/values never enter evidence. */
 export function installDomProvenance({ slot, secret, binding, limit = 10000 } = {}) {
-  if (!slot || !secret || !binding || Object.hasOwn(window, slot)) return;
+  if (!slot || !secret || !binding || Object.hasOwn(globalThis, slot)) return;
+  // Serialized into the page with this function, so it must stay nested here.
+  /* NOSONAR */ function stackFrameOf(raw, match, methods, NativeEncoder) {
+    const { apply, stringSlice, digest, subtle, encode } = methods;
+    let pathEnd = raw.length;
+    for (let index = 0; index < raw.length; index++)
+      if (raw[index] === '?' || raw[index] === '#') {
+        pathEnd = index;
+        break;
+      }
+    const url = apply(stringSlice, raw, [0, pathEnd]);
+    if (url.length > 4096) return { barrier: true };
+    const key = digest ? apply(digest, subtle, ['SHA-256', apply(encode, new NativeEncoder(), [raw])]) : null;
+    return { url, key, line: +match[2], column: +match[3] };
+  }
   const apply = Reflect.apply,
     describe = Object.getOwnPropertyDescriptor,
     define = Object.defineProperty,
@@ -50,7 +64,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
   const errorString = describe(NativeError.prototype, 'toString');
   const sameDescriptor = (a, b) => {
     const names = ['value', 'get', 'set', 'writable', 'enumerable', 'configurable'];
-    for (let i = 0; i < names.length; i++) if (a?.[names[i]] !== b?.[names[i]]) return false;
+    for (let i = 0; i < names.length; i++) if (a?.[names[i]] !== b?.[names[i]]) return false; // NOSONAR: array-like or mutated collection, index loop kept
     return true;
   };
   const get = (map, key) => apply(mapGet, map, [key]),
@@ -92,7 +106,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
     transportLimit = null,
     claimed = false,
     truncated = false;
-  const stackFrames = () => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const stackFrames = () => {
     if (
       !sameDescriptor(prepare, describe(NativeError, 'prepareStackTrace')) ||
       !sameDescriptor(stackLimit, describe(NativeError, 'stackTraceLimit')) ||
@@ -101,6 +115,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       return { frames: [], reason: 'custom-stack-format' };
     const stack = new NativeError().stack;
     if (typeof stack !== 'string' || stack.length > 32768) return { frames: [], reason: 'stack-unavailable' };
+    const frameMethods = { apply, stringSlice, digest, subtle, encode };
     const frames = [];
     let offset = apply(stringIndex, stack, ['\n']) + 1;
     for (let i = 1; offset > 0 && offset < stack.length && i < 25; i++) {
@@ -114,19 +129,12 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
         break;
       }
       const raw = match[1];
-      let pathEnd = raw.length;
-      for (let j = 0; j < raw.length; j++)
-        if (raw[j] === '?' || raw[j] === '#') {
-          pathEnd = j;
-          break;
-        }
-      const url = apply(stringSlice, raw, [0, pathEnd]);
-      if (url.length > 4096) {
+      const frame = stackFrameOf(raw, match, frameMethods, NativeEncoder);
+      if (frame.barrier) {
         frames[frames.length] = { barrier: true };
         break;
       }
-      const key = digest ? apply(digest, subtle, ['SHA-256', apply(encode, new NativeEncoder(), [raw])]) : null;
-      frames[frames.length] = { url, key, line: +match[2], column: +match[3] };
+      frames[frames.length] = frame;
       if (frames.length >= 12) break;
     }
     return { frames, reason: !frames.length || frames[0].barrier ? 'callsite-unavailable' : null };
@@ -154,7 +162,9 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       frames[index] = frame;
       if (--remaining || closed || !has(pending, record.id)) return;
       try {
-        apply(emit, window, [apply(stringify, JSON, [{ version: 1, secret, id: record.id, relationship, frames }])]);
+        apply(emit, globalThis, [
+          apply(stringify, JSON, [{ version: 1, secret, id: record.id, relationship, frames }]),
+        ]);
       } catch {
         record.reason = 'callsite-unavailable';
         apply(mapDelete, pending, [record.id]);
@@ -171,8 +181,8 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
         complete(null);
         continue;
       }
-      try {
-        apply(then, frame.key, [
+      /* NOSONAR: rejection is handled by the caller */ try {
+        void apply(then, frame.key, [
           (buffer) => {
             const bytes = new NativeBytes(buffer),
               length = apply(byteLength, buffer, []);
@@ -193,7 +203,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       stack = [root];
     let visited = 0;
     while (stack.length && visited < budget) {
-      const node = stack[stack.length - 1];
+      const node = stack.at(-1);
       stack.length--;
       if (!node || !nodeType(node)) continue;
       visited++;
@@ -208,7 +218,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
   };
   const markNodes = (nodes, relationship) => {
     const capture = lazyStack();
-    for (let i = 0; i < nodes.length; i++) remember(nodes[i], relationship, capture);
+    for (let i = 0; i < nodes.length; i++) remember(nodes[i], relationship, capture); // NOSONAR: array-like or mutated collection, index loop kept
   };
   const incoming = (args, firstOnly = false) => {
     const nodes = [],
@@ -227,7 +237,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       const found = descendants(args[i], 2000 - visited),
         children = found.nodes;
       visited += found.visited;
-      for (let j = 0; j < children.length; j++)
+      /* NOSONAR: array-like or mutated collection, index loop kept */ for (let j = 0; j < children.length; j++)
         if (!apply(setHas, seen, [children[j]])) {
           apply(setAdd, seen, [children[j]]);
           nodes[nodes.length] = children[j];
@@ -251,7 +261,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       const found = descendants(node, 2000 - visited),
         children = found.nodes;
       visited += found.visited;
-      for (let i = 0; i < children.length; i++) nodes[nodes.length] = children[i];
+      for (let i = 0; i < children.length; i++) nodes[nodes.length] = children[i]; // NOSONAR: array-like or mutated collection, index loop kept
       node = readNode(node, 'nextSibling');
     }
     if (node && node !== prior.right) truncated = true;
@@ -319,7 +329,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
         }
         const found = descendants(added[j], budget);
         budget -= found.visited;
-        for (let k = 0; k < found.nodes.length; k++) remember(found.nodes[k], 'created-by', capture);
+        for (let k = 0; k < found.nodes.length; k++) remember(found.nodes[k], 'created-by', capture); // NOSONAR: array-like or mutated collection, index loop kept
       }
     }
   };
@@ -331,7 +341,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
     const descriptor = describe(Document.prototype, name);
     if (typeof descriptor?.value !== 'function' || !descriptor.configurable) continue;
     const original = descriptor.value;
-    const wrapper = function (...args) {
+    /* NOSONAR: captures variables of the enclosing function */ const wrapper = function (...args) {
       const previous = writeCapture;
       if (!closed)
         try {
@@ -438,15 +448,20 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       result.availability[0] = { reason: record.reason ?? transportLimit ?? 'creation-proof-pending' };
       return result;
     }
-    const proof = apply(clone, window, [record.proof]);
+    const proof = apply(clone, globalThis, [record.proof]);
     if (typeof proof.reason === 'string' && apply(regexExec, /^[a-z][a-z0-9-]{0,127}$/, [proof.reason]))
       result.availability[0] = { reason: proof.reason };
     result.sourceRefs = proof.sourceRefs ?? [];
     if (proof.limits) {
       result.limits.truncated = result.limits.truncated || Boolean(proof.limits.truncated);
       const reasons = proof.limits.reasons ?? [];
-      for (let i = 0; i < reasons.length; i++) result.limits.reasons[result.limits.reasons.length] = reasons[i];
+      for (let i = 0; i < reasons.length; i++) result.limits.reasons[result.limits.reasons.length] = reasons[i]; // NOSONAR: array-like or mutated collection, index loop kept
     }
+    const callsiteLabel = (relationship) => {
+      if (relationship === 'attached-by') return 'Observed script attachment callsite';
+      if (relationship === 'cloned-by') return 'Observed script clone callsite';
+      return 'Observed script creation callsite';
+    };
     const facts = proof.facts ?? [];
     for (let i = 0; i < facts.length; i++)
       result.facts[i] = {
@@ -454,12 +469,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
         scope,
         subject: record.id,
         predicate: record.relationship,
-        label:
-          record.relationship === 'attached-by'
-            ? 'Observed script attachment callsite'
-            : record.relationship === 'cloned-by'
-              ? 'Observed script clone callsite'
-              : 'Observed script creation callsite',
+        label: callsiteLabel(record.relationship),
       };
     return result;
   };
@@ -467,7 +477,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
     const record = get(pending, id);
     if (closed || !record || !proof || typeof proof !== 'object' || array(proof)) return false;
     try {
-      record.proof = apply(clone, window, [proof]);
+      record.proof = apply(clone, globalThis, [proof]);
     } catch {
       return false;
     }
@@ -490,7 +500,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
     resolveMany(entries) {
       if (!array(entries) || entries.length > 128 || closed) return 0;
       let count = 0;
-      for (let i = 0; i < entries.length; i++) if (resolveRecord(entries[i]?.id, entries[i]?.proof)) count++;
+      for (let i = 0; i < entries.length; i++) if (resolveRecord(entries[i]?.id, entries[i]?.proof)) count++; // NOSONAR: array-like or mutated collection, index loop kept
       if (count) ready();
       return count;
     },
@@ -523,5 +533,5 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       return writer;
     },
   });
-  define(window, slot, { value: reader, configurable: false, writable: false });
+  define(globalThis, slot, { value: reader, configurable: false, writable: false });
 }

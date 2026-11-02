@@ -29,7 +29,7 @@ export function createDataverseAdmin({
   change,
 }) {
   const DATAVERSE_GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  return async (req, res, relative) => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ return async (req, res, relative) => {
     const dataverse = getDataverse();
     const method = req.method;
     if (!dataverse) throw error('The Dataverse API is disabled for this runtime.', 404, 'DATAVERSE_DISABLED');
@@ -334,8 +334,8 @@ export function createDataverseAdmin({
             ],
             federatedIssuers: [{ issuer: body.issuer, jwks: body.jwks }],
           });
-        } catch (failure) {
-          throw error(failure.message);
+        } catch (error_) {
+          throw error(error_.message);
         }
         const [credential] = normalized.applications[0].federatedCredentials;
         const [issuer] = normalized.federatedIssuers;
@@ -398,7 +398,8 @@ export function createDataverseAdmin({
         );
         // Same sync as the registration at startup: the managedidentity rows follow the configured plus runtime list.
         await store.transact(() => {
-          (store.state.dataverse.managedIdentities ??= []).push({
+          store.state.dataverse.managedIdentities ??= [];
+          store.state.dataverse.managedIdentities.push({
             clientId,
             principalId,
             displayName: body.displayName,

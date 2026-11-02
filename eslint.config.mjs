@@ -25,10 +25,10 @@ const browserResolver = {
     ) {
       return nodeResolver.resolve(`../../mirage/admin/${specifier.slice(2)}`, importer);
     }
-    if (/^mirage\/admin\//.test(source) && /^\.\/(?:persona-search|persona-picker-view)\.mjs$/.test(specifier)) {
+    if (source.startsWith('mirage/admin/') && /^\.\/(?:persona-search|persona-picker-view)\.mjs$/.test(specifier)) {
       return nodeResolver.resolve(`../lib/${specifier.slice(2)}`, importer);
     }
-    if (/^mirage\/test-browser\//.test(source) && /^\/(?:_apps\/)?assets\/controls\.mjs$/.test(specifier)) {
+    if (source.startsWith('mirage/test-browser/') && /^\/(?:_apps\/)?assets\/controls\.mjs$/.test(specifier)) {
       return nodeResolver.resolve(path.join(root, 'mirage/lib/model-driven/controls.mjs'), importer);
     }
     if (

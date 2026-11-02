@@ -94,7 +94,7 @@ export function createSharePointContractRoutes({ fixtures, diagnostic, clock = s
   const roots = new Map();
   const add = (fields) => {
     const item = {
-      id: fields.id ?? ids.uuid().replace(/-/g, '').toUpperCase(),
+      id: fields.id ?? ids.uuid().replaceAll('-', '').toUpperCase(),
       version: 1,
       created: now(),
       modified: now(),
@@ -138,7 +138,7 @@ export function createSharePointContractRoutes({ fixtures, diagnostic, clock = s
 
   const pathOf = (item) => {
     const names = [];
-    for (let current = items.get(item.parentId); current && current.parentId; current = items.get(current.parentId))
+    for (let current = items.get(item.parentId); current?.parentId; current = items.get(current.parentId))
       names.unshift(current.name);
     return `/drives/${item.driveId}/root:${names.length ? '/' + names.join('/') : ''}`;
   };
@@ -397,7 +397,7 @@ export async function createSharePointFixtureServer({
   });
   const { port } = server.address();
   return {
-    url: `http://${host.includes(':') ? `[${host}]` : host}:${port}`,
+    url: 'http://' + (host.includes(':') ? '[' + host + ']' : host) + ':' + port, // NOSONAR: reserved or loopback placeholder host, not a real transport
     routes,
     close: () =>
       new Promise((resolve) => {

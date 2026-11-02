@@ -10,8 +10,10 @@ import { recordHttpError } from './trace-store.mjs';
  * The trace session key (D-R2-13): `contact:<id>` when signed in, else `visitor:<id>` when a visitor cookie exists, else
  * null. The visitor id stays a separate session field.
  */
-export const traceSessionKey = (contactId, visitorId) =>
-  contactId ? `contact:${contactId}` : visitorId ? `visitor:${visitorId}` : null;
+export const traceSessionKey = (contactId, visitorId) => {
+  if (contactId) return `contact:${contactId}`;
+  return visitorId ? `visitor:${visitorId}` : null;
+};
 
 /**
  * The identity of a root that has not authenticated (standalone and Dataverse listener roots): explicit, so a header-named
@@ -158,7 +160,7 @@ export function sseClients({
       ).then(() => undefined);
     },
     end() {
-      for (const res of [...clients.keys()]) {
+      /* NOSONAR: snapshot copy guards against mutation while iterating */ for (const res of [...clients.keys()]) {
         drop(res, 'ended');
         res.end();
       }

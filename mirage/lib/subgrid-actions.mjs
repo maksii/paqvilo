@@ -73,7 +73,7 @@ export async function subgridActionApplies(
 ) {
   if (!action.FilterCriteria) return true;
   const source = action.FilterCriteria;
-  const match = /<entity\b[^>]*\bname\s*=\s*(["'])(.*?)\1[^>]*>/i.exec(source);
+  const match = /<entity\b[^>]*\bname\s*=\s*(["'])(.*?)\1[^>]*>/i.exec(source); // NOSONAR: bounded exported FetchXML text, `.` must reject line terminators
   if (!match || canonical(match[2]) !== canonical(entity))
     fail('Subgrid action filter must target its exported table', 501, 'SUBGRID_FILTER_INVALID');
   const xml = source.replace(
@@ -84,20 +84,17 @@ export async function subgridActionApplies(
   return (result.entities ?? result.value ?? []).some((row) => canonical(row[idColumn]) === canonical(recordId));
 }
 
-/** Native grid deletes require a declared action and a currently related, readable child. */
-export async function deletePortalSubgridRecord(
-  kind,
-  componentId,
-  gridId,
-  rowId,
-  body,
-  { portal, store, schemas = {}, identity = {}, readProvider = store, writeProvider = store },
-) {
+function findSubgridDefinition(kind, componentId, portal) {
   if (!['entityform', 'webform'].includes(kind)) fail('Native grid form kind is unsupported', 404);
   const definition = (kind === 'webform' ? portal.advancedForms : portal.forms)?.find(
     (row) => canonical(row.id) === canonical(componentId),
   );
   if (!definition) fail('Native grid form is not exported', 404, 'FormNotFound');
+  return definition;
+}
+
+function resolveSubgridForm(kind, componentId, body, rowId, portal, schemas) {
+  const definition = findSubgridDefinition(kind, componentId, portal);
   let schema = schemas[definition.id] ?? schemas[definition.name];
   if (!schema) fail('Native grid form schema is unresolved', 501, 'FormSchemaRequired');
   if (schema.steps) {
@@ -109,19 +106,51 @@ export async function deletePortalSubgridRecord(
   if (!parentId || !rowId) fail('Native grid delete requires parent and row identifiers');
   if (schema.recordId && canonical(schema.recordId) !== canonical(body?.parentId))
     fail('Native grid parent differs from its form', 403, 'SubgridParentMismatch');
+  return { definition, schema, parentId };
+}
+
+function resolveSubgridRelation(schema, gridId, store) {
   const cells =
     schema.layout?.flatMap((tab) =>
       tab.columns.flatMap((column) => column.sections.flatMap((section) => section.rows.flat())),
     ) ?? [];
-  const cell = cells.find((cell) => cell.type === 'subgrid' && cell.id === gridId);
+  const cell = cells.find((item) => item.type === 'subgrid' && item.id === gridId);
   if (!cell) fail('Grid is not bound to the exported form', 403, 'SubgridNotBound');
   const mapping = store.resolveMapping(schema.entity);
   const [navigation, relation] =
     Object.entries(mapping.relationships ?? {}).find(
-      ([name, relation]) => name === cell.relationship || relation.schemaName === cell.relationship,
+      ([name, item]) => name === cell.relationship || item.schemaName === cell.relationship,
     ) ?? [];
   if (!relation?.many || relation.entity !== cell.entity)
     fail('Native grid relationship is unresolved', 501, 'SubgridRelationshipRequired');
+  return { cell, mapping, navigation, relation };
+}
+
+function resolveSubgridDeleteTarget({ kind, componentId, gridId, body, rowId, portal, schemas, store }) {
+  const form = resolveSubgridForm(kind, componentId, body, rowId, portal, schemas);
+  const relation = resolveSubgridRelation(form.schema, gridId, store);
+  return { ...form, ...relation };
+}
+
+/** Native grid deletes require a declared action and a currently related, readable child. */
+export async function deletePortalSubgridRecord(
+  kind,
+  componentId,
+  gridId,
+  rowId,
+  body,
+  { portal, store, schemas = {}, identity = {}, readProvider = store, writeProvider = store },
+) {
+  const { definition, schema, parentId, cell, mapping, navigation, relation } = resolveSubgridDeleteTarget({
+    kind,
+    componentId,
+    gridId,
+    body,
+    rowId,
+    portal,
+    schemas,
+    store,
+  });
   const parent = await readProvider.get(schema.entity, parentId, identity);
   const row = await readProvider.get(cell.entity, rowId, identity);
   if (!parent || !row) fail('Native grid parent or row does not exist', 404, 'SubgridRecordNotFound');

@@ -191,7 +191,7 @@ export function registerPackExport(name, spec) {
   const existing = PACK_EXPORTS[name];
   if (existing && !existing.pending && existing.check !== spec.check)
     throw new Error(`Pack export ${name} is already registered`);
-  PACK_EXPORTS[name] = row({ ...(existing ?? {}), ...spec, pending: null });
+  PACK_EXPORTS[name] = row({ ...existing, ...spec, pending: null });
   return PACK_EXPORTS[name];
 }
 

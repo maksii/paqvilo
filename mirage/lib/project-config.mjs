@@ -150,6 +150,381 @@ const OBSERVED_CHOICES = {
   pageErrorPresentation: ['diagnostic', 'generic-error'],
 };
 
+function applyObservedBasics(value, label, observed) {
+  if (value.canvasDisplay !== undefined)
+    observed.canvasDisplay = validateCanvasDisplay(value.canvasDisplay, `${label}.canvasDisplay`);
+  if (value.webApiFetchXmlTransport != null) {
+    const transport = value.webApiFetchXmlTransport,
+      limits = ['maxHeaderXmlBytes', 'maxUrlXmlBytes', 'maxConstructedXmlBytes'];
+    if (
+      !transport ||
+      typeof transport !== 'object' ||
+      Array.isArray(transport) ||
+      transport.encoding !== 'double-rfc3986' ||
+      Object.keys(transport).some((key) => !['encoding', ...limits].includes(key)) ||
+      limits.some((key) => !Number.isSafeInteger(transport[key]) || transport[key] < 1 || transport[key] > 4000000) ||
+      transport.maxHeaderXmlBytes > transport.maxUrlXmlBytes ||
+      transport.maxUrlXmlBytes > transport.maxConstructedXmlBytes
+    )
+      throw new Error(
+        `${label}.webApiFetchXmlTransport requires double-rfc3986 encoding and ordered bounded integer XML byte budgets`,
+      );
+    observed.webApiFetchXmlTransport = { ...transport };
+  }
+  if (value.webApiTwoDigitYearMax != null) {
+    if (
+      !Number.isInteger(value.webApiTwoDigitYearMax) ||
+      value.webApiTwoDigitYearMax < 99 ||
+      value.webApiTwoDigitYearMax > 9999 ||
+      value.webApiDateParsing !== 'month-first'
+    )
+      throw new Error(
+        `${label}.webApiTwoDigitYearMax requires month-first parsing and an integer from 99 through 9999`,
+      );
+    observed.webApiTwoDigitYearMax = value.webApiTwoDigitYearMax;
+  }
+}
+
+const observedObject = (item) => item && typeof item === 'object' && !Array.isArray(item);
+
+function normalizePermissionGroup(group, seen, counter, field, label) {
+  if (!Array.isArray(group) || !group.length || group.length > 5000)
+    throw new Error(`${label}.${field} requires nonempty bounded GUID groups`);
+  return group.map((id) => {
+    if (
+      typeof id !== 'string' ||
+      !/^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i.test(id) ||
+      seen.has(id.toLowerCase()) ||
+      ++counter.total > 5000
+    )
+      throw new Error(`${label}.${field} contains invalid, duplicate or excessive permission GUIDs`);
+    seen.add(id.toLowerCase());
+    return id.toLowerCase();
+  });
+}
+
+function normalizePermissionTables(input, field, label) {
+  const tables = {},
+    counter = { total: 0 };
+  for (const [table, groups] of Object.entries(input)) {
+    const seen = new Set();
+    if (!/^[_a-z][a-z\d_]{0,127}$/i.test(table) || !Array.isArray(groups) || groups.length > 5000)
+      throw new Error(`${label}.${field} requires bounded ordered GUID groups for each logical table`);
+    tables[table] = groups.map((group) => normalizePermissionGroup(group, seen, counter, field, label));
+  }
+  return tables;
+}
+
+function normalizePermissionOrder(order, field, label) {
+  if (
+    !observedObject(order) ||
+    Object.keys(order).some((key) => !['normalizedGraphHash', 'tables'].includes(key)) ||
+    typeof order.normalizedGraphHash !== 'string' ||
+    !/^[a-f\d]{64}$/.test(order.normalizedGraphHash) ||
+    !observedObject(order.tables) ||
+    Object.keys(order.tables).length > 100
+  )
+    throw new Error(`${label}.${field} requires a normalized graph SHA256 and at most 100 logical tables`);
+  return {
+    normalizedGraphHash: order.normalizedGraphHash,
+    tables: normalizePermissionTables(order.tables, field, label),
+  };
+}
+
+function applyObservedPermissionOrders(value, label, observed) {
+  for (const field of ['tablePermissionGrantOrder', 'odataPermissionGrantOrder'])
+    if (value[field] != null) observed[field] = normalizePermissionOrder(value[field], field, label);
+}
+
+function applyObservedFetchSettings(value, label, observed) {
+  if (value.webApiGlobalMetadataVersion != null) {
+    if (typeof value.webApiGlobalMetadataVersion !== 'string' || !/^\d{1,20}$/.test(value.webApiGlobalMetadataVersion))
+      throw new Error(`${label}.webApiGlobalMetadataVersion must be a bounded numeric string`);
+    observed.webApiGlobalMetadataVersion = value.webApiGlobalMetadataVersion;
+  }
+  if (value.fetchPreOperationSerialization != null) {
+    const entries = value.fetchPreOperationSerialization;
+    if (
+      !entries ||
+      typeof entries !== 'object' ||
+      Array.isArray(entries) ||
+      Object.keys(entries).length > 100 ||
+      Object.entries(entries).some(([entity, mode]) => !/^[_a-z][a-z\d_]{0,127}$/i.test(entity) || mode !== 'compact')
+    )
+      throw new Error(`${label}.fetchPreOperationSerialization must map at most 100 exact logical tables to compact`);
+    if (Object.keys(entries).length) observed.fetchPreOperationSerialization = { ...entries };
+  }
+  if (value.formSubmissionErrorMessage != null) {
+    if (
+      typeof value.formSubmissionErrorMessage !== 'string' ||
+      !value.formSubmissionErrorMessage.trim() ||
+      value.formSubmissionErrorMessage.length > 2000
+    )
+      throw new Error(`${label}.formSubmissionErrorMessage must be bounded plain text`);
+    observed.formSubmissionErrorMessage = value.formSubmissionErrorMessage;
+  }
+}
+
+function normalizeObservedPluginSource(name, source, label) {
+  const relative = typeof source?.path === 'string' ? source.path.replaceAll('\\', '/') : '';
+  if (
+    !/^[_a-z][\w.+`]{0,249}$/i.test(name) ||
+    !source ||
+    typeof source !== 'object' ||
+    Array.isArray(source) ||
+    Object.keys(source).some((key) => !['path', 'evidence', 'root'].includes(key)) ||
+    !relative.endsWith('.cs') ||
+    path.isAbsolute(relative) ||
+    // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
+    /[:\x00-\x1f]/.test(relative) ||
+    relative
+      .split('/')
+      .some(
+        (part) => !part || part === '.' || part === '..' || /^(?:\.git|\.paqvilo|node_modules|bin|obj)$/i.test(part),
+      ) ||
+    typeof source.evidence !== 'string' ||
+    !source.evidence.trim() ||
+    source.evidence.length > 2000 ||
+    (source.root !== undefined && (typeof source.root !== 'string' || !path.isAbsolute(source.root)))
+  )
+    throw new Error(
+      `${label}.pluginSources requires exact type names, relative .cs paths, evidence and an optional absolute trusted root`,
+    );
+  return {
+    path: relative,
+    evidence: source.evidence,
+    ...(source.root ? { root: source.root } : {}),
+  };
+}
+
+function applyObservedPluginSources(value, label, observed) {
+  if (value.pluginSources == null) return;
+  if (
+    !value.pluginSources ||
+    typeof value.pluginSources !== 'object' ||
+    Array.isArray(value.pluginSources) ||
+    Object.keys(value.pluginSources).length > 1000
+  )
+    throw new Error(
+      `${label}.pluginSources must map at most 1000 exact plugin type names to source paths with evidence`,
+    );
+  observed.pluginSources = {};
+  for (const [name, source] of Object.entries(value.pluginSources)) {
+    observed.pluginSources[name] = normalizeObservedPluginSource(name, source, label);
+  }
+}
+
+function normalizeObservedSdkMessage(message, id, label, observed) {
+  if (
+    !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id) ||
+    !message ||
+    typeof message !== 'object' ||
+    Array.isArray(message) ||
+    Object.keys(message).some((key) => !['name', 'evidence', 'availability', 'filterAvailability'].includes(key)) ||
+    typeof message.name !== 'string' ||
+    !/^[a-z][a-z0-9_]{0,199}$/i.test(message.name) ||
+    typeof message.evidence !== 'string' ||
+    !message.evidence.trim() ||
+    message.evidence.length > 2000
+  )
+    throw new Error(`${label}.sdkMessages requires GUID keys, SDK names and evidence`);
+  if (Object.hasOwn(observed.sdkMessages, id)) throw new Error(`${label}.sdkMessages has a duplicate SDK message GUID`);
+  if (message.availability !== undefined && ![0, 1, 2].includes(message.availability))
+    throw new Error(`${label}.sdkMessages availability must be 0 (server), 1 (client) or 2 (both)`);
+  if (
+    message.filterAvailability !== undefined &&
+    (!message.filterAvailability ||
+      typeof message.filterAvailability !== 'object' ||
+      Array.isArray(message.filterAvailability) ||
+      Object.keys(message.filterAvailability).length > 1000 ||
+      Object.entries(message.filterAvailability).some(
+        ([entity, availability]) => !/^[a-z][a-z0-9_]{0,199}$/i.test(entity) || ![0, 1, 2].includes(availability),
+      ))
+  )
+    throw new Error(`${label}.sdkMessages filterAvailability must map logical table names to availability 0, 1 or 2`);
+  if (
+    message.filterAvailability &&
+    new Set(Object.keys(message.filterAvailability).map((entity) => entity.toLowerCase())).size !==
+      Object.keys(message.filterAvailability).length
+  )
+    throw new Error(`${label}.sdkMessages filterAvailability has a duplicate logical table name`);
+  observed.sdkMessages[id] = {
+    name: message.name,
+    evidence: message.evidence,
+    ...(message.availability !== undefined ? { availability: message.availability } : {}),
+    ...(message.filterAvailability
+      ? {
+          filterAvailability: Object.fromEntries(
+            Object.entries(message.filterAvailability).map(([entity, availability]) => [
+              entity.toLowerCase(),
+              availability,
+            ]),
+          ),
+        }
+      : {}),
+  };
+}
+
+function applyObservedSdkMessages(value, label, observed) {
+  if (value.sdkMessages == null) return;
+  if (
+    !value.sdkMessages ||
+    typeof value.sdkMessages !== 'object' ||
+    Array.isArray(value.sdkMessages) ||
+    Object.keys(value.sdkMessages).length > 1000
+  )
+    throw new Error(`${label}.sdkMessages must map at most 1000 SDK message GUIDs to names with evidence`);
+  observed.sdkMessages = {};
+  for (const [raw, message] of Object.entries(value.sdkMessages)) {
+    const id = raw.replace(/[{}]/g, '').toLowerCase();
+    normalizeObservedSdkMessage(message, id, label, observed);
+  }
+}
+
+function normalizeObservedOwnership(ownership, id, label, observed) {
+  if (
+    !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id) ||
+    !ownership ||
+    typeof ownership !== 'object' ||
+    Array.isArray(ownership) ||
+    Object.keys(ownership).some((key) => !['kind', 'evidence'].includes(key)) ||
+    !['system', 'microsoft', 'custom', 'unknown'].includes(ownership.kind) ||
+    typeof ownership.evidence !== 'string' ||
+    !ownership.evidence.trim() ||
+    ownership.evidence.length > 2000
+  )
+    throw new Error(
+      `${label}.businessLogicOwnership requires GUID keys, a system/microsoft/custom/unknown kind and evidence`,
+    );
+  if (Object.hasOwn(observed.businessLogicOwnership, id))
+    throw new Error(`${label}.businessLogicOwnership has a duplicate GUID`);
+  observed.businessLogicOwnership[id] = { kind: ownership.kind, evidence: ownership.evidence };
+}
+
+function applyObservedBusinessLogicOwnership(value, label, observed) {
+  if (value.businessLogicOwnership == null) return;
+  if (
+    !value.businessLogicOwnership ||
+    typeof value.businessLogicOwnership !== 'object' ||
+    Array.isArray(value.businessLogicOwnership) ||
+    Object.keys(value.businessLogicOwnership).length > 1000
+  )
+    throw new Error(
+      `${label}.businessLogicOwnership must map at most 1000 business logic GUIDs to evidenced ownership`,
+    );
+  observed.businessLogicOwnership = {};
+  for (const [raw, ownership] of Object.entries(value.businessLogicOwnership)) {
+    const id = raw.replace(/[{}]/g, '').toLowerCase();
+    normalizeObservedOwnership(ownership, id, label, observed);
+  }
+}
+
+function applyObservedCodeComponents(value, label, observed) {
+  if (value.codeComponents == null) return;
+  if (!value.codeComponents || typeof value.codeComponents !== 'object' || Array.isArray(value.codeComponents))
+    throw new Error(`${label}.codeComponents must map GUIDs to control schema names`);
+  observed.codeComponents = {};
+  for (const [raw, schema] of Object.entries(value.codeComponents)) {
+    const id = raw.replace(/[{}]/g, '').toLowerCase();
+    if (
+      !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id) ||
+      typeof schema !== 'string' ||
+      !/^[\w.]+$/.test(schema)
+    )
+      throw new Error(`${label}.codeComponents requires GUID keys and schema names`);
+    if (Object.hasOwn(observed.codeComponents, id))
+      throw new Error(`${label}.codeComponents has a duplicate component GUID`);
+    observed.codeComponents[id] = schema;
+  }
+}
+
+function applyObservedUserSettings(value, label, observed) {
+  if (value.portalApplicationUser != null) {
+    const name = String(value.portalApplicationUser).trim();
+    if (!name || name.length > 200)
+      throw new Error(`${label}.portalApplicationUser must be the application user's display name`);
+    observed.portalApplicationUser = name;
+  }
+  if (value.portalApplicationUserId != null) {
+    const id = String(value.portalApplicationUserId).trim().replace(/[{}]/g, '').toLowerCase();
+    if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id))
+      throw new Error(`${label}.portalApplicationUserId must be the application user's systemuser GUID`);
+    observed.portalApplicationUserId = id;
+  }
+  if (value.loginPath != null) {
+    const loginPath = String(value.loginPath).trim();
+    if (!/^\/(?!\/)[^?#\s]*$/.test(loginPath))
+      throw new Error(`${label}.loginPath must be a site-relative path such as /SignIn`);
+    observed.loginPath = loginPath;
+  }
+}
+
+function applyObservedHeaders(value, label, observed) {
+  if (value.headers == null) return;
+  if (typeof value.headers !== 'object' || Array.isArray(value.headers))
+    throw new Error(`${label}.headers must map page and webFile to headers`);
+  const headers = {};
+  for (const [kind, entries] of Object.entries(value.headers)) {
+    if (!['page', 'webFile', 'webApi'].includes(kind))
+      throw new Error(`${label}.headers.${kind} must be page, webFile or webApi`);
+    if (!entries || typeof entries !== 'object' || Array.isArray(entries))
+      throw new Error(`${label}.headers.${kind} must map header names to values`);
+    headers[kind] = {};
+    for (const [name, raw] of Object.entries(entries)) {
+      const header = String(raw ?? '').trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(name) || !header || /[\r\n]/.test(header))
+        throw new Error(`${label}.headers.${kind}.${name} must be a header name with a one-line value`);
+      headers[kind][name.toLowerCase()] = header;
+    }
+  }
+  if (Object.values(headers).some((entries) => Object.keys(entries).length)) observed.headers = headers;
+}
+
+function applyObservedAuthority(value, label, observed) {
+  if (value.azureAdAuthority == null) return;
+  const authority = String(value.azureAdAuthority).trim();
+  if (!isTenantAuthority(authority))
+    throw new Error(
+      `${label}.azureAdAuthority must be the observed Microsoft Entra authority of one tenant, https://login.windows.net/<tenant>/ with the tenant's directory ID or domain name (not a placeholder, common or organizations)`,
+    );
+  observed.azureAdAuthority = authority;
+}
+
+function applyObservedSelfNnErrors(value, label, observed) {
+  if (value.webApiSelfNnPermissionErrors == null) return;
+  const profiles = value.webApiSelfNnPermissionErrors;
+  if (
+    !profiles ||
+    typeof profiles !== 'object' ||
+    Array.isArray(profiles) ||
+    !Object.keys(profiles).length ||
+    Object.keys(profiles).length > 1000
+  )
+    throw new Error(
+      `${label}.webApiSelfNnPermissionErrors must map qualified relationship schema names to native-classic`,
+    );
+  observed.webApiSelfNnPermissionErrors = Object.create(null);
+  for (const [schema, mode] of Object.entries(profiles)) {
+    if (
+      !/^[a-z][a-z0-9_]{0,199}$/i.test(schema) ||
+      mode !== 'native-classic' ||
+      Object.hasOwn(observed.webApiSelfNnPermissionErrors, schema.toLowerCase())
+    )
+      throw new Error(
+        `${label}.webApiSelfNnPermissionErrors requires unique relationship schema names and native-classic values`,
+      );
+    observed.webApiSelfNnPermissionErrors[schema.toLowerCase()] = mode;
+  }
+}
+
+function applyObservedChoices(value, label, observed) {
+  for (const [key, choices] of Object.entries(OBSERVED_CHOICES)) {
+    if (value[key] == null) continue;
+    if (!choices.includes(value[key])) throw new Error(`${label}.${key} must be ${choices.join(' or ')}`);
+    observed[key] = value[key];
+  }
+}
+
 /**
  * Observed platform behaviour that the export cannot express, recorded per site with the
  * evidence for it: `{ loginPath?, headers?, webApiInnerError?, anonymousDataAccess?, bootstrapStylesheet?, evidence }`.
@@ -189,342 +564,24 @@ export function observedConfig(value, label = 'observed') {
     )
       throw new Error(`Unknown ${label} key '${key}'`);
   const observed = {};
-  if (value.canvasDisplay !== undefined)
-    observed.canvasDisplay = validateCanvasDisplay(value.canvasDisplay, `${label}.canvasDisplay`);
-  if (value.webApiFetchXmlTransport != null) {
-    const transport = value.webApiFetchXmlTransport,
-      limits = ['maxHeaderXmlBytes', 'maxUrlXmlBytes', 'maxConstructedXmlBytes'];
-    if (
-      !transport ||
-      typeof transport !== 'object' ||
-      Array.isArray(transport) ||
-      transport.encoding !== 'double-rfc3986' ||
-      Object.keys(transport).some((key) => !['encoding', ...limits].includes(key)) ||
-      limits.some((key) => !Number.isSafeInteger(transport[key]) || transport[key] < 1 || transport[key] > 4000000) ||
-      transport.maxHeaderXmlBytes > transport.maxUrlXmlBytes ||
-      transport.maxUrlXmlBytes > transport.maxConstructedXmlBytes
-    )
-      throw new Error(
-        `${label}.webApiFetchXmlTransport requires double-rfc3986 encoding and ordered bounded integer XML byte budgets`,
-      );
-    observed.webApiFetchXmlTransport = { ...transport };
-  }
-  if (value.webApiTwoDigitYearMax != null) {
-    if (
-      !Number.isInteger(value.webApiTwoDigitYearMax) ||
-      value.webApiTwoDigitYearMax < 99 ||
-      value.webApiTwoDigitYearMax > 9999 ||
-      value.webApiDateParsing !== 'month-first'
-    )
-      throw new Error(
-        `${label}.webApiTwoDigitYearMax requires month-first parsing and an integer from 99 through 9999`,
-      );
-    observed.webApiTwoDigitYearMax = value.webApiTwoDigitYearMax;
-  }
-  for (const field of ['tablePermissionGrantOrder', 'odataPermissionGrantOrder'])
-    if (value[field] != null) {
-      const order = value[field];
-      const object = (item) => item && typeof item === 'object' && !Array.isArray(item);
-      if (
-        !object(order) ||
-        Object.keys(order).some((key) => !['normalizedGraphHash', 'tables'].includes(key)) ||
-        typeof order.normalizedGraphHash !== 'string' ||
-        !/^[a-f\d]{64}$/.test(order.normalizedGraphHash) ||
-        !object(order.tables) ||
-        Object.keys(order.tables).length > 100
-      )
-        throw new Error(`${label}.${field} requires a normalized graph SHA256 and at most 100 logical tables`);
-      const tables = {};
-      let total = 0;
-      for (const [table, groups] of Object.entries(order.tables)) {
-        const seen = new Set();
-        if (!/^[_a-z][a-z\d_]{0,127}$/i.test(table) || !Array.isArray(groups) || groups.length > 5000)
-          throw new Error(`${label}.${field} requires bounded ordered GUID groups for each logical table`);
-        tables[table] = groups.map((group) => {
-          if (!Array.isArray(group) || !group.length || group.length > 5000)
-            throw new Error(`${label}.${field} requires nonempty bounded GUID groups`);
-          return group.map((id) => {
-            if (
-              typeof id !== 'string' ||
-              !/^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i.test(id) ||
-              seen.has(id.toLowerCase()) ||
-              ++total > 5000
-            )
-              throw new Error(`${label}.${field} contains invalid, duplicate or excessive permission GUIDs`);
-            seen.add(id.toLowerCase());
-            return id.toLowerCase();
-          });
-        });
-      }
-      observed[field] = { normalizedGraphHash: order.normalizedGraphHash, tables };
-    }
-  if (value.webApiGlobalMetadataVersion != null) {
-    if (typeof value.webApiGlobalMetadataVersion !== 'string' || !/^\d{1,20}$/.test(value.webApiGlobalMetadataVersion))
-      throw new Error(`${label}.webApiGlobalMetadataVersion must be a bounded numeric string`);
-    observed.webApiGlobalMetadataVersion = value.webApiGlobalMetadataVersion;
-  }
-  if (value.fetchPreOperationSerialization != null) {
-    const entries = value.fetchPreOperationSerialization;
-    if (
-      !entries ||
-      typeof entries !== 'object' ||
-      Array.isArray(entries) ||
-      Object.keys(entries).length > 100 ||
-      Object.entries(entries).some(([entity, mode]) => !/^[_a-z][a-z\d_]{0,127}$/i.test(entity) || mode !== 'compact')
-    )
-      throw new Error(`${label}.fetchPreOperationSerialization must map at most 100 exact logical tables to compact`);
-    if (Object.keys(entries).length) observed.fetchPreOperationSerialization = { ...entries };
-  }
-  if (value.formSubmissionErrorMessage != null) {
-    if (
-      typeof value.formSubmissionErrorMessage !== 'string' ||
-      !value.formSubmissionErrorMessage.trim() ||
-      value.formSubmissionErrorMessage.length > 2000
-    )
-      throw new Error(`${label}.formSubmissionErrorMessage must be bounded plain text`);
-    observed.formSubmissionErrorMessage = value.formSubmissionErrorMessage;
-  }
-  if (value.pluginSources != null) {
-    if (
-      !value.pluginSources ||
-      typeof value.pluginSources !== 'object' ||
-      Array.isArray(value.pluginSources) ||
-      Object.keys(value.pluginSources).length > 1000
-    )
-      throw new Error(
-        `${label}.pluginSources must map at most 1000 exact plugin type names to source paths with evidence`,
-      );
-    observed.pluginSources = {};
-    for (const [name, source] of Object.entries(value.pluginSources)) {
-      const relative = typeof source?.path === 'string' ? source.path.replace(/\\/g, '/') : '';
-      if (
-        !/^[_a-z][\w.+`]{0,249}$/i.test(name) ||
-        !source ||
-        typeof source !== 'object' ||
-        Array.isArray(source) ||
-        Object.keys(source).some((key) => !['path', 'evidence', 'root'].includes(key)) ||
-        !relative.endsWith('.cs') ||
-        path.isAbsolute(relative) ||
-        // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
-        /[:\x00-\x1f]/.test(relative) ||
-        relative
-          .split('/')
-          .some(
-            (part) =>
-              !part || part === '.' || part === '..' || /^(?:\.git|\.paqvilo|node_modules|bin|obj)$/i.test(part),
-          ) ||
-        typeof source.evidence !== 'string' ||
-        !source.evidence.trim() ||
-        source.evidence.length > 2000 ||
-        (source.root !== undefined && (typeof source.root !== 'string' || !path.isAbsolute(source.root)))
-      )
-        throw new Error(
-          `${label}.pluginSources requires exact type names, relative .cs paths, evidence and an optional absolute trusted root`,
-        );
-      observed.pluginSources[name] = {
-        path: relative,
-        evidence: source.evidence,
-        ...(source.root ? { root: source.root } : {}),
-      };
-    }
-  }
-  if (value.sdkMessages != null) {
-    if (
-      !value.sdkMessages ||
-      typeof value.sdkMessages !== 'object' ||
-      Array.isArray(value.sdkMessages) ||
-      Object.keys(value.sdkMessages).length > 1000
-    )
-      throw new Error(`${label}.sdkMessages must map at most 1000 SDK message GUIDs to names with evidence`);
-    observed.sdkMessages = {};
-    for (const [raw, message] of Object.entries(value.sdkMessages)) {
-      const id = raw.replace(/[{}]/g, '').toLowerCase();
-      if (
-        !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id) ||
-        !message ||
-        typeof message !== 'object' ||
-        Array.isArray(message) ||
-        Object.keys(message).some((key) => !['name', 'evidence', 'availability', 'filterAvailability'].includes(key)) ||
-        typeof message.name !== 'string' ||
-        !/^[a-z][a-z0-9_]{0,199}$/i.test(message.name) ||
-        typeof message.evidence !== 'string' ||
-        !message.evidence.trim() ||
-        message.evidence.length > 2000
-      )
-        throw new Error(`${label}.sdkMessages requires GUID keys, SDK names and evidence`);
-      if (Object.hasOwn(observed.sdkMessages, id))
-        throw new Error(`${label}.sdkMessages has a duplicate SDK message GUID`);
-      if (message.availability !== undefined && ![0, 1, 2].includes(message.availability))
-        throw new Error(`${label}.sdkMessages availability must be 0 (server), 1 (client) or 2 (both)`);
-      if (
-        message.filterAvailability !== undefined &&
-        (!message.filterAvailability ||
-          typeof message.filterAvailability !== 'object' ||
-          Array.isArray(message.filterAvailability) ||
-          Object.keys(message.filterAvailability).length > 1000 ||
-          Object.entries(message.filterAvailability).some(
-            ([entity, availability]) => !/^[a-z][a-z0-9_]{0,199}$/i.test(entity) || ![0, 1, 2].includes(availability),
-          ))
-      )
-        throw new Error(
-          `${label}.sdkMessages filterAvailability must map logical table names to availability 0, 1 or 2`,
-        );
-      if (
-        message.filterAvailability &&
-        new Set(Object.keys(message.filterAvailability).map((entity) => entity.toLowerCase())).size !==
-          Object.keys(message.filterAvailability).length
-      )
-        throw new Error(`${label}.sdkMessages filterAvailability has a duplicate logical table name`);
-      observed.sdkMessages[id] = {
-        name: message.name,
-        evidence: message.evidence,
-        ...(message.availability !== undefined ? { availability: message.availability } : {}),
-        ...(message.filterAvailability
-          ? {
-              filterAvailability: Object.fromEntries(
-                Object.entries(message.filterAvailability).map(([entity, availability]) => [
-                  entity.toLowerCase(),
-                  availability,
-                ]),
-              ),
-            }
-          : {}),
-      };
-    }
-  }
-  if (value.businessLogicOwnership != null) {
-    if (
-      !value.businessLogicOwnership ||
-      typeof value.businessLogicOwnership !== 'object' ||
-      Array.isArray(value.businessLogicOwnership) ||
-      Object.keys(value.businessLogicOwnership).length > 1000
-    )
-      throw new Error(
-        `${label}.businessLogicOwnership must map at most 1000 business logic GUIDs to evidenced ownership`,
-      );
-    observed.businessLogicOwnership = {};
-    for (const [raw, ownership] of Object.entries(value.businessLogicOwnership)) {
-      const id = raw.replace(/[{}]/g, '').toLowerCase();
-      if (
-        !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id) ||
-        !ownership ||
-        typeof ownership !== 'object' ||
-        Array.isArray(ownership) ||
-        Object.keys(ownership).some((key) => !['kind', 'evidence'].includes(key)) ||
-        !['system', 'microsoft', 'custom', 'unknown'].includes(ownership.kind) ||
-        typeof ownership.evidence !== 'string' ||
-        !ownership.evidence.trim() ||
-        ownership.evidence.length > 2000
-      )
-        throw new Error(
-          `${label}.businessLogicOwnership requires GUID keys, a system/microsoft/custom/unknown kind and evidence`,
-        );
-      if (Object.hasOwn(observed.businessLogicOwnership, id))
-        throw new Error(`${label}.businessLogicOwnership has a duplicate GUID`);
-      observed.businessLogicOwnership[id] = { kind: ownership.kind, evidence: ownership.evidence };
-    }
-  }
-  if (value.codeComponents != null) {
-    if (!value.codeComponents || typeof value.codeComponents !== 'object' || Array.isArray(value.codeComponents))
-      throw new Error(`${label}.codeComponents must map GUIDs to control schema names`);
-    observed.codeComponents = {};
-    for (const [raw, schema] of Object.entries(value.codeComponents)) {
-      const id = raw.replace(/[{}]/g, '').toLowerCase();
-      if (
-        !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id) ||
-        typeof schema !== 'string' ||
-        !/^[\w.]+$/.test(schema)
-      )
-        throw new Error(`${label}.codeComponents requires GUID keys and schema names`);
-      if (Object.hasOwn(observed.codeComponents, id))
-        throw new Error(`${label}.codeComponents has a duplicate component GUID`);
-      observed.codeComponents[id] = schema;
-    }
-  }
-  // portalApplicationUser: the display name of the site's application user, which the platform
-  // records as the creator of the notes and records the portal creates (no export holds it).
-  if (value.portalApplicationUser != null) {
-    const name = String(value.portalApplicationUser).trim();
-    if (!name || name.length > 200)
-      throw new Error(`${label}.portalApplicationUser must be the application user's display name`);
-    observed.portalApplicationUser = name;
-  }
-  // portalApplicationUserId: that application user's systemuser id (the createdby id the platform reports).
-  if (value.portalApplicationUserId != null) {
-    const id = String(value.portalApplicationUserId).trim().replace(/[{}]/g, '').toLowerCase();
-    if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id))
-      throw new Error(`${label}.portalApplicationUserId must be the application user's systemuser GUID`);
-    observed.portalApplicationUserId = id;
-  }
-  if (value.loginPath != null) {
-    const loginPath = String(value.loginPath).trim();
-    if (!/^\/(?!\/)[^?#\s]*$/.test(loginPath))
-      throw new Error(`${label}.loginPath must be a site-relative path such as /SignIn`);
-    observed.loginPath = loginPath;
-  }
+  applyObservedBasics(value, label, observed);
+  applyObservedPermissionOrders(value, label, observed);
+  applyObservedFetchSettings(value, label, observed);
+  applyObservedPluginSources(value, label, observed);
+  applyObservedSdkMessages(value, label, observed);
+  applyObservedBusinessLogicOwnership(value, label, observed);
+  applyObservedCodeComponents(value, label, observed);
+  applyObservedUserSettings(value, label, observed);
   // headers: { page?: { <name>: <value> }, webFile?: { <name>: <value> } }, the response
   // headers the platform sends on that kind of response although no exported site setting
   // defines them (lib/response-headers.mjs siteHeaders).
-  if (value.headers != null) {
-    if (typeof value.headers !== 'object' || Array.isArray(value.headers))
-      throw new Error(`${label}.headers must map page and webFile to headers`);
-    const headers = {};
-    for (const [kind, entries] of Object.entries(value.headers)) {
-      if (!['page', 'webFile', 'webApi'].includes(kind))
-        throw new Error(`${label}.headers.${kind} must be page, webFile or webApi`);
-      if (!entries || typeof entries !== 'object' || Array.isArray(entries))
-        throw new Error(`${label}.headers.${kind} must map header names to values`);
-      headers[kind] = {};
-      for (const [name, raw] of Object.entries(entries)) {
-        const header = String(raw ?? '').trim();
-        if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(name) || !header || /[\r\n]/.test(header))
-          throw new Error(`${label}.headers.${kind}.${name} must be a header name with a one-line value`);
-        headers[kind][name.toLowerCase()] = header;
-      }
-    }
-    if (Object.values(headers).some((entries) => Object.keys(entries).length)) observed.headers = headers;
-  }
+  applyObservedHeaders(value, label, observed);
   // azureAdAuthority: the authority the built-in Microsoft Entra provider posts on the site
   // when the export carries no Authentication/OpenIdConnect/AzureAD/Authority (lib/external-login.mjs).
   // An observation names one tenant: a placeholder is never recorded as observed.
-  if (value.azureAdAuthority != null) {
-    const authority = String(value.azureAdAuthority).trim();
-    if (!isTenantAuthority(authority))
-      throw new Error(
-        `${label}.azureAdAuthority must be the observed Microsoft Entra authority of one tenant, https://login.windows.net/<tenant>/ with the tenant's directory ID or domain name (not a placeholder, common or organizations)`,
-      );
-    observed.azureAdAuthority = authority;
-  }
-  if (value.webApiSelfNnPermissionErrors != null) {
-    const profiles = value.webApiSelfNnPermissionErrors;
-    if (
-      !profiles ||
-      typeof profiles !== 'object' ||
-      Array.isArray(profiles) ||
-      !Object.keys(profiles).length ||
-      Object.keys(profiles).length > 1000
-    )
-      throw new Error(
-        `${label}.webApiSelfNnPermissionErrors must map qualified relationship schema names to native-classic`,
-      );
-    observed.webApiSelfNnPermissionErrors = Object.create(null);
-    for (const [schema, mode] of Object.entries(profiles)) {
-      if (
-        !/^[a-z][a-z0-9_]{0,199}$/i.test(schema) ||
-        mode !== 'native-classic' ||
-        Object.hasOwn(observed.webApiSelfNnPermissionErrors, schema.toLowerCase())
-      )
-        throw new Error(
-          `${label}.webApiSelfNnPermissionErrors requires unique relationship schema names and native-classic values`,
-        );
-      observed.webApiSelfNnPermissionErrors[schema.toLowerCase()] = mode;
-    }
-  }
-  for (const [key, choices] of Object.entries(OBSERVED_CHOICES)) {
-    if (value[key] == null) continue;
-    if (!choices.includes(value[key])) throw new Error(`${label}.${key} must be ${choices.join(' or ')}`);
-    observed[key] = value[key];
-  }
+  applyObservedAuthority(value, label, observed);
+  applyObservedSelfNnErrors(value, label, observed);
+  applyObservedChoices(value, label, observed);
   if (!Object.keys(observed).length) return null;
   const evidence = typeof value.evidence === 'string' ? value.evidence.trim() : '';
   if (!evidence)
@@ -623,13 +680,7 @@ export async function loadProjectConfig(configFile) {
 }
 
 /** Setup validates structure separately from source readiness, without importing packs. */
-export async function resolveProjectConfig(raw, configFile, { checkSources = true } = {}) {
-  const absoluteConfig = path.resolve(configFile);
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Project configuration must be an object');
-  if (!VERSIONS.includes(raw.version))
-    throw new Error(`Project configuration version must be ${VERSIONS.join(' or ')}`);
-  // Version 2 rejects unknown keys; version 1 stays lenient and reports them as diagnostics.
-  const diagnostics = [];
+function checkProjectConfigKeys(raw, diagnostics) {
   for (const key of Object.keys(raw)) {
     if (KNOWN_KEYS.has(key)) continue;
     if (raw.version >= 2) throw new Error(`Unknown project configuration key '${key}'`);
@@ -640,107 +691,171 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
       message: `Unknown project configuration key '${key}' is ignored.`,
     });
   }
-  const portalEntries = list(raw.portals, 'portals').map(normalizePortal);
-  const runtime = parseSetting('runtime', raw.runtime);
+}
+
+function assertUniqueEntries(entries, kind) {
+  const seen = new Set();
+  for (const entry of entries) {
+    if (seen.has(entry.id)) throw new Error(`Duplicate ${kind} id '${entry.id}'`);
+    seen.add(entry.id);
+  }
+}
+
+function assertPortalSources(portalEntries, runtime) {
   if (!portalEntries.length && runtime.kind === 'power-pages')
     throw new Error('At least one portal source is required');
-  const solutionEntries = list(raw.solutions, 'solutions').map(normalizeSolution);
-  const unique = (entries, kind) => {
-    const seen = new Set();
-    for (const entry of entries) {
-      if (seen.has(entry.id)) throw new Error(`Duplicate ${kind} id '${entry.id}'`);
-      seen.add(entry.id);
-    }
-  };
-  unique(portalEntries, 'portal');
-  unique(solutionEntries, 'solution');
-  const base = path.dirname(absoluteConfig);
-  const resolveSource = async (sourcePath, kind, id) => {
-    const resolved = path.resolve(base, sourcePath);
-    if (!checkSources) return resolved;
-    let stat;
-    try {
-      stat = await fs.stat(resolved);
-    } catch {
-      throw new Error(`${kind} '${id}' source directory does not exist: ${resolved}`);
-    }
-    if (!stat.isDirectory()) throw new Error(`${kind} '${id}' source is not a directory: ${resolved}`);
-    return fs.realpath(resolved);
-  };
-  const solutions = await Promise.all(
-    solutionEntries.map(async (solution) => ({
-      ...solution,
-      root: await resolveSource(solution.sourcePath, 'Solution', solution.id),
-    })),
+}
+
+async function resolveProjectSource(base, checkSources, sourcePath, kind, id) {
+  const resolved = path.resolve(base, sourcePath);
+  if (!checkSources) return resolved;
+  let stat;
+  try {
+    stat = await fs.stat(resolved);
+  } catch {
+    throw new Error(`${kind} '${id}' source directory does not exist: ${resolved}`);
+  }
+  if (!stat.isDirectory()) throw new Error(`${kind} '${id}' source is not a directory: ${resolved}`);
+  return fs.realpath(resolved);
+}
+
+async function resolveSolutionEntry(solution, resolveSource) {
+  return { ...solution, root: await resolveSource(solution.sourcePath, 'Solution', solution.id) };
+}
+
+function referenceAllowsLoopback(ref, raw, runtime) {
+  return (
+    runtime.kind === 'model-driven' &&
+    Array.isArray(raw.modelDriven?.targets) &&
+    raw.modelDriven.targets.some((target) => target?.reference === ref?.id)
   );
+}
+
+async function resolveProjectPortal({
+  solutionIds,
+  portal,
+  byId,
+  references,
+  solutions,
+  raw,
+  runtime,
+  base,
+  resolveSource,
+}) {
+  for (const solutionId of solutionIds ?? [])
+    if (!byId.has(solutionId)) throw new Error(`Portal '${portal.id}' selects unknown solution '${solutionId}'`);
+  if (portal.reference && !references.some((ref) => ref.id === portal.reference))
+    throw new Error(`Portal '${portal.id}' selects unknown reference '${portal.reference}'`);
+  const selected = (solutionIds ?? solutions.map((solution) => solution.id)).map((solutionId) => byId.get(solutionId));
+  if (portal.observed?.pluginSources)
+    portal.observed.pluginSources = Object.fromEntries(
+      Object.entries(portal.observed.pluginSources).map(([name, source]) => [
+        name,
+        { ...source, root: source.root ?? base },
+      ]),
+    );
+  // Standalone profiles retain portal selections for later use, without
+  // requiring that unused export to be present on this machine.
+  const sourceDir =
+    runtime.kind === 'power-pages'
+      ? await resolveSource(portal.sourcePath, 'Portal', portal.id)
+      : path.resolve(base, portal.sourcePath);
+  return {
+    ...portal,
+    ...contentPolicyDefaults(raw),
+    ...contentPolicyDefaults(portal),
+    platform: parseSetting('platform', portal.platform ?? raw.platform, { label: `portals.${portal.id}.platform` }),
+    deploymentProfiles: resolveDeploymentProfiles(portal.deploymentProfiles ?? raw.deploymentProfiles, base, {
+      sourceDir,
+      sourceRoot: base,
+    }),
+    sourceDir,
+    solutions: selected.map((solution) => solution.id),
+    solutionRoots: selected.map((solution) => solution.root),
+  };
+}
+
+async function resolveDataPack(pack, base, checkSources) {
+  const module = path.resolve(base, pack.modulePath);
+  if (!checkSources) return { id: pack.id, module };
+  try {
+    if (!(await fs.stat(module)).isFile()) throw new Error('Data pack module is not a file.');
+  } catch {
+    throw new Error(`Data pack '${pack.id}' module does not exist: ${module}`);
+  }
+  return { id: pack.id, module };
+}
+
+function validateEnvironmentVariables(environmentVariables) {
+  if (!environmentVariables || typeof environmentVariables !== 'object' || Array.isArray(environmentVariables))
+    throw new Error('environmentVariables must map schema names to values');
+  for (const [name, value] of Object.entries(environmentVariables))
+    if (!/^[a-z][\w.]*$/i.test(name) || !['string', 'number', 'boolean'].includes(typeof value))
+      throw new Error(`environmentVariables.${name} must be a string, number or boolean value`);
+}
+
+function resolveProjectSettings(raw, runtime, base, diagnostics) {
+  const settings = {};
+  for (const key of projectKeys()) {
+    if (RESOLVED_SEPARATELY.has(key)) continue;
+    let value;
+    if (key === 'dataverse')
+      value = raw.dataverse ?? (runtime.kind === 'dataverse-api' ? { enabled: true } : undefined);
+    else value = raw[key];
+    if (value === undefined) continue;
+    settings[key] = parseSetting(key, value, { base, diagnostics });
+  }
+  return settings;
+}
+
+function validateModelDrivenTargets(settings, references) {
+  const targetOrigins = new Set();
+  for (const target of settings.modelDriven?.targets ?? []) {
+    const reference = references.find((ref) => ref.id === target.reference);
+    if (!reference) throw new Error(`Model-driven target selects unknown reference '${target.reference}'`);
+    if (targetOrigins.has(reference.origin)) throw new Error('Model-driven targets must have distinct origins');
+    targetOrigins.add(reference.origin);
+  }
+}
+
+export async function resolveProjectConfig(raw, configFile, { checkSources = true } = {}) {
+  const absoluteConfig = path.resolve(configFile);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Project configuration must be an object');
+  if (!VERSIONS.includes(raw.version))
+    throw new Error(`Project configuration version must be ${VERSIONS.join(' or ')}`);
+  // Version 2 rejects unknown keys; version 1 stays lenient and reports them as diagnostics.
+  const diagnostics = [];
+  checkProjectConfigKeys(raw, diagnostics);
+  const portalEntries = list(raw.portals, 'portals').map((entry, index) => normalizePortal(entry, index));
+  const runtime = parseSetting('runtime', raw.runtime);
+  assertPortalSources(portalEntries, runtime);
+  const solutionEntries = list(raw.solutions, 'solutions').map((entry, index) => normalizeSolution(entry, index));
+  assertUniqueEntries(portalEntries, 'portal');
+  assertUniqueEntries(solutionEntries, 'solution');
+  const base = path.dirname(absoluteConfig);
+  const resolveSource = (sourcePath, kind, id) => resolveProjectSource(base, checkSources, sourcePath, kind, id);
+  const solutions = await Promise.all(solutionEntries.map((solution) => resolveSolutionEntry(solution, resolveSource)));
   const byId = new Map(solutions.map((solution) => [solution.id, solution]));
   const references = list(raw.references ?? raw.referenceEnvironments, 'references').map((ref, index) =>
-    normalizeReference(
-      ref,
-      index,
-      runtime.kind === 'model-driven' &&
-        Array.isArray(raw.modelDriven?.targets) &&
-        raw.modelDriven.targets.some((target) => target?.reference === ref?.id),
-    ),
+    normalizeReference(ref, index, referenceAllowsLoopback(ref, raw, runtime)),
   );
-  unique(references, 'reference');
+  assertUniqueEntries(references, 'reference');
   if (references.filter((ref) => ref.default).length > 1) throw new Error('Only one reference can be the default');
   const defaultReference = references.find((ref) => ref.default) ?? (references.length === 1 ? references[0] : null);
   const portals = await Promise.all(
-    portalEntries.map(async ({ solutionIds, ...portal }) => {
-      for (const solutionId of solutionIds ?? [])
-        if (!byId.has(solutionId)) throw new Error(`Portal '${portal.id}' selects unknown solution '${solutionId}'`);
-      if (portal.reference && !references.some((ref) => ref.id === portal.reference))
-        throw new Error(`Portal '${portal.id}' selects unknown reference '${portal.reference}'`);
-      const selected = (solutionIds ?? solutions.map((solution) => solution.id)).map((solutionId) =>
-        byId.get(solutionId),
-      );
-      if (portal.observed?.pluginSources)
-        portal.observed.pluginSources = Object.fromEntries(
-          Object.entries(portal.observed.pluginSources).map(([name, source]) => [
-            name,
-            { ...source, root: source.root ?? base },
-          ]),
-        );
-      // Standalone profiles retain portal selections for later use, without
-      // requiring that unused export to be present on this machine.
-      const sourceDir =
-        runtime.kind === 'power-pages'
-          ? await resolveSource(portal.sourcePath, 'Portal', portal.id)
-          : path.resolve(base, portal.sourcePath);
-      return {
-        ...portal,
-        ...contentPolicyDefaults(raw),
-        ...contentPolicyDefaults(portal),
-        platform: parseSetting('platform', portal.platform ?? raw.platform, { label: `portals.${portal.id}.platform` }),
-        deploymentProfiles: resolveDeploymentProfiles(portal.deploymentProfiles ?? raw.deploymentProfiles, base, {
-          sourceDir,
-          sourceRoot: base,
-        }),
-        sourceDir,
-        solutions: selected.map((solution) => solution.id),
-        solutionRoots: selected.map((solution) => solution.root),
-      };
-    }),
+    portalEntries.map(({ solutionIds, ...portal }) =>
+      resolveProjectPortal({ solutionIds, portal, byId, references, solutions, raw, runtime, base, resolveSource }),
+    ),
   );
   const defaultPortal = raw.defaultPortal ?? raw.default_portal ?? portals[0]?.id ?? null;
   if (defaultPortal !== null && !portals.some((portal) => portal.id === defaultPortal))
     throw new Error(`defaultPortal '${defaultPortal}' is not configured`);
   const dataPacks = await Promise.all(
     list(raw.dataPacks ?? raw.presets, 'dataPacks')
-      .map(normalizeDataPack)
-      .map(async (pack) => {
-        const module = path.resolve(base, pack.modulePath);
-        if (!checkSources) return { id: pack.id, module };
-        try {
-          if (!(await fs.stat(module)).isFile()) throw new Error();
-        } catch {
-          throw new Error(`Data pack '${pack.id}' module does not exist: ${module}`);
-        }
-        return { id: pack.id, module };
-      }),
+      .map((entry, index) => normalizeDataPack(entry, index))
+      .map((pack) => resolveDataPack(pack, base, checkSources)),
   );
-  unique(dataPacks, 'data pack');
+  assertUniqueEntries(dataPacks, 'data pack');
   const lcid = raw.lcid ?? raw.dataverse?.localeId ?? 1033;
   if (!Number.isInteger(lcid) || lcid <= 0) throw new Error('lcid must be a positive integer');
   if (raw.watch !== undefined && typeof raw.watch !== 'boolean') throw new Error('watch must be a boolean');
@@ -751,28 +866,9 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
   if (stateDirectoryValue !== undefined && (typeof stateDirectoryValue !== 'string' || !stateDirectoryValue.trim()))
     throw new Error('stateDirectory must be a path');
   const environmentVariables = raw.environmentVariables ?? {};
-  if (!environmentVariables || typeof environmentVariables !== 'object' || Array.isArray(environmentVariables))
-    throw new Error('environmentVariables must map schema names to values');
-  for (const [name, value] of Object.entries(environmentVariables))
-    if (!/^[a-z][\w.]*$/i.test(name) || !['string', 'number', 'boolean'].includes(typeof value))
-      throw new Error(`environmentVariables.${name} must be a string, number or boolean value`);
-  const settings = {};
-  for (const key of projectKeys()) {
-    if (RESOLVED_SEPARATELY.has(key)) continue;
-    const value =
-      key === 'dataverse'
-        ? (raw.dataverse ?? (runtime.kind === 'dataverse-api' ? { enabled: true } : undefined))
-        : raw[key];
-    if (value === undefined) continue;
-    settings[key] = parseSetting(key, value, { base, diagnostics });
-  }
-  const targetOrigins = new Set();
-  for (const target of settings.modelDriven?.targets ?? []) {
-    const reference = references.find((ref) => ref.id === target.reference);
-    if (!reference) throw new Error(`Model-driven target selects unknown reference '${target.reference}'`);
-    if (targetOrigins.has(reference.origin)) throw new Error('Model-driven targets must have distinct origins');
-    targetOrigins.add(reference.origin);
-  }
+  validateEnvironmentVariables(environmentVariables);
+  const settings = resolveProjectSettings(raw, runtime, base, diagnostics);
+  validateModelDrivenTargets(settings, references);
   return {
     configFile: absoluteConfig,
     stateNamespace: createHash('sha256')

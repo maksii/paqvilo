@@ -22,16 +22,15 @@ import { createWebApiReplayClient } from '../portal-harness/mirage-webapi-replay
 import { createLiquidReplayClient } from '../portal-harness/mirage-liquid-replay.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const canonical = (value) =>
-  Array.isArray(value)
-    ? value.map(canonical)
-    : value && typeof value === 'object'
-      ? Object.fromEntries(
-          Object.keys(value)
-            .sort()
-            .map((key) => [key, canonical(value[key])]),
-        )
-      : value;
+const canonical = (value) => {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort((a, b) => Number(a > b) - Number(a < b))
+      .map((key) => [key, canonical(value[key])]),
+  );
+};
 const spanDto = (value) =>
   value?.type === 'String' &&
   value.truncated === false &&
@@ -48,24 +47,23 @@ const generatedCaptureTime = (value) =>
   Number.isFinite(Date.parse(value))
     ? '[generated UTC capture string]'
     : value;
-const normalizeWire = (value) =>
-  Array.isArray(value)
-    ? value.map(normalizeWire)
-    : value && typeof value === 'object'
-      ? Object.fromEntries(
-          Object.entries(value).map(([key, item]) => {
-            if (['@odata.context', '@odata.nextLink'].includes(key) && typeof item === 'string') {
-              try {
-                const url = new URL(item);
-                return [key, '[owned origin]' + url.pathname + url.search + url.hash];
-              } catch {
-                /* Optional payload or browser capability is unavailable. */
-              }
-            }
-            return [key, normalizeWire(item)];
-          }),
-        )
-      : value;
+const normalizeWire = (value) => {
+  if (Array.isArray(value)) return value.map(normalizeWire);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => {
+      if (['@odata.context', '@odata.nextLink'].includes(key) && typeof item === 'string') {
+        try {
+          const url = new URL(item);
+          return [key, '[owned origin]' + url.pathname + url.search + url.hash];
+        } catch {
+          /* Optional payload or browser capability is unavailable. */
+        }
+      }
+      return [key, normalizeWire(item)];
+    }),
+  );
+};
 const child = (node, name) => node.children?.find((item) => item.name.toLowerCase() === name.toLowerCase());
 const value = (node, name) => child(node, name)?.text ?? node.attrs?.[name] ?? null;
 async function regular(file) {
@@ -91,16 +89,15 @@ async function files(root) {
 }
 
 export function nativeRegistrationFingerprint(registration) {
-  const clean = (value) =>
-    Array.isArray(value)
-      ? value.map(clean)
-      : value && typeof value === 'object'
-        ? Object.fromEntries(
-            Object.entries(value)
-              .filter(([key]) => !key.startsWith('@'))
-              .map(([key, item]) => [key, clean(item)]),
-          )
-        : value;
+  const clean = (value) => {
+    if (Array.isArray(value)) return value.map(clean);
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => !key.startsWith('@'))
+        .map(([key, item]) => [key, clean(item)]),
+    );
+  };
   const snapshot = { schemaVersion: registration.schemaVersion, applicationUserId: registration.applicationUserId };
   for (const [section, key] of [
     ['steps', 'sdkmessageprocessingstepid'],
@@ -116,32 +113,8 @@ export function nativeRegistrationFingerprint(registration) {
   return hash(Buffer.from(JSON.stringify(canonical(snapshot))));
 }
 
-/** This explicit trusted project adapter uses original exported DLL bytes. It
- * never downloads SDK assemblies or contacts Dataverse. Private configuration
- * stays in the returned pack; summaries contain hashes and registration IDs. */
-export async function prepareNativeReplayPlugins({
-  exportRoot,
-  nativeSteps = [],
-  nativeRegistration,
-  sdkMessages = {},
-  context,
-  serviceProfiles,
-  sdkAssembly,
-  proxyAssembly,
-  cacheRoot,
-  expectedAssemblyHashes,
-  selectedStepIds,
-  secureConfigurationByStep = {},
-  persistentHost = false,
-  expectedRegistrationHash,
-}) {
-  if (!Array.isArray(serviceProfiles) || !serviceProfiles.length)
-    throw new Error('Explicit backend caller profiles are required.');
-  const registrationSha256 = nativeRegistration ? nativeRegistrationFingerprint(nativeRegistration) : null;
-  if (expectedRegistrationHash && registrationSha256 !== expectedRegistrationHash)
-    throw new Error('Native registration snapshot does not match the required campaign witness.');
-  const root = await fs.realpath(exportRoot),
-    documents = [],
+async function loadExportedPluginDocuments(root) {
+  const documents = [],
     configuration = new Map(),
     exportedFiles = await files(root);
   for (const file of exportedFiles.filter((file) => file.endsWith('.xml'))) {
@@ -160,44 +133,45 @@ export async function prepareNativeReplayPlugins({
       configuration.set(id, value(document, 'Configuration'));
     }
   }
-  if (nativeRegistration) {
-    const filters = new Map(nativeRegistration.filters.map((filter) => [filter.sdkmessagefilterid, filter]));
-    for (const message of nativeRegistration.messages)
-      sdkMessages[message.sdkmessageid] = {
-        name: message.name,
-        evidence: 'Fresh native SDK message registration snapshot',
-      };
-    nativeSteps = nativeRegistration.steps.map((step) => ({
-      id: step.sdkmessageprocessingstepid,
-      name: step.name,
-      configuration: step.configuration,
-      typeId: step._eventhandler_value,
-      message: sdkMessages[step._sdkmessageid_value]?.name,
-      entity: filters.get(step._sdkmessagefilterid_value)?.primaryobjecttypecode ?? null,
-      messageFilterId: step._sdkmessagefilterid_value ?? null,
-      unfiltered: Object.hasOwn(step, '_sdkmessagefilterid_value') && step._sdkmessagefilterid_value === null,
-      stage: step.stage,
-      rank: step.rank,
-      mode: step.mode,
-      enabled: step.statecode === 0,
-      impersonatingUserId: step._impersonatinguserid_value,
-      filteringAttributes: String(step.filteringattributes ?? '')
-        .split(',')
-        .filter(Boolean),
-      images: nativeRegistration.images
-        .filter((image) => image._sdkmessageprocessingstepid_value === step.sdkmessageprocessingstepid)
-        .map((image) => ({
-          name: image.name,
-          alias: image.entityalias,
-          type: image.imagetype,
-          attributes: String(image.attributes ?? '')
-            .split(',')
-            .filter(Boolean),
-        })),
-    }));
-  }
-  const nativeById = new Map(nativeSteps.map((step) => [step.id ?? step.sdkmessageprocessingstepid, step]));
-  const inventory = importSolutionPlugins([{ documents }], { sdkMessages });
+  return { documents, configuration };
+}
+function registeredNativeSteps(nativeRegistration, sdkMessages) {
+  const filters = new Map(nativeRegistration.filters.map((filter) => [filter.sdkmessagefilterid, filter]));
+  for (const message of nativeRegistration.messages)
+    sdkMessages[message.sdkmessageid] = {
+      name: message.name,
+      evidence: 'Fresh native SDK message registration snapshot',
+    };
+  return nativeRegistration.steps.map((step) => ({
+    id: step.sdkmessageprocessingstepid,
+    name: step.name,
+    configuration: step.configuration,
+    typeId: step._eventhandler_value,
+    message: sdkMessages[step._sdkmessageid_value]?.name,
+    entity: filters.get(step._sdkmessagefilterid_value)?.primaryobjecttypecode ?? null,
+    messageFilterId: step._sdkmessagefilterid_value ?? null,
+    unfiltered: Object.hasOwn(step, '_sdkmessagefilterid_value') && step._sdkmessagefilterid_value === null,
+    stage: step.stage,
+    rank: step.rank,
+    mode: step.mode,
+    enabled: step.statecode === 0,
+    impersonatingUserId: step._impersonatinguserid_value,
+    filteringAttributes: String(step.filteringattributes ?? '')
+      .split(',')
+      .filter(Boolean),
+    images: nativeRegistration.images
+      .filter((image) => image._sdkmessageprocessingstepid_value === step.sdkmessageprocessingstepid)
+      .map((image) => ({
+        name: image.name,
+        alias: image.entityalias,
+        type: image.imagetype,
+        attributes: String(image.attributes ?? '')
+          .split(',')
+          .filter(Boolean),
+      })),
+  }));
+}
+function mergeNativeStepMetadata(inventory, nativeById, configuration) {
   inventory.steps = inventory.steps.map((step) => {
     const native = nativeById.get(step.id);
     if (!native) return step;
@@ -226,15 +200,27 @@ export async function prepareNativeReplayPlugins({
       ),
     };
   });
-  const selected = selectedStepIds ? new Set(selectedStepIds) : null;
-  if (selected)
-    for (const id of selected) {
-      const step = inventory.steps.find((step) => step.id === id);
-      if (!step || !step.enabled || (nativeRegistration && !nativeById.has(id)))
-        throw new Error('A selected native runtime step is absent or disabled.');
-    }
-  const assemblyFiles = new Map(),
-    receipts = [];
+}
+function validateSelectedNativeSteps(selected, inventory, nativeRegistration, nativeById) {
+  if (!selected) return;
+  for (const id of selected) {
+    const step = inventory.steps.find((step) => step.id === id);
+    if (!step?.enabled || (nativeRegistration && !nativeById.has(id)))
+      throw new Error('A selected native runtime step is absent or disabled.');
+  }
+}
+function shouldPrepareNativeStep(step, selected) {
+  return step.enabled && (!selected || selected.has(step.id));
+}
+function nativeStepAssembly(step, assemblyFiles) {
+  if (!step.typeName || !step.message)
+    throw new Error('A selected native registration has no resolved type or SDK message.');
+  const assembly = assemblyFiles.get(step.assemblyId);
+  if (!assembly) throw new Error('A selected native registration has no verified original assembly.');
+  return { assembly, assemblyName: path.basename(assembly.file) };
+}
+async function verifyNativeAssemblyFiles(root, inventory, expectedAssemblyHashes, receipts) {
+  const assemblyFiles = new Map();
   for (const assembly of inventory.assemblies) {
     const relative = String(assembly.binaryPath ?? '').replace(/^[/\\]/, '');
     const file = path.resolve(root, relative),
@@ -248,6 +234,108 @@ export async function prepareNativeReplayPlugins({
     assemblyFiles.set(assembly.id, { file, sha256, bytes });
     receipts.push({ assembly: assembly.name, sha256 });
   }
+  return assemblyFiles;
+}
+function nativeRuntimeDescriptor(step, context, assemblyName) {
+  const {
+    bindingState,
+    cacheRoot,
+    configuration,
+    context: runtimeContext,
+    proxyBytes,
+    secureConfigurationByStep,
+    sdkAssembly,
+    serviceProfiles,
+    workRoot,
+  } = context;
+  const profile = serviceProfiles.find(
+    (profile) =>
+      profile.userId.toLowerCase() === (runtimeContext.userId ?? runtimeContext.initiatingUserId).toLowerCase(),
+  );
+  if (!profile) throw new Error('The observed runtime caller has no explicit backend grant profile.');
+  return validateClrDescriptor({
+    trust: 'execute-local-assembly',
+    root: workRoot,
+    assembly: assemblyName,
+    typeName: step.typeName,
+    sdkRoot: path.dirname(sdkAssembly),
+    sdkAssembly: path.basename(sdkAssembly),
+    dependencies: proxyBytes ? [path.basename(bindingState.proxyAssembly)] : [],
+    cacheRoot: path.resolve(cacheRoot, 'hosts'),
+    serviceProfile: profile,
+    sdkCallerProfiles: serviceProfiles.filter((item) => item !== profile),
+    context: { ...runtimeContext, ...(step.impersonatingUserId ? { executionUserId: step.impersonatingUserId } : {}) },
+    unsecureConfiguration: configuration.get(step.id) ?? null,
+    secureConfiguration: secureConfigurationByStep[step.id] ?? null,
+    timeoutMs: 10000,
+    persistentHost: bindingState.persistentHost,
+  });
+}
+function setNativeRuntimeReadContext(runtimes, serviceProfiles, snapshot) {
+  const observed = contextFromNativeCapture(snapshot),
+    profile = serviceProfiles.find((profile) => profile.userId.toLowerCase() === observed.userId.toLowerCase());
+  if (!profile) throw new Error('The observed read caller has no explicit backend grant profile.');
+  for (const runtime of runtimes.values()) {
+    const executionUserId = runtime.descriptor.context.executionUserId;
+    runtime.descriptor = validateClrDescriptor({
+      ...runtime.descriptor,
+      serviceProfile: profile,
+      sdkCallerProfiles: serviceProfiles.filter((item) => item !== profile),
+      context: { ...observed, ...(executionUserId ? { executionUserId } : {}) },
+    });
+  }
+}
+function closeNativeRuntimes(runtimes, diagnostic) {
+  for (const runtime of runtimes.values()) closeClrHostPool({ runtime, diagnostic });
+}
+function bindNativeRuntimePipeline(store, items, runtimes, diagnostic) {
+  store.setPluginPipeline(
+    (event) => runPluginPhase({ ...event, store, items, runtimes, diagnostic }),
+    (event) =>
+      items.some(
+        (item) =>
+          item.enabled &&
+          pluginStepMatchesEntity(item, event.entity) &&
+          String(item.message).toLowerCase() === event.operation &&
+          runtimes.has(item.id),
+      ),
+  );
+}
+
+/** This explicit trusted project adapter uses original exported DLL bytes. It
+ * never downloads SDK assemblies or contacts Dataverse. Private configuration
+ * stays in the returned pack; summaries contain hashes and registration IDs. */
+export async function prepareNativeReplayPlugins({
+  exportRoot,
+  nativeSteps = [],
+  nativeRegistration,
+  sdkMessages = {},
+  context,
+  serviceProfiles,
+  sdkAssembly,
+  proxyAssembly,
+  cacheRoot,
+  expectedAssemblyHashes,
+  selectedStepIds,
+  secureConfigurationByStep = {},
+  persistentHost = false,
+  expectedRegistrationHash,
+}) {
+  if (!Array.isArray(serviceProfiles) || !serviceProfiles.length)
+    throw new Error('Explicit backend caller profiles are required.');
+  const registrationSha256 = nativeRegistration ? nativeRegistrationFingerprint(nativeRegistration) : null;
+  if (expectedRegistrationHash && registrationSha256 !== expectedRegistrationHash)
+    throw new Error('Native registration snapshot does not match the required campaign witness.');
+  const root = await fs.realpath(exportRoot),
+    { documents, configuration } = await loadExportedPluginDocuments(root);
+  if (nativeRegistration) nativeSteps = registeredNativeSteps(nativeRegistration, sdkMessages);
+  const nativeById = new Map(nativeSteps.map((step) => [step.id ?? step.sdkmessageprocessingstepid, step]));
+  const inventory = importSolutionPlugins([{ documents }], { sdkMessages });
+  mergeNativeStepMetadata(inventory, nativeById, configuration);
+  const selected = selectedStepIds ? new Set(selectedStepIds) : null;
+  validateSelectedNativeSteps(selected, inventory, nativeRegistration, nativeById);
+  const receipts = [],
+    assemblyFiles = await verifyNativeAssemblyFiles(root, inventory, expectedAssemblyHashes, receipts);
   if (!path.isAbsolute(cacheRoot)) throw new Error('An explicit absolute owned native runtime cache is required.');
   await fs.mkdir(cacheRoot, { recursive: true });
   await canonicalClrDirectory(cacheRoot);
@@ -260,36 +348,26 @@ export async function prepareNativeReplayPlugins({
     runtimes = new Map(),
     pluginRuntimes = {},
     overrides = {};
+  const bindingState = { pluginRuntimes, overrides, proxyAssembly, persistentHost };
+  const runtimeContext = {
+    bindingState,
+    cacheRoot,
+    configuration,
+    context,
+    prepared,
+    proxyBytes,
+    runtimes,
+    secureConfigurationByStep,
+    sdkAssembly,
+    serviceProfiles,
+    workRoot,
+  };
   for (const step of inventory.steps) {
-    if (!step.enabled || (selected && !selected.has(step.id))) continue;
-    if (!step.typeName || !step.message)
-      throw new Error('A selected native registration has no resolved type or SDK message.');
-    const assembly = assemblyFiles.get(step.assemblyId);
-    if (!assembly) throw new Error('A selected native registration has no verified original assembly.');
-    const assemblyName = path.basename(assembly.file);
+    if (!shouldPrepareNativeStep(step, selected)) continue;
+    const { assembly, assemblyName } = nativeStepAssembly(step, assemblyFiles);
     await fs.writeFile(path.join(workRoot, assemblyName), assembly.bytes);
-    const profile = serviceProfiles.find(
-      (profile) => profile.userId.toLowerCase() === (context.userId ?? context.initiatingUserId).toLowerCase(),
-    );
-    if (!profile) throw new Error('The observed runtime caller has no explicit backend grant profile.');
-    const descriptor = validateClrDescriptor({
-      trust: 'execute-local-assembly',
-      root: workRoot,
-      assembly: assemblyName,
-      typeName: step.typeName,
-      sdkRoot: path.dirname(sdkAssembly),
-      sdkAssembly: path.basename(sdkAssembly),
-      dependencies: proxyBytes ? [path.basename(proxyAssembly)] : [],
-      cacheRoot: path.resolve(cacheRoot, 'hosts'),
-      serviceProfile: profile,
-      sdkCallerProfiles: serviceProfiles.filter((item) => item !== profile),
-      context: { ...context, ...(step.impersonatingUserId ? { executionUserId: step.impersonatingUserId } : {}) },
-      unsecureConfiguration: configuration.get(step.id) ?? null,
-      secureConfiguration: secureConfigurationByStep[step.id] ?? null,
-      timeoutMs: 10000,
-      persistentHost,
-    });
-    const key = `${assembly.sha256}/${step.typeName}`;
+    const descriptor = nativeRuntimeDescriptor(step, runtimeContext, assemblyName),
+      key = `${assembly.sha256}/${step.typeName}`;
     if (!prepared.has(key)) prepared.set(key, await prepareClrRuntime(descriptor));
     const runtime = { ...prepared.get(key), descriptor };
     runtimes.set(step.id, runtime);
@@ -318,34 +396,13 @@ export async function prepareNativeReplayPlugins({
         'Only explicitly supplied installation-safe fixtures; native secure values are never read or copied',
     },
     setReadContext(snapshot) {
-      const observed = contextFromNativeCapture(snapshot),
-        profile = serviceProfiles.find((profile) => profile.userId.toLowerCase() === observed.userId.toLowerCase());
-      if (!profile) throw new Error('The observed read caller has no explicit backend grant profile.');
-      for (const runtime of runtimes.values()) {
-        const executionUserId = runtime.descriptor.context.executionUserId;
-        runtime.descriptor = validateClrDescriptor({
-          ...runtime.descriptor,
-          serviceProfile: profile,
-          sdkCallerProfiles: serviceProfiles.filter((item) => item !== profile),
-          context: { ...observed, ...(executionUserId ? { executionUserId } : {}) },
-        });
-      }
+      setNativeRuntimeReadContext(runtimes, serviceProfiles, snapshot);
     },
     close(diagnostic = () => {}) {
-      for (const runtime of runtimes.values()) closeClrHostPool({ runtime, diagnostic });
+      closeNativeRuntimes(runtimes, diagnostic);
     },
     bind(store, diagnostic = () => {}) {
-      store.setPluginPipeline(
-        (event) => runPluginPhase({ ...event, store, items, runtimes, diagnostic }),
-        (event) =>
-          items.some(
-            (item) =>
-              item.enabled &&
-              pluginStepMatchesEntity(item, event.entity) &&
-              String(item.message).toLowerCase() === event.operation &&
-              runtimes.has(item.id),
-          ),
-      );
+      bindNativeRuntimePipeline(store, items, runtimes, diagnostic);
     },
   };
 }
@@ -420,21 +477,20 @@ export function compareRecordedContexts(native, local) {
     'OperationId',
     'OperationCreatedOn',
   ];
-  const stable = (value, field) =>
-    ['CorrelationId', 'RequestId', 'OperationId'].includes(field)
-      ? generatedGuid(value)
-      : field === 'OperationCreatedOn'
-        ? generatedTime(value)
-        : field === 'sharedVariables' && value
-          ? {
-              ...value,
-              ...(Object.hasOwn(value, 'pqvd.lab.span') ? { 'pqvd.lab.span': spanDto(value['pqvd.lab.span']) } : {}),
-            }
-          : field === 'parents' && Array.isArray(value)
-            ? value.map((parent) =>
-                Object.fromEntries(Object.entries(parent).map(([key, item]) => [key, stable(item, key)])),
-              )
-            : value;
+  const stable = (value, field) => {
+    if (['CorrelationId', 'RequestId', 'OperationId'].includes(field)) return generatedGuid(value);
+    if (field === 'OperationCreatedOn') return generatedTime(value);
+    if (field === 'sharedVariables' && value)
+      return {
+        ...value,
+        ...(Object.hasOwn(value, 'pqvd.lab.span') ? { 'pqvd.lab.span': spanDto(value['pqvd.lab.span']) } : {}),
+      };
+    if (field === 'parents' && Array.isArray(value))
+      return value.map((parent) =>
+        Object.fromEntries(Object.entries(parent).map(([key, item]) => [key, stable(item, key)])),
+      );
+    return value;
+  };
   const differences = fields
     .filter(
       (field) =>
@@ -468,12 +524,11 @@ export function compareRecordedPluginArtifacts(native, local) {
     'spanId',
     'parentSpanId',
   ];
-  const normalize = (value, key) =>
-    key === 'captureTime'
-      ? generatedCaptureTime(value)
-      : ['spanId', 'parentSpanId'].includes(key)
-        ? generatedGuid(value)
-        : value;
+  const normalize = (value, key) => {
+    if (key === 'captureTime') return generatedCaptureTime(value);
+    if (['spanId', 'parentSpanId'].includes(key)) return generatedGuid(value);
+    return value;
+  };
   const differences = fields
     .filter(
       (field) =>
@@ -492,14 +547,7 @@ export function compareRecordedPluginArtifacts(native, local) {
 /** Load frozen native records, including platform defaults absent from seed
  * manifests. Metadata resolves lookup targets; no identity or grant is inferred
  * from the source rows. This is an explicit local snapshot replacement. */
-export function applyNativeDataSnapshot(store, snapshot, { rowVersions = snapshot?.rowVersions ?? {} } = {}) {
-  if (!snapshot?.tables || !snapshot.projections)
-    throw new Error('A complete native data/projection snapshot is required.');
-  const tables = structuredClone(store.state.tables),
-    mappings = structuredClone(store.state.mappings);
-  const sourceTables = structuredClone(snapshot.tables),
-    actor = structuredClone(snapshot.actorBinding?.actor),
-    customer = snapshot.actorBinding?.customer;
+function bindNativeSnapshotActor(store, mappings, sourceTables, snapshot, actor, customer) {
   if (actor && customer) {
     const definition = store.fieldDefinition('contact', 'parentcustomerid');
     mappings.contact.fields ??= {};
@@ -510,40 +558,64 @@ export function applyNativeDataSnapshot(store, snapshot, { rowVersions = snapsho
     };
     actor['_parentcustomerid_value@Microsoft.Dynamics.CRM.lookuplogicalname'] = customer.type;
   }
-  if (actor) {
-    if (actor.contactid !== snapshot.contactId) throw new Error('Native actor binding identifies a different Contact.');
-    sourceTables.contact ??= [];
-    const existing = sourceTables.contact.find((row) => row.contactid === actor.contactid);
-    if (
-      existing &&
-      Object.entries(actor).some(
-        ([field, value]) => Object.hasOwn(existing, field) && JSON.stringify(existing[field]) !== JSON.stringify(value),
-      )
+  if (!actor) return;
+  if (actor.contactid !== snapshot.contactId) throw new Error('Native actor binding identifies a different Contact.');
+  sourceTables.contact ??= [];
+  const existing = sourceTables.contact.find((row) => row.contactid === actor.contactid);
+  if (
+    existing &&
+    Object.entries(actor).some(
+      ([field, value]) => Object.hasOwn(existing, field) && JSON.stringify(existing[field]) !== JSON.stringify(value),
     )
-      throw new Error('Native actor binding conflicts with frozen fixture fields.');
-    if (existing) Object.assign(existing, actor);
-    else sourceTables.contact.push(actor);
+  )
+    throw new Error('Native actor binding conflicts with frozen fixture fields.');
+  if (existing) Object.assign(existing, actor);
+  else sourceTables.contact.push(actor);
+}
+function bindNativeSnapshotCustomer(sourceTables, actor, customer) {
+  if (!customer) return;
+  if (
+    !['account', 'contact'].includes(customer.type) ||
+    customer.row?.[customer.type + 'id'] !== customer.id ||
+    actor?._parentcustomerid_value !== customer.id
+  )
+    throw new Error('Native typed customer binding conflicts with its actor lookup.');
+  sourceTables[customer.type] ??= [];
+  const primary = customer.type + 'id',
+    existing = sourceTables[customer.type].find((row) => row[primary] === customer.id);
+  if (
+    existing &&
+    Object.entries(customer.row).some(
+      ([field, value]) => Object.hasOwn(existing, field) && JSON.stringify(existing[field]) !== JSON.stringify(value),
+    )
+  )
+    throw new Error('Native customer binding conflicts with frozen fixture fields.');
+  if (existing) Object.assign(existing, customer.row);
+  else sourceTables[customer.type].push(customer.row);
+}
+/* NOSONAR */ function mapNativeSnapshotRow(store, mappings, entity, mapping, source, snapshot, rowVersions) {
+  const row = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (key.startsWith('@') || key.includes('@')) continue;
+    const lookup = /^_(.+)_value$/.exec(key),
+      field = lookup?.[1],
+      targets =
+        field && (mappings[mapping.logicalName].fields?.[field] ?? store.fieldDefinition(entity, field))?.targets,
+      annotation = lookup && source[`${key}@Microsoft.Dynamics.CRM.lookuplogicalname`];
+    if (annotation && (!/^[a-z][a-z\d_]*$/i.test(annotation) || (targets?.length && !targets.includes(annotation))))
+      throw new Error('Native lookup annotation conflicts with declared target metadata.');
+    const target = annotation ?? (targets?.length === 1 ? targets[0] : null);
+    if (lookup && value !== null && target) row[field] = { id: value, logical_name: target };
+    else row[field ?? key] = value;
   }
-  if (customer) {
-    if (
-      !['account', 'contact'].includes(customer.type) ||
-      customer.row?.[customer.type + 'id'] !== customer.id ||
-      actor?._parentcustomerid_value !== customer.id
-    )
-      throw new Error('Native typed customer binding conflicts with its actor lookup.');
-    sourceTables[customer.type] ??= [];
-    const primary = customer.type + 'id',
-      existing = sourceTables[customer.type].find((row) => row[primary] === customer.id);
-    if (
-      existing &&
-      Object.entries(customer.row).some(
-        ([field, value]) => Object.hasOwn(existing, field) && JSON.stringify(existing[field]) !== JSON.stringify(value),
-      )
-    )
-      throw new Error('Native customer binding conflicts with frozen fixture fields.');
-    if (existing) Object.assign(existing, customer.row);
-    else sourceTables[customer.type].push(customer.row);
-  }
+  const version =
+    entity === 'contact' && row.contactid === snapshot.contactId && rowVersions.actor?.contact != null
+      ? rowVersions.actor.contact
+      : rowVersions[entity]?.[row[mapping.idColumn]];
+  if (version !== undefined) row.versionnumber = version;
+  return row;
+}
+function mapNativeSnapshotTables(store, mappings, sourceTables, snapshot, rowVersions, tables) {
   for (const [entity, rows] of Object.entries(sourceTables)) {
     if (!Array.isArray(rows) || rows.length > 10000) throw new Error('Native snapshot table exceeds local bounds.');
     const mapping = store.resolveMapping(entity);
@@ -552,35 +624,31 @@ export function applyNativeDataSnapshot(store, snapshot, { rowVersions = snapsho
       mappings[mapping.logicalName].fields ??= {};
       mappings[mapping.logicalName].fields.versionnumber = { type: 'bigint' };
     }
-    tables[mapping.logicalName] = rows.map((source) => {
-      const row = {};
-      for (const [key, value] of Object.entries(source)) {
-        if (key.startsWith('@') || key.includes('@')) continue;
-        const lookup = /^_(.+)_value$/.exec(key),
-          field = lookup?.[1],
-          targets =
-            field && (mappings[mapping.logicalName].fields?.[field] ?? store.fieldDefinition(entity, field))?.targets,
-          annotation = lookup && source[`${key}@Microsoft.Dynamics.CRM.lookuplogicalname`];
-        if (annotation && (!/^[a-z][a-z\d_]*$/i.test(annotation) || (targets?.length && !targets.includes(annotation))))
-          throw new Error('Native lookup annotation conflicts with declared target metadata.');
-        const target = annotation ?? (targets?.length === 1 ? targets[0] : null);
-        if (lookup && value !== null && target) row[field] = { id: value, logical_name: target };
-        else row[field ?? key] = value;
-      }
-      const version =
-        entity === 'contact' && row.contactid === snapshot.contactId && rowVersions.actor?.contact != null
-          ? rowVersions.actor.contact
-          : rowVersions[entity]?.[row[mapping.idColumn]];
-      if (version !== undefined) row.versionnumber = version;
-      return row;
-    });
+    tables[mapping.logicalName] = rows.map((source) =>
+      mapNativeSnapshotRow(store, mappings, entity, mapping, source, snapshot, rowVersions),
+    );
   }
+}
+function applyNativeSnapshotProjections(store, snapshot, tables) {
   for (const [schemaName, rows] of Object.entries(snapshot.projections)) {
     const relationship = store.state.relationships?.[schemaName];
     if (!relationship?.intersectEntity) throw new Error('Native projection has no exact imported relationship.');
     if (!Array.isArray(rows) || rows.length > 10000) throw new Error('Native projection exceeds local bounds.');
     tables[relationship.intersectEntity] = structuredClone(rows);
   }
+}
+export function applyNativeDataSnapshot(store, snapshot, { rowVersions = snapshot?.rowVersions ?? {} } = {}) {
+  if (!snapshot?.tables || !snapshot.projections)
+    throw new Error('A complete native data/projection snapshot is required.');
+  const tables = structuredClone(store.state.tables),
+    mappings = structuredClone(store.state.mappings);
+  const sourceTables = structuredClone(snapshot.tables),
+    actor = structuredClone(snapshot.actorBinding?.actor),
+    customer = snapshot.actorBinding?.customer;
+  bindNativeSnapshotActor(store, mappings, sourceTables, snapshot, actor, customer);
+  bindNativeSnapshotCustomer(sourceTables, actor, customer);
+  mapNativeSnapshotTables(store, mappings, sourceTables, snapshot, rowVersions, tables);
+  applyNativeSnapshotProjections(store, snapshot, tables);
   store.state.tables = tables;
   store.state.mappings = mappings;
   Object.defineProperty(store, 'nativeReadSnapshot', {
@@ -655,18 +723,7 @@ export function validateNativeReadWitness(witness, receipt, loaded) {
 }
 
 const finalObserverWitnesses = new WeakSet();
-/** Derive the narrower final-query/wire scope from actual paired calibration.
- * A caller-supplied verified Boolean cannot activate this observation profile. */
-export function validateFinalQueryObserverWitness(calibration) {
-  const { full, final } = calibration ?? {};
-  if (
-    !full?.capture ||
-    !final?.capture ||
-    !Array.isArray(full.registration?.steps) ||
-    !Array.isArray(final.registration?.steps)
-  )
-    throw new Error('Actual paired full/final observer calibration is required.');
-  const snapshots = [full.before, full.after, final.before, final.after];
+function validateObserverSnapshots(snapshots) {
   for (const field of [
     'permissionSnapshotHash',
     'membershipSnapshotHash',
@@ -685,21 +742,23 @@ export function validateFinalQueryObserverWitness(calibration) {
       )
     )
       throw new Error('Observer calibration graph, actor, membership, data or versions changed.');
-  const siteHashes = [full.siteBefore, full.siteAfter, final.siteBefore, final.siteAfter].map((rows) => {
-    const result = validateNativeWireWitness({ before: rows, after: rows });
-    if (!result.verified) throw new Error('Observer calibration requires complete source freezes.');
-    return result.beforeHash;
-  });
-  if (new Set(siteHashes).size !== 1) throw new Error('Observer calibration consumed site source changed.');
-  const typeId = calibration.observerTypeId;
+}
+function validateObserverType(typeId) {
   if (!/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/.test(typeId ?? ''))
     throw new Error('Observer calibration requires its exact exported observer type.');
-  const enabled = final.registration.steps.filter((row) => row._eventhandler_value === typeId && row.statecode === 0);
+}
+function observerRegistration(calibration, typeId) {
+  const enabled = calibration.final.registration.steps.filter(
+    (row) => row._eventhandler_value === typeId && row.statecode === 0,
+  );
   if (!enabled.length || enabled.some((row) => row.stage !== 20 || row.rank !== 9900 || row.mode !== 0))
     throw new Error('Final observation requires only synchronous final20 observer declarations.');
   const finalStepIds = enabled.map((row) => row.sdkmessageprocessingstepid),
-    fullSteps = new Map(full.registration.steps.map((row) => [row.sdkmessageprocessingstepid, row]));
-  if (fullSteps.size !== full.registration.steps.length || final.registration.steps.length !== fullSteps.size)
+    fullSteps = new Map(calibration.full.registration.steps.map((row) => [row.sdkmessageprocessingstepid, row]));
+  if (
+    fullSteps.size !== calibration.full.registration.steps.length ||
+    calibration.final.registration.steps.length !== fullSteps.size
+  )
     throw new Error('Observer registration identities changed.');
   const registrationView = (registration, allowState) => ({
     ...registration,
@@ -713,141 +772,175 @@ export function validateFinalQueryObserverWitness(calibration) {
     }),
   });
   if (
-    nativeRegistrationFingerprint(registrationView(full.registration, true)) !==
-    nativeRegistrationFingerprint(registrationView(final.registration, true))
+    nativeRegistrationFingerprint(registrationView(calibration.full.registration, true)) !==
+    nativeRegistrationFingerprint(registrationView(calibration.final.registration, true))
   )
     throw new Error('Observer calibration changed configuration, handlers or unrelated registrations.');
   for (const step of enabled) {
     const original = fullSteps.get(step.sdkmessageprocessingstepid);
     if (original?.statecode !== 0) throw new Error('Final observer was not active in its full calibration.');
   }
-  const artifacts = {
-      full: recordedPluginPayloads(full.capture.backendEvents),
-      final: recordedPluginPayloads(final.capture.backendEvents),
-    },
-    key = (request) => JSON.stringify([request.caseId, request.variant, request.lane, request.page ?? 1]),
-    byKey = new Map(full.capture.requests.map((request) => [key(request), request]));
+  return { enabled, finalStepIds };
+}
+function validateCalibrationArtifacts(calibration, artifacts, typeId) {
   for (const [side, events] of Object.entries(artifacts))
     for (const event of events) {
       const declared = calibration[side].registration.steps.find(
         (row) => row.sdkmessageprocessingstepid === event.context?.owningExtension?.id,
       );
       if (
-        !declared ||
-        declared.statecode !== 0 ||
+        declared?.statecode !== 0 ||
         declared.stage !== event.context.Stage ||
         declared._eventhandler_value !== typeId ||
         !calibration[side].capture.requests.some((request) => request.operationId === event.operationId)
       )
         throw new Error('Observer calibration artifacts do not bind active declared source steps and requests.');
     }
+}
+function calibrationMarker(request) {
+  const text = request.authoredFetchXml ?? new URL(request.url, 'http://127.0.0.1').searchParams.get('$filter') ?? '',
+    values = [...text.matchAll(/CO-UTC:\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g)].map((match) => match[0]);
+  if (new Set(values).size !== 1) throw new Error('Observer calibration authored UTC binding is missing or ambiguous.');
+  return values[0];
+}
+function authoredCalibrationQuery(text, request) {
+  return typeof text === 'string'
+    ? text
+        .replaceAll('CO-OP:' + request.operationId, 'CO-OP:[operation]')
+        .replaceAll(calibrationMarker(request), 'CO-UTC:[time]')
+    : text;
+}
+function calibrationSource(request) {
+  if (request.authoredFetchXml) return authoredCalibrationQuery(request.authoredFetchXml, request);
+  const url = new URL(request.url, 'http://127.0.0.1');
+  return (
+    url.pathname +
+    '?' +
+    [...url.searchParams]
+      .map(([name, value]) => [name, authoredCalibrationQuery(value, request)])
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map((row) => JSON.stringify(row))
+      .join('&')
+  );
+}
+function validateCalibrationEventPair(a, b, original, request, finalStepIds) {
+  if (
+    a.length !== b.length ||
+    b.some((row) => row.context?.Stage !== 20 || !finalStepIds.includes(row.context?.owningExtension?.id))
+  )
+    throw new Error('Final observer artifact inventory differs from its calibrated full profile.');
+  for (const event of b) {
+    const match = a.find((row) => row.context.owningExtension.id === event.context.owningExtension.id);
+    if (
+      !match ||
+      typeof event.content?.query?.xml !== 'string' ||
+      authoredCalibrationQuery(match.content?.query?.xml, original) !==
+        authoredCalibrationQuery(event.content.query.xml, request) ||
+      stableAssembly(match.assemblyIdentity) !== stableAssembly(event.assemblyIdentity)
+    )
+      throw new Error('Final native query or original assembly differs between full/final profiles.');
+  }
+}
+function validateCalibrationPositive(fullCapture, a, fullEvents, request, original) {
+  const positive =
+    request.lane === 'webapi'
+      ? fullCapture.results.find((row) => row.operationId === original.operationId)?.status === 200
+      : fullCapture.liquidPages?.find((row) => row.operationId === original.operationId)?.outcome === 'success';
+  if (
+    a.length &&
+    positive &&
+    !fullEvents.some(
+      (row) =>
+        row.context?.Stage === 40 &&
+        row.context.output?.BusinessEntityCollection?.type === 'EntityCollection' &&
+        row.context.output.BusinessEntityCollection.truncated === false,
+    )
+  )
+    throw new Error('Full positive calibration lacks its complete actual Stage40 SDK observation.');
+}
+function validateCalibrationWire(fullCapture, finalCapture, request, original) {
+  if (request.lane === 'webapi') {
+    const left = fullCapture.results.find((row) => row.operationId === original.operationId),
+      right = finalCapture.results.find((row) => row.operationId === request.operationId);
+    if (
+      !left ||
+      !right ||
+      left.status !== right.status ||
+      JSON.stringify(canonical(normalizeWire(parseExactJson(left.body)))) !==
+        JSON.stringify(canonical(normalizeWire(parseExactJson(right.body))))
+    )
+      throw new Error('Full/final actual HTTP wire differs or is missing.');
+    return;
+  }
+  const left = fullCapture.liquidPages?.find((row) => row.operationId === original.operationId),
+    right = finalCapture.liquidPages?.find((row) => row.operationId === request.operationId),
+    page = (row, source) =>
+      row
+        ? {
+            ...row,
+            operationId: '[operation]',
+            authoredFetchXml: authoredCalibrationQuery(row.authoredFetchXml, source),
+            effectiveFetchXml: authoredCalibrationQuery(row.effectiveFetchXml, source),
+          }
+        : null;
+  if (
+    !left ||
+    !right ||
+    JSON.stringify(canonical(page(left, original))) !== JSON.stringify(canonical(page(right, request)))
+  )
+    throw new Error('Full/final actual Liquid wire differs or is missing.');
+}
+/** Derive the narrower final-query/wire scope from actual paired calibration.
+ * A caller-supplied verified Boolean cannot activate this observation profile. */
+export function validateFinalQueryObserverWitness(calibration) {
+  const { full, final } = calibration ?? {};
+  if (
+    !full?.capture ||
+    !final?.capture ||
+    !Array.isArray(full.registration?.steps) ||
+    !Array.isArray(final.registration?.steps)
+  )
+    throw new Error('Actual paired full/final observer calibration is required.');
+  const snapshots = [full.before, full.after, final.before, final.after];
+  validateObserverSnapshots(snapshots);
+  const siteHashes = [full.siteBefore, full.siteAfter, final.siteBefore, final.siteAfter].map((rows) => {
+    const result = validateNativeWireWitness({ before: rows, after: rows });
+    if (!result.verified) throw new Error('Observer calibration requires complete source freezes.');
+    return result.beforeHash;
+  });
+  if (new Set(siteHashes).size !== 1) throw new Error('Observer calibration consumed site source changed.');
+  const typeId = calibration.observerTypeId;
+  validateObserverType(typeId);
+  const { finalStepIds } = observerRegistration(calibration, typeId);
+  const artifacts = {
+      full: recordedPluginPayloads(full.capture.backendEvents),
+      final: recordedPluginPayloads(final.capture.backendEvents),
+    },
+    key = (request) => JSON.stringify([request.caseId, request.variant, request.lane, request.page ?? 1]),
+    byKey = new Map(full.capture.requests.map((request) => [key(request), request]));
+  validateCalibrationArtifacts(calibration, artifacts, typeId);
   if (
     byKey.size !== full.capture.requests.length ||
     final.capture.requests.length !== byKey.size ||
     new Set(final.capture.requests.map(key)).size !== byKey.size
   )
     throw new Error('Observer calibration must cover the same complete physical request inventory.');
-  const marker = (request) => {
-    const text = request.authoredFetchXml ?? new URL(request.url, 'http://127.0.0.1').searchParams.get('$filter') ?? '',
-      values = [...text.matchAll(/CO-UTC:\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g)].map((match) => match[0]);
-    if (new Set(values).size !== 1)
-      throw new Error('Observer calibration authored UTC binding is missing or ambiguous.');
-    return values[0];
-  };
-  const authored = (text, request) =>
-    typeof text === 'string'
-      ? text
-          .replaceAll('CO-OP:' + request.operationId, 'CO-OP:[operation]')
-          .replaceAll(marker(request), 'CO-UTC:[time]')
-      : text;
-  const source = (request) =>
-    request.authoredFetchXml
-      ? authored(request.authoredFetchXml, request)
-      : (() => {
-          const url = new URL(request.url, 'http://127.0.0.1');
-          return (
-            url.pathname +
-            '?' +
-            [...url.searchParams]
-              .map(([name, value]) => [name, authored(value, request)])
-              .sort(([a], [b]) => a.localeCompare(b))
-              .map((row) => JSON.stringify(row))
-              .join('&')
-          );
-        })();
   let observed = 0,
     backendless = 0;
   for (const request of final.capture.requests) {
     const original = byKey.get(key(request));
-    if (!original || source(original) !== source(request))
+    if (!original || calibrationSource(original) !== calibrationSource(request))
       throw new Error('Observer calibration changed caller-authored query inputs.');
     const a = artifacts.full.filter(
         (row) => row.operationId === original.operationId && finalStepIds.includes(row.context?.owningExtension?.id),
       ),
       b = artifacts.final.filter((row) => row.operationId === request.operationId);
-    if (
-      a.length !== b.length ||
-      b.some((row) => row.context?.Stage !== 20 || !finalStepIds.includes(row.context?.owningExtension?.id))
-    )
-      throw new Error('Final observer artifact inventory differs from its calibrated full profile.');
-    for (const event of b) {
-      const match = a.find((row) => row.context.owningExtension.id === event.context.owningExtension.id);
-      if (
-        !match ||
-        typeof event.content?.query?.xml !== 'string' ||
-        authored(match.content?.query?.xml, original) !== authored(event.content.query.xml, request) ||
-        stableAssembly(match.assemblyIdentity) !== stableAssembly(event.assemblyIdentity)
-      )
-        throw new Error('Final native query or original assembly differs between full/final profiles.');
-    }
+    validateCalibrationEventPair(a, b, original, request, finalStepIds);
     if (b.length) observed++;
     else backendless++;
-    const fullEvents = artifacts.full.filter((row) => row.operationId === original.operationId),
-      positive =
-        request.lane === 'webapi'
-          ? full.capture.results.find((row) => row.operationId === original.operationId)?.status === 200
-          : full.capture.liquidPages?.find((row) => row.operationId === original.operationId)?.outcome === 'success';
-    if (
-      a.length &&
-      positive &&
-      !fullEvents.some(
-        (row) =>
-          row.context?.Stage === 40 &&
-          row.context.output?.BusinessEntityCollection?.type === 'EntityCollection' &&
-          row.context.output.BusinessEntityCollection.truncated === false,
-      )
-    )
-      throw new Error('Full positive calibration lacks its complete actual Stage40 SDK observation.');
-    if (request.lane === 'webapi') {
-      const left = full.capture.results.find((row) => row.operationId === original.operationId),
-        right = final.capture.results.find((row) => row.operationId === request.operationId);
-      if (
-        !left ||
-        !right ||
-        left.status !== right.status ||
-        JSON.stringify(canonical(normalizeWire(parseExactJson(left.body)))) !==
-          JSON.stringify(canonical(normalizeWire(parseExactJson(right.body))))
-      )
-        throw new Error('Full/final actual HTTP wire differs or is missing.');
-    } else {
-      const left = full.capture.liquidPages?.find((row) => row.operationId === original.operationId),
-        right = final.capture.liquidPages?.find((row) => row.operationId === request.operationId),
-        page = (row, source) =>
-          row
-            ? {
-                ...row,
-                operationId: '[operation]',
-                authoredFetchXml: authored(row.authoredFetchXml, source),
-                effectiveFetchXml: authored(row.effectiveFetchXml, source),
-              }
-            : null;
-      if (
-        !left ||
-        !right ||
-        JSON.stringify(canonical(page(left, original))) !== JSON.stringify(canonical(page(right, request)))
-      )
-        throw new Error('Full/final actual Liquid wire differs or is missing.');
-    }
+    const fullEvents = artifacts.full.filter((row) => row.operationId === original.operationId);
+    validateCalibrationPositive(full.capture, a, fullEvents, request, original);
+    validateCalibrationWire(full.capture, final.capture, request, original);
   }
   if (!observed) throw new Error('Observer calibration has no actual final-query callback evidence.');
   const witness = Object.freeze({
@@ -1055,62 +1148,67 @@ export function nativeReadRequestInput(store, request, liquidPage) {
 /** Bind the actually consumed template/settings inputs to complete native site
  * component readbacks. Query-template replay excludes dispatcher/authentication
  * execution; this receipt never labels an unrendered page or script as executed. */
+function cleanNativeWireValue(value) {
+  if (Array.isArray(value)) return value.map(cleanNativeWireValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !key.startsWith('@'))
+      .map(([key, item]) => [key, cleanNativeWireValue(item)]),
+  );
+}
+function nativeWireComponents(rows) {
+  return Array.isArray(rows)
+    ? rows
+        .map(cleanNativeWireValue)
+        .sort((a, b) => String(a.powerpagecomponentid).localeCompare(String(b.powerpagecomponentid)))
+    : null;
+}
+function nativeWireSource(before, type, name, reasons, consumed) {
+  const rows = before.filter((row) => row.powerpagecomponenttype === type && row.statecode === 0 && row.name === name);
+  if (rows.length !== 1) {
+    reasons.push('sourceMissingOrAmbiguous');
+    return null;
+  }
+  const row = rows[0];
+  let content;
+  try {
+    content = JSON.parse(row.content);
+  } catch {
+    reasons.push('sourceContent');
+    return null;
+  }
+  consumed.push({ id: row.powerpagecomponentid, sha256: hash(Buffer.from(row.content)) });
+  return content;
+}
+function validateWebApiWireSettings(webApiPortal, before, reasons, consumed) {
+  if (!webApiPortal) return;
+  for (const [name, value] of Object.entries(webApiPortal.settings ?? {}))
+    if (nativeWireSource(before, 9, name, reasons, consumed)?.value !== value) reasons.push('webApiSetting');
+}
+function validateLiquidWireInputs(liquidReplay, before, reasons, consumed) {
+  if (!liquidReplay) return;
+  for (const template of liquidReplay.templates ?? [])
+    if (nativeWireSource(before, 8, template.name, reasons, consumed)?.source !== template.source)
+      reasons.push('queryTemplateSource');
+  for (const [name, value] of Object.entries(liquidReplay.portal?.settings ?? {}))
+    if (nativeWireSource(before, 9, name, reasons, consumed)?.value !== value) reasons.push('liquidSetting');
+  const dispatcher = nativeWireSource(before, 8, 'CO Permission Lab Liquid Dispatcher', reasons, consumed)?.source;
+  if (/assign dataset_version = '([^']+)'/.exec(dispatcher ?? '')?.[1] !== liquidReplay.datasetVersion)
+    reasons.push('datasetVersionInput');
+}
 export function validateNativeWireWitness(witness, { webApiPortal, liquidReplay } = {}) {
-  const reasons = [],
-    clean = (value) =>
-      Array.isArray(value)
-        ? value.map(clean)
-        : value && typeof value === 'object'
-          ? Object.fromEntries(
-              Object.entries(value)
-                .filter(([key]) => !key.startsWith('@'))
-                .map(([key, item]) => [key, clean(item)]),
-            )
-          : value;
-  const components = (rows) =>
-    Array.isArray(rows)
-      ? rows.map(clean).sort((a, b) => String(a.powerpagecomponentid).localeCompare(String(b.powerpagecomponentid)))
-      : null;
-  const before = components(witness?.before),
-    after = components(witness?.after),
+  const reasons = [];
+  const before = nativeWireComponents(witness?.before),
+    after = nativeWireComponents(witness?.after),
     consumed = [];
   if (!before || !after || !before.length || before.some((row) => !row.powerpagecomponentid))
     return { verified: false, reasons: ['siteComponents'], consumed };
   const beforeHash = hash(Buffer.from(JSON.stringify(canonical(before)))),
     afterHash = hash(Buffer.from(JSON.stringify(canonical(after))));
   if (beforeHash !== afterHash) reasons.push('siteSourceChanged');
-  const source = (type, name) => {
-    const rows = before.filter(
-      (row) => row.powerpagecomponenttype === type && row.statecode === 0 && row.name === name,
-    );
-    if (rows.length !== 1) {
-      reasons.push('sourceMissingOrAmbiguous');
-      return null;
-    }
-    const row = rows[0];
-    let content;
-    try {
-      content = JSON.parse(row.content);
-    } catch {
-      reasons.push('sourceContent');
-      return null;
-    }
-    consumed.push({ id: row.powerpagecomponentid, sha256: hash(Buffer.from(row.content)) });
-    return content;
-  };
-  if (webApiPortal)
-    for (const [name, value] of Object.entries(webApiPortal.settings ?? {})) {
-      if (source(9, name)?.value !== value) reasons.push('webApiSetting');
-    }
-  if (liquidReplay) {
-    for (const template of liquidReplay.templates ?? [])
-      if (source(8, template.name)?.source !== template.source) reasons.push('queryTemplateSource');
-    for (const [name, value] of Object.entries(liquidReplay.portal?.settings ?? {}))
-      if (source(9, name)?.value !== value) reasons.push('liquidSetting');
-    const dispatcher = source(8, 'CO Permission Lab Liquid Dispatcher')?.source;
-    if (/assign dataset_version = '([^']+)'/.exec(dispatcher ?? '')?.[1] !== liquidReplay.datasetVersion)
-      reasons.push('datasetVersionInput');
-  }
+  validateWebApiWireSettings(webApiPortal, before, reasons, consumed);
+  validateLiquidWireInputs(liquidReplay, before, reasons, consumed);
   return {
     verified: reasons.length === 0,
     reasons: [...new Set(reasons)],
@@ -1124,6 +1222,49 @@ export function validateNativeWireWitness(witness, { webApiPortal, liquidReplay 
 
 /** Recorder reads are source inputs, not reconstructed expected query outputs.
  * Older captures lack these readbacks and retain their narrower proof scope. */
+/* NOSONAR */ function convertNativeRecorderRow(store, platformTargets, entity, source) {
+  const mapping = store.resolveMapping(entity),
+    row = {};
+  if (!source || typeof source !== 'object' || Array.isArray(source))
+    throw new Error('Native recorder readback is not a record.');
+  for (const [key, value] of Object.entries(source)) {
+    if (key.startsWith('@') || key.includes('@')) continue;
+    const lookup = /^_(.+)_value$/.exec(key),
+      field = lookup?.[1] ?? key,
+      annotation = source[key + '@Microsoft.Dynamics.CRM.lookuplogicalname'],
+      targets = lookup && (store.fieldDefinition(entity, field)?.targets ?? platformTargets[field]),
+      target = annotation ?? (targets?.length === 1 ? targets[0] : null);
+    if (annotation && targets?.length && !targets.includes(annotation))
+      throw new Error('Native recorder lookup conflicts with source metadata.');
+    if (lookup && value != null && !target) throw new Error('Native recorder lookup requires typed source metadata.');
+    row[field] = lookup && value != null ? { id: value, logical_name: target } : value;
+  }
+  const etag = /^W\/"(\d+)"$/.exec(source['@odata.etag'] ?? '');
+  if (!etag || !row[mapping.idColumn] || !row.createdby?.id)
+    throw new Error('Native recorder readback lacks identity, creator or RowVersion.');
+  row.versionnumber = etag[1];
+  return row;
+}
+function validateNativeRecorderOperation(store, capture, operation, request, actor) {
+  const authored = nativeReadRequestInput(
+    store,
+    request,
+    (capture.liquidPages ?? []).find((row) => row.operationId === request.operationId),
+  );
+  if (
+    !operation ||
+    operation.pqvd_runid?.id !== capture.runId ||
+    operation.pqvd_runnercontactid?.id !== actor ||
+    operation.pqvd_markeroperation !== 'CO-OP:' + request.operationId ||
+    operation.pqvd_markerutc !== authored.marker ||
+    operation.pqvd_roottable !== authored.table ||
+    operation.pqvd_expectedmessage !== 'RetrieveMultiple' ||
+    operation.pqvd_lane !== (request.lane === 'liquid' ? 183270000 : 183270001) ||
+    operation.pqvd_caseid !== request.caseId ||
+    operation.pqvd_variant !== request.variant
+  )
+    throw new Error('Native recorder operation does not bind its authored physical request.');
+}
 export function nativeRecordingInputs(store, capture, identity) {
   if (capture.recordingInputs === undefined)
     return {
@@ -1146,55 +1287,16 @@ export function nativeRecordingInputs(store, capture, identity) {
     owningteam: ['team'],
     owningbusinessunit: ['businessunit'],
   };
-  const convert = (entity, source) => {
-    const mapping = store.resolveMapping(entity),
-      row = {};
-    if (!source || typeof source !== 'object' || Array.isArray(source))
-      throw new Error('Native recorder readback is not a record.');
-    for (const [key, value] of Object.entries(source)) {
-      if (key.startsWith('@') || key.includes('@')) continue;
-      const lookup = /^_(.+)_value$/.exec(key),
-        field = lookup?.[1] ?? key,
-        annotation = source[key + '@Microsoft.Dynamics.CRM.lookuplogicalname'],
-        targets = lookup && (store.fieldDefinition(entity, field)?.targets ?? platformTargets[field]),
-        target = annotation ?? (targets?.length === 1 ? targets[0] : null);
-      if (annotation && targets?.length && !targets.includes(annotation))
-        throw new Error('Native recorder lookup conflicts with source metadata.');
-      if (lookup && value != null && !target) throw new Error('Native recorder lookup requires typed source metadata.');
-      row[field] = lookup && value != null ? { id: value, logical_name: target } : value;
-    }
-    const etag = /^W\/"(\d+)"$/.exec(source['@odata.etag'] ?? '');
-    if (!etag || !row[mapping.idColumn] || !row.createdby?.id)
-      throw new Error('Native recorder readback lacks identity, creator or RowVersion.');
-    row.versionnumber = etag[1];
-    return row;
-  };
-  const run = convert('pqvd_testrun', inputs.run);
+  const run = convertNativeRecorderRow(store, platformTargets, 'pqvd_testrun', inputs.run);
   if (run.pqvd_testrunid !== capture.runId || run.pqvd_runnercontactid?.id !== actor)
     throw new Error('Native recorder Run does not belong to the actual actor.');
-  const operations = inputs.operations.map((source) => convert('pqvd_testoperation', source)),
+  const operations = inputs.operations.map((source) =>
+      convertNativeRecorderRow(store, platformTargets, 'pqvd_testoperation', source),
+    ),
     byId = new Map(operations.map((row) => [row.pqvd_testoperationid, row]));
   if (byId.size !== operations.length) throw new Error('Native recorder operation readbacks are ambiguous.');
   for (const request of capture.requests) {
-    const operation = byId.get(request.operationId),
-      authored = nativeReadRequestInput(
-        store,
-        request,
-        (capture.liquidPages ?? []).find((row) => row.operationId === request.operationId),
-      );
-    if (
-      !operation ||
-      operation.pqvd_runid?.id !== capture.runId ||
-      operation.pqvd_runnercontactid?.id !== actor ||
-      operation.pqvd_markeroperation !== 'CO-OP:' + request.operationId ||
-      operation.pqvd_markerutc !== authored.marker ||
-      operation.pqvd_roottable !== authored.table ||
-      operation.pqvd_expectedmessage !== 'RetrieveMultiple' ||
-      operation.pqvd_lane !== (request.lane === 'liquid' ? 183270000 : 183270001) ||
-      operation.pqvd_caseid !== request.caseId ||
-      operation.pqvd_variant !== request.variant
-    )
-      throw new Error('Native recorder operation does not bind its authored physical request.');
+    validateNativeRecorderOperation(store, capture, byId.get(request.operationId), request, actor);
   }
   return {
     verified: true,
@@ -1208,18 +1310,7 @@ export function nativeRecordingInputs(store, capture, identity) {
  * binding. The caller supplies the already frozen graph/data/session; this hook
  * never changes native roles, permissions or data, and never feeds a captured
  * expanded query into the local execution path. */
-export async function replayNativeReadBatch({
-  binding,
-  store,
-  identity,
-  capture,
-  sourceWitness,
-  webApiPortal,
-  liquidReplay,
-  metadata,
-  finalObserverWitness,
-  progress = () => {},
-}) {
+function validateNativeReplayRequestSet(binding, store, capture, finalObserverWitness) {
   if (finalObserverWitness !== undefined) {
     if (
       !finalObserverWitnesses.has(finalObserverWitness) ||
@@ -1232,10 +1323,9 @@ export async function replayNativeReadBatch({
       throw new Error('Final observer profile does not bind this exact source/registration/runtime.');
   }
   const native = recordedPluginPayloads(capture.backendEvents),
-    byOperation = new Map();
+    requestIds = new Set();
   if (!Array.isArray(capture.requests) || !capture.requests.length)
     throw new Error('Native read qualification requires a nonempty physical request set.');
-  const requestIds = new Set();
   for (const request of capture.requests) {
     if (
       !/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(request.operationId ?? '') ||
@@ -1247,200 +1337,166 @@ export async function replayNativeReadBatch({
   }
   if (native.some((event) => !requestIds.has(event.operationId)))
     throw new Error('Native backend artifacts include an unrequested operation.');
+  return { native, requestIds };
+}
+function groupNativeEvents(native) {
+  const byOperation = new Map();
   for (const event of native) {
     if (!byOperation.has(event.operationId)) byOperation.set(event.operationId, []);
     byOperation.get(event.operationId).push(event);
   }
-  const results = new Map(
-    capture.results.filter((result) => result.operationId).map((result) => [result.operationId, result]),
-  );
-  const liquid = new Map((capture.liquidPages ?? []).map((page) => [page.operationId, page]));
-  const originalOperations = structuredClone(store.state.tables.pqvd_testoperation),
-    originalRuns = structuredClone(store.state.tables.pqvd_testrun),
-    originalEvents = structuredClone(store.state.tables.pqvd_pluginevent),
-    started = Date.now(),
-    pages = [];
-  const recorderInputs = nativeRecordingInputs(store, capture, identity);
-  const liquidClient = liquidReplay ? createLiquidReplayClient({ store, identity, ...liquidReplay }) : null;
-  const webApi = webApiPortal
-    ? await createWebApiReplayClient({ store, identity, portal: webApiPortal, metadata })
-    : null;
-  let localPhases = [],
-    localBackendExecutions = 0;
-  const originalPipeline = store.pluginPipeline,
-    originalFetchCore = store.fetchXmlCore;
-  if (originalPipeline)
-    store.pluginPipeline = function (event) {
-      if (event.portalRequest === true && event.operation === 'retrievemultiple')
-        localPhases.push({ entity: event.entity, stage: event.stage });
-      return originalPipeline?.call(this, event);
-    };
-  store.fetchXmlCore = function (xml, who, options = {}) {
-    if (options.portalRequest === true && options.noBackendAdmission !== true) localBackendExecutions++;
-    return originalFetchCore.call(this, xml, who, options);
-  };
+  return byOperation;
+}
+async function executeNativeRequest(context, request, expected, liquidPage) {
+  const { binding, store, identity, capture, recorderInputs, webApi, liquidClient } = context;
+  let result, error, localHttp, localLiquid;
   try {
-    if (recorderInputs.verified)
-      store.state.tables.pqvd_testrun = [
-        ...(originalRuns ?? []).filter((row) => row.pqvd_testrunid !== capture.runId),
-        recorderInputs.run,
-      ];
-    for (const request of capture.requests) {
-      store.state.tables.pqvd_testoperation = structuredClone(originalOperations);
-      store.state.tables.pqvd_pluginevent = structuredClone(originalEvents);
-      localPhases = [];
-      localBackendExecutions = 0;
-      const expected = byOperation.get(request.operationId) ?? [],
-        http = results.get(request.operationId),
-        liquidPage = liquid.get(request.operationId);
-      let result,
-        error,
-        captures = [],
-        localHttp,
-        localLiquid;
-      try {
-        if (expected.length) {
-          binding.setReadContext((expected.find((event) => event.context.Stage === 40) ?? expected[0]).context);
-        }
-        const { source, table, marker, page } = nativeReadRequestInput(store, request, liquidPage);
-        const controller = identity.contactId ?? identity.id;
-        store.state.tables.pqvd_testoperation = store.state.tables.pqvd_testoperation.filter(
-          (row) => row.pqvd_testoperationid !== request.operationId,
-        );
-        store.state.tables.pqvd_testoperation.push(
-          recorderInputs.verified
-            ? structuredClone(recorderInputs.operations.find((row) => row.pqvd_testoperationid === request.operationId))
-            : {
-                pqvd_testoperationid: request.operationId,
-                pqvd_name: 'Native campaign replay intent',
-                pqvd_runid: { id: capture.runId, logical_name: 'pqvd_testrun' },
-                pqvd_runnercontactid: { id: controller, logical_name: 'contact' },
-                pqvd_markerutc: marker,
-                pqvd_markeroperation: 'CO-OP:' + request.operationId,
-                pqvd_roottable: table,
-                pqvd_expectedmessage: 'RetrieveMultiple',
-                pqvd_lane: request.lane === 'liquid' ? 183270000 : 183270001,
-                pqvd_actorprovenance: 'PortalRelationshipClaim',
-              },
-        );
-        if (request.lane === 'webapi' && webApi) {
-          const url = new URL(request.url, 'http://127.0.0.1');
-          localHttp = await webApi.request(url.pathname + url.search);
-          const body = parseExactJson(localHttp.body);
-          result = { entities: body.value ?? [] };
-          if (localHttp.status >= 400)
-            error = {
-              code: body.error?.code,
-              platformCode: body.error?.cdscode ?? body.error?.innererror?.code ?? null,
-              message: body.error?.message,
-              status: localHttp.status,
-            };
-        } else if (request.lane === 'liquid' && liquidClient) {
-          localLiquid = await liquidClient.request({
-            caseId: request.caseId,
-            variant: request.variant,
-            templateName: request.templateName,
-            operation: {
-              ...store.state.tables.pqvd_testoperation.at(-1),
-              id: request.operationId,
-              pqvd_pagenumber: page,
-            },
-          });
-          result = {
-            entities: localLiquid.page.rows,
-            more_records: localLiquid.page.more,
-            xml: localLiquid.page.effectiveFetchXml,
-          };
-        } else
-          result = await store.readOperation(() =>
-            store.fetchXml(source, identity, {
-              portalRequest: true,
-              profile: request.lane === 'webapi' ? 'webapi' : 'portal',
-            }),
-          );
-      } catch (cause) {
+    if (expected.length)
+      binding.setReadContext((expected.find((event) => event.context.Stage === 40) ?? expected[0]).context);
+    const { source, table, marker, page } = nativeReadRequestInput(store, request, liquidPage);
+    const controller = identity.contactId ?? identity.id;
+    store.state.tables.pqvd_testoperation = store.state.tables.pqvd_testoperation.filter(
+      (row) => row.pqvd_testoperationid !== request.operationId,
+    );
+    store.state.tables.pqvd_testoperation.push(
+      recorderInputs.verified
+        ? structuredClone(recorderInputs.operations.find((row) => row.pqvd_testoperationid === request.operationId))
+        : {
+            pqvd_testoperationid: request.operationId,
+            pqvd_name: 'Native campaign replay intent',
+            pqvd_runid: { id: capture.runId, logical_name: 'pqvd_testrun' },
+            pqvd_runnercontactid: { id: controller, logical_name: 'contact' },
+            pqvd_markerutc: marker,
+            pqvd_markeroperation: 'CO-OP:' + request.operationId,
+            pqvd_roottable: table,
+            pqvd_expectedmessage: 'RetrieveMultiple',
+            pqvd_lane: request.lane === 'liquid' ? 183270000 : 183270001,
+            pqvd_actorprovenance: 'PortalRelationshipClaim',
+          },
+    );
+    if (request.lane === 'webapi' && webApi) {
+      const url = new URL(request.url, 'http://127.0.0.1');
+      localHttp = await webApi.request(url.pathname + url.search);
+      const body = parseExactJson(localHttp.body);
+      result = { entities: body.value ?? [] };
+      if (localHttp.status >= 400)
         error = {
-          code: cause.code ?? 'NativeReplayUnsupported',
-          platformCode: cause.details?.innerCode ?? null,
-          message: cause.message,
-          status: cause.status,
+          code: body.error?.code,
+          platformCode: body.error?.cdscode ?? body.error?.innererror?.code ?? null,
+          message: body.error?.message,
+          status: localHttp.status,
         };
-      }
-      captures = recordedPluginPayloads(store.state.tables.pqvd_pluginevent.slice(originalEvents.length));
-      let httpExact = null;
-      try {
-        if (localHttp && http)
-          httpExact =
-            localHttp.status === http.status &&
-            JSON.stringify(canonical(normalizeWire(parseExactJson(localHttp.body)))) ===
-              JSON.stringify(canonical(normalizeWire(parseExactJson(http.body))));
-      } catch {
-        httpExact = false;
-      }
-      const source = request.authoredFetchXml ?? liquidPage?.authoredFetchXml;
-      const liquidExact =
-        request.lane === 'liquid' && liquidPage && !error
-          ? localLiquid
-            ? JSON.stringify(canonical(localLiquid.page)) === JSON.stringify(canonical(liquidPage)) &&
-              localLiquid.page.authoredFetchXml === source
-            : liquidPage.outcome === 'success' &&
-              JSON.stringify(canonical(result?.entities)) === JSON.stringify(canonical(liquidPage.rows)) &&
-              Boolean(result?.more_records) === liquidPage.more &&
-              result?.xml === liquidPage.effectiveFetchXml
-          : null;
-      const wireQualified =
-        request.lane === 'liquid'
-          ? Boolean(liquidClient) && liquidExact === true
-          : Boolean(webApi) && httpExact === true;
-      const wireFailure =
-        wireQualified &&
-        (localHttp?.status >= 400 || String(localLiquid?.page.outcome ?? '').startsWith('Liquid error:'));
-      const artifacts = compareNativeReadArtifacts(expected, captures, {
-        wireQualified,
-        wireFailure,
-        localPhases,
-        localBackendExecutions,
-        finalObserverWitness,
-      });
-      const entry = {
+    } else if (request.lane === 'liquid' && liquidClient) {
+      localLiquid = await liquidClient.request({
         caseId: request.caseId,
         variant: request.variant,
-        lane: request.lane,
-        operationId: request.operationId,
-        localCount: result?.entities.length,
-        error,
-        ...artifacts,
-        httpExact,
-        liquidExact,
-        wireQualified,
-        capturedEvents: captures.length,
-        nativeEvents: expected.length,
-        localBackendExecutions,
-        localPhases: [...localPhases],
-        nativeHttpStatus: http?.status,
-        nativeLiquidOutcome: liquidPage?.outcome,
-        captures,
-        localHttp,
-        localLiquid,
+        templateName: request.templateName,
+        operation: {
+          ...store.state.tables.pqvd_testoperation.at(-1),
+          id: request.operationId,
+          pqvd_pagenumber: page,
+        },
+      });
+      result = {
+        entities: localLiquid.page.rows,
+        more_records: localLiquid.page.more,
+        xml: localLiquid.page.effectiveFetchXml,
       };
-      pages.push(entry);
-      await progress({ ...entry, captures: undefined });
-    }
-  } finally {
-    store.pluginPipeline = originalPipeline;
-    store.fetchXmlCore = originalFetchCore;
-    store.state.tables.pqvd_testoperation = originalOperations;
-    store.state.tables.pqvd_testrun = originalRuns;
-    store.state.tables.pqvd_pluginevent = originalEvents;
-    await webApi?.close();
+    } else
+      result = await store.readOperation(() =>
+        store.fetchXml(source, identity, {
+          portalRequest: true,
+          profile: request.lane === 'webapi' ? 'webapi' : 'portal',
+        }),
+      );
+  } catch (cause) {
+    error = {
+      code: cause.code ?? 'NativeReplayUnsupported',
+      platformCode: cause.details?.innerCode ?? null,
+      message: cause.message,
+      status: cause.status,
+    };
   }
-  const witness = validateNativeReadWitness(sourceWitness, binding.receipt, store.nativeReadSnapshot);
-  const wireWitness =
-    webApiPortal || liquidReplay
-      ? validateNativeWireWitness(sourceWitness?.siteComponents, { webApiPortal, liquidReplay })
-      : null;
-  if (finalObserverWitness && wireWitness?.beforeHash !== finalObserverWitness.siteSourceHash)
-    throw new Error('Final observer source does not match its calibrated site source.');
+  return { result, error, localHttp, localLiquid };
+}
+function buildNativeReplayEntry(context, request, expected, http, liquidPage, outcome) {
+  const { store, originalEvents, finalObserverWitness, localPhases, localBackendExecutions } = context;
+  const { result, error, localHttp, localLiquid } = outcome,
+    captures = recordedPluginPayloads(store.state.tables.pqvd_pluginevent.slice(originalEvents.length));
+  let httpExact = null;
+  try {
+    if (localHttp && http)
+      httpExact =
+        localHttp.status === http.status &&
+        JSON.stringify(canonical(normalizeWire(parseExactJson(localHttp.body)))) ===
+          JSON.stringify(canonical(normalizeWire(parseExactJson(http.body))));
+  } catch {
+    httpExact = false;
+  }
+  const source = request.authoredFetchXml ?? liquidPage?.authoredFetchXml;
+  let liquidExact = null;
+  if (request.lane === 'liquid' && liquidPage && !error) {
+    if (localLiquid)
+      liquidExact =
+        JSON.stringify(canonical(localLiquid.page)) === JSON.stringify(canonical(liquidPage)) &&
+        localLiquid.page.authoredFetchXml === source;
+    else
+      liquidExact =
+        liquidPage.outcome === 'success' &&
+        JSON.stringify(canonical(result?.entities)) === JSON.stringify(canonical(liquidPage.rows)) &&
+        Boolean(result?.more_records) === liquidPage.more &&
+        result?.xml === liquidPage.effectiveFetchXml;
+  }
+  const wireQualified =
+      request.lane === 'liquid'
+        ? Boolean(context.liquidClient) && liquidExact === true
+        : Boolean(context.webApi) && httpExact === true,
+    wireFailure =
+      wireQualified &&
+      (localHttp?.status >= 400 || String(localLiquid?.page.outcome ?? '').startsWith('Liquid error:')),
+    artifacts = compareNativeReadArtifacts(expected, captures, {
+      wireQualified,
+      wireFailure,
+      localPhases,
+      localBackendExecutions,
+      finalObserverWitness,
+    });
+  return {
+    caseId: request.caseId,
+    variant: request.variant,
+    lane: request.lane,
+    operationId: request.operationId,
+    localCount: result?.entities.length,
+    error,
+    ...artifacts,
+    httpExact,
+    liquidExact,
+    wireQualified,
+    capturedEvents: captures.length,
+    nativeEvents: expected.length,
+    localBackendExecutions,
+    localPhases: [...localPhases],
+    nativeHttpStatus: http?.status,
+    nativeLiquidOutcome: liquidPage?.outcome,
+    captures,
+    localHttp,
+    localLiquid,
+  };
+}
+function trackedPluginPipeline(originalPipeline, metrics) {
+  return function (event) {
+    if (event.portalRequest === true && event.operation === 'retrievemultiple')
+      metrics.localPhases.push({ entity: event.entity, stage: event.stage });
+    return originalPipeline?.call(this, event);
+  };
+}
+function trackedFetchXmlCore(originalFetchCore, metrics) {
+  return function (xml, who, options = {}) {
+    if (options.portalRequest === true && options.noBackendAdmission !== true) metrics.localBackendExecutions++;
+    return originalFetchCore.call(this, xml, who, options);
+  };
+}
+function buildNativeReplaySummary(started, pages, finalObserverWitness, recorderInputs, witness, wireWitness) {
   return {
     durationMs: Date.now() - started,
     pages,
@@ -1459,4 +1515,87 @@ export async function replayNativeReadBatch({
     allRuntimeFaultCodesQualified: pages.every((page) => page.backendFaultCodeObserved !== false),
     allQualified: witness.verified && (!wireWitness || wireWitness.verified) && pages.every((page) => page.qualified),
   };
+}
+export async function replayNativeReadBatch({
+  binding,
+  store,
+  identity,
+  capture,
+  sourceWitness,
+  webApiPortal,
+  liquidReplay,
+  metadata,
+  finalObserverWitness,
+  progress = () => {},
+}) {
+  const { native } = validateNativeReplayRequestSet(binding, store, capture, finalObserverWitness),
+    byOperation = groupNativeEvents(native);
+  const results = new Map(
+    capture.results.filter((result) => result.operationId).map((result) => [result.operationId, result]),
+  );
+  const liquid = new Map((capture.liquidPages ?? []).map((page) => [page.operationId, page]));
+  const originalOperations = structuredClone(store.state.tables.pqvd_testoperation),
+    originalRuns = structuredClone(store.state.tables.pqvd_testrun),
+    originalEvents = structuredClone(store.state.tables.pqvd_pluginevent),
+    started = Date.now(),
+    pages = [];
+  const recorderInputs = nativeRecordingInputs(store, capture, identity);
+  const liquidClient = liquidReplay ? createLiquidReplayClient({ store, identity, ...liquidReplay }) : null;
+  const webApi = webApiPortal
+    ? await createWebApiReplayClient({ store, identity, portal: webApiPortal, metadata })
+    : null;
+  const metrics = { localPhases: [], localBackendExecutions: 0 };
+  const originalPipeline = store.pluginPipeline,
+    originalFetchCore = store.fetchXmlCore;
+  if (originalPipeline) store.pluginPipeline = trackedPluginPipeline(originalPipeline, metrics);
+  store.fetchXmlCore = trackedFetchXmlCore(originalFetchCore, metrics);
+  try {
+    if (recorderInputs.verified)
+      store.state.tables.pqvd_testrun = [
+        ...(originalRuns ?? []).filter((row) => row.pqvd_testrunid !== capture.runId),
+        recorderInputs.run,
+      ];
+    for (const request of capture.requests) {
+      store.state.tables.pqvd_testoperation = structuredClone(originalOperations);
+      store.state.tables.pqvd_pluginevent = structuredClone(originalEvents);
+      metrics.localPhases = [];
+      metrics.localBackendExecutions = 0;
+      const expected = byOperation.get(request.operationId) ?? [],
+        http = results.get(request.operationId),
+        liquidPage = liquid.get(request.operationId),
+        context = {
+          binding,
+          store,
+          identity,
+          capture,
+          recorderInputs,
+          webApi,
+          liquidClient,
+          originalEvents,
+          finalObserverWitness,
+          localPhases: metrics.localPhases,
+          localBackendExecutions: metrics.localBackendExecutions,
+        };
+      const outcome = await executeNativeRequest(context, request, expected, liquidPage);
+      context.localBackendExecutions = metrics.localBackendExecutions;
+      const entry = buildNativeReplayEntry(context, request, expected, http, liquidPage, outcome);
+      pages.push(entry);
+      await progress({ ...entry, captures: undefined }); // NOSONAR: await kept: the value may be a thenable and timing matters
+    }
+  } finally {
+    store.pluginPipeline = originalPipeline;
+    store.fetchXmlCore = originalFetchCore;
+    store.state.tables.pqvd_testoperation = originalOperations;
+    store.state.tables.pqvd_testrun = originalRuns;
+    store.state.tables.pqvd_pluginevent = originalEvents;
+    await webApi?.close();
+  }
+  const witness = validateNativeReadWitness(sourceWitness, binding.receipt, store.nativeReadSnapshot);
+  const wireWitness =
+    webApiPortal || liquidReplay
+      ? validateNativeWireWitness(sourceWitness?.siteComponents, { webApiPortal, liquidReplay })
+      : null;
+  if (finalObserverWitness && wireWitness?.beforeHash !== finalObserverWitness.siteSourceHash)
+    throw new Error('Final observer source does not match its calibrated site source.');
+  return buildNativeReplaySummary(started, pages, finalObserverWitness, recorderInputs, witness, wireWitness);
 }

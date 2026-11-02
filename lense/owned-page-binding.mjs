@@ -1,9 +1,9 @@
 import { randomBytes } from 'node:crypto';
 
 function install({ origin, channel, stateName, names, maxBytes }) {
-  if (window !== window.top || location.origin !== origin || globalThis[stateName]) return;
-  if (names.some((name) => Object.prototype.hasOwnProperty.call(globalThis, name)))
-    throw Error('An owned page API name is already present.');
+  if (globalThis !== window.top || location.origin !== origin || globalThis[stateName]) return; // NOSONAR: window and globalThis are compared deliberately
+  if (names.some((name) => Object.hasOwn(globalThis, name)))
+    throw new Error('An owned page API name is already present.');
   let sequence = 0;
   const pending = new Map();
   const state = {
@@ -13,15 +13,15 @@ function install({ origin, channel, stateName, names, maxBytes }) {
       pending.delete(packet.id);
       clearTimeout(entry.timer);
       if (packet.expiresAt < Date.now()) {
-        entry.reject(Error('The owned page reply expired.'));
+        entry.reject(new Error('The owned page reply expired.'));
         return;
       }
-      packet.failed ? entry.reject(Error('The owned page request failed.')) : entry.resolve(packet.value);
+      packet.failed ? entry.reject(new Error('The owned page request failed.')) : entry.resolve(packet.value);
     },
     dispose() {
       for (const entry of pending.values()) {
         clearTimeout(entry.timer);
-        entry.reject(Error('The owned page connection closed.'));
+        entry.reject(new Error('The owned page connection closed.'));
       }
       pending.clear();
       for (const name of names) if (globalThis[name]?.ownedChannel === channel) delete globalThis[name];
@@ -36,19 +36,19 @@ function install({ origin, channel, stateName, names, maxBytes }) {
   for (const name of names) {
     const fn = (...args) =>
       new Promise((resolve, reject) => {
-        if (location.origin !== origin) return reject(Error('The owned page changed origin.'));
+        if (location.origin !== origin) return reject(new Error('The owned page changed origin.'));
         let body;
         const id = ++sequence;
         try {
           body = JSON.stringify({ id, name, args });
         } catch {
-          return reject(Error('The owned page request is not JSON.'));
+          return reject(new Error('The owned page request is not JSON.'));
         }
         if (new TextEncoder().encode(body).length > maxBytes)
-          return reject(Error('The owned page request is too large.'));
+          return reject(new Error('The owned page request is too large.'));
         const timer = setTimeout(() => {
           pending.delete(id);
-          reject(Error('The owned page request timed out.'));
+          reject(new Error('The owned page request timed out.'));
         }, 20000);
         pending.set(id, { resolve, reject, timer });
         try {
@@ -56,7 +56,7 @@ function install({ origin, channel, stateName, names, maxBytes }) {
         } catch {
           clearTimeout(timer);
           pending.delete(id);
-          reject(Error('The owned page connection is unavailable.'));
+          reject(new Error('The owned page connection is unavailable.'));
         }
       });
     Object.defineProperty(fn, 'ownedChannel', { value: channel });
@@ -72,7 +72,7 @@ export async function createOwnedPageBindings(
   const expected = new URL(origin).origin;
   const entries = Object.entries(bindings);
   if (entries.some(([name, callback]) => !/^[A-Za-z_$][\w$]{0,100}$/.test(name) || typeof callback !== 'function'))
-    throw Error('Invalid owned page binding.');
+    throw new Error('Invalid owned page binding.');
   const suffix = randomBytes(16).toString('hex');
   const channel = '__paqviloOwned_' + suffix,
     stateName = '__paqviloOwnedState_' + suffix;
@@ -125,7 +125,7 @@ export async function createOwnedPageBindings(
     try {
       let timer, cancel;
       const deadline = new Promise((_, reject) => {
-        cancel = () => reject(Error('Owned page call ended.'));
+        cancel = () => reject(new Error('Owned page call ended.'));
         timer = setTimeout(cancel, callTimeout);
       });
       pendingCalls.add(cancel);
@@ -156,7 +156,7 @@ export async function createOwnedPageBindings(
   const bounded = (operation, timeout = 500) => {
     let timer;
     const deadline = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(Error('Owned page cleanup timed out.')), timeout);
+      timer = setTimeout(() => reject(new Error('Owned page cleanup timed out.')), timeout);
     });
     return Promise.race([Promise.resolve().then(operation), deadline]).finally(() => clearTimeout(timer));
   };
@@ -203,7 +203,7 @@ export async function createOwnedPageBindings(
         const response = await session.send('Runtime.evaluate', {
           expression: `globalThis[${JSON.stringify(stateName)}]?.dispose();delete globalThis[${JSON.stringify(channel)}]`,
         });
-        if (response.exceptionDetails) throw Error('Owned page wrapper cleanup failed.');
+        if (response.exceptionDetails) throw new Error('Owned page wrapper cleanup failed.');
       });
       await drain(() => session.send('Runtime.removeBinding', { name: channel }));
     }
@@ -222,13 +222,13 @@ export async function createOwnedPageBindings(
     const installed = await session.send('Runtime.evaluate', {
       expression: source,
     });
-    if (installed.exceptionDetails) throw Error('Owned page wrapper installation failed.');
+    if (installed.exceptionDetails) throw new Error('Owned page wrapper installation failed.');
   } catch (error) {
     try {
       await close();
-    } catch (cleanup) {
+    } catch (error_) {
       throw new AggregateError(
-        [error, cleanup],
+        [error, error_],
         'Owned page binding initialization and cleanup failed.',
         // eslint-disable-next-line preserve-caught-error -- Both caught errors are preserved in errors; the cause remains the initiating failure.
         { cause: error },

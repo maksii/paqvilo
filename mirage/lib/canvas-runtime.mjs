@@ -114,35 +114,51 @@ const kindName = (kind) =>
     : String(kind ?? 'Unknown');
 
 // ---- formula text scanning (strings, quoted identifiers, comments and brackets aware) ----
+function skipDoubleQuoted(text, index) {
+  if (text[index] === '$') index++;
+  for (index++; index < text.length; index++)
+    if (text[index] === '"') {
+      if (text[index + 1] === '"') index++;
+      else break;
+    }
+  return index;
+}
+
+function skipQuotedIdentifier(text, index) {
+  for (index++; index < text.length; index++)
+    if (text[index] === "'") {
+      if (text[index + 1] === "'") index++;
+      else break;
+    }
+  return index;
+}
+
+function skipLineComment(text, index) {
+  while (index < text.length && text[index] !== '\n') index++;
+  return index;
+}
+
+function skipBlockComment(text, index) {
+  const end = text.indexOf('*/', index + 2);
+  return end < 0 ? text.length : end + 1;
+}
+
+function skipFormulaSegment(text, index, char) {
+  // ponytail: an interpolated string's holes are skipped as text; a `"` inside a hole ends it early.
+  if (char === '"' || (char === '$' && text[index + 1] === '"')) return skipDoubleQuoted(text, index);
+  if (char === "'") return skipQuotedIdentifier(text, index);
+  if (char === '/' && text[index + 1] === '/') return skipLineComment(text, index);
+  if (char === '/' && text[index + 1] === '*') return skipBlockComment(text, index);
+  return undefined;
+}
+
 function scan(text, visit) {
   let depth = 0;
   for (let index = 0; index < text.length; index++) {
     const char = text[index];
-    if (char === '"' || (char === '$' && text[index + 1] === '"')) {
-      if (char === '$') index++;
-      // ponytail: an interpolated string's holes are skipped as text; a `"` inside a hole ends it early.
-      for (index++; index < text.length; index++)
-        if (text[index] === '"') {
-          if (text[index + 1] === '"') index++;
-          else break;
-        }
-      continue;
-    }
-    if (char === "'") {
-      for (index++; index < text.length; index++)
-        if (text[index] === "'") {
-          if (text[index + 1] === "'") index++;
-          else break;
-        }
-      continue;
-    }
-    if (char === '/' && text[index + 1] === '/') {
-      while (index < text.length && text[index] !== '\n') index++;
-      continue;
-    }
-    if (char === '/' && text[index + 1] === '*') {
-      const end = text.indexOf('*/', index + 2);
-      index = end < 0 ? text.length : end + 1;
+    const skipped = skipFormulaSegment(text, index, char);
+    if (skipped !== undefined) {
+      index = skipped; // NOSONAR: loop cursor is advanced in the body on purpose
       continue;
     }
     if ('([{'.includes(char)) {
@@ -195,7 +211,7 @@ function callsIn(text, accept) {
   const calls = [];
   scan(text, (char, index) => {
     if (char !== '(') return;
-    const head = /(?:([A-Za-z_][\w]*)\s*\.\s*)?([A-Za-z_][\w]*)\s*$/.exec(text.slice(0, index));
+    const head = /(?:([A-Za-z_]\w*)\s*\.\s*)?([A-Za-z_]\w*)\s*$/.exec(text.slice(0, index)); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
     if (!head || /[\w.]$/.test(text.slice(0, head.index))) return;
     const call = { start: head.index, open: index, name: head[1] ?? head[2], member: head[1] ? head[2] : null };
     if (!accept(call)) return;
@@ -211,8 +227,16 @@ const isPlain = (value) =>
   !Array.isArray(value) &&
   Object.getPrototypeOf(value) === Object.prototype;
 const blank = (value) => value === undefined || value === null || value === '';
-const literal = (raw) =>
-  raw === 'true' ? true : raw === 'false' ? false : raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : raw;
+const literal = (raw) => {
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  if (raw !== '' && Number.isFinite(Number(raw))) return Number(raw);
+  return raw;
+};
+const choiceIndex = (list, choice) =>
+  Number.isInteger(choice)
+    ? choice
+    : list.findIndex((row) => (isPlain(row) ? Object.values(row).includes(choice) : row === choice));
 const fail = (message, code, status = 400) => Object.assign(new Error(message), { code, status });
 
 /** Validate and copy a player viewport before any app behavior runs. */
@@ -221,6 +245,270 @@ export function canvasViewport(viewport) {
   if (![width, height].every((value) => Number.isInteger(value) && value >= 1 && value <= 8192))
     throw fail('viewport needs integer width and height between 1 and 8192.', 'CanvasActionInvalid');
   return { width, height };
+}
+
+function canvasFormulaMap(source) {
+  const formulas = new Map();
+  for (const row of source.formulas ?? []) {
+    const owner = row.owner.includes('.') ? row.owner.slice(row.owner.indexOf('.') + 1) : row.owner;
+    if (!formulas.has(owner)) formulas.set(owner, new Map());
+    const raw = String(row.text ?? '').trimStart();
+    const blankFormula = /^=(?:\s|\/\/[^\r\n]*(?:\r?\n|$)|\/\*(?:[^*]|\*+[^*/])*\*+\/)*$/.test(raw); // NOSONAR: regex kept: a rewrite would change matches or captures
+    formulas.get(owner).set(
+      row.property,
+      raw.startsWith('=') && !blankFormula
+        ? {
+            formula: raw.slice(1).trim(),
+            source: row.source,
+            line: row.line,
+            componentDefinition: row.componentDefinition,
+          }
+        : {
+            value: blankFormula ? null : literal(raw),
+            source: row.source,
+            line: row.line,
+            componentDefinition: row.componentDefinition,
+          },
+    );
+  }
+  return formulas;
+}
+
+function canvasControlModel(tree, format) {
+  const screens = new Map(),
+    controls = new Map(),
+    lower = new Map();
+  for (const screen of tree.screens) {
+    if (lower.has(screen.name.toLowerCase()))
+      throw fail('Canvas source has colliding names and cannot be hosted safely.', 'CanvasSourceNameCollision', 501);
+    screens.set(screen.name, { name: screen.name });
+    lower.set(screen.name.toLowerCase(), screen.name);
+    for (const control of screen.controls ?? []) {
+      if (lower.has(control.name.toLowerCase()))
+        throw fail('Canvas source has colliding names and cannot be hosted safely.', 'CanvasSourceNameCollision', 501);
+      const sourceKind = controlKind(control.control, format);
+      const kind = control.componentName && sourceKind !== 'codecomponent' ? null : sourceKind;
+      controls.set(control.name, {
+        name: control.name,
+        type: control.control ?? null,
+        modern: /^modern/i.test(control.control ?? ''),
+        variant: control.variant ?? null,
+        kind,
+        supported: Boolean(kind),
+        screen: screen.name,
+        parent: control.parent ?? null,
+        children: [],
+      });
+      lower.set(control.name.toLowerCase(), control.name);
+    }
+  }
+  for (const control of controls.values())
+    if (control.parent) controls.get(control.parent)?.children.push(control.name);
+  const order = (tree.screensOrder ?? []).filter((name) => screens.has(name));
+  const screenNames = [...order, ...[...screens.keys()].filter((name) => !order.includes(name))];
+  return { screens, controls, lower, screenNames };
+}
+
+function prepareCanvasModel(source) {
+  const tree = source.tree ?? {
+    format: source.app?.format ?? 'pa.yaml',
+    screens: source.screens ?? [],
+    components: source.components ?? [],
+  };
+  const format = tree.format ?? 'pa.yaml';
+  const formulas = canvasFormulaMap(source);
+  const { screens, controls, lower, screenNames } = canvasControlModel(tree, format);
+  const dataSources = new Map((source.dataSources ?? []).map((entry) => [entry.name, entry]));
+  const unsupported = unsupportedControls({ tree, app: source.app });
+  const namedFormulas = new Map(
+    splitTop(formulas.get('App')?.get('Formulas')?.formula ?? '', ';')
+      .filter(Boolean)
+      .map((entry) => {
+        const at = entry.indexOf('=');
+        return [unquote(entry.slice(0, at).trim()), entry.slice(at + 1).trim()];
+      })
+      .filter(([name, formula]) => name && formula),
+  );
+  return { tree, format, formulas, screens, controls, lower, screenNames, dataSources, unsupported, namedFormulas };
+}
+
+function canvasRecordKeys(text) {
+  return /^\{[\s\S]*\}$/.test(text?.trim() ?? '')
+    ? splitTop(text.trim().slice(1, -1), ',')
+        .map((entry) => unquote(entry.slice(0, entry.indexOf(':')).trim()))
+        .filter(Boolean)
+    : [];
+}
+
+/* NOSONAR */ function establishCanvasCall(call, context) {
+  const args = splitTop(context.entry.formula.slice(call.open + 1, call.end), ',');
+  const first = staticIdentifier(args[0]);
+  switch (call.name) {
+    case 'Set':
+      if (first) {
+        context.target[first] ??= null;
+        if (context.target === context.variables) context.globals.add(first);
+      }
+      break;
+    case 'Collect':
+    case 'ClearCollect':
+      if (first && !context.dataSources.has(first)) {
+        if (context.target === context.variables) context.collections.add(first);
+        context.target[first] = [];
+      }
+      break;
+    case 'UpdateContext':
+      for (const key of canvasRecordKeys(args[0]))
+        if (context.contexts.has(context.home)) context.contexts.get(context.home)[key] ??= null;
+      break;
+    case 'Navigate': {
+      const target = first,
+        screen = context.screens.has(target) ? target : context.controls.get(target)?.screen;
+      for (const key of canvasRecordKeys(args[2]))
+        if (context.contexts.has(screen)) context.contexts.get(screen)[key] ??= null;
+      break;
+    }
+  }
+}
+
+function establishCanvasFormula(owner, entry, context) {
+  if (!entry.formula) return;
+  const home = context.screens.has(owner) ? owner : context.controls.get(owner)?.screen;
+  const component = context.formulaComponent(owner, entry);
+  let target = context.variables;
+  if (component && !component.accessAppScope) {
+    if (!context.componentVariables.has(component.root)) context.componentVariables.set(component.root, {});
+    target = context.componentVariables.get(component.root);
+  }
+  for (const call of callsIn(
+    entry.formula,
+    (item) => !item.member && ['Set', 'UpdateContext', 'Navigate', 'Collect', 'ClearCollect'].includes(item.name),
+  ))
+    establishCanvasCall(call, { ...context, entry, target, home });
+}
+
+function initializeCanvasVariables({ dataSources, formulas, screens, controls, screenNames, formulaComponent }) {
+  const componentVariables = new Map();
+  const variables = {},
+    globals = new Set(),
+    collections = new Set(),
+    contexts = new Map(screenNames.map((name) => [name, {}]));
+  for (const entry of dataSources.values()) {
+    if (String(entry.kind).toLowerCase() === 'collectiondatasourceinfo') {
+      variables[entry.name] = [];
+      collections.add(entry.name);
+    }
+  }
+  const context = {
+    componentVariables,
+    variables,
+    globals,
+    collections,
+    contexts,
+    screens,
+    controls,
+    dataSources,
+    formulaComponent,
+  };
+  for (const [owner, properties] of formulas)
+    for (const entry of properties.values()) establishCanvasFormula(owner, entry, context);
+  return { componentVariables, variables, globals, collections, contexts };
+}
+
+function canvasAssetSymbols(uniqueName, source, report) {
+  const assetSymbols = new Map();
+  const ambiguousAssets = new Set();
+  const assets = source[CANVAS_ASSETS];
+  if (assets instanceof Map) {
+    for (const [filename, url] of Object.entries(canvasAssetUrls(uniqueName, assets))) {
+      const basename = filename.split('/').at(-1);
+      const stem = basename.slice(0, basename.lastIndexOf('.'));
+      if (!/^[A-Za-z_]\w*$/.test(stem)) continue;
+      const key = stem.toLowerCase();
+      if (assetSymbols.has(key)) ambiguousAssets.add(key);
+      else assetSymbols.set(key, { stem, url });
+    }
+    for (const key of ambiguousAssets) {
+      assetSymbols.delete(key);
+      report({
+        code: 'CANVAS_ASSET_NAME_AMBIGUOUS',
+        source: key,
+        message: 'Multiple assets share this formula identifier.',
+      });
+    }
+  }
+  return assetSymbols;
+}
+
+function sourceEnumNames({
+  source,
+  lower,
+  dataSources,
+  namedFormulas,
+  variables,
+  contexts,
+  componentVariables,
+  assetSymbols,
+}) {
+  return new Set(
+    [
+      'app',
+      ...Object.keys(ENUMS),
+      ...powerFxBuiltinEnums(),
+      ...lower.keys(),
+      ...dataSources.keys(),
+      ...namedFormulas.keys(),
+      ...Object.keys(variables),
+      ...[...contexts.values()].flatMap((entry) => Object.keys(entry)),
+      ...[...componentVariables.values()].flatMap((entry) => Object.keys(entry)),
+      ...Object.values(source.componentScopes ?? {}).flatMap((entry) => [
+        entry.definition,
+        ...Object.keys(entry.locals ?? {}),
+      ]),
+      ...[...assetSymbols.values()].map((entry) => entry.stem),
+    ].map((name) => name.toLowerCase()),
+  );
+}
+
+function validSourceEnumEntries(entries) {
+  const labels = Object.entries(entries),
+    seen = new Set();
+  return !labels.some(([label, value]) => {
+    const normalized = label.toLowerCase();
+    if (!label || seen.has(normalized) || !Number.isSafeInteger(value)) return true;
+    seen.add(normalized);
+    return false;
+  });
+}
+
+function canvasSourceEnums(source, reservedEnumNames, report) {
+  const sourceEnums = new Map();
+  const conflictingEnums = new Set();
+  for (const [name, entries] of Object.entries(source.enums ?? {})) {
+    const key = name.toLowerCase();
+    if (reservedEnumNames.has(key) || sourceEnums.has(key)) {
+      conflictingEnums.add(key);
+      continue;
+    }
+    if (!name || ['__proto__', 'constructor', 'prototype'].includes(key) || !isPlain(entries)) {
+      conflictingEnums.add(key);
+      continue;
+    }
+    if (!validSourceEnumEntries(entries)) {
+      conflictingEnums.add(key);
+      continue;
+    }
+    sourceEnums.set(key, { name, value: new FxEnum(name, entries) });
+  }
+  for (const key of conflictingEnums) {
+    sourceEnums.delete(key);
+    report({
+      code: 'CANVAS_ENUM_NAME_AMBIGUOUS',
+      source: key,
+      message: 'The source option enum name or labels are ambiguous.',
+    });
+  }
+  return sourceEnums;
 }
 
 /** A JSON-safe copy of a formula value for snapshots and API answers. */
@@ -238,6 +526,35 @@ function observable(value, depth = 0) {
   if (typeof value !== 'object' || depth > 6) return value;
   if (Array.isArray(value)) return value.map((item) => observable(item, depth + 1));
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, observable(item, depth + 1)]));
+}
+
+function validPictureName(name) {
+  return (
+    typeof name === 'string' &&
+    name &&
+    name.length <= 255 &&
+    ![...name].some(
+      (character) =>
+        character.codePointAt(0) < 32 || character.codePointAt(0) === 127 || character === '/' || character === '\\',
+    )
+  );
+}
+
+function validComponentValue(type, value, integer, numeric, text, enumeration, date) {
+  return (
+    value === null ||
+    (numeric && typeof value === 'number' && Number.isFinite(value) && (!integer || Number.isSafeInteger(value))) ||
+    (text && typeof value === 'string' && value.length <= 65536) ||
+    (type === 'twooptions' && typeof value === 'boolean') ||
+    (enumeration && ((typeof value === 'string' && value.length <= 65536) || Number.isSafeInteger(value))) ||
+    (date &&
+      typeof value === 'string' &&
+      (type === 'datetime.dateonly'
+        ? /^\d{4}-\d{2}-\d{2}$/.test(value)
+        : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value)) &&
+      !Number.isNaN(Date.parse(value)) &&
+      new Date(value).toISOString().slice(0, 10) === value.slice(0, 10))
+  );
 }
 
 /**
@@ -276,80 +593,9 @@ export function createCanvasApp({
         diagnostic: (entry) => hostDiagnostic(entry, 'Dataverse'),
       })
     : null;
-  const tree = source.tree ?? {
-    format: source.app?.format ?? 'pa.yaml',
-    screens: source.screens ?? [],
-    components: source.components ?? [],
-  };
-  const format = tree.format ?? 'pa.yaml';
-
   // ---- static model ----
-  const formulas = new Map();
-  for (const row of source.formulas ?? []) {
-    const owner = row.owner.includes('.') ? row.owner.slice(row.owner.indexOf('.') + 1) : row.owner;
-    if (!formulas.has(owner)) formulas.set(owner, new Map());
-    const raw = String(row.text ?? '').trimStart();
-    const blankFormula = /^=(?:\s|\/\/[^\r\n]*(?:\r?\n|$)|\/\*(?:[^*]|\*+[^*/])*\*+\/)*$/.test(raw);
-    // A formula starts with `=`; any other scalar is a literal value.
-    formulas.get(owner).set(
-      row.property,
-      raw.startsWith('=') && !blankFormula
-        ? {
-            formula: raw.slice(1).trim(),
-            source: row.source,
-            line: row.line,
-            componentDefinition: row.componentDefinition,
-          }
-        : {
-            value: blankFormula ? null : literal(raw),
-            source: row.source,
-            line: row.line,
-            componentDefinition: row.componentDefinition,
-          },
-    );
-  }
-  const screens = new Map(),
-    controls = new Map(),
-    lower = new Map();
-  for (const screen of tree.screens) {
-    if (lower.has(screen.name.toLowerCase()))
-      throw fail('Canvas source has colliding names and cannot be hosted safely.', 'CanvasSourceNameCollision', 501);
-    screens.set(screen.name, { name: screen.name });
-    lower.set(screen.name.toLowerCase(), screen.name);
-    for (const control of screen.controls ?? []) {
-      if (lower.has(control.name.toLowerCase()))
-        throw fail('Canvas source has colliding names and cannot be hosted safely.', 'CanvasSourceNameCollision', 501);
-      const sourceKind = controlKind(control.control, format);
-      const kind = control.componentName && sourceKind !== 'codecomponent' ? null : sourceKind;
-      controls.set(control.name, {
-        name: control.name,
-        type: control.control ?? null,
-        modern: /^modern/i.test(control.control ?? ''),
-        variant: control.variant ?? null,
-        kind,
-        supported: Boolean(kind),
-        screen: screen.name,
-        parent: control.parent ?? null,
-        children: [],
-      });
-      lower.set(control.name.toLowerCase(), control.name);
-    }
-  }
-  for (const control of controls.values())
-    if (control.parent) controls.get(control.parent)?.children.push(control.name);
-  const order = (tree.screensOrder ?? []).filter((name) => screens.has(name));
-  const screenNames = [...order, ...[...screens.keys()].filter((name) => !order.includes(name))];
-  const dataSources = new Map((source.dataSources ?? []).map((entry) => [entry.name, entry]));
-  const unsupported = unsupportedControls({ tree, app: source.app });
-  const namedFormulas = new Map(
-    splitTop(formulas.get('App')?.get('Formulas')?.formula ?? '', ';')
-      .filter(Boolean)
-      .map((entry) => {
-        const at = entry.indexOf('=');
-        return [unquote(entry.slice(0, at).trim()), entry.slice(at + 1).trim()];
-      })
-      .filter(([name, formula]) => name && formula),
-  );
+  const { formulas, screens, controls, lower, screenNames, dataSources, unsupported, namedFormulas } =
+    prepareCanvasModel(source);
   const kindOf = (name) => controls.get(name)?.kind;
   const ancestors = (name) => {
     const out = [];
@@ -371,55 +617,14 @@ export function createCanvasApp({
   // ---- state ----
   // Set, UpdateContext, Navigate's context record, Collect and ClearCollect establish a name, which reads
   // blank (a collection: empty) until a formula fills it.
-  const componentVariables = new Map();
-  const variables = {},
-    globals = new Set(),
-    collections = new Set(),
-    contexts = new Map(screenNames.map((name) => [name, {}]));
-  // Legacy exports can declare local collections as data sources. They are local state, not table providers.
-  for (const entry of dataSources.values()) {
-    if (String(entry.kind).toLowerCase() === 'collectiondatasourceinfo') {
-      variables[entry.name] = [];
-      collections.add(entry.name);
-    }
-  }
-  const recordKeys = (text) =>
-    /^\{[\s\S]*\}$/.test(text?.trim() ?? '')
-      ? splitTop(text.trim().slice(1, -1), ',')
-          .map((entry) => unquote(entry.slice(0, entry.indexOf(':')).trim()))
-          .filter(Boolean)
-      : [];
-  for (const [owner, properties] of formulas)
-    for (const entry of properties.values()) {
-      if (!entry.formula) continue;
-      const home = screens.has(owner) ? owner : controls.get(owner)?.screen;
-      const component = formulaComponent(owner, entry);
-      let target = variables;
-      if (component && !component.accessAppScope) {
-        if (!componentVariables.has(component.root)) componentVariables.set(component.root, {});
-        target = componentVariables.get(component.root);
-      }
-      for (const call of callsIn(
-        entry.formula,
-        (item) => !item.member && ['Set', 'UpdateContext', 'Navigate', 'Collect', 'ClearCollect'].includes(item.name),
-      )) {
-        const args = splitTop(entry.formula.slice(call.open + 1, call.end), ',');
-        const first = staticIdentifier(args[0]);
-        if (call.name === 'Set' && first) {
-          target[first] ??= null;
-          if (target === variables) globals.add(first);
-        } else if (call.name.endsWith('Collect') && first && !dataSources.has(first)) {
-          if (target === variables) collections.add(first);
-          target[first] = [];
-        } else if (call.name === 'UpdateContext') {
-          for (const key of recordKeys(args[0])) if (contexts.has(home)) contexts.get(home)[key] ??= null;
-        } else if (call.name === 'Navigate') {
-          const target = first,
-            screen = screens.has(target) ? target : controls.get(target)?.screen;
-          for (const key of recordKeys(args[2])) if (contexts.has(screen)) contexts.get(screen)[key] ??= null;
-        }
-      }
-    }
+  const { componentVariables, variables, globals, collections, contexts } = initializeCanvasVariables({
+    dataSources,
+    formulas,
+    screens,
+    controls,
+    screenNames,
+    formulaComponent,
+  });
   const state = {
     current: null,
     transition: 'None',
@@ -452,80 +657,18 @@ export function createCanvasApp({
     state.diagnostics.push(entry);
     diagnostic({ ...entry, app: app.uniqueName });
   };
-  const assetSymbols = new Map();
-  const ambiguousAssets = new Set();
-  const assets = source[CANVAS_ASSETS];
-  if (assets instanceof Map) {
-    for (const [filename, url] of Object.entries(canvasAssetUrls(app.uniqueName, assets))) {
-      const basename = filename.split('/').at(-1);
-      const stem = basename.slice(0, basename.lastIndexOf('.'));
-      if (!/^[A-Za-z_][\w]*$/.test(stem)) continue;
-      const key = stem.toLowerCase();
-      if (assetSymbols.has(key)) ambiguousAssets.add(key);
-      else assetSymbols.set(key, { stem, url });
-    }
-    for (const key of ambiguousAssets) {
-      assetSymbols.delete(key);
-      report({
-        code: 'CANVAS_ASSET_NAME_AMBIGUOUS',
-        source: key,
-        message: 'Multiple assets share this formula identifier.',
-      });
-    }
-  }
-  const sourceEnums = new Map();
-  const conflictingEnums = new Set();
-  const reservedEnumNames = new Set(
-    [
-      'app',
-      ...Object.keys(ENUMS),
-      ...powerFxBuiltinEnums(),
-      ...lower.keys(),
-      ...dataSources.keys(),
-      ...namedFormulas.keys(),
-      ...Object.keys(variables),
-      ...[...contexts.values()].flatMap((entry) => Object.keys(entry)),
-      ...[...componentVariables.values()].flatMap((entry) => Object.keys(entry)),
-      ...Object.values(source.componentScopes ?? {}).flatMap((entry) => [
-        entry.definition,
-        ...Object.keys(entry.locals ?? {}),
-      ]),
-      ...[...assetSymbols.values()].map((entry) => entry.stem),
-    ].map((name) => name.toLowerCase()),
-  );
-  for (const [name, entries] of Object.entries(source.enums ?? {})) {
-    const key = name.toLowerCase();
-    if (reservedEnumNames.has(key) || sourceEnums.has(key)) {
-      conflictingEnums.add(key);
-      continue;
-    }
-    if (!name || ['__proto__', 'constructor', 'prototype'].includes(key) || !isPlain(entries)) {
-      conflictingEnums.add(key);
-      continue;
-    }
-    const labels = Object.entries(entries),
-      seen = new Set();
-    if (
-      labels.some(([label, value]) => {
-        const normalized = label.toLowerCase();
-        if (!label || seen.has(normalized) || !Number.isSafeInteger(value)) return true;
-        seen.add(normalized);
-        return false;
-      })
-    ) {
-      conflictingEnums.add(key);
-      continue;
-    }
-    sourceEnums.set(key, { name, value: new FxEnum(name, entries) });
-  }
-  for (const key of conflictingEnums) {
-    sourceEnums.delete(key);
-    report({
-      code: 'CANVAS_ENUM_NAME_AMBIGUOUS',
-      source: key,
-      message: 'The source option enum name or labels are ambiguous.',
-    });
-  }
+  const assetSymbols = canvasAssetSymbols(app.uniqueName, source, report);
+  const reservedEnumNames = sourceEnumNames({
+    source,
+    lower,
+    dataSources,
+    namedFormulas,
+    variables,
+    contexts,
+    componentVariables,
+    assetSymbols,
+  });
+  const sourceEnums = canvasSourceEnums(source, reservedEnumNames, report);
   // The engine's warnings (delegation): fromFx of a data source passed to a canvas function is not a query, so it is not reported.
   function hostDiagnostic(entry, where) {
     if (entry?.operation !== 'fromFx') report({ ...entry, source: where });
@@ -632,24 +775,18 @@ export function createCanvasApp({
     return ref;
   };
   const nameOf = (value) => {
-    const id =
-      value instanceof FxRecordRef
-        ? value.canvasName
-        : isPlain(value) && [SCREEN, CONTROL].includes(value.logical_name)
-          ? lower.get(value.id)
-          : null;
+    let id = null;
+    if (value instanceof FxRecordRef) id = value.canvasName;
+    else if (isPlain(value) && [SCREEN, CONTROL].includes(value.logical_name)) id = lower.get(value.id);
     return id ?? null;
   };
   const screenOf = (scope) => scope.screen ?? (scope.control ? controls.get(scope.control)?.screen : null);
-  const values = (scope = {}) => {
-    const out = { ...ENUMS };
-    for (const { name, value } of sourceEnums.values())
-      Object.defineProperty(out, name, { value, enumerable: true, configurable: true, writable: true });
-    if (scope.pureComponent) return Object.assign(out, scope.extra ?? {});
-    const define = (name, get) => Object.defineProperty(out, name, { enumerable: true, configurable: true, get });
-    const component = scope.component;
+  const defineAssetValues = (component, define) => {
     for (const { stem, url } of assetSymbols.values())
       if ((component && !component.accessAppScope) || !lower.has(stem.toLowerCase())) define(stem, () => url);
+  };
+  const defineApplicationValues = (scope, define) => {
+    const component = scope.component;
     if (!component || component.accessAppScope) {
       for (const name of screenNames) define(name, () => reference(name, {}));
       for (const name of controls.keys())
@@ -677,18 +814,32 @@ export function createCanvasApp({
         },
       }));
     }
-    if (component) {
-      define(component.definition, () => reference(component.root, scope));
-      for (const [name, internal] of Object.entries(component.locals)) define(name, () => reference(internal, scope));
-    }
-    if (scope.control) {
-      out.Self = reference(scope.control, scope);
-      const parent = controls.get(scope.control)?.parent ?? controls.get(scope.control)?.screen;
-      if (parent) out.Parent = reference(parent, scope);
-      const form = formOf(scope.control);
-      if (scope.item !== undefined) out.ThisItem = out.ThisRecord = scope.item;
-      else if (form) define('ThisItem', () => formRecord(form));
-    }
+  };
+  const defineComponentValues = (component, scope, define) => {
+    if (!component) return;
+    define(component.definition, () => reference(component.root, scope));
+    for (const [name, internal] of Object.entries(component.locals)) define(name, () => reference(internal, scope));
+  };
+  const defineControlValues = (scope, out, define) => {
+    if (!scope.control) return;
+    out.Self = reference(scope.control, scope);
+    const parent = controls.get(scope.control)?.parent ?? controls.get(scope.control)?.screen;
+    if (parent) out.Parent = reference(parent, scope);
+    const form = formOf(scope.control);
+    if (scope.item !== undefined) out.ThisItem = out.ThisRecord = scope.item;
+    else if (form) define('ThisItem', () => formRecord(form));
+  };
+  const values = (scope = {}) => {
+    const out = { ...ENUMS };
+    for (const { name, value } of sourceEnums.values())
+      Object.defineProperty(out, name, { value, enumerable: true, configurable: true, writable: true });
+    if (scope.pureComponent) return Object.assign(out, scope.extra ?? {});
+    const define = (name, get) => Object.defineProperty(out, name, { enumerable: true, configurable: true, get });
+    const component = scope.component;
+    defineAssetValues(component, define);
+    defineApplicationValues(scope, define);
+    defineComponentValues(component, scope, define);
+    defineControlValues(scope, out, define);
     return Object.assign(out, scope.extra ?? {});
   };
   // Track scalar variable and context reads so a Set/UpdateContext invalidates only affected property answers.
@@ -788,13 +939,13 @@ export function createCanvasApp({
           },
           trace: (message) => log({ event: 'trace', message: String(message) }),
           functions: new Proxy(canvasFunctions(scope, where), {
-            get: (target, name) =>
-              typeof name !== 'string'
-                ? undefined
-                : Object.hasOwn(target, name)
-                  ? target[name]
-                  : (componentFunction(name, scope) ??
-                    connectorFunction(name, scope.connectors ?? { list: [], next: 0 })),
+            get: (target, name) => {
+              if (typeof name !== 'string') return undefined;
+              if (Object.hasOwn(target, name)) return target[name];
+              return (
+                componentFunction(name, scope) ?? connectorFunction(name, scope.connectors ?? { list: [], next: 0 })
+              );
+            },
           }),
         };
   const evaluate = (text, scope, where) =>
@@ -805,7 +956,7 @@ export function createCanvasApp({
 
   // ---- reactive properties ----
   const keyOf = (name, property, scope) =>
-    `prop:${name}.${property}${scope.itemIndex !== undefined ? `#${scope.itemIndex}` : ''}`;
+    `prop:${name}.${property}${scope.itemIndex !== undefined ? '#' + scope.itemIndex : ''}`;
   function read(name, property, scope = {}) {
     const key = keyOf(name, property, scope);
     track(key);
@@ -889,14 +1040,17 @@ export function createCanvasApp({
     return COMMON_DEFAULTS[property] ?? null;
   };
   const input = (name, scope) => {
-    const key = `input:${name}${scope.itemIndex !== undefined ? `#${scope.itemIndex}` : ''}`;
+    const key = `input:${name}${scope.itemIndex !== undefined ? '#' + scope.itemIndex : ''}`;
     track(key);
     return state.inputs.get(key);
   };
   // A table value's rows: a delegated data source query reads through its adapter (no row limit, no warning: the query
   // was delegated); a non-delegable formula already read its rows in the engine, with the warning.
-  const rowsOf = (value) =>
-    value instanceof FxDataSource ? value.adapter.read(value.query) : Array.isArray(value) ? value : [];
+  const rowsOf = (value) => {
+    if (value instanceof FxDataSource) return value.adapter.read(value.query);
+    if (Array.isArray(value)) return value;
+    return [];
+  };
   const items = (name) => {
     const key = `rows:${name}`;
     track(key);
@@ -928,42 +1082,22 @@ export function createCanvasApp({
   const sameRow = (left, right) =>
     left === right ||
     (isPlain(left) && isPlain(right) && JSON.stringify(observable(left)) === JSON.stringify(observable(right)));
-  // Compute the straightforward single-line flex allocation from source properties. Wrapping and complex
-  // native layout remain renderer approximations; explicit sizes stay authoritative on the cross axis.
-  function autoLayoutDimension(name, property, scope) {
-    if (!['Width', 'Height'].includes(property)) return undefined;
-    const child = controls.get(name),
-      parent = controls.get(child?.parent);
-    if (!parent || parent.kind !== 'container' || read(parent.name, 'LayoutWrap', scope) === true) return undefined;
-    const explicitDirection = read(parent.name, 'LayoutDirection', scope);
-    const variant = String(parent.variant ?? '');
-    const direction =
-      explicitDirection ?? (/horizontal/i.test(variant) ? 'Horizontal' : /vertical/i.test(variant) ? 'Vertical' : null);
-    if (!['Horizontal', 'Vertical'].includes(direction)) return undefined;
-    const vertical = direction === 'Vertical';
-    const main = vertical ? 'Height' : 'Width';
-    const cross = vertical ? 'Width' : 'Height';
+  const layoutDimension = (parent, property, scope, start, end) => {
+    const size = read(parent.name, property, scope);
+    if (typeof size !== 'number' || !Number.isFinite(size)) return null;
+    const pad = (key) => Math.max(0, Number(read(parent.name, key, scope)) || 0);
+    return Math.max(0, size - pad(start) - pad(end));
+  };
+  const crossLayoutDimension = (name, property, scope, parent, cross, formulas) => {
+    if (property !== cross || formulas.get(name)?.has(property)) return undefined;
+    const align = read(name, 'AlignInContainer', scope) ?? 'SetByContainer';
+    const effective = align === 'SetByContainer' ? read(parent.name, 'LayoutAlignItems', scope) : align;
+    if (effective !== 'Stretch') return undefined;
     const start = property === 'Width' ? 'PaddingLeft' : 'PaddingTop';
     const end = property === 'Width' ? 'PaddingRight' : 'PaddingBottom';
-    const dimension = () => {
-      const size = read(parent.name, property, scope);
-      if (typeof size !== 'number' || !Number.isFinite(size)) return null;
-      const pad = (key) => Math.max(0, Number(read(parent.name, key, scope)) || 0);
-      return Math.max(0, size - pad(start) - pad(end));
-    };
-    if (property === cross && !formulas.get(name)?.has(property)) {
-      const align = read(name, 'AlignInContainer', scope) ?? 'SetByContainer';
-      const effective = align === 'SetByContainer' ? read(parent.name, 'LayoutAlignItems', scope) : align;
-      if (effective !== 'Stretch') return undefined;
-      return dimension() ?? undefined;
-    }
-    if (property !== main) return undefined;
-    const portion = Number(read(name, 'FillPortions', scope)) || 0;
-    if (!(portion > 0)) return undefined;
-    const available = dimension();
-    if (available === null) return undefined;
-    const siblings = parent.children.filter((sibling) => read(sibling, 'Visible', scope) !== false);
-    const minimum = vertical ? 'LayoutMinHeight' : 'LayoutMinWidth';
+    return layoutDimension(parent, property, scope, start, end) ?? undefined;
+  };
+  const layoutSums = (siblings, name, property, minimum, scope) => {
     let fixed = 0,
       weights = 0,
       minima = 0,
@@ -977,95 +1111,144 @@ export function createCanvasApp({
         if (sibling === name) ownMinimum = min;
       } else {
         const size = read(sibling, property, scope);
-        if (typeof size !== 'number' || !Number.isFinite(size)) return undefined;
+        if (typeof size !== 'number' || !Number.isFinite(size)) return null;
         fixed += Math.max(0, size);
       }
     }
+    return { fixed, weights, minima, ownMinimum };
+  };
+  const mainLayoutDimension = (name, property, scope, parent, main, vertical) => {
+    if (property !== main) return undefined;
+    const portion = Number(read(name, 'FillPortions', scope)) || 0;
+    if (portion <= 0) return undefined;
+    const start = property === 'Width' ? 'PaddingLeft' : 'PaddingTop';
+    const end = property === 'Width' ? 'PaddingRight' : 'PaddingBottom';
+    const available = layoutDimension(parent, property, scope, start, end);
+    if (available === null) return undefined;
+    const siblings = parent.children.filter((sibling) => read(sibling, 'Visible', scope) !== false);
+    const minimum = vertical ? 'LayoutMinHeight' : 'LayoutMinWidth';
+    const sums = layoutSums(siblings, name, property, minimum, scope);
+    if (!sums) return undefined;
+    const { fixed, weights, minima, ownMinimum } = sums;
     if (!weights || !siblings.includes(name)) return undefined;
     const gap = Math.max(0, Number(read(parent.name, 'LayoutGap', scope)) || 0);
     const free = Math.max(0, available - fixed - minima - gap * Math.max(0, siblings.length - 1));
     return ownMinimum + (free * portion) / weights;
-  }
-  function compute(name, property, scope) {
-    const layout = autoLayoutDimension(name, property, scope);
-    if (layout !== undefined) return layout;
-    if (kindOf(name) === 'codecomponent') {
-      const definition = source.codeComponents?.[name];
-      const descriptor = definition?.properties?.find((entry) => entry.name === property);
-      if (descriptor) {
-        const key = `pcf:${name}.${property}${scope.itemIndex !== undefined ? `#${scope.itemIndex}` : ''}`;
-        track(key);
-        if (state.inputs.has(key)) return state.inputs.get(key);
-        const value = declared(name, property, scope);
-        if (value.found) return value.value;
-        if (typeof descriptor.defaultFormula === 'string') {
-          const formula = descriptor.defaultFormula.replace(/^\s*=/, '').trim();
-          if (/%[^%]+%/.test(formula)) {
-            const message = 'The code component default uses an unsupported reserved placeholder.';
-            report({ code: 'CANVAS_PCF_DEFAULT_UNSUPPORTED', source: `${name}.${property}`, message });
-            return new FxError([{ Kind: ErrorKind.NotSupported, Message: message }]);
-          }
-          return formula
-            ? pure(
-                formula,
-                {
-                  ...scope,
-                  control: name,
-                  screen: controls.get(name)?.screen,
-                  component: source.componentScopes?.[name],
-                },
-                `${name}.${property}`,
-              )
-            : null;
-        }
-        return descriptor.defaultValue ?? null;
-      }
+  };
+  // Compute the straightforward single-line flex allocation from source properties. Wrapping and complex
+  // native layout remain renderer approximations; explicit sizes stay authoritative on the cross axis.
+  function autoLayoutDimension(name, property, scope) {
+    if (!['Width', 'Height'].includes(property)) return undefined;
+    const child = controls.get(name),
+      parent = controls.get(child?.parent);
+    if (parent?.kind !== 'container' || read(parent.name, 'LayoutWrap', scope) === true) return undefined;
+    const explicitDirection = read(parent.name, 'LayoutDirection', scope);
+    const variant = String(parent.variant ?? '');
+    let direction = explicitDirection;
+    if (direction == null) {
+      if (/horizontal/i.test(variant)) direction = 'Horizontal';
+      else if (/vertical/i.test(variant)) direction = 'Vertical';
+      else direction = null;
     }
+    if (!['Horizontal', 'Vertical'].includes(direction)) return undefined;
+    const vertical = direction === 'Vertical';
+    const main = vertical ? 'Height' : 'Width';
+    const cross = vertical ? 'Width' : 'Height';
+    const crossDimension = crossLayoutDimension(name, property, scope, parent, cross, formulas);
+    if (crossDimension !== undefined) return crossDimension;
+    return mainLayoutDimension(name, property, scope, parent, main, vertical);
+  }
+  function codeComponentValue(name, property, scope) {
+    if (kindOf(name) !== 'codecomponent') return { found: false };
+    const definition = source.codeComponents?.[name];
+    const descriptor = definition?.properties?.find((entry) => entry.name === property);
+    if (!descriptor) return { found: false };
+    const key = `pcf:${name}.${property}${scope.itemIndex !== undefined ? '#' + scope.itemIndex : ''}`;
+    track(key);
+    if (state.inputs.has(key)) return { found: true, value: state.inputs.get(key) };
+    const value = declared(name, property, scope);
+    if (value.found) return value;
+    if (typeof descriptor.defaultFormula === 'string') {
+      const formula = descriptor.defaultFormula.replace(/^\s*=/, '').trim();
+      if (/%[^%]+%/.test(formula)) {
+        const message = 'The code component default uses an unsupported reserved placeholder.';
+        report({ code: 'CANVAS_PCF_DEFAULT_UNSUPPORTED', source: `${name}.${property}`, message });
+        return { found: true, value: new FxError([{ Kind: ErrorKind.NotSupported, Message: message }]) };
+      }
+      return {
+        found: true,
+        value: formula
+          ? pure(
+              formula,
+              {
+                ...scope,
+                control: name,
+                screen: controls.get(name)?.screen,
+                component: source.componentScopes?.[name],
+              },
+              `${name}.${property}`,
+            )
+          : null,
+      };
+    }
+    return { found: true, value: descriptor.defaultValue ?? null };
+  }
 
+  function appPropertyValue(name, property, scope) {
     if (name === 'App' && (property === 'Width' || property === 'Height')) {
       track('viewport');
-      return state.viewport[property.toLowerCase()];
+      return { found: true, value: state.viewport[property.toLowerCase()] };
     }
     if (name === 'App' && ['MinScreenWidth', 'MinScreenHeight', 'SizeBreakpoints'].includes(property)) {
       const result = declared(name, property, scope);
-      return result.found ? result.value : property === 'SizeBreakpoints' ? [600, 900, 1200] : 0;
+      if (result.found) return result;
+      if (property === 'SizeBreakpoints') return { found: true, value: [600, 900, 1200] };
+      return { found: true, value: 0 };
     }
-    if (screens.has(name) && !controls.has(name)) {
-      const result = declared(name, property, scope);
-      if (result.found) return result.value;
-      if (property === 'Width' || property === 'Height')
-        return Math.max(read('App', property), Number(read('App', `MinScreen${property}`)) || 0);
-      if (property === 'Size') {
-        const breakpoints = read('App', 'SizeBreakpoints');
-        const width = read(name, 'Width');
-        return (
+    return { found: false };
+  }
+
+  function screenPropertyValue(name, property, scope) {
+    if (!screens.has(name) || controls.has(name)) return { found: false };
+    const result = declared(name, property, scope);
+    if (result.found) return result;
+    if (property === 'Width' || property === 'Height')
+      return { found: true, value: Math.max(read('App', property), Number(read('App', `MinScreen${property}`)) || 0) };
+    if (property === 'Size') {
+      const breakpoints = read('App', 'SizeBreakpoints');
+      const width = read(name, 'Width');
+      return {
+        found: true,
+        value:
           1 +
-          (Array.isArray(breakpoints) ? breakpoints : []).filter((item) => width >= Number(item?.Value ?? item)).length
-        );
-      }
-      if (property === 'Orientation') return read(name, 'Width') > read(name, 'Height') ? 'Horizontal' : 'Vertical';
+          (Array.isArray(breakpoints) ? breakpoints : []).filter((item) => width >= Number(item?.Value ?? item)).length,
+      };
     }
-    if (name === 'App' && property.startsWith('#formula:'))
-      return pure(namedFormulas.get(property.slice(9)), {}, `App.Formulas.${property.slice(9)}`);
+    if (property === 'Orientation')
+      return { found: true, value: read(name, 'Width') > read(name, 'Height') ? 'Horizontal' : 'Vertical' };
+    return { found: false };
+  }
+
+  /* NOSONAR */ function inputPropertyValue(name, property, scope) {
     switch (`${kindOf(name)}.${property}`) {
       case 'textinput.Text': {
         const typed = input(name, scope);
-        return typed !== undefined ? typed : (fallback(name, 'Default', scope) ?? '');
+        return { found: true, value: typed !== undefined ? typed : (fallback(name, 'Default', scope) ?? '') };
       }
       case 'addmedia.Media':
       case 'addmedia.FileName': {
         const media = input(name, scope);
-        return property === 'Media' ? (media?.uri ?? null) : (media?.name ?? '');
+        return { found: true, value: property === 'Media' ? (media?.uri ?? null) : (media?.name ?? '') };
       }
       case 'slider.Value':
       case 'numberinput.Value': {
         const set = input(name, scope);
-        return set !== undefined ? set : fallback(name, 'Default', scope);
+        return { found: true, value: set !== undefined ? set : fallback(name, 'Default', scope) };
       }
       case 'combobox.SearchText': {
-        const key = `search:${name}${scope.itemIndex !== undefined ? `#${scope.itemIndex}` : ''}`;
+        const key = `search:${name}${scope.itemIndex !== undefined ? '#' + scope.itemIndex : ''}`;
         track(key);
-        return state.inputs.get(key) ?? '';
+        return { found: true, value: state.inputs.get(key) ?? '' };
       }
       case 'audio.Paused':
       case 'video.Paused':
@@ -1073,110 +1256,175 @@ export function createCanvasApp({
       case 'video.Time': {
         track(`media:${name}`);
         const media = state.media.get(name);
-        return property === 'Paused' ? (media?.paused ?? true) : (media?.time ?? 0);
+        return { found: true, value: property === 'Paused' ? (media?.paused ?? true) : (media?.time ?? 0) };
       }
       case 'timer.Value':
       case 'timer.Running': {
         track(`timer:${name}`);
         const timer = state.timers.get(name);
-        return property === 'Value' ? (timer?.value ?? 0) : (timer?.running ?? false);
+        return { found: true, value: property === 'Value' ? (timer?.value ?? 0) : (timer?.running ?? false) };
       }
       case 'checkbox.Checked':
       case 'toggle.Checked':
       case 'checkbox.Value':
       case 'toggle.Value': {
         const set = input(name, scope);
-        if (set !== undefined) return set;
+        if (set !== undefined) return { found: true, value: set };
         const modern = controls.get(name)?.modern;
-        return fallback(name, modern ? 'Checked' : 'Default', scope) === true;
+        return { found: true, value: fallback(name, modern ? 'Checked' : 'Default', scope) === true };
       }
       case 'datepicker.SelectedDate': {
         const set = input(name, scope);
-        return set !== undefined ? set : fallback(name, 'DefaultDate', scope);
+        return { found: true, value: set !== undefined ? set : fallback(name, 'DefaultDate', scope) };
       }
+      default:
+        return { found: false };
+    }
+  }
+
+  function selectionPropertyValue(name, property, scope) {
+    switch (`${kindOf(name)}.${property}`) {
       case 'radio.Selected':
       case 'dropdown.Selected': {
         const list = items(name),
           chosen = input(name, scope);
-        if (chosen !== undefined) return list[chosen] ?? null;
+        if (chosen !== undefined) return { found: true, value: list[chosen] ?? null };
         const wanted = fallback(name, 'Default', scope);
-        // Default is the initial value; without one the first item is selected.
-        return (
-          list.find((row) => (isPlain(row) ? Object.values(row).some((value) => value === wanted) : row === wanted)) ??
-          list[0] ??
-          null
-        );
+        return {
+          found: true,
+          value:
+            list.find(
+              (row) => (isPlain(row) ? Object.values(row).some((value) => value === wanted) : row === wanted), // NOSONAR: includes would change NaN handling
+            ) ??
+            list[0] ??
+            null,
+        };
       }
       case 'combobox.SelectedItems': {
         const list = items(name),
           chosen = input(name, scope);
-        if (chosen !== undefined) return chosen.map((index) => list[index]).filter(Boolean);
-        return rowsOf(fallback(name, 'DefaultSelectedItems', scope));
+        if (chosen !== undefined) return { found: true, value: chosen.map((index) => list[index]).filter(Boolean) };
+        return { found: true, value: rowsOf(fallback(name, 'DefaultSelectedItems', scope)) };
       }
       case 'combobox.Selected':
-        return read(name, 'SelectedItems', scope)?.at(-1) ?? null;
+        return { found: true, value: read(name, 'SelectedItems', scope)?.at(-1) ?? null };
+      default:
+        return { found: false };
+    }
+  }
+
+  function galleryPropertyValue(name, property, scope) {
+    switch (`${kindOf(name)}.${property}`) {
       case 'gallery.AllItems':
-        return items(name);
+        return { found: true, value: items(name) };
       case 'gallery.AllItemsCount':
-        return read(name, 'AllItems', scope).length;
+        return { found: true, value: read(name, 'AllItems', scope).length };
       case 'gallery.Selected': {
         track(`sel:${name}`);
         const list = items(name),
           chosen = state.selected.get(name);
-        if (chosen !== undefined) return list[chosen] ?? null;
+        if (chosen !== undefined) return { found: true, value: list[chosen] ?? null };
         const wanted = declared(name, 'Default', scope);
-        return (
-          (wanted.found && wanted.value ? list.find((row) => sameRow(row, wanted.value)) : null) ?? list[0] ?? null
-        );
+        return {
+          found: true,
+          value:
+            (wanted.found && wanted.value ? list.find((row) => sameRow(row, wanted.value)) : null) ?? list[0] ?? null,
+        };
       }
+      default:
+        return { found: false };
+    }
+  }
+
+  function formPropertyValue(name, property, scope) {
+    switch (`${kindOf(name)}.${property}`) {
       case 'form.Mode':
-        return formState(name).mode ?? fallback(name, 'DefaultMode', scope) ?? 'Edit';
+        return { found: true, value: formState(name).mode ?? fallback(name, 'DefaultMode', scope) ?? 'Edit' };
       case 'formviewer.Mode':
-        return 'View';
+        return { found: true, value: 'View' };
       case 'form.DisplayMode':
       case 'formviewer.DisplayMode':
-        return read(name, 'Mode', scope) === 'View' ? 'View' : 'Edit';
+        return { found: true, value: read(name, 'Mode', scope) === 'View' ? 'View' : 'Edit' };
       case 'form.Updates':
-        return Object.fromEntries(
-          cards(name)
-            .map((card) => [read(card, 'DataField', {}), read(card, 'Update', {})])
-            .filter(([field]) => typeof field === 'string' && field),
-        );
+        return {
+          found: true,
+          value: Object.fromEntries(
+            cards(name)
+              .map((card) => [read(card, 'DataField', {}), read(card, 'Update', {})])
+              .filter(([field]) => typeof field === 'string' && field),
+          ),
+        };
       case 'form.Valid':
-        return cards(name).every((card) => read(card, 'Valid', {}) !== false);
+        return { found: true, value: cards(name).every((card) => read(card, 'Valid', {}) !== false) };
       case 'form.Unsaved':
-        return cards(name).some((card) => read(card, 'Update', {}) !== read(card, 'Default', {}));
+        return {
+          found: true,
+          value: cards(name).some((card) => read(card, 'Update', {}) !== read(card, 'Default', {})),
+        };
       case 'form.LastSubmit':
-        return formState(name).lastSubmit ?? null;
+        return { found: true, value: formState(name).lastSubmit ?? null };
       case 'form.Error':
-        return formState(name).error ?? '';
+        return { found: true, value: formState(name).error ?? '' };
       case 'form.ErrorKind':
-        return formState(name).errorKind ?? ErrorKind.None;
+        return { found: true, value: formState(name).errorKind ?? ErrorKind.None };
+      default:
+        return { found: false };
+    }
+  }
+
+  function cardPropertyValue(name, property, scope) {
+    switch (`${kindOf(name)}.${property}`) {
       case 'card.Default': {
         const result = declared(name, property, scope);
-        if (result.found || !formOf(name)) return result.value ?? null;
+        if (result.found || !formOf(name)) return { found: true, value: result.value ?? null };
         const record = formRecord(formOf(name)),
           field = read(name, 'DataField', scope);
-        return record && typeof field === 'string' ? (record[field] ?? null) : null;
+        return { found: true, value: record && typeof field === 'string' ? (record[field] ?? null) : null };
       }
       case 'card.Update': {
         const result = declared(name, property, scope);
-        return result.found ? result.value : read(name, 'Default', scope);
+        return { found: true, value: result.found ? result.value : read(name, 'Default', scope) };
       }
       case 'card.Valid':
-        return !(read(name, 'Required', scope) === true && blank(read(name, 'Update', scope)));
+        return { found: true, value: !(read(name, 'Required', scope) === true && blank(read(name, 'Update', scope))) };
       case 'card.DisplayMode': {
         // Cards usually take Parent.DisplayMode (the form's).
         const result = declared(name, property, scope);
-        return result.found
-          ? result.value
-          : formOf(name)
-            ? read(formOf(name), 'DisplayMode', {})
-            : COMMON_DEFAULTS.DisplayMode;
+        if (result.found) return { found: true, value: result.value };
+        if (formOf(name)) return { found: true, value: read(formOf(name), 'DisplayMode', {}) };
+        return { found: true, value: COMMON_DEFAULTS.DisplayMode };
       }
       default:
-        return fallback(name, property, scope);
+        return { found: false };
     }
+  }
+
+  function controlPropertyValue(name, property, scope) {
+    const inputs = inputPropertyValue(name, property, scope);
+    if (inputs.found) return inputs;
+    const selections = selectionPropertyValue(name, property, scope);
+    if (selections.found) return selections;
+    const gallery = galleryPropertyValue(name, property, scope);
+    if (gallery.found) return gallery;
+    const form = formPropertyValue(name, property, scope);
+    if (form.found) return form;
+    return cardPropertyValue(name, property, scope);
+  }
+
+  function compute(name, property, scope) {
+    const layout = autoLayoutDimension(name, property, scope);
+    if (layout !== undefined) return layout;
+    const componentValue = codeComponentValue(name, property, scope);
+    if (componentValue.found) return componentValue.value;
+
+    const appValue = appPropertyValue(name, property, scope);
+    if (appValue.found) return appValue.value;
+    const screenValue = screenPropertyValue(name, property, scope);
+    if (screenValue.found) return screenValue.value;
+    if (name === 'App' && property.startsWith('#formula:'))
+      return pure(namedFormulas.get(property.slice(9)), {}, `App.Formulas.${property.slice(9)}`);
+    const controlValue = controlPropertyValue(name, property, scope);
+    return controlValue.found ? controlValue.value : fallback(name, property, scope);
   }
 
   // ---- canvas functions the engine calls back (arguments arrive as host values: a control is { id, logical_name }) ----
@@ -1207,7 +1455,7 @@ export function createCanvasApp({
       NewForm: (form) => mode(controlArg(form, ['form'], 'NewForm'), 'New'),
       EditForm: (form) => mode(controlArg(form, ['form'], 'EditForm'), 'Edit'),
       ViewForm: (form) => mode(controlArg(form, ['form'], 'ViewForm'), 'View'),
-      ResetForm: (target) => {
+      /* NOSONAR: constant return value is part of the handler contract */ ResetForm: (target) => {
         const form = controlArg(target, ['form'], 'ResetForm');
         if (read(form, 'Mode') === 'View') return true; // ResetForm has no effect in FormMode.View
         clearInputs(form);
@@ -1328,6 +1576,61 @@ export function createCanvasApp({
     (type === 'Table' && (Array.isArray(value) || value instanceof FxDataSource)) ||
     (type === 'Screen' && value instanceof FxRecordRef && value.table === SCREEN);
   const componentCallStack = [];
+  function validateComponentAccess(descriptor, scope, root, pureCall) {
+    if (['InputFunction', 'Event'].includes(descriptor.kind) && scope.component?.root !== root)
+      throw fail(
+        'Component input functions and events can only be invoked by their component.',
+        'CanvasComponentActionInvalid',
+      );
+    if (!pureCall && !scope.behaviour)
+      throw fail('Component behavior properties require a behavior formula.', 'CanvasComponentActionInvalid');
+  }
+  function componentParameters(descriptor, args) {
+    const allowed = new Set(['Text', 'Number', 'Boolean', 'DateAndTime', 'Record', 'Table', 'Screen', 'Currency']);
+    const parameters = descriptor.parameters ?? [];
+    if (
+      parameters.length > 32 ||
+      parameters.some((parameter) => !allowed.has(parameter.dataType)) ||
+      (descriptor.returnType && ![...allowed, 'None'].includes(descriptor.returnType))
+    )
+      throw fail(
+        'This component function uses an unsupported parameter or return type.',
+        'CanvasComponentFunctionUnsupported',
+        501,
+      );
+    if (args.length > parameters.length || parameters.slice(args.length).some((parameter) => !parameter.optional))
+      throw fail('Component function argument count is invalid.', 'CanvasComponentArgumentInvalid');
+    return parameters;
+  }
+  function componentArguments(parameters, args, scope, component, pureCall, key) {
+    const extra = {};
+    for (let index = 0; index < parameters.length; index++) {
+      const parameter = parameters[index];
+      let value = args[index];
+      if (value === undefined && parameter.default != null) {
+        const text = String(parameter.default).replace(/^\s*=/, '');
+        value = evaluate(
+          text,
+          { ...scope, component, pureComponent: pureCall, componentArguments: true, extra },
+          `${key}.${parameter.name}`,
+        );
+      }
+      if (value instanceof FxError) return { failed: true, value };
+      if (!componentTypeMatches(parameter.dataType, value))
+        throw fail('Component function argument has an unsupported type.', 'CanvasComponentArgumentInvalid');
+      extra[parameter.name] = value ?? null;
+    }
+    return { failed: false, extra };
+  }
+  function validateComponentReturn(result, descriptor) {
+    if (
+      !(result instanceof FxError) &&
+      descriptor.returnType &&
+      descriptor.returnType !== 'None' &&
+      !componentTypeMatches(descriptor.returnType, result)
+    )
+      throw fail('Component function returned a value of the wrong type.', 'CanvasComponentArgumentInvalid');
+  }
   const componentFunction = (name, scope) => {
     const dot = name.indexOf('.');
     if (dot <= 0) return undefined;
@@ -1339,27 +1642,8 @@ export function createCanvasApp({
     if (!descriptor) return undefined;
     return typedPowerFxFunction((...args) => {
       const pureCall = descriptor.kind === 'InputFunction' || descriptor.kind === 'OutputFunction';
-      if (['InputFunction', 'Event'].includes(descriptor.kind) && scope.component?.root !== root)
-        throw fail(
-          'Component input functions and events can only be invoked by their component.',
-          'CanvasComponentActionInvalid',
-        );
-      if (!pureCall && !scope.behaviour)
-        throw fail('Component behavior properties require a behavior formula.', 'CanvasComponentActionInvalid');
-      const allowed = new Set(['Text', 'Number', 'Boolean', 'DateAndTime', 'Record', 'Table', 'Screen', 'Currency']);
-      const parameters = descriptor.parameters ?? [];
-      if (
-        parameters.length > 32 ||
-        parameters.some((parameter) => !allowed.has(parameter.dataType)) ||
-        (descriptor.returnType && ![...allowed, 'None'].includes(descriptor.returnType))
-      )
-        throw fail(
-          'This component function uses an unsupported parameter or return type.',
-          'CanvasComponentFunctionUnsupported',
-          501,
-        );
-      if (args.length > parameters.length || parameters.slice(args.length).some((parameter) => !parameter.optional))
-        throw fail('Component function argument count is invalid.', 'CanvasComponentArgumentInvalid');
+      validateComponentAccess(descriptor, scope, root, pureCall);
+      const parameters = componentParameters(descriptor, args);
       const entry = formulas.get(root)?.get(property);
       if (!entry?.formula) throw fail('Component function has no formula.', 'CanvasComponentFunctionUnsupported', 501);
       const key = `${root}.${property}`;
@@ -1368,23 +1652,9 @@ export function createCanvasApp({
       componentCallStack.push(key);
       try {
         const component = formulaComponent(root, entry);
-        const extra = {};
-        for (let index = 0; index < parameters.length; index++) {
-          const parameter = parameters[index];
-          let value = args[index];
-          if (value === undefined && parameter.default != null) {
-            const text = String(parameter.default).replace(/^\s*=/, '');
-            value = evaluate(
-              text,
-              { ...scope, component, pureComponent: pureCall, componentArguments: true, extra },
-              `${key}.${parameter.name}`,
-            );
-          }
-          if (value instanceof FxError) return value;
-          if (!componentTypeMatches(parameter.dataType, value))
-            throw fail('Component function argument has an unsupported type.', 'CanvasComponentArgumentInvalid');
-          extra[parameter.name] = value ?? null;
-        }
+        const argumentValues = componentArguments(parameters, args, scope, component, pureCall, key);
+        if (argumentValues.failed) return argumentValues.value;
+        const { extra } = argumentValues;
         const result = evaluate(
           entry.formula,
           {
@@ -1398,13 +1668,7 @@ export function createCanvasApp({
           },
           key,
         );
-        if (
-          !(result instanceof FxError) &&
-          descriptor.returnType &&
-          descriptor.returnType !== 'None' &&
-          !componentTypeMatches(descriptor.returnType, result)
-        )
-          throw fail('Component function returned a value of the wrong type.', 'CanvasComponentArgumentInvalid');
+        validateComponentReturn(result, descriptor);
         return result;
       } finally {
         componentCallStack.pop();
@@ -1486,7 +1750,10 @@ export function createCanvasApp({
   // Power Apps' own message text for a failed connector call is not known.
   const EXCERPT = 2000; // ponytail: HttpResponse keeps the first 2000 characters of the body; raise it if a body needs more.
   const connectorFailure = (source, status, body, kind = ErrorKind.Network) => {
-    const text = body === undefined || body === null ? '' : typeof body === 'string' ? body : JSON.stringify(body);
+    let text;
+    if (body === undefined || body === null) text = '';
+    else if (typeof body === 'string') text = body;
+    else text = JSON.stringify(body);
     const reason =
       body?.error?.message ??
       body?.message ??
@@ -1519,7 +1786,10 @@ export function createCanvasApp({
         `Connector ${entry.name} is not available in this runtime.`,
         ErrorKind.NotSupported,
       );
-    const body = args.length === 1 && isPlain(args[0]) ? args[0] : args.length ? { args } : {};
+    let body;
+    if (args.length === 1 && isPlain(args[0])) body = args[0];
+    else if (args.length) body = { args };
+    else body = {};
     let result;
     try {
       result = await connectors({
@@ -1599,7 +1869,7 @@ export function createCanvasApp({
       propertyWaits.clear();
       instance.snapshot();
       if (!propertyWaits.size) return;
-      for (const [key, wait] of [...propertyWaits]) propertyAnswers.get(key).push(await callConnector(wait));
+      for (const [key, wait] of [...propertyWaits]) propertyAnswers.get(key).push(await callConnector(wait)); // NOSONAR: snapshot copy guards against mutation while iterating
       forget();
     }
   }
@@ -1618,6 +1888,14 @@ export function createCanvasApp({
   }
   function initializeResetInputs() {
     for (const input of captureResetInputs()) componentInputBaseline.set(input.key, input.value);
+  }
+  function formulaOutcome(result, where, current) {
+    let failed;
+    if (result instanceof FxError) failed = [result];
+    else if (Array.isArray(result)) failed = result.filter((item) => item instanceof FxError);
+    else failed = [];
+    if (failed.length) current.errors = failed.flatMap((item) => fromFxError(item, where));
+    else current.value = result;
   }
   async function synchronizeResetInputs() {
     for (let round = 0; round < 32; round++) {
@@ -1639,8 +1917,7 @@ export function createCanvasApp({
   }
   /** Runs one behaviour formula; its errors are recorded (the chain itself continues). */
   async function run(text, scope, where) {
-    let errors = [],
-      value = null;
+    const current = { errors: [], value: null };
     const tape = { list: [], next: 0, journal: { entries: [], next: 0 } };
     try {
       for (let attempt = 0; ; attempt++) {
@@ -1666,29 +1943,22 @@ export function createCanvasApp({
         });
         if (!outcome.suspended) {
           // An error value, or a table holding error values (ForAll over failed writes), is the formula's failure.
-          const failed =
-            outcome.result instanceof FxError
-              ? [outcome.result]
-              : Array.isArray(outcome.result)
-                ? outcome.result.filter((item) => item instanceof FxError)
-                : [];
-          if (failed.length) errors = failed.flatMap((item) => fromFxError(item, where));
-          else value = outcome.result;
+          formulaOutcome(outcome.result, where, current);
           break;
         }
         restoreState(saved);
         tape.list.push(await callConnector(outcome.suspended));
       }
     } catch (error) {
-      errors = [fromError(error, where)];
+      current.errors = [fromError(error, where)];
     }
     forget();
-    for (const entry of errors) pushError(entry);
+    for (const entry of current.errors) pushError(entry);
     const queued = pending;
     pending = [];
     for (const task of queued) await task();
-    if (errors.length && !scope.handled) await onError(errors, where);
-    return { value, errors };
+    if (current.errors.length && !scope.handled) await onError(current.errors, where);
+    return { value: current.value, errors: current.errors };
   }
   async function onError(errors, where) {
     const handler = formulas.get('App')?.get('OnError')?.formula;
@@ -1705,23 +1975,27 @@ export function createCanvasApp({
       'App.OnError',
     );
   }
+  const skipHiddenMediaPause = (entry, previous) =>
+    entry.screen !== previous || !['audio', 'video'].includes(entry.kind) || read(entry.name, 'AutoPause') === false;
+  const shouldAutostartTimer = (control, screen) =>
+    control.screen === screen && control.kind === 'timer' && read(control.name, 'AutoStart') === true;
+  const shouldAutostartMedia = (control, screen) =>
+    control.screen === screen && ['audio', 'video'].includes(control.kind) && read(control.name, 'AutoStart') === true;
+  function pauseHiddenMedia(previous) {
+    for (const entry of controls.values()) {
+      if (skipHiddenMediaPause(entry, previous)) continue;
+      const media = state.media.get(entry.name);
+      if (media && !media.paused) {
+        state.media.set(entry.name, { ...media, paused: true });
+        changed(`media:${entry.name}`);
+      }
+    }
+  }
   async function show(screen, { transition, update, push }) {
     const previous = state.current;
     if (previous) {
       await behaviour(previous, 'OnHidden', { screen: previous });
-      for (const entry of controls.values()) {
-        if (
-          entry.screen !== previous ||
-          !['audio', 'video'].includes(entry.kind) ||
-          read(entry.name, 'AutoPause') === false
-        )
-          continue;
-        const media = state.media.get(entry.name);
-        if (media && !media.paused) {
-          state.media.set(entry.name, { ...media, paused: true });
-          changed(`media:${entry.name}`);
-        }
-      }
+      pauseHiddenMedia(previous);
     }
     if (update) {
       Object.assign(trackedState(contexts.get(screen), `context:${screen}`), update);
@@ -1734,13 +2008,8 @@ export function createCanvasApp({
     log({ event: 'navigate', from: previous, to: screen, transition });
     await behaviour(screen, 'OnVisible', { screen });
     for (const control of controls.values()) {
-      if (control.screen === screen && control.kind === 'timer' && read(control.name, 'AutoStart') === true)
-        await startTimer(control.name);
-      if (
-        control.screen === screen &&
-        ['audio', 'video'].includes(control.kind) &&
-        read(control.name, 'AutoStart') === true
-      ) {
+      if (shouldAutostartTimer(control, screen)) await startTimer(control.name);
+      if (shouldAutostartMedia(control, screen)) {
         state.media.set(control.name, { ...(state.media.get(control.name) ?? { time: 0 }), paused: false });
         changed(`media:${control.name}`);
         await behaviour(control.name, 'OnStart', {});
@@ -1796,16 +2065,22 @@ export function createCanvasApp({
   async function syncTimers() {
     for (const entry of controls.values()) if (entry.kind === 'timer') await syncTimer(entry);
   }
+  const timerOnCurrentScreen = (entry) => entry.screen === state.current || read(entry.name, 'AutoPause') === false;
+  const timerStartAgain = (entry, name, repeat) =>
+    repeat && state.timers.get(name)?.running && timerOnCurrentScreen(entry);
+  const timerTransitionLimitReached = (iterations, remaining) => iterations >= 100 && remaining > 0;
+  const completeTimerCycle = (name, timer, duration, repeat) => {
+    state.timers.set(name, { ...timer, value: repeat ? 0 : duration, running: repeat, completed: !repeat });
+    changed(`timer:${name}`);
+  };
   async function tickTimers(milliseconds) {
-    for (const entry of controls.values()) {
-      if (entry.kind !== 'timer') continue;
+    for (const entry of [...controls.values()].filter((control) => control.kind === 'timer')) {
       const name = entry.name;
-      if (entry.screen !== state.current && read(name, 'AutoPause') !== false) continue;
+      if (!timerOnCurrentScreen(entry)) continue;
       await syncTimer(entry);
       let remaining = milliseconds,
         iterations = 0;
-      while (remaining > 0 && state.timers.get(name)?.running) {
-        if (entry.screen !== state.current && read(name, 'AutoPause') !== false) break;
+      while (remaining > 0 && state.timers.get(name)?.running && timerOnCurrentScreen(entry)) {
         const timer = state.timers.get(name);
         const duration = Math.min(86400000, Math.max(1, Number(read(name, 'Duration')) || 60000));
         const step = Math.min(remaining, Math.max(0, duration - timer.value));
@@ -1815,16 +2090,11 @@ export function createCanvasApp({
         remaining -= step;
         if (value < duration) break;
         const repeat = read(name, 'Repeat') === true;
-        state.timers.set(name, { ...timer, value: repeat ? 0 : duration, running: repeat, completed: !repeat });
-        changed(`timer:${name}`);
+        completeTimerCycle(name, timer, duration, repeat);
         await behaviour(name, 'OnTimerEnd', {});
-        if (
-          repeat &&
-          state.timers.get(name)?.running &&
-          (entry.screen === state.current || read(name, 'AutoPause') === false)
-        )
-          await behaviour(name, 'OnTimerStart', {});
-        if (++iterations >= 100 && remaining > 0) {
+        if (timerStartAgain(entry, name, repeat)) await behaviour(name, 'OnTimerStart', {});
+        iterations++;
+        if (timerTransitionLimitReached(iterations, remaining)) {
           report({
             code: 'CANVAS_TIMER_TICK_LIMIT',
             source: name,
@@ -1852,6 +2122,31 @@ export function createCanvasApp({
     return behaviour(control, 'OnSelect', scope);
   }
 
+  const numberInputValue = (name, given, scope) => {
+    const next = Number(given);
+    if (!Number.isFinite(next)) throw fail('The number is not valid.', 'CanvasInputInvalid');
+    const min = read(name, 'Min', scope),
+      max = read(name, 'Max', scope);
+    if ((min !== null && next < Number(min)) || (max !== null && next > Number(max)))
+      throw fail('The number is outside the control bounds.', 'CanvasInputInvalid');
+    return next;
+  };
+  const singleChoiceValue = (name, given) => {
+    const list = items(name);
+    const next = choiceIndex(list, given);
+    if (next < 0 || next >= list.length) throw fail(`${name} has no item ${given}.`, 'CanvasItemNotFound', 404);
+    return next;
+  };
+  const multipleChoiceValue = (name, given, scope) => {
+    const list = items(name);
+    const next = [given].flat().map((choice) => choiceIndex(list, choice));
+    if (next.length > 1 && read(name, 'SelectMultiple', scope) === false)
+      throw fail(`${name} allows only one selection.`, 'CanvasInputInvalid');
+    if (next.some((index) => index < 0 || index >= list.length))
+      throw fail(`${name} has no such item.`, 'CanvasItemNotFound', 404);
+    return next;
+  };
+
   // ---- driver API ----
   const itemScope = (control, item) => {
     const gallery = kindOf(control) === 'gallery' ? control : galleryOf(control);
@@ -1877,36 +2172,36 @@ export function createCanvasApp({
   async function setInput(name, given, item) {
     const entry = hosted(name),
       scope = itemScope(name, item);
-    const key = `input:${name}${scope.itemIndex !== undefined ? `#${scope.itemIndex}` : ''}`;
+    const key = `input:${name}${scope.itemIndex !== undefined ? '#' + scope.itemIndex : ''}`;
     let next;
-    const indexOf = (list, choice) =>
-      Number.isInteger(choice)
-        ? choice
-        : list.findIndex((row) => (isPlain(row) ? Object.values(row).includes(choice) : row === choice));
-    if (entry.kind === 'textinput') next = given === null || given === undefined ? '' : String(given);
-    else if (entry.kind === 'checkbox' || entry.kind === 'toggle') next = given === true || given === 'true';
-    else if (entry.kind === 'datepicker') {
-      next = given ? new Date(given) : null;
-      if (next && Number.isNaN(next.getTime())) throw fail('The date is not valid.', 'CanvasInputInvalid');
-    } else if (entry.kind === 'slider' || entry.kind === 'numberinput') {
-      next = Number(given);
-      if (!Number.isFinite(next)) throw fail('The number is not valid.', 'CanvasInputInvalid');
-      const min = read(name, 'Min', scope),
-        max = read(name, 'Max', scope);
-      if ((min !== null && next < Number(min)) || (max !== null && next > Number(max)))
-        throw fail('The number is outside the control bounds.', 'CanvasInputInvalid');
-    } else if (entry.kind === 'dropdown' || entry.kind === 'radio') {
-      const list = items(name);
-      next = indexOf(list, given);
-      if (next < 0 || next >= list.length) throw fail(`${name} has no item ${given}.`, 'CanvasItemNotFound', 404);
-    } else if (entry.kind === 'combobox') {
-      const list = items(name);
-      next = [given].flat().map((choice) => indexOf(list, choice));
-      if (next.length > 1 && read(name, 'SelectMultiple', scope) === false)
-        throw fail(`${name} allows only one selection.`, 'CanvasInputInvalid');
-      if (next.some((index) => index < 0 || index >= list.length))
-        throw fail(`${name} has no such item.`, 'CanvasItemNotFound', 404);
-    } else throw fail(`${name} (${entry.type}) takes no input.`, 'CanvasActionInvalid');
+    switch (entry.kind) {
+      case 'textinput':
+        next = given === null || given === undefined ? '' : String(given);
+        break;
+      case 'checkbox':
+      case 'toggle':
+        next = given === true || given === 'true';
+        break;
+      case 'datepicker':
+        next = given ? new Date(given) : null;
+        if (next && Number.isNaN(next.getTime())) throw fail('The date is not valid.', 'CanvasInputInvalid');
+        break;
+      case 'slider':
+      case 'numberinput':
+        next = numberInputValue(name, given, scope);
+        break;
+      case 'dropdown':
+      case 'radio': {
+        next = singleChoiceValue(name, given);
+        break;
+      }
+      case 'combobox': {
+        next = multipleChoiceValue(name, given, scope);
+        break;
+      }
+      default:
+        throw fail(`${name} (${entry.type}) takes no input.`, 'CanvasActionInvalid');
+    }
     const checked = entry.kind === 'checkbox' || entry.kind === 'toggle';
     if (checked && read(name, 'Value', scope) === next) return;
     state.inputs.set(key, next);
@@ -1915,6 +2210,178 @@ export function createCanvasApp({
     const result = await behaviour(name, 'OnChange', scope);
     if (checked) await behaviour(name, next ? 'OnCheck' : 'OnUncheck', scope);
     return result;
+  }
+  function validatePictureData(data, mime) {
+    if (
+      typeof data !== 'string' ||
+      data.length > Math.ceil((1024 * 1024) / 3) * 4 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data)
+    )
+      throw fail('The picture is invalid or exceeds the local size limit.', 'CanvasInputInvalid');
+    const bytes = Buffer.from(data, 'base64');
+    if (!bytes.length || bytes.length > 1024 * 1024 || bytes.toString('base64') !== data)
+      throw fail('The picture is invalid or exceeds the local size limit.', 'CanvasInputInvalid');
+    let valid;
+    if (mime === 'image/png') valid = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    else if (mime === 'image/jpeg')
+      valid = bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
+    else if (mime === 'image/gif') valid = ['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'));
+    else
+      valid =
+        bytes.length >= 12 &&
+        bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+        bytes.subarray(8, 12).toString('ascii') === 'WEBP';
+    if (!valid) throw fail('The picture does not match its declared image type.', 'CanvasInputInvalid');
+  }
+  function addMediaAction(request) {
+    const entry = hosted(request.control);
+    if (entry.kind !== 'addmedia') throw fail('add-media needs an add picture control.', 'CanvasActionInvalid');
+    const scope = itemScope(entry.name, request.item);
+    if (read(entry.name, 'DisplayMode', scope) !== 'Edit')
+      throw fail('The control is not editable.', 'CanvasActionInvalid');
+    const { name, mime, data } = request;
+    if (!validPictureName(name) || !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mime))
+      throw fail('The picture is invalid or exceeds the local size limit.', 'CanvasInputInvalid');
+    validatePictureData(data, mime);
+    const key = `input:${entry.name}${scope.itemIndex !== undefined ? '#' + scope.itemIndex : ''}`;
+    state.inputs.set(key, { name, uri: `data:${mime};base64,${data}` });
+    changed(key);
+    return behaviour(entry.name, 'OnChange', scope);
+  }
+  function codeComponentEventAction(request) {
+    const entry = hosted(request.control);
+    const definition = source.codeComponents?.[entry.name];
+    if (entry.kind !== 'codecomponent' || !definition?.admitted)
+      throw fail('Code component is not admitted by its manifest.', 'CanvasControlUnsupported', 501);
+    if (typeof request.event !== 'string' || !(definition.events ?? []).includes(request.event))
+      throw fail('Code component event is not declared by its manifest.', 'CanvasActionInvalid');
+    const scope = itemScope(entry.name, request.item);
+    if (read(entry.name, 'DisplayMode', scope) !== 'Edit')
+      throw fail('Code component is not editable.', 'CanvasActionInvalid');
+    return behaviour(entry.name, request.event, scope);
+  }
+  const isIntegerComponentType = (type) =>
+    ['whole.none', 'whole.duration', 'whole.timezone', 'whole.language', 'optionset'].includes(type);
+  const isNumericComponentType = (type, integer) => integer || ['decimal', 'fp', 'currency'].includes(type);
+  const isTextComponentType = (type) =>
+    [
+      'singleline.text',
+      'singleline.textarea',
+      'singleline.email',
+      'singleline.phone',
+      'singleline.url',
+      'singleline.ticker',
+      'multiple',
+    ].includes(type);
+  const writableComponentProperty = (descriptor) =>
+    Boolean(descriptor) && ['output', 'bound'].includes(descriptor.usage);
+  const supportedComponentValueType = (numeric, text, date, enumeration, type) =>
+    numeric || text || date || enumeration || type === 'twooptions';
+  function codeComponentAction(request) {
+    const entry = hosted(request.control);
+    const definition = source.codeComponents?.[entry.name];
+    if (entry.kind !== 'codecomponent' || !definition?.admitted)
+      throw fail('Code component is not admitted by its manifest.', 'CanvasControlUnsupported', 501);
+    const scope = itemScope(entry.name, request.item);
+    if (read(entry.name, 'DisplayMode', scope) !== 'Edit')
+      throw fail('Code component is not editable.', 'CanvasActionInvalid');
+    if (!isPlain(request.values) || Object.keys(request.values).length > 128)
+      throw fail('Code component values must be a bounded property object.', 'CanvasActionInvalid');
+    const changes = [];
+    for (const [property, value] of Object.entries(request.values)) {
+      const descriptor = definition.properties.find((item) => item.name === property);
+      if (!writableComponentProperty(descriptor))
+        throw fail(`Code component property ${property} is not writable.`, 'CanvasActionInvalid');
+      const type = descriptor.ofType.toLowerCase();
+      const integer = isIntegerComponentType(type);
+      const numeric = isNumericComponentType(type, integer);
+      const text = isTextComponentType(type);
+      const enumeration = type === 'enum';
+      const date = ['datetime.dateonly', 'datetime.datetime'].includes(type);
+      if (
+        !validComponentValue(type, value, integer, numeric, text, enumeration, date) ||
+        !supportedComponentValueType(numeric, text, date, enumeration, type)
+      )
+        throw fail(`Code component property ${property} has an invalid value.`, 'CanvasInputInvalid');
+      changes.push([
+        `pcf:${entry.name}.${property}${scope.itemIndex !== undefined ? '#' + scope.itemIndex : ''}`,
+        value,
+      ]);
+    }
+    for (const [key, value] of changes) {
+      state.inputs.set(key, value);
+      changed(key);
+    }
+    if (changes.length) return behaviour(entry.name, 'OnChange', scope);
+  }
+  function mediaAction(request) {
+    const entry = hosted(request.control);
+    if (!['audio', 'video'].includes(entry.kind) || !['play', 'pause', 'end', 'seek'].includes(request.event))
+      throw fail('media needs an audio or video control and a valid event.', 'CanvasActionInvalid');
+    const prior = state.media.get(entry.name) ?? { paused: true, time: 0 };
+    if (
+      request.event === 'seek' &&
+      (typeof request.time !== 'number' || !Number.isFinite(request.time) || request.time < 0 || request.time > 86400)
+    )
+      throw fail('media seek needs a time from 0 to 86400 seconds.', 'CanvasActionInvalid');
+    let next;
+    if (request.event === 'seek') next = { ...prior, time: request.time };
+    else if (request.event === 'play') next = { ...prior, paused: false };
+    else if (request.event === 'end' && read(entry.name, 'Loop') === true) next = { paused: false, time: 0 };
+    else next = { ...prior, paused: true };
+    state.media.set(entry.name, next);
+    changed(`media:${entry.name}`);
+    return { entry, prior };
+  }
+  const shouldHandleMediaStart = (request, prior) => request.event === 'play' && prior.paused;
+  const shouldHandleMediaPause = (request, prior) => request.event === 'pause' && !prior.paused;
+  function tickAction(request) {
+    if (!Number.isInteger(request.milliseconds) || request.milliseconds < 1 || request.milliseconds > 60000)
+      throw fail('tick needs integer milliseconds from 1 to 60000.', 'CanvasActionInvalid');
+    return tickTimers(request.milliseconds);
+  }
+  function searchAction(request) {
+    const entry = hosted(request.control);
+    if (entry.kind !== 'combobox' || typeof request.value !== 'string' || request.value.length > 1000)
+      throw fail('search needs a combo box and text up to 1000 characters.', 'CanvasActionInvalid');
+    const scope = itemScope(request.control, request.item);
+    const key = `search:${request.control}${scope.itemIndex !== undefined ? '#' + scope.itemIndex : ''}`;
+    state.inputs.set(key, request.value);
+    changed(key);
+  }
+  function galleryWindowAction(request) {
+    const entry = hosted(request.control);
+    if (
+      entry.kind !== 'gallery' ||
+      !Number.isSafeInteger(request.offset) ||
+      request.offset < 0 ||
+      request.offset > 1000000
+    )
+      throw fail('gallery-window needs a gallery and an offset from 0 to 1000000.', 'CanvasActionInvalid');
+    state.windows.set(request.control, request.offset);
+  }
+  function navigateAction(request) {
+    if (!screens.has(request.screen))
+      throw fail(`Screen ${request.screen} is not part of this app.`, 'CanvasScreenNotFound', 404);
+    return show(request.screen, { transition: 'None', push: true });
+  }
+  function runAction(request) {
+    if (typeof request.formula !== 'string' || !request.formula.trim())
+      throw fail('run needs a formula.', 'CanvasActionInvalid');
+    return run(request.formula.replace(/^\s*=/, ''), { screen: state.current }, 'driver');
+  }
+  function evaluateAction(request) {
+    if (typeof request.formula !== 'string' || !request.formula.trim())
+      throw fail('evaluate needs a formula.', 'CanvasActionInvalid');
+    const value = evaluate(request.formula.replace(/^\s*=/, ''), { screen: state.current }, 'driver');
+    return value instanceof FxDataSource ? rowsOf(value) : value;
+  }
+  function resizeAction(request) {
+    const next = canvasViewport(request);
+    if (next.width !== state.viewport.width || next.height !== state.viewport.height) {
+      state.viewport = next;
+      changed('viewport');
+    }
   }
   let queue = Promise.resolve();
   const serial = (task) => {
@@ -1961,210 +2428,54 @@ export function createCanvasApp({
             await setInput(request.control, request.value, request.item);
             break;
           case 'add-media': {
-            const entry = hosted(request.control);
-            if (entry.kind !== 'addmedia') throw fail('add-media needs an add picture control.', 'CanvasActionInvalid');
-            const scope = itemScope(entry.name, request.item);
-            if (read(entry.name, 'DisplayMode', scope) !== 'Edit')
-              throw fail('The control is not editable.', 'CanvasActionInvalid');
-            const { name, mime, data } = request;
-            if (
-              typeof name !== 'string' ||
-              !name ||
-              name.length > 255 ||
-              [...name].some(
-                (character) =>
-                  character.charCodeAt(0) < 32 ||
-                  character.charCodeAt(0) === 127 ||
-                  character === '/' ||
-                  character === '\\',
-              ) ||
-              !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mime) ||
-              typeof data !== 'string' ||
-              data.length > Math.ceil((1024 * 1024) / 3) * 4 ||
-              !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data)
-            )
-              throw fail('The picture is invalid or exceeds the local size limit.', 'CanvasInputInvalid');
-            const bytes = Buffer.from(data, 'base64');
-            if (!bytes.length || bytes.length > 1024 * 1024 || bytes.toString('base64') !== data)
-              throw fail('The picture is invalid or exceeds the local size limit.', 'CanvasInputInvalid');
-            const valid =
-              mime === 'image/png'
-                ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-                : mime === 'image/jpeg'
-                  ? bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
-                  : mime === 'image/gif'
-                    ? ['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'))
-                    : bytes.length >= 12 &&
-                      bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
-                      bytes.subarray(8, 12).toString('ascii') === 'WEBP';
-            if (!valid) throw fail('The picture does not match its declared image type.', 'CanvasInputInvalid');
-            const key = `input:${entry.name}${scope.itemIndex !== undefined ? `#${scope.itemIndex}` : ''}`;
-            state.inputs.set(key, { name, uri: `data:${mime};base64,${data}` });
-            changed(key);
-            await behaviour(entry.name, 'OnChange', scope);
+            await addMediaAction(request);
             break;
           }
           case 'codecomponent-event': {
-            const entry = hosted(request.control);
-            const definition = source.codeComponents?.[entry.name];
-            if (entry.kind !== 'codecomponent' || !definition?.admitted)
-              throw fail('Code component is not admitted by its manifest.', 'CanvasControlUnsupported', 501);
-            if (typeof request.event !== 'string' || !(definition.events ?? []).includes(request.event))
-              throw fail('Code component event is not declared by its manifest.', 'CanvasActionInvalid');
-            const scope = itemScope(entry.name, request.item);
-            if (read(entry.name, 'DisplayMode', scope) !== 'Edit')
-              throw fail('Code component is not editable.', 'CanvasActionInvalid');
-            await behaviour(entry.name, request.event, scope);
+            await codeComponentEventAction(request);
             break;
           }
           case 'codecomponent': {
-            const entry = hosted(request.control);
-            const definition = source.codeComponents?.[entry.name];
-            if (entry.kind !== 'codecomponent' || !definition?.admitted)
-              throw fail('Code component is not admitted by its manifest.', 'CanvasControlUnsupported', 501);
-            const scope = itemScope(entry.name, request.item);
-            if (read(entry.name, 'DisplayMode', scope) !== 'Edit')
-              throw fail('Code component is not editable.', 'CanvasActionInvalid');
-            if (!isPlain(request.values) || Object.keys(request.values).length > 128)
-              throw fail('Code component values must be a bounded property object.', 'CanvasActionInvalid');
-            const changes = [];
-            for (const [property, value] of Object.entries(request.values)) {
-              const descriptor = definition.properties.find((item) => item.name === property);
-              if (!descriptor || !['output', 'bound'].includes(descriptor.usage))
-                throw fail(`Code component property ${property} is not writable.`, 'CanvasActionInvalid');
-              const type = descriptor.ofType.toLowerCase();
-              const integer = [
-                'whole.none',
-                'whole.duration',
-                'whole.timezone',
-                'whole.language',
-                'optionset',
-              ].includes(type);
-              const numeric = integer || ['decimal', 'fp', 'currency'].includes(type);
-              const text = [
-                'singleline.text',
-                'singleline.textarea',
-                'singleline.email',
-                'singleline.phone',
-                'singleline.url',
-                'singleline.ticker',
-                'multiple',
-              ].includes(type);
-              const enumeration = type === 'enum';
-              const date = ['datetime.dateonly', 'datetime.datetime'].includes(type);
-              const valid =
-                value === null ||
-                (numeric &&
-                  typeof value === 'number' &&
-                  Number.isFinite(value) &&
-                  (!integer || Number.isSafeInteger(value))) ||
-                (text && typeof value === 'string' && value.length <= 65536) ||
-                (type === 'twooptions' && typeof value === 'boolean') ||
-                (enumeration &&
-                  ((typeof value === 'string' && value.length <= 65536) || Number.isSafeInteger(value))) ||
-                (date &&
-                  typeof value === 'string' &&
-                  (type === 'datetime.dateonly'
-                    ? /^\d{4}-\d{2}-\d{2}$/.test(value)
-                    : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value)) &&
-                  !Number.isNaN(Date.parse(value)) &&
-                  new Date(value).toISOString().slice(0, 10) === value.slice(0, 10));
-              if (!valid || (!numeric && !text && !date && !enumeration && type !== 'twooptions'))
-                throw fail(`Code component property ${property} has an invalid value.`, 'CanvasInputInvalid');
-              changes.push([
-                `pcf:${entry.name}.${property}${scope.itemIndex !== undefined ? `#${scope.itemIndex}` : ''}`,
-                value,
-              ]);
-            }
-            for (const [key, value] of changes) {
-              state.inputs.set(key, value);
-              changed(key);
-            }
-            if (changes.length) await behaviour(entry.name, 'OnChange', scope);
+            const pending = codeComponentAction(request);
+            if (pending) await pending; // NOSONAR: optional pending promise, awaited only when set
             break;
           }
           case 'media': {
-            const entry = hosted(request.control);
-            if (!['audio', 'video'].includes(entry.kind) || !['play', 'pause', 'end', 'seek'].includes(request.event))
-              throw fail('media needs an audio or video control and a valid event.', 'CanvasActionInvalid');
-            const prior = state.media.get(entry.name) ?? { paused: true, time: 0 };
-            if (
-              request.event === 'seek' &&
-              (typeof request.time !== 'number' ||
-                !Number.isFinite(request.time) ||
-                request.time < 0 ||
-                request.time > 86400)
-            )
-              throw fail('media seek needs a time from 0 to 86400 seconds.', 'CanvasActionInvalid');
-            const next =
-              request.event === 'seek'
-                ? { ...prior, time: request.time }
-                : request.event === 'play'
-                  ? { ...prior, paused: false }
-                  : request.event === 'end' && read(entry.name, 'Loop') === true
-                    ? { paused: false, time: 0 }
-                    : { ...prior, paused: true };
-            state.media.set(entry.name, next);
-            changed(`media:${entry.name}`);
-            if (request.event === 'play' && prior.paused) await behaviour(entry.name, 'OnStart', {});
-            if (request.event === 'pause' && !prior.paused) await behaviour(entry.name, 'OnPause', {});
+            const { entry, prior } = mediaAction(request);
+            if (shouldHandleMediaStart(request, prior)) await behaviour(entry.name, 'OnStart', {});
+            if (shouldHandleMediaPause(request, prior)) await behaviour(entry.name, 'OnPause', {});
             if (request.event === 'end') await behaviour(entry.name, 'OnEnd', {});
             break;
           }
           case 'tick': {
-            if (!Number.isInteger(request.milliseconds) || request.milliseconds < 1 || request.milliseconds > 60000)
-              throw fail('tick needs integer milliseconds from 1 to 60000.', 'CanvasActionInvalid');
-            await tickTimers(request.milliseconds);
+            await tickAction(request);
             break;
           }
           case 'search': {
-            const entry = hosted(request.control);
-            if (entry.kind !== 'combobox' || typeof request.value !== 'string' || request.value.length > 1000)
-              throw fail('search needs a combo box and text up to 1000 characters.', 'CanvasActionInvalid');
-            const scope = itemScope(request.control, request.item);
-            const key = `search:${request.control}${scope.itemIndex !== undefined ? `#${scope.itemIndex}` : ''}`;
-            state.inputs.set(key, request.value);
-            changed(key);
+            searchAction(request);
             break;
           }
           case 'gallery-window': {
-            const entry = hosted(request.control);
-            if (
-              entry.kind !== 'gallery' ||
-              !Number.isSafeInteger(request.offset) ||
-              request.offset < 0 ||
-              request.offset > 1000000
-            )
-              throw fail('gallery-window needs a gallery and an offset from 0 to 1000000.', 'CanvasActionInvalid');
-            state.windows.set(request.control, request.offset);
+            galleryWindowAction(request);
             break;
           }
-          case 'navigate':
-            if (!screens.has(request.screen))
-              throw fail(`Screen ${request.screen} is not part of this app.`, 'CanvasScreenNotFound', 404);
-            await show(request.screen, { transition: 'None', push: true });
+          case 'navigate': {
+            await navigateAction(request);
             break;
+          }
           case 'back':
             result = await goBack();
             break;
-          case 'run':
-            if (typeof request.formula !== 'string' || !request.formula.trim())
-              throw fail('run needs a formula.', 'CanvasActionInvalid');
-            result = (await run(request.formula.replace(/^\s*=/, ''), { screen: state.current }, 'driver')).value;
+          case 'run': {
+            result = (await runAction(request)).value;
             break;
+          }
           case 'evaluate': {
-            if (typeof request.formula !== 'string' || !request.formula.trim())
-              throw fail('evaluate needs a formula.', 'CanvasActionInvalid');
-            const value = evaluate(request.formula.replace(/^\s*=/, ''), { screen: state.current }, 'driver');
-            result = value instanceof FxDataSource ? rowsOf(value) : value;
+            result = evaluateAction(request);
             break;
           }
           case 'resize': {
-            const viewport = canvasViewport(request);
-            if (viewport.width !== state.viewport.width || viewport.height !== state.viewport.height) {
-              state.viewport = viewport;
-              changed('viewport');
-            }
+            resizeAction(request);
             break;
           }
           case 'refresh':
@@ -2221,12 +2532,11 @@ export function createCanvasApp({
           const rows = items(name);
           out.optionsTotal = rows.length;
           out.options = rows.slice(0, CANVAS_DATA_ROW_LIMIT).map((item, index) => {
-            const label =
-              entry.kind === 'combobox' && formulas.get(name)?.has('ItemDisplayText')
-                ? read(name, 'ItemDisplayText', { item, itemIndex: index, option: true })
-                : isPlain(item)
-                  ? (item.Label ?? item.Value ?? Object.values(item)[0] ?? '')
-                  : item;
+            let label;
+            if (entry.kind === 'combobox' && formulas.get(name)?.has('ItemDisplayText'))
+              label = read(name, 'ItemDisplayText', { item, itemIndex: index, option: true });
+            else if (isPlain(item)) label = item.Label ?? item.Value ?? Object.values(item)[0] ?? '';
+            else label = item;
             return { index, value: observable(item), label: observable(label) };
           });
         }
@@ -2261,7 +2571,7 @@ export function createCanvasApp({
                       ...(model.kind === 'codecomponent'
                         ? { codeComponent: source.codeComponents?.[child] ?? null }
                         : {}),
-                      behaviours: [...(formulas.get(child)?.keys() ?? [])].filter((property) =>
+                      /* NOSONAR */ behaviours: [...(formulas.get(child)?.keys() ?? [])].filter((property) =>
                         isBehaviour(child, property),
                       ),
                     },

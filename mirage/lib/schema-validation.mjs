@@ -18,7 +18,7 @@ function fieldEntry(definition) {
 /** Index of schema-complete tables from a raw solution schema (importSolutionData().schema). */
 export function schemaFieldIndex(schema, tableNames) {
   const tables = {};
-  for (const name of [...new Set(tableNames)].sort()) {
+  for (const name of [...new Set(tableNames)].sort((a, b) => Number(a > b) - Number(a < b))) {
     const table = Object.hasOwn(schema.tables, name) ? schema.tables[name] : undefined;
     if (!table?.schemaComplete) continue;
     const fields = {};
@@ -26,7 +26,7 @@ export function schemaFieldIndex(schema, tableNames) {
       fields[field] = fieldEntry(definition);
     tables[name] = {
       schemaComplete: true,
-      fields: Object.fromEntries(Object.entries(fields).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
+      fields: Object.fromEntries(Object.entries(fields).sort(([a], [b]) => (a < b ? -1 : Number(a > b)))),
     };
   }
   return { tables };
@@ -78,34 +78,39 @@ export function schemaViolations(tables, index, { idColumn = (table) => `${table
   for (const [table, rows] of Object.entries(tables)) {
     const definition = Object.hasOwn(index.tables, table) ? index.tables[table] : undefined;
     if (!definition?.schemaComplete || !Array.isArray(rows)) continue;
-    for (const row of rows)
-      for (const [column, value] of Object.entries(row)) {
-        if (column.startsWith('__') || column.startsWith('@')) continue;
-        if (!Object.hasOwn(definition.fields, column)) {
-          add(table, column, 'unknown-column', row);
-          continue;
-        }
-        const options = definition.fields[column];
-        if (!options) continue;
-        for (const option of optionValues(value)) {
-          const match = options.find(([candidate]) => candidate === option.value);
-          if (!match)
-            add(table, column, 'option-value', row, { value: option.value, expected: options.map(([v]) => v) });
-          else if (option.label !== undefined && option.label !== match[1])
-            add(table, column, 'option-label', row, { value: option.value, label: option.label, expected: match[1] });
-        }
-      }
+    for (const row of rows) inspectRow(table, row, definition, add);
   }
   return [...found.values()].sort((a, b) => (a.table + a.column + a.kind < b.table + b.column + b.kind ? -1 : 1));
 }
 
+function inspectRow(table, row, definition, add) {
+  for (const [column, value] of Object.entries(row)) {
+    if (column.startsWith('__') || column.startsWith('@')) continue;
+    if (!Object.hasOwn(definition.fields, column)) {
+      add(table, column, 'unknown-column', row);
+      continue;
+    }
+    const options = definition.fields[column];
+    if (!options) continue;
+    inspectOptions(table, row, column, value, options, add);
+  }
+}
+
+function inspectOptions(table, row, column, value, options, add) {
+  for (const option of optionValues(value)) {
+    const match = options.find(([candidate]) => candidate === option.value);
+    if (!match) add(table, column, 'option-value', row, { value: option.value, expected: options.map(([v]) => v) });
+    else if (option.label !== undefined && option.label !== match[1])
+      add(table, column, 'option-label', row, { value: option.value, label: option.label, expected: match[1] });
+  }
+}
+
 /** One line per violation, grouped by table/column. */
 export function formatViolations(violations) {
-  return violations.map((v) =>
-    v.kind === 'unknown-column'
-      ? `${v.table}.${v.column}: unknown column (${v.rows} rows, e.g. ${v.sample})`
-      : v.kind === 'option-value'
-        ? `${v.table}.${v.column}: value ${v.value} outside option set [${v.expected.join(', ')}] (${v.rows} rows)`
-        : `${v.table}.${v.column}: label "${v.label}" for ${v.value}, metadata "${v.expected}" (${v.rows} rows)`,
-  );
+  return violations.map((v) => {
+    if (v.kind === 'unknown-column') return `${v.table}.${v.column}: unknown column (${v.rows} rows, e.g. ${v.sample})`;
+    if (v.kind === 'option-value')
+      return `${v.table}.${v.column}: value ${v.value} outside option set [${v.expected.join(', ')}] (${v.rows} rows)`;
+    return `${v.table}.${v.column}: label "${v.label}" for ${v.value}, metadata "${v.expected}" (${v.rows} rows)`;
+  });
 }

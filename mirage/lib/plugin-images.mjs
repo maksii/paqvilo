@@ -42,12 +42,11 @@ const PRIMARY_NAME_MESSAGES = new Set([
   'retrieve',
   'merge',
 ]);
-export const primaryNameSide = (operation) =>
-  PRIMARY_NAME_MESSAGES.has(operation)
-    ? ['delete', 'deletemultiple', 'assign'].includes(operation)
-      ? 'pre'
-      : 'post'
-    : null;
+export const primaryNameSide = (operation) => {
+  if (!PRIMARY_NAME_MESSAGES.has(operation)) return null;
+  if (['delete', 'deletemultiple', 'assign'].includes(operation)) return 'pre';
+  return 'post';
+};
 
 /** The IPluginExecutionContext4 image set of one stage as the step at `upTo` sees it. Native fills the stage's
  * collections in execution order: every step that ran or was queued (an asynchronous PostOperation step at its rank

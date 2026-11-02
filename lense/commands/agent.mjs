@@ -114,31 +114,7 @@ export async function agentRequest(discovery, route, { body, timeout = 35_000, i
       signal: AbortSignal.timeout(timeout),
     });
     const bytes = await boundedBody(response, image && response.ok ? MAX_IMAGE : MAX_JSON);
-    if (image && response.ok) {
-      if (
-        !response.headers.get('content-type')?.startsWith('image/png') ||
-        !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-      ) {
-        throw argument('Agent returned an invalid PNG screenshot', 'invalid_response');
-      }
-      return bytes;
-    }
-    let result;
-    try {
-      result = JSON.parse(bytes.toString('utf8'));
-    } catch {
-      throw argument('Agent returned invalid JSON', 'invalid_response');
-    }
-    if (!result || typeof result !== 'object' || Array.isArray(result))
-      throw argument('Agent returned invalid JSON: expected an object', 'invalid_response');
-    if (!response.ok)
-      throw Object.assign(
-        new Error(
-          `Agent HTTP ${response.status}: ${String(result.error?.message ?? result.error ?? 'request failed').slice(0, 1000)}`,
-        ),
-        { code: result.error?.code, status: response.status },
-      );
-    return result;
+    return parseAgentResponse(response, bytes, image);
   } catch (error) {
     // Never include discovery objects or fetch options in an error (they contain the token).
     if (error.name === 'TimeoutError' || error.name === 'AbortError')
@@ -152,6 +128,34 @@ export async function agentRequest(discovery, route, { body, timeout = 35_000, i
       });
     throw error;
   }
+}
+
+function parseAgentResponse(response, bytes, image) {
+  if (image && response.ok) {
+    if (
+      !response.headers.get('content-type')?.startsWith('image/png') ||
+      !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    ) {
+      throw argument('Agent returned an invalid PNG screenshot', 'invalid_response');
+    }
+    return bytes;
+  }
+  let result;
+  try {
+    result = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    throw argument('Agent returned invalid JSON', 'invalid_response');
+  }
+  if (!result || typeof result !== 'object' || Array.isArray(result))
+    throw argument('Agent returned invalid JSON: expected an object', 'invalid_response');
+  if (!response.ok)
+    throw Object.assign(
+      new Error(
+        `Agent HTTP ${response.status}: ${String(result.error?.message ?? result.error ?? 'request failed').slice(0, 1000)}`,
+      ),
+      { code: result.error?.code, status: response.status },
+    );
+  return result;
 }
 
 export async function listAgentSessions(stateDir) {
@@ -201,16 +205,84 @@ export async function listAgentSessions(stateDir) {
     );
   }
   sessions.sort((a, b) => a.discoveryFile.localeCompare(b.discoveryFile));
-  return { schemaVersion: 1, sessions, invalidFiles: invalidFiles.sort(), truncated: names.length > 64 };
+  return {
+    schemaVersion: 1,
+    sessions,
+    invalidFiles: invalidFiles.toSorted((a, b) => Number(a > b) - Number(a < b)),
+    truncated: names.length > 64,
+  };
 }
 
 export default async function agent(_cfg, args, positionals = []) {
   const action = positionals[0] ?? 'sessions';
+  const pageActions = validateAgentAction(action, args);
+  const timeout = integer(args.timeout, '--timeout', 35_000, 2000, 120_000);
+  if (action === 'sessions') {
+    const stateDir = path.join(args.config ? path.dirname(path.resolve(args.config)) : process.cwd(), '.paqvilo');
+    console.log(JSON.stringify(await listAgentSessions(stateDir), null, 2));
+    return 0;
+  }
+  assertAgentArguments(action, args, pageActions);
+  const { route, body } = agentActionRequest(action, args, timeout);
+  const discovery = await readDiscovery(args.session);
+  let handle;
+  const output = args.output ? path.resolve(args.output) : null;
+  if (output) {
+    await fs.mkdir(path.dirname(output), { recursive: true });
+    try {
+      handle = await fs.open(output, 'wx', 0o600);
+    } catch (error) {
+      if (error.code === 'EEXIST') {
+        throw argument(
+          `Screenshot output already exists: ${outputName(output, args.config)}. Existing files are never replaced; choose a new --output.`,
+        );
+      }
+      throw error;
+    }
+  }
+  try {
+    const result = await agentRequest(discovery, route, { body, timeout, image: action === 'screenshot' });
+    if (handle) {
+      await handle.writeFile(result);
+      const displayPath = outputName(output, args.config);
+      console.log(
+        JSON.stringify(
+          { schemaVersion: 1, path: displayPath, bytes: result.length, writesFiles: [displayPath] },
+          null,
+          2,
+        ),
+      );
+    } else console.log(JSON.stringify(result, null, 2));
+  } catch (err) {
+    if (handle) {
+      await handle.close();
+      handle = null;
+      await fs.rm(output, { force: true });
+    }
+    throw err;
+  } finally {
+    await handle?.close();
+  }
+  return 0;
+}
+
+function assertAgentArguments(action, args, pageActions) {
+  if (!args.session)
+    throw argument(`agent ${action} requires --session <discovery-file>; use agent sessions to find it`);
+  if (pageActions.has(action) && !args['page-id'])
+    throw argument(`agent ${action} requires --page-id from agent pages`);
+  if (action === 'navigate' && !args.path) throw argument('agent navigate requires --path <portal-path>');
+  if (action === 'screenshot' && (!args.output || path.extname(args.output).toLowerCase() !== '.png'))
+    throw argument('agent screenshot requires --output <file.png>');
+  if (pageActions.has(action)) integer(args['page-id'], '--page-id', undefined, 1, Number.MAX_SAFE_INTEGER);
+}
+
+function validateAgentAction(action, args) {
   if (!AGENT_ACTIONS.includes(action))
     throw argument(`Unknown agent action "${action}". Expected ${AGENT_ACTIONS.join(', ')}`);
   const allowed = new Set(['config', 'json', 'help', ...(action === 'sessions' ? [] : ['session', 'timeout'])]);
-  const pageActions = ['state', 'snapshot', 'screenshot', 'viewport', 'navigate', 'reload'];
-  if (pageActions.includes(action)) allowed.add('page-id');
+  const pageActions = new Set(['state', 'snapshot', 'screenshot', 'viewport', 'navigate', 'reload']);
+  if (pageActions.has(action)) allowed.add('page-id');
   for (const option of {
     events: ['after', 'limit'],
     snapshot: ['selector', 'limit', 'styles'],
@@ -221,20 +293,10 @@ export default async function agent(_cfg, args, positionals = []) {
     allowed.add(option);
   for (const option of Object.keys(args))
     if (!allowed.has(option)) throw argument(`--${option} is not supported by agent ${action}`, 'unsupported_option');
-  const timeout = integer(args.timeout, '--timeout', 35_000, 2000, 120_000);
-  if (action === 'sessions') {
-    const stateDir = path.join(args.config ? path.dirname(path.resolve(args.config)) : process.cwd(), '.paqvilo');
-    console.log(JSON.stringify(await listAgentSessions(stateDir), null, 2));
-    return 0;
-  }
-  if (!args.session)
-    throw argument(`agent ${action} requires --session <discovery-file>; use agent sessions to find it`);
-  if (pageActions.includes(action) && !args['page-id'])
-    throw argument(`agent ${action} requires --page-id from agent pages`);
-  if (action === 'navigate' && !args.path) throw argument('agent navigate requires --path <portal-path>');
-  if (action === 'screenshot' && (!args.output || path.extname(args.output).toLowerCase() !== '.png'))
-    throw argument('agent screenshot requires --output <file.png>');
-  if (pageActions.includes(action)) integer(args['page-id'], '--page-id', undefined, 1, Number.MAX_SAFE_INTEGER);
+  return pageActions;
+}
+
+function agentActionRequest(action, args, timeout) {
   const page = `/v1/pages/${encodeURIComponent(args['page-id'])}`;
   let route;
   let body;
@@ -286,44 +348,5 @@ export default async function agent(_cfg, args, positionals = []) {
       body = {};
       break;
   }
-  const discovery = await readDiscovery(args.session);
-  let handle;
-  const output = args.output ? path.resolve(args.output) : null;
-  if (output) {
-    await fs.mkdir(path.dirname(output), { recursive: true });
-    try {
-      handle = await fs.open(output, 'wx', 0o600);
-    } catch (error) {
-      if (error.code === 'EEXIST') {
-        throw argument(
-          `Screenshot output already exists: ${outputName(output, args.config)}. Existing files are never replaced; choose a new --output.`,
-        );
-      }
-      throw error;
-    }
-  }
-  try {
-    const result = await agentRequest(discovery, route, { body, timeout, image: action === 'screenshot' });
-    if (handle) {
-      await handle.writeFile(result);
-      const displayPath = outputName(output, args.config);
-      console.log(
-        JSON.stringify(
-          { schemaVersion: 1, path: displayPath, bytes: result.length, writesFiles: [displayPath] },
-          null,
-          2,
-        ),
-      );
-    } else console.log(JSON.stringify(result, null, 2));
-  } catch (err) {
-    if (handle) {
-      await handle.close();
-      handle = null;
-      await fs.rm(output, { force: true });
-    }
-    throw err;
-  } finally {
-    await handle?.close();
-  }
-  return 0;
+  return { route, body };
 }

@@ -443,10 +443,7 @@ try {
     if (!allowed[command].includes(option))
       throw Object.assign(new Error(`--${option} is not supported by ${command}`), { code: 'unsupported_option' });
   for (const [option, value] of Object.entries(values)) {
-    if (
-      !['search', 'port'].includes(option) &&
-      (Array.isArray(value) ? value.some((item) => item === '') : value === '')
-    )
+    if (!['search', 'port'].includes(option) && (Array.isArray(value) ? value.includes('') : value === ''))
       throw new Error(`--${option} must not be empty`);
   }
   if (values.portals !== undefined && !['selected', 'all'].includes(values.portals))
@@ -477,7 +474,7 @@ try {
       !values.path.startsWith('/') ||
       values.path.startsWith('//') ||
       values.path.includes('\\') ||
-      [...values.path].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
+      [...values.path].some((char) => char.codePointAt(0) < 32 || char.codePointAt(0) === 127)
     )
       throw new Error('--path must be an origin-relative path');
   }
@@ -560,7 +557,13 @@ try {
   if (typeof code === 'number') process.exitCode = code;
 } catch (err) {
   startup?.fail(err.message);
-  if (values.json || command === 'agent')
+  if (values.json || command === 'agent') {
+    let errorCode = err.code;
+    if (errorCode == null) {
+      if (phase === 'arguments') errorCode = 'invalid_argument';
+      else if (phase === 'configuration') errorCode = 'configuration_error';
+      else errorCode = 'command_failed';
+    }
     console.log(
       JSON.stringify({
         schemaVersion: 1,
@@ -568,19 +571,13 @@ try {
         ok: false,
         writesFiles: err.writesFiles ?? [],
         error: {
-          code:
-            err.code ??
-            (phase === 'arguments'
-              ? 'invalid_argument'
-              : phase === 'configuration'
-                ? 'configuration_error'
-                : 'command_failed'),
+          code: errorCode,
           message: err.message,
           ...(err.status ? { status: err.status } : {}),
         },
       }),
     );
-  else console.error(`paqvilo: ${err.message}`);
+  } else console.error(`paqvilo: ${err.message}`);
   const starting = command === 'dev' || (command === 'mirage' && ['dev', 'start'].includes(positionals[1]));
   // Starting a project that has no configuration yet opens setup in the browser, when a person runs it in a terminal.
   if (
@@ -600,10 +597,12 @@ try {
       await import('./commands/setup.mjs')
     ).runSetup(['--config', values.config ?? './paqvilo.config.yml', '--open']);
   } else {
-    if (!values.json && starting)
-      console.error(
-        `Configure this project with: paqvilo setup${values.config ? ` --config ${JSON.stringify(values.config)}` : values.project ? ` --project ${JSON.stringify(values.project)}` : ''}`,
-      );
+    if (!values.json && starting) {
+      let setupOptions = '';
+      if (values.config) setupOptions = ' --config ' + JSON.stringify(values.config);
+      else if (values.project) setupOptions = ' --project ' + JSON.stringify(values.project);
+      console.error(`Configure this project with: paqvilo setup${setupOptions}`);
+    }
     if (process.env.PAQVILO_DEBUG) console.error(err.stack);
     process.exitCode = 1;
   }

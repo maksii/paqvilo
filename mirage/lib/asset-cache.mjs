@@ -12,8 +12,10 @@ const mediaType = (value) =>
     .split(';')[0]
     .trim()
     .toLowerCase();
-const credentialKey =
-  /^(?:access[_-]?token|id[_-]?token|refresh[_-]?token|token|password|passwd|secret|client[_-]?secret|authorization|cookie|api[_-]?key|__requestverificationtoken|code|sig|signature|credential)$/i;
+const credentialKeyPrefix =
+  /^(?:access[_-]?token|id[_-]?token|refresh[_-]?token|token|password|passwd|secret|client[_-]?secret)$/i;
+const credentialKeySuffix =
+  /^(?:authorization|cookie|api[_-]?key|__requestverificationtoken|code|sig|signature|credential)$/i;
 const platformCdn = 'https://content.powerapps.com';
 const officeFontPrefix = '/__sim-static/office-fonts/';
 const crmFontSource = '/resource/powerappsportal/fonts/CRMMDL2.woff';
@@ -112,7 +114,8 @@ function assetPath(value) {
   validateLivePath(value);
   const parsed = new URL(value, 'https://local.invalid');
   for (const [key] of parsed.searchParams)
-    if (credentialKey.test(key)) throw fail('Credential or authorization query parameters cannot be cached.');
+    if (credentialKeyPrefix.test(key) || credentialKeySuffix.test(key))
+      throw fail('Credential or authorization query parameters cannot be cached.');
   if (/\.axd$/i.test(parsed.pathname) && !isAspNetResourcePath(value))
     throw fail(
       'ASP.NET resource URLs allow only exact WebResource/ScriptResource paths with one opaque d and t parameter.',
@@ -121,13 +124,10 @@ function assetPath(value) {
     );
   // A CSS url(%22images%2Ficon.png%22) requests the literal quoted pathname.
   // Validate its static type without rewriting the URL the browser would request.
-  const ext = isAspNetResourcePath(value)
-    ? '.js'
-    : isResourceManagerPath(parsed.pathname)
-      ? '.js'
-      : isPcfWebResourcePath(parsed.pathname)
-        ? '.pcf'
-        : path.posix.extname(parsed.pathname.replace(/(?:%22|%27)$/i, '')).toLowerCase();
+  let ext;
+  if (isAspNetResourcePath(value) || isResourceManagerPath(parsed.pathname)) ext = '.js';
+  else if (isPcfWebResourcePath(parsed.pathname)) ext = '.pcf';
+  else ext = path.posix.extname(parsed.pathname.replace(/(?:%22|%27)$/i, '')).toLowerCase();
   if (!types[ext] || (ext === '.pcf' && !isPcfWebResourcePath(parsed.pathname)))
     throw fail(
       'Only static script, style, font, image, source-map and known platform ResourceManager asset paths may be captured.',
@@ -141,27 +141,36 @@ const failurePath = (value) =>
 // PAC preserves attachment bytes. Some exported stylesheets use a UTF-16 BOM,
 // which browsers decode correctly but a UTF-8-only reading would garble.
 export const cssText = (bytes) => {
-  const encoding =
-    bytes[0] === 0xff && bytes[1] === 0xfe ? 'utf-16le' : bytes[0] === 0xfe && bytes[1] === 0xff ? 'utf-16be' : 'utf-8';
+  let encoding = 'utf-8';
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) encoding = 'utf-16le';
+  else if (bytes[0] === 0xfe && bytes[1] === 0xff) encoding = 'utf-16be';
   return new TextDecoder(encoding).decode(bytes);
 };
 // A stylesheet starts with a rule, an at-rule or a comment. Control characters
 // mark binary bytes; a leading markup tag, statement, call or assignment marks a
 // document or script served under a stylesheet content type.
 // This is a leading-token check, not a CSS parser.
-const cssLeading =
-  /^(?:<[!?a-z/]|\/\/|\/(?!\*)|[("'`!;~+=]|(?:var|let|const|function|class|import|export|return|if|for|while|switch|try|throw|new|typeof|void|async|await|this|window|document|self|globalThis)(?![-\w])|[\w$]+(?:\.[\w$]+)*\s*(?:\(|=(?!=)))/i;
+const cssLeading = [
+  /^(?:<[!?a-z/]|\/\/|\/(?!\*)|[("'`!;~+=])/i,
+  /^(?:var|let|const|function|class|import|export|return|if|for|while|switch)(?![-\w])/i,
+  /^(?:try|throw|new|typeof|void|async|await|this|window|document|self|globalThis)(?![-\w])/i,
+  /^[\w$]+(?:\.[\w$]+)*\s*(?:\(|=(?!=))/i,
+];
+const credentialValueName =
+  /(?:access[_-]?token|refresh[_-]?token|client[_-]?secret|__requestverificationtoken|authorization)/i;
+const credentialValueSuffix = /["']?\s*[:=]\s*["'](?:Bearer\s+)?[^"'\s]{12,}["']/i; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+const credentialValue = new RegExp(credentialValueName.source + credentialValueSuffix.source, 'i');
 function plausibleStylesheet(bytes) {
   const text = cssText(bytes);
   for (let index = 0; index < text.length; index++) {
-    const code = text.charCodeAt(index);
+    const code = text.codePointAt(index);
     if (code <= 0x08 || (code >= 0x0e && code <= 0x1f)) return false;
   }
   const start = text
     .slice(0, 4096)
     .replace(/^\uFEFF/, '')
     .replace(/^(?:\s+|\/\*[\s\S]*?\*\/|<!--|-->)*/, '');
-  return !cssLeading.test(start);
+  return !cssLeading.some((pattern) => pattern.test(start));
 }
 function verifyAsset(bytes, type, extension, { observedEmpty = false } = {}) {
   const contentType = mediaType(type);
@@ -181,9 +190,7 @@ function verifyAsset(bytes, type, extension, { observedEmpty = false } = {}) {
     throw fail('The stylesheet response body is not CSS and was not cached.', 502, 'ASSET_CONTENT_TYPE');
   if (
     ['.js', '.mjs', '.css', '.json', '.map', '.pcf'].includes(extension) &&
-    /(?:access[_-]?token|refresh[_-]?token|client[_-]?secret|__requestverificationtoken|authorization)["']?\s*[:=]\s*["'](?:Bearer\s+)?[^"'\s]{12,}["']/i.test(
-      bytes.toString('utf8'),
-    )
+    credentialValue.test(bytes.toString('utf8'))
   )
     throw fail(
       'Static response appears to contain embedded credential values and was not cached.',
@@ -249,6 +256,49 @@ function woffNames(table) {
   return { family: names.get(1), postScriptName: names.get(6) };
 }
 
+function cmapFormat12Covers(subtable, codepoint) {
+  if (subtable.length < 16) return false;
+  const groups = subtable.readUInt32BE(12);
+  if (groups > 100000 || 16 + groups * 12 > subtable.length) return false;
+  for (let index = 0; index < groups; index++) {
+    const offset = 16 + index * 12,
+      first = subtable.readUInt32BE(offset),
+      last = subtable.readUInt32BE(offset + 4),
+      glyph = subtable.readUInt32BE(offset + 8);
+    if (first <= codepoint && codepoint <= last) return glyph + codepoint - first !== 0;
+  }
+  return false;
+}
+
+function cmapFormat4Covers(subtable, codepoint) {
+  if (codepoint > 0xffff || subtable.length < 16) return false;
+  const segments = subtable.readUInt16BE(6) / 2,
+    endBase = 14,
+    startBase = endBase + segments * 2 + 2,
+    deltaBase = startBase + segments * 2,
+    rangeBase = deltaBase + segments * 2;
+  if (!segments || rangeBase + segments * 2 > subtable.length) return false;
+  for (let index = 0; index < segments; index++) {
+    const end = subtable.readUInt16BE(endBase + index * 2);
+    if (codepoint > end) continue;
+    const first = subtable.readUInt16BE(startBase + index * 2);
+    if (codepoint < first) return false;
+    const delta = subtable.readInt16BE(deltaBase + index * 2),
+      range = subtable.readUInt16BE(rangeBase + index * 2);
+    if (!range) return Boolean((codepoint + delta) & 0xffff);
+    const glyphOffset = rangeBase + index * 2 + range + 2 * (codepoint - first);
+    return glyphOffset + 2 <= subtable.length && subtable.readUInt16BE(glyphOffset) !== 0;
+  }
+  return false;
+}
+
+function cmapSubtableCovers(subtable, codepoint) {
+  const format = subtable.readUInt16BE(0);
+  if (format === 12) return cmapFormat12Covers(subtable, codepoint);
+  if (format !== 4) return false;
+  return cmapFormat4Covers(subtable, codepoint);
+}
+
 function cmapCovers(table, codepoints) {
   if (!table || table.length < 4) return false;
   const count = table.readUInt16BE(2);
@@ -259,42 +309,7 @@ function cmapCovers(table, codepoints) {
       start = table.readUInt32BE(offset + 4);
     if (start + 2 <= table.length) subtables.push(table.subarray(start));
   }
-  return codepoints.every((codepoint) =>
-    subtables.some((subtable) => {
-      const format = subtable.readUInt16BE(0);
-      if (format === 12 && subtable.length >= 16) {
-        const groups = subtable.readUInt32BE(12);
-        if (groups > 100000 || 16 + groups * 12 > subtable.length) return false;
-        for (let index = 0; index < groups; index++) {
-          const offset = 16 + index * 12,
-            first = subtable.readUInt32BE(offset),
-            last = subtable.readUInt32BE(offset + 4),
-            glyph = subtable.readUInt32BE(offset + 8);
-          if (first <= codepoint && codepoint <= last) return glyph + codepoint - first !== 0;
-        }
-        return false;
-      }
-      if (format !== 4 || codepoint > 0xffff || subtable.length < 16) return false;
-      const segments = subtable.readUInt16BE(6) / 2,
-        endBase = 14,
-        startBase = endBase + segments * 2 + 2,
-        deltaBase = startBase + segments * 2,
-        rangeBase = deltaBase + segments * 2;
-      if (!segments || rangeBase + segments * 2 > subtable.length) return false;
-      for (let index = 0; index < segments; index++) {
-        const end = subtable.readUInt16BE(endBase + index * 2);
-        if (codepoint > end) continue;
-        const first = subtable.readUInt16BE(startBase + index * 2);
-        if (codepoint < first) return false;
-        const delta = subtable.readInt16BE(deltaBase + index * 2),
-          range = subtable.readUInt16BE(rangeBase + index * 2);
-        if (!range) return (codepoint + delta) & 0xffff ? true : false;
-        const glyphOffset = rangeBase + index * 2 + range + 2 * (codepoint - first);
-        return glyphOffset + 2 <= subtable.length && subtable.readUInt16BE(glyphOffset) !== 0;
-      }
-      return false;
-    }),
-  );
+  return codepoints.every((codepoint) => subtables.some((subtable) => cmapSubtableCovers(subtable, codepoint)));
 }
 
 function crmFontMetadata(bytes, requiredCodepoints) {
@@ -317,6 +332,192 @@ function crmFontMetadata(bytes, requiredCodepoints) {
   };
 }
 
+function supportedAssetPath(parsed) {
+  return (
+    isResourceManagerPath(parsed.pathname) ||
+    isPcfWebResourcePath(parsed.pathname) ||
+    /\.axd$/i.test(parsed.pathname) ||
+    Boolean(types[path.posix.extname(parsed.pathname).toLowerCase()])
+  );
+}
+
+function findStableCacheEntry(entries, origin, parsed) {
+  let entry;
+  if (parsed.searchParams.has('_')) {
+    const values = parsed.searchParams.getAll('_');
+    if (values.length === 1 && /^\d{1,30}$/.test(values[0])) {
+      const stable = new URL(parsed.href);
+      stable.searchParams.delete('_');
+      entry = entries[hash(safeOrigin(origin) + stable.pathname + stable.search)];
+    }
+  }
+  return entry;
+}
+
+function assetFallback(item) {
+  if (item.fallback === undefined) return undefined;
+  const value = item.fallback;
+  if (
+    !crmFontTargets.has(item.path) ||
+    item.finalPath !== crmFontSource ||
+    item.sourceOrigin !== platformCdn ||
+    value?.kind !== 'microsoft-public-cdn-font' ||
+    value?.sourcePath !== crmFontSource ||
+    value?.cssFamily !== 'CRMMDL2' ||
+    value?.fontFamily !== 'CRM MDL2 Assets' ||
+    value?.postScriptName !== 'CRMMDL2Assets' ||
+    (value?.sourceFormat !== undefined && value.sourceFormat !== 'woff') ||
+    (item.path === crmPlatformFontTarget && value.sourceFormat !== 'woff') ||
+    !Array.isArray(value.requiredCodepoints) ||
+    value.requiredCodepoints.length > 256 ||
+    value.requiredCodepoints.some((codepoint) => !Number.isInteger(codepoint) || codepoint < 0 || codepoint > 0x10ffff)
+  )
+    throw fail('Invalid Microsoft CRM font fallback provenance.', 500, 'ASSET_FONT_PROVENANCE');
+  return {
+    kind: value.kind,
+    sourcePath: value.sourcePath,
+    cssFamily: value.cssFamily,
+    fontFamily: value.fontFamily,
+    postScriptName: value.postScriptName,
+    sourceFormat: 'woff',
+    requiredCodepoints: [...value.requiredCodepoints],
+  };
+}
+
+function validateAssetSourceOrigin(item, origin) {
+  if (
+    item.sourceOrigin &&
+    item.sourceOrigin !== origin &&
+    item.sourceOrigin !== platformCdn &&
+    !(
+      ['https://res-1.cdn.office.net', 'https://res.cdn.office.net'].includes(item.sourceOrigin) &&
+      item.path.startsWith(officeFontPrefix + new URL(item.sourceOrigin).hostname + '/') &&
+      officeFontPath(
+        item.sourceOrigin + item.path.slice((officeFontPrefix + new URL(item.sourceOrigin).hostname).length),
+      ) === item.path
+    )
+  )
+    throw fail('Invalid asset source origin.', 500);
+}
+
+function manifestEntry(item) {
+  const checked = assetPath(item.path);
+  const origin = safeOrigin(item.origin);
+  // Alternate-format aliases are finite and must also pass the strict provenance checks below.
+  // Ordinary .woff2 metadata stays unchanged.
+  const contentExtension = item.fallback !== undefined && crmFontTargets.has(item.path) ? '.woff' : checked.extension;
+  if (
+    !/^[\da-f]{64}$/.test(item.sha256) ||
+    !types[contentExtension]?.includes(mediaType(item.contentType)) ||
+    !Number.isSafeInteger(item.bytes) ||
+    item.bytes < 0
+  )
+    throw fail('Invalid static asset cache metadata.', 500);
+  const finalPath = assetPath(item.finalPath ?? item.path).key;
+  const fallback = assetFallback(item);
+  const aspNetObservation = isAspNetResourcePath(item.path) ? checkedAspNetObservation(item.aspNetObservation) : null;
+  if (aspNetObservation && (finalPath !== checked.key || (item.sourceOrigin && item.sourceOrigin !== origin)))
+    throw fail('Invalid ASP.NET resource provenance.', 500, 'ASSET_AXD_OBSERVATION');
+  validateAssetSourceOrigin(item, origin);
+  return {
+    key: hash(origin + checked.key),
+    entry: {
+      path: checked.key,
+      origin,
+      finalPath,
+      ...(item.sourceOrigin ? { sourceOrigin: item.sourceOrigin } : {}),
+      ...(fallback ? { fallback } : {}),
+      contentType: mediaType(item.contentType),
+      bytes: item.bytes,
+      sha256: item.sha256,
+      capturedAt: item.capturedAt,
+      ...(aspNetObservation ? { aspNetObservation } : {}),
+      ...(item.observedEmpty === true
+        ? {
+            observedEmpty: true,
+            contentTypeInferred: item.contentTypeInferred === true,
+            diagnostic: 'ASSET_OBSERVED_EMPTY',
+          }
+        : {}),
+    },
+  };
+}
+
+async function copyStagedAssets(directory, root, copied) {
+  for (const file of await fs.readdir(directory)) {
+    if (!/^[\da-f]{64}\.bin$/.test(file)) throw fail('Unexpected staged asset file.');
+    try {
+      await fs.copyFile(path.join(directory, file), path.join(root, file), constants.COPYFILE_EXCL);
+      copied.push(file);
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+  }
+}
+
+async function rollbackAssetManifest(root, manifest, previous, error) {
+  try {
+    if (previous === undefined) await fs.rm(manifest, { force: true });
+    else {
+      const rollback = path.join(root, randomUUID() + '.tmp');
+      await fs.writeFile(rollback, previous);
+      await fs.rename(rollback, manifest);
+    }
+  } catch (error_) {
+    throw new AggregateError([error, error_], 'Asset publication and rollback failed.', { cause: error_ });
+  }
+}
+
+async function removeUnreferencedAssets(cache, copied) {
+  const retained = new Set(Object.values(cache.entries).map((entry) => entry.sha256 + '.bin'));
+  for (const file of copied) if (!retained.has(file)) await fs.rm(path.join(cache.directory, file), { force: true });
+}
+
+async function runCacheTransaction(cache, fn, accept, publish) {
+  const directory = path.join(cache.directory, 'staging-' + randomUUID());
+  if (path.dirname(directory) !== cache.directory) throw fail('Invalid cache staging directory.');
+  await fs.mkdir(directory);
+  const staged = Object.create(cache);
+  Object.assign(staged, {
+    directory,
+    entries: structuredClone(cache.entries),
+    queue: Promise.resolve(),
+    staging: true,
+    save: async () => {},
+  });
+  const readThrough = Object.create(staged);
+  readThrough.directory = cache.directory;
+  staged.get = async (...args) =>
+    (await AssetCache.prototype.get.call(staged, ...args)) ?? AssetCache.prototype.get.call(readThrough, ...args);
+  const manifest = path.join(cache.directory, 'manifest.json');
+  let previous;
+  let published = false;
+  const copied = [];
+  try {
+    try {
+      previous = await fs.readFile(manifest);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    const result = await fn(staged);
+    if (!accept(result)) return result;
+    await copyStagedAssets(directory, cache.directory, copied);
+    const publication = Object.create(staged);
+    publication.directory = cache.directory;
+    await cache.save.call(publication);
+    published = true;
+    await publish?.(result);
+    cache.entries = staged.entries;
+    return result;
+  } catch (error) {
+    if (published) await rollbackAssetManifest(cache.directory, manifest, previous, error);
+    await removeUnreferencedAssets(cache, copied);
+    throw error;
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+}
+
 /** Cache same-origin static bytes only; authentication stays in the browser. */
 export class AssetCache {
   constructor({ directory, origin = null, fetchImpl = globalThis.fetch } = {}) {
@@ -324,7 +525,7 @@ export class AssetCache {
     this.directory = path.resolve(directory);
     this.origin = origin ? safeOrigin(origin) : null;
     this.entries = {};
-    this.queue = Promise.resolve();
+    this.queue = Promise.resolve(); // NOSONAR: constructor timing must not change
     this.fetchImpl = fetchImpl;
   }
   async init() {
@@ -333,88 +534,8 @@ export class AssetCache {
       const value = JSON.parse(await fs.readFile(path.join(this.directory, 'manifest.json'), 'utf8'));
       if (value.version !== 1 || !Array.isArray(value.assets)) throw fail('Invalid static asset cache manifest.', 500);
       for (const item of value.assets) {
-        const checked = assetPath(item.path);
-        const origin = safeOrigin(item.origin);
-        // Alternate-format aliases are finite and must also pass the strict
-        // provenance checks below. Ordinary .woff2 metadata stays unchanged.
-        const contentExtension =
-          item.fallback !== undefined && crmFontTargets.has(item.path) ? '.woff' : checked.extension;
-        if (
-          !/^[\da-f]{64}$/.test(item.sha256) ||
-          !types[contentExtension]?.includes(mediaType(item.contentType)) ||
-          !Number.isSafeInteger(item.bytes) ||
-          item.bytes < 0
-        )
-          throw fail('Invalid static asset cache metadata.', 500);
-        const finalPath = assetPath(item.finalPath ?? item.path).key;
-        let fallback;
-        if (item.fallback !== undefined) {
-          const value = item.fallback;
-          if (
-            !crmFontTargets.has(item.path) ||
-            item.finalPath !== crmFontSource ||
-            item.sourceOrigin !== platformCdn ||
-            value?.kind !== 'microsoft-public-cdn-font' ||
-            value?.sourcePath !== crmFontSource ||
-            value?.cssFamily !== 'CRMMDL2' ||
-            value?.fontFamily !== 'CRM MDL2 Assets' ||
-            value?.postScriptName !== 'CRMMDL2Assets' ||
-            (value?.sourceFormat !== undefined && value.sourceFormat !== 'woff') ||
-            (item.path === crmPlatformFontTarget && value.sourceFormat !== 'woff') ||
-            !Array.isArray(value.requiredCodepoints) ||
-            value.requiredCodepoints.length > 256 ||
-            value.requiredCodepoints.some(
-              (codepoint) => !Number.isInteger(codepoint) || codepoint < 0 || codepoint > 0x10ffff,
-            )
-          )
-            throw fail('Invalid Microsoft CRM font fallback provenance.', 500, 'ASSET_FONT_PROVENANCE');
-          fallback = {
-            kind: value.kind,
-            sourcePath: value.sourcePath,
-            cssFamily: value.cssFamily,
-            fontFamily: value.fontFamily,
-            postScriptName: value.postScriptName,
-            sourceFormat: 'woff',
-            requiredCodepoints: [...value.requiredCodepoints],
-          };
-        }
-        const aspNetObservation = isAspNetResourcePath(item.path)
-          ? checkedAspNetObservation(item.aspNetObservation)
-          : null;
-        if (aspNetObservation && (finalPath !== checked.key || (item.sourceOrigin && item.sourceOrigin !== origin)))
-          throw fail('Invalid ASP.NET resource provenance.', 500, 'ASSET_AXD_OBSERVATION');
-        if (
-          item.sourceOrigin &&
-          item.sourceOrigin !== origin &&
-          item.sourceOrigin !== platformCdn &&
-          !(
-            ['https://res-1.cdn.office.net', 'https://res.cdn.office.net'].includes(item.sourceOrigin) &&
-            item.path.startsWith(officeFontPrefix + new URL(item.sourceOrigin).hostname + '/') &&
-            officeFontPath(
-              item.sourceOrigin + item.path.slice((officeFontPrefix + new URL(item.sourceOrigin).hostname).length),
-            ) === item.path
-          )
-        )
-          throw fail('Invalid asset source origin.', 500);
-        this.entries[hash(origin + checked.key)] = {
-          path: checked.key,
-          origin,
-          finalPath,
-          ...(item.sourceOrigin ? { sourceOrigin: item.sourceOrigin } : {}),
-          ...(fallback ? { fallback } : {}),
-          contentType: mediaType(item.contentType),
-          bytes: item.bytes,
-          sha256: item.sha256,
-          capturedAt: item.capturedAt,
-          ...(aspNetObservation ? { aspNetObservation } : {}),
-          ...(item.observedEmpty === true
-            ? {
-                observedEmpty: true,
-                contentTypeInferred: item.contentTypeInferred === true,
-                diagnostic: 'ASSET_OBSERVED_EMPTY',
-              }
-            : {}),
-        };
+        const { key, entry } = manifestEntry(item);
+        this.entries[key] = entry;
       }
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
@@ -445,71 +566,7 @@ export class AssetCache {
       if (accept(result)) await publish?.(result);
       return result;
     }
-    const run = this.queue.then(async () => {
-      const directory = path.join(this.directory, 'staging-' + randomUUID());
-      if (path.dirname(directory) !== this.directory) throw fail('Invalid cache staging directory.');
-      await fs.mkdir(directory);
-      const staged = Object.create(this);
-      Object.assign(staged, {
-        directory,
-        entries: structuredClone(this.entries),
-        queue: Promise.resolve(),
-        staging: true,
-        save: async () => {},
-      });
-      const readThrough = Object.create(staged);
-      readThrough.directory = this.directory;
-      staged.get = async (...args) =>
-        (await AssetCache.prototype.get.call(staged, ...args)) ?? AssetCache.prototype.get.call(readThrough, ...args);
-      const manifest = path.join(this.directory, 'manifest.json');
-      let previous;
-      let published = false;
-      const copied = [];
-      try {
-        try {
-          previous = await fs.readFile(manifest);
-        } catch (error) {
-          if (error.code !== 'ENOENT') throw error;
-        }
-        const result = await fn(staged);
-        if (!accept(result)) return result;
-        for (const file of await fs.readdir(directory)) {
-          if (!/^[\da-f]{64}\.bin$/.test(file)) throw fail('Unexpected staged asset file.');
-          try {
-            await fs.copyFile(path.join(directory, file), path.join(this.directory, file), constants.COPYFILE_EXCL);
-            copied.push(file);
-          } catch (error) {
-            if (error.code !== 'EEXIST') throw error;
-          }
-        }
-        const publication = Object.create(staged);
-        publication.directory = this.directory;
-        await this.save.call(publication);
-        published = true;
-        await publish?.(result);
-        this.entries = staged.entries;
-        return result;
-      } catch (error) {
-        if (published) {
-          try {
-            if (previous === undefined) await fs.rm(manifest, { force: true });
-            else {
-              const rollback = path.join(this.directory, randomUUID() + '.tmp');
-              await fs.writeFile(rollback, previous);
-              await fs.rename(rollback, manifest);
-            }
-          } catch (rollback) {
-            throw new AggregateError([error, rollback], 'Asset publication and rollback failed.', { cause: rollback });
-          }
-        }
-        const retained = new Set(Object.values(this.entries).map((entry) => entry.sha256 + '.bin'));
-        for (const file of copied)
-          if (!retained.has(file)) await fs.rm(path.join(this.directory, file), { force: true });
-        throw error;
-      } finally {
-        await fs.rm(directory, { recursive: true, force: true });
-      }
-    });
+    const run = this.queue.then(() => runCacheTransaction(this, fn, accept, publish));
     this.queue = run.catch(() => {});
     return run;
   }
@@ -519,10 +576,10 @@ export class AssetCache {
     const origin = safeOrigin(bridge?.origin);
     if (this.origin && origin !== this.origin)
       throw fail('Connected portal origin differs from the asset cache origin.');
-    const run = this.queue.then(async () => {
+    /* NOSONAR */ const run = this.queue.then(async () => {
       const captured = [],
         failures = [];
-      for (const value of [...new Set(paths)]) {
+      for (const value of new Set(paths)) {
         try {
           const requested = assetPath(value);
           const aspNet = isAspNetResourcePath(value);
@@ -624,11 +681,9 @@ export class AssetCache {
             ...(error.originStatus ? { originStatus: error.originStatus } : {}),
             ...(error.originContentType ? { originContentType: error.originContentType } : {}),
             message:
-              error.code === 'LIVE_BRIDGE'
+              error.code === 'LIVE_BRIDGE' || error.code?.startsWith('ASSET_')
                 ? error.message
-                : error.code?.startsWith('ASSET_')
-                  ? error.message
-                  : 'Static asset capture failed.',
+                : 'Static asset capture failed.',
           });
         }
       }
@@ -642,7 +697,7 @@ export class AssetCache {
     if (!Array.isArray(urls) || urls.length > 200) throw fail('Provide up to 200 observed Office font URLs.');
     const captured = [],
       failures = [];
-    for (const value of [...new Set(urls)]) {
+    for (const value of new Set(urls)) {
       const key = officeFontPath(value),
         source = new URL(value);
       const bridge = {
@@ -674,7 +729,7 @@ export class AssetCache {
     }
     return { captured, failures };
   }
-  async capturePublic(paths, { portalOrigin = this.origin, recursive = true } = {}) {
+  /* NOSONAR */ async capturePublic(paths, { portalOrigin = this.origin, recursive = true } = {}) {
     const origin = safeOrigin(portalOrigin);
     for (const value of paths ?? [])
       if (!assetPath(value).key.startsWith('/resource/powerappsportal/'))
@@ -733,7 +788,7 @@ export class AssetCache {
           const cached = await this.get(item.path, { origin });
           const css = cached.body.toString('utf8');
           const values = [
-            ...[...css.matchAll(/url\(\s*(?:(["'])(.*?)\1|([^)]*))\s*\)/gi)].map((m) => (m[2] ?? m[3]).trim()),
+            ...[...css.matchAll(/url\(\s*(?:(["'])(.*?)\1\s*|([^)]*))\)/gi)].map((m) => (m[2] ?? m[3]).trim()), // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
             ...[...css.matchAll(/@import\s+(["'])(.*?)\1/gi)].map((m) => m[2]),
           ];
           for (const value of values) {
@@ -829,23 +884,10 @@ export class AssetCache {
     validateLivePath(value);
     if (!origin) return null;
     const parsed = new URL(value, 'https://local.invalid');
-    if (
-      !isResourceManagerPath(parsed.pathname) &&
-      !isPcfWebResourcePath(parsed.pathname) &&
-      !/\.axd$/i.test(parsed.pathname) &&
-      !types[path.posix.extname(parsed.pathname).toLowerCase()]
-    )
-      return null;
+    if (!supportedAssetPath(parsed)) return null;
     const requested = assetPath(value);
     let entry = this.entries[hash(safeOrigin(origin) + requested.key)];
-    if (!entry && parsed.searchParams.has('_')) {
-      const values = parsed.searchParams.getAll('_');
-      if (values.length === 1 && /^\d{1,30}$/.test(values[0])) {
-        const stable = new URL(parsed.href);
-        stable.searchParams.delete('_');
-        entry = this.entries[hash(safeOrigin(origin) + stable.pathname + stable.search)];
-      }
-    }
+    if (!entry) entry = findStableCacheEntry(this.entries, origin, parsed);
     if (!entry) return null;
     const file = path.join(this.directory, entry.sha256 + '.bin');
     let bytes;

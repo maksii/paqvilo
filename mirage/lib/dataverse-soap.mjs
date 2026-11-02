@@ -92,7 +92,11 @@ const kidText = (node, ns, name) => {
 };
 // Local-name match, for the few elements whose namespace the SDK does not fix in these tables.
 const localText = (node, name) => node?.children.find((child) => child.name === name)?.text.trim() ?? null;
-const operatorOf = (text) => (text == null ? null : /^\d+$/.test(text) ? Number(text) : text);
+const operatorOf = (text) => {
+  if (text == null) return null;
+  if (/^\d+$/.test(text)) return Number(text);
+  return text;
+};
 
 function typeKey(node) {
   const qname = node.attrs.find((a) => a.ns === NS.i && a.name === 'type')?.value;
@@ -454,20 +458,21 @@ function attributesJson(s, entity) {
     );
   const mapping = mappingOf(s.api, entity.logicalName);
   const out = {};
-  for (const [name, value] of entity.attributes ?? []) {
-    const nav = lookupNav(s.api.store, mapping, name);
-    if (value?.type === 'EntityReference') {
-      if (value.id == null && !value.keyAttributes?.size) out[`${nav}@odata.bind`] = null;
-      else if (!value.logicalName) throw invalid(`The lookup ${name} names no entity.`, '0x80048d19');
-      else out[`${nav}@odata.bind`] = `/${setOf(s.api, value.logicalName)}(${recordKey(s.api, value, 'lookup')})`;
-    } else if (value == null) {
-      const lookup =
-        fieldKind(s.api.store.fieldDefinition(entity.logicalName, name, s.api.metadataFields)) === 'lookup';
-      if (lookup) out[`${nav}@odata.bind`] = null;
-      else out[name] = null;
-    } else out[name] = jsonValue(value, name);
-  }
+  for (const [name, value] of entity.attributes ?? []) writeAttributeJson(s, entity, mapping, out, name, value);
   return out;
+}
+
+function writeAttributeJson(s, entity, mapping, out, name, value) {
+  const nav = lookupNav(s.api.store, mapping, name);
+  if (value?.type === 'EntityReference') {
+    if (value.id == null && !value.keyAttributes?.size) out[`${nav}@odata.bind`] = null;
+    else if (!value.logicalName) throw invalid(`The lookup ${name} names no entity.`, '0x80048d19');
+    else out[`${nav}@odata.bind`] = `/${setOf(s.api, value.logicalName)}(${recordKey(s.api, value, 'lookup')})`;
+  } else if (value == null) {
+    const lookup = fieldKind(s.api.store.fieldDefinition(entity.logicalName, name, s.api.metadataFields)) === 'lookup';
+    if (lookup) out[`${nav}@odata.bind`] = null;
+    else out[name] = null;
+  } else out[name] = jsonValue(value, name);
 }
 
 const idFromLocation = (location) => {
@@ -480,6 +485,12 @@ const idFromLocation = (location) => {
 };
 
 // Typed SOAP value for one column of a row. Lookups arrive separately (see entityFrom).
+function typedNumber(value, kind) {
+  if (kind === 'choice') return { type: 'OptionSetValue', value };
+  if (!Number.isInteger(value)) return { type: 'double', value };
+  return value >= INT_MIN && value <= INT_MAX ? { type: 'int', value } : { type: 'long', value: String(value) };
+}
+
 function typedValue(s, logical, key, value) {
   if (value == null) return null;
   if (isExactNumeric(value)) {
@@ -490,12 +501,8 @@ function typedValue(s, logical, key, value) {
     };
   }
   const kind = fieldKind(s.api.store.fieldDefinition(logical, key, s.api.metadataFields));
-  if (kind === 'choice' && typeof value === 'number') return { type: 'OptionSetValue', value };
   if (typeof value === 'boolean') return { type: 'boolean', value };
-  if (typeof value === 'number') {
-    if (!Number.isInteger(value)) return { type: 'double', value };
-    return value >= INT_MIN && value <= INT_MAX ? { type: 'int', value } : { type: 'long', value: String(value) };
-  }
+  if (typeof value === 'number') return typedNumber(value, kind);
   if (value instanceof Date) return { type: 'dateTime', value }; // encoded by dateText, which rejects an invalid Date as a fault
   if (typeof value === 'string') {
     if (key === mappingOf(s.api, logical).idColumn && GUID.test(value)) return { type: 'guid', value };
@@ -602,12 +609,11 @@ const queriedTable = (query, model = query?.model) =>
     ? /<entity\b[^>]*?\bname\s*=\s*["']([^"']+)["']/i.exec(query.xml ?? '')?.[1]
     : model?.entityName) ?? null;
 // The query kind a message carries (D-R3-8): FetchXML, or a QueryExpression (a QueryByAttribute is one too).
-const queryKind = (query) =>
-  query?.type === 'Fetch'
-    ? 'fetchxml'
-    : query?.type === 'QueryExpression' || query?.type === 'QueryByAttribute'
-      ? 'queryexpression'
-      : undefined;
+const queryKind = (query) => {
+  if (query?.type === 'Fetch') return 'fetchxml';
+  if (query?.type === 'QueryExpression' || query?.type === 'QueryByAttribute') return 'queryexpression';
+  return undefined;
+};
 
 async function retrieveMany(s, query) {
   const model = query.type === 'QueryByAttribute' ? fromQueryByAttribute(query.model) : query.model;
@@ -833,7 +839,34 @@ function runTaggedRequest(base, request) {
     { fresh: true },
   );
 }
-async function runRequestCore(base, { name, params }) {
+
+function validateRequestInputs(name, params, inputs, optional) {
+  if (inputs)
+    for (const key of params.keys())
+      if (!inputs.includes(key) && !optional.has(key))
+        throw new DataError(`Unsupported SOAP ${name} request parameter: ${key}`, 501, 'LocalSoapInputUnsupported');
+}
+
+function validateSimpleSettings(params) {
+  for (const key of ['partitionId', 'SessionToken'])
+    if (params.get(key) != null && params.get(key).type !== 'string') throw invalid(`${key} requires a String value.`);
+  if (params.get('UnMaskedData') != null && params.get('UnMaskedData').type !== 'boolean')
+    throw invalid('UnMaskedData requires a Boolean value.');
+}
+
+function validateSuppression(name, params, suppression) {
+  if (!params.has('SuppressDuplicateDetection')) return;
+  if (!['Create', 'Update'].includes(name))
+    throw new DataError(
+      'SuppressDuplicateDetection is supported only for Create and Update.',
+      501,
+      'LocalSoapInputUnsupported',
+    );
+  if (suppression?.type !== 'boolean' || typeof suppression.value !== 'boolean')
+    throw invalid('SuppressDuplicateDetection requires a Boolean value.');
+}
+
+function prepareRequest(base, name, params) {
   const inputs = {
     Create: ['Target'],
     Update: ['Target', 'ConcurrencyBehavior'],
@@ -846,7 +879,7 @@ async function runRequestCore(base, { name, params }) {
     Assign: ['Target', 'Assignee'],
     SetState: ['EntityMoniker', 'State', 'Status'],
   }[name];
-  const optional = [
+  const optional = new Set([
     'tag',
     'partitionId',
     'SessionToken',
@@ -855,40 +888,125 @@ async function runRequestCore(base, { name, params }) {
     'BypassBusinessLogicExecutionStepIds',
     'SuppressDuplicateDetection',
     ...(['Retrieve', 'RetrieveMultiple'].includes(name) ? ['UnMaskedData'] : []),
-  ];
-  if (inputs)
-    for (const key of params.keys())
-      if (!inputs.includes(key) && !optional.includes(key))
-        throw new DataError(`Unsupported SOAP ${name} request parameter: ${key}`, 501, 'LocalSoapInputUnsupported');
-  for (const key of ['partitionId', 'SessionToken'])
-    if (params.get(key) != null && params.get(key).type !== 'string') throw invalid(`${key} requires a String value.`);
-  if (params.get('UnMaskedData') != null && params.get('UnMaskedData').type !== 'boolean')
-    throw invalid('UnMaskedData requires a Boolean value.');
+  ]);
+  validateRequestInputs(name, params, inputs, optional);
+  validateSimpleSettings(params);
   const suppression = params.get('SuppressDuplicateDetection');
-  if (params.has('SuppressDuplicateDetection')) {
-    if (!['Create', 'Update'].includes(name))
-      throw new DataError(
-        'SuppressDuplicateDetection is supported only for Create and Update.',
-        501,
-        'LocalSoapInputUnsupported',
-      );
-    if (suppression?.type !== 'boolean' || typeof suppression.value !== 'boolean')
-      throw invalid('SuppressDuplicateDetection requires a Boolean value.');
-  }
+  validateSuppression(name, params, suppression);
   // UnMaskedData: request["UnMaskedData"] = true asks the clear value of masked columns.
   const unmask = [true, 'true'].includes(params.get('UnMaskedData')?.value);
-  const s = {
+  return {
     ...bypassed(base, params),
     partitionId: params.get('partitionId')?.value,
     sessionToken: params.get('SessionToken')?.value,
     unmask,
     suppressDuplicateDetection: suppression?.value,
   };
-  const writeReply = (results = new Map()) => {
-    if (s.sdkResults !== undefined) results = soapSdkResults(s.sdkResults);
-    if (s.responseSessionToken) results.set('x-ms-session-token', { type: 'string', value: s.responseSessionToken });
-    return reply(name, results);
+}
+
+function assignRequest(s, p) {
+  const target = p('Target');
+  const assignee = p('Assignee');
+  const id = requireId(s.api, target, 'Assign'),
+    assigneeId = requireId(s.api, assignee, 'Assign assignee'),
+    logical = primaryTable(s.api, target.logicalName) ?? target.logicalName,
+    assigneeTable = primaryTable(s.api, assignee.logicalName) ?? assignee.logicalName;
+  // Assign runs its own pipeline; its main operation updates the owner as SYSTEM (recorded native soapMessages).
+  return namedTransaction(s, () =>
+    runEntryMessage(s.api.store, {
+      message: 'Assign',
+      entity: logical,
+      id,
+      inputs: { Target: sdkRef(logical, id), Assignee: sdkRef(assigneeTable, assigneeId) },
+      context: s,
+      main: () =>
+        namedUpdate(s, logical, id, { 'ownerid@odata.bind': `/${setOf(s.api, assigneeTable)}(${assigneeId})` }, true, {
+          assignOwner: true,
+        }),
+    }),
+  );
+}
+
+function setStateRequest(s, p) {
+  const moniker = p('EntityMoniker');
+  const id = requireId(s.api, moniker, 'SetState'),
+    logical = primaryTable(s.api, moniker.logicalName) ?? moniker.logicalName,
+    state = num(p('State')?.value),
+    status = p('Status')?.value == null ? null : num(p('Status').value);
+  // SetState runs as SetStateDynamicEntity; its main operation updates the state as the caller (recorded native
+  // soapMessages). Registered SetState steps never run.
+  return namedTransaction(s, () =>
+    runEntryMessage(s.api.store, {
+      message: 'SetStateDynamicEntity',
+      entity: logical,
+      id,
+      inputs: {
+        EntityMoniker: sdkRef(logical, id),
+        State: { $type: 'OptionSetValue', value: state },
+        Status: { $type: 'OptionSetValue', value: status ?? -1 },
+      },
+      context: s,
+      main: () =>
+        namedUpdate(s, logical, id, {
+          statecode: state,
+          ...(status == null || status === -1 ? {} : { statuscode: status }),
+        }).then(() => ({ IsValid: true })),
+    }),
+  );
+}
+
+function writeSoapReply(s, name, results = new Map()) {
+  if (s.sdkResults !== undefined) results = soapSdkResults(s.sdkResults);
+  if (s.responseSessionToken) results.set('x-ms-session-token', { type: 'string', value: s.responseSessionToken });
+  return reply(name, results);
+}
+
+function entityMessageReply(name, s, row, sdkName, entityName) {
+  return reply(
+    name,
+    s.sdkResults === undefined ? new Map([[entityName, row]]) : soapSdkResults(s.sdkResults, [[sdkName, entityName]]),
+  );
+}
+
+function emptyMessageReply(name, sdkResults) {
+  return reply(name, sdkResults === undefined ? new Map() : soapSdkResults(sdkResults));
+}
+
+function batchOptions(name, p) {
+  const collection = p('Requests')?.items ?? [];
+  const settings = p('Settings')?.node;
+  const transaction = name === 'ExecuteTransaction';
+  if (!transaction && collection.length > MAX_BATCH)
+    throw invalid(`The ExecuteMultiple request has ${collection.length} requests; the maximum is ${MAX_BATCH}.`); // ponytail: fixed limit; unverified message text
+  const continueOnError = !transaction && ['true', '1'].includes(localText(settings, 'ContinueOnError'));
+  const returnResponses = transaction
+    ? p('ReturnResponses')?.value === true
+    : ['true', '1'].includes(localText(settings, 'ReturnResponses'));
+  return { collection, transaction, continueOnError, returnResponses };
+}
+
+function batchReply(name, transaction, outcomes, returnResponses) {
+  const items = outcomes
+    .filter((o) => o.error || returnResponses)
+    .map((o) => (transaction ? transactionItem(o) : multipleItem(o)));
+  // Both collections are DataContract "OrganizationResponseCollection": xrm/7.1 for ExecuteTransaction, xrm/2012 for ExecuteMultiple.
+  const collectionType = transaction ? 'o:OrganizationResponseCollection' : 'l:OrganizationResponseCollection';
+  const value = {
+    rawValueXml: `<a:KeyValuePairOfstringanyType><b:key>Responses</b:key><b:value i:type="${collectionType}">${items.join('')}</b:value></a:KeyValuePairOfstringanyType>`,
   };
+  if (transaction) return reply(name, new Map([['Responses', value]]));
+  // ExecuteMultipleResponse.IsFaulted: a fault in the batch is reported in the items, not as a SOAP fault.
+  return reply(
+    name,
+    new Map([
+      ['IsFaulted', { type: 'boolean', value: outcomes.some((o) => o.error) }],
+      ['Responses', value],
+    ]),
+  );
+}
+
+async function runRequestCore(base, { name, params }) {
+  const s = prepareRequest(base, name, params);
   const p = (key) => params.get(key);
   // Requests relayed to a registered operation run its pipeline there (dataverse-operations.mjs), Assign runs its own
   // below; the service's other built-in messages have no pipeline and refuse a step chosen for them.
@@ -897,25 +1015,15 @@ async function runRequestCore(base, { name, params }) {
   switch (name) {
     case 'Create': {
       const id = await createRow(s, p('Target'));
-      return writeReply(new Map([['id', guid(id)]]));
+      return writeSoapReply(s, name, new Map([['id', guid(id)]]));
     }
     case 'Retrieve': {
       const row = await retrieveRow(s, p('Target'), p('ColumnSet'));
-      return reply(
-        name,
-        s.sdkResults === undefined
-          ? new Map([['Entity', row]])
-          : soapSdkResults(s.sdkResults, [['BusinessEntity', 'Entity']]),
-      );
+      return entityMessageReply(name, s, row, 'BusinessEntity', 'Entity');
     }
     case 'RetrieveMultiple': {
       const rows = await retrieveMany(s, p('Query'));
-      return reply(
-        name,
-        s.sdkResults === undefined
-          ? new Map([['EntityCollection', rows]])
-          : soapSdkResults(s.sdkResults, [['BusinessEntityCollection', 'EntityCollection']]),
-      );
+      return entityMessageReply(name, s, rows, 'BusinessEntityCollection', 'EntityCollection');
     }
     case 'Update':
       if (params.has('ConcurrencyBehavior'))
@@ -925,18 +1033,20 @@ async function runRequestCore(base, { name, params }) {
           'LocalSoapInputUnsupported',
         );
       await updateRow(s, p('Target'));
-      return writeReply();
+      return writeSoapReply(s, name);
     case 'Delete':
       await deleteRow(s, p('Target'));
-      return reply(name, s.sdkResults === undefined ? new Map() : soapSdkResults(s.sdkResults));
+      return emptyMessageReply(name, s.sdkResults);
     case 'Associate':
     case 'Disassociate':
       await relate(s, p('Target'), p('Relationship'), p('RelatedEntities'), name === 'Disassociate');
-      return reply(name, s.sdkResults === undefined ? new Map() : soapSdkResults(s.sdkResults));
+      return emptyMessageReply(name, s.sdkResults);
     case 'Upsert': {
       const target = p('Target');
       const { created, id } = await upsertRow(s, target);
-      return writeReply(
+      return writeSoapReply(
+        s,
+        name,
         new Map([
           ['RecordCreated', { type: 'boolean', value: created }],
           ['Target', { type: 'EntityReference', logicalName: target.logicalName, id }],
@@ -944,59 +1054,11 @@ async function runRequestCore(base, { name, params }) {
       );
     }
     case 'Assign': {
-      const target = p('Target');
-      const assignee = p('Assignee');
-      const id = requireId(s.api, target, 'Assign'),
-        assigneeId = requireId(s.api, assignee, 'Assign assignee'),
-        logical = primaryTable(s.api, target.logicalName) ?? target.logicalName,
-        assigneeTable = primaryTable(s.api, assignee.logicalName) ?? assignee.logicalName;
-      // Assign runs its own pipeline; its main operation updates the owner as SYSTEM (recorded native soapMessages).
-      await namedTransaction(s, () =>
-        runEntryMessage(s.api.store, {
-          message: 'Assign',
-          entity: logical,
-          id,
-          inputs: { Target: sdkRef(logical, id), Assignee: sdkRef(assigneeTable, assigneeId) },
-          context: s,
-          main: () =>
-            namedUpdate(
-              s,
-              logical,
-              id,
-              { 'ownerid@odata.bind': `/${setOf(s.api, assigneeTable)}(${assigneeId})` },
-              true,
-              { assignOwner: true },
-            ),
-        }),
-      );
+      await assignRequest(s, p);
       return reply(name, new Map(), NS.g);
     }
     case 'SetState': {
-      const moniker = p('EntityMoniker');
-      const id = requireId(s.api, moniker, 'SetState'),
-        logical = primaryTable(s.api, moniker.logicalName) ?? moniker.logicalName,
-        state = num(p('State')?.value),
-        status = p('Status')?.value == null ? null : num(p('Status').value);
-      // SetState runs as SetStateDynamicEntity; its main operation updates the state as the caller (recorded native
-      // soapMessages). Registered SetState steps never run.
-      await namedTransaction(s, () =>
-        runEntryMessage(s.api.store, {
-          message: 'SetStateDynamicEntity',
-          entity: logical,
-          id,
-          inputs: {
-            EntityMoniker: sdkRef(logical, id),
-            State: { $type: 'OptionSetValue', value: state },
-            Status: { $type: 'OptionSetValue', value: status ?? -1 },
-          },
-          context: s,
-          main: () =>
-            namedUpdate(s, logical, id, {
-              statecode: state,
-              ...(status == null || status === -1 ? {} : { statuscode: status }),
-            }).then(() => ({ IsValid: true })),
-        }),
-      );
+      await setStateRequest(s, p);
       return reply(name, new Map(), NS.g);
     }
     case 'WhoAmI': {
@@ -1057,34 +1119,9 @@ async function runRequestCore(base, { name, params }) {
     }
     case 'ExecuteMultiple':
     case 'ExecuteTransaction': {
-      const collection = p('Requests')?.items ?? [];
-      const settings = p('Settings')?.node;
-      const transaction = name === 'ExecuteTransaction';
-      if (!transaction && collection.length > MAX_BATCH) {
-        throw invalid(`The ExecuteMultiple request has ${collection.length} requests; the maximum is ${MAX_BATCH}.`); // ponytail: fixed limit; unverified message text
-      }
-      const continueOnError = !transaction && ['true', '1'].includes(localText(settings, 'ContinueOnError'));
-      const returnResponses = transaction
-        ? p('ReturnResponses')?.value === true
-        : ['true', '1'].includes(localText(settings, 'ReturnResponses'));
+      const { collection, transaction, continueOnError, returnResponses } = batchOptions(name, p);
       const outcomes = await runMany(s, collection, { continueOnError, transaction });
-      const items = outcomes
-        .filter((o) => o.error || returnResponses)
-        .map((o) => (transaction ? transactionItem(o) : multipleItem(o)));
-      // Both collections are DataContract "OrganizationResponseCollection": xrm/7.1 for ExecuteTransaction, xrm/2012 for ExecuteMultiple.
-      const collectionType = transaction ? 'o:OrganizationResponseCollection' : 'l:OrganizationResponseCollection';
-      const value = {
-        rawValueXml: `<a:KeyValuePairOfstringanyType><b:key>Responses</b:key><b:value i:type="${collectionType}">${items.join('')}</b:value></a:KeyValuePairOfstringanyType>`,
-      };
-      if (transaction) return reply(name, new Map([['Responses', value]]));
-      // ExecuteMultipleResponse.IsFaulted: a fault in the batch is reported in the items, not as a SOAP fault.
-      return reply(
-        name,
-        new Map([
-          ['IsFaulted', { type: 'boolean', value: outcomes.some((o) => o.error) }],
-          ['Responses', value],
-        ]),
-      );
+      return batchReply(name, transaction, outcomes, returnResponses);
     }
     default: {
       const extension = metadataRequests(s.api).get(name);
@@ -1236,25 +1273,34 @@ async function runMany(s, items, { continueOnError, transaction }) {
 async function runEach(s, items, { continueOnError, transaction }) {
   const outcomes = [];
   for (const [index, request] of items.entries()) {
-    if (transaction && (request.name === 'ExecuteMultiple' || request.name === 'ExecuteTransaction')) {
-      throw invalid('An ExecuteTransaction cannot contain another ExecuteMultiple or ExecuteTransaction.');
-    }
+    rejectNestedTransaction(request, transaction);
     try {
       // An ExecuteMultipleRequest cannot invoke another; that item faults and the batch goes on as ContinueOnError says.
-      if (!transaction && request.name === 'ExecuteMultiple')
-        throw invalid('An ExecuteMultiple request cannot contain another ExecuteMultiple request.');
+      rejectNestedMultiple(request, transaction);
       outcomes.push({ index, response: await runRequest(s, request, index) });
     } catch (error) {
-      if (transaction) {
-        if (error && typeof error === 'object') error.faultedRequestIndex = index;
-        throw error;
-      }
+      if (transaction) throwTransactionFailure(error, index);
       // Without ContinueOnError processing stops at the faulted item, which is still returned.
       outcomes.push({ index, error });
       if (!continueOnError) break;
     }
   }
   return outcomes;
+}
+
+function throwTransactionFailure(error, index) {
+  if (error && typeof error === 'object') error.faultedRequestIndex = index;
+  throw error;
+}
+
+function rejectNestedTransaction(request, transaction) {
+  if (transaction && (request.name === 'ExecuteMultiple' || request.name === 'ExecuteTransaction'))
+    throw invalid('An ExecuteTransaction cannot contain another ExecuteMultiple or ExecuteTransaction.');
+}
+
+function rejectNestedMultiple(request, transaction) {
+  if (!transaction && request.name === 'ExecuteMultiple')
+    throw invalid('An ExecuteMultiple request cannot contain another ExecuteMultiple request.');
 }
 
 const prefixOf = (namespace) => (namespace === NS.g ? 'g' : 'a');
@@ -1324,11 +1370,10 @@ function executeXml(result) {
 function bodyXml(result) {
   const resultName = BODY_RESULTS[result.name];
   const key = { Create: 'id', Retrieve: 'Entity', RetrieveMultiple: 'EntityCollection' }[result.name];
-  const value = result.results.has(key)
-    ? result.results.get(key)
-    : result.name === 'Create'
-      ? guid('00000000-0000-0000-0000-000000000000')
-      : null;
+  let value;
+  if (result.results.has(key)) value = result.results.get(key);
+  else if (result.name === 'Create') value = guid('00000000-0000-0000-0000-000000000000');
+  else value = null;
   const inner = resultName ? encodeValue(`svc:${resultName}`, value) : '';
   return `<svc:${result.name}Response>${inner}</svc:${result.name}Response>`;
 }

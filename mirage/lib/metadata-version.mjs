@@ -9,7 +9,7 @@ export function globalMetadataVersion(store) {
   const mappings = store.state.mappings ?? emptyMappings;
   if (!versions.has(mappings)) {
     const digest = createHash('sha256').update(JSON.stringify(mappings)).digest('hex');
-    versions.set(mappings, String(parseInt(digest.slice(0, 8), 16)));
+    versions.set(mappings, String(Number.parseInt(digest.slice(0, 8), 16)));
   }
   return versions.get(mappings);
 }

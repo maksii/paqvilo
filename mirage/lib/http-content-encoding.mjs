@@ -6,7 +6,10 @@ export function acceptsGzip(req) {
     if (!['gzip', '*'].includes(name.trim())) continue;
     const weight = parameters.find((value) => /^\s*q\s*=/.test(value));
     const raw = weight?.split('=')[1]?.trim();
-    const quality = raw === undefined ? 1 : /^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.test(raw) ? Number(raw) : 0;
+    let quality;
+    if (raw === undefined) quality = 1;
+    else if (/^(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.test(raw)) quality = Number(raw);
+    else quality = 0;
     if (name.trim() === 'gzip') gzip = quality;
     else wildcard = quality;
   }

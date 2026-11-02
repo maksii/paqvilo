@@ -24,12 +24,10 @@ function isolatedState(state) {
     )
       throw new TypeError('Fixture recipe state cannot contain shared-memory buffers.');
     if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) continue;
-    const children =
-      value instanceof Map
-        ? [...value].flat()
-        : value instanceof Set
-          ? [...value]
-          : Object.getOwnPropertyNames(value).map((key) => value[key]);
+    let children;
+    if (value instanceof Map) children = [...value].flat();
+    else if (value instanceof Set) children = [...value];
+    else children = Object.getOwnPropertyNames(value).map((key) => value[key]);
     charge(children.length);
     for (const child of children) pending.push(child);
   }
@@ -62,7 +60,7 @@ export function createFixtureRecipes(definitions) {
     recipes.set(name, { state, epochMs, namespace });
   }
   return Object.freeze({
-    names: () => [...recipes.keys()].sort(),
+    names: () => [...recipes.keys()].sort((a, b) => Number(a > b) - Number(a < b)),
     create(name) {
       const recipe = recipes.get(name);
       if (!recipe) throw new Error('Unknown fixture recipe.');

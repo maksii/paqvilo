@@ -7,7 +7,7 @@ import path from 'node:path';
 const RACY_WINDOW_MS = 2000;
 /** True while `stat` (number or bigint fields) is too recent to identify the file's content. */
 export const racyStat = (stat, now = Date.now()) =>
-  Number(stat.mtimeMs > stat.ctimeMs ? stat.mtimeMs : stat.ctimeMs) > now - RACY_WINDOW_MS;
+  Number(stat.mtimeMs > stat.ctimeMs ? stat.mtimeMs : stat.ctimeMs) > now - RACY_WINDOW_MS; // NOSONAR: Math.max would reject BigInt values
 let racyStamps = 0;
 /**
  * The stamp to keep beside content read after `stat`: `value`, or while the stat is racy a value

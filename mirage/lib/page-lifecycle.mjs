@@ -54,8 +54,8 @@ export async function observePageLifecycle(page, { origin, maxRecords = 10000, c
       )
         continue;
       record.lifecycle = { reason, observedAt: new Date().toISOString() };
-      record.outcome =
-        record.status >= 400 ? 'http-failure' : read(record.method) ? 'superseded-read' : 'cancelled-write';
+      if (record.status >= 400) record.outcome = 'http-failure';
+      else record.outcome = read(record.method) ? 'superseded-read' : 'cancelled-write';
       record.browserCompletionObserved = false;
     }
     lastActivity = clock.now();
@@ -100,7 +100,7 @@ export async function observePageLifecycle(page, { origin, maxRecords = 10000, c
     // A failed live read followed by an unrelated commit remains failed forever.
     // Only an abort after independently observed document removal is superseded.
     record.outcome =
-      read(record.method) && record.lifecycle && record.error === 'net::ERR_ABORTED' && !(record.status >= 400)
+      read(record.method) && record.lifecycle && record.error === 'net::ERR_ABORTED' && !(record.status >= 400) // NOSONAR: operand can be NaN or undefined, the negated test differs
         ? 'superseded-read'
         : 'network-failure';
     record.browserCompletionObserved = false;
@@ -200,7 +200,7 @@ export async function observeContextLifecycle(context, options = {}) {
   context.on('page', attach);
   for (const page of context.pages()) attach(page);
   const ready = async () => {
-    while (attaching.size) await Promise.all([...attaching]);
+    while (attaching.size) await Promise.all(attaching);
     if (errors.length) throw errors[0];
   };
   const dispose = async () => {
@@ -217,38 +217,17 @@ export async function observeContextLifecycle(context, options = {}) {
   }
   return {
     ready,
-    async settle({ timeout = 5000, quietMs = 100, pollMs = 25 } = {}) {
+    /* NOSONAR */ async settle({ timeout = 5000, quietMs = 100, pollMs = 25 } = {}) {
       if (![timeout, quietMs, pollMs].every(Number.isFinite) || timeout < 0 || quietMs < 0 || pollMs <= 0)
         throw new Error('Settling requires nonnegative finite timeout/quietMs and positive pollMs.');
       const started = clock.now(),
         deadline = started + timeout;
-      const withinDeadline = async (promise) => {
-        let timer;
-        try {
-          return await Promise.race([
-            promise.then((value) => ({ value })),
-            new Promise((resolve) => {
-              timer = clock.setTimeout(() => resolve({ timedOut: true }), Math.max(0, deadline - clock.now()));
-            }),
-          ]);
-        } finally {
-          clock.clearTimeout(timer);
-        }
-      };
-      const incomplete = async () => ({
-        pages: await Promise.all(
-          [...observers.values()].map((observer) => observer.settle({ timeout: 0, quietMs, pollMs })),
-        ),
-        pendingAttachments: attaching.size,
-        waitedMs: clock.now() - started,
-        settled: false,
-        passed: false,
-      });
+      const incomplete = () => incompleteContextSettle(observers, attaching, started, clock, quietMs, pollMs);
       for (;;) {
         if (disposed) return incomplete();
         // Attachment and page settling share one deadline. New pages created while
         // another page is settling must join this observation before it can pass.
-        if ((await withinDeadline(ready())).timedOut) return incomplete();
+        if ((await withinDeadline(ready(), clock, deadline)).timedOut) return incomplete();
         if (disposed) return incomplete();
         if (attaching.size) {
           if (clock.now() >= deadline) return incomplete();
@@ -261,6 +240,8 @@ export async function observeContextLifecycle(context, options = {}) {
               observer.settle({ timeout: Math.max(0, deadline - clock.now()), quietMs, pollMs }),
             ),
           ),
+          clock,
+          deadline,
         );
         if (result.timedOut) return incomplete();
         if (errors.length) throw errors[0];
@@ -281,5 +262,31 @@ export async function observeContextLifecycle(context, options = {}) {
       }
     },
     dispose,
+  };
+}
+
+async function withinDeadline(promise, clock, deadline) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise.then((value) => ({ value })),
+      new Promise((resolve) => {
+        timer = clock.setTimeout(() => resolve({ timedOut: true }), Math.max(0, deadline - clock.now()));
+      }),
+    ]);
+  } finally {
+    clock.clearTimeout(timer);
+  }
+}
+
+async function incompleteContextSettle(observers, attaching, started, clock, quietMs, pollMs) {
+  return {
+    pages: await Promise.all(
+      [...observers.values()].map((observer) => observer.settle({ timeout: 0, quietMs, pollMs })),
+    ),
+    pendingAttachments: attaching.size,
+    waitedMs: clock.now() - started,
+    settled: false,
+    passed: false,
   };
 }

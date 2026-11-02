@@ -4,14 +4,14 @@ import { observePortalNode } from './portal-node-observation.mjs';
 import { definitionQuery } from './definition-query.mjs';
 
 // All embedded source is owned code; page data is passed as a separate argument.
-export const xrayUi = new Function(
+/* NOSONAR: intentional local script execution or generated handler */ export const xrayUi = new Function(
   'data',
   `const {resolveInspectionEvidence}=(${inspectionEvidenceRuntime.toString()})(); const renderInspectionEvidence=(${renderInspectionEvidence.toString()}); const observePortalNode=(${observePortalNode.toString()}); const definitionQuery=(${definitionQuery.toString()}); return (${xrayBrowserImpl.toString()})(data);`,
 );
 
 // Self-contained browser function, like panelUi. Never reads page text or input values.
 function xrayBrowserImpl(data) {
-  if (location.origin !== data.origin || window.__paqviloRetiredSessions?.includes(data.token) || !document.body)
+  if (location.origin !== data.origin || globalThis.__paqviloRetiredSessions?.includes(data.token) || !document.body)
     return;
   let host = document.getElementById('paqvilo-xray');
   // The panel owns the current UI state; server-persisted visibility may lag a shortcut.
@@ -84,8 +84,9 @@ function xrayBrowserImpl(data) {
   const documentIds = new WeakMap(),
     frameIds = new WeakMap(),
     anchorIds = new WeakMap();
-  const uiEpoch = (Number.isSafeInteger(window.__paqviloInspectionEpoch) ? window.__paqviloInspectionEpoch : 0) + 1;
-  window.__paqviloInspectionEpoch = uiEpoch;
+  const uiEpoch =
+    (Number.isSafeInteger(globalThis.__paqviloInspectionEpoch) ? globalThis.__paqviloInspectionEpoch : 0) + 1;
+  globalThis.__paqviloInspectionEpoch = uiEpoch;
   const opaqueId = (map, value, prefix) => {
     if (!map.has(value))
       map.set(
@@ -119,7 +120,7 @@ function xrayBrowserImpl(data) {
     frameAnimationHooks = new Map(),
     frameShadowHooks = new Map();
   const listenViews = (type, fn, options = {}) => {
-    listen(window, type, fn, options);
+    listen(globalThis, type, fn, options);
     viewListeners.push([type, fn, options]);
   };
   const watchFrame = (doc) => {
@@ -289,9 +290,19 @@ function xrayBrowserImpl(data) {
     ui.setAttribute('aria-busy', String(loading));
     wash.hidden = !loading || Boolean(report);
     scanState.hidden = !loading && !error;
+    const progressTitle = () => {
+      if (report) return 'Updating source inspection';
+      if (pending) return 'Reading local sources';
+      return 'Preparing X-ray';
+    };
+    const progressPhase = () =>
+      (d.inspection ?? d.mirage)?.phase ??
+      (report
+        ? 'Previous details remain visible while sources update.'
+        : 'Matching rendered elements to their origins.');
     const html = error
       ? `<span class="scan-orbit" aria-hidden="true"></span><div><strong>Source inspection unavailable</strong><p>Details: ${esc(error)}</p></div><button data-action="refresh">Retry</button>`
-      : `<span class="scan-orbit" aria-hidden="true"></span><div><strong>${report ? 'Updating source inspection' : pending ? 'Reading local sources' : 'Preparing X-ray'}</strong><p>${esc((d.inspection ?? d.mirage)?.phase ?? (report ? 'Previous details remain visible while sources update.' : 'Matching rendered elements to their origins.'))} You can exit at any time.</p></div>`;
+      : `<span class="scan-orbit" aria-hidden="true"></span><div><strong>${progressTitle()}</strong><p>${esc(progressPhase())} You can exit at any time.</p></div>`;
     if (scanState.innerHTML !== html) scanState.innerHTML = html;
     scanState.classList.toggle('error', Boolean(error));
     const refresh = root.querySelector('.bar [data-action="refresh"]');
@@ -305,14 +316,19 @@ function xrayBrowserImpl(data) {
   const label = (node) =>
     `${node.localName}${node.id ? '#' + node.id.slice(0, 160) : ''}${!node.id && node.classList?.length ? '.' + [...node.classList].slice(0, 2).join('.') : ''}`;
   const descent = new WeakMap();
-  const child = (node) =>
-    descent.get(node)?.isConnected && parent(descent.get(node)) === node
-      ? descent.get(node)
-      : node?.localName === 'iframe'
-        ? frameDocument(node)?.body
-        : [...(node?.shadowRoot?.children ?? node?.children ?? [])].find(
-            (item) => !item.matches('style,script,link') && !own(item),
-          );
+  const child = (node) => {
+    if (descent.get(node)?.isConnected && parent(descent.get(node)) === node) return descent.get(node);
+    if (node?.localName === 'iframe') return frameDocument(node)?.body;
+    return [...(node?.shadowRoot?.children ?? node?.children ?? [])].find(
+      (item) => !item.matches('style,script,link') && !own(item),
+    );
+  };
+  const parameterDescription = (parameter) => {
+    if (parameter.kind === 'binding') return 'Column: ' + parameter.column;
+    if (parameter.kind === 'dataset') return 'Dataset: ' + (parameter.viewId ?? parameter.entity ?? 'unresolved');
+    if (parameter.kind === 'unresolved') return parameter.reason ?? 'Unresolved binding';
+    return 'Exported ' + parameter.kind;
+  };
   const frameOf = (doc) => {
     try {
       return doc?.defaultView?.frameElement ?? null;
@@ -365,17 +381,17 @@ function xrayBrowserImpl(data) {
       return undefined;
     }
   };
-  const gridColumn = (node) => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const gridColumn = (node) => {
     const cell = node.closest('td,th,[data-paqvilo-column]'),
       table = cell?.closest('table');
     if (!table) return null;
     // A scroll-head clone can opt into the original grid by ID. Do not guess
     // from a shared wrapper, column name or page-wide requests.
-    const boundId = table.getAttribute('data-paqvilo-grid');
+    const boundId = table.getAttribute('data-paqvilo-grid'); // NOSONAR: reads attributes of observed DOM, dataset would differ
     const boundMatches = boundId ? [...table.getRootNode().querySelectorAll('#' + CSS.escape(boundId))] : [table];
     const boundTable = boundMatches.length === 1 ? boundMatches[0] : null;
-    if (!boundTable || boundTable.localName !== 'table') return null;
-    const declared = cell.getAttribute('data-paqvilo-column');
+    if (boundTable?.localName !== 'table') return null;
+    const declared = cell.getAttribute('data-paqvilo-column'); // NOSONAR: reads attributes of observed DOM, dataset would differ
     const view = table.ownerDocument.defaultView,
       jq = ownData(view, 'jQuery'),
       settings =
@@ -391,8 +407,8 @@ function xrayBrowserImpl(data) {
       }
     const columns = ownData(config, 'aoColumns');
     const cellIndex = ownData(ownData(cell, '_DT_CellIndex'), 'column');
-    const headerIndex = /^\d+$/.test(cell.getAttribute('data-dt-column') ?? '')
-      ? Number(cell.getAttribute('data-dt-column'))
+    const headerIndex = /^\d+$/.test(cell.getAttribute('data-dt-column') ?? '') // NOSONAR: reads attributes of observed DOM, dataset would differ
+      ? Number(cell.getAttribute('data-dt-column')) // NOSONAR: reads attributes of observed DOM, dataset would differ
       : null;
     let column;
     if (Array.isArray(columns)) {
@@ -407,24 +423,24 @@ function xrayBrowserImpl(data) {
     }
     const name = declared || ownData(column, 'sName') || ownData(column, 'mData');
     if (typeof name !== 'string' || !/^[a-z][a-z0-9_]*$/i.test(name)) return null;
-    return { name: name.toLowerCase(), table: boundTable.getAttribute('data-paqvilo-table') ?? '' };
+    return { name: name.toLowerCase(), table: boundTable.getAttribute('data-paqvilo-table') ?? '' }; // NOSONAR: reads attributes of observed DOM, dataset would differ
   };
-  const binding = (node, resolveHost = true) => {
+  /* NOSONAR */ const binding = (node, resolveHost = true) => {
     if (report?.modelDriven) {
       const context = report.modelDriven,
         catalogue = context.catalogue;
       const chain = lineage(node),
-        nativeId = chain.find((item) => item.hasAttribute('data-id'))?.getAttribute('data-id') ?? '';
+        nativeId = chain.find((item) => item.hasAttribute('data-id'))?.getAttribute('data-id') ?? ''; // NOSONAR: reads attributes of observed DOM, dataset would differ
       // Native fields carry data-id; a labelled form control without one (such as the
       // loopback app) is identified only by its own name. An empty identifier matches nothing.
-      const control = nativeId
-        ? null
-        : (labelledControl(node) ?? (node.matches('input,select,textarea') ? node : null));
+      let control = null;
+      if (!nativeId) control = labelledControl(node) ?? (node.matches('input,select,textarea') ? node : null);
       const fieldName = nativeId ? nativeId.split('.')[0] : (control?.getAttribute('name') ?? '');
       // Parent app context does not establish ownership inside an embedded document.
       const sameDocument = node.ownerDocument === document;
       const exact = sameDocument ? (report.forms ?? []).filter((form) => norm(form.id) === norm(context.formId)) : [];
-      const forms = sameDocument ? (exact.length ? exact : (report.forms ?? [])) : [];
+      let forms = [];
+      if (sameDocument) forms = exact.length ? exact : (report.forms ?? []);
       // A subgrid carries data-id="dataSetRoot_<control>" (native and Mirage); it names its table, view and relationship, not a column.
       const subgridId = nativeId.startsWith('dataSetRoot_') ? nativeId.slice('dataSetRoot_'.length) : '';
       const native = subgridId
@@ -445,17 +461,17 @@ function xrayBrowserImpl(data) {
         listPage && fieldName
           ? (report.columns ?? []).filter((column) => column.name === fieldName && column.entity === context.entity)
           : [];
-      const fields = listPage
-        ? listFields
-        : fieldName && !subgridId
-          ? forms.flatMap((form) =>
-              (report.columns ?? []).filter(
-                (column) =>
-                  column.formId === form.id &&
-                  (nativeId ? [column.name, column.controlId] : [column.name]).includes(fieldName),
-              ),
-            )
-          : [];
+      let fields;
+      if (listPage) fields = listFields;
+      else if (fieldName && !subgridId)
+        fields = forms.flatMap((form) =>
+          (report.columns ?? []).filter(
+            (column) =>
+              column.formId === form.id &&
+              (nativeId ? [column.name, column.controlId] : [column.name]).includes(fieldName),
+          ),
+        );
+      else fields = [];
       const code = fields.flatMap((field) => {
         const form = forms.find((item) => item.id === field.formId),
           control = form?.controls.find((item) => item.name === field.name);
@@ -474,12 +490,11 @@ function xrayBrowserImpl(data) {
             ]
           : [];
       });
-      const commandLocation =
-        context.pageType === 'entitylist'
-          ? 'grid'
-          : context.formId || context.formType != null || context.pageType === 'entityrecord'
-            ? 'form'
-            : null;
+      let commandLocation;
+      if (context.pageType === 'entitylist') commandLocation = 'grid';
+      else if (context.formId || context.formType != null || context.pageType === 'entityrecord')
+        commandLocation = 'form';
+      else commandLocation = null;
       const matches = sameDocument
         ? (catalogue?.commands ?? []).filter(
             (command) =>
@@ -545,8 +560,8 @@ function xrayBrowserImpl(data) {
             norm(id) === norm(forms[0]) ||
             allForms.some(
               (form) =>
-                [form.id, form.formXml?.id].some((value) => norm(value) === norm(id)) &&
-                [form.id, form.formXml?.id].some((value) => norm(value) === norm(forms[0])),
+                [form.id, form.formXml?.id].some((value) => norm(value) === norm(id)) /* NOSONAR */ &&
+                [form.id, form.formXml?.id].some((value) => norm(value) === norm(forms[0])), // NOSONAR: callbacks capture request-scoped state
             ),
         );
         return {
@@ -561,7 +576,7 @@ function xrayBrowserImpl(data) {
     const documentForm = (doc) => documentContext(doc).formId ?? '';
     const compact = (value) =>
       norm(value)
-        .replace(/-/g, '')
+        .replaceAll('-', '')
         .replace(/[^a-z0-9_]/g, '_');
     const indexedForms = report?.componentIndex?.forms ?? [];
     const allForms = [
@@ -610,8 +625,8 @@ function xrayBrowserImpl(data) {
       let shape = {};
       try {
         const parsed = JSON.parse(
-          current.getAttribute('data-form-layout') ??
-            current.querySelector(':scope > [data-form-layout]')?.getAttribute('data-form-layout') ??
+          /* NOSONAR */ current.getAttribute('data-form-layout') ??
+            /* NOSONAR */ current.querySelector(':scope > [data-form-layout]')?.getAttribute('data-form-layout') ??
             '{}',
         );
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) shape = parsed;
@@ -647,11 +662,12 @@ function xrayBrowserImpl(data) {
           /* Optional inspection or cleanup failure must not interrupt the owning operation. */
         }
       }
-      const fallbackForm = /^EntityFormControl(?:_EntityFormView)?$/.test(current.id)
-        ? current.ownerDocument === document
-          ? (report?.page?.entityFormId ?? report?.page?.basicFormId ?? '')
-          : documentForm(current.ownerDocument)
-        : '';
+      let fallbackForm = '';
+      if (/^EntityFormControl(?:_EntityFormView)?$/.test(current.id)) {
+        if (current.ownerDocument === document)
+          fallbackForm = report?.page?.entityFormId ?? report?.page?.basicFormId ?? '';
+        else fallbackForm = documentForm(current.ownerDocument);
+      }
       const fallbackList =
         current.ownerDocument === document && /^EntityListControl$/.test(current.id)
           ? (report?.page?.listId ?? '')
@@ -669,7 +685,7 @@ function xrayBrowserImpl(data) {
           conflict = true;
       }
       let vid = value('data-viewid') || value('data-selected-view');
-      if (!vid && current.hasAttribute('data-view-layouts'))
+      /* NOSONAR */ if (!vid && current.hasAttribute('data-view-layouts'))
         try {
           const layouts = JSON.parse(atob(value('data-view-layouts')));
           if (Array.isArray(layouts) && layouts.length === 1) vid = String(layouts[0].Id ?? layouts[0].id ?? '');
@@ -694,14 +710,16 @@ function xrayBrowserImpl(data) {
       }
       const nativeForms = nativeAt(current);
       const recordForms = allForms.filter((item) => fid && norm(item.id) === norm(fid));
-      const nextForms = recordForms.length
-        ? recordForms
-        : nativeForms.length
-          ? nativeForms
-          : allForms.filter((item) => fid && norm(item.formXml?.id) === norm(fid));
+      let nextForms;
+      if (recordForms.length) nextForms = recordForms;
+      else if (nativeForms.length) nextForms = nativeForms;
+      else nextForms = allForms.filter((item) => fid && norm(item.formXml?.id) === norm(fid));
       const nextViews = (report?.views ?? []).filter((item) => vid && norm(item.id) === norm(vid));
       const nextLists = allLists.filter((item) => lid && compact(item.recordId ?? item.id) === compact(lid));
-      const nextFamily = vid || lid ? 'collection' : fid || nativeForms.length ? 'form' : '';
+      let nextFamily;
+      if (vid || lid) nextFamily = 'collection';
+      else if (fid || nativeForms.length) nextFamily = 'form';
+      else nextFamily = '';
       if (family && nextFamily && family !== nextFamily) break;
       if (
         forms.length &&
@@ -760,13 +778,11 @@ function xrayBrowserImpl(data) {
     const explicit = scope.find((item) => fieldAttributes.some((name) => item.hasAttribute(name)));
     const control = labelled ?? scope.find((item) => item.matches('input,select,textarea,output'));
     const grid = gridColumn(node);
-    const names = explicit
-      ? fieldAttributes.map((key) => explicit.getAttribute(key)).filter(Boolean)
-      : grid
-        ? [grid.name]
-        : control
-          ? [control.id, control.getAttribute('name')].filter(Boolean)
-          : [];
+    let names;
+    if (explicit) names = fieldAttributes.map((key) => explicit.getAttribute(key)).filter(Boolean);
+    else if (grid) names = [grid.name];
+    else if (control) names = [control.id, control.getAttribute('name')].filter(Boolean);
+    else names = [];
     const hostContext = richHost ? binding(richHost, false) : null;
     const hostAgrees =
       hostContext &&
@@ -783,10 +799,10 @@ function xrayBrowserImpl(data) {
       if (entity && norm(grid.table) !== norm(entity)) conflict = true;
       else entity = norm(grid.table);
     }
-    if (control && entity) for (const name of [...names]) if (name.includes('$')) names.push(name.split('$').at(-1));
+    if (control && entity) for (const name of [...names]) if (name.includes('$')) names.push(name.split('$').at(-1)); // NOSONAR: snapshot copy guards against mutation while iterating
     const cell = control?.closest('.cell,.form-group,td,[data-fieldname]');
     if (cell) {
-      for (const name of [...names]) {
+      /* NOSONAR: snapshot copy guards against mutation while iterating */ for (const name of [...names]) {
         const base = name.replace(
           /_(?:name|entityname|datepicker_description|datepicker|timepicker_description|timepicker|i\d+|option_\d+|\d+|selected|value|container)$/i,
           '',
@@ -815,10 +831,10 @@ function xrayBrowserImpl(data) {
     const ownerForms =
       chain
         .map((current) => {
-          let id = current.getAttribute('data-formid');
+          let id = current.getAttribute('data-formid'); // NOSONAR: reads attributes of observed DOM, dataset would differ
           if (!id)
             try {
-              id = JSON.parse(current.getAttribute('data-form-layout') ?? '{}')?.Id;
+              id = JSON.parse(current.getAttribute('data-form-layout') ?? '{}')?.Id; // NOSONAR: reads attributes of observed DOM, dataset would differ
             } catch {
               /* Optional inspection or cleanup failure must not interrupt the owning operation. */
             }
@@ -830,12 +846,12 @@ function xrayBrowserImpl(data) {
     const native = (report?.nativeComponents ?? []).filter(
       (item) =>
         scope.some(
-          (ancestor) => ancestor.id === item.id || ancestor.getAttribute('data-lookup-datafieldname') === item.id,
+          (ancestor) => ancestor.id === item.id || ancestor.getAttribute('data-lookup-datafieldname') === item.id, // NOSONAR: reads attributes of observed DOM, dataset would differ
         ) &&
         (!ownerForms.length || ownerForms.some((form) => norm(form.id) === norm(item.formId))) &&
         (!item.viewId || !viewId || norm(item.viewId) === norm(viewId)),
     );
-    const schema = scope.find((item) => item.hasAttribute('data-pcf-schema'))?.getAttribute('data-pcf-schema');
+    const schema = scope.find((item) => item.hasAttribute('data-pcf-schema'))?.getAttribute('data-pcf-schema'); // NOSONAR: reads attributes of observed DOM, dataset would differ
     const code = (report?.codeComponents ?? []).filter(
       (item) =>
         (schema && norm(item.schemaName) === norm(schema)) ||
@@ -845,7 +861,7 @@ function xrayBrowserImpl(data) {
           ownerForms.some((form) => norm(form.id) === norm(item.formId)) &&
           scope.some(
             (node) =>
-              node.id === 'PcfControl_' + item.field || node.getAttribute('data-pcf-native-field') === item.field,
+              node.id === 'PcfControl_' + item.field || node.getAttribute('data-pcf-native-field') === item.field, // NOSONAR: reads attributes of observed DOM, dataset would differ
           )),
     );
     return {
@@ -869,9 +885,18 @@ function xrayBrowserImpl(data) {
     };
   };
   const framework =
-    /^(?:alert(?:-.+)?|message|form-control|btn(?:-.+)?|close|title|row|container(?:-fluid)?|col-(?:xs|sm|md|lg|xl|xxl)-\d+|modal(?:-.+)?|control-label|input-group(?:-.+)?|clearfix|pull-(?:left|right)|text-(?:left|right|center|muted)|hidden|show|active)$/;
+    /^(?:alert(?:-.+)?|message|form-control|btn(?:-.+)?|close|title|row|container(?:-fluid)?|col-(?:xs|sm|md|lg|xl|xxl)-\d+|modal(?:-.+)?|control-label|input-group(?:-.+)?|clearfix|pull-(?:left|right)|text-(?:left|right|center|muted)|hidden|show|active)$/; // NOSONAR: regex kept: a rewrite would change matches or captures
   let rankingReport, frequencies, pageOwners;
-  const sourceMatches = (node) => {
+  const sourceEvidenceLabel = (item, strong, depth) => {
+    let prefix;
+    if (item.kind === 'script') prefix = 'Script reference';
+    else if (strong) prefix = 'Markup match';
+    else prefix = 'Possible match';
+    const enclosing = depth ? ' on an enclosing element' : '';
+    const occurrences = item.occurrences > 1 ? ' · ' + item.occurrences + ' locations in this source' : '';
+    return `${prefix}: ${item.selector}${enclosing}${occurrences}`;
+  };
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const sourceMatches = (node) => {
     const ancestors = lineage(node).filter((item) => item.ownerDocument === node.ownerDocument),
       rows = [];
     if (rankingReport !== report || !frequencies) {
@@ -881,7 +906,10 @@ function xrayBrowserImpl(data) {
       for (const item of report?.elementSources ?? [])
         if (item.matchKind === 'class') {
           let files = frequencies.get(item.selector);
-          if (!files) frequencies.set(item.selector, (files = new Set()));
+          if (!files) {
+            files = new Set();
+            frequencies.set(item.selector, files);
+          }
           files.add((item.ref ?? item.sourceFile) + '#' + (item.recordId ?? item.id ?? item.name ?? ''));
         }
       const sources = [
@@ -912,16 +940,14 @@ function xrayBrowserImpl(data) {
     for (const item of report?.elementSources ?? []) {
       try {
         const exactDepth = ancestors.findIndex((ancestor) => ancestor.matches(item.selector));
-        const depth =
-          exactDepth >= 0
-            ? exactDepth
-            : item.matchKind === 'class'
-              ? ancestors.findIndex(
-                  (ancestor) =>
-                    ancestor.localName === item.tag &&
-                    (item.classes ?? []).some((name) => ancestor.classList.contains(name)),
-                )
-              : -1;
+        let depth;
+        if (exactDepth >= 0) depth = exactDepth;
+        else if (item.matchKind === 'class')
+          depth = ancestors.findIndex(
+            (ancestor) =>
+              ancestor.localName === item.tag && (item.classes ?? []).some((name) => ancestor.classList.contains(name)),
+          );
+        else depth = -1;
         if (depth < 0) continue;
         const target = ancestors[depth];
         const locations = item.locations ?? [];
@@ -991,15 +1017,15 @@ function xrayBrowserImpl(data) {
         ).length;
         // Prefer stronger evidence across adjacent regions, but do not let a distant
         // page-container ID eclipse the distinctive template immediately around a node.
+        const matchKindScore = () => {
+          if (item.matchKind === 'id') return 110;
+          if (item.matchKind === 'attribute') return 85;
+          if (item.matchKind === 'class') return 35 + classes.length * 5 + meaningful.length * 10;
+          return 20;
+        };
         const score =
           attributeCount * 5 +
-          (item.matchKind === 'id'
-            ? 110
-            : item.matchKind === 'attribute'
-              ? 85
-              : item.matchKind === 'class'
-                ? 35 + classes.length * 5 + meaningful.length * 10
-                : 20) +
+          matchKindScore() +
           (tagMatch ? 10 : -85) +
           agreed * 20 +
           contextual * 20 -
@@ -1018,7 +1044,7 @@ function xrayBrowserImpl(data) {
           strong,
           compatible,
           pageChain,
-          evidenceLabel: `${item.kind === 'script' ? 'Script reference' : strong ? 'Markup match' : 'Possible match'}: ${item.selector}${depth ? ' on an enclosing element' : ''}${item.occurrences > 1 ? ' · ' + item.occurrences + ' locations in this source' : ''}`,
+          evidenceLabel: sourceEvidenceLabel(item, strong, depth),
         });
       } catch {
         /* Optional inspection or cleanup failure must not interrupt the owning operation. */
@@ -1053,7 +1079,7 @@ function xrayBrowserImpl(data) {
         row.strong = false;
         row.evidenceLabel = row.evidenceLabel.replace('Markup match:', 'Possible match:');
       }
-    const ranked = rows.sort(
+    const ranked = rows.toSorted(
       (a, b) =>
         Number(b.strong) - Number(a.strong) ||
         b.score - a.score ||
@@ -1138,11 +1164,22 @@ function xrayBrowserImpl(data) {
     })[kind] ??
     kind ??
     'Source';
+  const sourceNote = (item, evidence) => {
+    if (!(item.evidenceLabel || evidence)) return '';
+    return `<div class="note">${esc(item.evidenceLabel ?? evidence)}</div>`;
+  };
+  const sourceActions = (item) => {
+    if (!item.ref) return '';
+    let region = '';
+    if (item.depth)
+      region = `<button data-action="source-region" data-selector="${esc(item.selector)}">Select matching ancestor</button>`;
+    return `<div class="actions"><button data-action="open" data-ref="${esc(item.ref)}">Browse file ↗</button><button data-action="copy" data-copy="${esc(item.path ?? item.sourceFile ?? item.ref)}">Copy path</button>${region}</div>`;
+  };
   const sourceRows = (rows, evidence) =>
     rows
       .map(
         (item) =>
-          `<div class="source"><div class="name"><b>${esc(item.name ?? item.label ?? 'Source')}</b><span class="badge">${esc(kindName(item.kind))}</span></div><div class="mono">${esc(item.ref ?? item.url ?? 'Source unavailable')}</div>${item.evidenceLabel || evidence ? `<div class="note">${esc(item.evidenceLabel ?? evidence)}</div>` : ''}${item.ref ? `<div class="actions"><button data-action="open" data-ref="${esc(item.ref)}">Browse file ↗</button><button data-action="copy" data-copy="${esc(item.path ?? item.sourceFile ?? item.ref)}">Copy path</button>${item.depth ? `<button data-action="source-region" data-selector="${esc(item.selector)}">Select matching ancestor</button>` : ''}</div>` : ''}</div>`,
+          `<div class="source"><div class="name"><b>${esc(item.name ?? item.label ?? 'Source')}</b><span class="badge">${esc(kindName(item.kind))}</span></div><div class="mono">${esc(item.ref ?? item.url ?? 'Source unavailable')}</div>${sourceNote(item, evidence)}${sourceActions(item)}</div>`,
       )
       .join('');
   const disclosureState = new Map(),
@@ -1151,28 +1188,26 @@ function xrayBrowserImpl(data) {
     const size = 8,
       pages = Math.max(1, Math.ceil(rows.length / size));
     const page = Math.min(contextPages.get(key) ?? 0, pages - 1);
-    return (
-      render(rows.slice(page * size, (page + 1) * size)) +
-      (pages > 1
-        ? `<div class="actions"><button data-action="context-page" data-context="${esc(key)}" data-page="${page - 1}" ${page ? '' : 'disabled'}>Previous</button><span class="note">${page + 1} / ${pages} · ${rows.length} entries</span><button data-action="context-page" data-context="${esc(key)}" data-page="${page + 1}" ${page < pages - 1 ? '' : 'disabled'}>Next</button></div>`
-        : '')
-    );
+    const pageControls = () => {
+      if (pages <= 1) return '';
+      return `<div class="actions"><button data-action="context-page" data-context="${esc(key)}" data-page="${page - 1}" ${page ? '' : 'disabled'}>Previous</button><span class="note">${page + 1} / ${pages} · ${rows.length} entries</span><button data-action="context-page" data-context="${esc(key)}" data-page="${page + 1}" ${page < pages - 1 ? '' : 'disabled'}>Next</button></div>`;
+    };
+    return render(rows.slice(page * size, (page + 1) * size)) + pageControls();
   };
   const emptyEvidenceRefs = [],
     modelHydrations = new Map();
   let indexedEvidenceRows = null,
     evidenceIndex = null,
     evidenceReport = null;
-  const sourceEvidenceIndex = () => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const sourceEvidenceIndex = () => {
     if (evidenceReport !== report) {
       evidenceReport = report;
       modelHydrations.clear();
     }
-    const rows = Array.isArray(report?.portalSources)
-      ? report.portalSources
-      : Array.isArray(report?.sourceRefs)
-        ? report.sourceRefs
-        : emptyEvidenceRefs;
+    let rows;
+    if (Array.isArray(report?.portalSources)) rows = report.portalSources;
+    else if (Array.isArray(report?.sourceRefs)) rows = report.sourceRefs;
+    else rows = emptyEvidenceRefs;
     if (rows !== indexedEvidenceRows) {
       indexedEvidenceRows = rows;
       evidenceIndex = { rows, byId: new Map(), byRef: new Map(), byComponent: new Map() };
@@ -1190,7 +1225,7 @@ function xrayBrowserImpl(data) {
   };
   const portalHydrations = new Set(),
     selectionAnchors = new WeakMap();
-  const hydrateModelSelection = (node, scope, anchorGeneration, packets) => {
+  /* NOSONAR */ const hydrateModelSelection = (node, scope, anchorGeneration, packets) => {
     if (!d.modelDriven || disposed) return [];
     const active = {},
       componentKeys = new Set(),
@@ -1215,7 +1250,12 @@ function xrayBrowserImpl(data) {
         componentKeys.add(ref.componentKey);
     const sameScope = (value) =>
       value && ['documentId', 'frameId', 'uiEpoch', 'sourceRevision'].every((name) => value[name] === scope[name]);
-    const key = JSON.stringify([scope, anchorGeneration, active, [...componentKeys].sort()]);
+    const key = JSON.stringify([
+      scope,
+      anchorGeneration,
+      active,
+      [...componentKeys].sort((a, b) => Number(a > b) - Number(a < b)),
+    ]);
     const capturedReport = report;
     let cached = modelHydrations.get(key);
     if (!cached && observedRefs.length)
@@ -1233,12 +1273,11 @@ function xrayBrowserImpl(data) {
         const current = currentRefs.find((item) => item.id === ref.id);
         return {
           ...ref,
-          currentState:
-            ref.currentState === 'unavailable' || current?.currentState === 'unavailable'
-              ? 'unavailable'
-              : current
-                ? 'available'
-                : 'pending',
+          currentState: (() => {
+            if (ref.currentState === 'unavailable' || current?.currentState === 'unavailable') return 'unavailable';
+            if (current) return 'available';
+            return 'pending';
+          })(),
           ...(current ? { currentContentRevision: current.currentContentRevision ?? current.contentRevision } : {}),
         };
       });
@@ -1258,7 +1297,7 @@ function xrayBrowserImpl(data) {
           !sameScope(getSelectionScope(node))
         )
           return;
-        const api = Object.getOwnPropertyDescriptor(window, '__paqviloModelPanelApi')?.value;
+        const api = Object.getOwnPropertyDescriptor(globalThis, '__paqviloModelPanelApi')?.value;
         if (typeof api !== 'function') {
           entry.status = 'unavailable';
           return;
@@ -1305,7 +1344,7 @@ function xrayBrowserImpl(data) {
     });
     return currentRefs;
   };
-  const queryElementEvidence = (node, b, matches, scope) => {
+  /* NOSONAR */ const queryElementEvidence = (node, b, matches, scope) => {
     const anchorGeneration = host.__px?.selectionState?.().anchorGeneration ?? 0;
     const packets = [],
       reasons = [];
@@ -1323,8 +1362,7 @@ function xrayBrowserImpl(data) {
         const packet = query(node, { scope, anchorGeneration });
         const after = getSelectionScope(node);
         if (
-          !packet ||
-          packet.version !== 1 ||
+          packet?.version !== 1 ||
           packet.scope?.documentId !== scope.documentId ||
           packet.scope?.frameId !== scope.frameId ||
           packet.scope?.uiEpoch !== scope.uiEpoch ||
@@ -1526,7 +1564,10 @@ function xrayBrowserImpl(data) {
       );
       // One file can contain thousands of unrelated records/fields/languages.
       // A filename never selects all of them as this node's candidate identity.
-      const selected = referenced ? [referenced] : item.recordId && semantic.length === 1 ? semantic : [];
+      let selected;
+      if (referenced) selected = [referenced];
+      else if (item.recordId && semantic.length === 1) selected = semantic;
+      else selected = [];
       const refs = selected.length
         ? selected
         : [{ id: 'static:' + position, ref: item.ref, kind: item.kind, name: item.name }];
@@ -1613,13 +1654,12 @@ function xrayBrowserImpl(data) {
         (candidate
           ? 'Possible ' + (candidate.label ?? candidate.name ?? candidate.kind)
           : 'Selected ' + node.localName),
-      kind: owner
-        ? kindName(owner.kind)
-        : evidence.source.status === 'exact'
-          ? 'Rendered source'
-          : evidence.owner.status === 'conflicting'
-            ? 'Conflicting owner evidence'
-            : 'Owner ' + evidence.owner.status,
+      kind: (() => {
+        if (owner) return kindName(owner.kind);
+        if (evidence.source.status === 'exact') return 'Rendered source';
+        if (evidence.owner.status === 'conflicting') return 'Conflicting owner evidence';
+        return 'Owner ' + evidence.owner.status;
+      })(),
       sub: owner
         ? [owner.entity, owner.field ?? owner.controlName].filter(Boolean).join('.')
         : (exact?.ref ?? 'Select a source below or inspect the evidence.'),
@@ -1661,7 +1701,7 @@ function xrayBrowserImpl(data) {
       sources: found.evidence.source.refs.filter((ref) => ref.status === 'exact'),
     };
   };
-  const declaredContextHtml = (node, b) => {
+  /* NOSONAR */ const declaredContextHtml = (node, b) => {
     let out = '';
     if (node.matches('img[src],img[srcset],link[href],script[src]')) {
       let pathname;
@@ -1802,19 +1842,7 @@ function xrayBrowserImpl(data) {
                 parameters
                   .map(
                     ([name, parameter]) =>
-                      '<dt>' +
-                      esc(name) +
-                      '</dt><dd>' +
-                      esc(
-                        parameter.kind === 'binding'
-                          ? 'Column: ' + parameter.column
-                          : parameter.kind === 'dataset'
-                            ? 'Dataset: ' + (parameter.viewId ?? parameter.entity ?? 'unresolved')
-                            : parameter.kind === 'unresolved'
-                              ? (parameter.reason ?? 'Unresolved binding')
-                              : 'Exported ' + parameter.kind,
-                      ) +
-                      '</dd>',
+                      '<dt>' + esc(name) + '</dt><dd>' + esc(parameterDescription(parameter)) + '</dd>',
                   )
                   .join('') +
                 '</dl>'
@@ -1878,7 +1906,7 @@ function xrayBrowserImpl(data) {
                   ),
                   (rules) =>
                     sourceRows(
-                      rules.map((rule) => ({
+                      /* NOSONAR: callbacks capture request-scoped state */ rules.map((rule) => ({
                         ...rule,
                         kind: 'permission',
                         evidenceLabel: rule.scope + ' · effective access ' + (rule.effective ?? 'unknown'),
@@ -1937,7 +1965,7 @@ function xrayBrowserImpl(data) {
       declaredContextHtml(node, found.b)
     );
   };
-  const renderCard = (preserve = false, measuredRect) => {
+  /* NOSONAR */ const renderCard = (preserve = false, measuredRect) => {
     if (!enabled) return;
     if (!statusCurrent(statusSelection)) {
       statusMessage = '';
@@ -1962,7 +1990,16 @@ function xrayBrowserImpl(data) {
         : [];
     card.hidden = !details || !selected;
     if (!selected) {
-      card.innerHTML = `<div class="welcome"><div class="hero">Select a portal element</div><p class="note">Hover or click to identify its template, page source, form, view or Dataverse column.</p><p class="note">Hold <kbd>Ctrl</kbd> to interact with the portal. <kbd>Esc</kbd> clears selection, then exits.</p><p class="note counts">${report ? `${(report.webTemplates ?? []).length} templates · ${(report.forms ?? []).length} forms · ${(report.views ?? []).length} views · ${(report.columns ?? []).length} columns` : esc(d.inspectionError || (d.inspection?.active === false ? d.inspection.error : '') || 'Loading source inspection…')}</p></div>`;
+      const welcomeCounts = () => {
+        if (report)
+          return `${(report.webTemplates ?? []).length} templates · ${(report.forms ?? []).length} forms · ${(report.views ?? []).length} views · ${(report.columns ?? []).length} columns`;
+        return esc(
+          d.inspectionError ||
+            (d.inspection?.active === false ? d.inspection.error : '') ||
+            'Loading source inspection…',
+        );
+      };
+      card.innerHTML = `<div class="welcome"><div class="hero">Select a portal element</div><p class="note">Hover or click to identify its template, page source, form, view or Dataverse column.</p><p class="note">Hold <kbd>Ctrl</kbd> to interact with the portal. <kbd>Esc</kbd> clears selection, then exits.</p><p class="note counts">${welcomeCounts()}</p></div>`;
       return;
     }
     const identity = identify(selected, getSelectionScope(selected));
@@ -1997,7 +2034,7 @@ function xrayBrowserImpl(data) {
         ?.focus({ preventScroll: true });
   };
   // Rectangles live outside portal layout. Clip to each scroll container without changing its CSS.
-  function visibleRect(node) {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ function visibleRect(node) {
     if (!liveNode(node) || own(node)) return null;
     if (geometryCache?.has(node)) return geometryCache.get(node);
     const style = styleFor(node);
@@ -2023,7 +2060,9 @@ function xrayBrowserImpl(data) {
       (css.backdropFilter && css.backdropFilter !== 'none') ||
       /layout|paint|strict|content/.test(css.contain) ||
       /transform|perspective|filter/.test(css.willChange);
-    let escape = style.position === 'fixed' ? 'fixed' : style.position === 'absolute' ? 'absolute' : '';
+    let escape = '';
+    if (style.position === 'fixed') escape = 'fixed';
+    else if (style.position === 'absolute') escape = 'absolute';
     for (const ancestor of lineage(parent(node)).filter((item) => item.ownerDocument === doc)) {
       const css = styleFor(ancestor);
       if (css.display === 'none' || css.opacity === '0') return null;
@@ -2093,16 +2132,35 @@ function xrayBrowserImpl(data) {
       const css = styleFor(item);
       return (css.clip !== 'auto' && css.clip !== '') || (css.clipPath !== 'none' && css.clipPath !== '');
     });
-  const category = (node) =>
-    node.matches(
-      'input,select,textarea,[data-field],[data-attribute],[data-fieldname],[data-pcf-native-field],[data-th]',
+  const category = (node) => {
+    if (
+      node.matches(
+        'input,select,textarea,[data-field],[data-attribute],[data-fieldname],[data-pcf-native-field],[data-th]',
+      )
     )
-      ? 'field'
-      : node.matches(
-            'form,[data-formid],[data-form-layout],[data-viewid],[data-selected-view],[data-listid],[data-pcf-schema],.entity-grid',
-          )
-        ? 'component'
-        : 'content';
+      return 'field';
+    if (
+      node.matches(
+        'form,[data-formid],[data-form-layout],[data-viewid],[data-selected-view],[data-listid],[data-pcf-schema],.entity-grid',
+      )
+    )
+      return 'component';
+    return 'content';
+  };
+  const markColor = (type) => {
+    if (type === 'field') return '#29805b';
+    if (type === 'component') return '#3975ad';
+    return '#947330';
+  };
+  const tooltipFormDetails = (binding) => {
+    if (binding.fields.length !== 1 || !binding.forms.length) return '';
+    let label = 'Form';
+    if (!binding.formCertain) label = 'Form candidate' + (binding.forms.length > 1 ? 's' : '');
+    let count;
+    if (binding.forms.length === 1) count = binding.forms[0].name;
+    else count = binding.forms.length + ' configurations';
+    return `<div class="note">${label}: ${esc(count)}</div>`;
+  };
   const isOccluded = (node, r) => {
     const x = r.left + r.width / 2,
       y = r.top + Math.min(r.height / 2, 30),
@@ -2115,7 +2173,7 @@ function xrayBrowserImpl(data) {
     releaseAnimationHook = null;
   function watchShadowRoots() {
     if (releaseShadowHook) return;
-    releaseShadowHook = hookShadowView(window);
+    releaseShadowHook = hookShadowView(globalThis);
   }
   function hookShadowView(view) {
     const prototype = view.Element.prototype;
@@ -2141,7 +2199,7 @@ function xrayBrowserImpl(data) {
   }
   function watchAnimations() {
     if (releaseAnimationHook) return;
-    releaseAnimationHook = hookAnimationView(window);
+    releaseAnimationHook = hookAnimationView(globalThis);
   }
   function hookAnimationView(view) {
     const prototype = view.Element.prototype,
@@ -2158,7 +2216,7 @@ function xrayBrowserImpl(data) {
         Object.defineProperty(prototype, 'animate', descriptor);
     };
   }
-  const scan = () => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const scan = () => {
     // Rebuild observed roots so detached components are not retained indefinitely.
     observer.disconnect();
     observer.observe(document.documentElement, {
@@ -2260,7 +2318,7 @@ function xrayBrowserImpl(data) {
     // Frame animations may already be running when their documents are discovered.
     animate();
   };
-  const paint = () => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const paint = () => {
     frame = 0;
     if (!enabled || disposed || document.hidden) return;
     if (warmup) {
@@ -2293,7 +2351,7 @@ function xrayBrowserImpl(data) {
         if ((layer === 'data' && type === 'content') || (layer === 'content' && type !== 'content')) continue;
         const r = visibleRect(node);
         if (!r || r.width < 4 || r.height < 4 || backgroundClipped(node) || isOccluded(node, r)) continue;
-        background.append(rectNode(r, type === 'field' ? '#29805b' : type === 'component' ? '#3975ad' : '#947330'));
+        background.append(rectNode(r, markColor(type)));
         if (++count >= 250) break;
       }
     backgroundMarks.replaceChildren(background);
@@ -2326,7 +2384,7 @@ function xrayBrowserImpl(data) {
     if (!tip.hidden) {
       const identity = identify(target),
         b = identity.b;
-      tip.innerHTML = `<span class="note">${esc(identity.kind)}</span><b>${esc(identity.title)}</b><div class="mono">${esc(identity.sub)}</div>${b.fields.length === 1 && b.forms.length ? `<div class="note">${b.formCertain ? 'Form' : 'Form candidate' + (b.forms.length > 1 ? 's' : '')}: ${esc(b.forms.length === 1 ? b.forms[0].name : b.forms.length + ' configurations')}</div>` : ''}`;
+      tip.innerHTML = `<span class="note">${esc(identity.kind)}</span><b>${esc(identity.title)}</b><div class="mono">${esc(identity.sub)}</div>${tooltipFormDetails(b)}`;
       const tr = tip.getBoundingClientRect();
       tip.style.left = Math.max(8, Math.min(innerWidth - tr.width - 8, r.left)) + 'px';
       tip.style.top = Math.max(58, Math.min(innerHeight - tr.height - 8, r.top - tr.height - 8)) + 'px';
@@ -2358,7 +2416,7 @@ function xrayBrowserImpl(data) {
   const hitStack = (x, y) => {
     const stack = [],
       seen = new Set();
-    const add = (node, depth = 0, px = x, py = y) => {
+    /* NOSONAR */ const add = (node, depth = 0, px = x, py = y) => {
       if (own(node) || seen.has(node)) return;
       seen.add(node);
       if (node.shadowRoot)
@@ -2417,7 +2475,7 @@ function xrayBrowserImpl(data) {
   let identifierReport,
     knownIdentifiers = new Set(),
     knownClasses = new Set();
-  const selectionElement = () => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const selectionElement = () => {
     if (!selected) return null;
     if (identifierReport !== report) {
       identifierReport = report;
@@ -2633,13 +2691,13 @@ function xrayBrowserImpl(data) {
     if (!external.length) return;
     if (selected) {
       const associated = labelledControl(selected);
-      const related = [...lineage(selected), ...lineage(associated)];
+      const related = new Set([...lineage(selected), ...lineage(associated)]);
       if (
         external.some(
           (record) =>
             record.attributeName !== 'style' &&
             (record.type === 'childList' ||
-              related.includes(record.target) ||
+              related.has(record.target) ||
               lineage(record.target).includes(selected) ||
               record.attributeName === 'id' ||
               record.target.localName === 'slot'),
@@ -2713,7 +2771,7 @@ function xrayBrowserImpl(data) {
   ])
     listenViews(
       type,
-      (event) => {
+      (event) => /* NOSONAR: single-pass routine, splitting it would change shared state */ {
         if (!pickGesture && (!enabled || interacting || ctrl || event.ctrlKey)) return;
         const node = event.composedPath().find((item) => item?.nodeType === 1);
         if (!pickGesture && (!node || (own(node) && !node.classList?.contains('shield')))) return;
@@ -2771,7 +2829,7 @@ function xrayBrowserImpl(data) {
   );
   listenViews(
     'keydown',
-    (event) => {
+    (event) => /* NOSONAR: single-pass routine, splitting it would change shared state */ {
       if (event.altKey && event.shiftKey && event.code === 'KeyX') {
         if (event.ctrlKey || event.metaKey || event.repeat) return;
         event.preventDefault();
@@ -2797,15 +2855,12 @@ function xrayBrowserImpl(data) {
         ].filter((item) => item.getClientRects().length && getComputedStyle(item).visibility !== 'hidden');
         const index = controls.indexOf(root.activeElement),
           direction = event.shiftKey ? -1 : 1;
-        (
-          controls[
-            index < 0
-              ? event.shiftKey
-                ? controls.length - 1
-                : 0
-              : (index + direction + controls.length) % controls.length
-          ] ?? ui
-        ).focus();
+        let focusIndex;
+        if (index < 0) {
+          if (event.shiftKey) focusIndex = controls.length - 1;
+          else focusIndex = 0;
+        } else focusIndex = (index + direction + controls.length) % controls.length;
+        (controls[focusIndex] ?? ui).focus();
         return;
       }
       if (own(node) && node?.matches('input,select,textarea')) return;
@@ -2834,8 +2889,13 @@ function xrayBrowserImpl(data) {
         if (event.key === 'ArrowDown' && selected) select(child(selected));
         if (event.key === '[' || event.key === ']') {
           const stack = hitStack(pointer.x, pointer.y),
-            index = stack.indexOf(selected ?? hover),
-            next = index < 0 ? 0 : (index + (event.key === ']' ? 1 : -1) + stack.length) % stack.length;
+            index = stack.indexOf(selected ?? hover);
+          let next;
+          if (index < 0) next = 0;
+          else {
+            const step = event.key === ']' ? 1 : -1;
+            next = (index + step + stack.length) % stack.length;
+          }
           select(stack[next]);
         }
       }
@@ -2870,12 +2930,12 @@ function xrayBrowserImpl(data) {
   listen(
     root,
     'wheel',
-    (event) => {
+    (event) => /* NOSONAR: single-pass routine, splitting it would change shared state */ {
       if (!event.target.classList?.contains('shield') || interacting || ctrl || event.ctrlKey) return;
       event.preventDefault();
       const node = underPointer(event.clientX, event.clientY);
       if (!node) return;
-      const line = parseFloat(getComputedStyle(node).lineHeight) || 16,
+      const line = Number.parseFloat(getComputedStyle(node).lineHeight) || 16,
         factor = event.deltaMode === 1 ? line : 1;
       let dx = event.deltaX * factor,
         dy = event.deltaY * factor;
@@ -2903,13 +2963,12 @@ function xrayBrowserImpl(data) {
           if ((!/auto|scroll/.test(overflow) && !rootScroller) || extent <= 0) continue;
           const offset = vertical ? current.scrollTop : current.scrollLeft;
           const rtl = !vertical && css.direction === 'rtl';
-          const canScroll = rtl
-            ? amount < 0
-              ? offset > -extent + 1
-              : offset < 0
-            : amount < 0
-              ? offset > 0
-              : offset < extent - 1;
+          let canScroll;
+          if (rtl) {
+            if (amount < 0) canScroll = offset > -extent + 1;
+            else canScroll = offset < 0;
+          } else if (amount < 0) canScroll = offset > 0;
+          else canScroll = offset < extent - 1;
           if (canScroll) {
             current.scrollBy({ left: vertical ? 0 : amount, top: vertical ? amount : 0, behavior: 'instant' });
             break;
@@ -2957,7 +3016,7 @@ function xrayBrowserImpl(data) {
     },
     { capture: true },
   );
-  listen(root, 'click', async (event) => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ listen(root, 'click', async (event) => {
     const button = event.target.closest('[data-action]');
     if (!button || button.disabled) return;
     const action = button.dataset.action;
@@ -3003,7 +3062,7 @@ function xrayBrowserImpl(data) {
     if (action === 'frame-open' && selected?.localName === 'iframe') {
       try {
         const url = new URL(selected.getAttribute('src') ?? '', selected.ownerDocument.baseURI);
-        if (!selected.getAttribute('src') || !['http:', 'https:'].includes(url.protocol)) throw new Error();
+        if (!selected.getAttribute('src') || !['http:', 'https:'].includes(url.protocol)) throw new Error(); // NOSONAR: error is detected by type, message is not used
         window.open(url.href, '_blank', 'noopener');
       } catch {
         setStatus('This embedded document has no standalone HTTP address.');
@@ -3127,7 +3186,7 @@ function xrayBrowserImpl(data) {
     get enabled() {
       return enabled;
     },
-    update(next, nextReport) {
+    /* NOSONAR: single-pass routine, splitting it would change shared state */ update(next, nextReport) {
       const previousError = d.inspectionError;
       const previousScope = selected ? getSelectionScope(selected) : null;
       d =

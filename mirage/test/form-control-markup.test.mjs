@@ -280,7 +280,7 @@ async function loadMultiSelectHost() {
   const source = await readFile(new URL('../lib/multiselect-compat.js', import.meta.url), 'utf8');
   const window = { document: { readyState: 'complete', querySelectorAll: () => [] } };
   window.window = window;
-  vm.runInNewContext(source, { window, document: window.document });
+  vm.runInNewContext(source, window);
   return window;
 }
 

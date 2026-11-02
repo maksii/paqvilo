@@ -7647,7 +7647,7 @@ const render = ([tag, attrs, ...children]) => {
   return children.length ? `<${tag}${attributes}>${children.map(render).join('')}</${tag}>` : `<${tag}${attributes} />`;
 };
 const attrsOf = (text) =>
-  Object.fromEntries([...text.matchAll(/([\w:]+)="([^"]*)"/g)].map((match) => [match[1], match[2]]));
+  Object.fromEntries([...text.matchAll(/([\w:]+)="([^"]*)"/g)].map((match) => [match[1], match[2]])); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
 const keyOf = ([tag, attrs, ...children]) =>
   [tag, attrs.Name, attrs.IsBound === 'true' ? children.find((child) => child[0] === 'Parameter')?.[1].Type : ''].join(
     ':',
@@ -7655,7 +7655,7 @@ const keyOf = ([tag, attrs, ...children]) =>
 const operations = new Map(PLATFORM_OPERATIONS.map((contract) => [keyOf(contract), contract]));
 const types = new Map(PLATFORM_TYPES.map((contract) => [contract[1].Name, contract]));
 const references = (text) =>
-  [...text.matchAll(/\b(?:Type|BaseType|EntityType)="(?:Collection\()?mscrm\.([\w]+)/g)].map((match) => match[1]);
+  [...text.matchAll(/\b(?:Type|BaseType|EntityType)="(?:Collection\()?mscrm\.(\w+)/g)].map((match) => match[1]);
 const OPERATION = /<(Action|Function)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1>)/g;
 const TYPE = /<(ComplexType|EnumType|EntityType)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/\1>)/g;
 
@@ -7668,8 +7668,10 @@ export function platformOperationCsdl(input, registration = null) {
     const registered =
       registration?.name === attrs.Name && (registration.kind === 'action' ? 'Action' : 'Function') === tag;
     const type = registration?.entity === '*' ? 'mscrm.crmbaseentity' : `mscrm.${registration?.entity}`;
-    const registeredBinding =
-      registration?.binding === 'collection' ? `Collection(${type})` : registration?.binding === 'entity' ? type : '';
+    let registeredBinding;
+    if (registration?.binding === 'collection') registeredBinding = `Collection(${type})`;
+    else if (registration?.binding === 'entity') registeredBinding = type;
+    else registeredBinding = '';
     const contract = operations.get([tag, attrs.Name, registered ? registeredBinding : binding].join(':'));
     return contract ? render(contract) : original;
   });

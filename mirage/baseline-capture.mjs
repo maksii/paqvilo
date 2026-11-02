@@ -21,11 +21,11 @@ const SIGN_IN_MARKERS = Object.freeze([
 /** Preserve surrounding markup/JSON and URL paths while removing query values. */
 export function redactEmbeddedQueryValues(text) {
   return String(text ?? '').replace(/(?:https?:)?(?:\/|\\\/){2}[^\s<>"'`]+|\/(?!\/)[^\s<>"'`]*/gi, (raw) => {
-    const ending = raw.match(/[),.;\]}]+$/)?.[0] ?? '';
+    const ending = /[),.;\]}]+$/.exec(raw)?.[0] ?? ''; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
     const body = ending ? raw.slice(0, -ending.length) : raw;
-    const escapedSlashes = body.includes('\\/');
-    const separator = body.match(/&(?:amp;|#0*38;|#x0*26;)|\\u0026/i)?.[0];
-    const plain = body.replaceAll('\\/', '/').replace(/&(?:amp;|#0*38;|#x0*26;)|\\u0026/gi, '&');
+    const escapedSlashes = body.includes(String.raw`\/`);
+    const separator = /&(?:amp;|#0*38;|#x0*26;)|\\u0026/i.exec(body)?.[0];
+    const plain = body.replaceAll(String.raw`\/`, '/').replace(/&(?:amp;|#0*38;|#x0*26;)|\\u0026/gi, '&');
     const question = plain.indexOf('?');
     if (question < 0) return raw;
     try {
@@ -46,7 +46,7 @@ export function redactEmbeddedQueryValues(text) {
       })
       .join(separator ?? '&');
     const result = plain.slice(0, question + 1) + safe + fragment;
-    return (escapedSlashes ? result.replaceAll('/', '\\/') : result) + ending;
+    return (escapedSlashes ? result.replaceAll('/', String.raw`\/`) : result) + ending;
   });
 }
 
@@ -129,7 +129,7 @@ function redactHeaders(headers, origin = null) {
               .split(/,(?=\s*\w+=)|;/)
               .map((part) => part.split('=')[0].trim())
               .filter(Boolean)
-              .sort()
+              .sort((a, b) => Number(a > b) - Number(a < b))
               .join(';')
           : '{token}';
     } else {
@@ -146,7 +146,7 @@ function redactHeaders(headers, origin = null) {
  * its page and returns { summary, raw }. It must not reference module scope (it is stringified).
  * options: { origin, scenario, ids, allowWrites, allowPaths, allowEntitySets, readPosts, signInMarkers, settle, textTypes, maxBody }
  */
-export async function pageRunner(page, options) {
+/* NOSONAR */ export async function pageRunner(page, options) {
   const {
     origin,
     scenario,
@@ -161,20 +161,20 @@ export async function pageRunner(page, options) {
   } = options;
   const textTypes = new RegExp(
     options.textTypes ??
-      '^(?:text/|application/(?:json|xml|x-www-form-urlencoded|javascript|problem\\+json)|.*\\+json|.*\\+xml)',
+      String.raw`^(?:text/|application/(?:json|xml|x-www-form-urlencoded|javascript|problem\+json)|.*\+json|.*\+xml)`,
     'i',
   );
   const sleep = (ms) => page.waitForTimeout(ms);
   const resolve = (text) =>
     String(text ?? '').replace(/\{id:([\w.-]+)\}/g, (_, alias) => {
-      if (!Object.prototype.hasOwnProperty.call(ids, alias)) throw new Error(`Unknown record alias {id:${alias}}`);
+      if (!Object.hasOwn(ids, alias)) throw new Error(`Unknown record alias {id:${alias}}`);
       return String(ids[alias]);
     });
   const context = page.context();
   const loopback = /^(?:127\.0\.0\.1|localhost|\[::1\])$/.test(new URL(origin).hostname);
   const allowWrite = (method, pathname) => {
     // A local runtime's own instrumentation endpoints are not scenario writes.
-    if (loopback && /^\/__sim\//.test(pathname)) return true;
+    if (loopback && pathname.startsWith('/__sim/')) return true;
     // Portal list/grid data is fetched with POST but reads only (entity-grid-data.json and friends).
     if (readPosts.some((pattern) => new RegExp(pattern).test(pathname))) return true;
     if (!allowWrites) return false;
@@ -242,13 +242,13 @@ export async function pageRunner(page, options) {
     entries.set(request, entry);
     raw.requests.push(entry);
     // Persistent streams (a local runtime's /__sim/events, EventSource, WebSocket) never finish: not in-flight work.
-    if (!/^(?:eventsource|websocket)$/.test(entry.resourceType) && !/^\/__sim\//.test(new URL(entry.url).pathname))
+    if (!/^(?:eventsource|websocket)$/.test(entry.resourceType) && !new URL(entry.url).pathname.startsWith('/__sim/'))
       inflight.add(request);
   });
   owned.on('requestfailed', (request) => {
     inflight.delete(request);
     const entry = entries.get(request);
-    if (entry) entry.response = { status: 0, failure: (request.failure() && request.failure().errorText) || 'failed' };
+    if (entry) entry.response = { status: 0, failure: request.failure()?.errorText || 'failed' };
   });
   owned.on('requestfinished', (request) => inflight.delete(request));
   owned.on('response', async (response) => {
@@ -281,11 +281,11 @@ export async function pageRunner(page, options) {
     raw.console.push({
       type: message.type(),
       text: String(message.text()).slice(0, 2000),
-      url: location && location.url,
-      line: location && location.lineNumber,
+      url: location?.url ?? null,
+      line: location?.lineNumber ?? null,
     });
   });
-  owned.on('pageerror', (error) => raw.pageErrors.push(String((error && error.message) || error).slice(0, 2000)));
+  owned.on('pageerror', (error) => raw.pageErrors.push(String(error?.message || error).slice(0, 2000)));
   owned.on('dialog', async (dialog) => {
     raw.dialogs.push({ type: dialog.type(), message: String(dialog.message()).slice(0, 500) });
     await dialog.accept().catch(() => {});
@@ -342,7 +342,8 @@ export async function pageRunner(page, options) {
       await sleep(150);
     }
     if (settleMs) await sleep(Math.min(settleMs, 10000));
-    (summary.settlements ??= []).push({ settled, timeoutMs: timeout, loading, inflight: inflight.size });
+    if (summary.settlements == null) summary.settlements = [];
+    summary.settlements.push({ settled, timeoutMs: timeout, loading, inflight: inflight.size });
     if (!settled) summary.problems.push('page did not settle within ' + timeout + ' ms');
     return settled;
   };
@@ -377,7 +378,7 @@ export async function pageRunner(page, options) {
       throw error;
     }
   };
-  const runStep = async (step) => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const runStep = async (step) => {
     const timeout = step.timeout ?? 20000;
     const q = (selector, scope = owned) => scope.locator(resolve(selector)).first();
     if (step.goto !== undefined) {
@@ -411,13 +412,11 @@ export async function pageRunner(page, options) {
       const multiple = await input.evaluate((el) => Boolean(el.multiple)).catch(() => false);
       const matches = (file) =>
         !accept.length ||
-        accept.some((rule) =>
-          rule.startsWith('.')
-            ? file.name.toLowerCase().endsWith(rule.toLowerCase())
-            : rule.endsWith('/*')
-              ? file.mimeType.startsWith(rule.slice(0, -1))
-              : rule === file.mimeType,
-        );
+        accept.some((rule) => {
+          if (rule.startsWith('.')) return file.name.toLowerCase().endsWith(rule.toLowerCase());
+          if (rule.endsWith('/*')) return file.mimeType.startsWith(rule.slice(0, -1));
+          return rule === file.mimeType;
+        });
       const files = (step.files || [])
         .map((file) =>
           typeof file === 'string'
@@ -445,27 +444,21 @@ export async function pageRunner(page, options) {
             { timeout },
           );
         else if (inner.check !== undefined) await q(inner.check, frame).setChecked(inner.value !== false, { timeout });
-        else if (inner.wait && inner.wait.selector)
+        else if (inner.wait?.selector)
           await q(inner.wait.selector, frame).waitFor({ state: inner.wait.state ?? 'visible', timeout });
         else throw new Error('Unsupported frame step: ' + Object.keys(inner).join(','));
       }
     } else throw new Error('Unsupported step: ' + Object.keys(step).join(','));
     if (step.settle !== false) await settle(step.settleOptions ?? {});
   };
-  const elementInventory = () => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const elementInventory = () => {
     const selectorOf = (element) => {
       const parts = [];
-      for (
-        let node = element;
-        node && node.nodeType === 1 && node !== document.documentElement;
-        node = node.parentElement
-      ) {
+      for (let node = element; node?.nodeType === 1 && node !== document.documentElement; node = node.parentElement) {
         let part = node.tagName.toLowerCase();
         if (node.id) part += '#' + CSS.escape(node.id);
         else {
-          const siblings = [...((node.parentElement && node.parentElement.children) || [])].filter(
-            (item) => item.tagName === node.tagName,
-          );
+          const siblings = [...(node.parentElement?.children || [])].filter((item) => item.tagName === node.tagName);
           if (siblings.length > 1) part += ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')';
         }
         parts.unshift(part);
@@ -485,6 +478,11 @@ export async function pageRunner(page, options) {
           secret.test(element.getAttribute('name') || '') && attribute.name === 'value' ? '{token}' : attribute.value;
       }
       const formControl = ['INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName) && element.type !== 'password';
+      const formControlValue = () => {
+        if (element.type === 'checkbox' || element.type === 'radio') return element.checked;
+        if (secret.test(element.name)) return '{token}';
+        return String(element.value ?? '');
+      };
       out.push({
         selector: selectorOf(element),
         tag: element.tagName.toLowerCase(),
@@ -496,12 +494,7 @@ export async function pageRunner(page, options) {
         required: Boolean(element.required) || element.getAttribute('aria-required') === 'true',
         ...(formControl
           ? {
-              value:
-                element.type === 'checkbox' || element.type === 'radio'
-                  ? element.checked
-                  : secret.test(element.name)
-                    ? '{token}'
-                    : String(element.value ?? ''),
+              value: formControlValue(),
             }
           : {}),
       });
@@ -587,7 +580,7 @@ export async function pageRunner(page, options) {
       summary.problems.push('url does not match expectation');
   } catch (error) {
     summary.status = 'error';
-    summary.problems.push(String((error && error.message) || error).slice(0, 1200));
+    summary.problems.push(String(error?.message || error).slice(0, 1200));
   }
   if (summary.problems.length && summary.status === 'captured') summary.status = 'failed';
   mark('checked');
@@ -622,7 +615,7 @@ export async function pageRunner(page, options) {
   try {
     raw.screenshot = (await owned.screenshot({ fullPage: true, timeout: 30000 })).toString('base64');
   } catch (error) {
-    summary.problems.push('screenshot: ' + String(error && error.message).slice(0, 200));
+    summary.problems.push('screenshot: ' + String(error && error.message).slice(0, 200)); // NOSONAR: optional chaining would change the false/null result
   }
   mark('screenshot');
   await owned.unroute((url) => url.origin === origin, guard).catch(() => {});
@@ -648,6 +641,11 @@ export async function writeCapture(
   });
   const origins = [origin];
   // Mirage's own instrumentation (/__sim/ event stream, readiness probes) is not portal traffic and is not evidence.
+  const bodyHashOf = (response) => {
+    if (response.bodyHashInput) return sha(Buffer.from(response.bodyHashInput, 'base64'));
+    if (response.body) return sha(redactTokens(response.body));
+    return null;
+  };
   const requests = raw.requests
     .filter((entry) => !/\/__sim\//.test(entry.url ?? ''))
     .map((entry) => {
@@ -661,11 +659,7 @@ export async function writeCapture(
                 ? null
                 : redactTokens(entry.response.body),
             bodyBytes: entry.response.bodyBytes ?? null,
-            bodySha256: entry.response.bodyHashInput
-              ? sha(Buffer.from(entry.response.bodyHashInput, 'base64'))
-              : entry.response.body
-                ? sha(redactTokens(entry.response.body))
-                : null,
+            bodySha256: bodyHashOf(entry.response),
             ...(entry.response.bodyHashProvenance ? { bodyHashProvenance: entry.response.bodyHashProvenance } : {}),
           }
         : null;

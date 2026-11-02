@@ -21,19 +21,7 @@ export { browserProfileDir } from './browser-profile.mjs';
 export async function openBrowser(cfg, overrides = {}) {
   const b = cfg.browser;
   validateDebuggerMode(b.cdpUrl, overrides.debugPort ?? b.debugPort);
-  if (b.cdpUrl) {
-    const browser = await chromium.connectOverCDP(b.cdpUrl);
-    const contexts = browser.contexts();
-    const context = contexts[0];
-    if (contexts.length !== 1) {
-      await browser.close().catch(() => {});
-      throw new Error(
-        `Expected one browser context at the CDP endpoint, found ${contexts.length}. Attach to the debugging endpoint of the intended profile.`,
-      );
-    }
-    // closing only detaches: the browser belongs to the user
-    return { context, attached: true, profile: browserProfileInfo(cfg), close: () => browser.close() };
-  }
+  if (b.cdpUrl) return attachBrowser(cfg, b.cdpUrl);
   const profile = browserProfileInfo(cfg, overrides.profileDir);
   validateBrowserProfile(profile);
   const profileDir = profile.userDataDir;
@@ -53,72 +41,9 @@ export async function openBrowser(cfg, overrides = {}) {
       `Debugger port ${debugPort} is already in use. Choose another --debug-port (0 disables debugging), or attach to the intended browser with --cdp-url.`,
     );
   if (debugPort) args.push(`--remote-debugging-port=${debugPort}`, '--remote-debugging-address=127.0.0.1');
-  let context;
-  try {
-    context = await chromium.launchPersistentContext(
-      profileDir,
-      windowsLaunchOptions({
-        channel: b.channel === 'chromium' ? undefined : b.channel,
-        headless,
-        // Desktop sessions use the browser sandbox. Linux headless fixture runners can
-        // run inside containers without an available Chromium user-namespace sandbox.
-        chromiumSandbox: process.platform === 'win32' || !headless,
-        viewport: headless ? { width: 1440, height: 900 } : null,
-        // a service worker would answer requests before the overlay sees them
-        serviceWorkers: 'block',
-        // An explicit development opt-in is needed when local edits invalidate the portal's CSP.
-        bypassCSP: Boolean(b.bypassCSP),
-        ignoreDefaultArgs: ['--enable-automation'],
-        args,
-      }),
-    );
-  } catch (err) {
-    const first = err.message.split('\n')[0];
-    if (
-      /already (?:in use|running)|ProcessSingleton|SingletonLock|Target page, context or browser has been closed/i.test(
-        err.message,
-      )
-    ) {
-      throw new Error(
-        `the browser profile ${profileDir} (${profile.profileDirectory}) is in use or could not start. Close the browser using that user-data root, choose another --profile, or attach with --cdp-url to its existing debugging endpoint. (${first})`,
-        { cause: err },
-      );
-    }
-    if (/is not found at|distribution .* is not found|executable doesn't exist/i.test(err.message)) {
-      throw new Error(
-        `browser "${b.channel}" is not installed. Set PAQVILO_BROWSER in .env to msedge or chrome. (${first})`,
-        { cause: err },
-      );
-    }
-    throw err;
-  }
-  if (initializePlacement) {
-    try {
-      await initializeBrowserWindow(context, profileDir);
-    } catch (error) {
-      await context.close().catch(() => {});
-      throw error;
-    }
-  }
-  if (debugPort) {
-    try {
-      const page = context.pages()[0] ?? (await context.newPage());
-      const cdp = await context.newCDPSession(page);
-      let targetId;
-      try {
-        targetId = (await cdp.send('Target.getTargetInfo')).targetInfo.targetId;
-      } finally {
-        await cdp.detach();
-      }
-      if (!(await debuggerListening(debugPort, targetId)))
-        throw new Error(
-          `Debugger port ${debugPort} did not expose the selected browser profile. The new browser has been closed; choose a free port and retry.`,
-        );
-    } catch (error) {
-      await context.close().catch(() => {});
-      throw error;
-    }
-  }
+  const context = await launchBrowserContext(profileDir, b, headless, args, profile);
+  if (initializePlacement || debugPort)
+    await initializeLaunchedBrowser(context, initializePlacement, profileDir, debugPort);
   // External profiles stay entirely browser-managed; never export their session credentials.
   const stopKeeping =
     profile.kind === 'external'
@@ -132,25 +57,109 @@ export async function openBrowser(cfg, overrides = {}) {
     attached: false,
     profile,
     debugPort: debugPort || null,
-    close: async () => {
-      try {
-        try {
-          await bounded(stopKeeping(), 5000);
-        } catch {
-          /* browser stopped responding */
-        }
-        if (previousWindow) {
-          try {
-            await bounded(restoreBrowserWindow(context, previousWindow), 5000);
-          } catch (error) {
-            console.error(`Could not restore browser window placement: ${error.message.split('\n')[0]}`);
-          }
-        }
-      } finally {
-        await context.close();
-      }
-    },
+    close: () => closeLaunchedBrowser(context, stopKeeping, previousWindow),
   };
+}
+
+async function attachBrowser(cfg, cdpUrl) {
+  const browser = await chromium.connectOverCDP(cdpUrl);
+  const contexts = browser.contexts();
+  const context = contexts[0];
+  if (contexts.length !== 1) {
+    await browser.close().catch(() => {});
+    throw new Error(
+      `Expected one browser context at the CDP endpoint, found ${contexts.length}. Attach to the debugging endpoint of the intended profile.`,
+    );
+  }
+  // closing only detaches: the browser belongs to the user
+  return { context, attached: true, profile: browserProfileInfo(cfg), close: () => browser.close() };
+}
+
+async function launchBrowserContext(profileDir, browserConfig, headless, args, profile) {
+  try {
+    return await chromium.launchPersistentContext(
+      profileDir,
+      windowsLaunchOptions({
+        channel: browserConfig.channel === 'chromium' ? undefined : browserConfig.channel,
+        headless,
+        // Desktop sessions use the browser sandbox. Linux headless fixture runners can
+        // run inside containers without an available Chromium user-namespace sandbox.
+        chromiumSandbox: process.platform === 'win32' || !headless,
+        viewport: headless ? { width: 1440, height: 900 } : null,
+        // a service worker would answer requests before the overlay sees them
+        serviceWorkers: 'block',
+        // An explicit development opt-in is needed when local edits invalidate the portal's CSP.
+        bypassCSP: Boolean(browserConfig.bypassCSP),
+        ignoreDefaultArgs: ['--enable-automation'],
+        args,
+      }),
+    );
+  } catch (err) {
+    const first = err.message.split('\n')[0];
+    if (
+      /already (?:in use|running)|ProcessSingleton|SingletonLock|Target page, context or browser has been closed/i.test(
+        err.message,
+      )
+    )
+      throw new Error(
+        `the browser profile ${profileDir} (${profile.profileDirectory}) is in use or could not start. Close the browser using that user-data root, choose another --profile, or attach with --cdp-url to its existing debugging endpoint. (${first})`,
+        { cause: err },
+      );
+    if (/is not found at|distribution .* is not found|executable doesn't exist/i.test(err.message))
+      throw new Error(
+        `browser "${browserConfig.channel}" is not installed. Set PAQVILO_BROWSER in .env to msedge or chrome. (${first})`,
+        { cause: err },
+      );
+    throw err;
+  }
+}
+
+async function initializeLaunchedBrowser(context, initializePlacement, profileDir, debugPort) {
+  if (initializePlacement) {
+    try {
+      await initializeBrowserWindow(context, profileDir);
+    } catch (error) {
+      await context.close().catch(() => {});
+      throw error;
+    }
+  }
+  if (!debugPort) return;
+  try {
+    const page = context.pages()[0] ?? (await context.newPage());
+    const cdp = await context.newCDPSession(page);
+    let targetId;
+    try {
+      targetId = (await cdp.send('Target.getTargetInfo')).targetInfo.targetId;
+    } finally {
+      await cdp.detach();
+    }
+    if (!(await debuggerListening(debugPort, targetId)))
+      throw new Error(
+        `Debugger port ${debugPort} did not expose the selected browser profile. The new browser has been closed; choose a free port and retry.`,
+      );
+  } catch (error) {
+    await context.close().catch(() => {});
+    throw error;
+  }
+}
+
+async function closeLaunchedBrowser(context, stopKeeping, previousWindow) {
+  try {
+    try {
+      await bounded(stopKeeping(), 5000);
+    } catch {
+      /* browser stopped responding */
+    }
+    if (previousWindow) {
+      try {
+        await bounded(restoreBrowserWindow(context, previousWindow), 5000);
+      } catch (error) {
+        console.error(`Could not restore browser window placement: ${error.message.split('\n')[0]}`);
+      }
+    }
+  } finally {
+    await context.close();
+  }
 }
 
 function savedWindowBounds(profileDir, profileDirectory) {
@@ -231,7 +240,7 @@ export function safeDownloadName(suggested) {
       .basename(path.posix.basename(suggested))
       // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
       .replace(/[<>:"|?*\x00-\x1f]/g, '_')
-      .replace(/[. ]+$/, '') || 'download';
+      .replace(/[. ]+$/, '') || 'download'; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
   return /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name) ? `_${name}` : name;
 }
 
@@ -407,39 +416,43 @@ function planRefresh(session, files) {
   const plan = { cssUrls: [], styles: [], reloadKeys: new Set(), reloadAll: false };
   const changes = session.rewriter?.blockChanges;
   const disabled = session.disabled ?? new Set();
-  for (const file of files) {
-    if (session.rel && disabled.has(session.rel(file))) continue;
-    const webFile = session.model.webFiles.find((w) => w.file === file);
-    if (webFile?.url && /\.css$/i.test(webFile.url)) {
-      let url = webFile.url;
-      try {
-        url = decodeURIComponent(url);
-      } catch {
-        /* literal percent */
-      }
-      if (!plan.cssUrls.includes(url.toLowerCase())) plan.cssUrls.push(url.toLowerCase());
-      continue;
-    }
-    const sources = (session.model.inlineSources ?? []).filter((source) => source.file === file);
-    if (!sources.length) {
-      plan.reloadAll = true;
-      continue;
-    }
-    for (const source of sources) {
-      // forms, lists, templates and snippets can appear on any page
-      if (!source.kind.startsWith('page-') || !source.pageUrl) {
-        plan.reloadAll = true;
-        continue;
-      }
-      if (disabled.has(source.rel)) continue; // a paused override changes nothing in the page
-      const key = pageKey(source.pageUrl);
-      const change = source.kind === 'page-css' && !source.extract ? changes?.get(source.rel) : null;
-      if (typeof change?.before === 'string' && change.before.trim() && typeof change.after === 'string')
-        plan.styles.push({ pageKey: key, before: change.before, after: change.after });
-      else plan.reloadKeys.add(key);
-    }
-  }
+  for (const file of files) planRefreshFile(session, file, plan, changes, disabled);
   return plan;
+}
+
+function planRefreshFile(session, file, plan, changes, disabled) {
+  if (session.rel && disabled.has(session.rel(file))) return;
+  const webFile = session.model.webFiles.find((w) => w.file === file);
+  if (webFile?.url && /\.css$/i.test(webFile.url)) {
+    let url = webFile.url;
+    try {
+      url = decodeURIComponent(url);
+    } catch {
+      /* literal percent */
+    }
+    if (!plan.cssUrls.includes(url.toLowerCase())) plan.cssUrls.push(url.toLowerCase());
+    return;
+  }
+  const sources = (session.model.inlineSources ?? []).filter((source) => source.file === file);
+  if (!sources.length) {
+    plan.reloadAll = true;
+    return;
+  }
+  for (const source of sources) planInlineSource(source, plan, changes, disabled);
+}
+
+function planInlineSource(source, plan, changes, disabled) {
+  // forms, lists, templates and snippets can appear on any page
+  if (!source.kind.startsWith('page-') || !source.pageUrl) {
+    plan.reloadAll = true;
+    return;
+  }
+  if (disabled.has(source.rel)) return; // a paused override changes nothing in the page
+  const key = pageKey(source.pageUrl);
+  const change = source.kind === 'page-css' && !source.extract ? changes?.get(source.rel) : null;
+  if (typeof change?.before === 'string' && change.before.trim() && typeof change.after === 'string')
+    plan.styles.push({ pageKey: key, before: change.before, after: change.after });
+  else plan.reloadKeys.add(key);
 }
 
 const pageKeyOf = (address, model) => {
@@ -565,11 +578,8 @@ export async function refreshPages(context, session, files, { force = false, out
       }
     }),
   );
-  return reloaded
-    ? 'reload'
-    : swapped
-      ? 'css'
-      : [...outcomes.values()].some((result) => result.how === 'none')
-        ? 'none'
-        : 'skipped';
+  if (reloaded) return 'reload';
+  if (swapped) return 'css';
+  if ([...outcomes.values()].some((result) => result.how === 'none')) return 'none';
+  return 'skipped';
 }

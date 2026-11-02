@@ -48,28 +48,29 @@ export function validateTransitions(map) {
   if (!map || typeof map !== 'object' || Array.isArray(map))
     throw new TypeError('transitions must map table names to status transition maps.');
   const result = {};
-  for (const [table, statuses] of Object.entries(map)) {
-    const logical = table.trim().toLowerCase();
-    if (!TABLE.test(logical)) throw new TypeError(`transitions key '${table}' must be a table logical name.`);
-    if (Object.hasOwn(result, logical)) throw new TypeError(`transitions key '${table}' repeats table ${logical}.`);
-    if (!statuses || typeof statuses !== 'object' || Array.isArray(statuses))
-      throw new TypeError(`transitions['${table}'] must map statuscodes to arrays of statuscodes.`);
-    const entries = {};
-    for (const [from, targets] of Object.entries(statuses)) {
-      if (!WHOLE.test(from))
-        throw new TypeError(`transitions['${table}']['${from}'] must be a statuscode (a whole number).`);
-      if (!Array.isArray(targets) || !targets.every((target) => Number.isInteger(target) && target >= 0)) {
-        throw new TypeError(`transitions['${table}']['${from}'] must be an array of statuscode integers.`);
-      }
-      entries[Number(from)] = [...new Set(targets)];
-    }
-    result[logical] = entries;
-  }
+  for (const [table, statuses] of Object.entries(map)) validateTableTransitions(result, table, statuses);
   return result;
 }
 
+function validateTableTransitions(result, table, statuses) {
+  const logical = table.trim().toLowerCase();
+  if (!TABLE.test(logical)) throw new TypeError(`transitions key '${table}' must be a table logical name.`);
+  if (Object.hasOwn(result, logical)) throw new TypeError(`transitions key '${table}' repeats table ${logical}.`);
+  if (!statuses || typeof statuses !== 'object' || Array.isArray(statuses))
+    throw new TypeError(`transitions['${table}'] must map statuscodes to arrays of statuscodes.`);
+  const entries = {};
+  for (const [from, targets] of Object.entries(statuses)) {
+    if (!WHOLE.test(from))
+      throw new TypeError(`transitions['${table}']['${from}'] must be a statuscode (a whole number).`);
+    if (!Array.isArray(targets) || !targets.every((target) => Number.isInteger(target) && target >= 0))
+      throw new TypeError(`transitions['${table}']['${from}'] must be an array of statuscode integers.`);
+    entries[Number(from)] = [...new Set(targets)];
+  }
+  result[logical] = entries;
+}
+
 // Exported metadata nests column facts under columnMetadata; runtime definitions may hold them at the top level.
-const facts = (definition) => ({ ...definition, ...(definition?.columnMetadata ?? {}) });
+const facts = (definition) => ({ ...definition, ...definition?.columnMetadata });
 const statusOptions = (api, logical) =>
   facts(api.store.fieldDefinition(logical, 'statuscode', api.metadataFields)).options ?? [];
 const stateOptions = (api, logical) =>
@@ -95,10 +96,7 @@ function targetsFrom(state, logical, options, from) {
   const data = optionOf(options, from)?.TransitionData;
   if (Array.isArray(data)) return { allowed: data.map(Number), source: 'metadata' };
   if (typeof data === 'string') {
-    const xml = data
-      .replace(/&quot;/g, '"')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>');
+    const xml = data.replaceAll('&quot;', '"').replaceAll('&lt;', '<').replaceAll('&gt;', '>');
     if (/<allowedtransition\b/.test(xml)) {
       const allowed = [...xml.matchAll(/sourcestatusid="(\d+)"\s+tostatusid="(\d+)"/g)]
         .filter((match) => Number(match[1]) === from)

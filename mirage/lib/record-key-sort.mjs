@@ -3,7 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { temporaryRecordName } from './record-file-lease.mjs';
 
-export const compareKeyPair = (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : Math.sign(a[1] - b[1]));
+export const compareKeyPair = (a, b) => {
+  if (a[0] < b[0]) return -1;
+  if (a[0] > b[0]) return 1;
+  return Math.sign(a[1] - b[1]);
+};
 
 function* readRun(file) {
   const fd = fs.openSync(file, 'r'),
@@ -22,7 +26,7 @@ function* readRun(file) {
       }
       pending = Buffer.from(bytes.subarray(start));
     }
-    if (pending.length) throw Error('Incomplete temporary key run');
+    if (pending.length) throw new Error('Incomplete temporary key run');
   } finally {
     fs.closeSync(fd);
   }
@@ -100,7 +104,7 @@ export class KeySorter {
     this.peakBytes = 0;
   }
   add(pair) {
-    if (this.finished) throw Error('Key sorter already consumed');
+    if (this.finished) throw new Error('Key sorter already consumed');
     const size = Buffer.byteLength(pair[0]) * 2 + 96;
     if (this.pending.length && (this.pending.length >= this.limit || this.bytes + size > this.byteLimit)) this.flush();
     this.pending.push(pair);
@@ -120,7 +124,7 @@ export class KeySorter {
       let done = 0;
       while (done < bytes.length) {
         const count = fs.writeSync(fd, bytes, done);
-        if (!count) throw Error('Incomplete key-run write');
+        if (!count) throw new Error('Incomplete key-run write');
         done += count;
       }
       pending = '';
@@ -147,7 +151,7 @@ export class KeySorter {
     this.bytes = 0;
   }
   *sorted() {
-    if (this.finished) throw Error('Key sorter already consumed');
+    if (this.finished) throw new Error('Key sorter already consumed');
     this.finished = true;
     try {
       if (!this.runs.length) {
@@ -182,8 +186,8 @@ export class KeySorter {
       try {
         fs.unlinkSync(file);
         this.files.delete(file);
-      } catch (failure) {
-        error ??= failure;
+      } catch (error_) {
+        error ??= error_;
       }
     }
     if (error) throw error;

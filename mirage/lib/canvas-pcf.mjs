@@ -8,13 +8,13 @@ import { CANVAS_ASSETS } from './canvas-assets.mjs';
 const prepared = new WeakMap();
 
 const SCALAR =
-  /^(?:SingleLine\.(?:Text|TextArea|Email|Phone|URL|Ticker)|Multiple|Whole\.(?:None|Duration|TimeZone|Language)|Decimal|FP|Currency|Enum|OptionSet|TwoOptions|DateAndTime\.(?:DateAndTime|DateOnly))$/i;
+  /^(?:SingleLine\.(?:Text(?:Area)?|Email|Phone|URL|Ticker)|Multiple|Whole\.(?:None|Duration|TimeZone|Language)|Decimal|FP|Currency|Enum|OptionSet|TwoOptions|DateAndTime\.Date(?:AndTime|Only))$/i; // NOSONAR: regex kept: a rewrite would change matches or captures
 const identity = (name) =>
   String(name ?? '')
     .replace(/\([0-9a-f-]{36}\)$/i, '')
     .toLowerCase();
 const safeProperty = (name) =>
-  /^[A-Za-z_][A-Za-z0-9_]*$/.test(name ?? '') && !['__proto__', 'prototype', 'constructor'].includes(name);
+  /^[A-Za-z_]\w*$/.test(name ?? '') && !['__proto__', 'prototype', 'constructor'].includes(name);
 
 function propertyDefault(property, ofType) {
   const formula = property['pfx-default-value'];
@@ -124,8 +124,7 @@ export function canvasPcfApps(apps, catalog, options = {}) {
     ]);
     const prior = prepared.get(key);
     if (
-      prior &&
-      prior.signature === signature &&
+      prior?.signature === signature &&
       prior.formulas === raw.formulas &&
       prior.enums === raw.enums &&
       prior.assets === raw[CANVAS_ASSETS] &&
