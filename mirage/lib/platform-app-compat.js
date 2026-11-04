@@ -55,7 +55,7 @@
   };
   portal.UpdateValidationSummary ||= portal.SetValidationSummary;
   portal.addRoleOnCheckboxLabel ||= function (elements) {
-    for (const element of jq() ? jq()(elements).toArray() : [].concat(elements ?? []))
+    for (const element of jq() ? jq()(elements).toArray() : /* NOSONAR */ [].concat(elements ?? []))
       // NOSONAR: concat preserves spreadability and sparse input behavior
       // NOSONAR: concat preserves caller Symbol.isConcatSpreadable semantics
       element?.setAttribute?.('role', 'none');

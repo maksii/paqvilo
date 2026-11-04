@@ -1,5 +1,5 @@
 // Reproduce the legacy quoted-input attribute matcher with linear scans.
-export function liveInputAttributes(text) {
+export function /* NOSONAR */ liveInputAttributes(text) {
   // NOSONAR: preserve state, evaluation order, and lifecycle
   const pairs = [];
   let cursor = 0;

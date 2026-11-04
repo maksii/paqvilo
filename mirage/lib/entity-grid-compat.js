@@ -307,7 +307,11 @@
       Id: (control.querySelector('input[id$="_EntityFormView_EntityID"]')?.value ?? '').replace(/[{}]/g, ''),
     };
     const submit = () =>
-      post(button.getAttribute('data-url') || location.href, { entityReference: reference }, { json: false }).then(
+      post(
+        /* NOSONAR */ button.getAttribute('data-url') || location.href,
+        { entityReference: reference },
+        { json: false },
+      ).then(
         // NOSONAR: read actual attributes, not inherited dataset properties
         // NOSONAR: actual attributes exclude inherited dataset values
         () => location.reload(),
@@ -2227,7 +2231,7 @@
       const replacement = primary.cloneNode(true);
       primary.replaceWith(replacement);
       replacement.addEventListener('click', () =>
-        submit(modal, container.getAttribute('data-url-add') ?? null, {
+        submit(modal, /* NOSONAR */ container.getAttribute('data-url-add') ?? null, {
           // NOSONAR: read actual attributes, not inherited dataset properties
           // NOSONAR: actual attributes exclude inherited dataset values
           regardingEntityLogicalName: regarding.LogicalName,

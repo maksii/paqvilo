@@ -88,7 +88,7 @@ export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlo
     // A script may remove a parser marker before this microtask; MutationRecord retains the original node.
     const oldMarkers = [];
     // NOSONAR: page scripts can replace the array iterator after early bootstrap.
-    for (let i = 0; i < records.length; i++) {
+    /* NOSONAR */ for (let i = 0; i < records.length; i++) {
       // NOSONAR: preserve indexed native-record access and mutation order
       const record = records[i];
       if (

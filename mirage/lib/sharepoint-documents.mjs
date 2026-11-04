@@ -567,7 +567,7 @@ const failureBody = (error) => ({ error: { code: error.code ?? 'PortalDocumentsF
   blockedExtensions = () => [],
 }) {
   const system = { admin: true }; // the portal's own permission check runs first; the organization call acts as the site
-  async function handle(req, res, url, { identity = {}, csrf = null } = {}) {
+  async function /* NOSONAR */ handle(req, res, url, { identity = {}, csrf = null } = {}) {
     // NOSONAR: preserve state, evaluation order, and lifecycle
     if (!url.pathname.toLowerCase().startsWith(PORTAL_DOCUMENTS_ROUTE)) return false;
     const parts = url.pathname

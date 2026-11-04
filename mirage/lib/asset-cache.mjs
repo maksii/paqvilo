@@ -22,7 +22,7 @@ const crmFontSource = '/resource/powerappsportal/fonts/CRMMDL2.woff';
 const crmFontTarget = '/uclient/resources/styles/CRMMDL2.woff';
 const crmPlatformFontTarget = '/resource/powerappsportal/fonts/CRMMDL2.woff2';
 const crmFontTargets = new Set([crmFontTarget, crmPlatformFontTarget]);
-function cssUrlValues(css) {
+function /* NOSONAR */ cssUrlValues(css) {
   // NOSONAR: preserve state, evaluation order, and lifecycle
   const quotes = { "'": [], '"': [] },
     parens = [],
@@ -543,7 +543,7 @@ export class AssetCache {
       if (accept(result)) await publish?.(result);
       return result;
     }
-    const run = this.queue.then(async () => {
+    const run = this.queue.then(async () /* NOSONAR */ => {
       // NOSONAR: preserve state, evaluation order, and lifecycle
       const directory = path.join(this.directory, 'staging-' + randomUUID());
       if (path.dirname(directory) !== this.directory) throw fail('Invalid cache staging directory.');

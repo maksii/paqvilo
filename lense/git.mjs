@@ -349,7 +349,7 @@ export class GitBaseline {
     const forceFull = this.pendingChanges++ > 0;
     const current = () => new Set(this.changedSnapshot ?? []);
     const previous = this.changeQueue;
-    const pending = (async () => {
+    const pending = (async () /* NOSONAR */ => {
       // NOSONAR: preserve state, evaluation order, and lifecycle
       // Only one scan owns subprocesses; a save burst skips superseded queued work.
       await previous;

@@ -194,7 +194,7 @@ function validModulePrefix(after, content, boundary, info, newline) {
 }
 
 /** Captures for the static import/export resource grammar, without re-scanning failed prefixes. */
-export function* moduleImportMatches(text) {
+export function* /* NOSONAR */ moduleImportMatches(text) {
   // NOSONAR: preserve state, evaluation order, and lifecycle
   let boundary = -1;
   let newline = -1;

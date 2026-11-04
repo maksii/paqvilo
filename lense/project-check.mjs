@@ -454,7 +454,7 @@ function checkPackModules(name, packs, add) {
 }
 
 function checkMappedFiles(name, profile, section, files, seen, diagnostics) {
-  for (const file of [].concat(files)) {
+  for (const file of /* NOSONAR */ [].concat(files)) {
     // NOSONAR: concat preserves spreadability and sparse input behavior
     // NOSONAR: preserve concat spreading semantics
     const key = JSON.stringify([profile, section, file]);

@@ -499,7 +499,7 @@ export class RecordPageSession {
     };
     try {
       if (!source.aliases) {
-        for (const chunk of [...source.chunks]) {
+        for (const chunk of /* NOSONAR */ [...source.chunks]) {
           // NOSONAR: snapshot iteration preserves mutation and scheduling behavior
           const ids = new Array(chunk.count);
           for (let i = 0; i < chunk.count; i++) ids[i] = chunk.ids?.[i] ? save(chunk.ids[i]) : 0;
@@ -682,7 +682,7 @@ export class RecordPageSession {
               lastFile = file;
               lastPage = pageNumber;
             }
-            if (!entry || entry.kind !== 1 || within - pageNumber * SLOTS >= entry.count)
+            if (/* NOSONAR */ !entry || entry.kind !== 1 || within - pageNumber * SLOTS >= entry.count)
               // NOSONAR: retain the existing falsy-value guard and short circuit
               throw Error('Dangling record locator'); // NOSONAR: preserve Error call semantics for host instrumentation
             if (id <= previous) ascending = false;

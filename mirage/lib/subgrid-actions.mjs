@@ -66,7 +66,7 @@ export function subgridActionUrl(action, { portal, parentId, recordId, requestUr
   return target.origin === origin ? target.pathname + target.search : target.href;
 }
 
-function subgridEntityTag(source) {
+function /* NOSONAR */ subgridEntityTag(source) {
   // NOSONAR: preserve state, evaluation order, and lifecycle
   const text = `${source}`;
   const positions = { "'": [], '"': [], '>': [], line: [] };

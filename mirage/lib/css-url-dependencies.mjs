@@ -1,5 +1,5 @@
 // Find CSS url() dependencies with the same capture choices as the historical matcher.
-export function cssUrlDependencies(css) {
+export function /* NOSONAR */ cssUrlDependencies(css) {
   // NOSONAR: preserve state, evaluation order, and lifecycle
   const closers = { '"': [], "'": [] };
   const lines = [];

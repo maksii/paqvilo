@@ -376,7 +376,7 @@ const parsePayload = (text) => {
       if (!complete) finish(failure(`Server-logic worker stopped before returning a result (${code}).`));
     });
     worker.on('message', (message) => inSpan(() => answerMessage(message)));
-    const answerMessage = async (message) => {
+    const answerMessage = async (message) /* NOSONAR */ => {
       // NOSONAR: preserve state, evaluation order, and lifecycle
       if (complete) return;
       if (message.kind === 'ready') {

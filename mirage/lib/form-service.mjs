@@ -1251,7 +1251,7 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
           );
         }
         const match = expression.exec(value);
-        if (!match || match[0] !== value)
+        if (/* NOSONAR */ !match || match[0] !== value)
           // NOSONAR: retain the existing falsy-value guard and short circuit
           invalid(field, 'FormFieldInvalid', field.patternMessage || `${field.label} is not valid.`);
       }

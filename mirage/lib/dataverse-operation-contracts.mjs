@@ -7666,7 +7666,7 @@ export function platformOperationCsdl(input, registration = null) {
     const binding = attrs.IsBound === 'true' ? attrsOf(body.match(/<Parameter\b([^>]*?)\/>/)?.[1] ?? '').Type : '';
     // The registry's binding is authoritative; older extension helpers may have emitted an entity parameter for a set.
     const registered =
-      registration?.name === attrs.Name && (registration.kind === 'action' ? 'Action' : 'Function') === tag;
+      registration?.name === attrs.Name && (registration?.kind === 'action' ? 'Action' : 'Function') === tag;
     const type = registration?.entity === '*' ? 'mscrm.crmbaseentity' : `mscrm.${registration?.entity}`;
     let registeredBinding;
     if (registration?.binding === 'collection') registeredBinding = `Collection(${type})`;

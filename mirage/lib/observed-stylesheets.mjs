@@ -34,7 +34,7 @@ async function sourceBytes(portal, resource) {
     captured = [],
     failures = [],
     diagnostics = [];
-  for (const requested of [...new Set(paths)])
+  for (const requested of /* NOSONAR */ [...new Set(paths)])
     // NOSONAR: snapshot iteration preserves mutation and scheduling behavior
     try {
       validateLivePath(requested);

@@ -208,7 +208,7 @@ async function durableWrite(file, value, io) {
   const token = `${process.pid}:${randomUUID()}`,
     owned = [];
   const release = async () => {
-    for (const file of owned.reverse()) {
+    for (const file of /* NOSONAR */ owned.reverse()) {
       // NOSONAR: retain in-place receiver mutation and ordering
       try {
         if ((await readDeclaredFile(file, io, 'utf8')) === token) await io.unlink(file);
@@ -218,7 +218,7 @@ async function durableWrite(file, value, io) {
     }
   };
   try {
-    for (const file of [...files].sort()) {
+    for (const file of [...files]./* NOSONAR */ sort()) {
       // NOSONAR: preserve default coercion and UTF-16 sort order
       const name = `${file}.lock`;
       let handle;

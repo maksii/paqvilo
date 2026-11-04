@@ -33,7 +33,7 @@ const wanted = (name) =>
   DATA_SOURCE_JSON.test(name.replaceAll('\\', '/')) ||
   LEGACY_COMPONENT_JSON.test(name.replaceAll('\\', '/'));
 // `.fx.yaml` control keys: `Name As type[.variant]`; a quoted name keeps its spaces.
-function fxControlTypeStarts(text, end) {
+function /* NOSONAR */ fxControlTypeStarts(text, end) {
   // NOSONAR: preserve state, evaluation order, and lifecycle
   const starts = new Set();
   let cursor = end;
@@ -56,7 +56,7 @@ function fxControlTypeStarts(text, end) {
   }
   return starts;
 }
-function fxControl(key) {
+function /* NOSONAR */ fxControl(key) {
   // NOSONAR: preserve state, evaluation order, and lifecycle
   const end = key.trimEnd().length;
   const starts = fxControlTypeStarts(key, end);

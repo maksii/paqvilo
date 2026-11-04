@@ -587,7 +587,10 @@
     $(toggle).tab('show');
   }
   function handleCollapseCompatibilityClick(click, toggle) {
-    if (toggle.tagName === 'A' || !(toggle.getAttribute('data-target') || toggle.getAttribute('data-bs-target')))
+    if (
+      toggle.tagName === 'A' ||
+      !(/* NOSONAR */ toggle.getAttribute('data-target') || /* NOSONAR */ toggle.getAttribute('data-bs-target'))
+    )
       // NOSONAR: read actual attributes, not inherited dataset properties
       click.preventDefault(); // NOSONAR: actual attributes exclude inherited dataset values
     for (const element of targetsOf(toggle)) {

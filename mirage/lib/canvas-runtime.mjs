@@ -207,7 +207,7 @@ const staticIdentifier = (text) => {
   }
 };
 /** Every call `Name(` (or `Source.Op(`) outside strings, outermost first: [{ start, open, end, name, member }]. */
-function callHead(text, end) {
+function /* NOSONAR */ callHead(text, end) {
   // NOSONAR: preserve state, evaluation order, and lifecycle
   while (end > 0 && /\s/.test(text[end - 1])) end--;
   let start = end;

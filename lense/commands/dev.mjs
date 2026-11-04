@@ -54,7 +54,7 @@ function countHitSources(hit, tally) {
     return;
   }
   for (const source of hit.sources ?? []) {
-    if (/^patched/.test(source.action))
+    if (/* NOSONAR */ /^patched/.test(source.action))
       // NOSONAR: preserve the original string or regex dispatch
       tally.patches++; // NOSONAR: preserve coercion of absent or non-string action metadata
     else tally.blocks++;

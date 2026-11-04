@@ -117,7 +117,7 @@ function assertFixtureValues(bound, snapshot) {
   }
   for (const collection of new Set(snapshot.associations.map((edge) => edge.collection))) {
     const group = snapshot.associations.filter((edge) => edge.collection === collection);
-    if (!same([...new Set(group.map((edge) => edge.target))].sort(), group[0].ids))
+    if (!same([...new Set(group.map((edge) => edge.target))]./* NOSONAR */ sort(), group[0].ids))
       // NOSONAR: preserve default coercion and UTF-16 sort order
       throw new Error('Native disposable fixture projection has missing or foreign associations.');
   }

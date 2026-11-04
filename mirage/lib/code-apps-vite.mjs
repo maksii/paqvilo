@@ -274,7 +274,7 @@ export { setConfig } from ${JSON.stringify('/@fs/' + nativeApp)};
           inlineSources,
           edits,
         );
-        for (const [start, end, replacement] of edits.sort(
+        for (const [start, end, replacement] of /* NOSONAR */ edits.sort(
           // NOSONAR: retain in-place receiver mutation and ordering
           /* NOSONAR: preserve in-place sorting */ (a, b) => b[0] - a[0],
         ))

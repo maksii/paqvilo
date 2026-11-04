@@ -176,7 +176,7 @@ export function capturedQueries(events = [], { operationId } = {}) {
     if (result.query) queries.push(result.query);
   }
   return {
-    queries: queries.sort(
+    queries: /* NOSONAR */ queries.sort(
       // NOSONAR: retain in-place receiver mutation and ordering
       (a, b) => a.stage - b.stage || a.order - b.order || String(a.artifact).localeCompare(String(b.artifact)),
     ),

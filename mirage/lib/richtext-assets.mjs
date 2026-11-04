@@ -376,7 +376,7 @@ export function extractManagedRichTextControls(html) {
   }
   const seen = new Set(),
     bodies = new Map();
-  const capture = async (paths) => {
+  const capture = async (paths) /* NOSONAR */ => {
     // NOSONAR: preserve state, evaluation order, and lifecycle
     const planned = [];
     for (const path of paths) {

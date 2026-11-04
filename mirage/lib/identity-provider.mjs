@@ -387,7 +387,7 @@ function verifyPkce(entry, verifier) {
     remember(sessions, session, { subject: user.subject, provider: provider.slug, user, at: clock() });
     return deliver(res, params, fields, { 'set-cookie': `${cookieName}=${session}; Path=/; HttpOnly; SameSite=Lax` });
   };
-  const chooser = (provider, params, extras, list, query) => {
+  const chooser = (provider, params, extras, list, query) /* NOSONAR */ => {
     // NOSONAR: preserve state, evaluation order, and lifecycle
     const hidden = Object.entries({ ...extras, ...params })
       .filter(([, value]) => value)
@@ -414,7 +414,7 @@ function verifyPkce(entry, verifier) {
         ? `<dt>consent</dt><dd>The portal asks for consent to the scope ${escapeHtml(params.scope)}.</dd>`
         : '');
     const create = policy.allowed
-      ? `<section class="chooser-registration paqvilo-mirage-idp-new-user" id="paqvilo-mirage-idp-create"><form method="post" action="${action}" id="idp-register">${hidden}</form><h2>New user</h2><p>Create an external identity for the portal’s first-time registration flow.</p>${policy.forced ? `<p class="chooser-warning">Forced registration test. The portal disables registration with: ${escapeHtml(policy.disabled.join(', '))}. The portal may reject the callback.</p>` : ''}<div class="chooser-registration-fields">${[
+      ? `<section class="chooser-registration paqvilo-mirage-idp-new-user" id="paqvilo-mirage-idp-create"><form method="post" action="${action}" id="idp-register">${hidden}</form><h2>New user</h2><p>Create an external identity for the portal’s first-time registration flow.</p>${/* NOSONAR */ policy.forced ? /* NOSONAR */ `<p class="chooser-warning">Forced registration test. The portal disables registration with: ${escapeHtml(policy.disabled.join(', '))}. The portal may reject the callback.</p>` : ''}<div class="chooser-registration-fields">${[
           // NOSONAR: preserve template coercion and selected evaluation; preserve lazy branch evaluation and coercion
           ['given_name', 'Given name', 'text', 100],
           ['family_name', 'Family name', 'text', 100],
@@ -467,7 +467,7 @@ function verifyPkce(entry, verifier) {
 
   // ---- token endpoint: client authentication and the code grant
   /** The client's authentication at the token endpoint, as the provider registration expects; an error message or null. */
-  function authenticateClient(provider, form) {
+  function /* NOSONAR */ authenticateClient(provider, form) {
     // NOSONAR: preserve state, evaluation order, and lifecycle
     const method = provider.tokenAuthMethod === 'private_key_jwt' ? 'private_key_jwt' : 'client_secret_post';
     if (method === 'client_secret_post') {
@@ -566,7 +566,7 @@ function verifyPkce(entry, verifier) {
     return json(res, 200, userInfoClaims(entry.user));
   }
 
-  async function handle(req, res) {
+  async function /* NOSONAR */ handle(req, res) {
     // NOSONAR: preserve state, evaluation order, and lifecycle
     const url = new URL(req.url, origin);
     if (

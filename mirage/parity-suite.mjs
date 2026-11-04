@@ -4653,10 +4653,12 @@ function finalizeScenarioResult(scenario, plan, redactor, result, observations, 
     deltas: classified,
     deltaCounts: byClass,
     verdict,
-    owners: [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))].sort(
-      // NOSONAR: preserve default coercion and UTF-16 sort order
-      /* NOSONAR: preserve default string coercion */
-    ),
+    owners: [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))]
+      .sort /* NOSONAR */
+      (
+        // NOSONAR: preserve default coercion and UTF-16 sort order
+        /* NOSONAR: preserve default string coercion */
+      ),
   };
 }
 
@@ -4985,10 +4987,12 @@ function reclassifyScenario(scenario, plan) {
     else if (!unexpected.length) scenario.verdict = 'pass-with-expected-deltas';
     else scenario.verdict = 'delta';
   }
-  scenario.owners = [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))].sort(
-    // NOSONAR: preserve default coercion and UTF-16 sort order
-    /* NOSONAR: preserve default string coercion */
-  );
+  scenario.owners = [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))]
+    .sort /* NOSONAR */
+    (
+      // NOSONAR: preserve default coercion and UTF-16 sort order
+      /* NOSONAR: preserve default string coercion */
+    );
 }
 
 /** Human-readable summary; contains only redacted content from the report. */

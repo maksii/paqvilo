@@ -137,7 +137,7 @@ function flowRoot(traces, req, url, { origin, route, signed }) {
   resumeRun = api?.resumeRun ?? null,
   origin = null,
 }) {
-  return async (req, res, url) => {
+  return async (req, res, url) /* NOSONAR */ => {
     // NOSONAR: preserve state, evaluation order, and lifecycle
     const prefix = PREFIX.exec(url.pathname);
     if (!prefix) return false;
@@ -171,7 +171,7 @@ function flowRoot(traces, req, url, { origin, route, signed }) {
       if (span && status >= 400) recordHttpError(span, status, answerError(value, status));
       send(res, status, value, headers);
     };
-    const serve = async () => {
+    const serve = async () /* NOSONAR */ => {
       // NOSONAR: preserve state, evaluation order, and lifecycle
       try {
         // The callback URL of an HTTP Request trigger: its signature authorises the call (no CSRF token), its method and

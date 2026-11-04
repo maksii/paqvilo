@@ -3054,7 +3054,7 @@ export class DataStore {
       });
     return true;
   }
-  afterPluginPhase(mapping, operation, stage, target, row, options, id, frame, targetPrimary) {
+  /* NOSONAR */ afterPluginPhase(mapping, operation, stage, target, row, options, id, frame, targetPrimary) {
     // NOSONAR: preserve the public positional method signature
     if (frame) {
       this.pluginFrames ??= new WeakMap();
@@ -4137,7 +4137,7 @@ export class DataStore {
     const revision = this.dataRevision();
     this.storedColumns ??= new Map();
     let entry = this.storedColumns.get(mapping.logicalName);
-    if (!entry || entry.revision !== revision) {
+    if (/* NOSONAR */ !entry || entry.revision !== revision) {
       // NOSONAR: retain the existing falsy-value guard and short circuit
       const columns = new Set();
       for (const row of this.tableRows(mapping.logicalName)) for (const key of Object.keys(row)) columns.add(key);
@@ -6018,7 +6018,7 @@ export class DataStore {
     return row;
   }
   /** Commit an updated row: update plugins, unique alternate keys, secondary effects. */
-  commitUpdate(mapping, rows, index, row, identity, target, options = {}, rawInput = {}) {
+  /* NOSONAR */ commitUpdate(mapping, rows, index, row, identity, target, options = {}, rawInput = {}) {
     // NOSONAR: preserve the public positional method signature
     return this.runRecordSteps(this.commitUpdateSteps(mapping, rows, index, row, identity, target, options, rawInput));
   }

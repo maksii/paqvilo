@@ -600,7 +600,7 @@ function mergeRelationship(pending, rel, problems) {
 }
 
 function collectStandardPages(pages, prefixedTables, tables, optionSets, pending, problems, stats) {
-  for (const logical of Object.keys(pages).sort()) {
+  for (const logical of Object.keys(pages)./* NOSONAR */ sort()) {
     // NOSONAR: preserve default coercion and UTF-16 sort order
     const parsed = parseEntityPage(pages[logical], logical, { prefixedTables });
     problems.push(...parsed.problems);
@@ -661,7 +661,7 @@ function relationshipSurvives(name, rel, pages, tables, prefixedTables, problems
 
 function collectStandardRelationships(pending, pages, tables, prefixedTables, problems, stats) {
   const relationships = {};
-  for (const name of [...pending.keys()].sort()) {
+  for (const name of [...pending.keys()]./* NOSONAR */ sort()) {
     // NOSONAR: preserve default coercion and UTF-16 sort order
     const rel = pending.get(name);
     if (!relationshipSurvives(name, rel, pages, tables, prefixedTables, problems)) continue;

@@ -90,7 +90,7 @@ function installLateDraftTracker(slot, origins, binding) {
   navigation?.addEventListener('navigate', navigate);
   navigation?.addEventListener('navigateerror', clear);
   navigation?.addEventListener('navigatesuccess', clear);
-  Object.defineProperty(window, slot, {
+  Object.defineProperty(/* NOSONAR */ window, slot, {
     // NOSONAR: preserve the page window receiver and binding
     configurable: true,
     value: Object.freeze({

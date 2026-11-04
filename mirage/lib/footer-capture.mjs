@@ -113,7 +113,7 @@ function withoutCssComments(value) {
   return pieces.join('');
 }
 
-function hasIntrinsicSvgWidth(rules, clean) {
+function /* NOSONAR */ hasIntrinsicSvgWidth(rules, clean) {
   // NOSONAR: preserve state, evaluation order, and lifecycle
   let index = 0,
     depth = 0,

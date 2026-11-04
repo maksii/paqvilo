@@ -201,7 +201,10 @@ function compare(kind, left, right) {
   const a = comparable(left),
     b = comparable(right);
   // Numbers compare by their exact decimal digits (store exact-numeric values included).
-  if ([a, b].every((value) => typeof value === 'number' || isExactNumeric(value)) && [a, b].some(isExactNumeric)) {
+  if (
+    [a, b].every((value) => typeof value === 'number' || isExactNumeric(value)) &&
+    [a, b].some(/* NOSONAR */ isExactNumeric)
+  ) {
     // NOSONAR: preserve callback identity and iteration arguments
     const order = compareNumeric(a, b);
     return {

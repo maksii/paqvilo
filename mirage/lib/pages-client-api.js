@@ -549,7 +549,7 @@
       element.setAttribute('aria-busy', 'true');
       const current = generation;
       loading = (async () => {
-        const response = await fetch(element.getAttribute('data-get-url') ?? null, {
+        const response = await fetch(/* NOSONAR */ element.getAttribute('data-get-url') ?? null, {
           // NOSONAR: read actual attributes, not inherited dataset properties
           // NOSONAR: actual attributes exclude inherited dataset values
           method: 'POST',

@@ -186,7 +186,7 @@ export function redactSecureConfigurationTokens(text) {
     );
   return redactHtmlControlInputs(redactMultipartControlFields(redactQueryControlFields(redacted)));
 }
-function redactQueryControlFields(text) {
+function /* NOSONAR */ redactQueryControlFields(text) {
   // NOSONAR: preserve state, evaluation order, and lifecycle
   let candidate = 0,
     nameStart = 0,

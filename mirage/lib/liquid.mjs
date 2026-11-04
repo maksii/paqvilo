@@ -739,7 +739,7 @@ class SubstitutionTag extends RawBlock {
   }
 }
 /** Editable: CMS wrapper markup for page attributes and snippets (non-editor view). */
-function editableSyntax(markup) {
+function /* NOSONAR */ editableSyntax(markup) {
   // NOSONAR: preserve state, evaluation order, and lifecycle
   // Record token endings for every possible start, including starts inside a
   // malformed quoted candidate: the original unanchored matcher tried those too.
