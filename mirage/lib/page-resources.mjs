@@ -132,6 +132,7 @@ function* literalReferences(source, candidates) {
     return items[low];
   };
   for (let match; (match = candidates.exec(source));) {
+    // NOSONAR: preserve cursor and state initialization order
     if (match[2] !== undefined) {
       yield { text: match[0], reference: match[2] };
       continue;

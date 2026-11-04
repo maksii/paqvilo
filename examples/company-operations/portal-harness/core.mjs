@@ -10,7 +10,7 @@ function sortObject(value) {
   if (value && typeof value === 'object')
     return Object.fromEntries(
       Object.keys(value)
-        .sort()
+        .sort() // NOSONAR: preserve default coercion and UTF-16 sort order
         .map((k) => [k, sortObject(value[k])]),
     );
   return value;

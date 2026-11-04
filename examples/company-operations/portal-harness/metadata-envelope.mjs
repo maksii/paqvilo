@@ -17,7 +17,7 @@ const stable = (value) =>
     item && typeof item === 'object' && !Array.isArray(item)
       ? Object.fromEntries(
           Object.keys(item)
-            .sort()
+            .sort() // NOSONAR: preserve default coercion and UTF-16 sort order
             .map((key) => [key, item[key]]),
         )
       : item,
@@ -136,7 +136,7 @@ export async function readPortalMetadataEnvelope({
     requestPath,
     runId,
     actorId,
-    roleIds: [...roleIds].sort(),
+    roleIds: [...roleIds].sort(), // NOSONAR: preserve default coercion and UTF-16 sort order
     siteSourceHash,
     registrationHash,
     snapshotHash,

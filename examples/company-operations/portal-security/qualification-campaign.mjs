@@ -25,7 +25,7 @@ const hash = (value) =>
     .update(typeof value === 'string' ? value : stable(value))
     .digest('hex');
 const sha = /^[a-f0-9]{64}$/;
-const roles = (value) => [...new Set(value ?? [])].sort();
+const roles = (value) => [...new Set(value ?? [])].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
 const permissionCodes = new Set(['90040120', '90040102', '90040103', '90040104', '90040105', '90040106']);
 
 /** Recompute a genuinely empty root candidate set from the complete raw native

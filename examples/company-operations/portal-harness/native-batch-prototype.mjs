@@ -236,7 +236,7 @@ async function main() {
     if (
       config.expectedBusinessRoleNames &&
       stable(actor.roles.filter((name) => config.businessRoleNames.includes(name)).sort()) !==
-        stable([...config.expectedBusinessRoleNames].sort())
+        stable([...config.expectedBusinessRoleNames].sort()) // NOSONAR: preserve default coercion and UTF-16 sort order
     )
       throw new Error('Native role display has not stabilized after mask update.');
     const selectedPlans = [

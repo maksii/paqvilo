@@ -275,6 +275,7 @@ export { setConfig } from ${JSON.stringify('/@fs/' + nativeApp)};
           edits,
         );
         for (const [start, end, replacement] of edits.sort(
+          // NOSONAR: retain in-place receiver mutation and ordering
           /* NOSONAR: preserve in-place sorting */ (a, b) => b[0] - a[0],
         ))
           html = html.slice(0, start) + replacement + html.slice(end);

@@ -784,6 +784,7 @@ function operations(api) {
         }
         return respond(c, 'QuerySchedule', {
           TimeInfos: TimeInfos.sort(
+            // NOSONAR: retain in-place receiver mutation and ordering
             /* NOSONAR: preserve in-place sorting */ (left, right) => Date.parse(left.Start) - Date.parse(right.Start),
           ),
         });

@@ -161,7 +161,7 @@ export async function deploy({
     page: id('page:shell'),
     liquidPage: id('page:liquid'),
     fields: Object.fromEntries(
-      Object.entries(fields).map(([table, columns]) => [table, [...columns].filter(Boolean).sort()]),
+      Object.entries(fields).map(([table, columns]) => [table, [...columns].filter(Boolean).sort()]), // NOSONAR: preserve default coercion and UTF-16 sort order
     ),
   };
 }
@@ -221,7 +221,7 @@ function addFieldSettings(table, names, actual, push) {
     if (name && !legal.has(name)) throw new Error(`Web API allowlist references missing ${table}.${name}`);
   push('setting:' + table + ':enabled', `Webapi/${table}/enabled`, 9, { value: 'true' });
   push('setting:' + table + ':fields', `Webapi/${table}/fields`, 9, {
-    value: [...names].filter(Boolean).sort().join(','),
+    value: [...names].filter(Boolean).sort().join(','), // NOSONAR: preserve default coercion and UTF-16 sort order
   });
 }
 

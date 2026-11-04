@@ -5,7 +5,7 @@ import { parseXmlDocument } from 'paqvilo/mirage/lib/fetchxml-engine.mjs';
 import { stable, guid, laneOutcome } from './core.mjs';
 
 const hash = (text) => createHash('sha256').update(text).digest('hex');
-const roleSet = (roles) => [...new Set(roles ?? [])].sort();
+const roleSet = (roles) => [...new Set(roles ?? [])].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
 const marker = (value) =>
   String(value)
     .replace(/^CO-OP:[a-f\d-]{36}$/i, 'CO-OP:{operation}')
@@ -75,7 +75,7 @@ export function principalFootprint(xml) {
     for (const child of node.children) visit(child);
   };
   visit(parseXmlDocument(xml, { root: 'fetch' }));
-  return [...attributes].sort();
+  return [...attributes].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
 }
 
 /** Each plugin artifact is checksummed and reconstructed independently. Missing
@@ -177,6 +177,7 @@ export function capturedQueries(events = [], { operationId } = {}) {
   }
   return {
     queries: queries.sort(
+      // NOSONAR: retain in-place receiver mutation and ordering
       (a, b) => a.stage - b.stage || a.order - b.order || String(a.artifact).localeCompare(String(b.artifact)),
     ),
     errors,

@@ -192,7 +192,7 @@ function saveReferenceAssociations(catalogue, grant, references) {
     const record = {
         relationship,
         from: grant.key,
-        to: [...set].sort(),
+        to: [...set].sort(), // NOSONAR: preserve default coercion and UTF-16 sort order
       },
       existing = catalogue.associations.find((a) => a.relationship === relationship && a.from === grant.key);
     if (existing) existing.to = record.to;

@@ -20,7 +20,7 @@ export const stable = (value) =>
     item && typeof item === 'object' && !Array.isArray(item)
       ? Object.fromEntries(
           Object.keys(item)
-            .sort()
+            .sort() // NOSONAR: preserve default coercion and UTF-16 sort order
             .map((key) => [key, item[key]]),
         )
       : item,
@@ -47,7 +47,7 @@ export function frozenReplayIdentity(snapshot) {
   );
   validateFrozenRoleMembership(assigned, roles);
   const defaults = roles.filter((row) => JSON.parse(row.content).authenticatedusersrole === true);
-  const roleIds = [...new Set([...assigned, ...defaults].map((row) => row.powerpagecomponentid))].sort();
+  const roleIds = [...new Set([...assigned, ...defaults].map((row) => row.powerpagecomponentid))].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
   const actor = snapshot.actorBinding?.actor;
   if (actor && actor.contactid !== snapshot.contactId)
     throw new Error('Frozen actor binding identifies a different Contact.');

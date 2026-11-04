@@ -171,7 +171,7 @@ async function layerEntries(layer, budget) {
   if (clientSources !== undefined) {
     const libraryFiles = clientSources.filter((source) => /\.js$/i.test(source));
     for (const file of libraryFiles) {
-      const match = /^([A-Za-z][\w.-]*)@(\d+(?:\.\d+){1,3})\.js$/i.exec(path.basename(file));
+      const match = /^([A-Z][\w.-]*)@(\d+(?:\.\d+){1,3})\.js$/i.exec(path.basename(file));
       try {
         budget.take('entries', 1);
         if (!match)
@@ -314,7 +314,7 @@ async function layerEntries(layer, budget) {
           name: definition.name,
           id: definition.id?.replace(/[{}]/g, '').toLowerCase(),
           url,
-          type: imageMime ? 'image' : definition.type === 3 ? 'script' : definition.type === 1 ? 'page' : 'style',
+          type: imageMime ? 'image' : definition.type === 3 ? 'script' : definition.type === 1 ? 'page' : 'style', // NOSONAR: preserve lazy branch evaluation and coercion
           source: entry.file ? shown(entry.file) : `${shown(layer.dir)}!/${entry.name}`,
           sourceFile: entry.file,
           sourceContentRevision: createHash('sha256').update(data).digest('hex'),
@@ -325,7 +325,7 @@ async function layerEntries(layer, budget) {
             imageMime ??
             (definition.type === 3
               ? 'text/javascript; charset=utf-8'
-              : definition.type === 1
+              : definition.type === 1 // NOSONAR: preserve lazy branch evaluation and coercion
                 ? 'text/html; charset=utf-8'
                 : 'text/css; charset=utf-8'),
           ...(imageMime ? { passive: true } : {}),

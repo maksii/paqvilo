@@ -1,7 +1,7 @@
 /** Serializable early bootstrap. Only a backend-held writer can admit response descriptors. */
 // NOSONAR: window preserves the browser WindowProxy boundary when page code reassigns globalThis.
 export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlot, limit = 50000 }) {
-  if (!secret || !slot || Object.hasOwn(window, slot)) return;
+  if (!secret || !slot || Object.hasOwn(window, slot)) return; // NOSONAR: preserve the page window receiver and binding
   const marker = 'data-paqvilo-source';
   const apply = Reflect.apply,
     clone = structuredClone,
@@ -89,6 +89,7 @@ export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlo
     const oldMarkers = [];
     // NOSONAR: page scripts can replace the array iterator after early bootstrap.
     for (let i = 0; i < records.length; i++) {
+      // NOSONAR: preserve indexed native-record access and mutation order
       const record = records[i];
       if (
         recordValue(record, 'type') === 'attributes' &&
@@ -143,7 +144,7 @@ export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlo
       budget = { nodes: 0 };
     const oldMarkers = oldMarkersFor(records);
     // NOSONAR: keep mutation records independent of page-owned array iteration.
-    for (let i = 0; i < records.length; i++) processRecord(records[i], seen, budget, oldMarkers);
+    for (let i = 0; i < records.length; i++) processRecord(records[i], seen, budget, oldMarkers); // NOSONAR: preserve indexed native-record access and mutation order
   };
   const observer = new MutationObserver(observe);
   const takeRecords = observer.takeRecords.bind(observer),
@@ -320,5 +321,5 @@ export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlo
       return writer;
     },
   });
-  define(window, slot, { value: capability, configurable: false, writable: false });
+  define(window, slot, { value: capability, configurable: false, writable: false }); // NOSONAR: preserve the page window receiver and binding
 }

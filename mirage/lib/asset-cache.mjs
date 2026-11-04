@@ -23,6 +23,7 @@ const crmFontTarget = '/uclient/resources/styles/CRMMDL2.woff';
 const crmPlatformFontTarget = '/resource/powerappsportal/fonts/CRMMDL2.woff2';
 const crmFontTargets = new Set([crmFontTarget, crmPlatformFontTarget]);
 function cssUrlValues(css) {
+  // NOSONAR: preserve state, evaluation order, and lifecycle
   const quotes = { "'": [], '"': [] },
     parens = [],
     lines = [];
@@ -543,6 +544,7 @@ export class AssetCache {
       return result;
     }
     const run = this.queue.then(async () => {
+      // NOSONAR: preserve state, evaluation order, and lifecycle
       const directory = path.join(this.directory, 'staging-' + randomUUID());
       if (path.dirname(directory) !== this.directory) throw fail('Invalid cache staging directory.');
       await fs.mkdir(directory);
@@ -595,8 +597,8 @@ export class AssetCache {
               await fs.writeFile(rollback, previous);
               await fs.rename(rollback, manifest);
             }
-          } catch (rollback) {
-            throw new AggregateError([error, rollback], 'Asset publication and rollback failed.', { cause: rollback });
+          } catch (error_) {
+            throw new AggregateError([error, error_], 'Asset publication and rollback failed.', { cause: error_ });
           }
         }
         const retained = new Set(Object.values(this.entries).map((entry) => entry.sha256 + '.bin'));

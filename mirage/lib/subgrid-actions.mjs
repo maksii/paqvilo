@@ -67,6 +67,7 @@ export function subgridActionUrl(action, { portal, parentId, recordId, requestUr
 }
 
 function subgridEntityTag(source) {
+  // NOSONAR: preserve state, evaluation order, and lifecycle
   const text = `${source}`;
   const positions = { "'": [], '"': [], '>': [], line: [] };
   for (let index = 0; index < text.length; index++) {

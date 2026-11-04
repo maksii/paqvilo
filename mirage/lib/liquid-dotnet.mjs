@@ -219,7 +219,7 @@ function parseInt32(text) {
 }
 /** Decimal parsing (NumberStyles.Number: sign, thousands separators, decimal point). */
 function parseNetDecimal(text) {
-  const match = /^([+-]?)((?:\d{1,3}(?:,\d{3})+|\d+)?)(?:\.(\d+))?$/.exec(String(text).trim());
+  const match = /^([+-]?)((?:\d{1,3}(?:,\d{3})+|\d+)?)(?:\.(\d+))?$/.exec(String(text).trim()); // NOSONAR: preserve the exact grammar and captured values
   if (!match || (!match[2] && !match[3])) throw formatError();
   return NetDecimal.parse(`${match[1]}${(match[2] || '0').replaceAll(',', '')}${match[3] ? '.' + match[3] : ''}`);
 }

@@ -6,10 +6,9 @@ import { runInNewContext } from 'node:vm';
 const source = readFileSync(new URL('../lib/pages-client-api.js', import.meta.url), 'utf8');
 const start = source.indexOf('function replaceNamePlaceholders(');
 const end = source.indexOf('  const warned = new Set();', start);
-assert.ok(start >= 0 && end > start);
-const replace = runInNewContext(`(${source.slice(start, end).trim()})`);
-
 test('name placeholders preserve empty and nested opening braces', () => {
+  assert.ok(start >= 0 && end > start);
+  const replace = runInNewContext(`(${source.slice(start, end).trim()})`);
   assert.equal(
     replace('{} {x} {{y}', (key) => `[${key}]`),
     '{} [x] [{y]',

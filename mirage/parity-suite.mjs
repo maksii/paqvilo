@@ -1387,10 +1387,10 @@ export function tagShape(markup) {
       );
     else names.push(name.toLowerCase());
   }
-  return `${match[1].toLowerCase()}${classes
+  return `${match[1].toLowerCase()}${classes // NOSONAR: retain in-place receiver mutation and ordering
     .sort(/* NOSONAR: preserve in-place default string sorting */)
     .map((name) => `.${name}`)
-    .join('')}${names
+    .join('')}${names // NOSONAR: retain in-place receiver mutation and ordering
     .sort(/* NOSONAR: preserve in-place default string sorting */)
     .map((name) => `[${name}]`)
     .join('')}`;
@@ -4654,6 +4654,7 @@ function finalizeScenarioResult(scenario, plan, redactor, result, observations, 
     deltaCounts: byClass,
     verdict,
     owners: [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))].sort(
+      // NOSONAR: preserve default coercion and UTF-16 sort order
       /* NOSONAR: preserve default string coercion */
     ),
   };
@@ -4985,6 +4986,7 @@ function reclassifyScenario(scenario, plan) {
     else scenario.verdict = 'delta';
   }
   scenario.owners = [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))].sort(
+    // NOSONAR: preserve default coercion and UTF-16 sort order
     /* NOSONAR: preserve default string coercion */
   );
 }

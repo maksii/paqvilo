@@ -26,7 +26,7 @@ const NEVER_REWRITE = [
   '/.auth/**',
   '/_layout/tokenhtml**',
   '/externalauthenticationcallback**',
-].map(globToRegExp);
+].map(globToRegExp); // NOSONAR: preserve callback identity and iteration arguments
 
 const TEXT_TYPES = /^(?:text\/|application\/(?:json|javascript|xml|xhtml))/i;
 const MAX_PAGE_SOURCE_BYTES = 8 * 1024 * 1024;

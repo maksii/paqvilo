@@ -56,6 +56,7 @@
   portal.UpdateValidationSummary ||= portal.SetValidationSummary;
   portal.addRoleOnCheckboxLabel ||= function (elements) {
     for (const element of jq() ? jq()(elements).toArray() : [].concat(elements ?? []))
+      // NOSONAR: concat preserves spreadability and sparse input behavior
       // NOSONAR: concat preserves caller Symbol.isConcatSpreadable semantics
       element?.setAttribute?.('role', 'none');
   };
@@ -96,13 +97,13 @@
         if (!parsed) continue;
         const value = globalThis.moment(parsed);
         const dateFormat = dotNetToMoment(
-          element.closest('[data-dateformat]')?.getAttribute('data-dateformat') || 'MMMM d, yyyy',
+          element.closest('[data-dateformat]')?.getAttribute('data-dateformat') || 'MMMM d, yyyy', // NOSONAR: read actual attributes, not inherited dataset properties
         ); // NOSONAR: actual attributes exclude inherited dataset values
         const timeFormat = dotNetToMoment(
-          element.closest('[data-timeformat]')?.getAttribute('data-timeformat') || 'h:mm tt',
+          element.closest('[data-timeformat]')?.getAttribute('data-timeformat') || 'h:mm tt', // NOSONAR: read actual attributes, not inherited dataset properties
         ); // NOSONAR: actual attributes exclude inherited dataset values
-        const format = element.getAttribute('data-format')
-          ? dotNetToMoment(element.getAttribute('data-format'))
+        const format = element.getAttribute('data-format') // NOSONAR: read actual attributes, not inherited dataset properties
+          ? dotNetToMoment(element.getAttribute('data-format')) // NOSONAR: read actual attributes, not inherited dataset properties
           : `${dateFormat} ${timeFormat}`; // NOSONAR: actual attributes exclude inherited dataset values
         element.setAttribute(
           'title',

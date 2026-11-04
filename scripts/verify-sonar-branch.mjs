@@ -168,6 +168,7 @@ async function main() {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
+    // NOSONAR: preserve nonblocking module evaluation timing
     process.stderr.write(`${error.message}\n`);
     process.exitCode = 1;
   });

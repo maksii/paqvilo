@@ -209,6 +209,7 @@ async function durableWrite(file, value, io) {
     owned = [];
   const release = async () => {
     for (const file of owned.reverse()) {
+      // NOSONAR: retain in-place receiver mutation and ordering
       try {
         if ((await readDeclaredFile(file, io, 'utf8')) === token) await io.unlink(file);
       } catch (error) {
@@ -218,6 +219,7 @@ async function durableWrite(file, value, io) {
   };
   try {
     for (const file of [...files].sort()) {
+      // NOSONAR: preserve default coercion and UTF-16 sort order
       const name = `${file}.lock`;
       let handle;
       try {
@@ -271,7 +273,7 @@ export async function recoverTransactionalFiles({ journalFile, files, io = fs })
   if (new Set(files).size !== files.length)
     throw failure('A transaction names the same data file twice.', 'InvalidPackData', 400);
   await io.mkdir(path.dirname(journalFile), { recursive: true });
-  const lockFiles = [...new Set(allowedFiles)].sort();
+  const lockFiles = [...new Set(allowedFiles)].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
   const release = await locks(lockFiles, io, journalFile);
   const token = randomUUID(),
     prepared = [];

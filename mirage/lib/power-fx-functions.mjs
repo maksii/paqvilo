@@ -1583,7 +1583,7 @@ export const FUNCTIONS = {
     min: 4,
     max: 4,
     /* NOSONAR: mixed return values are part of the contract */ fn(fx, red, green, blue, alpha) {
-      const values = [red, green, blue, alpha].map(toNumber);
+      const values = [red, green, blue, alpha].map(toNumber); // NOSONAR: preserve callback identity and iteration arguments
       const error = firstError(...values);
       if (error) return error;
       if (values.some((value, i) => !Number.isFinite(value) || value < 0 || value > (i === 3 ? 1 : 255)))

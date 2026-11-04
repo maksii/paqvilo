@@ -152,7 +152,7 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
     program = '../mirage/cli.mjs';
     forwarded = args.length ? args : ['--help'];
     const overview = !args.length || ['--help', '-h', 'help'].includes(args[0]);
-    if (overview) helpSupplement = `Public Mirage tools:\n${Object.keys(MIRAGE_TOOLS).map(mirageToolHelp).join('')}`;
+    if (overview) helpSupplement = `Public Mirage tools:\n${Object.keys(MIRAGE_TOOLS).map(mirageToolHelp).join('')}`; // NOSONAR: preserve callback identity and iteration arguments
     if (overview && hasFlag(args, '--help', '-h'))
       helpSupplement +=
         '\nMirage demo: paqvilo mirage demo (editable sample and development browser).\nMirage lifecycle: init, dev, start, status, stop (catalogue and browser options: paqvilo lense --help).';

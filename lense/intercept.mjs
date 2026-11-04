@@ -35,7 +35,7 @@ const CDP_RELEASE_MS = 5_000;
 // only a document-level boolean; no field contents or node references are stored.
 // NOSONAR: window preserves the browser WindowProxy boundary when page code reassigns globalThis.
 function installLateDraftTracker(slot, origins, binding) {
-  if (window !== window.top || !origins.includes(location.origin) || window[slot]) return;
+  if (window !== window.top || !origins.includes(location.origin) || window[slot]) return; // NOSONAR: preserve the page window receiver and binding
   let changed = false,
     pending = null;
   const navigation = window.navigation;
@@ -43,10 +43,10 @@ function installLateDraftTracker(slot, origins, binding) {
   const stop =
     typeof nativeStop === 'function' &&
     Function.prototype.toString.call(nativeStop) === 'function stop() { [native code] }'
-      ? nativeStop.bind(window)
+      ? nativeStop.bind(window) // NOSONAR: preserve the page window receiver and binding
       : null;
   let originalBinding = window[binding];
-  let notify = typeof originalBinding === 'function' ? originalBinding.bind(window) : null;
+  let notify = typeof originalBinding === 'function' ? originalBinding.bind(window) : null; // NOSONAR: preserve the page window receiver and binding
   const clear = () => {
     const previous = pending;
     pending = null;
@@ -91,6 +91,7 @@ function installLateDraftTracker(slot, origins, binding) {
   navigation?.addEventListener('navigateerror', clear);
   navigation?.addEventListener('navigatesuccess', clear);
   Object.defineProperty(window, slot, {
+    // NOSONAR: preserve the page window receiver and binding
     configurable: true,
     value: Object.freeze({
       dirty: () => changed,
@@ -99,7 +100,7 @@ function installLateDraftTracker(slot, origins, binding) {
         // CDP binding is installed. Capture the admitted function before inspection,
         // rather than permanently retaining that earlier absence.
         originalBinding = window[binding];
-        notify = typeof originalBinding === 'function' ? originalBinding.bind(window) : null;
+        notify = typeof originalBinding === 'function' ? originalBinding.bind(window) : null; // NOSONAR: preserve the page window receiver and binding
       },
       repair(destination) {
         if (!stop || !notify || typeof navigation?.addEventListener !== 'function') return false;

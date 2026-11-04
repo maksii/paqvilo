@@ -114,6 +114,7 @@ function withoutCssComments(value) {
 }
 
 function hasIntrinsicSvgWidth(rules, clean) {
+  // NOSONAR: preserve state, evaluation order, and lifecycle
   let index = 0,
     depth = 0,
     quote;

@@ -232,7 +232,7 @@ export function createRunner({ manifest, context, request, notify = () => {}, st
     const xml = `<fetch count="200"><entity name="pqvd_pluginevent">${attributes}<filter><condition attribute="pqvd_operationid" operator="eq" value="${guid(operationId)}"></condition>${freshness}</filter><order attribute="pqvd_plugineventid"></order></entity></fetch>`;
     return request({ url: `/_api/pqvd_pluginevents?fetchXml=${encodeURIComponent(xml)}`, signal });
   }
-  const actor = () => sha256({ contactId: context.contactId, roles: [...context.roles].sort() });
+  const actor = () => sha256({ contactId: context.contactId, roles: [...context.roles].sort() }); // NOSONAR: preserve default coercion and UTF-16 sort order
   async function create(table, body) {
     const response = await request({ url: `/_api/${table}`, method: 'POST', body });
     if (!response.ok) throw Object.assign(new Error(`Recorder ${table}: HTTP ${response.status}`), { response });
@@ -341,7 +341,7 @@ export function createRunner({ manifest, context, request, notify = () => {}, st
       if (stopped() || fragments.at(-1).outcome !== 'success') break;
     }
     const rows = fragments.flatMap((f) => f.rows).sort((a, b) => stable(a).localeCompare(stable(b))),
-      ids = [...new Set(rows.map((r) => r[plan.primaryId]).filter(Boolean))].sort();
+      ids = [...new Set(rows.map((r) => r[plan.primaryId]).filter(Boolean))].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
     return {
       caseId: plan.id,
       engine,
@@ -402,7 +402,7 @@ export function createRunner({ manifest, context, request, notify = () => {}, st
     if (
       engine === 'liquid' &&
       (parsed.contactId !== guid(context.contactId) ||
-        stable([...parsed.roles].sort()) !== stable([...context.roles].sort()) ||
+        stable([...parsed.roles].sort()) !== stable([...context.roles].sort()) || // NOSONAR: preserve default coercion and UTF-16 sort order
         parsed.operationId !== op.pqvd_testoperationid ||
         parsed.caseId !== plan.id ||
         parsed.datasetVersion !== manifest.datasetVersion)
@@ -520,7 +520,7 @@ export function createRunner({ manifest, context, request, notify = () => {}, st
       }
     }
     rows.sort((a, b) => stable(a).localeCompare(stable(b)));
-    const ids = [...new Set(rows.map((r) => r[plan.primaryId]).filter(Boolean))].sort();
+    const ids = [...new Set(rows.map((r) => r[plan.primaryId]).filter(Boolean))].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
     if (pagingDuplicates.length) complete = false;
     return {
       caseId: plan.id,

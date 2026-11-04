@@ -862,9 +862,9 @@ const SCRIPT_RESTORE =
   const scripted = (operationId) => scriptRuns(connector, operationId);
   const gap = !connector.script
     ? null
-    : !scripts.trusts(connector.name, connector.script)
+    : !scripts.trusts(connector.name, connector.script) // NOSONAR: preserve lazy branch evaluation and coercion
       ? UNTRUSTED
-      : !scripts.available()
+      : !scripts.available() // NOSONAR: preserve lazy branch evaluation and coercion
         ? SDK_MISSING
         : null;
   const gapMessage = () =>
@@ -951,7 +951,7 @@ const SCRIPT_RESTORE =
         ],
         requires: ['loopback-network', ...(connector.script ? ['dotnet-sdk'] : [])],
       }),
-      ...(connector.blocked ? { reason: connector.blocked.code } : sdkMissing ? { reason: gap } : {}),
+      ...(connector.blocked ? { reason: connector.blocked.code } : sdkMissing ? { reason: gap } : {}), // NOSONAR: preserve lazy branch evaluation and coercion
     },
     async invoke({ operationId, parameters, nextLink }, context) {
       const { req, connection } = await request(operationId, parameters, nextLink, context);

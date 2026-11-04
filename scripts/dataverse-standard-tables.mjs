@@ -246,7 +246,7 @@ const numberOrUndefined = (value) => (plain(value) === '' ? undefined : Number(p
 const sortObject = (object) =>
   Object.fromEntries(
     Object.keys(object)
-      .sort()
+      .sort() // NOSONAR: preserve default coercion and UTF-16 sort order
       .map((key) => [key, object[key]]),
   );
 
@@ -499,7 +499,7 @@ function parseEntityRelationship(item, logical) {
     };
   let entities;
   if (selfReferencing) entities = [logical, logical];
-  else if (item.otherEntity) entities = [logical, item.otherEntity].sort();
+  else if (item.otherEntity) entities = [logical, item.otherEntity].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
   return {
     kind: 'many-to-many',
     schemaName: item.schemaName,
@@ -601,6 +601,7 @@ function mergeRelationship(pending, rel, problems) {
 
 function collectStandardPages(pages, prefixedTables, tables, optionSets, pending, problems, stats) {
   for (const logical of Object.keys(pages).sort()) {
+    // NOSONAR: preserve default coercion and UTF-16 sort order
     const parsed = parseEntityPage(pages[logical], logical, { prefixedTables });
     problems.push(...parsed.problems);
     tables[logical] = { ...parsed.table, attributes: sortObject(parsed.attributes) };
@@ -661,6 +662,7 @@ function relationshipSurvives(name, rel, pages, tables, prefixedTables, problems
 function collectStandardRelationships(pending, pages, tables, prefixedTables, problems, stats) {
   const relationships = {};
   for (const name of [...pending.keys()].sort()) {
+    // NOSONAR: preserve default coercion and UTF-16 sort order
     const rel = pending.get(name);
     if (!relationshipSurvives(name, rel, pages, tables, prefixedTables, problems)) continue;
     relationships[name] = rel;

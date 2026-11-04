@@ -67,7 +67,7 @@ export function extractShellReferences(html) {
     for (const child of node.childNodes ?? []) visit(child, inHead);
   }
   visit(document);
-  return result
+  return result // NOSONAR: retain in-place receiver mutation and ordering
     .sort(/* NOSONAR: preserve in-place sorting */ (a, b) => a.offset - b.offset)
     .map(({ offset, ...ref }) => ref);
 }

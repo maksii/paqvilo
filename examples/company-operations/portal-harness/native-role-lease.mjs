@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { savePrivateJson } from './private-journal.mjs';
 import { snapshotHash } from './native-capture.mjs';
-const sort = (ids) => [...new Set(ids)].sort();
+const sort = (ids) => [...new Set(ids)].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
 const equal = (a, b) => JSON.stringify(sort(a)) === JSON.stringify(sort(b));
 const readRoles = async (client, contactId) =>
   client.list(

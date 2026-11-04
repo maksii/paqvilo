@@ -822,7 +822,7 @@ function parsedInventoryEntry(file, text, component, name, size) {
 }
 
 function populateDataEntryFacts(extra, text, file, component, name, size) {
-  if (text == null || !(size <= TEXT_LIMIT)) return null;
+  if (text == null || !(size <= TEXT_LIMIT)) return null; // NOSONAR: the negated comparison preserves NaN behavior
   if (component === 'connector') {
     Object.assign(extra, connectorFacts(text, file));
     return null;

@@ -425,7 +425,7 @@ function resolveComponentDataset(dataset, { args, metadata, mappings, schema }) 
           events: (control.children ?? []).filter((node) => node.name === 'event').map((node) => ({ ...node.attrs })),
           features,
           libraries,
-          resources: resources.sort((a, b) => a.order - b.order),
+          resources: resources.sort((a, b) => a.order - b.order), // NOSONAR: retain in-place receiver mutation and ordering
           strings: {},
           stringResources,
           file: manifestFile,

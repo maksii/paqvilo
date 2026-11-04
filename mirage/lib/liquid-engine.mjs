@@ -59,7 +59,7 @@ const INTEGER = /^([+-]?\d+)$/;
 function rangeParts(value) {
   const text = String(value);
   const end = text.length;
-  if (text[0] !== '(' || text[end - 1] !== ')') return null;
+  if (!text.startsWith('(') || text[end - 1] !== ')') return null;
   const inner = text.slice(1, end - 1);
   if (/\s/.test(inner)) return null;
   const separator = inner.lastIndexOf('..', inner.length - 3);
@@ -769,8 +769,8 @@ export class LiquidContext {
       if (m) {
         const text = m[1];
         if (/^[+-]?\d+(?:\.\d+)?$/.test(text)) return NetDecimal.parse(text);
-        if (/^[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(text)) return NetDecimal.parse(text.replace(/,/g, ''));
-        const parsed = Number(text.replace(/,/g, ''));
+        if (/^[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(text)) return NetDecimal.parse(text.replaceAll(',', ''));
+        const parsed = Number(text.replaceAll(',', ''));
         if (Number.isFinite(parsed)) return parsed;
         throw new LiquidError('Input string was not in a correct format.', 'System.FormatException');
       }
@@ -784,7 +784,7 @@ export class LiquidContext {
     const parts = scan(markup, VARIABLE_PARSER);
     let first = parts[0];
     if (first === undefined) return null;
-    if (first[0] === '[') {
+    if (first.startsWith('[')) {
       // Context.TryGetVariable calls Resolve(...).ToString(): a root bracket that resolves to nil throws.
       const resolved = await this.resolve(first.slice(1, -1));
       if (resolved == null)
@@ -799,7 +799,7 @@ export class LiquidContext {
     let object = found.value ?? null;
     for (let i = 1; i < parts.length; i++) {
       const raw = parts[i];
-      const bracketed = raw[0] === '[';
+      const bracketed = raw.startsWith('[');
       const part = bracketed ? await this.resolve(raw.slice(1, -1)) : raw;
       if (object instanceof KeyValuePair) {
         const numeric = isNumber(part) ? Number(part) : null;

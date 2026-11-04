@@ -339,7 +339,7 @@ function cloneFindings(directory, snapshot, output) {
   const report = JSON.parse(fs.readFileSync(path.join(output, 'jscpd-report.json'), 'utf8'));
   if (!Array.isArray(report.duplicates)) throw new Error('jscpd returned no clone inventory.');
   const findings = report.duplicates.map((clone) => {
-    const pair = [clone.firstFile, clone.secondFile].map((file) => normalize(file.name, snapshot)).sort();
+    const pair = [clone.firstFile, clone.secondFile].map((file) => normalize(file.name, snapshot)).sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
     const hash = createHash('sha256').update(clone.fragment.replaceAll('\r\n', '\n')).digest('hex');
     return { key: `${pair.join('|')}:${hash}`, files: pair, lines: clone.lines };
   });

@@ -1080,6 +1080,7 @@ function xrayBrowserImpl(data) {
         row.evidenceLabel = row.evidenceLabel.replace('Markup match:', 'Possible match:');
       }
     const ranked = rows.sort(
+      // NOSONAR: retain in-place receiver mutation and ordering
       /* NOSONAR: preserve in-place sorting */
       (a, b) =>
         Number(b.strong) - Number(a.strong) ||

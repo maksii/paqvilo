@@ -6,7 +6,7 @@ const order = (value) => {
   if (value && typeof value === 'object')
     return Object.fromEntries(
       Object.keys(value)
-        .sort()
+        .sort() // NOSONAR: preserve default coercion and UTF-16 sort order
         .map((key) => [key, order(value[key])]),
     );
   return value;

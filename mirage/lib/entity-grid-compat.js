@@ -308,6 +308,7 @@
     };
     const submit = () =>
       post(button.getAttribute('data-url') || location.href, { entityReference: reference }, { json: false }).then(
+        // NOSONAR: read actual attributes, not inherited dataset properties
         // NOSONAR: actual attributes exclude inherited dataset values
         () => location.reload(),
         () => location.reload(),
@@ -1889,7 +1890,7 @@
           currentId && currentEntity
             ? [...gridElement.querySelectorAll('.view-grid tbody tr[data-id]')].find(
                 (row) =>
-                  row.getAttribute('data-id')?.toLowerCase() === currentId &&
+                  row.getAttribute('data-id')?.toLowerCase() === currentId && // NOSONAR: read actual attributes, not inherited dataset properties
                   row.getAttribute('data-entity')?.toLowerCase() === currentEntity, // NOSONAR: actual attributes exclude inherited dataset values
               )
             : null;
@@ -1905,9 +1906,9 @@
       const row = grid.selectedRows()[0];
       if (!row) return;
       setValue(
-        row.getAttribute('data-id') ?? null,
-        row.getAttribute('data-name') ?? null,
-        row.getAttribute('data-entity') ?? null,
+        row.getAttribute('data-id') ?? null, // NOSONAR: read actual attributes, not inherited dataset properties
+        row.getAttribute('data-name') ?? null, // NOSONAR: read actual attributes, not inherited dataset properties
+        row.getAttribute('data-entity') ?? null, // NOSONAR: read actual attributes, not inherited dataset properties
       ); // NOSONAR: actual attributes exclude inherited dataset values
       hideModal(modal);
       nameInput()?.focus();
@@ -2154,7 +2155,7 @@
         const reader = new FileReader();
         reader.onload = () =>
           resolve({ name: file.name, type: file.type, content: String(reader.result).replace(/^data:[^,]*,/, '') }); // NOSONAR: stringification is intentional here
-        reader.onerror = () => reject(reader.error);
+        reader.onerror = () => reject(reader.error); // NOSONAR: forward the native FileReader rejection value
         reader.readAsDataURL(file);
       });
     const dialog = (selector) => container.querySelector(selector) || document.querySelector(selector);
@@ -2227,6 +2228,7 @@
       primary.replaceWith(replacement);
       replacement.addEventListener('click', () =>
         submit(modal, container.getAttribute('data-url-add') ?? null, {
+          // NOSONAR: read actual attributes, not inherited dataset properties
           // NOSONAR: actual attributes exclude inherited dataset values
           regardingEntityLogicalName: regarding.LogicalName,
           regardingEntityId: regarding.Id,

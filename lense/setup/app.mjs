@@ -1075,7 +1075,7 @@ const yamlScalar = (value) =>
   /^[\w./~-][\w ./@:~-]*$/.test(value) &&
   !/: |:$| $|^- /.test(value) &&
   !/^(?:true|false|null|yes|no|on|off|~)$/i.test(value) &&
-  !/^(?:[-+]?(?:\d[\d_]*\.\d+|\d(?:[\d_]*\d)?|\.\d+)(?:e[-+]?\d+)?)$/i.test(value)
+  !/^(?:[-+]?(?:\d[\d_]*\.\d+|\d(?:[\d_]*\d)?|\.\d+)(?:e[-+]?\d+)?)$/i.test(value) // NOSONAR: preserve the exact grammar and captured values
     ? value
     : JSON.stringify(value);
 const yamlBlock = (value) => value !== null && typeof value === 'object' && Object.keys(value).length > 0;

@@ -48,7 +48,7 @@
   w.ValidatorHookupControlID = function (controlID, val) {
     if (typeof controlID !== 'string') return;
     const control = document.getElementById(controlID);
-    if (control !== undefined && control != null) w.ValidatorHookupControl(control, val);
+    if (control != null) w.ValidatorHookupControl(control, val);
     else {
       val.isvalid = true;
       val.enabled = false;
@@ -466,7 +466,7 @@
           size: file.size,
           content: String(reader.result).replace(/^data:[^,]*,/, ''), // NOSONAR: stringification is intentional here
         });
-      reader.onerror = () => reject(reader.error);
+      reader.onerror = () => reject(reader.error); // NOSONAR: forward the native FileReader rejection value
       reader.readAsDataURL(file);
     });
   const radios = (field, element) => [

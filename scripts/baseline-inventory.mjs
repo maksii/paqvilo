@@ -181,7 +181,7 @@ async function loadExport(tables, classids) {
       state: tag(data, 'StateCode'),
       triggerScope: tag(data, 'ProcessTriggerScope'),
       triggerForm: bare(tag(data, 'ProcessTriggerFormId')),
-      activities: [...new Set([...xaml.matchAll(/<(?:mcwc|mxswa):(Set\w+)/g)].map((m) => m[1]))].sort(),
+      activities: [...new Set([...xaml.matchAll(/<(?:mcwc|mxswa):(Set\w+)/g)].map((m) => m[1]))].sort(), // NOSONAR: preserve default coercion and UTF-16 sort order
       clears: /Value="\[Nothing\]"/.test(xaml),
     });
   }
@@ -365,7 +365,7 @@ async function loadFixture() {
 }
 
 const pagesFor = (formPages, ...names) =>
-  [...new Set(names.flatMap((name) => [...(formPages.get(name) ?? [])]))].sort();
+  [...new Set(names.flatMap((name) => [...(formPages.get(name) ?? [])]))].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
 const brief = (names, limit = 6) =>
   names.length > limit ? `${names.slice(0, limit).join(', ')} … (${names.length} in all)` : names.join(', ');
 const unique = (values) => [...new Set(values)];
@@ -1598,7 +1598,7 @@ function addSpecialControlRows({ controls, cells, exported, F, add, itemPages, i
     unique(readSteps.map((step) => (step.read.statecode === 1 ? 'disabled' : 'enabled'))),
     itemPages,
   );
-  const sources = unique(readSteps.map((step) => step.read.invocationSource)).sort();
+  const sources = unique(readSteps.map((step) => step.read.invocationSource)).sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
   const exportAgrees = readSteps.every((step) => step.exported?.invocationSource === step.read.invocationSource);
   add(
     'dv.plugin.invocation-source',
@@ -1630,7 +1630,7 @@ function addSpecialControlRows({ controls, cells, exported, F, add, itemPages, i
     return lookup.lookupStyle === 'polymorphic' ? 'multi-table' : 'simple';
   };
   const relationshipPages = (list) =>
-    unique(list.flatMap((r) => [...(pages[r.referencing] ?? []), ...(pages[r.referenced] ?? [])])).sort();
+    unique(list.flatMap((r) => [...(pages[r.referencing] ?? []), ...(pages[r.referenced] ?? [])])).sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
   const oneToMany = ownRelationships.filter((r) => r.type === 'OneToMany');
   const oneToManyText = oneToMany
     .map((r) => {
@@ -2123,7 +2123,7 @@ function powerPagesComponentLines(component, items, rows, notExpressed, caveats)
       })
       .join('; ');
     const recordPages = unique(records.map((record) => record.path).filter(Boolean))
-      .sort()
+      .sort() // NOSONAR: preserve default coercion and UTF-16 sort order
       .join(', ');
     const caveat = caveats.has(item.id) ? ` — caveat: ${escapeCell(caveats.get(item.id))}` : '';
     lines.push(

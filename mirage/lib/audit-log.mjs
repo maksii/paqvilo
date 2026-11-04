@@ -10,7 +10,7 @@ const limitText = (value, limit = 12000) => String(value ?? '').slice(0, limit);
 // The variable-length prefix of secret/token names is scanned backwards only after a
 // complete key/value match. This keeps malformed long identifiers linear.
 const secretAssignment =
-  /((password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|signature)["']?\s*(?:=|:|\beq\b)\s*)(?:"[^"]*"|'[^']*'|[^\s&<>;,]+)/gi;
+  /((password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|signature)["']?\s*(?:=|:|\beq\b)\s*)(?:"[^"]*"|'[^']*'|[^\s&<>;,]+)/gi; // NOSONAR: preserve the exact grammar and captured values
 
 function redactSecretAssignments(text) {
   let cursor = 0;

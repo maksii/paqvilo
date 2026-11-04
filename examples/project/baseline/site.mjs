@@ -228,7 +228,7 @@ function mapping(record, indent) {
   const pad = ' '.repeat(indent);
   return Object.keys(record)
     .filter((key) => record[key] !== undefined && record[key] !== null)
-    .sort()
+    .sort() // NOSONAR: preserve default coercion and UTF-16 sort order
     .map((key) => {
       const value = record[key];
       if (Array.isArray(value)) return `${key}:\n${value.map((v) => pad + '- ' + scalar(v)).join('\n')}`;

@@ -1814,7 +1814,7 @@ function singleColumn(result) {
         }
         if (r === null) unknown = true;
       }
-      const result = found ? true : unknown ? null : false;
+      const result = found ? true : unknown ? null : false; // NOSONAR: preserve lazy branch evaluation and coercion
       return node.negated ? not3(result) : result;
     }
     case 'Between': {

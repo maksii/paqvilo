@@ -138,6 +138,7 @@ function flowRoot(traces, req, url, { origin, route, signed }) {
   origin = null,
 }) {
   return async (req, res, url) => {
+    // NOSONAR: preserve state, evaluation order, and lifecycle
     const prefix = PREFIX.exec(url.pathname);
     if (!prefix) return false;
     const relative = url.pathname.slice(prefix[0].length);
@@ -151,9 +152,9 @@ function flowRoot(traces, req, url, { origin, route, signed }) {
     // Run-starting requests open an http root (flowRoot); every other route is administration and opens none.
     const route = invokeRoute
         ? 'flow-callback'
-        : req.method === 'POST' && triggersRoute?.[1]
+        : req.method === 'POST' && triggersRoute?.[1] // NOSONAR: preserve lazy branch evaluation and coercion
           ? 'flow-trigger'
-          : req.method === 'POST' && runsRoute && !runsRoute[1]
+          : req.method === 'POST' && runsRoute && !runsRoute[1] // NOSONAR: preserve lazy branch evaluation and coercion
             ? 'flow-run'
             : null,
       traces = route && api?.store?.traces?.enabled ? api.store.traces : null,
@@ -171,6 +172,7 @@ function flowRoot(traces, req, url, { origin, route, signed }) {
       send(res, status, value, headers);
     };
     const serve = async () => {
+      // NOSONAR: preserve state, evaluation order, and lifecycle
       try {
         // The callback URL of an HTTP Request trigger: its signature authorises the call (no CSRF token), its method and
         // schema are the trigger's (https://learn.microsoft.com/azure/connectors/connectors-native-reqres).

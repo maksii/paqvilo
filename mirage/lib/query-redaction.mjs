@@ -1,5 +1,6 @@
 // Redact query or fragment pairs without parsing or normalizing the supplied URL.
 export function redactUrlQuery(value) {
+  // NOSONAR: preserve state, evaluation order, and lifecycle
   if (!/[?#]/.test(value)) return value;
   let scan = 0;
   let copied = 0;

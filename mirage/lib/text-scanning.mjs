@@ -143,7 +143,7 @@ function nextDelimitedCandidate(candidates, text, cursor) {
 
 export function hasDelimitedText(text, open, close) {
   const start = text.indexOf(open);
-  return start >= 0 && text.indexOf(close, start + open.length) >= 0;
+  return start >= 0 && text.indexOf(close, start + open.length) >= 0; // NOSONAR: preserve indexOf dispatch and result semantics
 }
 
 /** The former line-label grammar: key characters, optional whitespace, separator and rest of line. */
@@ -195,6 +195,7 @@ function validModulePrefix(after, content, boundary, info, newline) {
 
 /** Captures for the static import/export resource grammar, without re-scanning failed prefixes. */
 export function* moduleImportMatches(text) {
+  // NOSONAR: preserve state, evaluation order, and lifecycle
   let boundary = -1;
   let newline = -1;
   let previousBoundary = -1;

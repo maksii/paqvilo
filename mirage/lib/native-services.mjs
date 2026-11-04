@@ -2025,9 +2025,9 @@ async function serveSolutionWebResource(req, res, url, context) {
   // The platform's /xrm-adx/samples/ images are static files too.
   const kind = localAspNetScript(url)
     ? 'axd'
-    : manager
+    : manager // NOSONAR: preserve lazy branch evaluation and coercion
       ? 'resource-manager'
-      : /^\/(?:js|xrm-adx\/(?:js|samples)|areas\/entitylist)\//.test(key)
+      : /^\/(?:js|xrm-adx\/(?:js|samples)|areas\/entitylist)\//.test(key) // NOSONAR: preserve lazy branch evaluation and coercion
         ? 'static'
         : null;
   // A local equivalent file dates its response by its own modification time, so a browser reuses
@@ -2051,7 +2051,7 @@ async function serveSolutionWebResource(req, res, url, context) {
     headers['content-type'] = localAspNetScript(url).contentType;
   // Calendar assets: scripts and stylesheets cache for a week, templates are not cached.
   if (/^\/areas\/entitylist\/(?:css|js)\//.test(key)) headers['cache-control'] = 'public,max-age=604800';
-  if (/^\/areas\/entitylist\/tmpls\//.test(key))
+  if (key.startsWith('/areas/entitylist/tmpls/'))
     Object.assign(headers, {
       'cache-control': 'no-cache, no-store, must-revalidate',
       expires: '-1',
@@ -2062,7 +2062,7 @@ async function serveSolutionWebResource(req, res, url, context) {
     ...headers,
     'x-sim-resource-provider': placeholder?.partial
       ? 'local-platform-partial'
-      : placeholder
+      : placeholder // NOSONAR: preserve lazy branch evaluation and coercion
         ? 'local-platform-placeholder'
         : 'local-platform-equivalent',
   });
@@ -2577,7 +2577,7 @@ const fileSizeDisplay = (bytes) =>
         HasAttachment: Boolean(row.filename),
         Subject: row.subject ?? '',
         // The platform wraps the note text in a paragraph.
-        Text: `<p>${text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]).replace(/\n/g, '<br />')}</p>`,
+        Text: `<p>${text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]).replaceAll('\n', '<br />')}</p>`,
         UnformattedText: text,
         IsPostedByCurrentUser: mine,
         PostedByName: /by (.*?) \[contact:/i.exec(row.subject ?? '')?.[1] ?? row.createdby?.name ?? '',

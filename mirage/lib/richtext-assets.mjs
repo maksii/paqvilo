@@ -377,6 +377,7 @@ export function extractManagedRichTextControls(html) {
   const seen = new Set(),
     bodies = new Map();
   const capture = async (paths) => {
+    // NOSONAR: preserve state, evaluation order, and lifecycle
     const planned = [];
     for (const path of paths) {
       if (seen.has(path)) continue;
@@ -597,12 +598,12 @@ export function extractManagedRichTextControls(html) {
   for (const path of languageScripts) {
     const script = bodies.get(path)?.toString('utf8') ?? '';
     for (const match of script.matchAll(
-      /CKEDITOR\s*\.\s*lang\s*(?:\[\s*['"]([a-z]{2}(?:-[a-z]{2})?)['"]\s*\]|\.\s*([a-z]{2}(?:-[a-z]{2})?))\s*=\s*\{/gi,
+      /CKEDITOR\s*\.\s*lang\s*(?:\[\s*['"]([a-z]{2}(?:-[a-z]{2})?)['"]\s*\]|\.\s*([a-z]{2}(?:-[a-z]{2})?))\s*=\s*\{/gi, // NOSONAR: preserve the exact grammar and captured values
     ))
       bundledLanguages.add((match[1] ?? match[2]).toLowerCase());
   }
   if (!bundledLanguages.size && library) await capture([editor + 'lang/editor-language-resources.js']);
-  result.bundledLanguages = [...bundledLanguages].sort();
+  result.bundledLanguages = [...bundledLanguages].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
   if (observed.fonts.length) {
     try {
       const report = await cache.captureOfficeFonts(observed.fonts, {

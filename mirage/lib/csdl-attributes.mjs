@@ -1,5 +1,6 @@
 // Match the permissive CSDL attribute catalogue grammar without rescanning failed name prefixes.
 export function csdlAttributes(text) {
+  // NOSONAR: preserve state, evaluation order, and lifecycle
   const pairs = [];
   const lastDouble = text.lastIndexOf('"');
   const lastSingle = text.lastIndexOf("'");

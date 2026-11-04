@@ -16,7 +16,7 @@ const capturedInventory = (capture) => {
   const { archive: ignoredArchive, history: ignoredHistory, ...inventory } = capture; // NOSONAR: binding is excluded from the rest object or is a placeholder
   return inventory;
 };
-const roleNames = (values) => [...new Set(values)].sort();
+const roleNames = (values) => [...new Set(values)].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
 const snapshotFields = [
   'permissionSnapshotHash',
   'membershipSnapshotHash',

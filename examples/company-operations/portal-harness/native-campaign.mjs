@@ -71,7 +71,7 @@ export function continuationCases(capture, manifest) {
     if (!plan) throw new Error('Continuation request is outside the frozen query catalogue.');
     addPendingContinuation(capture, request, plan, pending);
   }
-  return [...pending].sort();
+  return [...pending].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
 }
 function addPendingContinuation(capture, request, plan, pending) {
   if (request.lane === 'liquid') {

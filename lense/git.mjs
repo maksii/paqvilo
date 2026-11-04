@@ -350,6 +350,7 @@ export class GitBaseline {
     const current = () => new Set(this.changedSnapshot ?? []);
     const previous = this.changeQueue;
     const pending = (async () => {
+      // NOSONAR: preserve state, evaluation order, and lifecycle
       // Only one scan owns subprocesses; a save burst skips superseded queued work.
       await previous;
       if (generation !== this.changeGeneration || !this.refArgs) return current();

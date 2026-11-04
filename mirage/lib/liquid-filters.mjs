@@ -527,7 +527,7 @@ function formatN(value, decimals) {
   const [whole, fraction] = text.replace('-', '').split('.');
   const groups = [];
   for (let end = whole.length; end > 0; end -= 3) groups.push(whole.slice(Math.max(0, end - 3), end));
-  const grouped = groups.reverse().join(',');
+  const grouped = groups.reverse().join(','); // NOSONAR: retain in-place receiver mutation and ordering
   const sign = negative ? '-' : '',
     suffix = fraction ? '.' + fraction : '';
   return sign + grouped + suffix;

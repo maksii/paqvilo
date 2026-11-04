@@ -1384,6 +1384,7 @@ export class HtmlRewriter {
     if (external) {
       // Retaining async/defer/integrity after adding src changes execution or blocks the local script.
       const attrs = m[2].replace(/(?<!\s)\s+([^\s=/'"<>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g, (whole, name) =>
+        // NOSONAR: preserve the exact grammar and captured values
         /^(?:async|defer|integrity)$/i.test(name) ? '' : whole,
       );
       replacement = `<${m[1]}${attrs} src="${inlineScriptUrl(src.rel)}"></${m[1]}>`;

@@ -416,7 +416,7 @@ async function composeOrganizationRuntime({
     api.diagnostic.flush();
     if (extensions.length) await change(seedSecurity);
   } catch (error) {
-    await close().catch((cleanup) => log('organization-cleanup', cleanup));
+    await close().catch((error_) => log('organization-cleanup', error_));
     throw error;
   }
   // The organization the seeded organization row carries (settings.organizationId is null at runtime).

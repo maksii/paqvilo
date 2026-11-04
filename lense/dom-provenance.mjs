@@ -1,7 +1,7 @@
 /** Early owned-browser instrumentation. Arguments/text/values never enter evidence. */
 // NOSONAR: window preserves the browser WindowProxy boundary when page code reassigns globalThis.
 export function installDomProvenance({ slot, secret, binding, limit = 10000 } = {}) {
-  if (!slot || !secret || !binding || Object.hasOwn(window, slot)) return;
+  if (!slot || !secret || !binding || Object.hasOwn(window, slot)) return; // NOSONAR: preserve the page window receiver and binding
   // Serialized into the page with this function, so it must stay nested here.
   /* NOSONAR */ function stackFrameOf(raw, match, methods, NativeEncoder) {
     const { apply, stringSlice, digest, subtle, encode } = methods;
@@ -163,7 +163,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       frames[index] = frame;
       if (--remaining || closed || !has(pending, record.id)) return;
       try {
-        apply(emit, window, [apply(stringify, JSON, [{ version: 1, secret, id: record.id, relationship, frames }])]);
+        apply(emit, window, [apply(stringify, JSON, [{ version: 1, secret, id: record.id, relationship, frames }])]); // NOSONAR: preserve the page window receiver and binding
       } catch {
         record.reason = 'callsite-unavailable';
         apply(mapDelete, pending, [record.id]);
@@ -447,7 +447,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       result.availability[0] = { reason: record.reason ?? transportLimit ?? 'creation-proof-pending' };
       return result;
     }
-    const proof = apply(clone, window, [record.proof]);
+    const proof = apply(clone, window, [record.proof]); // NOSONAR: preserve the page window receiver and binding
     if (typeof proof.reason === 'string' && apply(regexExec, /^[a-z][a-z0-9-]{0,127}$/, [proof.reason]))
       result.availability[0] = { reason: proof.reason };
     result.sourceRefs = proof.sourceRefs ?? [];
@@ -476,7 +476,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
     const record = get(pending, id);
     if (closed || !record || !proof || typeof proof !== 'object' || array(proof)) return false;
     try {
-      record.proof = apply(clone, window, [proof]);
+      record.proof = apply(clone, window, [proof]); // NOSONAR: preserve the page window receiver and binding
     } catch {
       return false;
     }
@@ -532,5 +532,5 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       return writer;
     },
   });
-  define(window, slot, { value: reader, configurable: false, writable: false });
+  define(window, slot, { value: reader, configurable: false, writable: false }); // NOSONAR: preserve the page window receiver and binding
 }

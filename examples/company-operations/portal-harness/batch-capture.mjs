@@ -12,7 +12,7 @@ export function decodeBatchResponse(body, { operations, actor, roles, datasetVer
   const find = (node, name) =>
     node.name === name ? node : node.children.map((child) => find(child, name)).find(Boolean);
   const seen = new Set(),
-    expectedRoles = [...roles].sort();
+    expectedRoles = [...roles].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
   return root.children.map((node) => {
     if (node.name !== 'co-test-response') throw new Error('Unexpected batch child envelope.');
     const id = node.attrs['operation-id'],

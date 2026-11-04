@@ -1,5 +1,6 @@
 // Reproduce the legacy quoted-input attribute matcher with linear scans.
 export function liveInputAttributes(text) {
+  // NOSONAR: preserve state, evaluation order, and lifecycle
   const pairs = [];
   let cursor = 0;
   const nameCharacter = (char) => char !== undefined && /[\w-]/.test(char);

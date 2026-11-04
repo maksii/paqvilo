@@ -1014,10 +1014,10 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
       fail(`Field '${key}' is not bound to this native form`, 403, 'FormFieldNotBound');
     values[key] = value;
     changed[column] = binding
-      ? value === null
+      ? value === null // NOSONAR: preserve lazy branch evaluation and coercion
         ? null
-        : typeof value === 'string'
-          ? decodeURIComponent(value.match(/\(([^()]*)\)$/)?.[1] ?? value)
+        : typeof value === 'string' // NOSONAR: preserve lazy branch evaluation and coercion
+          ? decodeURIComponent(value.match(/\(([^()]*)\)$/)?.[1] ?? value) // NOSONAR: preserve receiver match dispatch and captured values
           : value
       : value;
   }
@@ -1193,13 +1193,13 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
       if (control === 'email' && (typeof value !== 'string' || !/^[^\s@<>]+@[^\s@<>]+$/.test(value)))
         invalid(field, 'FormFieldInvalid', field.validationMessage || `${field.label} must be a valid email address.`);
       if (['integer', 'decimal', 'double', 'money'].includes(control)) {
-        const number = typeof value === 'number' ? value : NaN;
+        const number = typeof value === 'number' ? value : Number.NaN;
         const exact = nativePostback && isExactNumeric(value) ? decimalParts(value) : null;
         const valid = exact
           ? control !== 'double' && (control !== 'integer' || exact.scale === 0)
           : Number.isFinite(number) && (control !== 'integer' || Number.isInteger(number));
         if (!valid) {
-          const kind = control === 'integer' ? 'integer' : control === 'double' ? 'floating-point' : 'decimal';
+          const kind = control === 'integer' ? 'integer' : control === 'double' ? 'floating-point' : 'decimal'; // NOSONAR: preserve lazy branch evaluation and coercion
           invalid(
             field,
             'FormFieldInvalid',
@@ -1226,7 +1226,7 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
         const clockDateOnly = behavior === 'DateOnly' && field.prepopulateType === 100000001;
         const native = clockDateOnly
           ? /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z?$/
-          : behavior === 'UserLocal'
+          : behavior === 'UserLocal' // NOSONAR: preserve lazy branch evaluation and coercion
             ? /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/
             : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}$/;
         if (typeof value !== 'string' || !parseDateValue(value) || (!assigned.has(key) && !native.test(value)))
@@ -1252,6 +1252,7 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
         }
         const match = expression.exec(value);
         if (!match || match[0] !== value)
+          // NOSONAR: retain the existing falsy-value guard and short circuit
           invalid(field, 'FormFieldInvalid', field.patternMessage || `${field.label} is not valid.`);
       }
       if (field.maxLength && !field.richText && value.length > Number(field.maxLength))
@@ -1284,12 +1285,12 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
         let referenceId = query[parameter];
         if (portalField(componentMetadata, 'referencequerystringisprimarykey') === false) {
           const attribute = portalField(componentMetadata, 'referencequeryattributelogicalname');
-          if (!/^[a-z_][\w]*$/i.test(attribute ?? ''))
+          if (!/^[a-z_]\w*$/i.test(attribute ?? ''))
             fail('Entity reference query attribute is invalid', 501, 'FormReferenceUnresolved');
           const targetMapping = store.resolveMapping(entity);
           const found = await readProvider.query(
             entity,
-            { $filter: `${attribute} eq '${String(referenceId).replace(/'/g, "''")}'`, $top: 1 },
+            { $filter: `${attribute} eq '${String(referenceId).replaceAll("'", "''")}'`, $top: 1 },
             identity,
           );
           referenceId = found.value?.[0]?.[targetMapping.idColumn];
@@ -1426,7 +1427,7 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
         ? Buffer.from(JSON.stringify({ Name: file.name, Type: placeholder.type, Size: size, Url: placeholder.key }))
         : null;
       notes.push((savedId) => ({
-        subject: `Note created on ${now().toLocaleString('en-US', { timeZone: 'UTC', hour12: true, month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' }).replace(',', '')} UTC by ${fullname}${contactId ? ` [contact:${contactId}]` : ''}`,
+        subject: `Note created on ${now().toLocaleString('en-US', { timeZone: 'UTC', hour12: true, month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' }).replace(',', '')} UTC by ${fullname}${contactId ? ` [contact:${contactId}]` : ''}`, // NOSONAR: preserve template coercion and selected evaluation
         notetext: notesFilter(portal),
         objecttypecode: schema.entity,
         ...(stored
