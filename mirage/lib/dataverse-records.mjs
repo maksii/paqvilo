@@ -22,7 +22,13 @@ import { upsertSourceOperation } from './plugin-delegation.mjs';
 import { initializePluginOperation } from './plugin-operation-context.mjs';
 import { bulkTargetsCollection } from './plugin-single-multiple.mjs';
 import { isElastic, recordKey, samePartition } from './dataverse-elastic.mjs';
-import { notInTarget, parseEntityReference, parseFetchXml, uncheckedLookup } from './data.mjs';
+import {
+  notInTarget,
+  parseEntityReference,
+  parseFetchXml,
+  uncheckedLookup,
+  withUpsertClassificationIndex,
+} from './data.mjs';
 import { sdkValueToRecord } from './local-organization-service.mjs';
 import { DATAVERSE_SYSTEM_COLUMNS, parseXmlDocument, webApiPagingCookie } from './fetchxml-engine.mjs';
 import {
@@ -2881,19 +2887,21 @@ export function createRecordHandlers({
         creates = [],
         updates = [],
         created = new Set();
-      for (const [index, target] of targets.entries()) {
-        const folded = texts[index].toLowerCase();
-        if (seen.has(folded)) throw invalid('Duplicate key in Targets.', '0x80040203'); // native message text is a guess
-        seen.add(folded);
-        const key = lookupKey(c, mapping, texts[index]);
-        const values = { ...target };
-        delete values['@odata.id'];
-        if (key.row) updates.push({ ...values, [mapping.idColumn]: key.row[mapping.idColumn] });
-        else {
-          creates.push(values);
-          created.add(index);
+      withUpsertClassificationIndex(store, mapping, targets, texts, () => {
+        for (const [index, target] of targets.entries()) {
+          const folded = texts[index].toLowerCase();
+          if (seen.has(folded)) throw invalid('Duplicate key in Targets.', '0x80040203'); // native message text is a guess
+          seen.add(folded);
+          const key = lookupKey(c, mapping, texts[index]);
+          const values = { ...target };
+          delete values['@odata.id'];
+          if (key.row) updates.push({ ...values, [mapping.idColumn]: key.row[mapping.idColumn] });
+          else {
+            creates.push(values);
+            created.add(index);
+          }
         }
-      }
+      });
       // UpsertMultiple runs no steps of its own (registered UpsertMultiple steps do not fire): its main operation
       // (UpsertMultiple/30) runs the new records through the CreateMultiple pipeline, then the existing ones through
       // UpdateMultiple, whose message input carries ConcurrencyBehavior; both in its transaction, request and correlation,

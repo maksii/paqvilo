@@ -3,7 +3,7 @@ import { readFile, mkdir, rename, open, unlink, rm } from 'node:fs/promises';
 import { dirname, join, resolve, basename } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { isDeepStrictEqual } from 'node:util';
+import { isDeepStrictEqual, types as utilTypes } from 'node:util';
 import { cloneStateData } from './state-clone.mjs';
 import fsSync from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -4964,7 +4964,8 @@ export class DataStore {
     if (isElastic(mapping) || !literal.every((bucket) => typeof bucket === 'string')) return { used: false };
     const name = `ks\u0000${JSON.stringify([collation, names, kinds])}`;
     const index = this.rowKeyIndex(rows, name, keySegmentOf(names, collation, kinds), { scoped: true, wild: true });
-    if (!index || index.linear) return { used: false };
+    if (!index) return findScopedUpsertKey({ store: this, rows, names, kinds, collation, literal, name, matches });
+    if (index.linear) return { used: false };
     const bucketed = index.get(JSON.stringify(literal));
     const candidates = index.wild.length ? [...new Set([...bucketed, ...index.wild])].sort((a, b) => a - b) : bucketed;
     let first;
@@ -7173,6 +7174,259 @@ export function parseEntityReference(value) {
     origin,
   };
 }
+// Internal synchronous UpsertMultiple classification scope. Only the record handler's
+// closed classification callback may use this bridge; arbitrary callbacks can mutate rows.
+const upsertLookupScopes = new WeakMap();
+const upsertMethods = [
+  'findByKey',
+  'tableRows',
+  'virtualTable',
+  'querySettings',
+  'fiscalSettings',
+  'fieldDefinition',
+  'resolveMapping',
+  'findIndexedKeyRow',
+  'rowKeyIndex',
+  'dropRowKeyIndex',
+];
+const upsertDescriptors = new Map(
+  ['state', ...upsertMethods].map((name) => [name, Object.getOwnPropertyDescriptor(DataStore.prototype, name)]),
+);
+const upsertProviders = new Map(
+  ['virtualTables', 'expiryFilter', 'observed'].map((name) => [
+    name,
+    Object.getOwnPropertyDescriptor(DataStore.prototype, name),
+  ]),
+);
+const upsertPrototypeParent = Object.getPrototypeOf(DataStore.prototype);
+const upsertPrototypeDescriptors = Object.getOwnPropertyDescriptors(DataStore.prototype);
+const upsertPrototypeKeys = Reflect.ownKeys(upsertPrototypeDescriptors);
+const ownData = (object, name) => {
+  const descriptor = Object.getOwnPropertyDescriptor(object, name);
+  return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor : null;
+};
+function inertUpsertGraph(root, budget) {
+  const seen = new WeakSet(),
+    pending = [root];
+  while (pending.length) {
+    const value = pending.pop();
+    if (value === null || value === undefined || ['string', 'number', 'boolean', 'bigint'].includes(typeof value))
+      continue;
+    if (typeof value !== 'object' || utilTypes.isProxy(value)) return false;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    if (!visitInertUpsertObject(value, pending, budget)) return false;
+  }
+  return true;
+}
+function visitInertUpsertObject(value, pending, budget) {
+  const prototype = Object.getPrototypeOf(value);
+  if (Array.isArray(value) ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null)
+    return false;
+  const array = Array.isArray(value);
+  const length = array ? Object.getOwnPropertyDescriptor(value, 'length').value : 0;
+  // Refuse large arrays before allocating their list of keys.
+  if (array && length > budget.remaining) return false;
+  const keys = Reflect.ownKeys(value);
+  budget.remaining -= keys.length;
+  if (budget.remaining < 0 || (array && keys.length - 1 !== length)) return false;
+  return enqueueInertUpsertProperties(value, keys, pending);
+}
+function enqueueInertUpsertProperties(value, keys, pending) {
+  for (const name of keys) {
+    if (
+      Array.isArray(value) &&
+      name !== 'length' &&
+      (typeof name !== 'string' || !/^(?:0|[1-9]\d*)$/.test(name) || Number(name) >= 4294967295)
+    )
+      return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, name);
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) return false;
+    if (typeof name === 'symbol') return false;
+    pending.push(descriptor.value);
+  }
+  return true;
+}
+function isAsciiString(value) {
+  if (typeof value !== 'string') return false;
+  for (let index = 0; index < value.length; index++) if (value.charCodeAt(index) > 0x7f) return false;
+  return true;
+}
+function sameUpsertPrototype() {
+  if (Object.getPrototypeOf(DataStore.prototype) !== upsertPrototypeParent) return false;
+  const prototypeKeys = Reflect.ownKeys(DataStore.prototype);
+  if (prototypeKeys.length !== upsertPrototypeKeys.length) return false;
+  for (const name of upsertPrototypeKeys) {
+    const expected = upsertPrototypeDescriptors[name];
+    const actual = Object.getOwnPropertyDescriptor(DataStore.prototype, name);
+    if (
+      !actual ||
+      actual.value !== expected.value ||
+      actual.get !== expected.get ||
+      actual.set !== expected.set ||
+      actual.writable !== expected.writable ||
+      actual.enumerable !== expected.enumerable ||
+      actual.configurable !== expected.configurable
+    )
+      return false;
+  }
+  return true;
+}
+function sameUpsertMethodDescriptors(store) {
+  for (const [name, expected] of upsertDescriptors) {
+    if (Object.getOwnPropertyDescriptor(store, name)) return false;
+    const actual = Object.getOwnPropertyDescriptor(DataStore.prototype, name);
+    if (!actual || actual.value !== expected.value || actual.get !== expected.get || actual.set !== expected.set)
+      return false;
+  }
+  for (const [name, expected] of upsertProviders) {
+    const actual = Object.getOwnPropertyDescriptor(DataStore.prototype, name);
+    if (
+      actual?.value !== expected?.value ||
+      actual?.get !== expected?.get ||
+      actual?.set !== expected?.set ||
+      Boolean(actual) !== Boolean(expected)
+    )
+      return false;
+  }
+  return true;
+}
+function isStandardUpsertStore(store) {
+  if (
+    !store ||
+    typeof store !== 'object' ||
+    utilTypes.isProxy(store) ||
+    Object.getPrototypeOf(store) !== DataStore.prototype
+  )
+    return false;
+  if (!sameUpsertPrototype()) return false;
+  return sameUpsertMethodDescriptors(store);
+}
+function findScopedUpsertKey({ store, rows, names, kinds, collation, literal, name, matches }) {
+  const scoped = upsertLookupScopes.get(store);
+  if (
+    scoped?.active &&
+    scoped.rows === rows &&
+    names.length === 1 &&
+    names[0] === scoped.key &&
+    kinds[scoped.key] === 'string' &&
+    typeof collation === 'string'
+  ) {
+    let cached = scoped.indexes.get(name);
+    if (!cached) {
+      cached = new RowKeyIndex(rows, keySegmentOf(names, collation, kinds));
+      scoped.indexes.set(name, cached);
+    }
+    if (!cached.linear) {
+      const [position] = cached.get(JSON.stringify(literal));
+      if (position === undefined) return { used: true, row: undefined };
+      const row = rows[position];
+      if (row !== undefined && matches(row)) return { used: true, row };
+      return { used: false };
+    }
+  }
+  return { used: false };
+}
+function eligibleUpsertGraphs(store, stateSlot, mapping, targets, texts, budget) {
+  const observed = Object.getOwnPropertyDescriptor(store, 'observed');
+  if (observed && (!Object.hasOwn(observed, 'value') || !inertUpsertGraph(observed.value, budget))) return null;
+  const state = stateSlot.value;
+  if (
+    !inertUpsertGraph(state, budget) ||
+    !inertUpsertGraph(mapping, budget) ||
+    !inertUpsertGraph(targets, budget) ||
+    !inertUpsertGraph(texts, budget)
+  )
+    return null;
+  return state;
+}
+function eligibleUpsertKey(texts) {
+  let key;
+  for (const text of texts) {
+    if (typeof text !== 'string') return null;
+    let parts;
+    try {
+      parts = parseKeySegment(text);
+    } catch {
+      return null;
+    }
+    if (!parts) return null;
+    const names = Object.keys(parts);
+    if (names.length !== 1 || !isAsciiString(parts[names[0]]) || !/^[^=]+=\s*'/.test(text)) return null;
+    const name = names[0];
+    if (!/^[a-z][a-z0-9_]*$/.test(name) || name.endsWith('_value') || (key !== undefined && key !== name)) return null;
+    key = name;
+  }
+  return key ?? null;
+}
+function eligibleUpsertRows(state, mapping, key) {
+  const source = ownData(state.mappings, mapping.logicalName)?.value;
+  const rows = ownData(state.tables, mapping.logicalName)?.value;
+  if (!source || !Array.isArray(rows) || !source.fields || !ownData(source.fields, key)) return null;
+  const definition = ownData(source.fields, key).value;
+  if (
+    !definition ||
+    typeof (definition.dataverseType ?? definition.type) !== 'string' ||
+    fieldKind(definition) !== 'string'
+  )
+    return null;
+  for (let i = 0; i < rows.length; i++) {
+    const entry = ownData(rows, String(i));
+    if (!entry || !entry.value || typeof entry.value !== 'object') return null;
+    const value = ownData(entry.value, key),
+      id = ownData(entry.value, mapping.idColumn);
+    if (!value || !isAsciiString(value.value) || !id || typeof id.value !== 'string') return null;
+  }
+  return rows;
+}
+function upsertLookupEligibility(store, mapping, targets, texts) {
+  if (!isStandardUpsertStore(store)) return null;
+  const stateSlot = ownData(store, '_state'),
+    isolated = ownData(store, 'isolatedCount');
+  if (!stateSlot || !isolated || isolated.value !== 0 || transactionFrameOf(store)) return null;
+  for (const name of ['virtualTables', 'expiryFilter']) {
+    const d = Object.getOwnPropertyDescriptor(store, name);
+    if (d && (!Object.hasOwn(d, 'value') || d.value != null)) return null;
+  }
+  // Limit visited descriptors by batch size and reject oversized arrays before enumeration.
+  if (!Array.isArray(texts) || utilTypes.isProxy(texts) || Object.getPrototypeOf(texts) !== Array.prototype)
+    return null;
+  const textLength = Object.getOwnPropertyDescriptor(texts, 'length').value;
+  if (textLength < 32) return null;
+  const budget = { remaining: 1024 * textLength };
+  const state = eligibleUpsertGraphs(store, stateSlot, mapping, targets, texts, budget);
+  if (!state || state.state != null || state.tableRows != null || !state.tables || !state.mappings) return null;
+  if (!Array.isArray(targets) || !Array.isArray(texts) || texts.length !== targets.length) return null;
+  const key = eligibleUpsertKey(texts);
+  if (!key) return null;
+  if (
+    !mapping ||
+    typeof mapping !== 'object' ||
+    typeof mapping.logicalName !== 'string' ||
+    typeof mapping.idColumn !== 'string' ||
+    isElastic(mapping)
+  )
+    return null;
+  const rows = eligibleUpsertRows(state, mapping, key);
+  if (rows === null) return null;
+  return { rows, key, indexes: new Map(), active: true };
+}
+export function withUpsertClassificationIndex(store, mapping, targets, texts, classify) {
+  // Even a rejected nested scope must not observe an outer scope's cached answers.
+  const previous = upsertLookupScopes.get(store);
+  // A nested callback could invalidate the outer guard. Resume it disabled.
+  if (previous) previous.active = false;
+  upsertLookupScopes.delete(store);
+  try {
+    const scope = upsertLookupEligibility(store, mapping, targets, texts);
+    if (scope) upsertLookupScopes.set(store, scope);
+    return classify();
+  } finally {
+    upsertLookupScopes.delete(store);
+    if (previous) upsertLookupScopes.set(store, previous);
+  }
+}
+
 /** Alternate key segment `a='x',b=2` as a column map; null for a primary key. */
 export function parseKeySegment(key) {
   const text = String(key ?? '').trim();

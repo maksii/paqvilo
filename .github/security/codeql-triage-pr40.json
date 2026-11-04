@@ -5,6 +5,34 @@
   "analysisId": 2078345472,
   "analysisCommit": "0f3fd6b7f8ff09f70f0117a9bc716091a0b79793",
   "policy": "This records the reviewed source and sink for the specified analysis, not a rule exclusion or automatic suppression list. Fixes and proposed dispositions require verification on the final head.",
+  "followupAnalyses": [
+    {
+      "analysisId": 2097478769,
+      "analysisCommit": "0c7c7075dee0e58f210f8a4a97ae5664c9eb5a36",
+      "headCommit": "7e89a133af6dfb4fa03f255aac4a4c84ee8cff2e",
+      "baseCommit": "e66e71544a7716b8508325d249e417680f4f6ed9",
+      "category": "/language:javascript-typescript",
+      "entries": [
+        {
+          "number": 377,
+          "rule": "js/xss-through-dom",
+          "disposition": "false-positive",
+          "previousAlertNumbers": [258, 169],
+          "source": "mirage/lib/platform-app-compat.js",
+          "sourceSha256": "4bc90fd675eaf7eca7a8e6b09538860303ac55673ec0ef74de4e3fa333bd662b",
+          "location": {
+            "line": 488,
+            "startColumn": 33,
+            "endColumn": 36
+          },
+          "primaryLocationLineHash": "ca14aa53a7d8b29d:1",
+          "evidence": "The data-page value is parsed as a URL and restricted to same-origin HTTP(S) with no double-slash-leading path. URLSearchParams serializes existing options and action-owned values are encoded; the two reported flows through the query and hash reach an iframe src navigation, not an HTML-string parser. This does not prove destination pages cannot independently reflect query data unsafely.",
+          "verification": "Two independent reviews of the exact source and both current SARIF flows; mirage/test-browser/frame-url-safety.test.mjs asserts hostile query and fragment inputs remain URL data, with no injected markup, script or external navigation.",
+          "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/377"
+        }
+      ]
+    }
+  ],
   "entries": [
     {
       "number": 361,
