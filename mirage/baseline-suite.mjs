@@ -608,16 +608,102 @@ function uncertainMutatingHook(error) {
   return null;
 }
 
-export async function captureMatrix({ matrix, side, outDir, label, ids = {}, only = null }) {
+/* NOSONAR: preserve observable side hook await ordering */ export async function captureMatrix({
+  matrix,
+  side,
+  outDir,
+  label,
+  ids = {},
+  only = null,
+}) {
   validateMatrix(matrix);
   validateCaptureLabel(label);
   const results = [];
-  const captureState = { currentPersona: Symbol('none'), failedPersonas: new Map(), blockedBy: null };
-  const selected = orderedCaptureScenarios(matrix, only);
+  let currentPersona = Symbol('none');
+  const failedPersonas = new Map();
+  let blockedBy = null;
+  // Persona switches are the expensive step on a live portal (its permission cache lags role changes by
+  // minutes), so scenarios run grouped by persona in first-appearance order; the order within a persona is kept.
+  const personaOrder = [];
+  for (const scenario of matrix.scenarios)
+    if (!personaOrder.includes(scenario.persona ?? null)) personaOrder.push(scenario.persona ?? null);
+  const selected = matrix.scenarios
+    .filter((scenario) => !only || only.includes(scenario.id))
+    .map((scenario, index) => ({ scenario, index }))
+    .sort(
+      (a, b) =>
+        personaOrder.indexOf(a.scenario.persona ?? null) - personaOrder.indexOf(b.scenario.persona ?? null) ||
+        a.index - b.index,
+    )
+    .map(({ scenario }) => scenario);
   for (const scenario of selected)
     await ensureCaptureDestination(scenarioDir(outDir, scenario, label), outDir, { create: false });
   for (const scenario of selected) {
-    const summary = await captureOneScenario({ scenario, side, captureState, outDir, ids, label });
+    const folder = scenarioDir(outDir, scenario, label);
+    const personaName = scenario.persona ?? null;
+    const summary = { id: scenario.id, folder: path.relative(outDir, folder), ms: {} };
+    let phase = null;
+    const timed = async (name, work) => {
+      phase = name;
+      const started = Date.now();
+      try {
+        return await work();
+      } finally {
+        summary.ms[name] = Date.now() - started;
+      }
+    };
+    try {
+      if (blockedBy) {
+        summary.notAttempted = true;
+        summary.blockedBy = { ...blockedBy };
+        throw new Error(
+          `Not attempted: uncertain mutating hook ${blockedBy.hook} in ${blockedBy.scenario} requires project reconciliation.`,
+        );
+      }
+      // A persona that did not take effect fails every scenario of its group at once instead of re-probing per scenario.
+      if (failedPersonas.has(personaName)) throw new Error(failedPersonas.get(personaName));
+      if (personaName !== currentPersona) {
+        try {
+          await timed('persona', () => side.persona(personaName ?? 'anonymous', { ids }));
+        } catch (error) {
+          failedPersonas.set(personaName, String(error.message));
+          throw error;
+        }
+        currentPersona = personaName;
+      }
+      if (scenario.reset !== false) await timed('reset', () => side.reset());
+      const capture = await timed('capture', () =>
+        side.capture(scenario, {
+          outDir: folder,
+          outputRoot: outDir,
+          ids,
+          label,
+          meta: {
+            persona: personaName,
+            component: scenario.component ?? null,
+            variation: scenario.variation ?? null,
+            state: scenario.state ?? null,
+          },
+        }),
+      );
+      Object.assign(summary, {
+        status: capture.status,
+        problems: capture.problems,
+        requests: capture.requests,
+        elements: capture.elements,
+        blockedWrites: capture.blockedWrites?.length ?? 0,
+      });
+    } catch (error) {
+      const hook = uncertainMutatingHook(error);
+      if (hook) {
+        blockedBy = { scenario: scenario.id, phase, hook, code: MUTATING_HOOK_FAILURE };
+        summary.uncertainHook = { hook, code: MUTATING_HOOK_FAILURE, reconciliationRequired: true };
+      }
+      Object.assign(summary, {
+        status: 'error',
+        problems: [String(error.message).slice(0, 500), ...(summary.notAttempted ? [] : side.diagnostics().slice(-3))],
+      });
+    }
     results.push(summary);
     console.log(
       JSON.stringify({
@@ -633,118 +719,6 @@ export async function captureMatrix({ matrix, side, outDir, label, ids = {}, onl
     if (!summary.notAttempted) await sleep(matrix.delayMs ?? 250);
   }
   return results;
-}
-
-function orderedCaptureScenarios(matrix, only) {
-  // Persona switches are the expensive step on a live portal (its permission cache lags role changes by
-  // minutes), so scenarios run grouped by persona in first-appearance order; the order within a persona is kept.
-  const personaOrder = [];
-  for (const scenario of matrix.scenarios)
-    if (!personaOrder.includes(scenario.persona ?? null)) personaOrder.push(scenario.persona ?? null);
-  return matrix.scenarios
-    .filter((scenario) => !only || only.includes(scenario.id))
-    .map((scenario, index) => ({ scenario, index }))
-    .sort(
-      (a, b) =>
-        personaOrder.indexOf(a.scenario.persona ?? null) - personaOrder.indexOf(b.scenario.persona ?? null) ||
-        a.index - b.index,
-    )
-    .map(({ scenario }) => scenario);
-}
-
-async function captureOneScenario({ scenario, side, captureState, outDir, ids, label }) {
-  const folder = scenarioDir(outDir, scenario, label);
-  const personaName = scenario.persona ?? null;
-  const summary = { id: scenario.id, folder: path.relative(outDir, folder), ms: {} };
-  const phaseState = { value: null };
-  try {
-    const capture = await captureScenarioWork({
-      scenario,
-      side,
-      captureState,
-      folder,
-      outDir,
-      ids,
-      label,
-      personaName,
-      summary,
-      phaseState,
-    });
-    Object.assign(summary, {
-      status: capture.status,
-      problems: capture.problems,
-      requests: capture.requests,
-      elements: capture.elements,
-      blockedWrites: capture.blockedWrites?.length ?? 0,
-    });
-  } catch (error) {
-    const hook = uncertainMutatingHook(error);
-    if (hook) {
-      captureState.blockedBy = { scenario: scenario.id, phase: phaseState.value, hook, code: MUTATING_HOOK_FAILURE };
-      summary.uncertainHook = { hook, code: MUTATING_HOOK_FAILURE, reconciliationRequired: true };
-    }
-    Object.assign(summary, {
-      status: 'error',
-      problems: [String(error.message).slice(0, 500), ...(summary.notAttempted ? [] : side.diagnostics().slice(-3))],
-    });
-  }
-  return summary;
-}
-
-async function captureScenarioWork({
-  scenario,
-  side,
-  captureState,
-  folder,
-  outDir,
-  ids,
-  label,
-  personaName,
-  summary,
-  phaseState,
-}) {
-  const timed = async (name, work) => {
-    phaseState.value = name;
-    const started = Date.now();
-    try {
-      return await work();
-    } finally {
-      summary.ms[name] = Date.now() - started;
-    }
-  };
-  if (captureState.blockedBy) {
-    summary.notAttempted = true;
-    summary.blockedBy = { ...captureState.blockedBy };
-    throw new Error(
-      `Not attempted: uncertain mutating hook ${captureState.blockedBy.hook} in ${captureState.blockedBy.scenario} requires project reconciliation.`,
-    );
-  }
-  if (captureState.failedPersonas.has(personaName)) throw new Error(captureState.failedPersonas.get(personaName));
-  if (personaName !== captureState.currentPersona) {
-    try {
-      await timed('persona', () => side.persona(personaName ?? 'anonymous', { ids }));
-    } catch (error) {
-      captureState.failedPersonas.set(personaName, String(error.message));
-      throw error;
-    }
-    captureState.currentPersona = personaName;
-  }
-  if (scenario.reset !== false) await timed('reset', () => side.reset());
-  const capture = await timed('capture', () =>
-    side.capture(scenario, {
-      outDir: folder,
-      outputRoot: outDir,
-      ids,
-      label,
-      meta: {
-        persona: personaName,
-        component: scenario.component ?? null,
-        variation: scenario.variation ?? null,
-        state: scenario.state ?? null,
-      },
-    }),
-  );
-  return capture;
 }
 
 async function main() {

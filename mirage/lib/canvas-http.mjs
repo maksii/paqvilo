@@ -162,25 +162,22 @@ function launchParameters(action) {
   return parameters;
 }
 
-async function hostedView(req, app, source, runtime, principal, csrf) {
-  if (!runtime) return '<p>This host does not run canvas apps; the inventory below is all it shows.</p>';
-  if (!source.screens.length) return '<p>The app has no readable screens; nothing runs.</p>';
-  const caller = await principal(req);
+// Synchronous preparation preserves the view's principal and observation await boundaries.
+function hostedViewForCaller(app, runtime, caller, csrf) {
   if (!caller?.principalId)
-    return '<p>Select a staff user in <a href="/_sim/">/_sim/</a> (or sign in to the portal) to run this app.</p>';
+    return {
+      hosted: '<p>Select a staff user in <a href="/_sim/">/_sim/</a> (or sign in to the portal) to run this app.</p>',
+    };
   const instance = runtime.existing(app.uniqueName, { kind: caller.kind, principalId: caller.principalId });
   if (!instance) {
     const formAction = `${API_PREFIX}${encodeURIComponent(app.uniqueName)}`;
-    return (
-      `<p>The app is not running.</p><form method="post" action="${escapeHtml(formAction)}">` +
-      `<input type="hidden" name="_csrf" value="${escapeHtml(csrf() ?? '')}"><input type="hidden" name="action" value="start"><button type="submit">Start the app</button></form>`
-    );
+    return {
+      hosted:
+        `<p>The app is not running.</p><form method="post" action="${escapeHtml(formAction)}">` +
+        `<input type="hidden" name="_csrf" value="${escapeHtml(csrf() ?? '')}"><input type="hidden" name="action" value="start"><button type="submit">Start the app</button></form>`,
+    };
   }
-  try {
-    return appView(app, await instance.observe(), csrf() ?? '');
-  } catch (error) {
-    return `<p>The app could not be read: <code>${escapeHtml(error.code ?? 'CanvasError')}</code> ${escapeHtml(error.message)}</p>`;
-  }
+  return { instance };
 }
 
 /** The headless app view (no script: every action is a form post that redirects back here). */
@@ -464,8 +461,21 @@ export function createCanvasHandler({
       diagnostics = `<ul>${items}</ul>`;
     }
     // The page never starts the app: a Start form (a CSRF-checked POST) does.
-    const hosted = await hostedView(req, app, source, runtime, principal, csrf);
-    const screens = source.screens.map((screen) => `<li>${escapeHtml(screen.name)}</li>`).join('');
+    let hosted;
+    if (!runtime) hosted = '<p>This host does not run canvas apps; the inventory below is all it shows.</p>';
+    else if (!source.screens.length) hosted = '<p>The app has no readable screens; nothing runs.</p>';
+    else {
+      const caller = await principal(req);
+      const prepared = hostedViewForCaller(app, runtime, caller, csrf);
+      hosted = prepared.hosted;
+      const instance = prepared.instance;
+      if (instance)
+        try {
+          hosted = appView(app, await instance.observe(), csrf() ?? '');
+        } catch (error) {
+          hosted = `<p>The app could not be read: <code>${escapeHtml(error.code ?? 'CanvasError')}</code> ${escapeHtml(error.message)}</p>`;
+        }
+    }
     send(
       res,
       200,
@@ -475,13 +485,58 @@ export function createCanvasHandler({
         `<h1>${escapeHtml(source.app.name)}</h1><dl>` +
           `<dt>Unique name</dt><dd>${escapeHtml(app.uniqueName)}</dd><dt>Version</dt><dd>${escapeHtml(source.app.version ?? 'unknown')}</dd>` +
           `<dt>Schema</dt><dd>${escapeHtml(source.app.schemaVersion ?? 'unknown')}</dd><dt>Formulas</dt><dd>${source.formulas.length}</dd></dl>` +
-          `<h2>Screens</h2><ul>${screens}</ul><h2>Diagnostics</h2>${diagnostics}` +
+          `<h2>Screens</h2><ul>${source.screens.map((screen) => `<li>${escapeHtml(screen.name)}</li>`).join('')}</ul><h2>Diagnostics</h2>${diagnostics}` +
           `<h2>Headless app</h2>${hosted}`,
         Boolean(runtime),
       ),
     );
   }
-  /* NOSONAR */ const handlePagePath = async (req, res, url, rest, list, find) => {
+  const handle = async (req, res, url) => {
+    const { pathname } = url;
+    // The root's actor is the principal the app runs as; an unusable session is answered by the paths that need one.
+    if (traces?.enabled)
+      try {
+        traces.current()?.setActor(traceActor(await principal(req)));
+      } catch {
+        /* no actor */
+      }
+    if (enabled() === false) {
+      once(':disabled', {
+        code: 'CANVAS_DISABLED',
+        message: 'A /_apps/canvas/ request was refused: canvas.enabled is false for this runtime.',
+      });
+      return json(res, 404, {
+        error: {
+          message: 'Canvas apps are disabled for this runtime (canvas.enabled is false).',
+          code: 'CanvasAppsDisabled',
+        },
+      });
+    }
+    const list = apps() ?? [];
+    const find = (encoded) => {
+      let name = null;
+      try {
+        name = decodeURIComponent(encoded);
+      } catch {
+        name = null;
+      }
+      return name && list.find((entry) => entry.uniqueName === name);
+    };
+    if (pathname.startsWith(API_PREFIX)) {
+      const app = /^[^/]+$/.test(pathname.slice(API_PREFIX.length)) && find(pathname.slice(API_PREFIX.length));
+      if (!app) throw failure(404, 'CanvasAppNotFound', 'Canvas app not found.');
+      return api(req, res, app);
+    }
+    if (req.method !== 'GET') {
+      res.setHeader('allow', 'GET');
+      return json(res, 405, {
+        error: {
+          message: 'Canvas app pages require GET; drive an app through POST /_apps/api/canvas/<app>.',
+          code: 'MethodNotAllowed',
+        },
+      });
+    }
+    const rest = pathname.slice(PREFIX.length);
     const assetRoute = /^([^/]+)\/assets\/([^/]+)$/.exec(rest);
     if (assetRoute) {
       const app = find(assetRoute[1]);
@@ -556,53 +611,6 @@ export function createCanvasHandler({
       );
     }
     return view(req, res, app);
-  };
-  const handle = async (req, res, url) => {
-    const { pathname } = url;
-    // The root's actor is the principal the app runs as; an unusable session is answered by the paths that need one.
-    if (traces?.enabled)
-      try {
-        traces.current()?.setActor(traceActor(await principal(req)));
-      } catch {
-        /* no actor */
-      }
-    if (enabled() === false) {
-      once(':disabled', {
-        code: 'CANVAS_DISABLED',
-        message: 'A /_apps/canvas/ request was refused: canvas.enabled is false for this runtime.',
-      });
-      return json(res, 404, {
-        error: {
-          message: 'Canvas apps are disabled for this runtime (canvas.enabled is false).',
-          code: 'CanvasAppsDisabled',
-        },
-      });
-    }
-    const list = apps() ?? [];
-    const find = (encoded) => {
-      let name = null;
-      try {
-        name = decodeURIComponent(encoded);
-      } catch {
-        name = null;
-      }
-      return name && list.find((entry) => entry.uniqueName === name);
-    };
-    if (pathname.startsWith(API_PREFIX)) {
-      const app = /^[^/]+$/.test(pathname.slice(API_PREFIX.length)) && find(pathname.slice(API_PREFIX.length));
-      if (!app) throw failure(404, 'CanvasAppNotFound', 'Canvas app not found.');
-      return api(req, res, app);
-    }
-    if (req.method !== 'GET') {
-      res.setHeader('allow', 'GET');
-      return json(res, 405, {
-        error: {
-          message: 'Canvas app pages require GET; drive an app through POST /_apps/api/canvas/<app>.',
-          code: 'MethodNotAllowed',
-        },
-      });
-    }
-    return handlePagePath(req, res, url, pathname.slice(PREFIX.length), list, find);
   };
   return (req, res, url = new URL(req.url, 'http://localhost')) => {
     const { pathname } = url;

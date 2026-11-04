@@ -333,6 +333,10 @@ function webhooksPanel(ctx, d) {
   );
 }
 
+function flowWaitOutcome(result) {
+  return result.outcome ? ` (${result.outcome})` : '';
+}
+
 function submitFlowWait(ctx, event, d, form) {
   event.preventDefault();
   const id = form.dataset.flowWaitForm,
@@ -364,8 +368,7 @@ function submitFlowWait(ctx, event, d, form) {
       body: JSON.stringify(body),
     });
     d.answer = null;
-    const outcome = result.outcome ? ` (${result.outcome})` : '';
-    ctx.notify(`Run ${result.runId} is scheduled to resume${outcome}.`);
+    ctx.notify(`Run ${result.runId} is scheduled to resume${flowWaitOutcome(result)}.`);
     await ctx.refresh();
   });
 }

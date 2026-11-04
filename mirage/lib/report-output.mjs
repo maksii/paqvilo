@@ -37,12 +37,6 @@ function throwUnlessMissing(error) {
   if (error.code !== 'ENOENT') throw error;
 }
 
-async function assertDistinctFromInputs(output, inputFiles) {
-  for (const input of inputFiles.filter(Boolean))
-    if (sameFile(output, await fileIdentity(input)))
-      throw new Error('Report output must not replace a configuration or source file');
-}
-
 async function containsLinkedSource(rootReal, outputStat) {
   const pending = [rootReal];
   while (pending.length) {
@@ -79,7 +73,10 @@ const needsLinkedSourceScan = (output) => Boolean(output.stat && output.stat.nli
 export async function assertReportOutput(file, { sourceRoots = [], inputFiles = [] } = {}) {
   const output = await fileIdentity(file);
   const canonical = await canonicalOutput(file);
-  await assertDistinctFromInputs(output, inputFiles);
+  for (const input of inputFiles.filter(Boolean)) {
+    if (sameFile(output, await fileIdentity(input)))
+      throw new Error('Report output must not replace a configuration or source file');
+  }
   for (const root of sourceRoots.filter(Boolean)) {
     const rootPath = path.resolve(root);
     if (inside(rootPath, output.resolved)) throw new Error('Report output must be outside portal and solution sources');

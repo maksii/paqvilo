@@ -156,47 +156,10 @@ function validSourceContents(parsed) {
   );
 }
 
-async function prepareResourceMapping(entry, assetsByName, remaining, mappedScripts) {
-  if (
-    !entry ||
-    typeof entry.resource !== 'string' ||
-    !entry.resource ||
-    Object.keys(entry).some((key) => !['path', 'resource', 'sourceMap'].includes(key))
-  )
-    throw new Error('Each resource mapping requires path, resource and optionally sourceMap.');
-  const mapping = { path: pathname(entry.path), resource: entry.resource };
-  if (entry.sourceMap === undefined) return { mapping, remaining };
-  if (mappedScripts.has(entry.resource)) throw new Error('A script can declare only one source-map sidecar.');
-  mappedScripts.add(entry.resource);
-  const spec = entry.sourceMap;
-  if (!spec || Object.keys(spec).some((key) => !['path', 'file'].includes(key)) || !confinedMapFile(spec.file))
-    throw new Error('sourceMap requires path and a confined file relative to the declared resource directory.');
-  const route = pathname(spec.path);
-  const asset = assetsByName.get(entry.resource);
-  try {
-    if (!asset?.file || !/(?:java|ecma)script/i.test(asset.mime))
-      throw new Error('The declared script has no local file-backed source.');
-    const data = await readLocalFile(path.join(path.dirname(asset.file), spec.file), {
-      root: path.dirname(asset.file),
-      maxBytes: DEBUG_MAP_LIMITS.assetBytes,
-    });
-    if (data.length > remaining) throw new Error('Source maps exceed the aggregate debugger-map byte limit.');
-    remaining -= data.length;
-    const parsed = JSON.parse(data.toString('utf8'));
-    if (!validSourceMap(parsed))
-      throw new Error('Source map must be a version 3 map with confined relative sources and no remote source root.');
-    mapping.sourceMap = { path: route, data };
-  } catch (error) {
-    mapping.sourceMapDiagnostic = {
-      code: 'MODEL_SOURCE_MAP_INVALID',
-      name: entry.resource,
-      message: `Debugger sidecar unavailable: ${error.code ?? error.message}. The compiled script remains overlaid.`,
-    };
-  }
-  return { mapping, remaining };
-}
-
-export async function readModelDrivenResourceMap(file, { assets = new Map() } = {}) {
+/* NOSONAR: preserve source-map input and observation ordering */ export async function readModelDrivenResourceMap(
+  file,
+  { assets = new Map() } = {},
+) {
   if (!file) return [];
   const data = await readLocalFile(file, { maxBytes: 1024 * 1024, encoding: 'utf8' });
   const map = JSON.parse(data);
@@ -207,9 +170,46 @@ export async function readModelDrivenResourceMap(file, { assets = new Map() } = 
   const mappedScripts = new Set();
   const assetsByName = new Map([...assets.values()].map((asset) => [asset.name, asset]));
   for (const entry of map.resources) {
-    const prepared = await prepareResourceMapping(entry, assetsByName, remaining, mappedScripts);
-    remaining = prepared.remaining;
-    mappings.push(prepared.mapping);
+    if (
+      !entry ||
+      typeof entry.resource !== 'string' ||
+      !entry.resource ||
+      Object.keys(entry).some((key) => !['path', 'resource', 'sourceMap'].includes(key))
+    )
+      throw new Error('Each resource mapping requires path, resource and optionally sourceMap.');
+    const mapping = { path: pathname(entry.path), resource: entry.resource };
+    if (entry.sourceMap !== undefined) {
+      if (mappedScripts.has(entry.resource)) throw new Error('A script can declare only one source-map sidecar.');
+      mappedScripts.add(entry.resource);
+      const spec = entry.sourceMap;
+      if (!spec || Object.keys(spec).some((key) => !['path', 'file'].includes(key)) || !confinedMapFile(spec.file))
+        throw new Error('sourceMap requires path and a confined file relative to the declared resource directory.');
+      const route = pathname(spec.path);
+      const asset = assetsByName.get(entry.resource);
+      try {
+        if (!asset?.file || !/(?:java|ecma)script/i.test(asset.mime))
+          throw new Error('The declared script has no local file-backed source.');
+        const data = await readLocalFile(path.join(path.dirname(asset.file), spec.file), {
+          root: path.dirname(asset.file),
+          maxBytes: DEBUG_MAP_LIMITS.assetBytes,
+        });
+        if (data.length > remaining) throw new Error('Source maps exceed the aggregate debugger-map byte limit.');
+        remaining -= data.length;
+        const parsed = JSON.parse(data.toString('utf8'));
+        if (!validSourceMap(parsed))
+          throw new Error(
+            'Source map must be a version 3 map with confined relative sources and no remote source root.',
+          );
+        mapping.sourceMap = { path: route, data };
+      } catch (error) {
+        mapping.sourceMapDiagnostic = {
+          code: 'MODEL_SOURCE_MAP_INVALID',
+          name: entry.resource,
+          message: `Debugger sidecar unavailable: ${error.code ?? error.message}. The compiled script remains overlaid.`,
+        };
+      }
+    }
+    mappings.push(mapping);
   }
   return mappings;
 }

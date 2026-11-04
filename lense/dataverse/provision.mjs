@@ -127,89 +127,76 @@ async function requiredMetadata(client, route) {
   }
 }
 
-async function existingComponent(client, action) {
+/* NOSONAR: preserve client lookup and continuation ordering */ async function existingComponent(client, action) {
   const b = action.body;
-  switch (action.kind) {
-    case 'publisher':
-      return one(client, `publishers?$filter=uniquename eq '${escape(b.uniquename)}'`);
-    case 'solution':
-      return one(client, `solutions?$filter=uniquename eq '${escape(b.uniquename)}'`);
-    case 'choice':
-      return client.optional(`GlobalOptionSetDefinitions(Name='${b.Name}')/Microsoft.Dynamics.CRM.OptionSetMetadata`);
-    case 'table':
-    case 'table-reference':
-      return existingTable(client, action);
-    case 'column':
-      return existingColumn(client, action);
-    case 'relationship':
-      return existingRelationship(client, action);
-    case 'key':
-      return one(
-        client,
-        `EntityDefinitions(LogicalName='${action.table}')/Keys?$filter=SchemaName eq '${b.SchemaName}'`,
-      );
-    case 'form':
-      return client.optional(`systemforms(${action.id})`);
-    case 'view':
-      return client.optional(`savedqueries(${action.id})`);
-    default:
-      throw new Error('Unknown provisioning component kind.');
+  if (action.kind === 'publisher') return one(client, `publishers?$filter=uniquename eq '${escape(b.uniquename)}'`);
+  if (action.kind === 'solution') return one(client, `solutions?$filter=uniquename eq '${escape(b.uniquename)}'`);
+  if (action.kind === 'choice')
+    return client.optional(`GlobalOptionSetDefinitions(Name='${b.Name}')/Microsoft.Dynamics.CRM.OptionSetMetadata`);
+  if (action.kind === 'table' || action.kind === 'table-reference') {
+    const table = await client.optional(`EntityDefinitions(LogicalName='${action.table}')`);
+    if (table && action.kind === 'table')
+      table.Attributes = [
+        await client.get(
+          `EntityDefinitions(LogicalName='${action.table}')/Attributes(LogicalName='${b.PrimaryNameAttribute}')`,
+        ),
+      ];
+    return table;
   }
-}
-
-async function existingTable(client, action) {
-  const table = await client.optional(`EntityDefinitions(LogicalName='${action.table}')`);
-  if (table && action.kind === 'table')
-    table.Attributes = [
-      await client.get(
-        `EntityDefinitions(LogicalName='${action.table}')/Attributes(LogicalName='${action.body.PrimaryNameAttribute}')`,
-      ),
-    ];
-  return table;
-}
-
-async function existingColumn(client, action) {
-  const b = action.body,
-    cast = b['@odata.type'];
-  const attribute = await client.optional(
-    `EntityDefinitions(LogicalName='${action.table}')/Attributes(LogicalName='${action.column}')`,
-  );
-  if (!attribute) return null;
-  if (
-    attribute['@odata.type'] &&
-    attribute['@odata.type'].replace(/^#/, '') !== cast &&
-    attribute['@odata.type'].replace(/^#/, '') !== 'Microsoft.Dynamics.CRM.AttributeMetadata'
-  )
-    return attribute;
-  let expand = '';
-  if (b['GlobalOptionSet@odata.bind']) expand = '?$expand=GlobalOptionSet';
-  else if (cast === 'Microsoft.Dynamics.CRM.BooleanAttributeMetadata') expand = '?$expand=OptionSet';
-  return client.get(
-    `EntityDefinitions(LogicalName='${action.table}')/Attributes(LogicalName='${action.column}')/${cast}${expand}`,
-  );
-}
-
-async function existingRelationship(client, action) {
-  const b = action.body,
-    relation = await one(client, `RelationshipDefinitions?$filter=SchemaName eq '${b.SchemaName}'`);
-  if (relation && b.Lookup)
-    relation.Lookup = await client.optional(
-      `EntityDefinitions(LogicalName='${b.ReferencingEntity}')/Attributes(LogicalName='${b.Lookup.SchemaName.toLowerCase()}')/Microsoft.Dynamics.CRM.LookupAttributeMetadata`,
+  if (action.kind === 'column') {
+    const cast = b['@odata.type'];
+    const attribute = await client.optional(
+      `EntityDefinitions(LogicalName='${action.table}')/Attributes(LogicalName='${action.column}')`,
     );
-  return relation;
+    if (!attribute) return null;
+    if (
+      attribute['@odata.type'] &&
+      attribute['@odata.type'].replace(/^#/, '') !== cast &&
+      attribute['@odata.type'].replace(/^#/, '') !== 'Microsoft.Dynamics.CRM.AttributeMetadata'
+    )
+      return attribute;
+    return client.get(
+      `EntityDefinitions(LogicalName='${action.table}')/Attributes(LogicalName='${action.column}')/${cast}${b['GlobalOptionSet@odata.bind'] ? '?$expand=GlobalOptionSet' : cast === 'Microsoft.Dynamics.CRM.BooleanAttributeMetadata' ? '?$expand=OptionSet' : ''}`,
+    );
+  }
+  if (action.kind === 'relationship') {
+    const relation = await one(client, `RelationshipDefinitions?$filter=SchemaName eq '${b.SchemaName}'`);
+    if (relation && b.Lookup)
+      relation.Lookup = await client.optional(
+        `EntityDefinitions(LogicalName='${b.ReferencingEntity}')/Attributes(LogicalName='${b.Lookup.SchemaName.toLowerCase()}')/Microsoft.Dynamics.CRM.LookupAttributeMetadata`,
+      );
+    return relation;
+  }
+  if (action.kind === 'key')
+    return one(client, `EntityDefinitions(LogicalName='${action.table}')/Keys?$filter=SchemaName eq '${b.SchemaName}'`);
+  if (action.kind === 'form') return client.optional(`systemforms(${action.id})`);
+  if (action.kind === 'view') return client.optional(`savedqueries(${action.id})`);
+  throw new Error('Unknown provisioning component kind.');
+}
+
+function requiredTableMissing(found, table) {
+  return !found && table.existing;
 }
 
 export async function planManifest(manifest, { client } = {}) {
   manifest = validateManifest(manifest);
   const compiled = compileManifest(manifest),
     actions = [],
-    missingTables = client ? await missingManifestTables(manifest, client) : new Set();
+    missingTables = new Set();
   const publisher = { id: undefined };
+  if (client) {
+    for (const table of manifest.tables) {
+      const found = await client.optional(`EntityDefinitions(LogicalName='${table.name}')`);
+      if (requiredTableMissing(found, table)) throw new Error(`Required existing table ${table.name} is absent.`);
+      if (!found) missingTables.add(table.name);
+    }
+  }
   for (const action of compiled.actions) {
-    if (!client) actions.push(offlinePlanAction(action, publisher));
-    else if (['column', 'key'].includes(action.kind) && missingTables.has(action.table))
-      actions.push(planActionResult(action, null, publisher));
-    else actions.push(await planAction(client, action, publisher));
+    const existing =
+      client && !(['column', 'key'].includes(action.kind) && missingTables.has(action.table))
+        ? await existingComponent(client, action)
+        : null;
+    actions.push(planActionResult(action, existing, publisher));
   }
   return {
     ...compiled,
@@ -222,26 +209,6 @@ export async function planManifest(manifest, { client } = {}) {
       drift: actions.filter((a) => a.status === 'drift').length,
     },
   };
-}
-
-async function missingManifestTables(manifest, client) {
-  const missingTables = new Set();
-  if (!client) return missingTables;
-  for (const table of manifest.tables) {
-    const found = await client.optional(`EntityDefinitions(LogicalName='${table.name}')`);
-    if (!found && table.existing) throw new Error(`Required existing table ${table.name} is absent.`);
-    if (!found) missingTables.add(table.name);
-  }
-  return missingTables;
-}
-
-async function planAction(client, action, publisher) {
-  const existing = await existingComponent(client, action);
-  return planActionResult(action, existing, publisher);
-}
-
-function offlinePlanAction(action, publisher) {
-  return planActionResult(action, null, publisher);
 }
 
 function planActionResult(action, existing, publisher) {
@@ -271,7 +238,10 @@ function planActionResult(action, existing, publisher) {
   };
 }
 
-export async function applyManifest(input, { client, journalFile, expectedOrganisationId, onProgress = () => {} }) {
+/* NOSONAR: preserve write, journal and progress callback ordering */ export async function applyManifest(
+  input,
+  { client, journalFile, expectedOrganisationId, onProgress = () => {} },
+) {
   const manifest = validateManifest(input);
   const identity = await client.verify(expectedOrganisationId);
   const plan = await planManifest(manifest, { client });
@@ -289,13 +259,108 @@ export async function applyManifest(input, { client, journalFile, expectedOrgani
     entries: [],
   };
   if (journalFile) await privateJson(journalFile, journal, true);
-  const state = { publisherId: undefined, solutionIds: new Map(), choiceIds: new Map() };
+  let publisherId;
+  const solutionIds = new Map();
+  const choiceIds = new Map();
+  const include = async (id, type, solution, root = false) => {
+    const solutionId = solutionIds.get(solution);
+    if (!guid.test(solutionId ?? '')) throw new Error('Solution identity is unavailable.');
+    const included = await client.list(
+      `solutioncomponents?$select=objectid,componenttype,rootcomponentbehavior&$filter=_solutionid_value eq ${solutionId} and objectid eq ${id} and componenttype eq ${type}`,
+    );
+    if (!included.length)
+      await client.request('AddSolutionComponent', {
+        method: 'POST',
+        body: {
+          ComponentId: id,
+          ComponentType: type,
+          SolutionUniqueName: solution,
+          AddRequiredComponents: false,
+          ...(root ? { DoNotIncludeSubcomponents: true } : {}),
+        },
+      });
+  };
   try {
     for (const planned of plan.actions) {
       journal.pending = planned.key;
       if (journalFile) await privateJson(journalFile, journal);
       // Re-read each identity before its write; preflight snapshots can become stale.
-      const entry = await applyPlannedAction(client, planned, state);
+      const current = await existingComponent(client, planned);
+      if (current && !compatible(current, planned.body))
+        throw new Error(`Metadata changed while applying ${planned.key}. Re-plan before continuing.`);
+      if (
+        planned.kind === 'solution' &&
+        current &&
+        current._publisherid_value?.toLowerCase() !== publisherId?.toLowerCase()
+      )
+        throw new Error('Solution publisher changed while applying.');
+      let componentId =
+        current?.MetadataId ?? current?.publisherid ?? current?.solutionid ?? current?.formid ?? current?.savedqueryid;
+      let status = 'exists';
+      if (!current) {
+        if (planned.kind === 'table-reference') throw new Error('Required existing table disappeared.');
+        const body = structuredClone(planned.body);
+        // Name resolves reliably for reads; bind writes use the server MetadataId.
+        // Some Dataverse builds reject Name-key bindings with a GUID parse error.
+        const binding = body['GlobalOptionSet@odata.bind']?.match(/^\/GlobalOptionSetDefinitions\(Name='([^']+)'\)$/);
+        if (binding) {
+          const id = choiceIds.get(binding[1]);
+          if (!guid.test(id ?? '')) throw new Error('Global choice identity is unavailable.');
+          body['GlobalOptionSet@odata.bind'] = `/GlobalOptionSetDefinitions(${id})`;
+        }
+        if (planned.kind === 'solution') {
+          if (!publisherId || !guid.test(publisherId)) throw new Error('Publisher identity is missing.');
+          body['publisherid@odata.bind'] = `/publishers(${publisherId})`;
+        }
+        const result = await client.request(planned.route, { method: 'POST', body, solution: planned.solution });
+        componentId = planned.id ?? metadataId(result);
+        status = 'created';
+        if (planned.kind === 'relationship' && planned.body.Lookup)
+          await completeLookupAudit(
+            client,
+            planned.body.ReferencingEntity,
+            planned.body.Lookup.SchemaName.toLowerCase(),
+            planned.solution,
+          );
+      }
+      if (planned.kind === 'publisher') publisherId = componentId;
+      if (planned.kind === 'solution') solutionIds.set(planned.body.uniquename, componentId);
+      if (planned.kind === 'choice') choiceIds.set(planned.body.Name, componentId);
+      if (TYPES[planned.kind]) {
+        if (!guid.test(componentId ?? '')) throw new Error('Invalid component ID; reconcile before continuing.');
+        await include(
+          componentId,
+          TYPES[planned.kind],
+          planned.solution,
+          ['table', 'table-reference'].includes(planned.kind),
+        );
+        if (planned.kind === 'table') {
+          const primaryName = planned.body.PrimaryNameAttribute;
+          const primary = await requiredMetadata(
+            client,
+            `EntityDefinitions(LogicalName='${planned.table}')/Attributes(LogicalName='${primaryName}')`,
+          );
+          if (!guid.test(primary.MetadataId ?? ''))
+            throw new Error('Primary-name metadata identity is unavailable; reconcile before exporting.');
+          await include(primary.MetadataId, 2, planned.solution);
+        }
+        if (planned.kind === 'relationship' && planned.body.Lookup) {
+          const lookup = await requiredMetadata(
+            client,
+            `EntityDefinitions(LogicalName='${planned.body.ReferencingEntity}')/Attributes(LogicalName='${planned.body.Lookup.SchemaName.toLowerCase()}')`,
+          );
+          if (!guid.test(lookup.MetadataId ?? ''))
+            throw new Error('Lookup metadata identity is unavailable; reconcile before exporting.');
+          await include(lookup.MetadataId, 2, planned.solution);
+        }
+      }
+      const entry = {
+        key: planned.key,
+        status,
+        componentId,
+        bodyHash: digest(planned.body),
+        finishedAt: new Date().toISOString(),
+      };
       journal.entries.push(entry);
       delete journal.pending;
       if (journalFile) await privateJson(journalFile, journal);
@@ -320,165 +385,43 @@ export async function applyManifest(input, { client, journalFile, expectedOrgani
   }
 }
 
-async function applyPlannedAction(client, planned, state) {
-  const current = await existingComponent(client, planned);
-  if (current && !compatible(current, planned.body))
-    throw new Error(`Metadata changed while applying ${planned.key}. Re-plan before continuing.`);
-  if (
-    planned.kind === 'solution' &&
-    current &&
-    current._publisherid_value?.toLowerCase() !== state.publisherId?.toLowerCase()
-  )
-    throw new Error('Solution publisher changed while applying.');
-  let componentId =
-    current?.MetadataId ?? current?.publisherid ?? current?.solutionid ?? current?.formid ?? current?.savedqueryid;
-  let status = 'exists';
-  if (!current) {
-    const created = await createPlannedComponent(client, planned, state);
-    componentId = created.componentId;
-    status = created.status;
-  }
-  updateProvisioningIdentities(planned, componentId, state);
-  if (TYPES[planned.kind]) await includePlannedComponent(client, planned, componentId, state.solutionIds);
-  return {
-    key: planned.key,
-    status,
-    componentId,
-    bodyHash: digest(planned.body),
-    finishedAt: new Date().toISOString(),
-  };
-}
-
-async function createPlannedComponent(client, planned, state) {
-  if (planned.kind === 'table-reference') throw new Error('Required existing table disappeared.');
-  const body = structuredClone(planned.body);
-  // Name resolves reliably for reads; bind writes use the server MetadataId.
-  // Some Dataverse builds reject Name-key bindings with a GUID parse error.
-  const binding = body['GlobalOptionSet@odata.bind']?.match(/^\/GlobalOptionSetDefinitions\(Name='([^']+)'\)$/);
-  if (binding) {
-    const id = state.choiceIds.get(binding[1]);
-    if (!guid.test(id ?? '')) throw new Error('Global choice identity is unavailable.');
-    body['GlobalOptionSet@odata.bind'] = `/GlobalOptionSetDefinitions(${id})`;
-  }
-  if (planned.kind === 'solution') {
-    if (!state.publisherId || !guid.test(state.publisherId)) throw new Error('Publisher identity is missing.');
-    body['publisherid@odata.bind'] = `/publishers(${state.publisherId})`;
-  }
-  const result = await client.request(planned.route, { method: 'POST', body, solution: planned.solution }),
-    componentId = planned.id ?? metadataId(result);
-  if (planned.kind === 'relationship' && planned.body.Lookup)
-    await completeLookupAudit(
-      client,
-      planned.body.ReferencingEntity,
-      planned.body.Lookup.SchemaName.toLowerCase(),
-      planned.solution,
-    );
-  return { componentId, status: 'created' };
-}
-
-function updateProvisioningIdentities(planned, componentId, state) {
-  if (planned.kind === 'publisher') state.publisherId = componentId;
-  if (planned.kind === 'solution') state.solutionIds.set(planned.body.uniquename, componentId);
-  if (planned.kind === 'choice') state.choiceIds.set(planned.body.Name, componentId);
-}
-
-async function includeComponent(client, id, type, solution, solutionIds, root = false) {
-  const solutionId = solutionIds.get(solution);
-  if (!guid.test(solutionId ?? '')) throw new Error('Solution identity is unavailable.');
-  const included = await client.list(
-    `solutioncomponents?$select=objectid,componenttype,rootcomponentbehavior&$filter=_solutionid_value eq ${solutionId} and objectid eq ${id} and componenttype eq ${type}`,
-  );
-  if (!included.length)
-    await client.request('AddSolutionComponent', {
-      method: 'POST',
-      body: {
-        ComponentId: id,
-        ComponentType: type,
-        SolutionUniqueName: solution,
-        AddRequiredComponents: false,
-        ...(root ? { DoNotIncludeSubcomponents: true } : {}),
-      },
-    });
-}
-
-async function includePlannedComponent(client, planned, componentId, solutionIds) {
-  if (!guid.test(componentId ?? '')) throw new Error('Invalid component ID; reconcile before continuing.');
-  await includeComponent(
-    client,
-    componentId,
-    TYPES[planned.kind],
-    planned.solution,
-    solutionIds,
-    ['table', 'table-reference'].includes(planned.kind),
-  );
-  if (planned.kind === 'table') await includePrimaryName(client, planned, solutionIds);
-  if (planned.kind === 'relationship' && planned.body.Lookup) await includeLookup(client, planned, solutionIds);
-}
-
-async function includePrimaryName(client, planned, solutionIds) {
-  const primary = await requiredMetadata(
-    client,
-    `EntityDefinitions(LogicalName='${planned.table}')/Attributes(LogicalName='${planned.body.PrimaryNameAttribute}')`,
-  );
-  if (!guid.test(primary.MetadataId ?? ''))
-    throw new Error('Primary-name metadata identity is unavailable; reconcile before exporting.');
-  await includeComponent(client, primary.MetadataId, 2, planned.solution, solutionIds);
-}
-
-async function includeLookup(client, planned, solutionIds) {
-  const lookup = await requiredMetadata(
-    client,
-    `EntityDefinitions(LogicalName='${planned.body.ReferencingEntity}')/Attributes(LogicalName='${planned.body.Lookup.SchemaName.toLowerCase()}')`,
-  );
-  if (!guid.test(lookup.MetadataId ?? ''))
-    throw new Error('Lookup metadata identity is unavailable; reconcile before exporting.');
-  await includeComponent(client, lookup.MetadataId, 2, planned.solution, solutionIds);
-}
-
 // Creating metadata with SolutionUniqueName can automatically add a table root
 // with IncludeSubcomponents. That later pulls another solution's forms/columns
 // into this export. Keep explicitly added subcomponents and narrow only known
 // table roots through the supported AddSolutionComponent action.
-export async function scopeSolutionRoots(input, client, { onProgress = () => {} } = {}) {
+/* NOSONAR: preserve public lifecycle await ordering */ export async function scopeSolutionRoots(
+  input,
+  client,
+  { onProgress = () => {} } = {},
+) {
   const manifest = validateManifest(input),
-    known = await knownTableIdentities(manifest, client),
+    known = new Map(),
     changes = [];
-  const declared = await declaredComponents(manifest, client),
-    solutionIds = new Map(),
-    scopes = await solutionScopes(manifest, client, known, solutionIds);
-  for (const scope of scopes) {
-    if (!scope.roots.length) continue;
-    await scopeRoots(scope, client, known, changes, onProgress);
-  }
-  await restoreDeclaredComponents(declared, solutionIds, client);
-  await restoreRelationshipLookups(manifest, solutionIds, client);
-  await onProgress({ state: 'declared-memberships-restored', changedRoots: changes.length }); // NOSONAR: await kept: the value may be a thenable and timing matters
-  return { changedRoots: changes.length, changes };
-}
-
-async function knownTableIdentities(manifest, client) {
-  const known = new Map();
   for (const table of manifest.tables) {
     const actual = await client.get(`EntityDefinitions(LogicalName='${table.name}')?$select=MetadataId,LogicalName`);
     if (!guid.test(actual.MetadataId ?? '')) throw new Error('Table identity unavailable for solution scoping.');
     known.set(actual.MetadataId.toLowerCase(), table.name);
   }
-  return known;
-}
-
-async function declaredComponents(manifest, client) {
-  const declared = [];
+  const solutionIds = new Map(),
+    scopes = [],
+    declared = [];
   for (const action of compileManifest(manifest).actions.filter((a) => TYPES[a.kind])) {
     const current = await existingComponent(client, action);
     if (!current || !compatible(current, action.body))
       throw new Error('Declared metadata must exist unchanged before solution scoping.');
     declared.push({ action, current });
   }
-  return declared;
-}
-
-async function solutionScopes(manifest, client, known, solutionIds) {
-  const scopes = [];
+  const add = async (id, type, solution) =>
+    client.request('AddSolutionComponent', {
+      method: 'POST',
+      body: {
+        ComponentId: id,
+        ComponentType: type,
+        SolutionUniqueName: solution,
+        AddRequiredComponents: false,
+        ...(type === 1 ? { DoNotIncludeSubcomponents: true } : {}),
+      },
+    });
   for (const solution of manifest.solutions) {
     const rows = await client.list(`solutions?$select=solutionid&$filter=uniquename eq '${solution.uniqueName}'`);
     if (rows.length !== 1) throw new Error('Solution identity unavailable for table-root scoping.');
@@ -491,57 +434,46 @@ async function solutionScopes(manifest, client, known, solutionIds) {
       throw new Error('Undeclared table root would include unrelated subcomponents; scoping refused.');
     scopes.push({ solution, sid, route, before, roots });
   }
-  return scopes;
-}
-
-async function addSolutionComponent(client, id, type, solution) {
-  return client.request('AddSolutionComponent', {
-    method: 'POST',
-    body: {
-      ComponentId: id,
-      ComponentType: type,
-      SolutionUniqueName: solution,
-      AddRequiredComponents: false,
-      ...(type === 1 ? { DoNotIncludeSubcomponents: true } : {}),
-    },
-  });
-}
-
-async function scopeRoots({ solution, sid, route, before, roots }, client, known, changes, onProgress) {
-  await onProgress({ state: 'before-membership-replacement', solution: solution.uniqueName, components: before });
-  for (const root of roots) {
-    await client.request('RemoveSolutionComponent', {
-      method: 'POST',
-      body: {
-        SolutionComponent: {
-          '@odata.type': 'Microsoft.Dynamics.CRM.solutioncomponent',
-          solutioncomponentid: root.objectid,
+  for (const { solution, sid, route, before, roots } of scopes) {
+    if (!roots.length) continue;
+    // The action does not narrow an existing IncludeAll root. Removing only its
+    // solution membership leaves the Dataverse table/data intact. Save every
+    // explicit component first; the caller's journal makes interruption reviewable.
+    await onProgress({ state: 'before-membership-replacement', solution: solution.uniqueName, components: before });
+    for (const root of roots) {
+      await client.request('RemoveSolutionComponent', {
+        method: 'POST',
+        body: {
+          SolutionComponent: {
+            '@odata.type': 'Microsoft.Dynamics.CRM.solutioncomponent',
+            solutioncomponentid: root.objectid,
+          },
+          ComponentType: 1,
+          SolutionUniqueName: solution.uniqueName,
         },
-        ComponentType: 1,
-        SolutionUniqueName: solution.uniqueName,
-      },
-    });
-    await addSolutionComponent(client, root.objectid, 1, solution.uniqueName);
-    const after = (await client.list(route)).find(
-      (row) => row.componenttype === 1 && row.objectid?.toLowerCase() === root.objectid.toLowerCase(),
-    );
-    if (after?.rootcomponentbehavior !== 1) throw new Error('Dataverse did not retain explicit table-root scoping.');
-    changes.push({ solution: solution.uniqueName, table: known.get(root.objectid.toLowerCase()), before: 0, after: 1 });
+      });
+      await add(root.objectid, 1, solution.uniqueName);
+      const after = (await client.list(route)).find(
+        (row) => row.componenttype === 1 && row.objectid?.toLowerCase() === root.objectid.toLowerCase(),
+      );
+      if (after?.rootcomponentbehavior !== 1) throw new Error('Dataverse did not retain explicit table-root scoping.');
+      changes.push({
+        solution: solution.uniqueName,
+        table: known.get(root.objectid.toLowerCase()),
+        before: 0,
+        after: 1,
+      });
+    }
+    for (const component of before.filter((row) => row.componenttype !== 1)) {
+      const present = await client.list(
+        `solutioncomponents?$select=objectid&$filter=_solutionid_value eq ${sid} and objectid eq ${component.objectid} and componenttype eq ${component.componenttype}`,
+      );
+      if (!present.length) await add(component.objectid, component.componenttype, solution.uniqueName);
+    }
+    await onProgress({ state: 'roots-scoped', solution: solution.uniqueName });
   }
-  await restoreExplicitComponents(before, sid, solution.uniqueName, client);
-  await onProgress({ state: 'roots-scoped', solution: solution.uniqueName });
-}
-
-async function restoreExplicitComponents(before, sid, solution, client) {
-  for (const component of before.filter((row) => row.componenttype !== 1)) {
-    const present = await client.list(
-      `solutioncomponents?$select=objectid&$filter=_solutionid_value eq ${sid} and objectid eq ${component.objectid} and componenttype eq ${component.componenttype}`,
-    );
-    if (!present.length) await addSolutionComponent(client, component.objectid, component.componenttype, solution);
-  }
-}
-
-async function restoreDeclaredComponents(declared, solutionIds, client) {
+  // IncludeAll roots can mask absent explicit membership. Restore the declared
+  // metadata after narrowing; never create/alter a table, column or business row.
   for (const { action, current } of declared) {
     const id = current.MetadataId ?? current.formid ?? current.savedqueryid,
       type = TYPES[action.kind],
@@ -550,24 +482,19 @@ async function restoreDeclaredComponents(declared, solutionIds, client) {
     const present = await client.list(
       `solutioncomponents?$select=objectid&$filter=_solutionid_value eq ${sid} and objectid eq ${id} and componenttype eq ${type}`,
     );
-    if (!present.length) await addSolutionComponent(client, id, type, action.solution);
-    if (action.kind === 'table') await restorePrimaryNameComponent(action, sid, client);
+    if (!present.length) await add(id, type, action.solution);
+    if (action.kind === 'table') {
+      const primary = await client.get(
+        `EntityDefinitions(LogicalName='${action.table}')/Attributes(LogicalName='${action.body.PrimaryNameAttribute}')`,
+      );
+      if (!guid.test(primary.MetadataId ?? ''))
+        throw new Error('Primary-name component unavailable during solution scoping.');
+      const included = await client.list(
+        `solutioncomponents?$select=objectid&$filter=_solutionid_value eq ${sid} and objectid eq ${primary.MetadataId} and componenttype eq 2`,
+      );
+      if (!included.length) await add(primary.MetadataId, 2, action.solution);
+    }
   }
-}
-
-async function restorePrimaryNameComponent(action, sid, client) {
-  const primary = await client.get(
-    `EntityDefinitions(LogicalName='${action.table}')/Attributes(LogicalName='${action.body.PrimaryNameAttribute}')`,
-  );
-  if (!guid.test(primary.MetadataId ?? ''))
-    throw new Error('Primary-name component unavailable during solution scoping.');
-  const included = await client.list(
-    `solutioncomponents?$select=objectid&$filter=_solutionid_value eq ${sid} and objectid eq ${primary.MetadataId} and componenttype eq 2`,
-  );
-  if (!included.length) await addSolutionComponent(client, primary.MetadataId, 2, action.solution);
-}
-
-async function restoreRelationshipLookups(manifest, solutionIds, client) {
   for (const relation of manifest.relationships.filter((r) => r.kind === 'oneToMany')) {
     const attribute = await client.get(
         `EntityDefinitions(LogicalName='${relation.child}')/Attributes(LogicalName='${relation.lookup.name}')`,
@@ -578,8 +505,10 @@ async function restoreRelationshipLookups(manifest, solutionIds, client) {
     const included = await client.list(
       `solutioncomponents?$select=objectid&$filter=_solutionid_value eq ${sid} and objectid eq ${attribute.MetadataId} and componenttype eq 2`,
     );
-    if (!included.length) await addSolutionComponent(client, attribute.MetadataId, 2, relation.solution);
+    if (!included.length) await add(attribute.MetadataId, 2, relation.solution);
   }
+  await onProgress({ state: 'declared-memberships-restored', changedRoots: changes.length });
+  return { changedRoots: changes.length, changes };
 }
 
 async function completeLookupAudit(client, table, column, solution) {

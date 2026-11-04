@@ -1700,34 +1700,6 @@ async function serveOnce(projectFile, timeoutMs) {
   }
 }
 
-async function checkToolkitServeStatus(projectFile, child, portals, result, check) {
-  try {
-    const { mirageStatus, miragePaths } = await import('../lense/commands/mirage.mjs');
-    const paths = miragePaths(null, { project: projectFile });
-    // The toolkit probes each runtime with a short timeout; a loaded machine gets a few attempts.
-    let sessions = [];
-    for (let attempt = 0; attempt < 5; attempt++) {
-      sessions = (await mirageStatus(paths)).filter((session) => session.pid === child.pid);
-      if (sessions.length === portals.length && sessions.every((session) => session.ready)) break;
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-    result.toolkitStatus = sessions.map(({ portal, url, ready: isReady, owned, stateFile }) => ({
-      portal,
-      url,
-      ready: isReady,
-      owned,
-      stateFile,
-    }));
-    check(
-      'toolkit `mirage status` lists every portal as ready',
-      sessions.length === portals.length && sessions.every((session) => session.ready),
-      `${sessions.length} session(s), owned: ${[...new Set(sessions.map((session) => session.owned))].join('/')}`,
-    );
-  } catch (error) {
-    check('toolkit `mirage status` lists every portal as ready', false, error.message);
-  }
-}
-
 /** Graceful stop (a `stop` line on stdin), forced after 30 s. */
 async function stopServe({ child, exited }) {
   if (child.exitCode != null) return { graceful: true, exitCode: child.exitCode };
@@ -1875,7 +1847,31 @@ async function serveStage(resolved, context) {
       (discovery?.portals ?? []).length === portals.length,
       ready.discovery ?? null,
     );
-    await checkToolkitServeStatus(projectFile, child, portals, result, check);
+    try {
+      const { mirageStatus, miragePaths } = await import('../lense/commands/mirage.mjs');
+      const paths = miragePaths(null, { project: projectFile });
+      // The toolkit probes each runtime with a short timeout; a loaded machine gets a few attempts.
+      let sessions = [];
+      for (let attempt = 0; attempt < 5; attempt++) {
+        sessions = (await mirageStatus(paths)).filter((session) => session.pid === child.pid);
+        if (sessions.length === portals.length && sessions.every((session) => session.ready)) break;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      result.toolkitStatus = sessions.map(({ portal, url, ready: isReady, owned, stateFile }) => ({
+        portal,
+        url,
+        ready: isReady,
+        owned,
+        stateFile,
+      }));
+      check(
+        'toolkit `mirage status` lists every portal as ready',
+        sessions.length === portals.length && sessions.every((session) => session.ready),
+        `${sessions.length} session(s), owned: ${[...new Set(sessions.map((session) => session.owned))].join('/')}`,
+      );
+    } catch (error) {
+      check('toolkit `mirage status` lists every portal as ready', false, error.message);
+    }
   } catch (error) {
     result.error = error.message;
   } finally {
@@ -1919,40 +1915,6 @@ function selectMatrixStages(options) {
   return { stages, personas, scaffoldPersonas, scaffoldProfile };
 }
 
-async function runPortalStages(target, context, stages, out, log) {
-  const runners = {
-    import: importStage,
-    bootstrap: bootstrapStage,
-    liquid: liquidStage,
-    webapi: webapiStage,
-    sweep: sweepStage,
-    scaffold: scaffoldStage,
-    runtime: runtimeStage,
-  };
-  for (const stage of STAGES.filter((name) => name !== 'serve' && stages.has(name))) {
-    const stageStarted = performance.now();
-    log(`${target.id}: ${stage}…`);
-    try {
-      context.entry[stage] = await runners[stage](target, context);
-    } catch (error) {
-      context.entry[stage] = { error: error.message };
-      context.entry.errors.push({ stage, message: error.message });
-    }
-    context.entry[stage].ms = elapsed(stageStarted);
-    const errorNote = context.entry[stage].error ? ` (error: ${context.entry[stage].error})` : '';
-    log(`${target.id}: ${stage} ${(context.entry[stage].ms / 1000).toFixed(1)} s${errorNote}`);
-    if (out) {
-      // Details: the full tool report where one exists (bootstrap, liquid, webapi, sweep), else the matrix entry.
-      await fs.mkdir(path.join(out, target.id), { recursive: true });
-      const detail =
-        stage === 'runtime'
-          ? { ...context.entry.runtime, ...context.details.runtime }
-          : (context.details[stage] ?? context.entry[stage]);
-      await fs.writeFile(path.join(out, target.id, `${stage}.json`), JSON.stringify(detail, null, 2));
-    }
-  }
-}
-
 function matrixInput(resolved, options) {
   if (resolved.mode === 'project')
     return {
@@ -1964,18 +1926,6 @@ function matrixInput(resolved, options) {
     };
   if (resolved.mode === 'samples') return { samples: path.resolve(options.samples), missing: resolved.missing };
   return { sites: resolved.targets.map((target) => target.label) };
-}
-
-async function runProjectServe(resolved, options, tmp, matrix, log) {
-  log('project: serve…');
-  const serveStarted = performance.now();
-  try {
-    matrix.serve = await serveStage(resolved, { tmp, serveTimeoutMs: options.serveTimeoutMs ?? 600_000 });
-  } catch (error) {
-    matrix.serve = { error: error.message, checks: [] };
-  }
-  matrix.serve.ms = elapsed(serveStarted);
-  log(`project: serve ${(matrix.serve.ms / 1000).toFixed(1)} s`);
 }
 
 /** Run the selected stages for every portal and return the matrix object. */
@@ -2040,10 +1990,50 @@ async function runProjectServe(resolved, options, tmp, matrix, log) {
         details: {},
         entry,
       };
-      await runPortalStages(target, context, stages, out, log);
+      const runners = {
+        import: importStage,
+        bootstrap: bootstrapStage,
+        liquid: liquidStage,
+        webapi: webapiStage,
+        sweep: sweepStage,
+        scaffold: scaffoldStage,
+        runtime: runtimeStage,
+      };
+      for (const stage of STAGES.filter((name) => name !== 'serve' && stages.has(name))) {
+        const stageStarted = performance.now();
+        log(`${target.id}: ${stage}…`);
+        try {
+          context.entry[stage] = await runners[stage](target, context);
+        } catch (error) {
+          context.entry[stage] = { error: error.message };
+          context.entry.errors.push({ stage, message: error.message });
+        }
+        context.entry[stage].ms = elapsed(stageStarted);
+        const errorNote = context.entry[stage].error ? ` (error: ${context.entry[stage].error})` : '';
+        log(`${target.id}: ${stage} ${(context.entry[stage].ms / 1000).toFixed(1)} s${errorNote}`);
+        if (out) {
+          // Details: the full tool report where one exists (bootstrap, liquid, webapi, sweep), else the matrix entry.
+          await fs.mkdir(path.join(out, target.id), { recursive: true });
+          const detail =
+            stage === 'runtime'
+              ? { ...context.entry.runtime, ...context.details.runtime }
+              : (context.details[stage] ?? context.entry[stage]);
+          await fs.writeFile(path.join(out, target.id, `${stage}.json`), JSON.stringify(detail, null, 2));
+        }
+      }
       matrix.portals.push(entry);
     }
-    if (stages.has('serve') && resolved.mode === 'project') await runProjectServe(resolved, options, tmp, matrix, log);
+    if (stages.has('serve') && resolved.mode === 'project') {
+      log('project: serve…');
+      const serveStarted = performance.now();
+      try {
+        matrix.serve = await serveStage(resolved, { tmp, serveTimeoutMs: options.serveTimeoutMs ?? 600_000 });
+      } catch (error) {
+        matrix.serve = { error: error.message, checks: [] };
+      }
+      matrix.serve.ms = elapsed(serveStarted);
+      log(`project: serve ${(matrix.serve.ms / 1000).toFixed(1)} s`);
+    }
   } finally {
     await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
   }

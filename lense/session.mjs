@@ -412,69 +412,6 @@ export class OverlaySession extends EventEmitter {
     }
   }
 
-  async #handleMirage(route, url, request, method, type) {
-    if (url.pathname.startsWith(LOCAL_PREFIX)) {
-      if (url.pathname.startsWith(API_PREFIX) && this.api)
-        return this.api(route, url.pathname.slice(API_PREFIX.length));
-      return route
-        .fulfill({
-          status: 404,
-          headers: { 'content-type': 'text/plain' },
-          body: 'paqvilo: no Mirage panel resource at this address',
-        })
-        .catch(() => {});
-    }
-    const isDocument =
-      type === 'document' &&
-      (method === 'GET' ||
-        (method === 'POST' && /^application\/x-www-form-urlencoded/i.test(request.headers()['content-type'] ?? '')));
-    if (isDocument) {
-      let navigation;
-      try {
-        navigation = request.isNavigationRequest() && request.frame().parentFrame() === null;
-      } catch {
-        navigation = true;
-      }
-      if (navigation) this.#record(route, { type: 'html', url: url.pathname, sources: [], navigation: true });
-    }
-    return route.fallback();
-  }
-
-  async #handleLocalResource(route, url, request, method) {
-    // the dev panel on the page talking to this process
-    if (url.pathname.startsWith(API_PREFIX) && this.api) return this.api(route, url.pathname.slice(API_PREFIX.length));
-    // inline scripts the rewriter turned into <script src> so they can be debugged
-    let rel = null;
-    try {
-      if (method === 'GET' && url.pathname.startsWith(INLINE_PREFIX))
-        rel = decodeURIComponent(url.pathname.slice(INLINE_PREFIX.length));
-    } catch {
-      /* malformed escape */
-    }
-    // only files the model lists as inline scripts are served, nothing else under the sources
-    const src = this.model.inlineSources.find((s) => s.rel === rel && s.tag === 'script' && !s.extract),
-      body = this.#readLocalInlineBody(src);
-    let proof = null;
-    const proofPromise = this.#localScriptProof(body, src, request);
-    if (proofPromise) proof = await proofPromise; // NOSONAR: optional pending promise, awaited only when set
-    await route
-      .fulfill(
-        body
-          ? {
-              status: 200,
-              headers: {
-                'content-type': 'application/javascript; charset=utf-8',
-                'cache-control': 'no-store',
-                'x-paqvilo': encodeURI(src.rel),
-              },
-              body,
-              ...(proof ? { provenance: proof } : {}),
-            }
-          : { status: 404, headers: { 'content-type': 'text/plain' }, body: 'paqvilo: nothing at this address' },
-      )
-      .catch(() => {});
-  }
-
   #readLocalInlineBody(src) {
     try {
       return src && isSourceFile(this.cfg.sourceDir, src.file)
@@ -486,100 +423,7 @@ export class OverlaySession extends EventEmitter {
     }
   }
 
-  #localScriptProof(body, src, request) {
-    if (!body) return null;
-    try {
-      return scriptResourceProof(
-        this.sourceInspector,
-        src.file,
-        body,
-        new URL(request.frame().page().url()).pathname,
-      ).catch(() => null);
-    } catch {
-      /* Navigation may have ended while this script was read. */
-      return null;
-    }
-  }
-
-  #handleBypass(route, url, request, type) {
-    let navigation = false;
-    try {
-      navigation = type === 'document' && request.frame().parentFrame() === null;
-    } catch {
-      /* no frame yet */
-    }
-    if (navigation) this.#record(route, { type: 'html', url: url.pathname, sources: [], navigation });
-    return route.fallback();
-  }
-
-  #handleWebFile(route, url, request, method) {
-    const found = this.resolver.resolve(url.pathname);
-    const hit = found && !this.disabled.has(this.rel(found.file)) ? found : null;
-    if (!hit) return null;
-    const contentType = mimeFor(hit.file, mimeFor(url.pathname, this.model.findWebFile(url.pathname)?.mimeType));
-    const isScript = /(?:javascript|ecmascript)/i.test(contentType);
-    let body;
-    try {
-      // HEAD needs existence/type metadata, not the entire asset or generated source map.
-      if (method === 'HEAD') body = fs.statSync(hit.file).isFile() ? Buffer.alloc(0) : null;
-      else {
-        const sourceKind = () => {
-          if (!isScript) return '';
-          return this.cfg.sourceMaps ? 'source-map' : 'script-source';
-        };
-        body = this.fileBodies.read(hit.file, sourceKind(), (bytes) =>
-          isScript ? scriptSourceBody(bytes, hit.file, { sourceMaps: Boolean(this.cfg.sourceMaps) }) : bytes,
-        );
-      }
-    } catch {
-      body = null;
-    }
-    if (!body) return null;
-    const rel = this.rel(hit.file);
-    this.#record(route, {
-      type: 'file',
-      url: url.pathname,
-      sources: [{ rel, action: hit.via, kind: 'web-file' }],
-    });
-    return this.#fulfillWebFile(route, request, method, hit, {
-      rel,
-      contentType,
-      isScript,
-      body,
-    });
-  }
-
-  async #fulfillWebFile(route, request, method, hit, { rel, contentType, isScript, body }) {
-    let proof = null;
-    if (method === 'GET' && isScript) {
-      try {
-        proof = await scriptResourceProof(
-          this.sourceInspector,
-          hit.file,
-          body,
-          new URL(request.frame().page().url()).pathname,
-        );
-      } catch {
-        /* No proof for a changing or unindexed source. */
-      }
-    }
-    // the tab may be gone by now; that is not an error
-    await route
-      .fulfill({
-        status: 200,
-        headers: {
-          // by the name on disk, else by the name in the URL, else what the metadata says
-          'content-type': contentType,
-          'cache-control': 'no-store',
-          'x-paqvilo': encodeURI(rel),
-        },
-        body: method === 'HEAD' ? '' : body,
-        ...(proof ? { provenance: proof } : {}),
-      })
-      .catch(() => {});
-  }
-
-  async #handle(route) {
+  /* NOSONAR: preserve route completion, fault delivery and lifecycle ordering */ async #handle(route) {
     const request = route.request();
     let url;
     try {
@@ -593,26 +437,159 @@ export class OverlaySession extends EventEmitter {
 
     // Mirage already rendered its current Liquid, markup, forms and source assets. Keep the
     // toolkit panel API, but never apply the remote-portal overlay a second time to this response.
-    if (this.cfg.mirage) return this.#handleMirage(route, url, request, method, type);
+    if (this.cfg.mirage) {
+      if (url.pathname.startsWith(LOCAL_PREFIX)) {
+        if (url.pathname.startsWith(API_PREFIX) && this.api)
+          return this.api(route, url.pathname.slice(API_PREFIX.length));
+        return route
+          .fulfill({
+            status: 404,
+            headers: { 'content-type': 'text/plain' },
+            body: 'paqvilo: no Mirage panel resource at this address',
+          })
+          .catch(() => {});
+      }
+      const isDocument =
+        type === 'document' &&
+        (method === 'GET' ||
+          (method === 'POST' && /^application\/x-www-form-urlencoded/i.test(request.headers()['content-type'] ?? '')));
+      if (isDocument) {
+        let navigation;
+        try {
+          navigation = request.isNavigationRequest() && request.frame().parentFrame() === null;
+        } catch {
+          navigation = true;
+        }
+        if (navigation) this.#record(route, { type: 'html', url: url.pathname, sources: [], navigation: true });
+      }
+      return route.fallback();
+    }
 
     // 0. addresses of the overlay itself; whatever happens, they are never sent to the portal
-    if (url.pathname.startsWith(LOCAL_PREFIX)) return this.#handleLocalResource(route, url, request, method);
+    if (url.pathname.startsWith(LOCAL_PREFIX)) {
+      // the dev panel on the page talking to this process
+      if (url.pathname.startsWith(API_PREFIX) && this.api)
+        return this.api(route, url.pathname.slice(API_PREFIX.length));
+      // inline scripts the rewriter turned into <script src> so they can be debugged
+      let rel = null;
+      try {
+        if (method === 'GET' && url.pathname.startsWith(INLINE_PREFIX))
+          rel = decodeURIComponent(url.pathname.slice(INLINE_PREFIX.length));
+      } catch {
+        /* malformed escape */
+      }
+      // only files the model lists as inline scripts are served, nothing else under the sources
+      const src = this.model.inlineSources.find((s) => s.rel === rel && s.tag === 'script' && !s.extract),
+        body = this.#readLocalInlineBody(src);
+      let proof = null;
+      try {
+        proof = body
+          ? await scriptResourceProof(
+              this.sourceInspector,
+              src.file,
+              body,
+              new URL(request.frame().page().url()).pathname,
+            ).catch(() => null)
+          : null;
+      } catch {
+        /* Navigation may have ended while this script was read. */
+      }
+      await route
+        .fulfill(
+          body
+            ? {
+                status: 200,
+                headers: {
+                  'content-type': 'application/javascript; charset=utf-8',
+                  'cache-control': 'no-store',
+                  'x-paqvilo': encodeURI(src.rel),
+                },
+                body,
+                ...(proof ? { provenance: proof } : {}),
+              }
+            : { status: 404, headers: { 'content-type': 'text/plain' }, body: 'paqvilo: nothing at this address' },
+        )
+        .catch(() => {});
+      return;
+    }
 
-    if (this.bypass) return this.#handleBypass(route, url, request, type);
+    if (this.bypass) {
+      let navigation = false;
+      try {
+        navigation = type === 'document' && request.frame().parentFrame() === null;
+      } catch {
+        /* no frame yet */
+      }
+      if (navigation) this.#record(route, { type: 'html', url: url.pathname, sources: [], navigation });
+      return route.fallback();
+    }
 
     const path = pageKey(url.pathname, this.model);
     if (NEVER_REWRITE.some((re) => re.test(path))) return route.fallback();
 
     // 1. web files and explicit routes: answered from disk, the online site is not asked at all
     if (method === 'GET' || method === 'HEAD') {
-      const webFile = this.#handleWebFile(route, url, request, method);
-      if (webFile) return webFile; // NOSONAR: optional pending promise, awaited only when set
+      const found = this.resolver.resolve(url.pathname);
+      const hit = found && !this.disabled.has(this.rel(found.file)) ? found : null;
+      if (hit) {
+        const contentType = mimeFor(hit.file, mimeFor(url.pathname, this.model.findWebFile(url.pathname)?.mimeType));
+        const isScript = /(?:javascript|ecmascript)/i.test(contentType);
+        let body;
+        try {
+          // HEAD needs existence/type metadata, not the entire asset or generated source map.
+          body =
+            method === 'HEAD'
+              ? fs.statSync(hit.file).isFile()
+                ? Buffer.alloc(0)
+                : null
+              : this.fileBodies.read(
+                  hit.file,
+                  isScript ? (this.cfg.sourceMaps ? 'source-map' : 'script-source') : '',
+                  (bytes) =>
+                    isScript ? scriptSourceBody(bytes, hit.file, { sourceMaps: Boolean(this.cfg.sourceMaps) }) : bytes,
+                );
+        } catch {
+          body = null;
+        }
+        if (body) {
+          const rel = this.rel(hit.file);
+          this.#record(route, {
+            type: 'file',
+            url: url.pathname,
+            sources: [{ rel, action: hit.via, kind: 'web-file' }],
+          });
+          let proof = null;
+          if (method === 'GET' && isScript) {
+            try {
+              proof = await scriptResourceProof(
+                this.sourceInspector,
+                hit.file,
+                body,
+                new URL(request.frame().page().url()).pathname,
+              );
+            } catch {
+              /* No proof for a changing or unindexed source. */
+            }
+          }
+          // the tab may be gone by now; that is not an error
+          await route
+            .fulfill({
+              status: 200,
+              headers: {
+                // by the name on disk, else by the name in the URL, else what the metadata says
+                'content-type': contentType,
+                'cache-control': 'no-store',
+                'x-paqvilo': encodeURI(rel),
+              },
+              body: method === 'HEAD' ? '' : body,
+              ...(proof ? { provenance: proof } : {}),
+            })
+            .catch(() => {});
+          return;
+        }
+      }
     }
 
-    return this.#handlePageRequest(route, url, request, method, type);
-  }
-
-  /* NOSONAR */ async #handlePageRequest(route, url, request, method, type) {
     // 2. pages: fetched online, then local inline blocks / markup changes are laid over the HTML
     // A form post is re-sent by route.fetch from the bytes the browser hands over, and it does not
     // hand over uploaded files: multipart posts are left alone.
@@ -649,47 +626,43 @@ export class OverlaySession extends EventEmitter {
         if (navigation) this.#record(route, { type: 'html', url: url.pathname, sources: [], navigation });
         return route.fulfill({ response }).catch(() => {});
       }
-      return this.#rewritePageResponse(route, url, request, response, isDocument, isHtml, navigation);
+      let original;
+      let result;
+      try {
+        original = await response.text();
+        let sourceIndex;
+        if (isDocument && isHtml && this.sourceInspector) {
+          try {
+            sourceIndex = await this.sourceInspector.sourceIndexFor(url.pathname);
+          } catch (error) {
+            this.emit('fault', error, request.url());
+          }
+        }
+        result = this.rewriter.rewrite(original, url.pathname, { html: isHtml, isDocument, sourceIndex });
+      } catch (err) {
+        this.emit('fault', err, request.url());
+        // Preserve the response already received, especially after a successful form save.
+        // If it cannot be read, abort instead of repeating the request.
+        return route.fulfill({ response }).catch(() => route.abort().catch(() => {}));
+      }
+      this.#record(route, {
+        type: 'html',
+        url: url.pathname,
+        navigation,
+        sources: result.applied.map((a) => ({ rel: a.rel, action: a.action, kind: a.kind })),
+        notes: result.notes,
+        // every local inline source recognised in the page, overridden or not
+        matched: result.matched,
+      });
+      return route
+        .fulfill({
+          response,
+          ...(result.html === original ? {} : { body: result.html }),
+          ...(result.provenance ? { provenance: result.provenance } : {}),
+        })
+        .catch(() => {});
     }
 
     return route.fallback();
-  }
-
-  async #rewritePageResponse(route, url, request, response, isDocument, isHtml, navigation) {
-    let original;
-    let result;
-    try {
-      original = await response.text();
-      let sourceIndex;
-      if (isDocument && isHtml && this.sourceInspector) {
-        try {
-          sourceIndex = await this.sourceInspector.sourceIndexFor(url.pathname);
-        } catch (error) {
-          this.emit('fault', error, request.url());
-        }
-      }
-      result = this.rewriter.rewrite(original, url.pathname, { html: isHtml, isDocument, sourceIndex });
-    } catch (err) {
-      this.emit('fault', err, request.url());
-      // Preserve the response already received, especially after a successful form save.
-      // If it cannot be read, abort instead of repeating the request.
-      return route.fulfill({ response }).catch(() => route.abort().catch(() => {}));
-    }
-    this.#record(route, {
-      type: 'html',
-      url: url.pathname,
-      navigation,
-      sources: result.applied.map((a) => ({ rel: a.rel, action: a.action, kind: a.kind })),
-      notes: result.notes,
-      // every local inline source recognised in the page, overridden or not
-      matched: result.matched,
-    });
-    return route
-      .fulfill({
-        response,
-        ...(result.html === original ? {} : { body: result.html }),
-        ...(result.provenance ? { provenance: result.provenance } : {}),
-      })
-      .catch(() => {});
   }
 }

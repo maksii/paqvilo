@@ -300,90 +300,10 @@ export async function createSetupHandler(options = {}) {
       };
     }
   };
-  const apiRoutes = new Map([
-    ['/_setup/api/status GET', async (_req, res) => respond(res, 200, await snapshot())],
-    [
-      '/_setup/api/quick GET',
-      async (_req, res) => {
-        // Quick setup: the exports found in the project folder, written as the configuration would write them.
-        const value = remember(await store.snapshot());
-        const candidates = await exportCandidates({
-          directory: path.dirname(store.file),
-          sourceRoot: value.settings?.resolvedSourceRoot ?? path.dirname(store.file),
-        });
-        // A new configuration gets one free local address per website found (8787, 8788, … when free), and the Web API its own.
-        const ports = value.layers?.shared?.exists ? [] : await localPorts(Math.max(1, candidates.portals.length));
-        respond(res, 200, {
-          candidates,
-          ...(value.layers?.shared?.exists ? { port: null } : { port: ports[0], ports, apiPort: await freePort(8790) }),
-        });
-      },
-    ],
-    [
-      '/_setup/api/port GET',
-      async (_req, res) => {
-        // A local port for another project: free on this computer and not already given to a project of this configuration.
-        const value = await store.snapshot();
-        respond(res, 200, {
-          port: (
-            await localPorts(
-              1,
-              (value.sites ?? []).map((site) => site.mirage?.port),
-            )
-          )[0],
-        });
-      },
-    ],
-    [
-      '/_setup/api/folders GET',
-      async (req, res) => {
-        // Quick setup folder picker: folder names and what they hold, read-only; the page chooses, the configuration API saves.
-        if (!sourceRoot) remember(await store.snapshot().catch(() => ({})));
-        respond(
-          res,
-          200,
-          await listFolders({
-            directory: path.dirname(store.file),
-            sourceRoot: sourceRoot ?? path.dirname(store.file),
-            folder: new URLSearchParams(req.url.slice('/_setup/api/folders'.length)).get('path'),
-            files: new URLSearchParams(req.url.slice('/_setup/api/folders'.length)).get('files'),
-          }),
-        );
-      },
-    ],
-    [
-      '/_setup/api/preview GET',
-      async (_req, res) =>
-        respond(res, 200, { sessions: await sessions(), operation: await previewOperation(store.file) }),
-    ],
-    [
-      '/_setup/api/preview POST',
-      async (req, res, origin) => {
-        verified(req, origin);
-        const { action, site = null } = await body(req);
-        if (!sites.length) remember(await store.snapshot());
-        if (store.kind !== 'project' && !sites.some((item) => item.id === site))
-          throw setupError('Choose a configured target to run.');
-        respond(res, 202, {
-          operation: await runPreviewOperation({
-            kind: store.kind,
-            file: store.file,
-            site: store.kind === 'project' ? null : site,
-            action,
-          }),
-        });
-      },
-    ],
-    [
-      '/_setup/api/config POST',
-      async (req, res, origin) => {
-        verified(req, origin);
-        await store.save(await body(req));
-        respond(res, 200, await snapshot());
-      },
-    ],
-  ]);
-  return async (req, res) => {
+  /* NOSONAR: Preserve synchronous error handling and the original request response ordering. */ return async (
+    req,
+    res,
+  ) => {
     const pathname = req.url?.split('?')[0];
     if (!/^\/_setup(?:\/|$)/.test(pathname ?? '')) return false;
     try {
@@ -411,14 +331,68 @@ export async function createSetupHandler(options = {}) {
         res.end(req.method === 'HEAD' ? undefined : content);
         return true;
       }
-      if (pathname.startsWith('/_setup/api/runtime/') && req.method === 'GET') {
+      if (pathname === '/_setup/api/status' && req.method === 'GET') respond(res, 200, await snapshot());
+      else if (pathname.startsWith('/_setup/api/runtime/') && req.method === 'GET') {
         const query = new URLSearchParams(req.url.slice(pathname.length));
         await liveView(res, await liveFor(query.get('site')), pathname.slice('/_setup/api/runtime/'.length), query);
-      } else {
-        const route = apiRoutes.get(`${pathname} ${req.method}`);
-        if (route) await route(req, res, origin);
-        else respond(res, 404, { error: { message: 'Unknown setup endpoint.' } });
-      }
+      } else if (pathname === '/_setup/api/quick' && req.method === 'GET') {
+        // Quick setup: the exports found in the project folder, written as the configuration would write them.
+        const value = remember(await store.snapshot());
+        const candidates = await exportCandidates({
+          directory: path.dirname(store.file),
+          sourceRoot: value.settings?.resolvedSourceRoot ?? path.dirname(store.file),
+        });
+        // A new configuration gets one free local address per website found (8787, 8788, … when free), and the Web API its own.
+        const ports = value.layers?.shared?.exists ? [] : await localPorts(Math.max(1, candidates.portals.length));
+        respond(res, 200, {
+          candidates,
+          ...(value.layers?.shared?.exists ? { port: null } : { port: ports[0], ports, apiPort: await freePort(8790) }),
+        });
+      } else if (pathname === '/_setup/api/port' && req.method === 'GET') {
+        // A local port for another project: free on this computer and not already given to a project of this configuration.
+        const value = await store.snapshot();
+        respond(res, 200, {
+          port: (
+            await localPorts(
+              1,
+              (value.sites ?? []).map((site) => site.mirage?.port),
+            )
+          )[0],
+        });
+      } else if (pathname === '/_setup/api/folders' && req.method === 'GET') {
+        // Quick setup folder picker: folder names and what they hold, read-only; the page chooses, the configuration API saves.
+        if (!sourceRoot) remember(await store.snapshot().catch(() => ({})));
+        respond(
+          res,
+          200,
+          await listFolders({
+            directory: path.dirname(store.file),
+            sourceRoot: sourceRoot ?? path.dirname(store.file),
+            folder: new URLSearchParams(req.url.slice(pathname.length)).get('path'),
+            files: new URLSearchParams(req.url.slice(pathname.length)).get('files'),
+          }),
+        );
+      } else if (pathname === '/_setup/api/preview' && req.method === 'GET')
+        respond(res, 200, { sessions: await sessions(), operation: await previewOperation(store.file) });
+      else if (pathname === '/_setup/api/preview' && req.method === 'POST') {
+        verified(req, origin);
+        const { action, site = null } = await body(req);
+        if (!sites.length) remember(await store.snapshot());
+        if (store.kind !== 'project' && !sites.some((item) => item.id === site))
+          throw setupError('Choose a configured target to run.');
+        respond(res, 202, {
+          operation: await runPreviewOperation({
+            kind: store.kind,
+            file: store.file,
+            site: store.kind === 'project' ? null : site,
+            action,
+          }),
+        });
+      } else if (pathname === '/_setup/api/config' && req.method === 'POST') {
+        verified(req, origin);
+        await store.save(await body(req));
+        respond(res, 200, await snapshot());
+      } else respond(res, 404, { error: { message: 'Unknown setup endpoint.' } });
     } catch (error) {
       respond(res, error.status ?? 400, { error: { message: error.message } });
     }

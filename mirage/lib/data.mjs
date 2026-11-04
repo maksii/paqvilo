@@ -699,7 +699,12 @@ const keySegmentBucket = (value, collation, kind) => {
   )
     return undefined;
   const guid = guidKey(raw);
-  return guid ? `g${guid}` : `t${foldText(raw, collation)}`;
+  if (guid) return `g${guid}`;
+  const folded = foldText(raw, collation);
+  // A non-GUID that folds to a GUID can compare equal to a raw GUID via
+  // text equality. Keep it wild so a g-bucket cannot hide that match.
+  if (guidKey(folded)) return undefined;
+  return `t${folded}`;
 };
 /** Restore `current` to `saved` in place, keeping the identity of tables, rows and sections that callers hold. */
 const restoreInPlace = (current, saved) => {
@@ -7249,7 +7254,7 @@ function enqueueInertUpsertProperties(value, keys, pending) {
 }
 function isAsciiString(value) {
   if (typeof value !== 'string') return false;
-  for (let index = 0; index < value.length; index++) if (value.charCodeAt(index) > 0x7f) return false;
+  for (let index = 0; index < value.length; index++) if (value.codePointAt(index) > 0x7f) return false;
   return true;
 }
 function sameUpsertPrototype() {
@@ -7372,7 +7377,7 @@ function eligibleUpsertRows(state, mapping, key) {
     return null;
   for (let i = 0; i < rows.length; i++) {
     const entry = ownData(rows, String(i));
-    if (!entry || !entry.value || typeof entry.value !== 'object') return null;
+    if (!entry?.value || typeof entry.value !== 'object') return null;
     const value = ownData(entry.value, key),
       id = ownData(entry.value, mapping.idColumn);
     if (!value || !isAsciiString(value.value) || !id || typeof id.value !== 'string') return null;
@@ -7383,7 +7388,7 @@ function upsertLookupEligibility(store, mapping, targets, texts) {
   if (!isStandardUpsertStore(store)) return null;
   const stateSlot = ownData(store, '_state'),
     isolated = ownData(store, 'isolatedCount');
-  if (!stateSlot || !isolated || isolated.value !== 0 || transactionFrameOf(store)) return null;
+  if (!stateSlot || isolated?.value !== 0 || transactionFrameOf(store)) return null;
   for (const name of ['virtualTables', 'expiryFilter']) {
     const d = Object.getOwnPropertyDescriptor(store, name);
     if (d && (!Object.hasOwn(d, 'value') || d.value != null)) return null;

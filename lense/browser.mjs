@@ -22,18 +22,25 @@ export { browserProfileDir } from './browser-profile.mjs';
 export async function openBrowser(cfg, overrides = {}) {
   const b = cfg.browser;
   validateDebuggerMode(b.cdpUrl, overrides.debugPort ?? b.debugPort);
-  if (b.cdpUrl) return attachBrowser(cfg, b.cdpUrl);
+  if (b.cdpUrl) {
+    const browser = await chromium.connectOverCDP(b.cdpUrl);
+    const contexts = browser.contexts();
+    const context = contexts[0];
+    if (contexts.length !== 1) {
+      await browser.close().catch(() => {});
+      throw new Error(
+        `Expected one browser context at the CDP endpoint, found ${contexts.length}. Attach to the debugging endpoint of the intended profile.`,
+      );
+    }
+    // closing only detaches: the browser belongs to the user
+    return { context, attached: true, profile: browserProfileInfo(cfg), close: () => browser.close() };
+  }
   const profile = browserProfileInfo(cfg, overrides.profileDir);
   validateBrowserProfile(profile);
   const profileDir = profile.userDataDir;
-  if (profile.kind !== 'external') fs.mkdirSync(profileDir, { recursive: true });
+  ensureOwnedProfileDirectory(profile, profileDir);
   const headless = overrides.headless ?? b.headless;
-  // A headless viewport otherwise becomes the next headed window's saved size.
-  // Read only placement metadata; restore it through CDP without editing browser storage.
-  const previousWindow = headless ? savedWindowBounds(profileDir, profile.profileDirectory) : null;
-  const initializePlacement = !headless && profile.kind !== 'external' && !fs.existsSync(`${profileDir}.window.json`);
-  const args = initializePlacement ? ['--window-size=1280,900'] : [];
-  if (profile.kind === 'external') args.push(`--profile-directory=${profile.profileDirectory}`);
+  const { previousWindow, initializePlacement, args } = browserWindowSettings(profile, profileDir, headless);
   // only the dev loop opens the port; it is bound to this machine
   const debugPort = overrides.debugPort ?? null;
   // Never attach VS Code to another account's browser because the requested port was occupied.
@@ -41,10 +48,40 @@ export async function openBrowser(cfg, overrides = {}) {
     throw new Error(
       `Debugger port ${debugPort} is already in use. Choose another --debug-port (0 disables debugging), or attach to the intended browser with --cdp-url.`,
     );
-  if (debugPort) args.push(`--remote-debugging-port=${debugPort}`, '--remote-debugging-address=127.0.0.1');
-  const context = await launchBrowserContext(profileDir, b, headless, args, profile);
-  if (initializePlacement || debugPort)
-    await initializeLaunchedBrowser(context, initializePlacement, profileDir, debugPort);
+  appendDebuggerArgs(args, debugPort);
+  let context;
+  try {
+    context = await chromium.launchPersistentContext(profileDir, browserLaunchSettings(b, headless, args));
+  } catch (err) {
+    throwBrowserLaunchError(err, profileDir, profile, b);
+  }
+  if (initializePlacement) {
+    try {
+      await initializeBrowserWindow(context, profileDir);
+    } catch (error) {
+      await context.close().catch(() => {});
+      throw error;
+    }
+  }
+  if (debugPort) {
+    try {
+      const page = context.pages()[0] ?? (await context.newPage());
+      const cdp = await context.newCDPSession(page);
+      let targetId;
+      try {
+        targetId = (await cdp.send('Target.getTargetInfo')).targetInfo.targetId;
+      } finally {
+        await cdp.detach();
+      }
+      if (!(await debuggerListening(debugPort, targetId)))
+        throw new Error(
+          `Debugger port ${debugPort} did not expose the selected browser profile. The new browser has been closed; choose a free port and retry.`,
+        );
+    } catch (error) {
+      await context.close().catch(() => {});
+      throw error;
+    }
+  }
   // External profiles stay entirely browser-managed; never export their session credentials.
   const stopKeeping =
     profile.kind === 'external'
@@ -52,7 +89,7 @@ export async function openBrowser(cfg, overrides = {}) {
       : await keepSessionCookies(context, `${profileDir}.session.json`, {
           origins: overrides.cookieOrigins ?? [cfg.origin].filter(Boolean),
         });
-  if (!headless) keepDownloads(context);
+  keepHeadedDownloads(context, headless);
   return {
     context,
     attached: false,
@@ -62,86 +99,60 @@ export async function openBrowser(cfg, overrides = {}) {
   };
 }
 
-async function attachBrowser(cfg, cdpUrl) {
-  const browser = await chromium.connectOverCDP(cdpUrl);
-  const contexts = browser.contexts();
-  const context = contexts[0];
-  if (contexts.length !== 1) {
-    await browser.close().catch(() => {});
-    throw new Error(
-      `Expected one browser context at the CDP endpoint, found ${contexts.length}. Attach to the debugging endpoint of the intended profile.`,
-    );
-  }
-  // closing only detaches: the browser belongs to the user
-  return { context, attached: true, profile: browserProfileInfo(cfg), close: () => browser.close() };
+function ensureOwnedProfileDirectory(profile, profileDir) {
+  if (profile.kind !== 'external') fs.mkdirSync(profileDir, { recursive: true });
+}
+function browserWindowSettings(profile, profileDir, headless) {
+  // A headless viewport otherwise becomes the next headed window's saved size.
+  // Read only placement metadata; restore it through CDP without editing browser storage.
+  const previousWindow = headless ? savedWindowBounds(profileDir, profile.profileDirectory) : null;
+  const initializePlacement = !headless && profile.kind !== 'external' && !fs.existsSync(`${profileDir}.window.json`);
+  const args = initializePlacement ? ['--window-size=1280,900'] : [];
+  if (profile.kind === 'external') args.push(`--profile-directory=${profile.profileDirectory}`);
+  return { previousWindow, initializePlacement, args };
+}
+function appendDebuggerArgs(args, debugPort) {
+  if (debugPort) args.push(`--remote-debugging-port=${debugPort}`, '--remote-debugging-address=127.0.0.1');
+}
+function browserLaunchSettings(b, headless, args) {
+  return windowsLaunchOptions({
+    channel: b.channel === 'chromium' ? undefined : b.channel,
+    headless,
+    // Desktop sessions use the browser sandbox. Linux headless fixture runners can
+    // run inside containers without an available Chromium user-namespace sandbox.
+    chromiumSandbox: process.platform === 'win32' || !headless,
+    viewport: headless ? { width: 1440, height: 900 } : null,
+    // a service worker would answer requests before the overlay sees them
+    serviceWorkers: 'block',
+    // An explicit development opt-in is needed when local edits invalidate the portal's CSP.
+    bypassCSP: Boolean(b.bypassCSP),
+    ignoreDefaultArgs: ['--enable-automation'],
+    args,
+  });
+}
+function keepHeadedDownloads(context, headless) {
+  if (!headless) keepDownloads(context);
 }
 
-async function launchBrowserContext(profileDir, browserConfig, headless, args, profile) {
-  try {
-    return await chromium.launchPersistentContext(
-      profileDir,
-      windowsLaunchOptions({
-        channel: browserConfig.channel === 'chromium' ? undefined : browserConfig.channel,
-        headless,
-        // Desktop sessions use the browser sandbox. Linux headless fixture runners can
-        // run inside containers without an available Chromium user-namespace sandbox.
-        chromiumSandbox: process.platform === 'win32' || !headless,
-        viewport: headless ? { width: 1440, height: 900 } : null,
-        // a service worker would answer requests before the overlay sees them
-        serviceWorkers: 'block',
-        // An explicit development opt-in is needed when local edits invalidate the portal's CSP.
-        bypassCSP: Boolean(browserConfig.bypassCSP),
-        ignoreDefaultArgs: ['--enable-automation'],
-        args,
-      }),
-    );
-  } catch (err) {
-    const first = err.message.split('\n')[0];
-    if (
-      /already (?:in use|running)|ProcessSingleton|SingletonLock|Target page, context or browser has been closed/i.test(
-        err.message,
-      )
+function throwBrowserLaunchError(err, profileDir, profile, b) {
+  const first = err.message.split('\n')[0];
+  if (
+    /already (?:in use|running)|ProcessSingleton|SingletonLock|Target page, context or browser has been closed/i.test(
+      err.message,
     )
-      throw new Error(
-        `the browser profile ${profileDir} (${profile.profileDirectory}) is in use or could not start. Close the browser using that user-data root, choose another --profile, or attach with --cdp-url to its existing debugging endpoint. (${first})`,
-        { cause: err },
-      );
-    if (/is not found at|distribution .* is not found|executable doesn't exist/i.test(err.message))
-      throw new Error(
-        `browser "${browserConfig.channel}" is not installed. Set PAQVILO_BROWSER in .env to msedge or chrome. (${first})`,
-        { cause: err },
-      );
-    throw err;
+  ) {
+    throw new Error(
+      `the browser profile ${profileDir} (${profile.profileDirectory}) is in use or could not start. Close the browser using that user-data root, choose another --profile, or attach with --cdp-url to its existing debugging endpoint. (${first})`,
+      { cause: err },
+    );
   }
-}
-
-async function initializeLaunchedBrowser(context, initializePlacement, profileDir, debugPort) {
-  if (initializePlacement) {
-    try {
-      await initializeBrowserWindow(context, profileDir);
-    } catch (error) {
-      await context.close().catch(() => {});
-      throw error;
-    }
+  if (/is not found at|distribution .* is not found|executable doesn't exist/i.test(err.message)) {
+    throw new Error(
+      `browser "${b.channel}" is not installed. Set PAQVILO_BROWSER in .env to msedge or chrome. (${first})`,
+      { cause: err },
+    );
   }
-  if (!debugPort) return;
-  try {
-    const page = context.pages()[0] ?? (await context.newPage());
-    const cdp = await context.newCDPSession(page);
-    let targetId;
-    try {
-      targetId = (await cdp.send('Target.getTargetInfo')).targetInfo.targetId;
-    } finally {
-      await cdp.detach();
-    }
-    if (!(await debuggerListening(debugPort, targetId)))
-      throw new Error(
-        `Debugger port ${debugPort} did not expose the selected browser profile. The new browser has been closed; choose a free port and retry.`,
-      );
-  } catch (error) {
-    await context.close().catch(() => {});
-    throw error;
-  }
+  throw err;
 }
 
 async function closeLaunchedBrowser(context, stopKeeping, previousWindow) {

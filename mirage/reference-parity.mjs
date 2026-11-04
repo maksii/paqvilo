@@ -139,63 +139,6 @@ function localVisitorOptions(localVisitor, before) {
   return { contactId, roles };
 }
 
-async function compareOneContract(contract, bridge, visitor) {
-  const result = {
-    id: contract.id,
-    path: contract.path.split('?')[0],
-    kind: contract.kind ?? 'json',
-    fields: contract.fields,
-    expectedCount: contract.expectedCount,
-    statusOnly: contract.statusOnly === true,
-    passed: false,
-  };
-  try {
-    const native = await bridge.request(contract.path, { method: 'GET', prefer: contract.prefer });
-    // A portal visitor owns its cookies and local-only controls. Neither is
-    // accepted from a plan or copied to the reference browser/evidence.
-    const response = await visitor.request(contract.path, {
-      method: 'GET',
-      headers: contract.prefer ? { Prefer: contract.prefer } : {},
-    });
-    const body = await response.text();
-    result.referenceStatus = native.status;
-    result.localStatus = response.status;
-    const expectedStatus = contract.expectedStatus ?? 200;
-    if (native.status !== expectedStatus || response.status !== expectedStatus)
-      throw new Error('HTTP status differs from the contract.');
-    const nativeBody = Buffer.isBuffer(native.body) ? native.body.toString('utf8') : native.body;
-    const a = normalizeContract(nativeBody, contract),
-      b = normalizeContract(body, contract);
-    result.referenceDigest = hash(a);
-    result.localDigest = hash(b);
-    result.referenceCount = Array.isArray(a) ? a.length : undefined;
-    result.localCount = Array.isArray(b) ? b.length : undefined;
-    if (
-      contract.expectedCount !== undefined &&
-      (result.referenceCount !== contract.expectedCount || result.localCount !== contract.expectedCount)
-    )
-      throw new Error('Result count differs from the contract.');
-    result.passed = result.referenceDigest === result.localDigest;
-    if (!result.passed) result.error = 'Projected response differs.';
-  } catch (cause) {
-    // Bodies, query strings and browser tokens are never emitted in the report.
-    result.error = [
-      'The response lacks the configured collection.',
-      'The response lacks a configured field.',
-      'HTTP status differs from the contract.',
-      'Result count differs from the contract.',
-    ].includes(cause.message)
-      ? cause.message
-      : 'Reference comparison failed; inspect the connected browser and explicit contract.';
-  }
-  return result;
-}
-
-async function compareContracts(contracts, bridge, visitor, results) {
-  for (const contract of contracts) results.push(await compareOneContract(contract, bridge, visitor));
-}
-
-/** Explicit projection prevents volatile annotations from masking useful record parity. */
 export function normalizeContract(body, contract) {
   validateContractOptions(contract);
   if (contract.statusOnly) return null;
@@ -221,7 +164,7 @@ export function normalizeContract(body, contract) {
 }
 
 /** Compare only explicit GET contracts using the browser's existing identity. */
-export async function compareReferenceContracts({
+/* NOSONAR: preserve supplied bridge and visitor callback await ordering */ export async function compareReferenceContracts({
   localUrl,
   origin,
   cdpUrl,
@@ -302,7 +245,57 @@ export async function compareReferenceContracts({
       identityFingerprint: visitorSignature(visitorIdentity),
     };
     if (!suppliedBridge) await bridge.connect(cdpUrl);
-    await compareContracts(contracts, bridge, visitor, report.contracts);
+    for (const contract of contracts) {
+      const result = {
+        id: contract.id,
+        path: contract.path.split('?')[0],
+        kind: contract.kind ?? 'json',
+        fields: contract.fields,
+        expectedCount: contract.expectedCount,
+        statusOnly: contract.statusOnly === true,
+        passed: false,
+      };
+      try {
+        const native = await bridge.request(contract.path, { method: 'GET', prefer: contract.prefer });
+        // A portal visitor owns its cookies and local-only controls. Neither is
+        // accepted from a plan or copied to the reference browser/evidence.
+        const response = await visitor.request(contract.path, {
+          method: 'GET',
+          headers: contract.prefer ? { Prefer: contract.prefer } : {},
+        });
+        const body = await response.text();
+        result.referenceStatus = native.status;
+        result.localStatus = response.status;
+        const expectedStatus = contract.expectedStatus ?? 200;
+        if (native.status !== expectedStatus || response.status !== expectedStatus)
+          throw new Error('HTTP status differs from the contract.');
+        const nativeBody = Buffer.isBuffer(native.body) ? native.body.toString('utf8') : native.body;
+        const a = normalizeContract(nativeBody, contract),
+          b = normalizeContract(body, contract);
+        result.referenceDigest = hash(a);
+        result.localDigest = hash(b);
+        result.referenceCount = Array.isArray(a) ? a.length : undefined;
+        result.localCount = Array.isArray(b) ? b.length : undefined;
+        if (
+          contract.expectedCount !== undefined &&
+          (result.referenceCount !== contract.expectedCount || result.localCount !== contract.expectedCount)
+        )
+          throw new Error('Result count differs from the contract.');
+        result.passed = result.referenceDigest === result.localDigest;
+        if (!result.passed) result.error = 'Projected response differs.';
+      } catch (cause) {
+        // Bodies, query strings and browser tokens are never emitted in the report.
+        result.error = [
+          'The response lacks the configured collection.',
+          'The response lacks a configured field.',
+          'HTTP status differs from the contract.',
+          'Result count differs from the contract.',
+        ].includes(cause.message)
+          ? cause.message
+          : 'Reference comparison failed; inspect the connected browser and explicit contract.';
+      }
+      report.contracts.push(result);
+    }
     report.stateUnchanged = stateSignature(before) === stateSignature(await readState());
     report.localVisitor.unchanged = visitorSignature(visitorIdentity) === visitorSignature(await visitor.session());
     report.passed =

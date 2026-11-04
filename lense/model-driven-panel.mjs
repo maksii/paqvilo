@@ -467,27 +467,6 @@ function groupCurrentAssets(assets, rootOf) {
   return grouped;
 }
 
-async function updateAssetGroup(root, assets, baselines, native, facts) {
-  let baseline = baselines.get(root);
-  if (!baseline) {
-    baseline = new GitBaseline(root, 'HEAD');
-    baselines.set(root, baseline);
-  }
-  baseline.preload(assets.map((asset) => asset.file));
-  const changed = await baseline.changedFilesAsync({ refreshRef: false });
-  for (const asset of assets) {
-    const before = baseline.available ? baseline.show(asset.file) : null;
-    const bytes = native.get(asset.name);
-    facts.set(asset.name, {
-      edited: baseline.available ? before === null || changed.has(path.resolve(asset.file)) : undefined,
-      canDiff: bytes !== undefined || baseline.available,
-      differs: bytes !== undefined ? !bytes.equals(asset.data) : null,
-      baseline,
-      before,
-    });
-  }
-}
-
 function setUnrootedAssetFacts(assets, native, facts) {
   for (const asset of assets.values())
     if (!facts.has(asset.name)) {
@@ -499,19 +478,6 @@ function setUnrootedAssetFacts(assets, native, facts) {
         before: null,
       });
     }
-}
-
-async function updateGitSummary(baselines, state) {
-  const first = [...baselines.entries()][0],
-    head = first ? await gitHead(first[0]) : null;
-  state.git = head
-    ? {
-        ...head,
-        headMoved: head.commit !== first[1].commit,
-        canRepin: true,
-        baseline: { available: first[1].available, requested: 'HEAD', commit: first[1].commit, pinned: true },
-      }
-    : null;
 }
 
 /** Git supplies the edited/scope baseline; only actually observed native bytes supply online equality. */
@@ -562,9 +528,37 @@ export async function createModelDrivenPanelSources(imported) {
     nativeBytes = discardMissingNativeAssets(current.assets, native, nativeBytes);
     const grouped = groupCurrentAssets(current.assets, rootOf);
     state.facts = new Map();
-    for (const [root, assets] of grouped) await updateAssetGroup(root, assets, baselines, native, state.facts);
+    for (const [root, assets] of grouped) {
+      let baseline = baselines.get(root);
+      if (!baseline) {
+        baseline = new GitBaseline(root, 'HEAD');
+        baselines.set(root, baseline);
+      }
+      baseline.preload(assets.map((asset) => asset.file));
+      const changed = await baseline.changedFilesAsync({ refreshRef: false });
+      for (const asset of assets) {
+        const before = baseline.available ? baseline.show(asset.file) : null;
+        const bytes = native.get(asset.name);
+        state.facts.set(asset.name, {
+          edited: baseline.available ? before === null || changed.has(path.resolve(asset.file)) : undefined,
+          canDiff: bytes !== undefined || baseline.available,
+          differs: bytes !== undefined ? !bytes.equals(asset.data) : null,
+          baseline,
+          before,
+        });
+      }
+    }
     setUnrootedAssetFacts(current.assets, native, state.facts);
-    await updateGitSummary(baselines, state);
+    const first = [...baselines.entries()][0],
+      head = first ? await gitHead(first[0]) : null;
+    state.git = head
+      ? {
+          ...head,
+          headMoved: head.commit !== first[1].commit,
+          canRepin: true,
+          baseline: { available: first[1].available, requested: 'HEAD', commit: first[1].commit, pinned: true },
+        }
+      : null;
     return state;
   }
   await update();

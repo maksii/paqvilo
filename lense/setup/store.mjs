@@ -177,158 +177,6 @@ function stageStatus(stage, { findings, snapshot, runtime, mirages, portal, crea
   return created && stage.configured?.(mirages, snapshot) ? 'done' : 'optional';
 }
 
-async function readLinkedProject(directory, file) {
-  const relative = path.relative(directory, file);
-  if (
-    !relative ||
-    relative === '..' ||
-    relative.startsWith('..' + path.sep) ||
-    path.isAbsolute(relative) ||
-    relative.split(/[\\/]/).some((part) => part.toLowerCase() === '.paqvilo')
-  )
-    return { refusal: { file, code: 'project-outside' } };
-  let text;
-  try {
-    text = await textFile(file, directory);
-  } catch (error) {
-    return {
-      refusal: {
-        file,
-        code: /outside|symbolic/i.test(error.message) ? 'project-outside' : 'project-invalid',
-        reason: error.message,
-      },
-    };
-  }
-  let raw = null;
-  if (text !== null)
-    try {
-      raw = document(text, 'Project configuration').raw;
-    } catch {
-      raw = null;
-    }
-  if (text !== null && !projectDocument(raw)) return { refusal: { file, code: 'project-invalid' } };
-  return { project: { file, text, raw } };
-}
-
-async function populateProjectSnapshot(store, result, valid, inspectSource) {
-  const authored = document(result.layers.shared.text, 'Project configuration').raw;
-  result.layers.shared.values = redactSettings(authored);
-  result.settings = {
-    defaultSite: valid.defaultPortal,
-    sourceRoot: store.directory,
-    runtime: valid.runtime,
-    simulation: defaultedSetting(valid, 'simulation'),
-    modelDriven: defaultedSetting(valid, 'modelDriven'),
-    dataverse: defaultedSetting(valid, 'dataverse'),
-    solutions: valid.solutions.map((item) => ({ id: item.id, path: item.sourcePath })),
-    solutionEntries: authored.solutions ?? [],
-    dataPackEntries: authored.dataPacks ?? authored.presets ?? [],
-    dataPacks: valid.dataPacks,
-    solutionRoots: valid.solutionRoots,
-    mirage: redactSettings(
-      Object.fromEntries(
-        projectKeys()
-          .filter((key) => valid[key] !== undefined)
-          .map((key) => [key, valid[key]]),
-      ),
-    ),
-    lcid: authored.lcid,
-    watch: authored.watch,
-    stateDirectory: authored.stateDirectory ?? authored.state_directory,
-    references: authored.references ?? authored.referenceEnvironments,
-    presets: authored.presets,
-    portals: authored.portals,
-  };
-  result.solutions = await Promise.all(valid.solutionRoots.map((folder) => inspectSource(folder)));
-  const packs = (result.packs = await Promise.all(valid.dataPacks.map(packStatus)));
-  result.sites = await Promise.all(
-    valid.portals.map(async (site) => {
-      const origin = projectOrigin(valid, site);
-      return {
-        id: site.id,
-        source: site.sourcePath,
-        packs,
-        sourceStatus: await inspectSource(site.sourceDir, { portal: true }),
-        environments: origin ? { reference: { url: origin } } : {},
-        runtime: valid.runtime,
-        mirage: {
-          runtime: valid.runtime,
-          simulation: defaultedSetting(valid, 'simulation'),
-          modelDriven: defaultedSetting(valid, 'modelDriven'),
-          dataverse: defaultedSetting(valid, 'dataverse'),
-          solutionRoots: site.solutionRoots,
-          dataPacks: valid.dataPacks,
-        },
-        solutions: await Promise.all(site.solutionRoots.map((folder) => inspectSource(folder))),
-      };
-    }),
-  );
-}
-
-async function populateCatalogueSnapshot(store, result, inspectSource) {
-  const catalogue = loadCatalogue({ config: store.file }, store.processEnv);
-  const { values, origin } = readEnvSettings(store.directory, store.processEnv);
-  result.settings = {
-    sourceRoot: catalogue.root.sourceRoot ?? '.',
-    resolvedSourceRoot: catalogue.sourceRoot,
-    defaultSite: catalogue.root.defaultSite ?? '',
-    browser: catalogue.root.browser,
-    portals: catalogue.root.portals,
-    liveReload: catalogue.root.liveReload,
-    panel: catalogue.root.panel,
-    includeCaution: catalogue.root.includeCaution,
-    agent: catalogue.root.agent ?? {},
-    editor: catalogue.root.editor,
-    sourceMaps: catalogue.root.sourceMaps,
-    defaults: redactDefaults(catalogue.root.defaults ?? {}),
-    solutionRoots: catalogue.root.defaults?.mirage?.solutionRoots ?? [],
-    runtime: runtimeSettings(catalogue.root.defaults?.mirage?.runtime),
-    simulation: simulationSettings(catalogue.root.defaults?.mirage?.simulation),
-    dataverse: catalogue.root.defaults?.mirage?.dataverse ?? {},
-    modelDriven: catalogue.root.defaults?.mirage?.modelDriven ?? {},
-    effective: Object.fromEntries(
-      ['PAQVILO_SITE', 'PAQVILO_ENV', 'PAQVILO_BROWSER', 'PAQVILO_REPO', 'PAQVILO_SCOPE', 'PAQVILO_BASELINE']
-        .filter((key) => values[key])
-        .map((key) => [key, { value: values[key], origin: origin[key] }]),
-    ),
-    provenance: catalogue.provenance,
-  };
-  result.sites = await Promise.all(
-    Object.entries(catalogue.sites).map(async ([id, site]) => {
-      const mirage = resolveMirageConfig(site.mirage, catalogue);
-      // `mirage` stays the site mapping merged over defaults.mirage (the current form values); `authoredMirage`
-      // is the site's own mapping and `inherited` marks keys that only defaults.mirage sets (form placeholders).
-      const authored = catalogue.root.sites?.[id]?.mirage ?? {};
-      const inherited = Object.fromEntries(
-        Object.keys(catalogue.root.defaults?.mirage ?? {})
-          .filter((key) => !Object.hasOwn(authored, key))
-          .map((key) => [key, true]),
-      );
-      const own = catalogue.root.sites?.[id] ?? {};
-      return {
-        id,
-        source: site.source ?? '',
-        defaultEnv: site.defaultEnv ?? '',
-        environments: site.environments,
-        startPath: site.startPath,
-        scope: site.scope,
-        routes: site.routes,
-        webFiles: own.webFiles,
-        inline: own.inline,
-        markup: own.markup,
-        mirage: redactSettings(site.mirage ?? {}),
-        authoredMirage: redactSettings(authored),
-        inherited,
-        runtime: mirage.runtime ?? runtimeSettings(),
-        effectiveMirage: redactSettings(mirage),
-        sourceStatus: await inspectSource(site.sourceDir, { portal: true }),
-        solutions: await Promise.all(mirage.solutionRoots.map((folder) => inspectSource(folder))),
-        packs: await Promise.all(mirage.dataPacks.map(packStatus)),
-      };
-    }),
-  );
-}
-
 function addPortalSiteFindings(store, site, add) {
   if (!site.sourceStatus.exists) add('missing-source', 'Select an existing local export folder.');
   else if (!site.sourceStatus.format)
@@ -376,38 +224,6 @@ function addSiteFindings(store, result) {
     addSiteResourceFindings(site, add);
   }
   if (standalone) addStandaloneFindings(result);
-}
-
-/* NOSONAR */ async function addLinkedProjectFindings(result, files) {
-  for (const [site, linked] of Object.entries(files.projects)) {
-    const add = (code, message) => result.findings.push({ code, site, layer: `project:${site}`, message });
-    if (linked.text === null) {
-      add('missing-project', `Project file does not exist: ${linked.file}`);
-      continue;
-    }
-    try {
-      const project = await resolveProjectConfig(document(linked.text, 'Project configuration').raw, linked.file, {
-        checkSources: false,
-      });
-      for (const solution of project.solutions)
-        if (!(await exists(solution.root, 'isDirectory')))
-          add('missing-solution', `Solution folder does not exist: ${solution.root}`);
-      for (const pack of project.dataPacks)
-        if (!(await exists(pack.module))) add('missing-pack', `Pack module does not exist: ${pack.module}`);
-    } catch (error) {
-      add('configuration', `${path.basename(linked.file)}: ${error.message}`);
-    }
-  }
-  for (const [site, item] of Object.entries(files.refused)) {
-    let message;
-    if (item.code === 'project-outside')
-      message = `Linked project file ${item.file} must be inside the catalogue folder and outside .paqvilo/. Setup neither shows nor edits it; change sites.${site}.mirage.project.`;
-    else {
-      const reason = item.reason ? ` (${item.reason})` : '';
-      message = `${path.basename(item.file)} is not a Mirage project document (version 1 or 2 with project keys only)${reason}. Setup neither shows nor edits it; change sites.${site}.mirage.project or repair the file outside setup.`;
-    }
-    result.findings.push({ code: item.code, site, message });
-  }
 }
 
 function addDuplicateFindings(result) {
@@ -605,47 +421,6 @@ function assertSaveInput(input, linkedSite, localFile) {
     throw setupError('A template creates the shared configuration.');
 }
 
-async function validateSaveText(store, input, file, projectFile, text, before, linkedSite) {
-  if (linkedSite) {
-    const raw = document(text, 'Project configuration').raw;
-    await resolveProjectConfig(raw, file, { checkSources: false });
-    if (!projectDocument(raw)) throw setupError('A linked project file holds version 1 or 2 and project keys only.');
-  } else {
-    await store.validate(
-      input.layer === 'shared' ? text : before.shared,
-      input.layer === 'personal' ? text : before.personal,
-    );
-  }
-  if (input.layer === 'personal') {
-    const tracked = await run('git', ['ls-files', '--error-unmatch', '--', path.basename(file)], {
-      cwd: store.directory,
-      windowsHide: true,
-      timeout: 3000,
-    }).then(
-      () => true,
-      () => false,
-    );
-    if (tracked)
-      throw setupError('Personal configuration is already tracked by Git. Untrack it before saving private overrides.');
-  }
-  // JSON projects keep their original encoding.
-  if (projectFile && /\.json$/i.test(file)) text = JSON.stringify(document(text, 'Project').raw, null, 2) + '\n';
-  return text;
-}
-
-async function updateLocalIgnore(ignoreFile) {
-  const ignores = (await textFile(ignoreFile)) ?? '';
-  const lines = new Set(ignores.split(/\r?\n/).map((line) => line.trim()));
-  const rules = ['.paqvilo/', '.env', 'paqvilo.config.local.yml'].filter(
-    (rule) => !lines.has(rule) && !lines.has('/' + rule),
-  );
-  if (rules.length)
-    await fs.appendFile(
-      ignoreFile,
-      `\n# Paqvilo local settings and state\n${rules.map((rule) => '/' + rule).join('\n')}\n`,
-    );
-}
-
 /** Journey stages (docs/setup.md): done, next (the first open stage), blocked (open behind it) or optional. */
 export function setupStages(snapshot, runtime = null) {
   const mirages =
@@ -766,7 +541,7 @@ export class SetupStore {
       throw setupError('Select the shared catalogue with --config; personal settings are a separate layer.');
     this.processEnv = processEnv;
   }
-  async files() {
+  /* NOSONAR: preserve linked-project read and refusal ordering */ async files() {
     const shared = await textFile(this.file);
     const personal = this.localFile ? await textFile(this.localFile) : null;
     // Hash .env for conflicts only. Its content never leaves the store.
@@ -779,9 +554,40 @@ export class SetupStore {
     const projects = {},
       refused = {};
     for (const [site, file] of Object.entries(this.linkedProjects(shared, personal))) {
-      const result = await readLinkedProject(this.directory, file);
-      if (result.refusal) refused[site] = result.refusal;
-      else projects[site] = result.project;
+      const relative = path.relative(this.directory, file);
+      if (
+        !relative ||
+        relative === '..' ||
+        relative.startsWith('..' + path.sep) ||
+        path.isAbsolute(relative) ||
+        relative.split(/[\\/]/).some((part) => part.toLowerCase() === '.paqvilo')
+      ) {
+        refused[site] = { file, code: 'project-outside' };
+        continue;
+      }
+      let text;
+      try {
+        text = await textFile(file, this.directory);
+      } catch (error) {
+        refused[site] = {
+          file,
+          code: /outside|symbolic/i.test(error.message) ? 'project-outside' : 'project-invalid',
+          reason: error.message,
+        };
+        continue;
+      }
+      let raw = null;
+      if (text !== null)
+        try {
+          raw = document(text, 'Project configuration').raw;
+        } catch {
+          raw = null;
+        }
+      if (text !== null && !projectDocument(raw)) {
+        refused[site] = { file, code: 'project-invalid' };
+        continue;
+      }
+      projects[site] = { file, text, raw };
     }
     const linked = Object.keys(projects)
       .sort(/* NOSONAR: preserve default string coercion */)
@@ -899,7 +705,7 @@ export class SetupStore {
     observedConfig(root.defaults?.mirage?.observed, 'defaults.mirage.observed');
     return root;
   }
-  async snapshot() {
+  /* NOSONAR: preserve snapshot inspection and callback timing */ async snapshot() {
     const gitQueues = new Map();
     const inspectSource = (directory, options = {}) => sourceStatus(directory, { ...options, gitQueues });
     const files = await this.files();
@@ -947,12 +753,153 @@ export class SetupStore {
       if (files.shared === null) return result;
       const valid = await this.validate(files.shared, files.personal);
       if (this.kind === 'project') {
-        await populateProjectSnapshot(this, result, valid, inspectSource);
+        const authored = document(result.layers.shared.text, 'Project configuration').raw;
+        result.layers.shared.values = redactSettings(authored);
+        result.settings = {
+          defaultSite: valid.defaultPortal,
+          sourceRoot: this.directory,
+          runtime: valid.runtime,
+          simulation: defaultedSetting(valid, 'simulation'),
+          modelDriven: defaultedSetting(valid, 'modelDriven'),
+          dataverse: defaultedSetting(valid, 'dataverse'),
+          solutions: valid.solutions.map((item) => ({ id: item.id, path: item.sourcePath })),
+          solutionEntries: authored.solutions ?? [],
+          dataPackEntries: authored.dataPacks ?? authored.presets ?? [],
+          dataPacks: valid.dataPacks,
+          solutionRoots: valid.solutionRoots,
+          mirage: redactSettings(
+            Object.fromEntries(
+              projectKeys()
+                .filter((key) => valid[key] !== undefined)
+                .map((key) => [key, valid[key]]),
+            ),
+          ),
+          lcid: authored.lcid,
+          watch: authored.watch,
+          stateDirectory: authored.stateDirectory ?? authored.state_directory,
+          references: authored.references ?? authored.referenceEnvironments,
+          presets: authored.presets,
+          portals: authored.portals,
+        };
+        result.solutions = await Promise.all(valid.solutionRoots.map((folder) => inspectSource(folder)));
+        const packs = (result.packs = await Promise.all(valid.dataPacks.map(packStatus)));
+        result.sites = await Promise.all(
+          valid.portals.map(async (site) => {
+            const origin = projectOrigin(valid, site);
+            return {
+              id: site.id,
+              source: site.sourcePath,
+              packs,
+              sourceStatus: await inspectSource(site.sourceDir, { portal: true }),
+              environments: origin ? { reference: { url: origin } } : {},
+              runtime: valid.runtime,
+              mirage: {
+                runtime: valid.runtime,
+                simulation: defaultedSetting(valid, 'simulation'),
+                modelDriven: defaultedSetting(valid, 'modelDriven'),
+                dataverse: defaultedSetting(valid, 'dataverse'),
+                solutionRoots: site.solutionRoots,
+                dataPacks: valid.dataPacks,
+              },
+              solutions: await Promise.all(site.solutionRoots.map((folder) => inspectSource(folder))),
+            };
+          }),
+        );
       } else {
-        await populateCatalogueSnapshot(this, result, inspectSource);
+        const catalogue = loadCatalogue({ config: this.file }, this.processEnv);
+        const { values, origin } = readEnvSettings(this.directory, this.processEnv);
+        result.settings = {
+          sourceRoot: catalogue.root.sourceRoot ?? '.',
+          resolvedSourceRoot: catalogue.sourceRoot,
+          defaultSite: catalogue.root.defaultSite ?? '',
+          browser: catalogue.root.browser,
+          portals: catalogue.root.portals,
+          liveReload: catalogue.root.liveReload,
+          panel: catalogue.root.panel,
+          includeCaution: catalogue.root.includeCaution,
+          agent: catalogue.root.agent ?? {},
+          editor: catalogue.root.editor,
+          sourceMaps: catalogue.root.sourceMaps,
+          defaults: redactDefaults(catalogue.root.defaults ?? {}),
+          solutionRoots: catalogue.root.defaults?.mirage?.solutionRoots ?? [],
+          runtime: runtimeSettings(catalogue.root.defaults?.mirage?.runtime),
+          simulation: simulationSettings(catalogue.root.defaults?.mirage?.simulation),
+          dataverse: catalogue.root.defaults?.mirage?.dataverse ?? {},
+          modelDriven: catalogue.root.defaults?.mirage?.modelDriven ?? {},
+          effective: Object.fromEntries(
+            ['PAQVILO_SITE', 'PAQVILO_ENV', 'PAQVILO_BROWSER', 'PAQVILO_REPO', 'PAQVILO_SCOPE', 'PAQVILO_BASELINE']
+              .filter((key) => values[key])
+              .map((key) => [key, { value: values[key], origin: origin[key] }]),
+          ),
+          provenance: catalogue.provenance,
+        };
+        result.sites = await Promise.all(
+          Object.entries(catalogue.sites).map(async ([id, site]) => {
+            const mirage = resolveMirageConfig(site.mirage, catalogue);
+            // `mirage` stays the site mapping merged over defaults.mirage (the current form values); `authoredMirage`
+            // is the site's own mapping and `inherited` marks keys that only defaults.mirage sets (form placeholders).
+            const authored = catalogue.root.sites?.[id]?.mirage ?? {};
+            const inherited = Object.fromEntries(
+              Object.keys(catalogue.root.defaults?.mirage ?? {})
+                .filter((key) => !Object.hasOwn(authored, key))
+                .map((key) => [key, true]),
+            );
+            const own = catalogue.root.sites?.[id] ?? {};
+            return {
+              id,
+              source: site.source ?? '',
+              defaultEnv: site.defaultEnv ?? '',
+              environments: site.environments,
+              startPath: site.startPath,
+              scope: site.scope,
+              routes: site.routes,
+              webFiles: own.webFiles,
+              inline: own.inline,
+              markup: own.markup,
+              mirage: redactSettings(site.mirage ?? {}),
+              authoredMirage: redactSettings(authored),
+              inherited,
+              runtime: mirage.runtime ?? runtimeSettings(),
+              effectiveMirage: redactSettings(mirage),
+              sourceStatus: await inspectSource(site.sourceDir, { portal: true }),
+              solutions: await Promise.all(mirage.solutionRoots.map((folder) => inspectSource(folder))),
+              packs: await Promise.all(mirage.dataPacks.map(packStatus)),
+            };
+          }),
+        );
       }
       addSiteFindings(this, result);
-      await addLinkedProjectFindings(result, files);
+
+      for (const [site, linked] of Object.entries(files.projects)) {
+        const add = (code, message) => result.findings.push({ code, site, layer: `project:${site}`, message });
+        if (linked.text === null) {
+          add('missing-project', `Project file does not exist: ${linked.file}`);
+          continue;
+        }
+        try {
+          const project = await resolveProjectConfig(document(linked.text, 'Project configuration').raw, linked.file, {
+            checkSources: false,
+          });
+          for (const solution of project.solutions)
+            if (!(await exists(solution.root, 'isDirectory')))
+              add('missing-solution', `Solution folder does not exist: ${solution.root}`);
+          for (const pack of project.dataPacks)
+            if (!(await exists(pack.module))) add('missing-pack', `Pack module does not exist: ${pack.module}`);
+        } catch (error) {
+          add('configuration', `${path.basename(linked.file)}: ${error.message}`);
+        }
+      }
+      for (const [site, item] of Object.entries(files.refused)) {
+        let message;
+        if (item.code === 'project-outside')
+          message = `Linked project file ${item.file} must be inside the catalogue folder and outside .paqvilo/. Setup neither shows nor edits it; change sites.${site}.mirage.project.`;
+        else {
+          const reason = item.reason ? ` (${item.reason})` : '';
+          message = `${path.basename(item.file)} is not a Mirage project document (version 1 or 2 with project keys only)${reason}. Setup neither shows nor edits it; change sites.${site}.mirage.project or repair the file outside setup.`;
+        }
+        result.findings.push({ code: item.code, site, message });
+      }
+
       addDuplicateFindings(result);
     } catch (error) {
       result.findings.push({ code: 'configuration', message: error.message });
@@ -961,7 +908,7 @@ export class SetupStore {
     result.ready = files.shared !== null && result.findings.length === 0;
     return result;
   }
-  async save(input) {
+  /* NOSONAR: preserve configuration validation, revision and atomic-rename await ordering */ async save(input) {
     const linkedSite = typeof input?.layer === 'string' ? LINKED.exec(input.layer)?.[1] : undefined;
     assertSaveInput(input, linkedSite, this.localFile);
     let file;
@@ -994,14 +941,53 @@ export class SetupStore {
         throw setupError('Configuration changed outside this page. Reload before saving.', 409);
       let text = createSaveText(this, input, before, file, linkedSite, layerText);
       if (Buffer.byteLength(text) > LIMIT) throw setupError('Configuration exceeds 256 KiB', 413);
-      text = await validateSaveText(this, input, file, projectFile, text, before, linkedSite);
+
+      if (linkedSite) {
+        const raw = document(text, 'Project configuration').raw;
+        await resolveProjectConfig(raw, file, { checkSources: false });
+        if (!projectDocument(raw))
+          throw setupError('A linked project file holds version 1 or 2 and project keys only.');
+      } else {
+        await this.validate(
+          input.layer === 'shared' ? text : before.shared,
+          input.layer === 'personal' ? text : before.personal,
+        );
+      }
+      if (input.layer === 'personal') {
+        const tracked = await run('git', ['ls-files', '--error-unmatch', '--', path.basename(file)], {
+          cwd: this.directory,
+          windowsHide: true,
+          timeout: 3000,
+        }).then(
+          () => true,
+          () => false,
+        );
+        if (tracked)
+          throw setupError(
+            'Personal configuration is already tracked by Git. Untrack it before saving private overrides.',
+          );
+      }
+      // JSON projects keep their original encoding.
+      if (projectFile && /\.json$/i.test(file)) text = JSON.stringify(document(text, 'Project').raw, null, 2) + '\n';
+
       if ((await this.files()).revision !== before.revision)
         throw setupError('Configuration changed while saving. Reload before saving.', 409);
       temporary = file + '.' + randomUUID() + '.tmp';
       await fs.writeFile(temporary, text, { flag: 'wx', mode: 0o600 });
       await assertScaffoldPath(file);
       // Make personal files and future local runtime state safe in a newly configured folder.
-      await updateLocalIgnore(ignoreFile);
+
+      const ignores = (await textFile(ignoreFile)) ?? '';
+      const lines = new Set(ignores.split(/\r?\n/).map((line) => line.trim()));
+      const rules = ['.paqvilo/', '.env', 'paqvilo.config.local.yml'].filter(
+        (rule) => !lines.has(rule) && !lines.has('/' + rule),
+      );
+      if (rules.length)
+        await fs.appendFile(
+          ignoreFile,
+          `\n# Paqvilo local settings and state\n${rules.map((rule) => '/' + rule).join('\n')}\n`,
+        );
+
       await fs.rename(temporary, file);
     } finally {
       await lock.close();

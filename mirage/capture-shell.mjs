@@ -115,208 +115,7 @@ function captureFailure(error) {
   };
 }
 
-function chooseCaptureSiteCandidate(name, cfg, candidates, skipped) {
-  for (const candidate of candidates)
-    if (candidate.caution) skipped.push({ site: name, env: candidate.envName, reason: 'Caution environment' });
-  if (cfg.caution) cfg = candidates.find((candidate) => !candidate.caution);
-  if (!cfg) return null;
-  for (const candidate of candidates)
-    if (!candidate.caution && candidate.envName !== cfg.envName)
-      skipped.push({
-        site: name,
-        env: candidate.envName,
-        reason: 'One capture per site state file; using ' + cfg.envName,
-      });
-  return cfg;
-}
-
-async function resolveCaptureSite(name, context) {
-  const { catalogue, resolved, config, all, env, skipped, targets } = context;
-  const target = resolved.sites.find((item) => item.name === name);
-  if (all && !Number.isInteger(catalogue.sites[name].mirage?.port)) {
-    skipped.push({ site: name, reason: 'No Mirage port configured' });
-    return null;
-  }
-  let cfg = await loadConfig({ config, site: name, env: all ? undefined : env }, process.env);
-  if (all) {
-    const candidates = await Promise.all(
-      Object.keys(catalogue.sites[name].environments).map((candidateEnv) =>
-        loadConfig({ config, site: name, env: candidateEnv }, process.env),
-      ),
-    );
-    cfg = chooseCaptureSiteCandidate(name, cfg, candidates, skipped);
-    if (!cfg) return null;
-  } else if (cfg.caution) throw new Error('Shell capture refuses caution environments');
-  const shared = targets.find((entry) => samePath(entry.target.mirage.stateFile, target.mirage.stateFile));
-  if (shared) {
-    skipped.push({
-      site: name,
-      env: cfg.envName,
-      reason: `Shared state file already selected for ${shared.cfg.siteName}`,
-    });
-    return null;
-  }
-  return { cfg, target };
-}
-
-async function resolveCaptureTargets(catalogue, resolved, options, skipped) {
-  const { config, all, selectedSites, env } = options,
-    targets = [];
-  for (const name of selectedSites) {
-    const target = await resolveCaptureSite(name, { catalogue, resolved, config, all, env, skipped, targets });
-    if (target) targets.push(target);
-  }
-  return targets;
-}
-
-async function matchingCaptureRuntimes(cfg, target) {
-  const running = (await discoveries(miragePaths(cfg), { probe: false })).filter(
-    (item) =>
-      item.processAlive &&
-      (item.stateFile ? samePath(item.stateFile, target.mirage.stateFile) : samePath(item.sourceDir, target.sourceDir)),
-  );
-  if (!running.length && target.mirage.port > 0) {
-    const url = `http://127.0.0.1:${target.mirage.port}`;
-    let response;
-    try {
-      response = await fetch(`${url}/_sim/api/status`, { signal: AbortSignal.timeout(1000), redirect: 'error' });
-    } catch {
-      /* No configured runtime. */
-    }
-    if (response?.ok) {
-      const status = await response.json();
-      if (typeof status.sourceDir === 'string') running.push({ url });
-    }
-  }
-  if (running.length > 1) throw new Error('Multiple runtimes match; stop extras before capturing');
-  return running;
-}
-
-function chooseRunningCaptureEnvironment(cfg, state, candidates, skipped) {
-  const active = candidates.find((candidate) => !candidate.caution && candidate.origin === state.config.live?.origin);
-  if (!active && candidates.some((candidate) => candidate.caution && candidate.origin === state.config.live?.origin)) {
-    skipped.push({
-      site: cfg.siteName,
-      env: cfg.envName,
-      reason: 'State file is owned by a runtime using a caution environment',
-    });
-    return null;
-  }
-  if (!active) throw new Error('Running runtime origin is not a non-caution environment for this site');
-  skipped.push({
-    site: cfg.siteName,
-    env: cfg.envName,
-    reason: 'Using the running runtime environment ' + active.envName,
-  });
-  const index = skipped.findIndex((item) => item.site === active.siteName && item.env === active.envName);
-  if (index >= 0) skipped.splice(index, 1);
-  return active;
-}
-
-async function connectRunningCaptureRuntime(running, cfg, target, options) {
-  const { all, catalogue, config, skipped } = options;
-  const client = await connectRuntime({ origin: running[0].url });
-  const status = await client.status(),
-    state = await client.state({ summary: true });
-  if (all && state.config.live?.origin !== cfg.origin) {
-    const candidates = await Promise.all(
-      Object.keys(catalogue.sites[cfg.siteName].environments).map((env) =>
-        loadConfig({ config, site: cfg.siteName, env }, process.env),
-      ),
-    );
-    const active = chooseRunningCaptureEnvironment(cfg, state, candidates, skipped);
-    if (!active) return null;
-    cfg = active;
-  }
-  if (
-    !samePath(status.sourceDir, target.sourceDir) ||
-    (status.stateFile && !samePath(status.stateFile, target.mirage.stateFile)) ||
-    state.config.live?.origin !== cfg.origin
-  )
-    throw new Error('Running runtime source/origin does not match the capture target');
-  if (state.status.live?.connected)
-    throw new Error('Runtime already has a live connection; disconnect it before shell capture');
-  return { cfg, client };
-}
-
-async function startLocalCaptureSimulator(cfg, target, createLocalSimulator) {
-  await assertOfflineState(target.mirage.stateFile);
-  return createLocalSimulator({
-    sourceDir: target.sourceDir,
-    stateFile: target.mirage.stateFile,
-    origin: cfg.origin,
-    port: 0,
-    watch: false,
-    solutionRoots: target.solutionRoots,
-    dataPacks: cfg.mirageConfig.dataPacks,
-    observed: cfg.mirageConfig.observed,
-    localOverrides: cfg.mirageConfig.localOverrides,
-  });
-}
-
-async function captureTarget(entry, options, reports) {
-  let { cfg } = entry;
-  const { target } = entry;
-  let browser, simulator, progress;
-  try {
-    const running = await matchingCaptureRuntimes(cfg, target);
-    let client;
-    if (running.length) {
-      const connection = await connectRunningCaptureRuntime(running, cfg, target, options);
-      if (!connection) return;
-      cfg = connection.cfg;
-      client = connection.client;
-    } else {
-      simulator = await startLocalCaptureSimulator(cfg, target, options.createLocalSimulator);
-      // Own cleanup before state replacement or connection can fail.
-      const state = simulator.store.snapshot();
-      state.simulator.live = { ...state.simulator.live, origin: cfg.origin };
-      await simulator.store.replaceState(state);
-      simulator.live.configure(state.simulator.live);
-      client = await connectRuntime({ origin: simulator.url });
-    }
-    let cdpUrl = options.cdp;
-    if (cdpUrl == null) {
-      browser = await options.launchBrowser(cfg.browser.channel);
-      cdpUrl = browser.cdp;
-    }
-    const startedAt = Date.now();
-    options.onProgress?.({ site: cfg.siteName, phase: 'started', elapsedMs: 0 });
-    if (options.onProgress)
-      progress = setInterval(
-        () => options.onProgress({ site: cfg.siteName, phase: 'waiting', elapsedMs: Date.now() - startedAt }),
-        15000,
-      );
-    reports.push({
-      site: cfg.siteName,
-      env: cfg.envName,
-      ...(await captureThroughRuntime(client, cdpUrl, options.pagePath, {
-        richText: !options.noRichText,
-        timeoutMs: options.timeoutMs,
-      })),
-    });
-  } catch (error) {
-    if (!options.all) throw error;
-    // One failed local capture must not hide reports from other selected sites.
-    reports.push({
-      site: cfg.siteName,
-      env: cfg.envName,
-      applied: false,
-      ready: false,
-      complete: false,
-      failures: [captureFailure(error)],
-    });
-  } finally {
-    clearInterval(progress);
-    try {
-      await simulator?.close();
-    } finally {
-      await browser?.close();
-    }
-  }
-}
-
-export async function captureShell({
+/* NOSONAR: preserve capture ownership and callback await order */ export async function captureShell({
   config,
   site,
   env,
@@ -339,29 +138,169 @@ export async function captureShell({
   const selectedSite = site;
   site ??= catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite ?? Object.keys(catalogue.sites)[0];
   if (!catalogue.sites[site]) throw new Error(`Unknown site '${site}'`);
-  const skipped = [];
+  const skipped = [],
+    targets = [];
   // Validate every target before opening any browser or changing local state.
   const resolved = await resolveCatalogue({ config });
-  let selectedSites;
-  if (!all) selectedSites = [site];
-  else if (selectedSite) selectedSites = [selectedSite];
-  else selectedSites = Object.keys(catalogue.sites);
-  const targets = await resolveCaptureTargets(catalogue, resolved, { config, all, selectedSites, env }, skipped);
+  for (const name of all ? (selectedSite ? [selectedSite] : Object.keys(catalogue.sites)) : [site]) {
+    const target = resolved.sites.find((item) => item.name === name);
+    if (all && !Number.isInteger(catalogue.sites[name].mirage?.port)) {
+      skipped.push({ site: name, reason: 'No Mirage port configured' });
+      continue;
+    }
+    let cfg = await loadConfig({ config, site: name, env: all ? undefined : env }, process.env);
+    if (all) {
+      const candidates = await Promise.all(
+        Object.keys(catalogue.sites[name].environments).map((env) =>
+          loadConfig({ config, site: name, env }, process.env),
+        ),
+      );
+      for (const candidate of candidates)
+        if (candidate.caution) skipped.push({ site: name, env: candidate.envName, reason: 'Caution environment' });
+      if (cfg.caution) cfg = candidates.find((candidate) => !candidate.caution);
+      if (!cfg) continue;
+      for (const candidate of candidates)
+        if (!candidate.caution && candidate.envName !== cfg.envName)
+          skipped.push({
+            site: name,
+            env: candidate.envName,
+            reason: 'One capture per site state file; using ' + cfg.envName,
+          });
+    } else if (cfg.caution) throw new Error('Shell capture refuses caution environments');
+    const shared = targets.find((entry) => samePath(entry.target.mirage.stateFile, target.mirage.stateFile));
+    if (shared) {
+      skipped.push({
+        site: name,
+        env: cfg.envName,
+        reason: `Shared state file already selected for ${shared.cfg.siteName}`,
+      });
+      continue;
+    }
+    targets.push({ cfg, target });
+  }
   const reports = [];
-  const captureOptions = {
-    all,
-    catalogue,
-    config,
-    skipped,
-    cdp,
-    pagePath,
-    timeoutMs,
-    onProgress,
-    noRichText,
-    launchBrowser,
-    createLocalSimulator,
-  };
-  for (const entry of targets) await captureTarget(entry, captureOptions, reports);
+  for (const entry of targets) {
+    let { cfg } = entry;
+    const { target } = entry;
+    let browser, simulator, progress;
+    try {
+      const running = (await discoveries(miragePaths(cfg), { probe: false })).filter(
+        (item) =>
+          item.processAlive &&
+          (item.stateFile
+            ? samePath(item.stateFile, target.mirage.stateFile)
+            : samePath(item.sourceDir, target.sourceDir)),
+      );
+      if (!running.length && target.mirage.port > 0) {
+        const url = `http://127.0.0.1:${target.mirage.port}`;
+        let response;
+        try {
+          response = await fetch(`${url}/_sim/api/status`, { signal: AbortSignal.timeout(1000), redirect: 'error' });
+        } catch {
+          /* No configured runtime. */
+        }
+        if (response?.ok) {
+          const status = await response.json();
+          if (typeof status.sourceDir === 'string') running.push({ url });
+        }
+      }
+      if (running.length > 1) throw new Error('Multiple runtimes match; stop extras before capturing');
+      let client;
+      if (running.length) {
+        client = await connectRuntime({ origin: running[0].url });
+        const status = await client.status(),
+          state = await client.state({ summary: true });
+        if (all && state.config.live?.origin !== cfg.origin) {
+          const candidates = await Promise.all(
+            Object.keys(catalogue.sites[cfg.siteName].environments).map((env) =>
+              loadConfig({ config, site: cfg.siteName, env }, process.env),
+            ),
+          );
+          const active = candidates.find(
+            (candidate) => !candidate.caution && candidate.origin === state.config.live?.origin,
+          );
+          if (
+            !active &&
+            candidates.some((candidate) => candidate.caution && candidate.origin === state.config.live?.origin)
+          ) {
+            skipped.push({
+              site: cfg.siteName,
+              env: cfg.envName,
+              reason: 'State file is owned by a runtime using a caution environment',
+            });
+            continue;
+          }
+          if (!active) throw new Error('Running runtime origin is not a non-caution environment for this site');
+          skipped.push({
+            site: cfg.siteName,
+            env: cfg.envName,
+            reason: 'Using the running runtime environment ' + active.envName,
+          });
+          const index = skipped.findIndex((item) => item.site === active.siteName && item.env === active.envName);
+          if (index >= 0) skipped.splice(index, 1);
+          cfg = active;
+        }
+        if (
+          !samePath(status.sourceDir, target.sourceDir) ||
+          (status.stateFile && !samePath(status.stateFile, target.mirage.stateFile)) ||
+          state.config.live?.origin !== cfg.origin
+        )
+          throw new Error('Running runtime source/origin does not match the capture target');
+        if (state.status.live?.connected)
+          throw new Error('Runtime already has a live connection; disconnect it before shell capture');
+      } else {
+        await assertOfflineState(target.mirage.stateFile);
+        simulator = await createLocalSimulator({
+          sourceDir: target.sourceDir,
+          stateFile: target.mirage.stateFile,
+          origin: cfg.origin,
+          port: 0,
+          watch: false,
+          solutionRoots: target.solutionRoots,
+          dataPacks: cfg.mirageConfig.dataPacks,
+          observed: cfg.mirageConfig.observed,
+          localOverrides: cfg.mirageConfig.localOverrides,
+        });
+        // A cached state may have been last used with another selected environment.
+        const state = simulator.store.snapshot();
+        state.simulator.live = { ...(state.simulator.live ?? {}), origin: cfg.origin };
+        await simulator.store.replaceState(state);
+        simulator.live.configure(state.simulator.live);
+        client = await connectRuntime({ origin: simulator.url });
+      }
+      const cdpUrl = cdp ?? (browser = await launchBrowser(cfg.browser.channel)).cdp;
+      const started = Date.now();
+      onProgress?.({ site: cfg.siteName, phase: 'started', elapsedMs: 0 });
+      if (onProgress)
+        progress = setInterval(
+          () => onProgress({ site: cfg.siteName, phase: 'waiting', elapsedMs: Date.now() - started }),
+          15000,
+        );
+      reports.push({
+        site: cfg.siteName,
+        env: cfg.envName,
+        ...(await captureThroughRuntime(client, cdpUrl, pagePath, { richText: !noRichText, timeoutMs })),
+      });
+    } catch (error) {
+      if (!all) throw error;
+      // One failed local capture must not hide reports from other selected sites.
+      reports.push({
+        site: cfg.siteName,
+        env: cfg.envName,
+        applied: false,
+        ready: false,
+        complete: false,
+        failures: [captureFailure(error)],
+      });
+    } finally {
+      clearInterval(progress);
+      try {
+        await simulator?.close();
+      } finally {
+        await browser?.close();
+      }
+    }
+  }
   return {
     schemaVersion: 1,
     command: 'capture-shell',

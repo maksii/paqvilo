@@ -398,8 +398,13 @@ export function createDataverseAdmin({
         );
         // Same sync as the registration at startup: the managedidentity rows follow the configured plus runtime list.
         await store.transact(() => {
-          store.state.dataverse.managedIdentities ??= [];
-          store.state.dataverse.managedIdentities.push({
+          const stateDataverse = store.state.dataverse;
+          let identities = stateDataverse.managedIdentities;
+          if (identities === null || identities === undefined) {
+            identities = [];
+            stateDataverse.managedIdentities = identities;
+          }
+          identities.push({
             clientId,
             principalId,
             displayName: body.displayName,

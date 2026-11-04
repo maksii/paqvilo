@@ -2540,10 +2540,128 @@ export async function openOwnedBrowser({ channel, headless = true, fulfil = [] }
         assets: new Set(),
       };
       try {
-        await configureOwnedContext(context, guard, state, base, origins, cookie, fulfil);
-        const { page } = await initializeOwnedPage(context, guard, state, base, origins, fulfil);
-        const capture = { page, state, base, origins, target, options, extract };
-        return await captureOwnedPage(capture);
+        // Local sessions are cookies; an anonymous visitor sends none.
+        const session = typeof cookie === 'function' ? cookie() : null;
+        if (session) await context.addCookies([{ name: session.name, value: session.value, url: base.origin }]);
+        if (guard === 'script') {
+          // Script guard: XHR/fetch/beacon writes are stopped in the page (synchronous XHR GETs are
+          // never paused), while documents, fetches, pings and other requests stay intercepted.
+          await context.exposeBinding('__parityGuard', (_source, entry) => {
+            const item = {
+              method: String(entry?.method ?? '').toUpperCase(),
+              url: redactUrl(String(entry?.url ?? ''), { origins }),
+            };
+            if (entry?.action === 'fulfil') state.fulfilled.push({ ...item, status: entry.status });
+            else state.blocked.push(item);
+          });
+          await context.addInitScript(writeGuard, {
+            origin: base.origin,
+            fulfil: fulfil.map((rule) => ({
+              method: String(rule.method).toUpperCase(),
+              pathPattern: rule.pathPattern,
+              status: rule.status,
+            })),
+          });
+        } else {
+          await context.route('**/*', (route) => handleOwnedRoute(route, state, base, origins, fulfil));
+        }
+
+        const page = await context.newPage();
+        const cdp = await context.newCDPSession(page);
+        const documentTokens = new WeakMap();
+        const requestDocuments = new WeakMap();
+        const requestFrame = (request) => {
+          try {
+            return request.frame();
+          } catch {
+            return null;
+          }
+        };
+        await cdp.send('Page.enable');
+        await observeDocumentCommits(page, cdp, {
+          document: (frame, token) => documentTokens.set(frame, token),
+          commit: (frame, token) => {
+            for (const request of state.inflight)
+              if (
+                request.resourceType() !== 'document' &&
+                requestFrame(request) === frame &&
+                requestDocuments.get(request) === token
+              )
+                state.inflight.delete(request);
+            state.lastActivity = Date.now();
+          },
+        });
+        page.on('framedetached', (frame) => {
+          for (const request of state.inflight) if (requestFrame(request) === frame) state.inflight.delete(request);
+          state.lastActivity = Date.now();
+        });
+        if (guard === 'script') {
+          const fail = (requestId) =>
+            cdp.send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }).catch(() => {});
+          cdp.on('Fetch.requestPaused', (event) =>
+            handleOwnedFetchRequest(event, { cdp, state, base, origins, fulfil, fail }),
+          );
+          await cdp.send('Fetch.enable', {
+            patterns: ['Document', 'Fetch', 'Ping', 'Other'].map((resourceType) => ({
+              urlPattern: '*',
+              resourceType,
+              requestStage: 'Request',
+            })),
+          });
+        }
+        configureOwnedPageEvents(page, state, base, origins, documentTokens, requestDocuments, requestFrame);
+
+        const started = Date.now();
+        let navigationError = null;
+        let response = null;
+        try {
+          response = await page.goto(new URL(target, base.origin).href, {
+            waitUntil: 'load',
+            timeout: options.timeout ?? 45000,
+          });
+          trace('owned navigated', response?.status() ?? '');
+        } catch (error) {
+          navigationError = normalizeText(error.message.split('\n')[0]);
+        }
+        const settle = await waitForQuiet({
+          inflight: () => state.inflight.size,
+          lastActivity: () => state.lastActivity,
+          isLoading: () => within(page.evaluate(loadingProbe), 5000),
+          quietMs: options.quietMs ?? 1000,
+          timeout: options.settleTimeout ?? 20000,
+        });
+        if (options.settleMs) await page.waitForTimeout(Math.min(options.settleMs, 5000));
+        trace('owned settled', settle.settled, state.inflight.size);
+        await within(Promise.allSettled(state.bodies), 5000, 'Response bodies').catch(() => {});
+        const finalUrl = page.url();
+        const status = response?.status() ?? null;
+        const headers = response ? headerMap(await response.allHeaders().catch(() => response.headers())) : {};
+        const baseResult = ownedPageResult(state, base, origins, status, navigationError, {
+          settle,
+          finalUrl,
+          headers,
+        });
+        let extracted;
+        // A page script may navigate or reload while it is being captured; capture the document
+        // it settles on (bounded retries) and record that it navigated.
+        for (let attempt = 0; ; attempt++) {
+          try {
+            extracted = await extract(page, response);
+            break;
+          } catch (error) {
+            const unresponsive = ownedCaptureError(error, attempt);
+            if (unresponsive) {
+              extracted = unresponsive;
+              break;
+            }
+            baseResult.navigatedDuringCapture = (baseResult.navigatedDuringCapture ?? 0) + 1;
+            await page.waitForLoadState('load', { timeout: 15000 }).catch(() => {});
+            await page.waitForTimeout(500);
+          }
+        }
+
+        baseResult.finalPath = redactUrl(page.url(), { origins });
+        return { ...baseResult, ...extracted, ms: Date.now() - started };
       } finally {
         await context.close().catch(() => {});
       }
@@ -2581,33 +2699,6 @@ export async function openOwnedBrowser({ channel, headless = true, fulfil = [] }
  * The remainder of the owned-page driver is split into phases so request decisions, event
  * ordering, and cleanup remain local to the same visit.
  */
-async function configureOwnedContext(context, guard, state, base, origins, cookie, fulfil) {
-  // Local sessions are cookies; an anonymous visitor sends none.
-  const session = typeof cookie === 'function' ? cookie() : null;
-  if (session) await context.addCookies([{ name: session.name, value: session.value, url: base.origin }]);
-  if (guard === 'script') {
-    // Script guard: XHR/fetch/beacon writes are stopped in the page (synchronous XHR GETs are
-    // never paused), while documents, fetches, pings and other requests stay intercepted.
-    await context.exposeBinding('__parityGuard', (_source, entry) => {
-      const item = {
-        method: String(entry?.method ?? '').toUpperCase(),
-        url: redactUrl(String(entry?.url ?? ''), { origins }),
-      };
-      if (entry?.action === 'fulfil') state.fulfilled.push({ ...item, status: entry.status });
-      else state.blocked.push(item);
-    });
-    await context.addInitScript(writeGuard, {
-      origin: base.origin,
-      fulfil: fulfil.map((rule) => ({
-        method: String(rule.method).toUpperCase(),
-        pathPattern: rule.pathPattern,
-        status: rule.status,
-      })),
-    });
-    return;
-  }
-  await context.route('**/*', (route) => handleOwnedRoute(route, state, base, origins, fulfil));
-}
 
 function handleOwnedRoute(route, state, base, origins, fulfil) {
   const request = route.request();
@@ -2633,54 +2724,6 @@ function handleOwnedRoute(route, state, base, origins, fulfil) {
     return route.abort('blockedbyclient');
   }
   return route.continue();
-}
-
-async function initializeOwnedPage(context, guard, state, base, origins, fulfil) {
-  const page = await context.newPage();
-  const cdp = await context.newCDPSession(page);
-  const documentTokens = new WeakMap();
-  const requestDocuments = new WeakMap();
-  const requestFrame = (request) => {
-    try {
-      return request.frame();
-    } catch {
-      return null;
-    }
-  };
-  await cdp.send('Page.enable');
-  await observeDocumentCommits(page, cdp, {
-    document: (frame, token) => documentTokens.set(frame, token),
-    commit: (frame, token) => {
-      for (const request of state.inflight)
-        if (
-          request.resourceType() !== 'document' &&
-          requestFrame(request) === frame &&
-          requestDocuments.get(request) === token
-        )
-          state.inflight.delete(request);
-      state.lastActivity = Date.now();
-    },
-  });
-  page.on('framedetached', (frame) => {
-    for (const request of state.inflight) if (requestFrame(request) === frame) state.inflight.delete(request);
-    state.lastActivity = Date.now();
-  });
-  if (guard === 'script') await configureOwnedFetchGuard(cdp, state, base, origins, fulfil);
-  configureOwnedPageEvents(page, state, base, origins, documentTokens, requestDocuments, requestFrame);
-  return { page };
-}
-
-async function configureOwnedFetchGuard(cdp, state, base, origins, fulfil) {
-  const fail = (requestId) =>
-    cdp.send('Fetch.failRequest', { requestId, errorReason: 'BlockedByClient' }).catch(() => {});
-  cdp.on('Fetch.requestPaused', (event) => handleOwnedFetchRequest(event, { cdp, state, base, origins, fulfil, fail }));
-  await cdp.send('Fetch.enable', {
-    patterns: ['Document', 'Fetch', 'Ping', 'Other'].map((resourceType) => ({
-      urlPattern: '*',
-      resourceType,
-      requestStage: 'Request',
-    })),
-  });
 }
 
 function handleOwnedFetchRequest(event, { cdp, state, base, origins, fulfil, fail }) {
@@ -2772,40 +2815,15 @@ function handleOwnedResponse(response, state, base, origins, page) {
     );
 }
 
-async function captureOwnedPage({ page, state, base, origins, target, options, extract }) {
-  const started = Date.now();
-  let navigationError = null;
-  let response = null;
-  try {
-    response = await page.goto(new URL(target, base.origin).href, {
-      waitUntil: 'load',
-      timeout: options.timeout ?? 45000,
-    });
-    trace('owned navigated', response?.status() ?? '');
-  } catch (error) {
-    navigationError = normalizeText(error.message.split('\n')[0]);
-  }
-  const settle = await waitForQuiet({
-    inflight: () => state.inflight.size,
-    lastActivity: () => state.lastActivity,
-    isLoading: () => within(page.evaluate(loadingProbe), 5000),
-    quietMs: options.quietMs ?? 1000,
-    timeout: options.settleTimeout ?? 20000,
-  });
-  if (options.settleMs) await page.waitForTimeout(Math.min(options.settleMs, 5000));
-  trace('owned settled', settle.settled, state.inflight.size);
-  await within(Promise.allSettled(state.bodies), 5000, 'Response bodies').catch(() => {});
-  const finalUrl = page.url();
-  const headers = response ? headerMap(await response.allHeaders().catch(() => response.headers())) : {};
-  const baseResult = ownedPageResult(state, base, origins, response, navigationError, { settle, finalUrl, headers });
-  const extracted = await extractOwnedDocument(page, response, baseResult, extract);
-  baseResult.finalPath = redactUrl(page.url(), { origins });
-  return { ...baseResult, ...extracted, ms: Date.now() - started };
+function ownedCaptureError(error, attempt) {
+  if (error.code === 'PAGE_UNRESPONSIVE') return { unresponsive: error.message, snapshot: null };
+  if (!/context was destroyed|navigat/i.test(error.message) || attempt >= 2) throw error;
+  return null;
 }
 
-function ownedPageResult(state, base, origins, response, navigationError, { settle, finalUrl, headers }) {
+function ownedPageResult(state, base, origins, status, navigationError, { settle, finalUrl, headers }) {
   const result = {
-    status: response?.status() ?? null,
+    status,
     headers,
     navigationError,
     finalPath: redactUrl(finalUrl, { origins }),
@@ -2829,22 +2847,6 @@ function ownedPageResult(state, base, origins, response, navigationError, { sett
   };
   delete result.headers['set-cookie'];
   return result;
-}
-
-async function extractOwnedDocument(page, response, baseResult, extract) {
-  // A page script may navigate or reload while it is being captured; capture the document
-  // it settles on (bounded retries) and record that it navigated.
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await extract(page, response);
-    } catch (error) {
-      if (error.code === 'PAGE_UNRESPONSIVE') return { unresponsive: error.message, snapshot: null };
-      if (!/context was destroyed|navigat/i.test(error.message) || attempt >= 2) throw error;
-      baseResult.navigatedDuringCapture = (baseResult.navigatedDuringCapture ?? 0) + 1;
-      await page.waitForLoadState('load', { timeout: 15000 }).catch(() => {});
-      await page.waitForTimeout(500);
-    }
-  }
 }
 
 // ---- Local runtime helpers
@@ -3158,56 +3160,25 @@ export async function scenarioSources({
       throw new Error('Pack selection must be auto, all, none or a list of pack ids.');
     const { packModules, loadPack, packMatches, packDirectory } = await import('./lib/preset-registry.mjs');
     const wanted = Array.isArray(packs) ? new Set(packs) : null;
-    await appendPackScenarioSources({
-      sources,
-      boundPacks,
-      explicit,
-      packDirectory,
-      packMatches,
-      packModules,
-      packs,
-      packsRoot,
-      portal,
-      project,
-      wanted,
-      loadPack,
-    });
+    const found = new Set();
+    const modules = [
+      ...(await packModules({ project, explicit, ...(packsRoot ? { root: packsRoot } : {}) })),
+      ...boundPacks.map((module) => ({ module })),
+    ];
+    for (const { module } of modules) {
+      const pack = await loadPack(module);
+      const selected = wanted ? wanted.has(pack.id) : packs === 'all' || (portal != null && packMatches(pack, portal));
+      if (!selected) continue;
+      found.add(pack.id);
+      if (pack.parity?.scenarios?.length && !packDirectory(pack))
+        throw new Error(`Loaded pack ${pack.id} needs parity.directory for relative scenario files`);
+      for (const file of packScenarioFiles(pack, packDirectory(pack) ?? process.cwd()))
+        sources.push({ source: `pack:${pack.id}`, file });
+    }
+    for (const id of wanted ?? []) if (!found.has(id)) throw new Error(`Data pack ${id} was not found.`);
   }
   for (const file of files) sources.push({ source: 'file', file: path.resolve(file) });
   return sources;
-}
-
-async function appendPackScenarioSources(options) {
-  const {
-    sources,
-    boundPacks,
-    explicit,
-    packDirectory,
-    packMatches,
-    packModules,
-    packs,
-    packsRoot,
-    portal,
-    project,
-    wanted,
-    loadPack,
-  } = options;
-  const found = new Set();
-  const modules = [
-    ...(await packModules({ project, explicit, ...(packsRoot ? { root: packsRoot } : {}) })),
-    ...boundPacks.map((module) => ({ module })),
-  ];
-  for (const { module } of modules) {
-    const pack = await loadPack(module);
-    const selected = wanted ? wanted.has(pack.id) : packs === 'all' || (portal != null && packMatches(pack, portal));
-    if (!selected) continue;
-    found.add(pack.id);
-    if (pack.parity?.scenarios?.length && !packDirectory(pack))
-      throw new Error(`Loaded pack ${pack.id} needs parity.directory for relative scenario files`);
-    for (const file of packScenarioFiles(pack, packDirectory(pack) ?? process.cwd()))
-      sources.push({ source: `pack:${pack.id}`, file });
-  }
-  for (const id of wanted ?? []) if (!found.has(id)) throw new Error(`Data pack ${id} was not found.`);
 }
 
 /**
@@ -3650,87 +3621,73 @@ function sharedResources(list, other) {
 
 async function discoverTarget(driver, scenario, { side, ids, portal, liveAssets } = {}) {
   const discover = scenario.discover;
-  if (discover.from === 'portal') return discoverPortalTarget(scenario, discover, portal, liveAssets);
-  if (discover.from === 'ids') return discoverIdTarget(scenario, discover, ids, side);
-  if (discover.from === 'page') return discoverPageTarget(driver, scenario, discover);
-  return discoverApiTarget(driver, scenario, discover);
-}
-
-function discoverPortalTarget(scenario, discover, portal, liveAssets) {
-  // Chosen once from the exported portal and the local mappings: the same path on both sides.
-  const values = {};
-  for (const key of discover.keys) {
-    if (portal?.[key] === undefined)
-      return { error: `This portal has no ${PORTAL_DISCOVERY[key]}.`, notApplicable: true };
-    values[key] = portal[key];
+  if (discover.from === 'portal') {
+    // Chosen once from the exported portal and the local mappings: the same path on both sides.
+    const values = {};
+    for (const key of discover.keys) {
+      if (portal?.[key] === undefined)
+        return { error: `This portal has no ${PORTAL_DISCOVERY[key]}.`, notApplicable: true };
+      values[key] = portal[key];
+    }
+    // A stylesheet the reference home page loaded is known to be deployed and public.
+    const loaded = (portal?.publicWebFiles ?? []).find((url) => liveAssets?.has(url));
+    if (discover.keys.includes('publicWebFile') && loaded) values.publicWebFile = loaded;
+    const target = scenarioPath(scenario, values);
+    try {
+      assertReadOnlyPath(target);
+    } catch {
+      return { error: 'The discovered path is on the read-only deny list.' };
+    }
+    return { path: target };
   }
-  // A stylesheet the reference home page loaded is known to be deployed and public.
-  const loaded = (portal?.publicWebFiles ?? []).find((url) => liveAssets?.has(url));
-  if (discover.keys.includes('publicWebFile') && loaded) values.publicWebFile = loaded;
-  const target = scenarioPath(scenario, values);
-  try {
-    assertReadOnlyPath(target);
-  } catch {
-    return { error: 'The discovered path is on the read-only deny list.' };
+  if (discover.from === 'ids') {
+    // Identifiers supplied at run time from an ignored file; they never enter the tracked plan.
+    const values = ids?.[discover.key]?.[side];
+    if (
+      !values ||
+      typeof values !== 'object' ||
+      !Object.values(values).every((value) => typeof value === 'string' && /^[\w-]{1,80}$/.test(value))
+    )
+      return { error: `No ${side} identifiers were supplied for '${discover.key}'.` };
+    const target = scenarioPath(scenario, values);
+    if (/\{[A-Za-z][A-Za-z0-9_]*\}/.test(target))
+      return { error: `The ${side} identifiers for '${discover.key}' do not fill every placeholder.` };
+    try {
+      assertReadOnlyPath(target);
+    } catch {
+      return { error: 'The supplied record path is on the read-only deny list.' };
+    }
+    return { path: target };
   }
-  return { path: target };
-}
-
-function discoverIdTarget(scenario, discover, ids, side) {
-  // Identifiers supplied at run time from an ignored file; they never enter the tracked plan.
-  const values = ids?.[discover.key]?.[side];
-  if (
-    !values ||
-    typeof values !== 'object' ||
-    !Object.values(values).every((value) => typeof value === 'string' && /^[\w-]{1,80}$/.test(value))
-  )
-    return { error: `No ${side} identifiers were supplied for '${discover.key}'.` };
-  const target = scenarioPath(scenario, values);
-  if (/\{[A-Za-z]\w*\}/.test(target))
-    return { error: `The ${side} identifiers for '${discover.key}' do not fill every placeholder.` };
-  try {
-    assertReadOnlyPath(target);
-  } catch {
-    return { error: 'The supplied record path is on the read-only deny list.' };
+  if (discover.from === 'page') {
+    if (!driver.page) return { error: 'No page driver is available for discovery.' };
+    const expression = `(() => { const node = document.querySelector(${JSON.stringify(discover.selector)}); return node ? node.getAttribute(${JSON.stringify(discover.attribute ?? 'href')}) : null; })()`;
+    const observation = await driver.page(discover.path, {
+      roots: ['head'],
+      probeExpression: expression,
+      settleMs: discover.settleMs ?? 1500,
+      settleTimeout: discover.settleTimeout ?? 30000,
+    });
+    const value = observation.probeValue;
+    if (typeof value !== 'string' || !value) return { error: 'The page rendered no matching record link.' };
+    let target;
+    try {
+      target = new URL(value, driver.origin ?? 'https://portal.invalid');
+    } catch {
+      return { error: 'The rendered record link is invalid.' };
+    }
+    if (driver.origin && target.origin !== new URL(driver.origin).origin)
+      return { error: 'The rendered record link leaves the portal origin.' };
+    const relative = target.pathname + target.search;
+    try {
+      assertReadOnlyPath(relative);
+    } catch {
+      return { error: 'The rendered record link is on the read-only deny list.' };
+    }
+    if (discover.pathPattern && !new RegExp(discover.pathPattern, 'i').test(target.pathname))
+      return { error: 'The rendered record link has an unexpected path.' };
+    return { path: relative };
   }
-  return { path: target };
-}
-
-async function discoverPageTarget(driver, scenario, discover) {
-  if (!driver.page) return { error: 'No page driver is available for discovery.' };
-  const expression = `(() => { const node = document.querySelector(${JSON.stringify(discover.selector)}); return node ? node.getAttribute(${JSON.stringify(discover.attribute ?? 'href')}) : null; })()`;
-  const observation = await driver.page(discover.path, {
-    roots: ['head'],
-    probeExpression: expression,
-    settleMs: discover.settleMs ?? 1500,
-    settleTimeout: discover.settleTimeout ?? 30000,
-  });
-  const value = observation.probeValue;
-  if (typeof value !== 'string' || !value) return { error: 'The page rendered no matching record link.' };
-  let target;
-  try {
-    target = new URL(value, driver.origin ?? 'https://portal.invalid');
-  } catch {
-    return { error: 'The rendered record link is invalid.' };
-  }
-  return validatePageDiscoveryTarget(target, driver, discover);
-}
-
-function validatePageDiscoveryTarget(target, driver, discover) {
-  if (driver.origin && target.origin !== new URL(driver.origin).origin)
-    return { error: 'The rendered record link leaves the portal origin.' };
-  const relative = target.pathname + target.search;
-  try {
-    assertReadOnlyPath(relative);
-  } catch {
-    return { error: 'The rendered record link is on the read-only deny list.' };
-  }
-  if (discover.pathPattern && !new RegExp(discover.pathPattern, 'i').test(target.pathname))
-    return { error: 'The rendered record link has an unexpected path.' };
-  return { path: relative };
-}
-
-async function discoverApiTarget(driver, scenario, discover) {
   const response = await driver.http(discover.path, { accept: 'application/json' });
   if (response.status !== 200) return { error: `Discovery read returned HTTP ${response.status}.` };
   let body;
@@ -3829,83 +3786,329 @@ function summarizeNetwork(records = []) {
   else if (identity !== 'anonymous')
     return { ...result, verdict: 'blocked', reason: 'No local sign-in is available for a signed-in comparison.' };
   result.localIdentity = context.identity?.describe() ?? null;
-  const paths = await resolveScenarioPaths(scenario, context, result, liveSide, localSide, origins);
-  if (paths.blocked) return paths.blocked;
-  const { livePath, localPath } = paths;
+  let livePath = scenario.path === undefined ? undefined : scenarioPath(scenario);
+  let localPath = livePath;
+  if (scenario.discover) {
+    const liveDiscovery = await discoverTarget(liveSide, scenario, {
+      side: 'live',
+      ids: context.ids,
+      portal: context.portalFacts,
+      liveAssets: context.liveShellAssets,
+    });
+    if (scenario.discover.from !== 'ids') await sleep(context.delayMs);
+    const localDiscovery = await discoverTarget(localSide, scenario, {
+      side: 'local',
+      ids: context.ids,
+      portal: context.portalFacts,
+      liveAssets: context.liveShellAssets,
+    });
+    result.discovery = { live: liveDiscovery.error ?? 'found', local: localDiscovery.error ?? 'found' };
+    // Portal-derived paths come from the export (not from live records), so the chosen path is kept.
+    if (scenario.discover.from === 'portal' && liveDiscovery.path)
+      result.discovery.path = redactUrl(liveDiscovery.path, { origins });
+    if (liveDiscovery.error || localDiscovery.error)
+      return {
+        ...result,
+        verdict: 'blocked',
+        reason: liveDiscovery.notApplicable
+          ? `Not applicable to this portal: ${liveDiscovery.error}`
+          : 'Record discovery did not find a comparable record on both sides.',
+      };
+    livePath = liveDiscovery.path;
+    localPath = localDiscovery.path;
+    result.discoveredPath = { live: redactUrl(livePath, { origins }), local: redactUrl(localPath, { origins }) };
+  }
   const deltas = [];
   const observations = {};
   const kind = scenario.kind;
-  const pageOptions = scenarioPageOptions(scenario, plan);
+  const pageOptions = {
+    roots: scenario.roots,
+    exclude: [...(plan.defaults?.exclude ?? []), ...(scenario.exclude ?? [])],
+    opaque: scenario.opaque,
+    dataSelectors: [...(plan.defaults?.dataSelectors ?? []), ...(scenario.dataSelectors ?? [])],
+    settleMs: scenario.settleMs ?? plan.defaults?.settleMs,
+    quietMs: scenario.quietMs ?? plan.defaults?.quietMs,
+    settleTimeout: scenario.settleTimeout ?? plan.defaults?.settleTimeout,
+    facts: scenario.facts ?? (scenario.defaultFacts === false ? [] : (plan.defaults?.facts ?? [])),
+    probeExpression: scenario.probe?.expression,
+  };
   if (
     ['page-dom', 'page-text', 'error-page'].includes(kind) ||
     (kind === 'liquid-probe' && scenario.probe.source === 'dom')
   ) {
-    const blocked = await runPageScenario({
-      scenario,
-      context,
-      liveSide,
-      localSide,
-      livePath,
-      localPath,
-      pageOptions,
-      identity,
-      redactor,
-      result,
-      observations,
-      deltas,
-      origins,
-      plan,
-      outDir,
-    });
-    if (blocked) return blocked;
+    if (!liveSide.page || !localSide.page)
+      return { ...result, verdict: 'blocked', reason: 'A browser page driver is unavailable for this identity.' };
+    trace(scenario.id, 'live page start');
+    const live = await liveSide.page(livePath, pageOptions);
+    trace(scenario.id, 'live page done', live.status ?? '', live.unresponsive ? 'unresponsive' : '');
+    await sleep(context.delayMs);
+    trace(scenario.id, 'local page start');
+    const local = await localSide.page(localPath, pageOptions);
+    trace(scenario.id, 'local page done', local.status ?? '', local.unresponsive ? 'unresponsive' : '');
+    // Live titles can name records: reveal only source-derived or local-equal titles.
+    if (local.snapshot?.title) redactor.rememberLocal(normalizeText(local.snapshot.title));
+    observations.live = pageDiagnostics(live, (value) => redactor.reveal(value));
+    observations.local = pageDiagnostics(local);
+    if (live.unresponsive || local.unresponsive)
+      deltas.push({ kind: 'page-unresponsive', live: Boolean(live.unresponsive), local: Boolean(local.unresponsive) });
+    if (identity === 'signed-in' && signInObserved(live))
+      return {
+        ...result,
+        observations,
+        verdict: 'blocked',
+        reason: 'The reference browser showed a sign-in page; this is not a signed-in comparison.',
+      };
+    const captureIssue = captureProblem(identity, live);
+    if (captureIssue) return { ...result, observations, verdict: 'blocked', reason: captureIssue };
+    const expectedLive = scenario.expect?.liveStatus;
+    if (expectedLive !== undefined && live.status !== null && live.status !== expectedLive)
+      deltas.push({ kind: 'expected-live-status', live: live.status, local: expectedLive });
+    if (live.status !== local.status) deltas.push({ kind: 'status', live: live.status, local: local.status });
+    if (live.blockedWrites.length || local.blockedWrites.length)
+      result.blockedWrites = { live: live.blockedWrites, local: local.blockedWrites };
+    if (live.facts || local.facts) {
+      observations.facts = { live: live.facts, local: local.facts };
+      for (const selector of new Set([...Object.keys(live.facts ?? {}), ...Object.keys(local.facts ?? {})])) {
+        const a = live.facts?.[selector];
+        const b = local.facts?.[selector];
+        const presenceOnly = scenario.factsPresenceOnly ?? plan.defaults?.factsPresenceOnly ?? false;
+        if (JSON.stringify(a) !== JSON.stringify(b) && !((a?.total ?? 0) > 0 && (b?.total ?? 0) > 0 && presenceOnly))
+          deltas.push({ kind: 'fact', field: selector, live: a, local: b });
+      }
+    }
+    if (scenario.network !== false && (live.network?.length || local.network?.length)) {
+      observations.network = { live: summarizeNetwork(live.network), local: summarizeNetwork(local.network) };
+      context.inventory.push(...(live.network ?? []).map((record) => ({ ...record, scenario: scenario.id })));
+    }
+    for (const asset of live.assets ?? [])
+      context.assets.set(asset, [...new Set([...(context.assets.get(asset) ?? []), scenario.id])]);
+    if (scenario.network !== false && (live.network?.length || local.network?.length)) {
+      if (scenario.compareNetwork !== false) deltas.push(...compareNetwork(live.network, local.network));
+    }
+    const prepare = (observation) =>
+      (observation.snapshot?.roots ?? []).map((root) => ({
+        selector: root.selector,
+        count: root.count,
+        trees: root.nodes.map((node) =>
+          prepareTree(node, {
+            origins,
+            ignoreClasses: [...(plan.defaults?.ignoreClasses ?? []), ...(scenario.ignoreClasses ?? [])],
+            ignoreAttributes: [...(plan.defaults?.ignoreAttributes ?? []), ...(scenario.ignoreAttributes ?? [])],
+          }),
+        ),
+      }));
+    const liveRoots = prepare(live);
+    const localRoots = prepare(local);
+    for (const root of localRoots) for (const tree of root.trees) rememberLocalTree(tree, redactor);
+    if (kind === 'liquid-probe') {
+      const liveText = liveRoots[0]?.trees[0]
+        ? treeText(liveRoots[0].trees[0])
+            .map((line) => line.text)
+            .join(' ')
+        : null;
+      const localText = localRoots[0]?.trees[0]
+        ? treeText(localRoots[0].trees[0])
+            .map((line) => line.text)
+            .join(' ')
+        : null;
+      redactor.rememberLocal(localText ?? '');
+      observations.probe = { live: liveText === null ? null : redactor.reveal(liveText), local: localText };
+      if (liveText !== localText) deltas.push({ kind: 'probe-text', live: liveText, local: localText });
+    } else {
+      for (let index = 0; index < Math.max(liveRoots.length, localRoots.length); index++) {
+        const a = liveRoots[index];
+        const b = localRoots[index];
+        const selector = a?.selector ?? b?.selector;
+        if ((a?.count ?? 0) !== (b?.count ?? 0))
+          deltas.push({ kind: 'root-count', path: selector, live: a?.count ?? 0, local: b?.count ?? 0 });
+        const pairs = Math.min(a?.trees.length ?? 0, b?.trees.length ?? 0);
+        for (let i = 0; i < pairs; i++) {
+          if (kind === 'page-text') {
+            const comparison = compareTextLines(treeText(a.trees[i]), treeText(b.trees[i]), {
+              maxDeltas: scenario.maxDeltas ?? 250,
+            });
+            deltas.push(...comparison.deltas.map((delta) => ({ ...delta, path: `${selector} ${delta.path}` })));
+            if (comparison.truncated)
+              result.truncatedDeltas = (result.truncatedDeltas ?? 0) + comparison.total - comparison.deltas.length;
+          } else {
+            const comparison = compareTrees(a.trees[i], b.trees[i], { maxDeltas: scenario.maxDeltas ?? 250 });
+            deltas.push(...comparison.deltas);
+            if (comparison.truncated)
+              result.truncatedDeltas = (result.truncatedDeltas ?? 0) + comparison.total - comparison.deltas.length;
+          }
+        }
+        if (scenario.saveTrees !== false && outDir) {
+          const directory = path.join(outDir, 'scenarios', scenario.id);
+          await fs.mkdir(directory, { recursive: true });
+          await fs.writeFile(
+            path.join(directory, `root-${index + 1}.live.json`),
+            JSON.stringify(
+              (a?.trees ?? []).map((tree) => redactTree(tree, redactor, 'live')),
+              null,
+              1,
+            ),
+          );
+          await fs.writeFile(
+            path.join(directory, `root-${index + 1}.local.json`),
+            JSON.stringify(
+              (b?.trees ?? []).map((tree) => redactTree(tree, redactor, 'local')),
+              null,
+              1,
+            ),
+          );
+        }
+      }
+      // Text-free structural digests let later runs detect reference-page drift without values.
+      result.structureFingerprint = {
+        live: sha256(liveRoots.map((root) => root.trees.map(shapeOf))).slice(0, 16),
+        local: sha256(localRoots.map((root) => root.trees.map(shapeOf))).slice(0, 16),
+      };
+    }
   } else if (kind === 'page-shell') {
-    const blocked = await runPageShellScenario({
-      scenario,
-      context,
-      liveSide,
-      localSide,
-      livePath,
-      localPath,
-      pageOptions,
+    // Document shell: title, html/body attributes and the order of script and stylesheet bundles.
+    if (!liveSide.page || !localSide.page)
+      return { ...result, verdict: 'blocked', reason: 'A browser page driver is unavailable for this identity.' };
+    const shellOptions = {
+      ...pageOptions,
+      roots: ['head'],
+      facts: [],
+      probeExpression: `(${shellFacts.toString()})()`,
+    };
+    trace(scenario.id, 'live shell start');
+    const live = await liveSide.page(livePath, shellOptions);
+    await sleep(context.delayMs);
+    trace(scenario.id, 'local shell start');
+    const local = await localSide.page(localPath, shellOptions);
+    const { a, b, reason } = admitPageProbe({
+      live,
+      local,
       identity,
       redactor,
       observations,
       deltas,
-      result,
-      origins,
+      rememberTitle: true,
     });
-    if (blocked) return blocked;
+    if (reason) return { ...result, observations, verdict: 'blocked', reason };
+    if (!a || !b) deltas.push({ kind: 'shell-unavailable', live: Boolean(a), local: Boolean(b) });
+    else {
+      const comparison = compareShell(a, b, { origins });
+      deltas.push(...comparison.deltas);
+      // Same-origin resources the reference page loaded (used to pick a deployed public web file).
+      context.liveShellAssets ??= new Set(a.resources.map((item) => item.path).filter((item) => item.startsWith('/')));
+      observations.shell = {
+        live: { ...comparison.live, title: redactor.reveal(comparison.live.title) },
+        local: comparison.local,
+      };
+    }
   } else if (kind === 'client-object') {
-    const blocked = await runClientObjectScenario({
-      scenario,
-      context,
-      liveSide,
-      localSide,
-      livePath,
-      localPath,
-      pageOptions,
-      identity,
-      redactor,
-      observations,
-      deltas,
-      result,
-    });
-    if (blocked) return blocked;
+    // Platform client objects: the same key sets, in the same order, with the same value types.
+    if (!liveSide.page || !localSide.page)
+      return { ...result, verdict: 'blocked', reason: 'A browser page driver is unavailable for this identity.' };
+    const objectOptions = {
+      ...pageOptions,
+      roots: ['head'],
+      facts: [],
+      probeExpression: `(${clientObjectFacts.toString()})()`,
+    };
+    trace(scenario.id, 'live client object start');
+    const live = await liveSide.page(livePath, objectOptions);
+    await sleep(context.delayMs);
+    trace(scenario.id, 'local client object start');
+    const local = await localSide.page(localPath, objectOptions);
+    const { a, b, reason } = admitPageProbe({ live, local, identity, redactor, observations, deltas });
+    if (reason) return { ...result, observations, verdict: 'blocked', reason };
+    if (!a || !b) deltas.push({ kind: 'client-object-unavailable', live: Boolean(a), local: Boolean(b) });
+    else {
+      deltas.push(...compareClientObject(a, b));
+      observations.clientObject = { live: clientObjectSummary(a), local: clientObjectSummary(b) };
+    }
   } else if (kind === 'webfile-drift') {
-    await runWebfileDrift({ scenario, context, sides, localSide, deltas, observations });
+    // Source-versus-deployment signal: deployed web-file bytes (cookie-free reads) against the
+    // bytes the local runtime serves from the export. Differences explain page deltas without
+    // implying a runtime defect.
+    const candidates = [
+      ...new Set([...(scenario.paths ?? []), ...(scenario.fromPages ? [...context.assets.keys()] : [])]),
+    ].slice(0, scenario.max ?? 80);
+    const files = [];
+    for (const target of candidates) {
+      try {
+        assertReadOnlyPath(target);
+      } catch {
+        continue;
+      }
+      const deployed = await sides.anonymous.http(target, { accept: '*/*', raw: true, redirect: 'manual' });
+      await sleep(Math.min(context.delayMs, 250));
+      const served = await localSide.http(target, { accept: '*/*', raw: true, redirect: 'manual' });
+      const verdict =
+        deployed.status !== 200
+          ? `live-${deployed.status}`
+          : served.status !== 200
+            ? `local-${served.status}`
+            : compareBytes(deployed.body, served.body);
+      files.push({
+        path: redactUrl(target),
+        verdict,
+        liveBytes: deployed.body?.length ?? 0,
+        localBytes: served.body?.length ?? 0,
+        usedBy: context.assets.get(target) ?? [],
+      });
+      if (verdict === 'different')
+        deltas.push({
+          kind: 'webfile-drift',
+          path: redactUrl(target),
+          live: deployed.body.length,
+          local: served.body.length,
+        });
+      else if (verdict.startsWith('local-'))
+        deltas.push({
+          kind: 'webfile-local-status',
+          path: redactUrl(target),
+          live: deployed.status,
+          local: served.status,
+        });
+    }
+    const counts = {};
+    for (const file of files) counts[file.verdict] = (counts[file.verdict] ?? 0) + 1;
+    observations.webFiles = { counts, files };
+    context.drift = new Set(files.filter((file) => file.verdict === 'different').map((file) => file.path));
   } else if (kind === 'reference-contracts') {
-    const blocked = await runReferenceContracts({
-      scenario,
-      context,
-      sides,
+    const { compareReferenceContracts } = await import('./reference-parity.mjs');
+    const contracts = JSON.parse(await fs.readFile(path.resolve(ROOT, scenario.plan), 'utf8'));
+    if (!sides.live?.http)
+      return { ...result, verdict: 'blocked', reason: 'The signed-in reference driver is unavailable.' };
+    const bridge = {
+      request: async (target, { prefer } = {}) => {
+        const response = await sides.live.http(target, { prefer, accept: 'application/json' });
+        await sleep(context.delayMs);
+        return { status: response.status, body: Buffer.from(response.body ?? '') };
+      },
+    };
+    const report = await compareReferenceContracts({
       localUrl,
       origin,
-      outDir,
-      observations,
-      deltas,
-      result,
+      contracts,
+      outputDir: path.join(outDir, 'scenarios', scenario.id),
+      bridge,
     });
-    if (blocked) return blocked;
+    observations.contracts = report.contracts.map((contract) => ({
+      id: contract.id,
+      passed: contract.passed,
+      referenceStatus: contract.referenceStatus,
+      localStatus: contract.localStatus,
+      referenceCount: contract.referenceCount,
+      localCount: contract.localCount,
+      error: contract.error,
+    }));
+    observations.stateUnchanged = report.stateUnchanged;
+    for (const contract of report.contracts)
+      if (!contract.passed)
+        deltas.push({
+          kind: 'contract',
+          field: contract.id,
+          live: contract.referenceStatus,
+          local: contract.localStatus,
+          path: contract.error,
+        });
   } else {
     const request = {
       prefer: scenario.prefer,
@@ -4197,445 +4400,6 @@ function summarizeNetwork(records = []) {
       observations.probe = { live: liveView, local: localView };
     }
   }
-  return finalizeScenarioResult(scenario, plan, redactor, result, observations, deltas);
-}
-
-async function runPageScenario(options) {
-  const {
-    scenario,
-    context,
-    liveSide,
-    localSide,
-    livePath,
-    localPath,
-    pageOptions,
-    identity,
-    redactor,
-    result,
-    observations,
-    deltas,
-    origins,
-    plan,
-    outDir,
-  } = options;
-  if (!liveSide.page || !localSide.page)
-    return { ...result, verdict: 'blocked', reason: 'A browser page driver is unavailable for this identity.' };
-  const { live, local } = await captureScenarioPages(
-    scenario,
-    context,
-    liveSide,
-    localSide,
-    livePath,
-    localPath,
-    pageOptions,
-  );
-  if (local.snapshot?.title) redactor.rememberLocal(normalizeText(local.snapshot.title));
-  const blocked = assessPageCapture(scenario, identity, live, local, redactor, { result, observations, deltas });
-  if (blocked) return blocked;
-  recordPageFacts(scenario, plan, live, local, observations, deltas);
-  recordPageNetwork(scenario, context, live, local, observations, deltas);
-  const liveRoots = preparePageRoots(scenario, plan, live, origins);
-  const localRoots = preparePageRoots(scenario, plan, local, origins);
-  for (const root of localRoots) for (const tree of root.trees) rememberLocalTree(tree, redactor);
-  if (scenario.kind === 'liquid-probe') comparePageProbeText(liveRoots, localRoots, redactor, observations, deltas);
-  else if (scenario.saveTrees !== false && outDir)
-    await comparePageRootsWithSaving(scenario, outDir, liveRoots, localRoots, redactor, result, deltas);
-  else comparePageRoots(scenario, liveRoots, localRoots, result, deltas);
-}
-
-async function captureScenarioPages(scenario, context, liveSide, localSide, livePath, localPath, pageOptions) {
-  trace(scenario.id, 'live page start');
-  const live = await liveSide.page(livePath, pageOptions);
-  trace(scenario.id, 'live page done', live.status ?? '', live.unresponsive ? 'unresponsive' : '');
-  await sleep(context.delayMs);
-  trace(scenario.id, 'local page start');
-  const local = await localSide.page(localPath, pageOptions);
-  trace(scenario.id, 'local page done', local.status ?? '', local.unresponsive ? 'unresponsive' : '');
-  return { live, local };
-}
-
-function assessPageCapture(scenario, identity, live, local, redactor, { result, observations, deltas }) {
-  observations.live = pageDiagnostics(live, (value) => redactor.reveal(value));
-  observations.local = pageDiagnostics(local);
-  if (live.unresponsive || local.unresponsive)
-    deltas.push({ kind: 'page-unresponsive', live: Boolean(live.unresponsive), local: Boolean(local.unresponsive) });
-  if (identity === 'signed-in' && signInObserved(live))
-    return {
-      ...result,
-      observations,
-      verdict: 'blocked',
-      reason: 'The reference browser showed a sign-in page; this is not a signed-in comparison.',
-    };
-  const captureIssue = captureProblem(identity, live);
-  if (captureIssue) return { ...result, observations, verdict: 'blocked', reason: captureIssue };
-  const expectedLive = scenario.expect?.liveStatus;
-  if (expectedLive !== undefined && live.status !== null && live.status !== expectedLive)
-    deltas.push({ kind: 'expected-live-status', live: live.status, local: expectedLive });
-  if (live.status !== local.status) deltas.push({ kind: 'status', live: live.status, local: local.status });
-  if (live.blockedWrites.length || local.blockedWrites.length)
-    result.blockedWrites = { live: live.blockedWrites, local: local.blockedWrites };
-}
-
-function recordPageFacts(scenario, plan, live, local, observations, deltas) {
-  if (!live.facts && !local.facts) return;
-  observations.facts = { live: live.facts, local: local.facts };
-  for (const selector of new Set([...Object.keys(live.facts ?? {}), ...Object.keys(local.facts ?? {})])) {
-    const a = live.facts?.[selector];
-    const b = local.facts?.[selector];
-    const presenceOnly = scenario.factsPresenceOnly ?? plan.defaults?.factsPresenceOnly ?? false;
-    if (JSON.stringify(a) !== JSON.stringify(b) && !((a?.total ?? 0) > 0 && (b?.total ?? 0) > 0 && presenceOnly))
-      deltas.push({ kind: 'fact', field: selector, live: a, local: b });
-  }
-}
-
-function recordPageNetwork(scenario, context, live, local, observations, deltas) {
-  if (scenario.network !== false && (live.network?.length || local.network?.length)) {
-    observations.network = { live: summarizeNetwork(live.network), local: summarizeNetwork(local.network) };
-    context.inventory.push(...(live.network ?? []).map((record) => ({ ...record, scenario: scenario.id })));
-  }
-  for (const asset of live.assets ?? [])
-    context.assets.set(asset, [...new Set([...(context.assets.get(asset) ?? []), scenario.id])]);
-  if (scenario.network !== false && (live.network?.length || local.network?.length)) {
-    if (scenario.compareNetwork !== false) deltas.push(...compareNetwork(live.network, local.network));
-  }
-}
-
-function preparePageRoots(scenario, plan, observation, origins) {
-  return (observation.snapshot?.roots ?? []).map((root) => ({
-    selector: root.selector,
-    count: root.count,
-    trees: root.nodes.map((node) =>
-      prepareTree(node, {
-        origins,
-        ignoreClasses: [...(plan.defaults?.ignoreClasses ?? []), ...(scenario.ignoreClasses ?? [])],
-        ignoreAttributes: [...(plan.defaults?.ignoreAttributes ?? []), ...(scenario.ignoreAttributes ?? [])],
-      }),
-    ),
-  }));
-}
-
-function comparePageProbeText(liveRoots, localRoots, redactor, observations, deltas) {
-  const liveText = liveRoots[0]?.trees[0]
-    ? treeText(liveRoots[0].trees[0])
-        .map((line) => line.text)
-        .join(' ')
-    : null;
-  const localText = localRoots[0]?.trees[0]
-    ? treeText(localRoots[0].trees[0])
-        .map((line) => line.text)
-        .join(' ')
-    : null;
-  redactor.rememberLocal(localText ?? '');
-  observations.probe = { live: liveText === null ? null : redactor.reveal(liveText), local: localText };
-  if (liveText !== localText) deltas.push({ kind: 'probe-text', live: liveText, local: localText });
-}
-
-function comparePageRoots(scenario, liveRoots, localRoots, result, deltas) {
-  for (let index = 0; index < Math.max(liveRoots.length, localRoots.length); index++) {
-    const live = liveRoots[index];
-    const local = localRoots[index];
-    comparePageRoot(scenario, live, local, result, deltas);
-  }
-  setPageStructureFingerprint(liveRoots, localRoots, result);
-}
-
-async function comparePageRootsWithSaving(scenario, outDir, liveRoots, localRoots, redactor, result, deltas) {
-  for (let index = 0; index < Math.max(liveRoots.length, localRoots.length); index++) {
-    const live = liveRoots[index];
-    const local = localRoots[index];
-    comparePageRoot(scenario, live, local, result, deltas);
-    await savePageRootTrees(outDir, scenario.id, index, live, local, redactor);
-  }
-  setPageStructureFingerprint(liveRoots, localRoots, result);
-}
-
-function setPageStructureFingerprint(liveRoots, localRoots, result) {
-  // Text-free structural digests let later runs detect reference-page drift without values.
-  result.structureFingerprint = {
-    live: sha256(liveRoots.map((root) => root.trees.map(shapeOf))).slice(0, 16),
-    local: sha256(localRoots.map((root) => root.trees.map(shapeOf))).slice(0, 16),
-  };
-}
-
-function comparePageRoot(scenario, a, b, result, deltas) {
-  const selector = a?.selector ?? b?.selector;
-  if ((a?.count ?? 0) !== (b?.count ?? 0))
-    deltas.push({ kind: 'root-count', path: selector, live: a?.count ?? 0, local: b?.count ?? 0 });
-  const pairs = Math.min(a?.trees.length ?? 0, b?.trees.length ?? 0);
-  for (let i = 0; i < pairs; i++) comparePageTreePair(scenario, a.trees[i], b.trees[i], selector, result, deltas);
-}
-
-function comparePageTreePair(scenario, a, b, selector, result, deltas) {
-  let comparison;
-  if (scenario.kind === 'page-text') {
-    comparison = compareTextLines(treeText(a), treeText(b), { maxDeltas: scenario.maxDeltas ?? 250 });
-    deltas.push(...comparison.deltas.map((delta) => ({ ...delta, path: `${selector} ${delta.path}` })));
-  } else {
-    comparison = compareTrees(a, b, { maxDeltas: scenario.maxDeltas ?? 250 });
-    deltas.push(...comparison.deltas);
-  }
-  if (comparison.truncated)
-    result.truncatedDeltas = (result.truncatedDeltas ?? 0) + comparison.total - comparison.deltas.length;
-}
-
-async function savePageRootTrees(outDir, scenarioId, index, live, local, redactor) {
-  const directory = path.join(outDir, 'scenarios', scenarioId);
-  await fs.mkdir(directory, { recursive: true });
-  await fs.writeFile(
-    path.join(directory, `root-${index + 1}.live.json`),
-    JSON.stringify(
-      (live?.trees ?? []).map((tree) => redactTree(tree, redactor, 'live')),
-      null,
-      1,
-    ),
-  );
-  await fs.writeFile(
-    path.join(directory, `root-${index + 1}.local.json`),
-    JSON.stringify(
-      (local?.trees ?? []).map((tree) => redactTree(tree, redactor, 'local')),
-      null,
-      1,
-    ),
-  );
-}
-
-async function runPageShellScenario(options) {
-  const {
-    scenario,
-    context,
-    liveSide,
-    localSide,
-    livePath,
-    localPath,
-    pageOptions,
-    identity,
-    redactor,
-    observations,
-    deltas,
-    result,
-    origins,
-  } = options;
-  // Document shell: title, html/body attributes and the order of script and stylesheet bundles.
-  if (!liveSide.page || !localSide.page)
-    return { ...result, verdict: 'blocked', reason: 'A browser page driver is unavailable for this identity.' };
-  const shellOptions = { ...pageOptions, roots: ['head'], facts: [], probeExpression: `(${shellFacts.toString()})()` };
-  trace(scenario.id, 'live shell start');
-  const live = await liveSide.page(livePath, shellOptions);
-  await sleep(context.delayMs);
-  trace(scenario.id, 'local shell start');
-  const local = await localSide.page(localPath, shellOptions);
-  const { a, b, reason } = admitPageProbe({
-    live,
-    local,
-    identity,
-    redactor,
-    observations,
-    deltas,
-    rememberTitle: true,
-  });
-  if (reason) return { ...result, observations, verdict: 'blocked', reason };
-  if (!a || !b) deltas.push({ kind: 'shell-unavailable', live: Boolean(a), local: Boolean(b) });
-  else {
-    const comparison = compareShell(a, b, { origins });
-    deltas.push(...comparison.deltas);
-    // Same-origin resources the reference page loaded (used to pick a deployed public web file).
-    context.liveShellAssets ??= new Set(a.resources.map((item) => item.path).filter((item) => item.startsWith('/')));
-    observations.shell = {
-      live: { ...comparison.live, title: redactor.reveal(comparison.live.title) },
-      local: comparison.local,
-    };
-  }
-}
-
-async function runClientObjectScenario(options) {
-  const {
-    scenario,
-    context,
-    liveSide,
-    localSide,
-    livePath,
-    localPath,
-    pageOptions,
-    identity,
-    redactor,
-    observations,
-    deltas,
-    result,
-  } = options;
-  // Platform client objects: the same key sets, in the same order, with the same value types.
-  if (!liveSide.page || !localSide.page)
-    return { ...result, verdict: 'blocked', reason: 'A browser page driver is unavailable for this identity.' };
-  const objectOptions = {
-    ...pageOptions,
-    roots: ['head'],
-    facts: [],
-    probeExpression: `(${clientObjectFacts.toString()})()`,
-  };
-  trace(scenario.id, 'live client object start');
-  const live = await liveSide.page(livePath, objectOptions);
-  await sleep(context.delayMs);
-  trace(scenario.id, 'local client object start');
-  const local = await localSide.page(localPath, objectOptions);
-  const { a, b, reason } = admitPageProbe({ live, local, identity, redactor, observations, deltas });
-  if (reason) return { ...result, observations, verdict: 'blocked', reason };
-  if (!a || !b) deltas.push({ kind: 'client-object-unavailable', live: Boolean(a), local: Boolean(b) });
-  else {
-    deltas.push(...compareClientObject(a, b));
-    observations.clientObject = { live: clientObjectSummary(a), local: clientObjectSummary(b) };
-  }
-}
-
-async function runWebfileDrift({ scenario, context, sides, localSide, deltas, observations }) {
-  // Source-versus-deployment signal: deployed web-file bytes against the local exported source.
-  const candidates = [
-    ...new Set([...(scenario.paths ?? []), ...(scenario.fromPages ? [...context.assets.keys()] : [])]),
-  ].slice(0, scenario.max ?? 80);
-  const files = [];
-  for (const target of candidates) {
-    try {
-      assertReadOnlyPath(target);
-    } catch {
-      continue;
-    }
-    await collectDriftFile(target, { context, sides, localSide, deltas, files });
-  }
-  const counts = {};
-  for (const file of files) counts[file.verdict] = (counts[file.verdict] ?? 0) + 1;
-  observations.webFiles = { counts, files };
-  context.drift = new Set(files.filter((file) => file.verdict === 'different').map((file) => file.path));
-}
-
-async function collectDriftFile(target, { context, sides, localSide, deltas, files }) {
-  const deployed = await sides.anonymous.http(target, { accept: '*/*', raw: true, redirect: 'manual' });
-  await sleep(Math.min(context.delayMs, 250));
-  const served = await localSide.http(target, { accept: '*/*', raw: true, redirect: 'manual' });
-  const verdict = driftVerdict(deployed, served);
-  files.push({
-    path: redactUrl(target),
-    verdict,
-    liveBytes: deployed.body?.length ?? 0,
-    localBytes: served.body?.length ?? 0,
-    usedBy: context.assets.get(target) ?? [],
-  });
-  if (verdict === 'different')
-    deltas.push({
-      kind: 'webfile-drift',
-      path: redactUrl(target),
-      live: deployed.body.length,
-      local: served.body.length,
-    });
-  else if (verdict.startsWith('local-'))
-    deltas.push({ kind: 'webfile-local-status', path: redactUrl(target), live: deployed.status, local: served.status });
-}
-
-function driftVerdict(deployed, served) {
-  if (deployed.status !== 200) return `live-${deployed.status}`;
-  if (served.status !== 200) return `local-${served.status}`;
-  return compareBytes(deployed.body, served.body);
-}
-
-async function runReferenceContracts({
-  scenario,
-  context,
-  sides,
-  localUrl,
-  origin,
-  outDir,
-  observations,
-  deltas,
-  result,
-}) {
-  const { compareReferenceContracts } = await import('./reference-parity.mjs');
-  const contracts = JSON.parse(await fs.readFile(path.resolve(ROOT, scenario.plan), 'utf8'));
-  if (!sides.live?.http)
-    return { ...result, verdict: 'blocked', reason: 'The signed-in reference driver is unavailable.' };
-  const bridge = {
-    request: async (target, { prefer } = {}) => {
-      const response = await sides.live.http(target, { prefer, accept: 'application/json' });
-      await sleep(context.delayMs);
-      return { status: response.status, body: Buffer.from(response.body ?? '') };
-    },
-  };
-  const report = await compareReferenceContracts({
-    localUrl,
-    origin,
-    contracts,
-    outputDir: path.join(outDir, 'scenarios', scenario.id),
-    bridge,
-  });
-  observations.contracts = report.contracts.map((contract) => ({
-    id: contract.id,
-    passed: contract.passed,
-    referenceStatus: contract.referenceStatus,
-    localStatus: contract.localStatus,
-    referenceCount: contract.referenceCount,
-    localCount: contract.localCount,
-    error: contract.error,
-  }));
-  observations.stateUnchanged = report.stateUnchanged;
-  for (const contract of report.contracts)
-    if (!contract.passed)
-      deltas.push({
-        kind: 'contract',
-        field: contract.id,
-        live: contract.referenceStatus,
-        local: contract.localStatus,
-        path: contract.error,
-      });
-}
-
-async function resolveScenarioPaths(scenario, context, result, liveSide, localSide, origins) {
-  let livePath = scenario.path === undefined ? undefined : scenarioPath(scenario);
-  let localPath = livePath;
-  if (!scenario.discover) return { livePath, localPath };
-  const liveDiscovery = await discoverTarget(liveSide, scenario, {
-    side: 'live',
-    ids: context.ids,
-    portal: context.portalFacts,
-    liveAssets: context.liveShellAssets,
-  });
-  if (scenario.discover.from !== 'ids') await sleep(context.delayMs);
-  const localDiscovery = await discoverTarget(localSide, scenario, {
-    side: 'local',
-    ids: context.ids,
-    portal: context.portalFacts,
-    liveAssets: context.liveShellAssets,
-  });
-  result.discovery = { live: liveDiscovery.error ?? 'found', local: localDiscovery.error ?? 'found' };
-  // Portal-derived paths come from the export (not from live records), so the chosen path is kept.
-  if (scenario.discover.from === 'portal' && liveDiscovery.path)
-    result.discovery.path = redactUrl(liveDiscovery.path, { origins });
-  if (liveDiscovery.error || localDiscovery.error)
-    return {
-      blocked: {
-        ...result,
-        verdict: 'blocked',
-        reason: liveDiscovery.notApplicable
-          ? `Not applicable to this portal: ${liveDiscovery.error}`
-          : 'Record discovery did not find a comparable record on both sides.',
-      },
-    };
-  livePath = liveDiscovery.path;
-  localPath = localDiscovery.path;
-  result.discoveredPath = { live: redactUrl(livePath, { origins }), local: redactUrl(localPath, { origins }) };
-  return { livePath, localPath };
-}
-
-function scenarioPageOptions(scenario, plan) {
-  return {
-    roots: scenario.roots,
-    exclude: [...(plan.defaults?.exclude ?? []), ...(scenario.exclude ?? [])],
-    opaque: scenario.opaque,
-    dataSelectors: [...(plan.defaults?.dataSelectors ?? []), ...(scenario.dataSelectors ?? [])],
-    settleMs: scenario.settleMs ?? plan.defaults?.settleMs,
-    quietMs: scenario.quietMs ?? plan.defaults?.quietMs,
-    settleTimeout: scenario.settleTimeout ?? plan.defaults?.settleTimeout,
-    facts: scenario.facts ?? (scenario.defaultFacts === false ? [] : (plan.defaults?.facts ?? [])),
-    probeExpression: scenario.probe?.expression,
-  };
-}
-
-function finalizeScenarioResult(scenario, plan, redactor, result, observations, deltas) {
   const classified = deltas.map((delta) => {
     const classification = classifyDelta(delta, scenario.id, rulesFor(plan, scenario));
     return { ...redactDelta(delta, redactor), classification };
@@ -4643,22 +4407,16 @@ function finalizeScenarioResult(scenario, plan, redactor, result, observations, 
   const byClass = {};
   for (const delta of classified) byClass[delta.classification.class] = (byClass[delta.classification.class] ?? 0) + 1;
   const unexpected = classified.filter((delta) => !EXPECTED_CLASSES.has(delta.classification.class));
-  let verdict;
-  if (!classified.length) verdict = 'pass';
-  else if (!unexpected.length) verdict = 'pass-with-expected-deltas';
-  else verdict = 'delta';
+  const verdict = !classified.length ? 'pass' : !unexpected.length ? 'pass-with-expected-deltas' : 'delta';
   return {
     ...result,
     observations,
     deltas: classified,
     deltaCounts: byClass,
     verdict,
-    owners: [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))]
-      .sort /* NOSONAR */
-      (
-        // NOSONAR: preserve default coercion and UTF-16 sort order
-        /* NOSONAR: preserve default string coercion */
-      ),
+    owners: [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))].sort(
+      /* NOSONAR: preserve default string coercion */
+    ),
   };
 }
 

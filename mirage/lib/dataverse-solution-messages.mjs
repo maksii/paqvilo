@@ -963,9 +963,18 @@ function lifecycleOperations(api, tools) {
           async () => {
             const zip = tools.exportArchive(row, { managed });
             await write(() => {
-              store.state.dataverse ??= {};
-              store.state.dataverse.exportJobs ??= {};
-              store.state.dataverse.exportJobs[lower(exportJobId)] = {
+              const state = store.state;
+              let dataverse = state.dataverse;
+              if (dataverse === null || dataverse === undefined) {
+                dataverse = {};
+                state.dataverse = dataverse;
+              }
+              let exportJobs = dataverse.exportJobs;
+              if (exportJobs === null || exportJobs === undefined) {
+                exportJobs = {};
+                dataverse.exportJobs = exportJobs;
+              }
+              exportJobs[lower(exportJobId)] = {
                 solutionName: row.uniquename,
                 managed,
                 file: zip.toString('base64'),
