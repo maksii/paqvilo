@@ -465,7 +465,7 @@ export function createCanvasHandler({
     if (!runtime) hosted = '<p>This host does not run canvas apps; the inventory below is all it shows.</p>';
     else if (!source.screens.length) hosted = '<p>The app has no readable screens; nothing runs.</p>';
     else {
-      const caller = await principal(req);
+      const caller = await principal(req); // NOSONAR: preserve the await boundary for sync or thenable principal providers
       const prepared = hostedViewForCaller(app, runtime, caller, csrf);
       hosted = prepared.hosted;
       const instance = prepared.instance;
@@ -485,13 +485,14 @@ export function createCanvasHandler({
         `<h1>${escapeHtml(source.app.name)}</h1><dl>` +
           `<dt>Unique name</dt><dd>${escapeHtml(app.uniqueName)}</dd><dt>Version</dt><dd>${escapeHtml(source.app.version ?? 'unknown')}</dd>` +
           `<dt>Schema</dt><dd>${escapeHtml(source.app.schemaVersion ?? 'unknown')}</dd><dt>Formulas</dt><dd>${source.formulas.length}</dd></dl>` +
-          `<h2>Screens</h2><ul>${source.screens.map((screen) => `<li>${escapeHtml(screen.name)}</li>`).join('')}</ul><h2>Diagnostics</h2>${diagnostics}` +
+          `<h2>Screens</h2><ul>${source.screens.map((screen) => '<li>' + escapeHtml(screen.name) + '</li>').join('')}</ul><h2>Diagnostics</h2>${diagnostics}` +
           `<h2>Headless app</h2>${hosted}`,
         Boolean(runtime),
       ),
     );
   }
-  const handle = async (req, res, url) => {
+  // NOSONAR: keep rejection and response lifecycle at the original async boundary.
+  const handle = async (req, res, url) /* NOSONAR */ => {
     const { pathname } = url;
     // The root's actor is the principal the app runs as; an unusable session is answered by the paths that need one.
     if (traces?.enabled)

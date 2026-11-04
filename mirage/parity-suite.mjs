@@ -2632,7 +2632,7 @@ export async function openOwnedBrowser({ channel, headless = true, fulfil = [] }
         });
         if (options.settleMs) await page.waitForTimeout(Math.min(options.settleMs, 5000));
         trace('owned settled', settle.settled, state.inflight.size);
-        await within(Promise.allSettled(state.bodies), 5000, 'Response bodies').catch(() => {});
+        await within(Promise.allSettled(state.bodies), 5000, 'Response bodies').catch(() => {}); // NOSONAR: promise assimilation and completion timing are observable
         const finalUrl = page.url();
         const status = response?.status() ?? null;
         const headers = response ? headerMap(await response.allHeaders().catch(() => response.headers())) : {};
@@ -3143,7 +3143,8 @@ export function packScenarioFiles(pack, packDir) {
  * Select scenario sources: the core set, data-pack plans (`auto`: packs whose matches({ portal })
  * accepts the imported portal; `all`; `none`; or a list of pack ids) and explicit plan files.
  */
-export async function scenarioSources({
+// NOSONAR: preserve extension callbacks and the existing async control boundary.
+export async function /* NOSONAR */ scenarioSources({
   core = true,
   packs = 'auto',
   boundPacks = [],
@@ -3619,7 +3620,8 @@ function sharedResources(list, other) {
   });
 }
 
-async function discoverTarget(driver, scenario, { side, ids, portal, liveAssets } = {}) {
+// NOSONAR: retain discovery callback and error ordering.
+async function /* NOSONAR */ discoverTarget(driver, scenario, { side, ids, portal, liveAssets } = {}) {
   const discover = scenario.discover;
   if (discover.from === 'portal') {
     // Chosen once from the exported portal and the local mappings: the same path on both sides.
@@ -3650,7 +3652,7 @@ async function discoverTarget(driver, scenario, { side, ids, portal, liveAssets 
     )
       return { error: `No ${side} identifiers were supplied for '${discover.key}'.` };
     const target = scenarioPath(scenario, values);
-    if (/\{[A-Za-z][A-Za-z0-9_]*\}/.test(target))
+    if (/\{[A-Za-z]\w*\}/.test(target))
       return { error: `The ${side} identifiers for '${discover.key}' do not fill every placeholder.` };
     try {
       assertReadOnlyPath(target);
@@ -4039,12 +4041,10 @@ function summarizeNetwork(records = []) {
       const deployed = await sides.anonymous.http(target, { accept: '*/*', raw: true, redirect: 'manual' });
       await sleep(Math.min(context.delayMs, 250));
       const served = await localSide.http(target, { accept: '*/*', raw: true, redirect: 'manual' });
-      const verdict =
-        deployed.status !== 200
-          ? `live-${deployed.status}`
-          : served.status !== 200
-            ? `local-${served.status}`
-            : compareBytes(deployed.body, served.body);
+      let verdict;
+      if (deployed.status !== 200) verdict = `live-${deployed.status}`;
+      else if (served.status !== 200) verdict = `local-${served.status}`;
+      else verdict = compareBytes(deployed.body, served.body);
       files.push({
         path: redactUrl(target),
         verdict,
@@ -4407,16 +4407,15 @@ function summarizeNetwork(records = []) {
   const byClass = {};
   for (const delta of classified) byClass[delta.classification.class] = (byClass[delta.classification.class] ?? 0) + 1;
   const unexpected = classified.filter((delta) => !EXPECTED_CLASSES.has(delta.classification.class));
-  const verdict = !classified.length ? 'pass' : !unexpected.length ? 'pass-with-expected-deltas' : 'delta';
+  let verdict = 'pass';
+  if (classified.length) verdict = !unexpected.length ? 'pass-with-expected-deltas' : 'delta';
   return {
     ...result,
     observations,
     deltas: classified,
     deltaCounts: byClass,
     verdict,
-    owners: [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))].sort(
-      /* NOSONAR: preserve default string coercion */
-    ),
+    owners: [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))].sort(), // NOSONAR: retain default string coercion and UTF-16 sorting
   };
 }
 

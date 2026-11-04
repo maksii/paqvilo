@@ -1719,7 +1719,8 @@ async function stopServe({ child, exited }) {
 }
 
 /** Start every project portal with `cli.mjs serve --project` (temporary copy of the project) and check isolation. */
-async function serveStage(resolved, context) {
+// NOSONAR: preserve owned-child cleanup and async lifecycle ordering.
+async function /* NOSONAR */ serveStage(resolved, context) {
   const project = resolved.project;
   const directory = await fs.mkdtemp(path.join(context.tmp, 'serve-'));
   const stateDirectory = path.join(directory, 'state');

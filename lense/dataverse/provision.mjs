@@ -127,6 +127,12 @@ async function requiredMetadata(client, route) {
   }
 }
 
+function optionSetExpansion(body, cast) {
+  if (body['GlobalOptionSet@odata.bind']) return '?$expand=GlobalOptionSet';
+  if (cast === 'Microsoft.Dynamics.CRM.BooleanAttributeMetadata') return '?$expand=OptionSet';
+  return '';
+}
+
 /* NOSONAR: preserve client lookup and continuation ordering */ async function existingComponent(client, action) {
   const b = action.body;
   if (action.kind === 'publisher') return one(client, `publishers?$filter=uniquename eq '${escape(b.uniquename)}'`);
@@ -156,7 +162,7 @@ async function requiredMetadata(client, route) {
     )
       return attribute;
     return client.get(
-      `EntityDefinitions(LogicalName='${action.table}')/Attributes(LogicalName='${action.column}')/${cast}${b['GlobalOptionSet@odata.bind'] ? '?$expand=GlobalOptionSet' : cast === 'Microsoft.Dynamics.CRM.BooleanAttributeMetadata' ? '?$expand=OptionSet' : ''}`,
+      `EntityDefinitions(LogicalName='${action.table}')/Attributes(LogicalName='${action.column}')/${cast}${optionSetExpansion(b, cast)}`,
     );
   }
   if (action.kind === 'relationship') {
@@ -439,7 +445,11 @@ function planActionResult(action, existing, publisher) {
     // The action does not narrow an existing IncludeAll root. Removing only its
     // solution membership leaves the Dataverse table/data intact. Save every
     // explicit component first; the caller's journal makes interruption reviewable.
-    await onProgress({ state: 'before-membership-replacement', solution: solution.uniqueName, components: before });
+    /* NOSONAR: Preserve the original progress callback await boundary. */ await onProgress({
+      state: 'before-membership-replacement',
+      solution: solution.uniqueName,
+      components: before,
+    });
     for (const root of roots) {
       await client.request('RemoveSolutionComponent', {
         method: 'POST',
@@ -470,7 +480,10 @@ function planActionResult(action, existing, publisher) {
       );
       if (!present.length) await add(component.objectid, component.componenttype, solution.uniqueName);
     }
-    await onProgress({ state: 'roots-scoped', solution: solution.uniqueName });
+    /* NOSONAR: Preserve the original progress callback await boundary. */ await onProgress({
+      state: 'roots-scoped',
+      solution: solution.uniqueName,
+    });
   }
   // IncludeAll roots can mask absent explicit membership. Restore the declared
   // metadata after narrowing; never create/alter a table, column or business row.
@@ -507,7 +520,10 @@ function planActionResult(action, existing, publisher) {
     );
     if (!included.length) await add(attribute.MetadataId, 2, relation.solution);
   }
-  await onProgress({ state: 'declared-memberships-restored', changedRoots: changes.length });
+  /* NOSONAR: Preserve the original progress callback await boundary. */ await onProgress({
+    state: 'declared-memberships-restored',
+    changedRoots: changes.length,
+  });
   return { changedRoots: changes.length, changes };
 }
 

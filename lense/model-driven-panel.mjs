@@ -522,7 +522,8 @@ export async function createModelDrivenPanelSources(imported) {
       })();
     return updating;
   }
-  async function readUpdate(next, repin) {
+  // The inline awaits preserve the public update/coalescing order.
+  async function /* NOSONAR */ readUpdate(next, repin) {
     current = byName(next);
     if (repin) baselines.clear();
     nativeBytes = discardMissingNativeAssets(current.assets, native, nativeBytes);

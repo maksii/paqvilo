@@ -142,7 +142,9 @@ function captureFailure(error) {
     targets = [];
   // Validate every target before opening any browser or changing local state.
   const resolved = await resolveCatalogue({ config });
-  for (const name of all ? (selectedSite ? [selectedSite] : Object.keys(catalogue.sites)) : [site]) {
+  let targetNames = [site];
+  if (all) targetNames = selectedSite ? [selectedSite] : Object.keys(catalogue.sites);
+  for (const name of targetNames) {
     const target = resolved.sites.find((item) => item.name === name);
     if (all && !Number.isInteger(catalogue.sites[name].mirage?.port)) {
       skipped.push({ site: name, reason: 'No Mirage port configured' });
@@ -263,12 +265,16 @@ function captureFailure(error) {
         });
         // A cached state may have been last used with another selected environment.
         const state = simulator.store.snapshot();
-        state.simulator.live = { ...(state.simulator.live ?? {}), origin: cfg.origin };
+        state.simulator.live = { ...state.simulator.live, origin: cfg.origin };
         await simulator.store.replaceState(state);
         simulator.live.configure(state.simulator.live);
         client = await connectRuntime({ origin: simulator.url });
       }
-      const cdpUrl = cdp ?? (browser = await launchBrowser(cfg.browser.channel)).cdp;
+      let cdpUrl = cdp;
+      if (cdpUrl === null || cdpUrl === undefined) {
+        browser = await launchBrowser(cfg.browser.channel);
+        cdpUrl = browser.cdp;
+      }
       const started = Date.now();
       onProgress?.({ site: cfg.siteName, phase: 'started', elapsedMs: 0 });
       if (onProgress)

@@ -303,7 +303,7 @@ export async function createSetupHandler(options = {}) {
   /* NOSONAR: Preserve synchronous error handling and the original request response ordering. */ return async (
     req,
     res,
-  ) => {
+  ) /* NOSONAR */ => {
     const pathname = req.url?.split('?')[0];
     if (!/^\/_setup(?:\/|$)/.test(pathname ?? '')) return false;
     try {

@@ -412,6 +412,10 @@ export class OverlaySession extends EventEmitter {
     }
   }
 
+  #scriptCacheKind(cfg) {
+    return cfg.sourceMaps ? 'source-map' : 'script-source';
+  }
+
   #readLocalInlineBody(src) {
     try {
       return src && isSourceFile(this.cfg.sourceDir, src.file)
@@ -537,17 +541,11 @@ export class OverlaySession extends EventEmitter {
         let body;
         try {
           // HEAD needs existence/type metadata, not the entire asset or generated source map.
-          body =
-            method === 'HEAD'
-              ? fs.statSync(hit.file).isFile()
-                ? Buffer.alloc(0)
-                : null
-              : this.fileBodies.read(
-                  hit.file,
-                  isScript ? (this.cfg.sourceMaps ? 'source-map' : 'script-source') : '',
-                  (bytes) =>
-                    isScript ? scriptSourceBody(bytes, hit.file, { sourceMaps: Boolean(this.cfg.sourceMaps) }) : bytes,
-                );
+          if (method === 'HEAD') body = fs.statSync(hit.file).isFile() ? Buffer.alloc(0) : null;
+          else
+            body = this.fileBodies.read(hit.file, isScript ? this.#scriptCacheKind(this.cfg) : '', (bytes) =>
+              isScript ? scriptSourceBody(bytes, hit.file, { sourceMaps: Boolean(this.cfg.sourceMaps) }) : bytes,
+            );
         } catch {
           body = null;
         }

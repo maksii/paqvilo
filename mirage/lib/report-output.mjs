@@ -69,14 +69,15 @@ async function matchesLinkedSourceFile(candidate, outputStat) {
 
 const needsLinkedSourceScan = (output) => Boolean(output.stat && output.stat.nlink > 1n && output.stat.ino);
 
+function rejectInputReplacement(output, input) {
+  if (sameFile(output, input)) throw new Error('Report output must not replace a configuration or source file');
+}
+
 /** Keep generated reports outside the exports and distinct from the selected configuration. */
 export async function assertReportOutput(file, { sourceRoots = [], inputFiles = [] } = {}) {
   const output = await fileIdentity(file);
   const canonical = await canonicalOutput(file);
-  for (const input of inputFiles.filter(Boolean)) {
-    if (sameFile(output, await fileIdentity(input)))
-      throw new Error('Report output must not replace a configuration or source file');
-  }
+  for (const input of inputFiles.filter(Boolean)) rejectInputReplacement(output, await fileIdentity(input));
   for (const root of sourceRoots.filter(Boolean)) {
     const rootPath = path.resolve(root);
     if (inside(rootPath, output.resolved)) throw new Error('Report output must be outside portal and solution sources');
