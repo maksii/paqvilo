@@ -568,7 +568,7 @@ export function modelDrivenActionAvailability({ origin, actions = [] }) {
         ['Column', 'Saved value', 'Formatted value'],
         Object.keys(saved)
           .filter((name) => !name.includes('@'))
-          .sort((a, b) => Number(a > b) - Number(a < b))
+          .sort(/* NOSONAR: preserve default string coercion */)
           .map((name) => [name, saved[name], saved[name + '@OData.Community.Display.V1.FormattedValue']]),
         'Saved server state; unsaved form changes are not included.',
       );

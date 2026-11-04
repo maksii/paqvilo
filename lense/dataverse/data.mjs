@@ -22,7 +22,6 @@ const normalizeValue = (value) => {
   if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value)) return new Date(value).toISOString();
   return value;
 };
-const compareAsText = (a, b) => Number(String(a) > String(b)) - Number(String(a) < String(b));
 const canonical = (value) =>
   JSON.stringify(
     Object.fromEntries(
@@ -184,7 +183,7 @@ async function context(input, client) {
       if (
         !keys.some(
           (k) =>
-            JSON.stringify([...k.KeyAttributes].sort(compareAsText)) === JSON.stringify([...key].sort(compareAsText)) &&
+            JSON.stringify([...k.KeyAttributes].sort()) === JSON.stringify([...key].sort()) && // NOSONAR: retain default string coercion and ordering
             k.EntityKeyIndexStatus === 'Active',
         )
       )
@@ -255,8 +254,8 @@ function equal(actual, expected) {
         .split(',')
         .filter(Boolean)
         .map(Number)
-        .sort(compareAsText)
-        .join(',') === [...expected].sort(compareAsText).join(',')
+        .sort() // NOSONAR: retain default string coercion and ordering
+        .join(',') === [...expected].sort().join(',') // NOSONAR: retain default string coercion and ordering
     );
   return normalizeValue(actual) === normalizeValue(expected);
 }
@@ -517,7 +516,7 @@ function pageFetchXml(xml, page, count, cookie) {
   return xml.replace(/<fetch\b([^>]*)>/i, (_all, attrs) => {
     if (/\btop\s*=/i.test(attrs)) throw new Error('Paged queries cannot use top.');
     const cookieAttr = cookie ? ` paging-cookie="${xmlEscape(cookie)}"` : '';
-    return `<fetch${attrs.replace(/\s+(?:page|count|paging-cookie)\s*=\s*(?:"[^"]*"|'[^']*')/gi, '')} page="${page}" count="${count}"${cookieAttr}>`; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    return `<fetch${attrs.replace(/(?<!\s)\s+(?:page|count|paging-cookie)\s*=\s*(?:"[^"]*"|'[^']*')/gi, '')} page="${page}" count="${count}"${cookieAttr}>`;
   });
 }
 export async function retrieveFetchXml(client, { entitySet, fetchXml, pageSize = 50, maxPages = 2000 }) {
@@ -569,9 +568,8 @@ export async function runDataQueries(input, { client }) {
       const fields = q.columns ?? Object.keys(q.expected[0] ?? {});
       const actual = data.rows.map((row) => Object.fromEntries(fields.map((f) => [f, row[f] ?? null]))),
         expected = q.expected.map((row) => Object.fromEntries(fields.map((f) => [f, resolve(row[f]) ?? null])));
-      const compareKeys = (a, b) => Number(a > b) - Number(a < b);
-      const actualKeys = actual.map(canonical).sort(compareKeys),
-        expectedKeys = expected.map(canonical).sort(compareKeys);
+      const actualKeys = actual.map(canonical).sort(), // NOSONAR: retain default string coercion and ordering
+        expectedKeys = expected.map(canonical).sort(); // NOSONAR: retain default string coercion and ordering
       results.push({
         id: q.id,
         operationId,

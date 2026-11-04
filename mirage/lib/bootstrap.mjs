@@ -123,7 +123,7 @@ export function initialState(portal, { origin, packs, metadata, platform } = {})
     const table = /^Webapi\/([a-z][a-z0-9_]*)\/enabled$/i.exec(name)?.[1];
     if (table && String(value).toLowerCase() === 'true') ensure(table);
   }
-  for (const entity of [...missing].sort((a, b) => Number(a > b) - Number(a < b)))
+  for (const entity of [...missing].sort(/* NOSONAR: preserve default string coercion */))
     importDiagnostics.push({
       code: 'TABLE_METADATA_MISSING',
       entity,

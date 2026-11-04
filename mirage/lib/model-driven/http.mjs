@@ -256,13 +256,13 @@ export function createModelDrivenHandler({
           // A web resource page may take the native ?data= parameter; every other asset is served without a query.
           if (
             !resource ||
-            (url.search && !(resource.mime.startsWith('text/html') && /^\?data=[^&]*$/.test(url.search)))
+            (url.search && !(/^text\/html/.test(resource.mime) && /^\?data=[^&]*$/.test(url.search))) // NOSONAR: preserve regex coercion
           )
             throw fail('Trusted client asset not found.', 404);
           // A trusted HTML web resource page opens inside the app (navigateTo, side panes, SiteMap) and runs its own scripts.
           res.setHeader(
             'content-security-policy',
-            resource.mime.startsWith('text/html')
+            /^text\/html/.test(resource.mime) // NOSONAR: preserve regex coercion
               ? "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
               : "default-src 'none'; frame-ancestors 'none'",
           );

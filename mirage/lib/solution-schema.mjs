@@ -1,3 +1,4 @@
+import { stripTrailingCharacter } from './text-scanning.mjs';
 import fs from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { recordSourceOf, materializeRecordSource } from './record-sources.mjs';
@@ -360,7 +361,7 @@ async function yamlComponentPaths(manifest) {
     if (!value || typeof value !== 'object' || depth > 6) return;
     for (const [key, item] of Object.entries(value)) {
       if (key.toLowerCase() === 'path' && typeof item === 'string')
-        paths.push(item.replaceAll('\\', '/').replace(/^\/+/, '').replace(/\/+$/, '').toLowerCase()); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+        paths.push(stripTrailingCharacter(item.replaceAll('\\', '/').replace(/^\/+/, ''), '/').toLowerCase());
       else visit(item, depth + 1);
     }
   };
@@ -1894,7 +1895,10 @@ function compileSolutionSchema(scan, { lcid }) {
       compare(norm(a.logicalName), norm(b.logicalName)),
     ),
     targets: Object.fromEntries(
-      Object.entries(targets).map(([key, set]) => [key, [...set].sort((a, b) => Number(a > b) - Number(a < b))]),
+      Object.entries(targets).map(([key, set]) => [
+        key,
+        [...set].sort(/* NOSONAR: preserve default string coercion */),
+      ]),
     ),
     diagnostics,
     standardRelationships: standardCount,

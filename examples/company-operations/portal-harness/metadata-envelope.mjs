@@ -17,7 +17,7 @@ const stable = (value) =>
     item && typeof item === 'object' && !Array.isArray(item)
       ? Object.fromEntries(
           Object.keys(item)
-            .sort((a, b) => Number(a > b) - Number(a < b))
+            .sort()
             .map((key) => [key, item[key]]),
         )
       : item,
@@ -136,7 +136,7 @@ export async function readPortalMetadataEnvelope({
     requestPath,
     runId,
     actorId,
-    roleIds: [...roleIds].sort((a, b) => Number(a > b) - Number(a < b)),
+    roleIds: [...roleIds].sort(),
     siteSourceHash,
     registrationHash,
     snapshotHash,

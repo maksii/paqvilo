@@ -14,89 +14,81 @@ const fail = (message) => {
   throw new DataError(message, 400, 'InvalidOperationConfiguration');
 };
 const definitionOf = (workflow) => workflow?.definition?.properties?.definition ?? workflow?.definition?.definition;
-const insideDirectory = (root, file) => {
-  const relative = path.relative(root, file);
-  return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
-};
 
-/* NOSONAR */ async function importSolutionEntry(root, entry, websiteId) {
-  if (!entry.isDirectory() || entry.isSymbolicLink()) return null;
-  const metadataFile = await fs.realpath(path.join(root, entry.name, 'powerpagecomponent.xml')).catch(() => null);
-  if (!metadataFile || !insideDirectory(root, metadataFile) || (await fs.stat(metadataFile)).size > 1024 * 1024)
-    return null;
-  const xmlSource = await readLocalFile(metadataFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
-  const xml = parseSolutionXml(xmlSource);
-  const type = Number(childText(xml, 'powerpagecomponenttype'));
-  if (![33, 35].includes(type) || Number(childText(xml, 'statecode') ?? 0) !== 0) return null;
-  const site = child(xml, 'powerpagesiteid');
-  if (canonical(site?.text.trim() || descendants(site, 'powerpagesiteid')[0]?.text) !== websiteId) return null;
-  const content = JSON.parse(childText(xml, 'content') || '{}');
-  const field = (name) => content[Object.keys(content).find((key) => key.toLowerCase() === name.toLowerCase())];
-  const roleIds = (value) => (Array.isArray(value) ? value : []).map(canonical);
-  const record = {
-    id: canonical(xml.attrs.powerpagecomponentid),
-    name: childText(xml, 'name') ?? '',
-    metadataFile,
-  };
-  if (!record.name || !record.id) return null;
-  if (type === 35) {
-    const filename = childText(xml, 'filecontent');
-    const code =
-      filename && path.basename(filename) === filename
-        ? await fs.realpath(path.join(path.dirname(metadataFile), 'filecontent', filename)).catch(() => null)
-        : null;
-    const codeFile =
-      code && insideDirectory(path.dirname(metadataFile), code) && (await fs.stat(code)).size <= 1024 * 1024
-        ? code
-        : null;
-    return {
-      kind: 'serverLogics',
-      value: {
-        ...record,
-        file: codeFile,
-        fingerprint: createHash('sha256')
-          .update(xmlSource)
-          .update(codeFile ? await fs.readFile(codeFile) : '')
-          .digest('hex'),
-        roleIds: roleIds(field('adx_serverlogic_adx_webrole')),
-      },
-    };
-  }
-  let route = null;
-  try {
-    const url = new URL(String(field('flowapiurl') ?? ''), 'http://local.invalid'); // NOSONAR: reserved or loopback placeholder host, not a real transport
-    if (
-      url.origin === 'http://local.invalid' /* NOSONAR: reserved placeholder host, not a real transport */ &&
-      /^\/_api\/cloudflow\/v1\.0\/trigger\/[^/]+\/?$/.test(url.pathname)
-    )
-      route = url.pathname;
-  } catch {
-    /* An invalid optional trigger URL has no callable local route. */
-  }
-  return {
-    kind: 'cloudFlows',
-    value: {
-      ...record,
-      path: route,
-      processId: canonical(field('processid')) || null,
-      roleIds: roleIds(field('adx_cloudflowconsumer_adx_webrole')),
-    },
-  };
-}
+/* NOSONAR */
 
 /** Selected enhanced solution components belonging to this exact exported website only. */
-export async function importSolutionOperationSources(layers, website) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export async function importSolutionOperationSources(
+  layers,
+  website,
+) {
   const result = { serverLogics: [], cloudFlows: [] };
   const websiteId = canonical(website?.id ?? website?.adx_websiteid);
   if (!websiteId) return result;
+  const inside = (root, file) => {
+    const relative = path.relative(root, file);
+    return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+  };
   for (const layer of layers ?? []) {
     if (!layer.dir) continue;
     const layerRoot = await fs.realpath(layer.dir);
     const root = await fs.realpath(path.join(layerRoot, 'powerpagecomponents')).catch(() => null);
-    if (!root || !insideDirectory(layerRoot, root)) continue;
+    if (!root || !inside(layerRoot, root)) continue;
     for (const entry of await fs.readdir(root, { withFileTypes: true })) {
-      const imported = await importSolutionEntry(root, entry, websiteId);
-      if (imported) result[imported.kind].push(imported.value);
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const file = await fs.realpath(path.join(root, entry.name, 'powerpagecomponent.xml')).catch(() => null);
+      if (!file || !inside(root, file) || (await fs.stat(file)).size > 1024 * 1024) continue;
+      const xmlSource = await readLocalFile(file, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
+      const xml = parseSolutionXml(xmlSource);
+      const type = Number(childText(xml, 'powerpagecomponenttype'));
+      if (![33, 35].includes(type) || Number(childText(xml, 'statecode') ?? 0) !== 0) continue;
+      const site = child(xml, 'powerpagesiteid');
+      if (canonical(site?.text.trim() || descendants(site, 'powerpagesiteid')[0]?.text) !== websiteId) continue;
+      const content = JSON.parse(childText(xml, 'content') || '{}');
+      const field = (name) => content[Object.keys(content).find((key) => key.toLowerCase() === name.toLowerCase())];
+      const roleIds = (value) => (Array.isArray(value) ? value : []).map(canonical);
+      const record = {
+        id: canonical(xml.attrs.powerpagecomponentid),
+        name: childText(xml, 'name') ?? '',
+        metadataFile: file,
+      };
+      if (!record.name || !record.id) continue;
+      if (type === 35) {
+        const filename = childText(xml, 'filecontent');
+        const code =
+          filename && path.basename(filename) === filename
+            ? await fs.realpath(path.join(path.dirname(file), 'filecontent', filename)).catch(() => null)
+            : null;
+        const codeFile =
+          code && inside(path.dirname(file), code) && (await fs.stat(code)).size <= 1024 * 1024 ? code : null;
+        result.serverLogics.push({
+          ...record,
+          file: codeFile,
+          fingerprint: createHash('sha256')
+            .update(xmlSource)
+            .update(codeFile ? await fs.readFile(codeFile) : '')
+            .digest('hex'),
+          roleIds: roleIds(field('adx_serverlogic_adx_webrole')),
+        });
+      } else {
+        let route = null;
+        try {
+          const url = new URL(String(field('flowapiurl') ?? ''), 'http://local.invalid');
+          if (
+            url.origin === 'http://local.invalid' &&
+            /^\/_api\/cloudflow\/v1\.0\/trigger\/[^/]+\/?$/.test(url.pathname)
+          )
+            route = url.pathname;
+        } catch {
+          /* An invalid optional trigger URL has no callable local route. */
+        }
+        result.cloudFlows.push({
+          ...record,
+          path: route,
+          processId: canonical(field('processid')) || null,
+          roleIds: roleIds(field('adx_cloudflowconsumer_adx_webrole')),
+        });
+      }
     }
   }
   return result;

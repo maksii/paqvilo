@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
 function install({ origin, channel, stateName, names, maxBytes }) {
-  if (globalThis !== window.top || location.origin !== origin || globalThis[stateName]) return; // NOSONAR: window and globalThis are compared deliberately
+  if (window !== window.top || location.origin !== origin || globalThis[stateName]) return; // NOSONAR: retain the original WindowProxy top-frame guard independently of the mutable globalThis alias.
   if (names.some((name) => Object.hasOwn(globalThis, name)))
     throw new Error('An owned page API name is already present.');
   let sequence = 0;

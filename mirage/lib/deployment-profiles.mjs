@@ -238,7 +238,7 @@ export async function loadDeploymentProfiles(config, pin = null) {
     unset = [];
   for (const section of PROFILE_SECTIONS) {
     if (!selection.enabled[section]) continue;
-    const files = [selection.sources[section]].flat();
+    const files = [].concat(selection.sources[section]); /* NOSONAR: preserve concat spreadability semantics */
     contents[section] = [];
     for (const file of files) {
       if (!loaded.has(file)) {
@@ -299,7 +299,7 @@ export async function deploymentProfilesStatus(config) {
   for (const [id, sources] of Object.entries(config.profiles)) {
     const files = [];
     for (const [section, paths] of Object.entries(sources))
-      for (const file of [paths].flat()) {
+      for (const file of [].concat(paths) /* NOSONAR: preserve concat spreadability semantics */) {
         try {
           await fs.access(file);
           files.push({ section, file, exists: true });

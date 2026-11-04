@@ -65,7 +65,7 @@ function rowText(row, shapes) {
   const keys = Object.keys(item);
   let shape = matchingShape(keys, shapes);
   if (!shape) {
-    const sorted = [...keys].sort((a, b) => Number(a > b) - Number(a < b));
+    const sorted = [...keys].sort(/* NOSONAR: preserve default string coercion */);
     const ordered = Object.create(null);
     for (const key of sorted) ordered[key] = null;
     // Integer keys require lexical order rather than native numeric order.

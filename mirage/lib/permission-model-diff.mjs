@@ -5,7 +5,7 @@ const id = (value) =>
   String(value ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
-const sorted = (values) => [...new Set(values)].sort((a, b) => Number(a > b) - Number(a < b));
+const sorted = (values) => [...new Set(values)].sort(/* NOSONAR: preserve default string coercion */);
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 const operations = new Set(['read', 'create', 'update', 'delete', 'append', 'appendTo']);
 const sources = new Set(['configured', 'exported', 'combined']);

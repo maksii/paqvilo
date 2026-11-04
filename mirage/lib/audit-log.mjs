@@ -7,30 +7,44 @@ const queryCredential = /^(?:code|sig)$/i;
 const secretQueryKey = (key) => secret.test(key) || queryCredential.test(key);
 const limitText = (value, limit = 12000) => String(value ?? '').slice(0, limit);
 
+// The variable-length prefix of secret/token names is scanned backwards only after a
+// complete key/value match. This keeps malformed long identifiers linear.
+const secretAssignment =
+  /((password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|signature)["']?\s*(?:=|:|\beq\b)\s*)(?:"[^"]*"|'[^']*'|[^\s&<>;,]+)/gi;
+
+function redactSecretAssignments(text) {
+  let cursor = 0;
+  let result = '';
+  for (const match of text.matchAll(secretAssignment)) {
+    let start = match.index;
+    if (/^(?:secret|token)$/i.test(match[2])) {
+      while (start > cursor && /[\w-]/.test(text[start - 1])) start--;
+    }
+    result += text.slice(cursor, start) + text.slice(start, match.index) + match[1] + '[redacted]';
+    cursor = match.index + match[0].length;
+  }
+  return result + text.slice(cursor);
+}
+
 /** Keep query structure useful while excluding credential values and headers. */
 export function auditText(value, limit = 12000) {
-  return (
-    String(value ?? '')
-      .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]')
-      .replace(/\bSharedAccessSignature\s+[^\s"'<>]+/gi, 'SharedAccessSignature [redacted]')
-      // A Basic credential is base64: a token holding a digit, + or / or ending in = (so "Basic plan" stays readable).
-      .replace(/\bBasic\s+(?=[a-z0-9+/]*[0-9+/=])[a-z0-9+/]{4,}={0,2}/gi, 'Basic [redacted]')
-      .replace(/\bDigest\s+[\w-]+=[^\r\n<>]*/gi, 'Digest [redacted]')
-      .replace(/([?&](?:code|sig)=)[^&#\s"'<>]*/gi, '$1[redacted]')
-      .replace(
-        /((?:password|passwd|[\w-]*secret|[\w-]*token|authorization|cookie|credential|api[_-]?key|signature)["']?\s*(?:=|:|\beq\b)\s*)(?:"[^"]*"|'[^']*'|[^\s&<>;,]+)/gi, // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches; regex kept: a rewrite would change matches or captures
-        '$1[redacted]',
-      )
-      .replace(/<condition\b[^>]*(?:\/>|>[\s\S]*?<\/condition>)/gi, (tag) => {
-        const attribute = /\battribute\s*=\s*(["'])(.*?)\1/i.exec(tag)?.[2];
-        return secret.test(attribute ?? '')
-          ? tag
-              .replace(/\bvalue\s*=\s*(["'])(.*?)\1/gi, 'value="[redacted]"')
-              .replace(/(<value>)[\s\S]*?(<\/value>)/gi, '$1[redacted]$2')
-          : tag;
-      })
-      .slice(0, limit)
-  );
+  const prefix = String(value ?? '')
+    .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]')
+    .replace(/\bSharedAccessSignature\s+[^\s"'<>]+/gi, 'SharedAccessSignature [redacted]')
+    // A Basic credential is base64: a token holding a digit, + or / or ending in = (so "Basic plan" stays readable).
+    .replace(/\bBasic\s+(?=[a-z0-9+/]*[0-9+/=])[a-z0-9+/]{4,}={0,2}/gi, 'Basic [redacted]')
+    .replace(/\bDigest\s+[\w-]+=[^\r\n<>]*/gi, 'Digest [redacted]')
+    .replace(/([?&](?:code|sig)=)[^&#\s"'<>]*/gi, '$1[redacted]');
+  return redactSecretAssignments(prefix)
+    .replace(/<condition\b[^>]*(?:\/>|>[\s\S]*?<\/condition>)/gi, (tag) => {
+      const attribute = /\battribute\s*=\s*(["'])(.*?)\1/i.exec(tag)?.[2];
+      return secret.test(attribute ?? '')
+        ? tag
+            .replace(/\bvalue\s*=\s*(["'])(.*?)\1/gi, 'value="[redacted]"')
+            .replace(/(<value>)[\s\S]*?(<\/value>)/gi, '$1[redacted]$2')
+        : tag;
+    })
+    .slice(0, limit);
 }
 
 /* NOSONAR: mixed return values are part of the contract */ export function auditQuery(value) {

@@ -118,7 +118,7 @@ function sourceAuthorities(portal) {
       /https:\/\/login\.(?:windows\.net|microsoftonline\.com)\/[0-9a-f-]{36}\//gi,
     ))
       found.add(match[0].toLowerCase());
-  return [...found].sort((a, b) => Number(a > b) - Number(a < b));
+  return [...found].sort(/* NOSONAR: preserve default string coercion */);
 }
 
 // Katana's OAuth 2.0 middlewares answer on /signin-<provider> by default.

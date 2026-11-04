@@ -274,7 +274,9 @@ export { setConfig } from ${JSON.stringify('/@fs/' + nativeApp)};
           inlineSources,
           edits,
         );
-        for (const [start, end, replacement] of edits.toSorted((a, b) => b[0] - a[0]))
+        for (const [start, end, replacement] of edits.sort(
+          /* NOSONAR: preserve in-place sorting */ (a, b) => b[0] - a[0],
+        ))
           html = html.slice(0, start) + replacement + html.slice(end);
         return {
           html,

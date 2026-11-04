@@ -133,9 +133,10 @@ function defaultValue(definition, index, seed, label) {
       : value;
   }
   if (text.has(type)) {
-    let value = `${label} ${index + 1}`;
+    let value;
     if (definition.format === 'email') value = `row${index + 1}@example.invalid`;
     else if (definition.format === 'url') value = `https://example.invalid/${index + 1}`;
+    else value = `${label} ${index + 1}`;
     return value.slice(0, definition.maxLength ?? value.length);
   }
   return undefined;
@@ -256,7 +257,7 @@ function validateDatasetRequest(schema, counts, rules, existing, seed) {
     throw new Error('Dataset schema.tables, counts, rules and existing must be objects');
   if (typeof seed !== 'string' || !/^[\w.-]{1,64}$/.test(seed))
     throw new Error('Dataset seed must be 1-64 letters, digits, dots, underscores or hyphens');
-  const selected = Object.keys(counts).sort((a, b) => Number(a > b) - Number(a < b));
+  const selected = Object.keys(counts).sort(/* NOSONAR: preserve default string coercion */);
   let total = 0;
   for (const table of selected) {
     if (!name(table) || !own(schema.tables, table)) fail(table, 'unknown table in counts');

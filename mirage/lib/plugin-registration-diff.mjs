@@ -32,7 +32,7 @@ const attributes = (value, charge) => {
     throw new Error('Registration attributes must be a bounded string array.');
   charge(value.length);
   for (const item of value) charge(item.length);
-  return [...new Set(value.map(normalized).filter(Boolean))].sort((a, b) => Number(a > b) - Number(a < b));
+  return [...new Set(value.map(normalized).filter(Boolean))].sort(/* NOSONAR: preserve default string coercion */);
 };
 function facts(kind, row, charge) {
   charge();
@@ -148,7 +148,7 @@ function compareRegistrationKind(kind, before, after, state) {
   state.ambiguous = new Set();
   const left = registrationMap(kind, 'before', before, state);
   const right = registrationMap(kind, 'after', after, state);
-  const ids = [...new Set([...left.keys(), ...right.keys()])].sort((a, b) => Number(a > b) - Number(a < b));
+  const ids = [...new Set([...left.keys(), ...right.keys()])].sort(/* NOSONAR: preserve default string coercion */);
   for (const id of ids) compareRegistration(kind, id, left, right, state);
 }
 

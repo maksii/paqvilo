@@ -49,27 +49,33 @@ const PLAIN = Object.freeze({
   'missing-config': ['There is no project configuration yet.', 'kind'],
 });
 const LOCAL = 'http://127.0.0.1:';
+export function stripTrailingCharacter(text, character) {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === character) end--;
+  return text.slice(0, end);
+}
 export const normalPath = (value) =>
-  String(value ?? '')
-    .replaceAll('\\', '/')
-    .replace(/^\.\//, '')
-    .replace(/\/+$/, '') // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-    .toLowerCase() || '.';
+  stripTrailingCharacter(
+    String(value ?? '')
+      .replaceAll('\\', '/')
+      .replace(/^\.\//, ''),
+    '/',
+  ).toLowerCase() || '.';
 const samePath = (a, b) => normalPath(a) === normalPath(b);
 // A path inside the project folder, shown from that folder.
 const shortPath = (directory, file) => {
-  const base = String(directory ?? '')
-      .replaceAll('\\', '/')
-      .replace(/\/+$/, ''), // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  const base = stripTrailingCharacter(String(directory ?? '').replaceAll('\\', '/'), '/'),
     value = String(file ?? '').replaceAll('\\', '/');
   return base && value.toLowerCase().startsWith(`${base.toLowerCase()}/`) ? `.${value.slice(base.length)}` : value;
 };
 export const slugName = (text) =>
-  String(text ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, '-')
-    .replace(/^-+|-+$/g, '') // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-    .slice(0, 40) || 'my-project';
+  stripTrailingCharacter(
+    String(text ?? '')
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-')
+      .replace(/^-+/, ''),
+    '-',
+  ).slice(0, 40) || 'my-project';
 const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
 /** The runtime kind of a choice of parts: a website needs the Power Pages host; apps without one the standalone app host. */

@@ -1,3 +1,4 @@
+import { stripTrailingCharacter } from './text-scanning.mjs';
 import { argsOf, readMessageRecords } from './dataverse-message-context.mjs';
 import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse organization, environment variable, license and deployment messages, through the registered operations.
@@ -305,7 +306,7 @@ function operations(api) {
     if (row.absoluteurl) return row.absoluteurl;
     const parent = parentOfSharePoint(row, logical);
     if (!parent) return row.relativeurl ?? ''; // a root row with no absolute URL: assumed
-    return `${absoluteOf(parent.row, parent.logical, depth + 1).replace(/\/+$/, '')}/${(row.relativeurl ?? '').replace(/^\/+/, '')}`; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    return `${stripTrailingCharacter(absoluteOf(parent.row, parent.logical, depth + 1), '/')}/${(row.relativeurl ?? '').replace(/^\/+/, '')}`;
   };
   // The site collection: the topmost sharepointsite of the row, whose absolute URL is given only when isgridpresent is true (blank otherwise).
   const siteCollectionUrl = (row, logical) => {

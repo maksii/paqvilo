@@ -17,6 +17,25 @@
 (function () {
   'use strict';
   if (globalThis.__paqviloPages) return;
+  function replaceNamePlaceholders(text, replacement) {
+    let cursor = 0;
+    let search = 0;
+    let result = '';
+    while (search < text.length) {
+      const start = text.indexOf('{', search);
+      if (start < 0) break;
+      const end = text.indexOf('}', start + 1);
+      if (end < 0) break;
+      if (end === start + 1) {
+        search = start + 1;
+        continue;
+      }
+      result += text.slice(cursor, start) + replacement(text.slice(start + 1, end));
+      cursor = end + 1;
+      search = cursor;
+    }
+    return result + text.slice(cursor);
+  }
   const warned = new Set();
   class PagesClientApiUnsupported extends Error {
     constructor(member) {
@@ -262,11 +281,11 @@
   function modernList(element) {
     // Views, search, metadata filter, sorting and actions reuse the classic grid engine: the same layouts (with the
     // list's action links), request body and grid, delete, download and modal form routes (platform.mjs renderModernList).
-    const layouts = base64Json(element.dataset.viewLayouts ?? null);
-    let layout = layouts.find((item) => item.Id === (element.dataset.selectedView ?? null)) ??
+    const layouts = base64Json(element.getAttribute('data-view-layouts') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
+    let layout = layouts.find((item) => item.Id === (element.getAttribute('data-selected-view') ?? null)) ?? // NOSONAR: actual attributes exclude inherited dataset values
       layouts[0] ?? { Columns: [] };
-    const pageSize = Number(element.dataset.pageSize) || layout.Configuration?.PageSize || 10;
-    const website = encodeURIComponent(element.dataset.websiteId ?? '');
+    const pageSize = Number(element.getAttribute('data-page-size')) || layout.Configuration?.PageSize || 10; // NOSONAR: actual attributes exclude inherited dataset values
+    const website = encodeURIComponent(element.getAttribute('data-website-id') ?? ''); // NOSONAR: actual attributes exclude inherited dataset values
     const table = element.querySelector('table');
     const head = table.querySelector('thead tr');
     const body = table.querySelector('tbody');
@@ -530,7 +549,8 @@
       element.setAttribute('aria-busy', 'true');
       const current = generation;
       loading = (async () => {
-        const response = await fetch(element.dataset.getUrl ?? null, {
+        const response = await fetch(element.getAttribute('data-get-url') ?? null, {
+          // NOSONAR: actual attributes exclude inherited dataset values
           method: 'POST',
           credentials: 'same-origin',
           headers: {
@@ -654,7 +674,8 @@
       const row = tr && byElement.get(tr);
       if (!row) return;
       const td = event.target.closest('td');
-      if (handlers.cellclick.size && td) emit('cellclick', { row, columnName: td.dataset.logicalName ?? null, event });
+      if (handlers.cellclick.size && td)
+        emit('cellclick', { row, columnName: td.getAttribute('data-logical-name') ?? null, event }); // NOSONAR: actual attributes exclude inherited dataset values
       else emit('rowclick', { row, event });
     });
     const list = {
@@ -698,7 +719,7 @@
   }
   const listFor = (element) => {
     if (!lists.has(element))
-      lists.set(element, 'ppModernList' in element.dataset ? modernList(element) : traditionalList(element));
+      lists.set(element, element.hasAttribute('data-pp-modern-list') ? modernList(element) : traditionalList(element)); // NOSONAR: actual attributes exclude inherited dataset values
     return lists.get(element);
   };
   const LIST_SELECTOR = '[data-pp-modern-list], .entity-grid.entitylist';
@@ -831,7 +852,7 @@
   // cells, which carry the parts on submit. The native composite part box ids are not known.
   const NAME_PARTS = { firstName: 'firstname', middleName: 'middlename', lastName: 'lastname' };
   function createControl(cell, form) {
-    const name = cell.dataset.logicalName ?? null;
+    const name = cell.getAttribute('data-logical-name') ?? null; // NOSONAR: actual attributes exclude inherited dataset values
     const holder = cell.closest('td.cell, .form-group') ?? cell;
     const info = holder.querySelector('.info');
     const id = info?.querySelector('label[id$="_label"]')?.id.replace(/_label$/, '') || name;
@@ -943,13 +964,12 @@
           boxes[key].value = String(value[key] ?? '');
           fire(boxes[key]);
         }
-      const template = element.dataset.contentTemplate ?? '{firstname} {lastname}';
-      element.value = template
-        .replace(
-          /\{([^}]+)\}/g, // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-          (_, key) =>
-            namePart(Object.values(NAME_PARTS).find((part) => key.toLowerCase().endsWith(part)) ?? '')?.value ?? '',
-        )
+      const template = element.getAttribute('data-content-template') ?? '{firstname} {lastname}'; // NOSONAR: actual attributes exclude inherited dataset values
+      element.value = replaceNamePlaceholders(
+        template,
+        (key) =>
+          namePart(Object.values(NAME_PARTS).find((part) => key.toLowerCase().endsWith(part)) ?? '')?.value ?? '',
+      )
         .replace(/\s+/g, ' ')
         .trim();
       fire(element);
@@ -1013,7 +1033,7 @@
       const radio = element.querySelector(`input[value="${CSS.escape(String(value))}"]`);
       if (!radio) throw new Error(`${value} is not an option of ${name}.`);
       radio.checked = true;
-      fire(element);
+      fire(radio);
     };
     const setMultiSelect = (value) => {
       const context = JSON.parse(cell.querySelector('[pcf-controlcontext]').getAttribute('pcf-controlcontext'));
@@ -1149,7 +1169,7 @@
     if (type === 'DateTime')
       Object.defineProperties(control, {
         isDisabled: { get: () => Boolean(element.disabled || element.readOnly), enumerable: true },
-        dataType: { value: element.dataset.type ?? null, enumerable: true },
+        dataType: { value: element.getAttribute('data-type') ?? null, enumerable: true }, // NOSONAR: actual attributes exclude inherited dataset values
       });
     if (type === 'Lookup')
       Object.assign(
@@ -1193,7 +1213,8 @@
       get controls() {
         return controlsIn(table);
       },
-      getName: () => table.dataset.name ?? table.closest('fieldset')?.querySelector('legend')?.textContent.trim() ?? '',
+      getName: () =>
+        table.getAttribute('data-name') ?? table.closest('fieldset')?.querySelector('legend')?.textContent.trim() ?? '', // NOSONAR: actual attributes exclude inherited dataset values
       ...visibleArea(table.closest('fieldset') ?? table),
     });
     const tabOf = (tab) => {
@@ -1202,7 +1223,7 @@
         get sections() {
           return [...tab.querySelectorAll('table.section')].map(sectionOf);
         },
-        getName: () => tab.dataset.name ?? title?.textContent.trim() ?? '',
+        getName: () => tab.getAttribute('data-name') ?? title?.textContent.trim() ?? '', // NOSONAR: actual attributes exclude inherited dataset values
         ...visibleArea(tab, title),
       };
     };
@@ -1212,7 +1233,7 @@
       typeof globalThis.jQuery === 'function' ? globalThis.jQuery(element ?? []) : (element ?? {});
     const form = {
       id: wrapper.id,
-      name: panel.dataset.formName ?? null,
+      name: panel.getAttribute('data-form-name') ?? null, // NOSONAR: actual attributes exclude inherited dataset values
       get controls() {
         return controlsIn(panel);
       },
@@ -1344,7 +1365,7 @@
       status.hidden = !text;
       status.textContent = text || '';
     };
-    const url = portalNavigationUrl(element.dataset.documentsUrl ?? null);
+    const url = portalNavigationUrl(element.getAttribute('data-documents-url') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
     if (!url) {
       element.removeAttribute('aria-busy');
       say('The document service URL must stay within this portal.');

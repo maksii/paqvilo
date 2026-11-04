@@ -224,7 +224,7 @@ export async function mountRichTextEditors(settings, purifier) {
         if (!alert) {
           alert = document.createElement('p');
           alert.setAttribute('role', 'alert');
-          alert.dataset.simRichtextError = '';
+          alert.setAttribute('data-sim-richtext-error', ''); // NOSONAR: preserve DOM attribute operations
           container.append(alert);
         }
         alert.hidden = false;

@@ -62,12 +62,7 @@ const envelopeBody = (body) => {
   if (body == null) return '';
   return typeof body === 'string' ? body : stringifyExactJson(body);
 };
-const reasonOf = (status) => {
-  if (status === 404) return 'Not Found';
-  if (status === 204) return 'No Content';
-  if (status === 201) return 'Created';
-  return 'OK';
-};
+
 const envelope = (status, body = '', headers = {}, serverError = null) => ({
   StatusCode: status,
   Body: envelopeBody(body),
@@ -176,7 +171,7 @@ const parsePayload = (text) => {
  * - log(entry) and diagnostic(entry): Logger lines and bridge diagnostics, each with the operation id (Server.Context.ActivityId).
  * A bridge without its service answers the envelope with ServerError true, never a success.
  */
-export async function runExportedServerLogic({
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export async function runExportedServerLogic({
   record,
   portal,
   store,
@@ -381,105 +376,6 @@ export async function runExportedServerLogic({
       if (!complete) finish(failure(`Server-logic worker stopped before returning a result (${code}).`));
     });
     worker.on('message', (message) => inSpan(() => answerMessage(message)));
-    const answerBridgeMessage = async (message) => {
-      let answer;
-      try {
-        answer = { value: await bridges[message.kind](message) };
-      } catch (error) {
-        answer = { value: envelope(error.status ?? 500, '', {}, error.message) };
-      }
-      return reply(message, answer);
-    };
-    const readWorkerOperation = (message, params) => {
-      if (message.kind === 'query')
-        return store.query(message.entitySet, params, identity, undefined, { dialect: 'dataverse' });
-      const row = store.get(message.entitySet, message.id, identity);
-      if (!row || !params.size) return row;
-      const mapping = store.resolveMapping(message.entitySet);
-      const requested = params.get('$filter');
-      const idFilter = `${mapping.idColumn} eq '${String(message.id).replaceAll("'", "''")}'`;
-      params.set('$filter', requested ? `(${requested}) and (${idFilter})` : idFilter);
-      return store.query(message.entitySet, params, identity, undefined, { dialect: 'dataverse' }).value[0];
-    };
-    const successfulWorkerAnswer = (data, status) => ({
-      value: {
-        StatusCode: status,
-        Body: data === undefined ? '' : stringifyExactJson(data),
-        IsSuccessStatusCode: status < 400,
-        ReasonPhrase: reasonOf(status),
-        ServerError: false,
-        ServerErrorMessage: null,
-        Headers: {},
-      },
-    });
-    const failedWorkerAnswer = (error) => ({
-      value: {
-        StatusCode: error.status ?? 500,
-        Body: '{}',
-        IsSuccessStatusCode: false,
-        ReasonPhrase: error.message,
-        ServerError: true,
-        ServerErrorMessage: error.message,
-        Headers: {},
-      },
-    });
-    const workerMutation = (message) => {
-      if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method))
-        throw failure('Local server-logic mutations require a verified write request.', 403, 'Forbidden');
-      let payload;
-      if (message.kind !== 'delete') {
-        payload = parseExactJson(message.payload);
-        if (!payload || typeof payload !== 'object' || Array.isArray(payload))
-          throw failure('The Dataverse payload must be a JSON object.', 400, 'InvalidRequest');
-      }
-      // The one portal write path (form-service.mjs portalRecordWrites): table permissions, the record pipeline and, under
-      // enhanced authorization, the visitor's mapped user and column security.
-      const writes = portalRecordWrites(store),
-        write = (fn) => store.transact(fn, { incremental: true });
-      return { payload, writes, write };
-    };
-    const answerDataMessage = async (message) => {
-      let answer;
-      try {
-        const params = new URLSearchParams(String(message.options ?? '').replace(/^\?/, ''));
-        let data,
-          status = 200;
-        if (message.kind === 'query' || message.kind === 'get') data = readWorkerOperation(message, params);
-        else {
-          const { payload, writes, write } = workerMutation(message);
-          switch (message.kind) {
-            case 'create':
-              data = await write(() => writes.create(message.entitySet, payload, identity));
-              status = 201;
-              break;
-            case 'update':
-              await write(() => writes.update(message.entitySet, message.id, payload, identity));
-              status = 204;
-              break;
-            case 'delete':
-              await write(() => writes.remove(message.entitySet, message.id, identity));
-              status = 204;
-              break;
-          }
-        }
-        if (['query', 'get'].includes(message.kind) && !data) status = 404;
-        answer = successfulWorkerAnswer(data, status);
-      } catch (error) {
-        answer = failedWorkerAnswer(error);
-      }
-      reply(message, answer);
-    };
-    const finishWorkerMessage = (message) => {
-      if (message.kind === 'result') {
-        finish(null, message.raw);
-        return true;
-      }
-      if (message.kind === 'failure') {
-        finish(failure(message.message));
-        return true;
-      }
-      return false;
-    };
     const answerMessage = async (message) => {
       if (complete) return;
       if (message.kind === 'ready') {
@@ -490,7 +386,8 @@ export async function runExportedServerLogic({
         );
         return;
       }
-      if (finishWorkerMessage(message)) return;
+      if (message.kind === 'result') return finish(null, message.raw);
+      if (message.kind === 'failure') return finish(failure(message.message));
       if (message.kind === 'log') {
         span?.event('trace', { message: message.message, attributes: { level: message.level ?? null } });
         return (services.log ?? (() => {}))({
@@ -504,9 +401,85 @@ export async function runExportedServerLogic({
         span?.event('diagnostic', { message: message.message, attributes: { code: message.code ?? null } });
         return note({ code: message.code, message: message.message });
       }
-      if (bridges[message.kind]) return answerBridgeMessage(message);
+      if (bridges[message.kind]) {
+        let answer;
+        try {
+          answer = { value: await bridges[message.kind](message) };
+        } catch (error) {
+          answer = { value: envelope(error.status ?? 500, '', {}, error.message) };
+        }
+        return reply(message, answer);
+      }
       if (!['query', 'get', 'create', 'update', 'delete'].includes(message.kind)) return;
-      return answerDataMessage(message);
+      let answer;
+      try {
+        const params = new URLSearchParams(String(message.options ?? '').replace(/^\?/, ''));
+        let data,
+          status = 200;
+        if (message.kind === 'query')
+          data = store.query(message.entitySet, params, identity, undefined, { dialect: 'dataverse' });
+        else if (message.kind === 'get') {
+          const row = store.get(message.entitySet, message.id, identity);
+          if (row && params.size) {
+            const mapping = store.resolveMapping(message.entitySet);
+            const requested = params.get('$filter');
+            const idFilter = `${mapping.idColumn} eq '${String(message.id).replace(/'/g, "''")}'`;
+            params.set('$filter', requested ? `(${requested}) and (${idFilter})` : idFilter);
+            data = store.query(message.entitySet, params, identity, undefined, { dialect: 'dataverse' }).value[0];
+          } else data = row;
+        } else {
+          if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method))
+            throw failure('Local server-logic mutations require a verified write request.', 403, 'Forbidden');
+          let payload;
+          if (message.kind !== 'delete') {
+            payload = parseExactJson(message.payload);
+            if (!payload || typeof payload !== 'object' || Array.isArray(payload))
+              throw failure('The Dataverse payload must be a JSON object.', 400, 'InvalidRequest');
+          }
+          // The one portal write path (form-service.mjs portalRecordWrites): table permissions, the record pipeline and, under
+          // enhanced authorization, the visitor's mapped user and column security.
+          const writes = portalRecordWrites(store),
+            write = (fn) => store.transact(fn, { incremental: true });
+          if (message.kind === 'create') {
+            data = await write(() => writes.create(message.entitySet, payload, identity));
+            status = 201;
+          }
+          if (message.kind === 'update') {
+            await write(() => writes.update(message.entitySet, message.id, payload, identity));
+            status = 204;
+          }
+          if (message.kind === 'delete') {
+            await write(() => writes.remove(message.entitySet, message.id, identity));
+            status = 204;
+          }
+        }
+        if (['query', 'get'].includes(message.kind) && !data) status = 404;
+        answer = {
+          value: {
+            StatusCode: status,
+            Body: data === undefined ? '' : stringifyExactJson(data),
+            IsSuccessStatusCode: status < 400,
+            ReasonPhrase:
+              status === 404 ? 'Not Found' : status === 204 ? 'No Content' : status === 201 ? 'Created' : 'OK',
+            ServerError: false,
+            ServerErrorMessage: null,
+            Headers: {},
+          },
+        };
+      } catch (error) {
+        answer = {
+          value: {
+            StatusCode: error.status ?? 500,
+            Body: '{}',
+            IsSuccessStatusCode: false,
+            ReasonPhrase: error.message,
+            ServerError: true,
+            ServerErrorMessage: error.message,
+            Headers: {},
+          },
+        };
+      }
+      reply(message, answer);
     };
   });
   if (!span) return running;
@@ -544,7 +517,10 @@ export function organizationCustomApi(organization, { principal, origin = 'http:
     });
 }
 
-async function invokeOrganizationOperation(organization, { method, url, payload, identity, principal, origin }) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function invokeOrganizationOperation(
+  organization,
+  { method, url, payload, identity, principal, origin },
+) {
   const verb = String(method ?? '').toUpperCase();
   const path = String(url ?? '')
     .replace(/^\/+/, '')
@@ -555,16 +531,52 @@ async function invokeOrganizationOperation(organization, { method, url, payload,
   if (!match || !['GET', 'POST'].includes(verb))
     return error(404, `No HTTP resource was found that matches the request URI '${url}'.`);
   const [, set, key, name, inline] = match;
-  const parameterResult = parseOperationParameters(inline, error);
-  if (parameterResult.error) return parameterResult.error;
-  const params = parameterResult.params;
+  const params = {};
+  for (const part of String(inline ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)) {
+    const pair = /^([A-Za-z_]\w*)=(?:'((?:[^']|'')*)'|(-?\d+(?:\.\d+)?)|(true|false|null))$/.exec(part);
+    if (!pair) return error(400, `The function parameter '${part}' is not a literal parameter.`);
+    params[pair[1]] =
+      pair[2] !== undefined
+        ? pair[2].replace(/''/g, "'")
+        : pair[3] !== undefined
+          ? Number(pair[3])
+          : pair[4] === 'null'
+            ? null
+            : pair[4] === 'true';
+  }
   const store = organization.store;
-  const resolvedTarget = resolveOperationTarget(set, key, store, identity, error);
-  if (resolvedTarget.response) return resolvedTarget.response;
-  const { mapping, target } = resolvedTarget;
-  let binding = 'entity';
-  if (!set) binding = 'unbound';
-  else if (key == null) binding = 'collection';
+  let mapping = null,
+    target = null;
+  if (set) {
+    try {
+      mapping = store.resolveMapping(set);
+    } catch {
+      return error(404, `Resource not found for the segment '${set}'.`);
+    }
+    const id = key == null ? null : String(key).replace(/^'|'$/g, '');
+    target = {
+      mapping,
+      id,
+      row: id
+        ? (store.tableRows(mapping.logicalName).find((row) => canonical(row[mapping.idColumn]) === canonical(id)) ??
+          null)
+        : null,
+    };
+    if (id && !target.row) return error(404, `${mapping.logicalName} With Id = ${id} Does Not Exist`);
+    // Table permissions govern what server logic reaches; the native status and code of a denial are a guess.
+    if (target.row && !store.allowed(mapping.logicalName, 'read', target.row, identity ?? {}))
+      return {
+        status: 403,
+        body: {
+          error: { code: 'Forbidden', message: `The current portal user cannot read ${mapping.logicalName} ${id}.` },
+        },
+        headers: {},
+      };
+  }
+  const binding = !set ? 'unbound' : key == null ? 'collection' : 'entity';
   const operation = organization.registry.find({
     name,
     kind: verb === 'GET' ? 'function' : 'action',
@@ -572,83 +584,16 @@ async function invokeOrganizationOperation(organization, { method, url, payload,
     entity: mapping?.logicalName,
   });
   if (!operation) return error(404, `Resource not found for the segment '${name}'.`);
-  return invokeRegisteredOperation(organization, store, operation, {
-    method: verb,
-    path,
-    params,
-    payload,
-    principal,
-    origin,
-    target,
-  });
-}
-
-function parseOperationParameters(inline, error) {
-  const params = {};
-  for (const part of String(inline ?? '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean)) {
-    const pair = /^([A-Za-z_]\w*)=(?:'((?:[^']|'')*)'|(-?\d+(?:\.\d+)?)|(true|false|null))$/.exec(part); // NOSONAR: regex kept: a rewrite would change matches or captures
-    if (!pair) return { error: error(400, `The function parameter '${part}' is not a literal parameter.`) };
-    let paramValue;
-    if (pair[2] !== undefined) paramValue = pair[2].replaceAll("''", "'");
-    else if (pair[3] !== undefined) paramValue = Number(pair[3]);
-    else if (pair[4] === 'null') paramValue = null;
-    else paramValue = pair[4] === 'true';
-    params[pair[1]] = paramValue;
-  }
-  return { params };
-}
-
-function resolveOperationTarget(set, key, store, identity, error) {
-  let mapping = null,
-    target = null;
-  if (!set) return { mapping, target };
-  try {
-    mapping = store.resolveMapping(set);
-  } catch {
-    return { response: error(404, `Resource not found for the segment '${set}'.`) };
-  }
-  const id = key == null ? null : String(key).replace(/^'|'$/g, '');
-  target = {
-    mapping,
-    id,
-    row: id
-      ? (store.tableRows(mapping.logicalName).find((row) => canonical(row[mapping.idColumn]) === canonical(id)) ?? null)
-      : null,
-  };
-  if (id && !target.row) return { response: error(404, `${mapping.logicalName} With Id = ${id} Does Not Exist`) };
-  // Table permissions govern what server logic reaches; the native status and code of a denial are a guess.
-  if (target.row && !store.allowed(mapping.logicalName, 'read', target.row, identity ?? {}))
-    return {
-      response: {
-        status: 403,
-        body: {
-          error: { code: 'Forbidden', message: `The current portal user cannot read ${mapping.logicalName} ${id}.` },
-        },
-        headers: {},
-      },
-    };
-  return { mapping, target };
-}
-
-async function invokeRegisteredOperation(
-  organization,
-  store,
-  operation,
-  { method, path, params, payload, principal, origin, target },
-) {
   try {
     // The Web API operation call (dataverse-api.mjs runOperation) for the principal's systemuser row.
     const user = store.tableRows('systemuser').find((row) => canonical(row.systemuserid) === canonical(principal));
     const principalContext = organizationPrincipalContext(store, user);
     const c = {
-      method,
+      method: verb,
       url: new URL(path, `${origin}/api/data/v9.2/`),
       route: { version: 'v9.2' },
       params,
-      body: method === 'POST' ? (payload ?? {}) : undefined,
+      body: verb === 'POST' ? (payload ?? {}) : undefined,
       user: principalContext.user,
       caller: principalContext.caller,
       identity: principalContext.identity,

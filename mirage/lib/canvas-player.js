@@ -164,7 +164,7 @@
     }
   }
   function processSafeHtmlTag(token, state) {
-    const match = /^<\s*(\/?)\s*([a-zA-Z][a-zA-Z0-9-]*)\b/.exec(token); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    const match = /^<\s*(?:(\/)\s*)?([a-zA-Z][a-zA-Z0-9-]*)\b/.exec(token);
     if (!match) {
       if (!state.blockedTag) state.normalized += '&lt;';
       return true;
@@ -178,6 +178,32 @@
     }
     processSafeAllowedHtmlTag(token, state, tag, closing);
     return false;
+  }
+  function* safeHtmlTokens(text) {
+    let cursor = 0;
+    const lastCommentEnd = text.lastIndexOf('-->');
+    const lastTagEnd = text.lastIndexOf('>');
+    while (cursor < text.length) {
+      if (text[cursor] !== '<') {
+        const next = text.indexOf('<', cursor);
+        const end = next < 0 ? text.length : next;
+        yield text.slice(cursor, end);
+        cursor = end;
+        continue;
+      }
+      if (text.startsWith('<!--', cursor) && cursor + 4 <= lastCommentEnd) {
+        const end = text.indexOf('-->', cursor + 4) + 3;
+        yield text.slice(cursor, end);
+        cursor = end;
+      } else if (cursor < lastTagEnd) {
+        const end = text.indexOf('>', cursor + 1) + 1;
+        yield text.slice(cursor, end);
+        cursor = end;
+      } else {
+        yield '<';
+        cursor++;
+      }
+    }
   }
   // Generate safe tags and numeric placeholders before DOMParser sees source, so parsing cannot fetch URLs.
   /* NOSONAR: single-pass routine, splitting it would change shared state */ function safeHtml(target, sourceText) {
@@ -215,7 +241,7 @@
       images: [],
       styles: [],
     };
-    /* NOSONAR */ for (const token of valueText(sourceText).match(/<!--[\s\S]*?-->|<[^>]*>|[^<]+|</g) ?? []) {
+    /* NOSONAR */ for (const token of [...safeHtmlTokens(valueText(sourceText))]) {
       if (token.startsWith('<!--')) continue;
       if (token.startsWith('<')) {
         if (processSafeHtmlTag(token, state)) continue;
@@ -224,12 +250,12 @@
     }
     const parsed = new DOMParser().parseFromString(state.normalized, 'text/html');
     for (const element of parsed.body.querySelectorAll('[data-paq-style]')) {
-      const style = state.styles[Number(element.dataset.paqStyle)] ?? {};
+      const style = state.styles[Number(element.getAttribute('data-paq-style'))] ?? {}; // NOSONAR: actual attributes exclude inherited dataset values
       for (const [name, value] of Object.entries(style)) element.style.setProperty(name, value);
       delete element.dataset.paqStyle;
     }
     for (const placeholder of parsed.body.querySelectorAll('[data-paq-image]')) {
-      const url = state.images[Number(placeholder.dataset.paqImage)];
+      const url = state.images[Number(placeholder.getAttribute('data-paq-image'))]; // NOSONAR: actual attributes exclude inherited dataset values
       if (!url) {
         placeholder.remove();
         continue;

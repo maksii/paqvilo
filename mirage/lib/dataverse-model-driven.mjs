@@ -262,7 +262,7 @@ export function createModelDrivenRecordService({
     );
   const request = (method, entity, id, options = {}, body) => {
     const mapping = store.resolveMapping(entity),
-      url = new URL(`/api/data/v9.2/${mapping.entitySet}${id ? '(' + id + ')' : ''}`, origin());
+      url = new URL(`/api/data/v9.2/${mapping.entitySet}${id ? `(${id})` : ''}`, origin()); // NOSONAR: template coercion is intentional
     if (options.fetchXml) url.searchParams.set('fetchXml', options.fetchXml);
     if (options.query) url.search = options.query;
     return records.handle({

@@ -10,7 +10,7 @@ function sortObject(value) {
   if (value && typeof value === 'object')
     return Object.fromEntries(
       Object.keys(value)
-        .sort((a, b) => Number(a > b) - Number(a < b))
+        .sort()
         .map((k) => [k, sortObject(value[k])]),
     );
   return value;

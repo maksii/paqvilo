@@ -66,6 +66,52 @@ export function subgridActionUrl(action, { portal, parentId, recordId, requestUr
   return target.origin === origin ? target.pathname + target.search : target.href;
 }
 
+function subgridEntityTag(source) {
+  const text = `${source}`;
+  const positions = { "'": [], '"': [], '>': [], line: [] };
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (char === "'" || char === '"' || char === '>') positions[char].push(index);
+    else if (/[\r\n\u2028\u2029]/.test(char)) positions.line.push(index);
+  }
+  const firstAt = (items, position) => {
+    let low = 0,
+      high = items.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (items[middle] < position) low = middle + 1;
+      else high = middle;
+    }
+    return items[low];
+  };
+  const names = [];
+  for (const match of text.matchAll(/\bname\s*=\s*(["'])/gi)) {
+    const start = match.index + match[0].length;
+    const close = firstAt(positions[match[1]], start),
+      line = firstAt(positions.line, start);
+    if (close === undefined || (line !== undefined && line < close)) continue;
+    const end = firstAt(positions['>'], close + 1);
+    if (end !== undefined) names.push({ index: match.index, start, close, end, quote: match[1] });
+  }
+  for (const match of text.matchAll(/<entity\b/gi)) {
+    const start = match.index + match[0].length;
+    const boundary = firstAt(positions['>'], start) ?? text.length;
+    let low = 0,
+      high = names.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (names[middle].index < boundary) low = middle + 1;
+      else high = middle;
+    }
+    // The old greedy attribute prefix preferred the last viable name, even
+    // inside another quoted attribute; its value could cross a tag boundary.
+    const name = names[low - 1];
+    if (name && name.index >= start)
+      return [text.slice(match.index, name.end + 1), name.quote, text.slice(name.start, name.close)];
+  }
+  return null;
+}
+
 /** Author-owned action conditions are evaluated by the same permission-trimmed read provider. */
 export async function subgridActionApplies(
   action,
@@ -73,7 +119,7 @@ export async function subgridActionApplies(
 ) {
   if (!action.FilterCriteria) return true;
   const source = action.FilterCriteria;
-  const match = /<entity\b[^>]*\bname\s*=\s*(["'])(.*?)\1[^>]*>/i.exec(source); // NOSONAR: bounded exported FetchXML text, `.` must reject line terminators
+  const match = subgridEntityTag(source);
   if (!match || canonical(match[2]) !== canonical(entity))
     fail('Subgrid action filter must target its exported table', 501, 'SUBGRID_FILTER_INVALID');
   const xml = source.replace(

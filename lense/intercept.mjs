@@ -33,8 +33,9 @@ const CDP_RELEASE_MS = 5_000;
 
 // Composed input events also cover controls inside closed shadow roots. Keep
 // only a document-level boolean; no field contents or node references are stored.
+// NOSONAR: window preserves the browser WindowProxy boundary when page code reassigns globalThis.
 function installLateDraftTracker(slot, origins, binding) {
-  if (globalThis !== window.top || !origins.includes(location.origin) || window[slot]) return; // NOSONAR: window and globalThis are compared deliberately
+  if (window !== window.top || !origins.includes(location.origin) || window[slot]) return;
   let changed = false,
     pending = null;
   const navigation = window.navigation;
@@ -42,10 +43,10 @@ function installLateDraftTracker(slot, origins, binding) {
   const stop =
     typeof nativeStop === 'function' &&
     Function.prototype.toString.call(nativeStop) === 'function stop() { [native code] }'
-      ? nativeStop.bind(globalThis)
+      ? nativeStop.bind(window)
       : null;
   let originalBinding = window[binding];
-  let notify = typeof originalBinding === 'function' ? originalBinding.bind(globalThis) : null;
+  let notify = typeof originalBinding === 'function' ? originalBinding.bind(window) : null;
   const clear = () => {
     const previous = pending;
     pending = null;
@@ -89,7 +90,7 @@ function installLateDraftTracker(slot, origins, binding) {
   navigation?.addEventListener('navigate', navigate);
   navigation?.addEventListener('navigateerror', clear);
   navigation?.addEventListener('navigatesuccess', clear);
-  Object.defineProperty(globalThis, slot, {
+  Object.defineProperty(window, slot, {
     configurable: true,
     value: Object.freeze({
       dirty: () => changed,
@@ -98,7 +99,7 @@ function installLateDraftTracker(slot, origins, binding) {
         // CDP binding is installed. Capture the admitted function before inspection,
         // rather than permanently retaining that earlier absence.
         originalBinding = window[binding];
-        notify = typeof originalBinding === 'function' ? originalBinding.bind(globalThis) : null;
+        notify = typeof originalBinding === 'function' ? originalBinding.bind(window) : null;
       },
       repair(destination) {
         if (!stop || !notify || typeof navigation?.addEventListener !== 'function') return false;

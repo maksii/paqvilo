@@ -25,6 +25,8 @@ import {
 import { authRoute, parseCookies, returnUrlParameter, safeReturnUrl } from './auth-session.mjs';
 import { loginPath } from './redirects.mjs';
 import { tracedFetch } from './trace-hosts.mjs';
+import { registrationSnippetText } from './registration-snippet-text.mjs';
+import { stripTrailingCharacter } from './text-scanning.mjs';
 
 /**
  * The portal side of external sign-in.
@@ -155,10 +157,7 @@ const lookupId = (value) => key(value && typeof value === 'object' ? (value.id ?
 // A lookup column as local rows hold it: { id, logical_name } under its name, or the Web API _<name>_value.
 const lookupOf = (row, name) => lookupId(row?.[name] ?? row?.[`_${name}_value`]);
 const active = (row) => Number(scalar(row?.statecode) ?? 0) === 0;
-const trimPath = (value) =>
-  String(value ?? '')
-    .replace(/\/+$/, '') // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-    .toLowerCase() || '/';
+const trimPath = (value) => stripTrailingCharacter(String(value ?? ''), '/').toLowerCase() || '/';
 const escapeHtml = (value) =>
   String(value ?? '').replace(
     /[&<>"']/g,
@@ -1080,20 +1079,7 @@ export function createExternalSignIn({
   /** The Account/Register/RegistrationDisabledMessage snippet (Learn) as text, else a local message. */
   const registrationDisabledMessage = () => {
     const snippet = portal().snippets?.['Account/Register/RegistrationDisabledMessage'];
-    const value =
-      typeof snippet === 'string'
-        ? snippet
-            .replace(/<\/?(?:p|div|br|li|ul|ol|h[1-6]|section|article|table|tr|td|th)\b[^>]*>/gi, ' ')
-            .replace(/<[^>]*>/g, '') // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-            .replaceAll('&nbsp;', ' ')
-            .replaceAll('&lt;', '<')
-            .replaceAll('&gt;', '>')
-            .replaceAll('&quot;', '"')
-            .replaceAll('&#39;', "'")
-            .replaceAll('&amp;', '&')
-            .replace(/\s+/g, ' ')
-            .trim()
-        : '';
+    const value = typeof snippet === 'string' ? registrationSnippetText(snippet) : '';
     return value || 'Registration is disabled for this site.';
   };
   const registrationDisabled = () => new SignInProblem(registrationDisabledMessage(), 'REGISTRATION_DISABLED', 403);

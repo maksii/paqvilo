@@ -894,13 +894,19 @@ const ODATA_TYPE = /^#?(?:Microsoft\.Dynamics\.CRM\.|mscrm\.)/;
  * ponytail: no CSDL-typed conversion (Int64, Decimal, DateTime, Money arrive as their JSON form). Upgrade: map the
  * operation's declared Edm parameter types.
  */
+function linkedRow(value) {
+  const tail = /\(([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\)$/i.exec(value);
+  if (!tail) return null;
+  let start = tail.index;
+  while (start > 0 && /\w/.test(value[start - 1])) start--;
+  while (start < tail.index && !/[a-z_]/i.test(value[start])) start++;
+  return start < tail.index ? [undefined, value.slice(start, tail.index), tail[1]] : null;
+}
 function entryValue(store, value) {
   if (typeof value === 'string' && GUID.test(value)) return { $type: 'Guid', value };
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   // An @odata.id reference (a function's parameter alias) names its row by entity set and key.
-  /* NOSONAR */ const linked = /([a-z_]\w*)\(([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\)$/i.exec(
-    typeof value['@odata.id'] === 'string' ? value['@odata.id'] : '',
-  );
+  const linked = linkedRow(typeof value['@odata.id'] === 'string' ? value['@odata.id'] : '');
   if (linked)
     return {
       $type: 'EntityReference',
@@ -1221,8 +1227,11 @@ function mergeChildren(store, relationships, mapping, subRow, idColumn) {
     // answers 204 while the scenario's asynchronous jobs still wait, and they run afterwards).
     if (!rel.many || rel.intersect || rel.cascade?.merge === 'NoCascade' || rel.entity === 'asyncoperation') continue;
     const childMapping = store.resolveMapping(rel.entity);
-    for (const row of store.tableRows(childMapping.logicalName))
-      if (same(refOf(row[rel.to]), refOf(subRow[rel.from ?? idColumn]))) children.push({ childMapping, row, rel });
+    for (const row of store.tableRows(childMapping.logicalName)) {
+      const left = refOf(row[rel.to]),
+        right = refOf(subRow[rel.from ?? idColumn]);
+      if (left != null && right != null && same(left, right)) children.push({ childMapping, row, rel });
+    }
   }
   return children;
 }

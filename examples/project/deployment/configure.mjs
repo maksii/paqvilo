@@ -51,7 +51,9 @@ try {
   const catalogue = path.join(root, 'paqvilo.config.yml');
   const configuration = await fs.readFile(catalogue, 'utf8');
   const mappings = [
-    ...configuration.matchAll(/^(\s*)([0-9a-f-]{36})(:\s*exa_ExamplePages\.ExampleAccountFields\s*)$/gim), // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    ...configuration.matchAll(
+      /^([^\S\r\n\u2028\u2029]*)([0-9a-f-]{36})(:\s*exa_ExamplePages\.ExampleAccountFields\s*)$/gim,
+    ),
   ];
   if (mappings.length !== 1)
     throw new Error('The local catalogue must contain exactly one observed ExampleAccountFields mapping.');
@@ -59,10 +61,11 @@ try {
     editSource({ file, sourceDir }, (text) =>
       text.replace(/(\{%\s*codecomponent\s+name\s*:\s*)[0-9a-f-]{36}(\s*%\})/gi, '$1' + ids[0] + '$2'),
     );
-  editSource(
-    { file: catalogue, sourceDir: root },
-    (text) =>
-      text.replace(/^(\s*)[0-9a-f-]{36}(:\s*exa_ExamplePages\.ExampleAccountFields\s*)$/gim, '$1' + ids[0] + '$2'), // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  editSource({ file: catalogue, sourceDir: root }, (text) =>
+    text.replace(
+      /^([^\S\r\n\u2028\u2029]*)[0-9a-f-]{36}(:\s*exa_ExamplePages\.ExampleAccountFields\s*)$/gim,
+      '$1' + ids[0] + '$2',
+    ),
   );
   console.log('PCF source configured for the selected environment.');
   console.log('Next: pac pages upload --path ./portal --modelVersion 2 --environment ' + environment.origin);

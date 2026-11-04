@@ -166,7 +166,7 @@ export async function runOracle({ pac, root = process.cwd(), spawn = spawnSync }
     const auth = decodePac(command(executable, ['auth', 'list'], env, spawn)).trim();
     if (
       !/^No profiles were found on this computer\.(?: Please run 'pac auth create' to create one\.)?$/i.test(auth) ||
-      /(?:^|\n)\s*(?:\*\s*)?\d+\s/m.test(auth) // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+      /(?:^|\n)\s*(?:\*\s*)?\d+\s/m.test(auth) // NOSONAR: evaluated only after the fixed no-profile sentence matches (<100 characters); || short-circuits all other output.
     )
       throw fail('PacAuthNotEmpty', 'PAC did not confirm an empty isolated authentication profile list.');
     const input = path.join(run, 'corpus.fx');

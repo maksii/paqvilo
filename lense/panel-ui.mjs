@@ -660,10 +660,15 @@ function panelBrowserImpl(data) {
       for (const button of el.panel.querySelectorAll('[data-act]')) {
         const busy = S.pendingActions.has(button.dataset.act) || (mutating && mutationActions.has(button.dataset.act));
         if (busy) {
-          if (!('paqviloBusy' in button.dataset)) button.dataset.paqviloBusy = String(button.disabled);
+          if (
+            !(/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-paqvilo-busy'))
+          )
+            button.dataset.paqviloBusy = String(button.disabled);
           button.disabled = true;
           button.setAttribute('aria-busy', 'true');
-        } else if ('paqviloBusy' in button.dataset) {
+        } else if (
+          /* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-paqvilo-busy')
+        ) {
           button.disabled = button.dataset.paqviloBusy === 'true';
           delete button.dataset.paqviloBusy;
           button.removeAttribute('aria-busy');

@@ -228,7 +228,7 @@ function mapping(record, indent) {
   const pad = ' '.repeat(indent);
   return Object.keys(record)
     .filter((key) => record[key] !== undefined && record[key] !== null)
-    .sort((a, b) => Number(a > b) - Number(a < b))
+    .sort()
     .map((key) => {
       const value = record[key];
       if (Array.isArray(value)) return `${key}:\n${value.map((v) => pad + '- ' + scalar(v)).join('\n')}`;

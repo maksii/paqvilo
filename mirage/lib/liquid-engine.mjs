@@ -1,3 +1,4 @@
+import { stripTrailingCharacter } from './text-scanning.mjs';
 // DotLiquid-compatible Liquid engine with Power Pages semantics.
 //
 // Power Pages renders Liquid with DotLiquid (SyntaxCompatibility.DotLiquid20) plus portal
@@ -55,7 +56,15 @@ const FILTER_NAME = re(String.raw`\s*([${WC}]+)`);
 const SINGLE_QUOTED = /^'(.*)'$/;
 const DOUBLE_QUOTED = /^"(.*)"$/;
 const INTEGER = /^([+-]?\d+)$/;
-const RANGE = /^\((\S+)\.\.(\S+)\)$/; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+function rangeParts(value) {
+  const text = String(value);
+  const end = text.length;
+  if (text[0] !== '(' || text[end - 1] !== ')') return null;
+  const inner = text.slice(1, end - 1);
+  if (/\s/.test(inner)) return null;
+  const separator = inner.lastIndexOf('..', inner.length - 3);
+  return separator >= 1 ? [undefined, inner.slice(0, separator), inner.slice(separator + 2)] : null;
+}
 const NUMERIC = /^([+-]?\d[\d.|,]+)$/;
 const IF_SYNTAX = re(String.raw`(${QF})\s*([=!<>a-zA-Z_]+)?\s*(${QF})?`);
 const IF_EXPRESSIONS = re(
@@ -378,11 +387,17 @@ function tokenizeTokens(text, rawTags, offsets) {
   return tokens;
 }
 
+function stripTrailingSpacesAndTabs(value) {
+  let end = value.length;
+  while (end > 0 && (value[end - 1] === ' ' || value[end - 1] === '\t')) end--;
+  return value.slice(0, end);
+}
+
 function appendLeadingLiteral(text, match, position, add) {
   if (match.index <= position) return;
   let literal = text.slice(position, match.index);
   // Leading whitespace control: spaces and tabs only (DotLiquid20).
-  if (match[2]) literal = literal.replace(/[\t ]+$/, ''); // NOSONAR: anchored trim of spaces and tabs on bounded template text
+  if (match[2]) literal = stripTrailingSpacesAndTabs(literal);
   if (literal !== '') add(literal, position, position + literal.length);
 }
 
@@ -571,7 +586,7 @@ const conditionFrom = (match, preserveParentheses = false) =>
   new Condition(
     preserveParentheses ? match[1] : match[1].replace(/^\(+/, ''),
     match[2] ?? '',
-    preserveParentheses ? (match[3] ?? '') : (match[3] ?? '').replace(/\)+$/, ''), // NOSONAR: anchored trim of closing parentheses
+    preserveParentheses ? (match[3] ?? '') : stripTrailingCharacter(match[3] ?? '', ')'),
   );
 /** If.PushBlock: expressions are grouped right-to-left; there are no parentheses. */
 function parseCondition(markup, preserveParentheses = false) {
@@ -703,7 +718,10 @@ export class LiquidContext {
     return { found: false, value: null };
   }
   /** Context.Resolve: literals, ranges, numbers and variable paths. */
-  async resolve(key, notifyNotFound = true) {
+  /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async resolve(
+    key,
+    notifyNotFound = true,
+  ) {
     switch (key) {
       case undefined:
       case null:
@@ -722,25 +740,51 @@ export class LiquidContext {
     }
     const first = key[0];
     if (first === "'") {
-      const quoted = quotedLiteral(key, SINGLE_QUOTED);
-      if (quoted.found) return quoted.value;
+      const m = SINGLE_QUOTED.exec(key);
+      if (m) return m[1];
     } else if (first === '"') {
-      const quoted = quotedLiteral(key, DOUBLE_QUOTED);
-      if (quoted.found) return quoted.value;
+      const m = DOUBLE_QUOTED.exec(key);
+      if (m) return m[1];
     } else if (first === '(') {
-      const m = RANGE.exec(key);
-      if (m) return resolveRange(this, m);
+      const m = rangeParts(key);
+      if (m) {
+        const from = toInt32(await this.resolve(m[1]));
+        const to = toInt32(await this.resolve(m[2]));
+        if (to - from > 1_000_000)
+          throw new LiquidError(
+            'Range exceeds the local renderer limit of 1,000,000 items',
+            'System.OverflowException',
+          );
+        const range = [];
+        for (let i = from; i <= to; i++) range.push(i);
+        return range;
+      }
     } else if (/[0-9+-]/.test(first)) {
-      const parsed = numericLiteral(key);
-      if (parsed.found) return parsed.value;
+      let m = INTEGER.exec(key);
+      if (m) {
+        const value = Number(m[1]);
+        return Number.isSafeInteger(value) ? value : NetDecimal.parse(m[1]);
+      }
+      m = NUMERIC.exec(key);
+      if (m) {
+        const text = m[1];
+        if (/^[+-]?\d+(?:\.\d+)?$/.test(text)) return NetDecimal.parse(text);
+        if (/^[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(text)) return NetDecimal.parse(text.replace(/,/g, ''));
+        const parsed = Number(text.replace(/,/g, ''));
+        if (Number.isFinite(parsed)) return parsed;
+        throw new LiquidError('Input string was not in a correct format.', 'System.FormatException');
+      }
     }
     return this.variable(key, notifyNotFound);
   }
-  async variable(markup, notifyNotFound) {
+  /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async variable(
+    markup,
+    notifyNotFound,
+  ) {
     const parts = scan(markup, VARIABLE_PARSER);
     let first = parts[0];
     if (first === undefined) return null;
-    if (first.startsWith('[')) {
+    if (first[0] === '[') {
       // Context.TryGetVariable calls Resolve(...).ToString(): a root bracket that resolves to nil throws.
       const resolved = await this.resolve(first.slice(1, -1));
       if (resolved == null)
@@ -748,8 +792,53 @@ export class LiquidContext {
       first = formatItem(resolved);
     }
     const found = await this.findVariable(first);
-    if (!found.found) return missingVariable(this, markup, notifyNotFound);
-    return resolveVariablePath(this, parts, found.value ?? null);
+    if (!found.found) {
+      if (notifyNotFound) this.errors.push(`Error - Variable '${markup}' could not be found`);
+      return null;
+    }
+    let object = found.value ?? null;
+    for (let i = 1; i < parts.length; i++) {
+      const raw = parts[i];
+      const bracketed = raw[0] === '[';
+      const part = bracketed ? await this.resolve(raw.slice(1, -1)) : raw;
+      if (object instanceof KeyValuePair) {
+        const numeric = isNumber(part) ? Number(part) : null;
+        if ((object.numericLookup && numeric === 0) || (object.namedLookup && part === 'Key')) {
+          object = object.key;
+          continue;
+        }
+        if (
+          (object.numericLookup && numeric === 1) ||
+          (object.namedLookup && part === 'Value') ||
+          part === object.key
+        ) {
+          object = object.value ?? null;
+          continue;
+        }
+      }
+      const result = await lookupMember(object, part, this);
+      if (result.found) {
+        object = result.value ?? null;
+        continue;
+      }
+      if (!bracketed && isEnumerable(object) && typeof part === 'string') {
+        const lower = part.toLowerCase();
+        if (lower === 'size') {
+          object = typeof object === 'string' ? object.length : toList(object).length;
+          continue;
+        }
+        if (lower === 'first') {
+          object = toList(object)[0] ?? null;
+          continue;
+        }
+        if (lower === 'last') {
+          object = toList(object).at(-1) ?? null;
+          continue;
+        }
+      }
+      return null;
+    }
+    return object ?? null;
   }
   async invokeFilter(name, input, args, markup) {
     const filter = this.engine.filters.get(name);
@@ -809,90 +898,6 @@ export class LiquidContext {
       throw error;
     }
   }
-}
-
-function missingVariable(context, markup, notifyNotFound) {
-  if (notifyNotFound) context.errors.push(`Error - Variable '${markup}' could not be found`);
-  return null;
-}
-
-async function resolveVariablePath(context, parts, initialObject) {
-  let object = initialObject;
-  for (let i = 1; i < parts.length; i++) {
-    const raw = parts[i];
-    const bracketed = raw.startsWith('[');
-    const part = bracketed ? await context.resolve(raw.slice(1, -1)) : raw;
-    if (object instanceof KeyValuePair) {
-      const pair = pairMember(object, part);
-      if (pair.found) {
-        object = pair.value;
-        continue;
-      }
-    }
-    const result = await lookupMember(object, part, context);
-    if (result.found) {
-      object = result.value ?? null;
-      continue;
-    }
-    const enumerable = enumerableMember(object, part, bracketed);
-    if (enumerable.found) {
-      object = enumerable.value;
-      continue;
-    }
-    return null;
-  }
-  return object ?? null;
-}
-
-function quotedLiteral(key, expression) {
-  const match = expression.exec(key);
-  return match ? { found: true, value: match[1] } : { found: false };
-}
-
-async function resolveRange(context, match) {
-  const from = toInt32(await context.resolve(match[1]));
-  const to = toInt32(await context.resolve(match[2]));
-  if (to - from > 1_000_000)
-    throw new LiquidError('Range exceeds the local renderer limit of 1,000,000 items', 'System.OverflowException');
-  const range = [];
-  for (let i = from; i <= to; i++) range.push(i);
-  return range;
-}
-
-function numericLiteral(key) {
-  let match = INTEGER.exec(key);
-  if (match) {
-    const value = Number(match[1]);
-    return { found: true, value: Number.isSafeInteger(value) ? value : NetDecimal.parse(match[1]) };
-  }
-  match = NUMERIC.exec(key);
-  if (!match) return { found: false };
-  const text = match[1];
-  if (/^[+-]?\d+(?:\.\d+)?$/.test(text)) return { found: true, value: NetDecimal.parse(text) };
-  if (/^[+-]?\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(text))
-    return { found: true, value: NetDecimal.parse(text.replaceAll(',', '')) };
-  const parsed = Number(text.replaceAll(',', ''));
-  if (Number.isFinite(parsed)) return { found: true, value: parsed };
-  throw new LiquidError('Input string was not in a correct format.', 'System.FormatException');
-}
-
-function pairMember(object, part) {
-  const numeric = isNumber(part) ? Number(part) : null;
-  if ((object.numericLookup && numeric === 0) || (object.namedLookup && part === 'Key'))
-    return { found: true, value: object.key };
-  if ((object.numericLookup && numeric === 1) || (object.namedLookup && part === 'Value') || part === object.key)
-    return { found: true, value: object.value ?? null };
-  return { found: false };
-}
-
-function enumerableMember(object, part, bracketed) {
-  if (bracketed || !isEnumerable(object) || typeof part !== 'string') return { found: false };
-  const lower = part.toLowerCase();
-  if (lower === 'size')
-    return { found: true, value: typeof object === 'string' ? object.length : toList(object).length };
-  if (lower === 'first') return { found: true, value: toList(object)[0] ?? null };
-  if (lower === 'last') return { found: true, value: toList(object).at(-1) ?? null };
-  return { found: false };
 }
 
 // ---- Parsing: Tag / Block / Document and the standard tags

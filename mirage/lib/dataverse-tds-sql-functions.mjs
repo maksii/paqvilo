@@ -1,3 +1,4 @@
+import { groupDigitRuns } from './group-digit-runs.mjs';
 // Dataverse SQL scalar function library with T-SQL semantics for the TDS endpoint.
 // Independent of the parser: callers pass evaluated argument values. The parser maps
 // CAST(x AS t) to castValue(x, t); CONVERT and TRY_CONVERT are registered as functions.
@@ -56,9 +57,15 @@ const TYPE_ALIAS = {
   nchar: 'nvarchar',
   smalldatetime: 'datetime',
 };
-const TYPE_TEXT = /^\s*([a-z]+)\s*(?:\(\s*([^)]*?)\s*\))?\s*$/i; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+function trimSqlTrailingSpaces(text) {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === ' ') end--;
+  return text.slice(0, end);
+}
+
+const TYPE_TEXT = /^\s*([a-z]+)(?:\s*\(([^)]*)\))?\s*$/i;
 const DECIMAL_TEXT = /^([+-]?)(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i;
-const FLOAT_TEXT = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+const FLOAT_TEXT = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 const ISO_DATE = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:\.(\d{1,3}))?)?)?$/; // NOSONAR: regex kept: a rewrite would change matches or captures
 const US_DATE = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/;
 const COMPACT_DATE = /^(\d{4})(\d{2})(\d{2})$/;
@@ -616,7 +623,8 @@ function parseType(spec) {
   if (raw === 'money' || raw === 'smallmoney')
     return { base: 'decimal', precision: raw === 'money' ? 19 : 10, scale: 4 };
   const base = TYPE_ALIAS[raw] ?? raw;
-  const args = m?.[2] ? m[2].split(',').map((x) => x.trim()) : [];
+  const argsText = m?.[2]?.trim();
+  const args = argsText ? argsText.split(',').map((x) => x.trim()) : [];
   if (base === 'decimal') return parseDecimalType(base, args);
   if (base === 'varchar' || base === 'nvarchar') return parseCharacterType(base, args);
   if (base === 'binary' || base === 'varbinary') return parseBinaryType(base, args);
@@ -758,8 +766,8 @@ export function compareValues(a, b, ctx, typeA = null, typeB = null) {
   const x0 = convertOperand(a, b);
   const y0 = convertOperand(b, a);
   if (typeof x0 === 'string' && typeof y0 === 'string') {
-    let x = x0.replace(/ +$/, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-    let y = y0.replace(/ +$/, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    let x = trimSqlTrailingSpaces(x0);
+    let y = trimSqlTrailingSpaces(y0);
     if (!ctx.caseSensitive) {
       x = x.toLowerCase();
       y = y.toLowerCase();
@@ -833,12 +841,12 @@ function numberFormat(n, pattern, locale) {
   while (frac.length > minFrac && frac.endsWith('0')) frac = frac.slice(0, -1);
   if (int === '0' && minInt === 0) int = '';
   int = int.padStart(minInt, '0');
-  if (intPat.includes(',')) int = int.replace(/\B(?=(\d{3})+(?!\d))/g, sep.group); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  if (intPat.includes(',')) int = groupDigitRuns(int, sep.group);
   const body = int + (frac ? `${sep.decimal}${frac}` : '') || '0';
   return (n < 0 && /[1-9]/.test(body) ? '-' : '') + body;
 }
 
-def('LEN', 1, 1, INT, ([s]) => (s === null ? null : textOf(s).replace(/ +$/, '').length)); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+def('LEN', 1, 1, INT, ([s]) => (s === null ? null : trimSqlTrailingSpaces(textOf(s)).length));
 def('DATALENGTH', 1, 1, INT, ([v]) => {
   if (v === null) return null;
   if (typeof v === 'string') return 2 * v.length;
@@ -897,10 +905,10 @@ def('REVERSE', 1, 1, TEXT_OF_FIRST, ([s]) => (s === null ? null : Array.from(tex
 def('LOWER', 1, 1, TEXT_OF_FIRST, ([s]) => (s === null ? null : textOf(s).toLowerCase()));
 def('UPPER', 1, 1, TEXT_OF_FIRST, ([s]) => (s === null ? null : textOf(s).toUpperCase()));
 def('LTRIM', 1, 1, TEXT_OF_FIRST, ([s]) => (s === null ? null : textOf(s).replace(/^ +/, '')));
-def('RTRIM', 1, 1, TEXT_OF_FIRST, ([s]) => (s === null ? null : textOf(s).replace(/ +$/, ''))); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+def('RTRIM', 1, 1, TEXT_OF_FIRST, ([s]) => (s === null ? null : trimSqlTrailingSpaces(textOf(s))));
 // TRIM(s) removes spaces. TRIM(characters, s) follows TRIM(characters FROM s): args are [characters, string].
 def('TRIM', 1, 2, TEXT_OF_FIRST, (args) => {
-  if (args.length === 1) return args[0] === null ? null : textOf(args[0]).replace(/^ +| +$/g, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  if (args.length === 1) return args[0] === null ? null : trimSqlTrailingSpaces(textOf(args[0]).replace(/^ +/, ''));
   const [chars, s] = args;
   if (anyNull(chars, s)) return null;
   const set = textOf(chars);
@@ -1020,7 +1028,7 @@ def('FORMAT', 2, 3, TEXT, ([v, fmt, culture]) => {
 
 // FORMATMESSAGE(msg, args...): printf-style %s %d %i %u %x %X %o %% with flags - 0 +, width and .precision.
 // NULL arguments print as (null). A message number would read sys.messages, which this library does not have.
-const PLACEHOLDER = /%([-0+]*)(\d*)(?:\.(\d+))?([sdiuxXo%])/g; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+const PLACEHOLDER = /%([-0+]*)([1-9]\d*|)(?:\.(\d+))?([sdiuxXo%])/g;
 const RADIX = { d: 10, i: 10, u: 10, x: 16, X: 16, o: 8 };
 function formatMessageArg(flags, width, precision, type, v) {
   let sign = '';

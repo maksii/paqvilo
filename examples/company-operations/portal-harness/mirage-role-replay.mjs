@@ -6,14 +6,14 @@ const stable = (value) =>
     item && typeof item === 'object' && !Array.isArray(item)
       ? Object.fromEntries(
           Object.keys(item)
-            .sort((a, b) => Number(a > b) - Number(a < b))
+            .sort()
             .map((key) => [key, item[key]]),
         )
       : item,
   );
 const hash = (value) => createHash('sha256').update(stable(value)).digest('hex');
 const guid = (value) => typeof value === 'string' && /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/.test(value);
-const sorted = (values) => [...values].sort((a, b) => Number(a > b) - Number(a < b));
+const sorted = (values) => [...values].sort();
 /** A role-mask label is not evidence. Bind it to actual frozen memberships,
  * authored domain sources and native history for every fragment/page/lane. */
 /* NOSONAR */ export function validateRoleReplayCell({ contract, cell, inputs, identityFor }) {

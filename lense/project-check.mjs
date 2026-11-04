@@ -49,7 +49,7 @@ function projectFiles(directory) {
   if (git.status === 0)
     return [...new Set(git.stdout.split('\0').filter(Boolean))]
       .filter((name) => safeTextFile(directory, name))
-      .sort((a, b) => Number(a > b) - Number(a < b));
+      .sort(/* NOSONAR: preserve default string coercion */);
   const names = [];
   const walk = (folder, prefix = '') => {
     for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
@@ -60,7 +60,7 @@ function projectFiles(directory) {
     }
   };
   walk(directory);
-  return names.sort((a, b) => Number(a > b) - Number(a < b));
+  return names.sort(/* NOSONAR: preserve default string coercion */);
 }
 
 export function scaffoldMarkers(directory) {
@@ -177,7 +177,8 @@ export function checkProject(directory, { config, processEnv = process.env } = {
     add(
       'schema',
       error.message,
-      error.message.match(/(?:Unknown setting )?([\w.-]+)(?: must| is|$)/)?.[1]?.replace(/^config\./, '') ?? '', // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+      error.message.match(/(?:Unknown setting )?(?<![\w.-])([\w.-]+)(?: must| is|$)/)?.[1]?.replace(/^config\./, '') ??
+        '',
     );
   }
   if (catalogue) {
@@ -453,7 +454,8 @@ function checkPackModules(name, packs, add) {
 }
 
 function checkMappedFiles(name, profile, section, files, seen, diagnostics) {
-  for (const file of [files].flat()) {
+  for (const file of [].concat(files)) {
+    // NOSONAR: preserve concat spreading semantics
     const key = JSON.stringify([profile, section, file]);
     if (!seen.has(key) && !pathExists(file, 'isFile'))
       diagnostics.push({

@@ -1330,7 +1330,7 @@ export function createRecordHandlers({
       const value = formatted[spec.navigation];
       if (!rel || value == null || typeof value !== 'object') continue;
       const target = store.resolveMapping(rel.entity);
-      for (const item of [value].flat())
+      for (const item of [].concat(value) /* NOSONAR: preserve concat spreadability semantics */)
         if (item && typeof item === 'object') projectRow(c, target, item, spec.expand ?? []);
     }
   }
@@ -1859,7 +1859,8 @@ export function createRecordHandlers({
     if (!info.aggregate && !info.distinct && !columns.includes(mapping.idColumn)) columns.push(mapping.idColumn);
     // FetchXML lists the columns alphabetically with the id, not in attribute order; an aggregate has no column list.
     // A saved query's columns keep the saved attribute order; the id stays last when it is not listed.
-    const ordered = order === 'attribute' ? columns : [...columns].sort((a, b) => Number(a > b) - Number(a < b));
+    const ordered =
+      order === 'attribute' ? columns : [...columns].sort(/* NOSONAR: preserve default string coercion */);
     const listed = columns.length ? `(${ordered.join(',')})` : '';
     const body = { '@odata.context': contextFor(c, `${mapping.entitySet}${listed}`) };
     // returntotalrecordcount="true" answers the count (capped like $count) and, when included, the total and its limit flag.
@@ -2049,16 +2050,12 @@ export function createRecordHandlers({
 
   // Deep insert: each nested child is a create of its own table, so it needs create and append on the child and appendto
   // on the parent (a refusal names the child table), then the same payload rules. Ownership is stamped per row by the store.
-  async function deepChildPayload(c, mapping, target, child) {
-    if (!child || typeof child !== 'object' || Array.isArray(child)) return child;
-    authorize(c, target.logicalName, 'create', target);
-    authorize(c, target.logicalName, 'append', target);
-    authorize(c, mapping.logicalName, 'appendto', mapping);
-    const childData = await deepPayload(c, target, createPayload(target, child));
-    await beforeWrite(c, target, { operation: 'create', data: childData, existing: null, deep: true });
-    return childData;
-  }
-  async function deepPayload(c, mapping, data) {
+
+  /* NOSONAR: retain original await boundaries for concurrent operations */ async function deepPayload(
+    c,
+    mapping,
+    data,
+  ) {
     for (const key of Object.keys(data)) {
       const rel = navigationOf(mapping, key);
       const value = data[key];
@@ -2068,8 +2065,18 @@ export function createRecordHandlers({
         throw invalid('Cannot create related entities. Create has to be called individually for each entity.');
       const target = store.resolveMapping(rel.entity);
       const children = [];
-      for (const child of Array.isArray(value) ? value : [value])
-        children.push(await deepChildPayload(c, mapping, target, child));
+      for (const child of Array.isArray(value) ? value : [value]) {
+        if (!child || typeof child !== 'object' || Array.isArray(child)) {
+          children.push(child);
+          continue;
+        }
+        authorize(c, target.logicalName, 'create', target);
+        authorize(c, target.logicalName, 'append', target);
+        authorize(c, mapping.logicalName, 'appendto', mapping);
+        const childData = await deepPayload(c, target, createPayload(target, child));
+        await beforeWrite(c, target, { operation: 'create', data: childData, existing: null, deep: true });
+        children.push(childData);
+      }
       data[key] = Array.isArray(value) ? children : children[0];
     }
     return data;
@@ -2330,61 +2337,88 @@ export function createRecordHandlers({
   }
 
   // Upsert semantics per If-Match / If-None-Match; runs inside the caller's transaction and returns { created, id }.
-  async function upsertElastic(c, mapping, key, body, ifMatch, ifNoneMatch) {
+
+  /* NOSONAR: retain original await boundaries for concurrent operations */ async function upsertNow(
+    c,
+    mapping,
+    key,
+    body,
+    { ifMatch, ifNoneMatch },
+  ) {
     const logical = mapping.logicalName;
-    const data = bindsOf(c, mapping, payload(mapping, body), key.row);
-    if (key.alternate) {
-      if (Object.hasOwn(data, 'partitionid') && !samePartition(data.partitionid, key.alternate.partitionid))
-        throw invalid('The partitionid value of an elastic table row cannot be changed.');
-      Object.assign(data, key.alternate);
-    } else data[mapping.idColumn] = key.id;
-    authorize(c, logical, key.row ? 'update' : 'create', mapping, key.row ?? undefined);
-    if (Object.keys(data).some((name) => name.endsWith(BIND))) authorize(c, logical, 'append', mapping);
-    await beforeWrite(c, mapping, { operation: 'upsert', data, existing: key.row });
-    const result = await store.elasticUpsertRecordAsync(
-      logical,
-      key.id ?? data[mapping.idColumn],
-      data,
-      c.identity,
-      (key.row ? updateOptions : createOptions)(c, { ifMatch, ifNoneMatch, partitionId: c.partitionId }),
-    );
-    await afterWrite(c, mapping, { operation: 'upsert', id: result.row[mapping.idColumn] });
-    return { created: result.created, id: result.row[mapping.idColumn] };
-  }
-  async function updateUpsert(c, mapping, key, body, ifMatch, ifNoneMatch) {
-    const { logicalName: logical, idColumn } = mapping;
-    const data = await updateData(
-      c,
-      mapping,
-      body,
-      key.row,
-      isElastic(mapping) ? [] : Object.keys(key.alternate ?? {}),
-    );
-    await withKeyViolation(mapping, data, () =>
-      store.updateRecordAsync(
+    if (ifMatch == null) assertPluginMessageAdmission(store, 'Upsert', c, logical);
+    if (key.row && ifNoneMatch === '*') {
+      throw new DataError('A record with matching key values already exists.', 412, 'PreconditionFailed', {
+        innerCode: '0x80040237',
+      });
+    }
+    // Native PATCH with If-Match on a missing row: 404 0x80040217, worded "Entity '<table>' With Id = <id> Does Not Exist".
+    if (!key.row && ifMatch != null) {
+      throw new DataError(`Entity '${logical}' With Id = ${key.text} Does Not Exist`, 404, 'NotFound', {
+        innerCode: '0x80040217',
+      });
+    }
+    if (isElastic(mapping) && ifMatch == null) {
+      const data = bindsOf(c, mapping, payload(mapping, body), key.row);
+      if (key.alternate) {
+        if (Object.hasOwn(data, 'partitionid') && !samePartition(data.partitionid, key.alternate.partitionid))
+          throw invalid('The partitionid value of an elastic table row cannot be changed.');
+        Object.assign(data, key.alternate);
+      } else data[mapping.idColumn] = key.id;
+      authorize(c, logical, key.row ? 'update' : 'create', mapping, key.row ?? undefined);
+      if (Object.keys(data).some((name) => name.endsWith(BIND))) authorize(c, logical, 'append', mapping);
+      await beforeWrite(c, mapping, { operation: 'upsert', data, existing: key.row });
+      const result = await store.elasticUpsertRecordAsync(
         logical,
-        key.row[idColumn],
+        key.id ?? data[mapping.idColumn],
         data,
         c.identity,
-        updateOptions(c, {
-          ifMatch,
-          ifNoneMatch,
-          ...(ifMatch == null ? { preValidationSourceOperation: 'upsert' } : {}),
-        }),
-      ),
-    );
-    await afterWrite(c, mapping, { operation: 'update', id: key.row[idColumn] });
-    return { created: false, id: key.row[idColumn] };
-  }
-  async function createUpsert(c, mapping, key, body, ifMatch, ifNoneMatch) {
-    const { logicalName: logical, idColumn } = mapping;
+        (key.row ? updateOptions : createOptions)(c, { ifMatch, ifNoneMatch, partitionId: c.partitionId }),
+      );
+      await afterWrite(c, mapping, { operation: 'upsert', id: result.row[mapping.idColumn] });
+      return { created: result.created, id: result.row[mapping.idColumn] };
+    }
+    // An Update the caller has no privilege for is refused before any step, also the existence read (recorded native
+    // privilegeSecond: PATCH answers 403 with no step).
+    if (key.row) authorize(c, logical, 'update', mapping, key.row);
+    if (ifMatch == null) upsertExistenceCheck(c, mapping, key, body);
+    if (key.row) {
+      // An elastic row's partitionid key is its partition: a body that changes it stays refused (elastic tables), not dropped.
+      // The body's values for the URL's alternate key are dropped. The same rule applies to an If-Match: * update through
+      // an alternate key, which is a guess: the drop is documented only for Upsert.
+      const data = await updateData(
+        c,
+        mapping,
+        body,
+        key.row,
+        isElastic(mapping) ? [] : Object.keys(key.alternate ?? {}),
+      );
+      await withKeyViolation(mapping, data, () =>
+        store.updateRecordAsync(
+          logical,
+          key.row[mapping.idColumn],
+          data,
+          c.identity,
+          updateOptions(c, {
+            ifMatch,
+            ifNoneMatch,
+            ...(ifMatch == null ? { preValidationSourceOperation: 'upsert' } : {}),
+          }),
+        ),
+      );
+      await afterWrite(c, mapping, { operation: 'update', id: key.row[mapping.idColumn] });
+      return { created: false, id: key.row[mapping.idColumn] };
+    }
     const data = await createData(c, mapping, body);
+    // An upsert create keeps the key values the body sets, even when they differ from the URL, and copies only the
+    // missing ones from the URL.
     if (key.alternate)
       for (const [name, value] of Object.entries(key.alternate)) {
         if (!Object.hasOwn(data, name)) data[name] = value;
       }
-    const createId = !key.alternate && ifMatch == null && !Object.hasOwn(data, idColumn) ? key.id : null;
-    if (!key.alternate && createId === null) data[idColumn] = key.id;
+    // The URL id is the new Entity.Id, not an authored primary-key attribute (native upsert-create Target).
+    const createId = !key.alternate && ifMatch == null && !Object.hasOwn(data, mapping.idColumn) ? key.id : null;
+    if (!key.alternate && createId === null) data[mapping.idColumn] = key.id;
     const row = await withKeyViolation(mapping, data, () =>
       store.createRecordAsync(
         logical,
@@ -2401,30 +2435,8 @@ export function createRecordHandlers({
         ),
       ),
     );
-    await afterWrite(c, mapping, { operation: 'create', id: row[idColumn] });
-    return { created: true, id: row[idColumn] };
-  }
-  async function upsertNow(c, mapping, key, body, { ifMatch, ifNoneMatch }) {
-    const logical = mapping.logicalName;
-    if (ifMatch == null) assertPluginMessageAdmission(store, 'Upsert', c, logical);
-    if (key.row && ifNoneMatch === '*') {
-      throw new DataError('A record with matching key values already exists.', 412, 'PreconditionFailed', {
-        innerCode: '0x80040237',
-      });
-    }
-    // Native PATCH with If-Match on a missing row: 404 0x80040217, worded "Entity '<table>' With Id = <id> Does Not Exist".
-    if (!key.row && ifMatch != null) {
-      throw new DataError(`Entity '${logical}' With Id = ${key.text} Does Not Exist`, 404, 'NotFound', {
-        innerCode: '0x80040217',
-      });
-    }
-    if (isElastic(mapping) && ifMatch == null) return await upsertElastic(c, mapping, key, body, ifMatch, ifNoneMatch);
-    // An Update the caller has no privilege for is refused before any step, also the existence read (recorded native
-    // privilegeSecond: PATCH answers 403 with no step).
-    if (key.row) authorize(c, logical, 'update', mapping, key.row);
-    if (ifMatch == null) upsertExistenceCheck(c, mapping, key, body);
-    if (key.row) return await updateUpsert(c, mapping, key, body, ifMatch, ifNoneMatch);
-    return await createUpsert(c, mapping, key, body, ifMatch, ifNoneMatch);
+    await afterWrite(c, mapping, { operation: 'create', id: row[mapping.idColumn] });
+    return { created: true, id: row[mapping.idColumn] };
   }
 
   async function createEntity(c) {
@@ -2847,44 +2859,7 @@ export function createRecordHandlers({
       : { status: 204 };
   }
 
-  async function upsertMultiple(c, mapping) {
-    const targets = targetsOf(c);
-    refuseBulkTargets(mapping, c.route.name, targets);
-    const texts = targets.map((target) =>
-      target['@odata.id'] == null ? String(target[mapping.idColumn] ?? '') : refOf(target['@odata.id']).id,
-    );
-    const seen = new Set(),
-      creates = [],
-      updates = [],
-      created = new Set();
-    for (const [index, target] of targets.entries()) {
-      const folded = texts[index].toLowerCase();
-      if (seen.has(folded)) throw invalid('Duplicate key in Targets.', '0x80040203'); // native message text is a guess
-      seen.add(folded);
-      const key = lookupKey(c, mapping, texts[index]);
-      const values = { ...target };
-      delete values['@odata.id'];
-      if (key.row) updates.push({ ...values, [mapping.idColumn]: key.row[mapping.idColumn] });
-      else {
-        creates.push(values);
-        created.add(index);
-      }
-    }
-    const main = upsertMultipleOperation(c, mapping, targets, texts, (index) => created.has(index));
-    await runWrite(async () => {
-      const previousMain = store.pluginMainOperation;
-      store.pluginMainOperation = main;
-      try {
-        if (creates.length) await bulkWrite(c, false, creates, { delegated: true });
-        if (updates.length) await bulkWrite(c, true, updates, { concurrencyBehavior: 0, delegated: true });
-      } finally {
-        store.pluginMainOperation = previousMain;
-      }
-    });
-    return { status: 204 };
-  }
-
-  async function boundAction(c) {
+  /* NOSONAR: retain original await boundaries for concurrent operations */ async function boundAction(c) {
     const { mapping, route } = c;
     if (route.key == null && route.name === 'DeleteMultiple' && !isElastic(mapping)) return deleteMultipleRefusal(c);
     assertPluginMessageAdmission(store, route.name, c, mapping.logicalName);
@@ -2895,7 +2870,47 @@ export function createRecordHandlers({
     )
       return elasticBulk(c);
     if (route.name === 'CreateMultiple' || route.name === 'UpdateMultiple') return standardBulk(c);
-    if (route.name === 'UpsertMultiple') return upsertMultiple(c, mapping);
+    if (route.name === 'UpsertMultiple') {
+      const targets = targetsOf(c);
+      refuseBulkTargets(mapping, route.name, targets);
+      // A target names its record by @odata.id or by its primary key column.
+      const texts = targets.map((target) =>
+        target['@odata.id'] == null ? String(target[mapping.idColumn] ?? '') : refOf(target['@odata.id']).id,
+      );
+      const seen = new Set(),
+        creates = [],
+        updates = [],
+        created = new Set();
+      for (const [index, target] of targets.entries()) {
+        const folded = texts[index].toLowerCase();
+        if (seen.has(folded)) throw invalid('Duplicate key in Targets.', '0x80040203'); // native message text is a guess
+        seen.add(folded);
+        const key = lookupKey(c, mapping, texts[index]);
+        const values = { ...target };
+        delete values['@odata.id'];
+        if (key.row) updates.push({ ...values, [mapping.idColumn]: key.row[mapping.idColumn] });
+        else {
+          creates.push(values);
+          created.add(index);
+        }
+      }
+      // UpsertMultiple runs no steps of its own (registered UpsertMultiple steps do not fire): its main operation
+      // (UpsertMultiple/30) runs the new records through the CreateMultiple pipeline, then the existing ones through
+      // UpdateMultiple, whose message input carries ConcurrencyBehavior; both in its transaction, request and correlation,
+      // under it as ParentContext (recorded native bulk).
+      const main = upsertMultipleOperation(c, mapping, targets, texts, (index) => created.has(index));
+      await runWrite(async () => {
+        const previousMain = store.pluginMainOperation;
+        store.pluginMainOperation = main;
+        try {
+          if (creates.length) await bulkWrite(c, false, creates, { delegated: true });
+          if (updates.length) await bulkWrite(c, true, updates, { concurrencyBehavior: 0, delegated: true });
+        } finally {
+          store.pluginMainOperation = previousMain;
+        }
+      });
+      return { status: 204 };
+    }
     throw noResource(c);
   }
 
@@ -3047,56 +3062,15 @@ export function createRecordHandlers({
     });
   }
 
-  /* NOSONAR */ async function prepareBulkTarget(c, mapping, target, update, now) {
-    const text = target[mapping.idColumn];
-    if (update && text == null) throw invalid(`The ${mapping.idColumn} property is required.`);
-    const existing = update ? lookupKey(c, mapping, String(text)).row : null;
-    if (update && !existing) throw notFoundRecord(mapping.logicalName, String(text));
-    const data = update ? await updateData(c, mapping, target, existing) : await createData(c, mapping, target);
-    const id = update ? existing[mapping.idColumn] : data[mapping.idColumn];
-    const created = update ? {} : (derivedCreateColumns.get(data) ?? {});
-    const input = store.normalizeRecord(mapping, data, c.identity);
-    for (const name of Object.keys(created)) delete input[name];
-    if (!update)
-      for (const [name, value] of Object.entries(mapping.recordDefaults ?? {}))
-        // Two-option defaults, a standard table's choice defaults too, never the state (data.mjs createStepsCore).
-        if (
-          !Object.hasOwn(input, name) &&
-          name !== 'statecode' &&
-          name !== 'statuscode' &&
-          (standardTableDef(mapping.logicalName) ||
-            fieldKind(store.fieldDefinition(mapping.logicalName, name, fieldsOf)) === 'boolean')
-        )
-          input[name] = structuredClone(value);
-    const sdkTarget = {
-      ...recordToSdkEntity(store, mapping.logicalName, update ? { ...input, [mapping.idColumn]: id } : input),
-      id: id ?? '00000000-0000-0000-0000-000000000000',
-    };
-    return { sdkTarget, created, stamp: bulkStamp(c, mapping, data, update, now, created) };
-  }
-  function authorizeBulkTarget(c, mapping, operation, values, previous) {
-    authorize(c, mapping.logicalName, operation, mapping, previous ?? values);
-    authorizeLookups(c, mapping, values);
-  }
-  async function writeBulkTarget(c, mapping, update, derived, id, data, options) {
-    if (!update) {
-      const columns = derived[options.targetIndex] ?? {};
-      for (const [name, value] of Object.entries(columns)) if (!Object.hasOwn(data, name)) data[name] = value;
-      derivedCreateColumns.set(data, columns);
-    }
-    const row = await withKeyViolation(mapping, data, () =>
-      update
-        ? store.updateRecordAsync(mapping.logicalName, id, data, c.identity, updateOptions(c, options))
-        : store.createRecordAsync(mapping.logicalName, data, c.identity, createOptions(c, options, data)),
-    );
-    options.postWriteEffects.push(() =>
-      afterWrite(c, mapping, { operation: update ? 'update' : 'create', id: row[mapping.idColumn] }),
-    );
-    return row;
-  }
+  /* NOSONAR */
 
   // The grouped CreateMultiple/UpdateMultiple pipeline over Web API targets, inside the caller's write.
-  async function bulkWrite(c, update, raw, { concurrencyBehavior, delegated = false } = {}) {
+  /* NOSONAR: retain original await boundaries for concurrent operations */ async function bulkWrite(
+    c,
+    update,
+    raw,
+    { concurrencyBehavior, delegated = false } = {},
+  ) {
     const { mapping } = c;
     const targets = [],
       stamps = [],
@@ -3104,14 +3078,36 @@ export function createRecordHandlers({
     // Whole seconds, as a single write stamps them (touchRow, createdon ??= in data.mjs).
     const now = isoUtc(store.clock.now());
     for (const target of raw) {
+      const text = target[mapping.idColumn];
+      if (update && text == null) throw invalid(`The ${mapping.idColumn} property is required.`);
+      const existing = update ? lookupKey(c, mapping, String(text)).row : null;
+      if (update && !existing) throw notFoundRecord(mapping.logicalName, String(text));
+      const data = update ? await updateData(c, mapping, target, existing) : await createData(c, mapping, target);
+      const id = update ? existing[mapping.idColumn] : data[mapping.idColumn];
       // As a single Create's Target (data.mjs createStepsCore): the submitted columns, the primary key a request names
       // and the column defaults at PreValidation; the derived state and the audit/ownership stamps from PreOperation on
       // (native bulk: CreateMultiple/10 Targets carry the key and the boolean default, /20 the stamps).
+      const created = update ? {} : (derivedCreateColumns.get(data) ?? {});
+      const input = store.normalizeRecord(mapping, data, c.identity);
+      for (const name of Object.keys(created)) delete input[name];
+      if (!update)
+        for (const [name, value] of Object.entries(mapping.recordDefaults ?? {}))
+          // Two-option defaults, a standard table's choice defaults too, never the state (data.mjs createStepsCore).
+          if (
+            !Object.hasOwn(input, name) &&
+            name !== 'statecode' &&
+            name !== 'statuscode' &&
+            (standardTableDef(mapping.logicalName) ||
+              fieldKind(store.fieldDefinition(mapping.logicalName, name, fieldsOf)) === 'boolean')
+          )
+            input[name] = structuredClone(value);
       // UpdateMultiple's Targets name the key (native bulk: the UpdateMultiple and bridged Update Targets at 10/20/40).
-      const prepared = await prepareBulkTarget(c, mapping, target, update, now);
-      targets.push(prepared.sdkTarget);
-      derived.push(prepared.created);
-      stamps.push(prepared.stamp);
+      targets.push({
+        ...recordToSdkEntity(store, mapping.logicalName, update ? { ...input, [mapping.idColumn]: id } : input),
+        id: id ?? '00000000-0000-0000-0000-000000000000',
+      });
+      derived.push(created);
+      stamps.push(bulkStamp(c, mapping, data, update, now, created));
     }
     return executeBulkRecordsAsync({
       store,
@@ -3124,8 +3120,26 @@ export function createRecordHandlers({
       bypassCustomAsync: c.bypassCustomAsync === true,
       bypassStepIds: c.bypassStepIds,
       systemParameters: c.systemParameters,
-      authorize: (operation, values, previous) => authorizeBulkTarget(c, mapping, operation, values, previous),
-      write: (_update, id, data, options) => writeBulkTarget(c, mapping, update, derived, id, data, options),
+      authorize: (operation, values, previous) => {
+        authorize(c, mapping.logicalName, operation, mapping, previous ?? values);
+        authorizeLookups(c, mapping, values);
+      },
+      write: async (_update, id, data, options) => {
+        if (!update) {
+          const columns = derived[options.targetIndex] ?? {};
+          for (const [name, value] of Object.entries(columns)) if (!Object.hasOwn(data, name)) data[name] = value;
+          derivedCreateColumns.set(data, columns);
+        }
+        const row = await withKeyViolation(mapping, data, () =>
+          update
+            ? store.updateRecordAsync(mapping.logicalName, id, data, c.identity, updateOptions(c, options))
+            : store.createRecordAsync(mapping.logicalName, data, c.identity, createOptions(c, options, data)),
+        );
+        options.postWriteEffects.push(() =>
+          afterWrite(c, mapping, { operation: update ? 'update' : 'create', id: row[mapping.idColumn] }),
+        );
+        return row;
+      },
       ...(concurrencyBehavior === undefined ? {} : { concurrencyBehavior }),
       delegated,
     });

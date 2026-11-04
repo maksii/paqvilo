@@ -1,3 +1,4 @@
+import { stripTrailingCharacter } from './text-scanning.mjs';
 // The Power Fx function table (power-fx.mjs evaluates; this file answers each function). One entry per function:
 // { min, max, fn(fx, ...values) } evaluates its arguments first and lets an error argument flow through (Learn, "Error
 // handling": error in, error out); `errors: true` sees error arguments; `lazy: true` receives the argument nodes (If,
@@ -1173,8 +1174,8 @@ export const FUNCTIONS = {
   Lower: textual((t) => t.toLowerCase()),
   Upper: textual((t) => t.toUpperCase()),
   Proper: textual((t) => t.toLowerCase().replace(/(^|[^\p{L}])(\p{L})/gu, (m, a, b) => a + b.toUpperCase())),
-  Trim: textual((t) => t.replace(/^ +/, '').replace(/ +$/, '').replace(/ {2,}/g, ' ')), // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-  TrimEnds: textual((t) => t.replace(/^ +/, '').replace(/ +$/, '')), // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  Trim: textual((t) => stripTrailingCharacter(t.replace(/^ +/, ''), ' ').replace(/ {2,}/g, ' ')),
+  TrimEnds: textual((t) => stripTrailingCharacter(t.replace(/^ +/, ''), ' ')),
   Left: {
     min: 2,
     max: 2,

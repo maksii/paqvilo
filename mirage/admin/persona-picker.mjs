@@ -237,7 +237,8 @@ export function mountPersonaPicker(root, report, { filters = {}, onSelect, onFil
   root.addEventListener('click', (event) => {
     const button = event.target.closest('button');
     if (!button || !root.contains(button)) return;
-    if ('personaClear' in button.dataset) return clearSelection();
+    if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-persona-clear'))
+      return clearSelection();
     if (button.dataset.personaPin) return togglePin(button.dataset.personaPin);
     if (button.dataset.personaDetails) return showDetails(button.dataset.personaDetails);
     if (button.dataset.personaChoose) choosePersona(button.dataset.personaChoose);

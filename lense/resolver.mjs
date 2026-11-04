@@ -58,13 +58,13 @@ function resolveRouteFile(model, rule, decoded, prefixEnd) {
   return file;
 }
 
-function resolveWebFile(model, site, excludes, changed, urlPath, decoded) {
+function resolveWebFile(model, site, excludes, inScope, urlPath, decoded) {
   if (site.webFiles?.enabled === false) return null;
   if (excludes.some((re) => re.test(decoded))) return null;
   // urlKey decodes once itself. Passing decoded here would conflate %252E and %2E.
   const webFile = model.webFileByUrl.get(urlKey(urlPath));
   if (!webFile?.file) return null;
-  if (changed && !changed.has(path.resolve(webFile.file))) return null;
+  if (!inScope(webFile.file)) return null;
   if (!isSourceFile(model.sourceDir, webFile.file)) return null;
   return { file: webFile.file, via: 'web-file' };
 }
@@ -113,6 +113,6 @@ export class Resolver {
       // rule matched but nothing on disk: fall through to the automatic mapping
     }
 
-    return resolveWebFile(this.model, this.site, this.excludes, this.changed, urlPath, decoded);
+    return resolveWebFile(this.model, this.site, this.excludes, (file) => this.inScope(file), urlPath, decoded);
   }
 }

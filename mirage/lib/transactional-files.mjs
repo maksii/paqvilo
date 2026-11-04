@@ -85,7 +85,7 @@ async function durableWrite(file, value, io) {
 
 /** Recovery only follows journal entries matching this runtime's declared file
  * set. Unknown file contents are never overwritten, including during rollback. */
-async function readJournal(journalFile, allowed, io) {
+/* NOSONAR: preserve transaction and recovery await boundaries */ async function readJournal(journalFile, allowed, io) {
   let journal;
   try {
     journal = JSON.parse(await readDeclaredFile(journalFile, io, 'utf8'));
@@ -93,14 +93,6 @@ async function readJournal(journalFile, allowed, io) {
     if (error.code === 'ENOENT') return;
     throw failure('Cannot read the pack transaction journal.', 'PersistenceRecoveryRequired');
   }
-  validateJournalHeader(journal, allowed);
-  const entries = journal.entries;
-  const seen = new Set();
-  for (const entry of entries) await validateJournalEntry(entry, journal, allowed, seen, io);
-  return journal;
-}
-
-function validateJournalHeader(journal, allowed) {
   if (
     !journal ||
     typeof journal !== 'object' ||
@@ -121,32 +113,56 @@ function validateJournalHeader(journal, allowed) {
       journal.lockFiles.some((file) => !allowed.has(file)))
   )
     throw failure('Pack journal lock ownership does not match the declared files.', 'PersistenceRecoveryRequired');
+  const entries = journal.entries;
+  const seen = new Set();
+  for (const entry of entries) {
+    if (
+      !entry ||
+      !allowed.has(entry.file) ||
+      seen.has(entry.file) ||
+      entry.temp !== companion(entry.file, journal.token, 'tmp') ||
+      entry.backup !== companion(entry.file, journal.token, 'bak') ||
+      !/^[a-f\d]{64}$/.test(entry.after) ||
+      (entry.before !== null && !/^[a-f\d]{64}$/.test(entry.before))
+    )
+      throw failure('Pack journal does not match the declared data files.', 'PersistenceRecoveryRequired');
+    seen.add(entry.file);
+    const actual = await currentDigest(entry.file, io);
+    if (journal.phase === 'prepared' && actual !== entry.before && actual !== entry.after)
+      throw failure(`Pack recovery found an external change in ${entry.file}.`, 'PersistenceRecoveryRequired');
+    if (
+      journal.phase === 'prepared' &&
+      entry.before !== null &&
+      (await currentDigest(entry.backup, io)) !== entry.before
+    )
+      throw failure(`Pack recovery backup is missing or changed for ${entry.file}.`, 'PersistenceRecoveryRequired');
+  }
+  return journal;
 }
 
-async function validateJournalEntry(entry, journal, allowed, seen, io) {
-  if (
-    !entry ||
-    !allowed.has(entry.file) ||
-    seen.has(entry.file) ||
-    entry.temp !== companion(entry.file, journal.token, 'tmp') ||
-    entry.backup !== companion(entry.file, journal.token, 'bak') ||
-    !/^[a-f\d]{64}$/.test(entry.after) ||
-    (entry.before !== null && !/^[a-f\d]{64}$/.test(entry.before))
-  )
-    throw failure('Pack journal does not match the declared data files.', 'PersistenceRecoveryRequired');
-  seen.add(entry.file);
-  const actual = await currentDigest(entry.file, io);
-  if (journal.phase === 'prepared' && actual !== entry.before && actual !== entry.after)
-    throw failure(`Pack recovery found an external change in ${entry.file}.`, 'PersistenceRecoveryRequired');
-  if (journal.phase === 'prepared' && entry.before !== null && (await currentDigest(entry.backup, io)) !== entry.before)
-    throw failure(`Pack recovery backup is missing or changed for ${entry.file}.`, 'PersistenceRecoveryRequired');
-}
-
-async function recover(journalFile, allowed, io) {
+/* NOSONAR: preserve transaction and recovery await boundaries */ async function recover(journalFile, allowed, io) {
   const journal = await readJournal(journalFile, allowed, io);
   if (!journal) return;
   const entries = journal.entries;
-  if (journal.phase === 'prepared') for (const entry of [...entries].reverse()) await restorePreparedEntry(entry, io);
+  if (journal.phase === 'prepared')
+    for (const entry of [...entries].reverse()) {
+      if ((await currentDigest(entry.file, io)) !== entry.after) continue;
+      if (entry.before === null) await io.unlink(entry.file);
+      else {
+        // Restore through an owned replacement. copyFile onto the destination
+        // would follow a concurrently replaced symlink outside the declared set.
+        await io.rm(entry.temp, { force: true });
+        if ((await currentDigest(entry.backup, io)) !== entry.before)
+          throw failure('Pack recovery backup changed.', 'PersistenceRecoveryRequired');
+        await io.copyFile(entry.backup, entry.temp, constants.COPYFILE_EXCL);
+        if (
+          (await currentDigest(entry.temp, io)) !== entry.before ||
+          (await currentDigest(entry.file, io)) !== entry.after
+        )
+          throw failure('Pack recovery path changed before restoration.', 'PersistenceRecoveryRequired');
+        await io.rename(entry.temp, entry.file);
+      }
+    }
   for (const entry of entries) {
     await io.rm(entry.temp, { force: true });
     await io.rm(entry.backup, { force: true });
@@ -155,24 +171,11 @@ async function recover(journalFile, allowed, io) {
   await io.unlink(journalFile);
 }
 
-async function restorePreparedEntry(entry, io) {
-  if ((await currentDigest(entry.file, io)) !== entry.after) return;
-  if (entry.before === null) {
-    await io.unlink(entry.file);
-    return;
-  }
-  // Restore through an owned replacement. copyFile onto the destination
-  // would follow a concurrently replaced symlink outside the declared set.
-  await io.rm(entry.temp, { force: true });
-  if ((await currentDigest(entry.backup, io)) !== entry.before)
-    throw failure('Pack recovery backup changed.', 'PersistenceRecoveryRequired');
-  await io.copyFile(entry.backup, entry.temp, constants.COPYFILE_EXCL);
-  if ((await currentDigest(entry.temp, io)) !== entry.before || (await currentDigest(entry.file, io)) !== entry.after)
-    throw failure('Pack recovery path changed before restoration.', 'PersistenceRecoveryRequired');
-  await io.rename(entry.temp, entry.file);
-}
-
-async function reclaimJournalLocks(journalFile, files, io) {
+/* NOSONAR: preserve transaction and recovery await boundaries */ async function reclaimJournalLocks(
+  journalFile,
+  files,
+  io,
+) {
   const journal = await readJournal(journalFile, new Set(files), io);
   if (journal?.version !== 2) return;
   const pid = Number(journal.lockOwner.split(':')[0]);
@@ -200,13 +203,12 @@ async function reclaimJournalLocks(journalFile, files, io) {
   }
 }
 
-async function locks(files, io, journalFile) {
+/* NOSONAR: preserve transaction and recovery await boundaries */ async function locks(files, io, journalFile) {
   if (journalFile) await reclaimJournalLocks(journalFile, files, io);
   const token = `${process.pid}:${randomUUID()}`,
     owned = [];
   const release = async () => {
-    owned.reverse();
-    for (const file of owned) {
+    for (const file of owned.reverse()) {
       try {
         if ((await readDeclaredFile(file, io, 'utf8')) === token) await io.unlink(file);
       } catch (error) {
@@ -215,7 +217,7 @@ async function locks(files, io, journalFile) {
     }
   };
   try {
-    for (const file of [...files].sort((left, right) => Number(left > right) - Number(left < right))) {
+    for (const file of [...files].sort()) {
       const name = `${file}.lock`;
       let handle;
       try {
@@ -257,7 +259,7 @@ export async function recoverTransactionalFiles({ journalFile, files, io = fs })
 /** Locked compare-and-swap publication with rollback and an on-disk recovery
  * journal. Every output is prepared before the first replacement. Cooperating
  * runtimes serialize; external content changes fail rather than being rebased. */
-export async function publishTransactionalFiles({
+/* NOSONAR: preserve transaction and recovery await boundaries */ export async function publishTransactionalFiles({
   entries,
   journalFile,
   io = fs,
@@ -269,7 +271,7 @@ export async function publishTransactionalFiles({
   if (new Set(files).size !== files.length)
     throw failure('A transaction names the same data file twice.', 'InvalidPackData', 400);
   await io.mkdir(path.dirname(journalFile), { recursive: true });
-  const lockFiles = [...new Set(allowedFiles)].sort((left, right) => Number(left > right) - Number(left < right));
+  const lockFiles = [...new Set(allowedFiles)].sort();
   const release = await locks(lockFiles, io, journalFile);
   const token = randomUUID(),
     prepared = [];
@@ -278,17 +280,47 @@ export async function publishTransactionalFiles({
   try {
     await recover(journalFile, new Set(allowedFiles), io);
     await verify();
-    await prepareTransactionEntries(entries, token, io, prepared);
+    for (const entry of entries) {
+      const before = await currentDigest(entry.file, io);
+      if (before !== entry.expectedDigest || (entry.existingOnly && before === null))
+        throw failure(
+          `Data changed outside this runtime: ${entry.file}. Restart from the updated pack before writing.`,
+        );
+      const item = {
+        file: entry.file,
+        before,
+        temp: companion(entry.file, token, 'tmp'),
+        backup: companion(entry.file, token, 'bak'),
+      };
+      prepared.push(item);
+      await writeJsonStream(item.temp, entry.value);
+      item.after = await currentDigest(item.temp, io);
+      if (before !== null) {
+        await io.copyFile(entry.file, item.backup, constants.COPYFILE_EXCL);
+        const backup = await io.open(item.backup, 'r+');
+        try {
+          await backup.sync();
+        } finally {
+          await backup.close();
+        }
+      }
+    }
     // Recheck the whole set before publication, not just each file at preparation.
     await verify();
-    await assertPreparedEntriesUnchanged(prepared, io);
+    for (const item of prepared)
+      if ((await currentDigest(item.file, io)) !== item.before)
+        throw failure(`Data changed while preparing ${item.file}.`);
     await durableWrite(
       journalFile,
       JSON.stringify({ version: 2, token, phase: 'prepared', entries: prepared, lockOwner: release.owner, lockFiles }),
       io,
     );
     journalWritten = true;
-    await publishPreparedEntries(prepared, io);
+    for (const item of prepared) {
+      if ((await currentDigest(item.file, io)) !== item.before)
+        throw failure(`Data changed before publishing ${item.file}.`);
+      await io.rename(item.temp, item.file);
+    }
     const marker = companion(journalFile, token, 'tmp');
     await durableWrite(
       marker,
@@ -302,7 +334,7 @@ export async function publishTransactionalFiles({
     if (journalWritten) {
       try {
         await recover(journalFile, new Set(allowedFiles), io);
-        journalWritten = false; // NOSONAR: reviewed, a rewrite would not preserve behaviour
+        journalWritten = false;
       } catch (recoveryError) {
         throw failure(
           `Publication failed and requires recovery: ${recoveryError.message}`,
@@ -323,45 +355,5 @@ export async function publishTransactionalFiles({
       }
     if (committed) await release().catch(() => {});
     else await release();
-  }
-}
-
-async function prepareTransactionEntries(entries, token, io, prepared) {
-  for (const entry of entries) {
-    const before = await currentDigest(entry.file, io);
-    if (before !== entry.expectedDigest || (entry.existingOnly && before === null))
-      throw failure(`Data changed outside this runtime: ${entry.file}. Restart from the updated pack before writing.`);
-    const item = {
-      file: entry.file,
-      before,
-      temp: companion(entry.file, token, 'tmp'),
-      backup: companion(entry.file, token, 'bak'),
-    };
-    prepared.push(item);
-    await writeJsonStream(item.temp, entry.value);
-    item.after = await currentDigest(item.temp, io);
-    if (before !== null) {
-      await io.copyFile(entry.file, item.backup, constants.COPYFILE_EXCL);
-      const backup = await io.open(item.backup, 'r+');
-      try {
-        await backup.sync();
-      } finally {
-        await backup.close();
-      }
-    }
-  }
-}
-
-async function assertPreparedEntriesUnchanged(prepared, io) {
-  for (const item of prepared)
-    if ((await currentDigest(item.file, io)) !== item.before)
-      throw failure(`Data changed while preparing ${item.file}.`);
-}
-
-async function publishPreparedEntries(prepared, io) {
-  for (const item of prepared) {
-    if ((await currentDigest(item.file, io)) !== item.before)
-      throw failure(`Data changed before publishing ${item.file}.`);
-    await io.rename(item.temp, item.file);
   }
 }

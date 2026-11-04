@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of platform form markup and multiselect behavior; no reproduced native capture cited.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderComponent } from '../lib/platform.mjs';

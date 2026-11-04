@@ -198,7 +198,7 @@ export function portalOverrideEntries(source, overrides = {}, section) {
     const records = (source.records ?? []).filter((record) => record.kind === 'webpageaccesscontrolrule');
     const find = (rows, id) => rows.find((record) => record.kind === 'webpageaccesscontrolrule' && record.id === id);
     return [...new Set([...records.map((record) => record.id), ...Object.keys(overrides.accessRules ?? {})])]
-      .sort((a, b) => Number(a > b) - Number(a < b))
+      .sort(/* NOSONAR: preserve default string coercion */)
       .map((id) => ({
         id,
         name: find(effective.records, id)?.name ?? find(records, id)?.name ?? id,
@@ -222,7 +222,7 @@ export function portalOverrideEntries(source, overrides = {}, section) {
       };
     const records = (source.records ?? []).filter((record) => record.kind === 'webrole');
     return [...new Set([...records.map((record) => record.id), ...Object.keys(overrides.roles ?? {})])]
-      .sort((a, b) => Number(a > b) - Number(a < b))
+      .sort(/* NOSONAR: preserve default string coercion */)
       .map((id) => ({
         id,
         name:
@@ -236,7 +236,7 @@ export function portalOverrideEntries(source, overrides = {}, section) {
       }));
   }
   return [...new Set([...Object.keys(source[section] ?? {}), ...Object.keys(overrides[section] ?? {})])]
-    .sort((a, b) => Number(a > b) - Number(a < b))
+    .sort(/* NOSONAR: preserve default string coercion */)
     .map((name) => ({
       id: name,
       name,

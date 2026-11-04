@@ -34,7 +34,7 @@ function boundaryOf(contentType) {
 
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 // A line that reads as the delimiter of another multipart body (RFC 2046 bchars, optional close). Its text is never executed.
-const FOREIGN_DELIMITER = /(^|\r?\n)--[0-9A-Za-z'()+_,\-./:=? ]+?(?:--)?[ \t]*(?=\r?\n|$)/; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+const FOREIGN_DELIMITER = /(^|\r?\n)--[0-9A-Za-z'()+_,\-./:=? ]+(?:\t[ \t]*)?(?=\r?\n|$)/;
 
 // Splits on delimiter lines that match this boundary exactly (CRLF, the boundary, optional "--", padding, CRLF).
 // A longer boundary that starts with this one is content, not a delimiter. Returns the text after each delimiter line.

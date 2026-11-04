@@ -1,6 +1,7 @@
 /** Early owned-browser instrumentation. Arguments/text/values never enter evidence. */
+// NOSONAR: window preserves the browser WindowProxy boundary when page code reassigns globalThis.
 export function installDomProvenance({ slot, secret, binding, limit = 10000 } = {}) {
-  if (!slot || !secret || !binding || Object.hasOwn(globalThis, slot)) return;
+  if (!slot || !secret || !binding || Object.hasOwn(window, slot)) return;
   // Serialized into the page with this function, so it must stay nested here.
   /* NOSONAR */ function stackFrameOf(raw, match, methods, NativeEncoder) {
     const { apply, stringSlice, digest, subtle, encode } = methods;
@@ -162,9 +163,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       frames[index] = frame;
       if (--remaining || closed || !has(pending, record.id)) return;
       try {
-        apply(emit, globalThis, [
-          apply(stringify, JSON, [{ version: 1, secret, id: record.id, relationship, frames }]),
-        ]);
+        apply(emit, window, [apply(stringify, JSON, [{ version: 1, secret, id: record.id, relationship, frames }])]);
       } catch {
         record.reason = 'callsite-unavailable';
         apply(mapDelete, pending, [record.id]);
@@ -203,7 +202,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       stack = [root];
     let visited = 0;
     while (stack.length && visited < budget) {
-      const node = stack.at(-1);
+      const node = stack[stack.length - 1]; // NOSONAR: do not invoke page-overridable Array.prototype methods during instrumentation
       stack.length--;
       if (!node || !nodeType(node)) continue;
       visited++;
@@ -448,7 +447,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       result.availability[0] = { reason: record.reason ?? transportLimit ?? 'creation-proof-pending' };
       return result;
     }
-    const proof = apply(clone, globalThis, [record.proof]);
+    const proof = apply(clone, window, [record.proof]);
     if (typeof proof.reason === 'string' && apply(regexExec, /^[a-z][a-z0-9-]{0,127}$/, [proof.reason]))
       result.availability[0] = { reason: proof.reason };
     result.sourceRefs = proof.sourceRefs ?? [];
@@ -477,7 +476,7 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
     const record = get(pending, id);
     if (closed || !record || !proof || typeof proof !== 'object' || array(proof)) return false;
     try {
-      record.proof = apply(clone, globalThis, [proof]);
+      record.proof = apply(clone, window, [proof]);
     } catch {
       return false;
     }
@@ -533,5 +532,5 @@ export function installDomProvenance({ slot, secret, binding, limit = 10000 } = 
       return writer;
     },
   });
-  define(globalThis, slot, { value: reader, configurable: false, writable: false });
+  define(window, slot, { value: reader, configurable: false, writable: false });
 }

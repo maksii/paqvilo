@@ -127,7 +127,7 @@ function extensionDiagnostics(forward) {
       }
       const tables = [
         ...new Set(entries.map((entry) => entry.table ?? entry.entity ?? entry.logicalName).filter(Boolean)),
-      ].sort((a, b) => Number(a > b) - Number(a < b));
+      ].sort(/* NOSONAR: preserve default string coercion */);
       const tableScope = tables.length ? ` for ${tables.length} tables` : '';
       forward({
         code,
@@ -387,9 +387,38 @@ async function composeOrganizationRuntime({
 </Function>`,
   );
   const installed = [];
-  const closeState = { promise: undefined };
-  const close = () => closeOrganization(closeState, installed, api, recordHandlers, changes, ownsScheduler, scheduler);
-  await installOrganizationExtensions(extensions, api, change, seedSecurity, installed, close, log);
+  let closed;
+  const close = () =>
+    (closed ??= (async () => {
+      const results = await Promise.allSettled(
+        installed.map((extension) => Promise.resolve().then(() => extension.close?.(api))),
+      );
+      try {
+        await recordHandlers.close?.();
+      } finally {
+        changes.close();
+        if (ownsScheduler) releaseOrganizationScheduler(scheduler);
+      }
+      const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+      if (failures.length) throw new AggregateError(failures, 'Organization extension cleanup failed.');
+    })());
+  try {
+    api.diagnostic.hold();
+    for (const extension of extensions) {
+      if (typeof extension?.install !== 'function')
+        throw new Error('A Dataverse API extension needs an install(api) function.');
+      // An installer may allocate resources before it fails. Give it the same
+      // cleanup opportunity as successfully installed extensions.
+      installed.push(extension);
+      // The runtime's diagnostic sink; pack overrides and providers come from api.packExport / api.providers.
+      await extension.install(api, { diagnostic: api.diagnostic });
+    }
+    api.diagnostic.flush();
+    if (extensions.length) await change(seedSecurity);
+  } catch (error) {
+    await close().catch((cleanup) => log('organization-cleanup', cleanup));
+    throw error;
+  }
   // The organization the seeded organization row carries (settings.organizationId is null at runtime).
   const organizationRow = store
     .tableRows('organization')
@@ -438,47 +467,24 @@ async function composeOrganizationRuntime({
     runAtomic: (fn, options) => runAtomic(api, fn, options),
     read: (fn) =>
       store.transact(fn, { nested: true, skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true }),
-    reseed: async () =>
-      reseedOrganizationRuntime({ store, api, extensions, registerApplications, seedSecurity, changes }),
+    reseed: async () => {
+      await registerApplications();
+      await store.transact(() => composeInternalTables(store));
+      api.diagnostic.hold();
+      try {
+        for (const extension of extensions) await extension.reset?.(api);
+      } finally {
+        api.diagnostic.flush();
+      }
+      await seedSecurity();
+      await store.transact(() => {
+        store.state.rowVersion = maxRowVersion(store.state);
+      });
+      await store.flushCommittedEvents?.();
+      changes.reset();
+    },
     close,
   };
-}
-
-function closeOrganization(state, installed, api, recordHandlers, changes, ownsScheduler, scheduler) {
-  const existing = state.promise;
-  if (existing != null) return existing;
-  const promise = (async () => {
-    const results = await Promise.allSettled(
-      installed.map((extension) => Promise.resolve().then(() => extension.close?.(api))),
-    );
-    try {
-      await recordHandlers.close?.();
-    } finally {
-      changes.close();
-      if (ownsScheduler) releaseOrganizationScheduler(scheduler);
-    }
-    const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
-    if (failures.length) throw new AggregateError(failures, 'Organization extension cleanup failed.');
-  })();
-  state.promise = promise;
-  return promise;
-}
-
-async function reseedOrganizationRuntime({ store, api, extensions, registerApplications, seedSecurity, changes }) {
-  await registerApplications();
-  await store.transact(() => composeInternalTables(store));
-  api.diagnostic.hold();
-  try {
-    for (const extension of extensions) await extension.reset?.(api);
-  } finally {
-    api.diagnostic.flush();
-  }
-  await seedSecurity();
-  await store.transact(() => {
-    store.state.rowVersion = maxRowVersion(store.state);
-  });
-  await store.flushCommittedEvents?.();
-  changes.reset();
 }
 
 function configureOrganizationRuntime(store, clockOption, idsOption, schedulerOption) {
@@ -532,24 +538,4 @@ function organizationSecuritySettings(settings, organizationId, tenantId) {
       roles: user.roles,
     })),
   };
-}
-
-async function installOrganizationExtensions(extensions, api, change, seedSecurity, installed, close, log) {
-  try {
-    api.diagnostic.hold();
-    for (const extension of extensions) {
-      if (typeof extension?.install !== 'function')
-        throw new Error('A Dataverse API extension needs an install(api) function.');
-      // An installer may allocate resources before it fails. Give it the same
-      // cleanup opportunity as successfully installed extensions.
-      installed.push(extension);
-      // The runtime's diagnostic sink; pack overrides and providers come from api.packExport / api.providers.
-      await extension.install(api, { diagnostic: api.diagnostic });
-    }
-    api.diagnostic.flush();
-    if (extensions.length) await change(seedSecurity);
-  } catch (error) {
-    await close().catch((error_) => log('organization-cleanup', error_));
-    throw error;
-  }
 }

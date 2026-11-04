@@ -124,7 +124,7 @@ export function createMemoryStorage({ id = 'memory', clock = systemClock, ids = 
       alive();
       const keys = [...objects.keys()]
         .filter((k) => k.startsWith(prefix) && (!continuation || k > continuation))
-        .sort((a, b) => Number(a > b) - Number(a < b));
+        .sort(/* NOSONAR: preserve default string coercion */);
       const page = keys.slice(0, pageSize);
       return {
         items: page.map((k) => ({

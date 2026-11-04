@@ -56,8 +56,8 @@ export function verificationWitness({ state, tables, identity, portal, runtime }
     contactId: identity?.contactId ?? identity?.id ?? null,
     accountId: identity?.accountId ?? null,
     roleSource: identity?.roleSource ?? 'memberships',
-    roles: [...(identity?.roles ?? [])].sort((a, b) => Number(a > b) - Number(a < b)),
-    roleIds: [...(identity?.roleIds ?? [])].sort((a, b) => Number(a > b) - Number(a < b)),
+    roles: [...(identity?.roles ?? [])].sort(), // NOSONAR: preserve default string coercion in witnesses
+    roleIds: [...(identity?.roleIds ?? [])].sort(), // NOSONAR: preserve default string coercion in witnesses
   };
   const rows = Object.fromEntries(
     selection.map((table) => [

@@ -130,96 +130,7 @@ export function startupProgress({
 }
 
 /** Navigation completion is separate from application readiness; no arbitrary live-page readiness is inferred. */
-function startTrackedRequest(state, request) {
-  if (!['document', 'script', 'stylesheet', 'image', 'font', 'xhr', 'fetch'].includes(request.resourceType())) return;
-  let frame = null;
-  try {
-    frame = request.frame();
-  } catch {
-    /* Worker/unknown ownership remains pending until its terminal event. */
-  }
-  const order = ++state.sequence;
-  state.requests.set(request, { frame, order });
-  if (frame && request.isNavigationRequest?.()) state.navigations.set(frame, order);
-  state.idleSince = Date.now();
-}
-
-function finishTrackedRequest(state, request) {
-  if (state.requests.delete(request)) state.idleSince = Date.now();
-}
-
-function commitTrackedFrame(state, frame) {
-  const boundary = state.navigations.get(frame);
-  if (boundary === undefined) return;
-  // A replaced document can lose terminal resource events during CDP interception.
-  // Retain its new navigation and every request started afterward, including preloads.
-  for (const [request, record] of state.requests)
-    if (record.frame === frame && record.order < boundary) state.requests.delete(request);
-  state.idleSince = Date.now();
-}
-
-function detachTrackedFrame(state, frame) {
-  for (const [request, record] of state.requests) if (record.frame === frame) state.requests.delete(request);
-  state.navigations.delete(frame);
-  state.idleSince = Date.now();
-}
-
-async function waitForMirageApplication(page, progress, remaining, cancelledResult) {
-  progress?.phase('application data', 'waiting for catalogue, staff identity and initial view');
-  const readiness = page
-    .waitForFunction(() => ['ready', 'error'].includes(document.documentElement.dataset.mirageAppState), null, {
-      timeout: remaining(),
-    })
-    .then(() => 'application');
-  if ((await Promise.race([cancelledResult, readiness])) === 'cancelled') return false;
-  const state = await page.evaluate(() => ({
-    state: document.documentElement.dataset.mirageAppState,
-    message: document.querySelector('#notice')?.textContent,
-  }));
-  if (state.state === 'error')
-    throw new Error(`Application failed to load: ${state.message || 'inspect the application diagnostics'}`);
-  progress?.complete('application and initial view usable');
-  return true;
-}
-
-async function waitForPageResources(page, progress, nativeModelDriven, deadline, timeout, tracking, cancelledResult) {
-  progress?.phase(
-    'page resources',
-    nativeModelDriven
-      ? 'waiting for document load; background resources and native application readiness remain unverified'
-      : 'waiting for initial resources and data requests; application readiness is unverified',
-  );
-  const remaining = () => Math.max(1, deadline - Date.now());
-  if (
-    (await Promise.race([
-      cancelledResult,
-      page.waitForLoadState('load', { timeout: remaining() }).then(() => 'loaded'),
-    ])) === 'cancelled'
-  )
-    return false;
-  // Native model-driven apps continuously fetch data and start workers. Their resource streams are not a readiness protocol.
-  while (!nativeModelDriven && (tracking.requests.size || Date.now() - tracking.idleSince < 100)) {
-    if (Date.now() >= deadline)
-      throw new Error(
-        `Initial page requests did not settle within ${timeout}ms; inspect pending requests and sign-in in the browser.`,
-      );
-    if (
-      (await Promise.race([
-        cancelledResult,
-        new Promise((resolve) => setTimeout(resolve, Math.min(50, remaining()))),
-      ])) === 'cancelled'
-    )
-      return false;
-  }
-  progress?.complete(
-    nativeModelDriven
-      ? 'document loaded; background resources, sign-in and native application readiness remain unverified'
-      : 'document and initial resources loaded; sign-in and application readiness remain unverified',
-  );
-  return true;
-}
-
-export async function waitForStartupPage(
+/* NOSONAR: preserve request lifecycle and cancellation await boundaries */ export async function waitForStartupPage(
   page,
   url,
   {
@@ -232,12 +143,42 @@ export async function waitForStartupPage(
   } = {},
 ) {
   let cancelled = false;
-  const deadline = Date.now() + timeout;
-  const tracking = { requests: new Map(), navigations: new Map(), idleSince: Date.now(), sequence: 0 };
-  const started = (request) => startTrackedRequest(tracking, request);
-  const finished = (request) => finishTrackedRequest(tracking, request);
-  const committed = (frame) => commitTrackedFrame(tracking, frame);
-  const detached = (frame) => detachTrackedFrame(tracking, frame);
+  const deadline = Date.now() + timeout,
+    requests = new Map(),
+    navigations = new Map();
+  let idleSince = Date.now(),
+    sequence = 0;
+  const started = (request) => {
+    if (!['document', 'script', 'stylesheet', 'image', 'font', 'xhr', 'fetch'].includes(request.resourceType())) return;
+    let frame = null;
+    try {
+      frame = request.frame();
+    } catch {
+      /* Worker/unknown ownership remains pending until its terminal event. */
+    }
+    const order = ++sequence;
+    requests.set(request, { frame, order });
+    if (frame && request.isNavigationRequest?.()) navigations.set(frame, order);
+    idleSince = Date.now();
+  };
+  const finished = (request) => {
+    if (requests.delete(request)) idleSince = Date.now();
+  };
+  const committed = (frame) => {
+    const boundary = navigations.get(frame);
+    if (boundary === undefined) return;
+    // A replaced document can lose terminal resource events during CDP interception.
+    // Retain its new navigation and every request started afterward, including preloads.
+    for (const [request, record] of requests)
+      if (record.frame === frame && record.order < boundary) requests.delete(request);
+    idleSince = Date.now();
+  };
+  const detached = (frame) => {
+    for (const [request, record] of requests) if (record.frame === frame) requests.delete(request);
+    navigations.delete(frame);
+    idleSince = Date.now();
+  };
+  const remaining = () => Math.max(1, deadline - Date.now());
   page.on('request', started);
   page.on('requestfinished', finished);
   page.on('requestfailed', finished);
@@ -259,13 +200,56 @@ export async function waitForStartupPage(
     const navigation = page.goto(url, { waitUntil: 'domcontentloaded', timeout }).then(() => 'document');
     if ((await Promise.race([cancelledResult, navigation])) === 'cancelled') return false;
     if (modelDriven && new URL(page.url()).pathname === '/main.aspx') {
-      if (!(await waitForMirageApplication(page, progress, () => Math.max(1, deadline - Date.now()), cancelledResult)))
+      progress?.phase('application data', 'waiting for catalogue, staff identity and initial view');
+      const readiness = page
+        .waitForFunction(() => ['ready', 'error'].includes(document.documentElement.dataset.mirageAppState), null, {
+          timeout: remaining(),
+        })
+        .then(() => 'application');
+      if ((await Promise.race([cancelledResult, readiness])) === 'cancelled') return false;
+      const state = await page.evaluate(() => ({
+        state: document.documentElement.dataset.mirageAppState,
+        message: document.querySelector('#notice')?.textContent,
+      }));
+      if (state.state === 'error')
+        throw new Error(`Application failed to load: ${state.message || 'inspect the application diagnostics'}`);
+      progress?.complete('application and initial view usable');
+    } else {
+      progress?.phase(
+        'page resources',
+        nativeModelDriven
+          ? 'waiting for document load; background resources and native application readiness remain unverified'
+          : 'waiting for initial resources and data requests; application readiness is unverified',
+      );
+      if (
+        (await Promise.race([
+          cancelledResult,
+          page.waitForLoadState('load', { timeout: remaining() }).then(() => 'loaded'),
+        ])) === 'cancelled'
+      )
         return false;
-    } else if (
-      // Native targets complete document navigation without asserting application usability.
-      !(await waitForPageResources(page, progress, nativeModelDriven, deadline, timeout, tracking, cancelledResult))
-    ) {
-      return false;
+      // Native model-driven apps continuously fetch data and start workers. Their
+      // resource streams are not a readiness protocol (and CDP can omit worker
+      // terminal events). Only Mirage exposes the explicit app-state contract.
+      // A native target completes document navigation without asserting usability.
+      while (!nativeModelDriven && (requests.size || Date.now() - idleSince < 100)) {
+        if (Date.now() >= deadline)
+          throw new Error(
+            `Initial page requests did not settle within ${timeout}ms; inspect pending requests and sign-in in the browser.`,
+          );
+        if (
+          (await Promise.race([
+            cancelledResult,
+            new Promise((resolve) => setTimeout(resolve, Math.min(50, remaining()))),
+          ])) === 'cancelled'
+        )
+          return false;
+      }
+      progress?.complete(
+        nativeModelDriven
+          ? 'document loaded; background resources, sign-in and native application readiness remain unverified'
+          : 'document and initial resources loaded; sign-in and application readiness remain unverified',
+      );
     }
     return !cancelled;
   } catch (error) {

@@ -47,7 +47,7 @@ function choiceDeclaration({ field, type, table, column, source, metadata, diagn
 }
 
 function lookupDeclaration({ field, table, column, diagnostics }) {
-  const targets = [...new Set(field.targets ?? [])].sort((a, b) => Number(a > b) - Number(a < b));
+  const targets = [...new Set(field.targets ?? [])].sort(/* NOSONAR: preserve default string coercion */);
   if (targets.some((target) => !name(target))) throw new TypeError('Schema lookup targets must be logical names.');
   if (!targets.length) diagnostics.push({ code: 'SCHEMA_LOOKUP_TARGETS_UNRESOLVED', table, column });
   return `Lookup<${targets.length ? targets.map((target) => JSON.stringify(target)).join(' | ') : 'string'}>`;
@@ -108,7 +108,7 @@ function appendTableDeclarations(table, context) {
   choiceLines.push(`  ${JSON.stringify(table)}: {`);
   primaryLines.push(`  ${JSON.stringify(table)}: ${JSON.stringify(primary)};`);
   const columnContext = { ...context, source };
-  for (const column of Object.keys(fields).sort((a, b) => Number(a > b) - Number(a < b)))
+  for (const column of Object.keys(fields).sort(/* NOSONAR: preserve default string coercion */))
     appendColumnDeclaration(column, table, fields, primary, columnContext);
   tableLines.push('  };');
   choiceLines.push('  };');
@@ -123,7 +123,7 @@ export function generateSchemaDeclarations(schema, { tables = Object.keys(schema
     tables.some((table) => !name(table) || !Object.hasOwn(schema.tables, table))
   )
     throw new TypeError('Schema declarations require imported tables and at most 1000 explicit logical table names.');
-  const selected = [...new Set(tables)].sort((a, b) => Number(a > b) - Number(a < b)),
+  const selected = [...new Set(tables)].sort(/* NOSONAR: preserve default string coercion */),
     diagnostics = [],
     tableLines = [],
     choiceLines = [],

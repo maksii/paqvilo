@@ -143,12 +143,12 @@ function projectScripts({ sites, packs, vscode }) {
     '.gitignore': await template('gitignore.template'),
     '.gitattributes': await template('gitattributes.template'),
     '.editorconfig': await template('editorconfig.template'),
-    '.node-version': metadata.engines.node.match(/\d+\.\d+\.\d+/)[0] + '\n', // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    '.node-version': metadata.engines.node.match(/(?<!\d)\d+\.\d+\.\d+/)[0] + '\n',
     'README.md': await template('README.md', {
       name,
       docs,
       version,
-      node: metadata.engines.node.match(/\d+\.\d+\.\d+/)[0], // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+      node: metadata.engines.node.match(/(?<!\d)\d+\.\d+\.\d+/)[0],
       nodeMajor: metadata.engines.node.match(/\d+/)[0],
       editorStep: vscode
         ? 'Run `npm run editor:refresh` after configuration changes; inspect any script proposals and edited-file alternatives.'

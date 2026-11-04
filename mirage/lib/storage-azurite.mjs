@@ -8,6 +8,7 @@ import { ProviderError, STORAGE_OPERATIONS, validateKey } from './storage-provid
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
 import { clockFunction, systemClock } from './runtime-clock.mjs';
 import { tracedFetch } from './trace-hosts.mjs';
+import { stripTrailingCharacter } from './text-scanning.mjs';
 
 /** x-ms-version pinned for every request and the SAS `sv` (listed in "Previous Azure Storage service versions"). */
 export const BLOB_API_VERSION = '2021-08-06';
@@ -86,7 +87,7 @@ export function parseConnectionString(text, source = 'the connection string') {
   if (!accountName || !/^[A-Za-z0-9-]{1,64}$/.test(accountName))
     return invalid(`AccountName in ${source} is missing or invalid.`);
   if (!accountKey || !BASE64.test(accountKey)) return invalid(`AccountKey in ${source} is missing or not base64.`);
-  return { accountName, accountKey, blobEndpoint: url.href.replace(/\/+$/, '') }; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  return { accountName, accountKey, blobEndpoint: stripTrailingCharacter(url.href, '/') };
 }
 
 // Shared Key (Blob, 2009-09-19 and later): the standard headers in this order, values only, one line each.
@@ -119,7 +120,7 @@ export function sharedKeyStringToSign({ method, url, headers = {}, accountName }
   // The service's comparer for names with '_' or '-' next to letters (ordinal vs culture order) is not known.
   const canonicalHeaders = [...h.keys()]
     .filter((name) => name.startsWith('x-ms-'))
-    .sort((a, b) => Number(a > b) - Number(a < b))
+    .sort(/* NOSONAR: preserve default string coercion */)
     .map((name) => `${name}:${h.get(name).replace(/\s+/g, ' ').trim()}\n`)
     .join('');
   const target = new URL(url);
@@ -127,7 +128,7 @@ export function sharedKeyStringToSign({ method, url, headers = {}, accountName }
   for (const [name, value] of target.searchParams)
     params.set(name.toLowerCase(), [...(params.get(name.toLowerCase()) ?? []), value]);
   const query = [...params.keys()]
-    .sort((a, b) => Number(a > b) - Number(a < b))
+    .sort(/* NOSONAR: preserve default string coercion */)
     .map((name) => `\n${name}:${params.get(name).sort().join(',')}`)
     .join('');
   return `${[method.toUpperCase(), ...standard].join('\n')}\n${canonicalHeaders}/${accountName}${target.pathname}${query}`;

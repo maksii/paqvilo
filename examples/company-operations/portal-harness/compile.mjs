@@ -5,6 +5,57 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const hash = (text) => createHash('sha256').update(text).digest('hex');
+
+// Preserve the harness's lexical FetchXML tag grammar, including malformed attributes.
+// A failed opener reuses the next '>' position instead of rescanning the remaining source.
+function fetchXmlOpeningMatch(text, at, after, close, name, attributesOnly) {
+  let content = after;
+  while (content < close && /\s/.test(text[content])) content++;
+  const attrs = text.slice(Math.min(content, close - 1), close);
+  const whole = text.slice(at, close + 1);
+  if (attributesOnly) return [whole, attrs];
+  if (name) return [whole, name, attrs, undefined, undefined];
+  return [whole, undefined, undefined, undefined, attrs];
+}
+
+export function* fetchXmlTagMatches(text, attributesOnly = false) {
+  const prefix = attributesOnly
+    ? /<attribute(?=\s)/g
+    : /<(entity|link-entity)(?=\s)|<\/(entity|link-entity)>|<(?:attribute|condition|order)(?=\s)/g;
+  let close = -1;
+  let consumed = 0;
+  for (const candidate of text.matchAll(prefix)) {
+    const at = candidate.index;
+    if (at < consumed) continue;
+    const after = at + candidate[0].length;
+    if (!attributesOnly && candidate[2]) {
+      const result = [candidate[0], undefined, undefined, candidate[2], undefined];
+      result.index = at;
+      consumed = after;
+      yield result;
+      continue;
+    }
+    if (close < after) close = text.indexOf('>', after);
+    if (close < 0) break;
+    if (close === after + 1) continue;
+    const result = fetchXmlOpeningMatch(text, at, after, close, candidate[1], attributesOnly);
+    result.index = at;
+    consumed = close + 1;
+    yield result;
+  }
+}
+export function hasSelfClosingTag(text) {
+  let cursor = 0;
+  while (cursor < text.length) {
+    const open = text.indexOf('<', cursor);
+    if (open < 0) return false;
+    const close = text.indexOf('>', open + 1);
+    if (close < 0) return false;
+    if (text[close - 1] === '/') return true;
+    cursor = close + 1;
+  }
+  return false;
+}
 export const xmlEscape = (value) =>
   String(value).replace(
     /[<>&"']/g,
@@ -61,7 +112,7 @@ export function compilePlans(catalogue, schema, resolvedIds = {}) {
         .replace('</entity>', `${guard}</entity>`)
         .replace(/<([^<>]+)\/>/g, (_, tag) => `<${tag}></${tag.split(/\s/)[0]}>`);
       const fields = q.columns.map((name) => {
-        /* NOSONAR */ const selected = [...fetchXml.matchAll(/<attribute\s+([^>]+)>/g)].find((a) =>
+        const selected = [...fetchXmlTagMatches(fetchXml, true)].find((a) =>
           new RegExp(`(?:alias|name)="${name}"`).test(a[1]),
         );
         const actualName = selected?.[1].match(/name="([^"]+)"/)?.[1] || name;

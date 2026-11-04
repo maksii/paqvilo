@@ -32,7 +32,8 @@ const list = async (relative, filter = () => true) =>
 
 // ---- small XML helpers (the export is machine-written, one element per line)
 const tag = (xml, name) => new RegExp(`<${name}>([^<]*)</${name}>`).exec(xml)?.[1];
-const attrsOf = (open) => Object.fromEntries([...open.matchAll(/([\w:]+)="([^"]*)"/g)].map((m) => [m[1], m[2]])); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+const attrsOf = (open) =>
+  Object.fromEntries([...open.matchAll(/(?<![\w:])([\w:]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
 const bare = (id) =>
   String(id ?? '')
     .replace(/[{}]/g, '')
@@ -180,9 +181,7 @@ async function loadExport(tables, classids) {
       state: tag(data, 'StateCode'),
       triggerScope: tag(data, 'ProcessTriggerScope'),
       triggerForm: bare(tag(data, 'ProcessTriggerFormId')),
-      activities: [...new Set([...xaml.matchAll(/<(?:mcwc|mxswa):(Set\w+)/g)].map((m) => m[1]))].sort(
-        (a, b) => Number(a > b) - Number(a < b),
-      ),
+      activities: [...new Set([...xaml.matchAll(/<(?:mcwc|mxswa):(Set\w+)/g)].map((m) => m[1]))].sort(),
       clears: /Value="\[Nothing\]"/.test(xaml),
     });
   }
@@ -366,7 +365,7 @@ async function loadFixture() {
 }
 
 const pagesFor = (formPages, ...names) =>
-  [...new Set(names.flatMap((name) => [...(formPages.get(name) ?? [])]))].sort((a, b) => Number(a > b) - Number(a < b));
+  [...new Set(names.flatMap((name) => [...(formPages.get(name) ?? [])]))].sort();
 const brief = (names, limit = 6) =>
   names.length > limit ? `${names.slice(0, limit).join(', ')} … (${names.length} in all)` : names.join(', ');
 const unique = (values) => [...new Set(values)];
@@ -1599,9 +1598,7 @@ function addSpecialControlRows({ controls, cells, exported, F, add, itemPages, i
     unique(readSteps.map((step) => (step.read.statecode === 1 ? 'disabled' : 'enabled'))),
     itemPages,
   );
-  const sources = unique(readSteps.map((step) => step.read.invocationSource)).sort(
-    (a, b) => Number(a > b) - Number(a < b),
-  );
+  const sources = unique(readSteps.map((step) => step.read.invocationSource)).sort();
   const exportAgrees = readSteps.every((step) => step.exported?.invocationSource === step.read.invocationSource);
   add(
     'dv.plugin.invocation-source',
@@ -1633,9 +1630,7 @@ function addSpecialControlRows({ controls, cells, exported, F, add, itemPages, i
     return lookup.lookupStyle === 'polymorphic' ? 'multi-table' : 'simple';
   };
   const relationshipPages = (list) =>
-    unique(list.flatMap((r) => [...(pages[r.referencing] ?? []), ...(pages[r.referenced] ?? [])])).sort(
-      (a, b) => Number(a > b) - Number(a < b),
-    );
+    unique(list.flatMap((r) => [...(pages[r.referencing] ?? []), ...(pages[r.referenced] ?? [])])).sort();
   const oneToMany = ownRelationships.filter((r) => r.type === 'OneToMany');
   const oneToManyText = oneToMany
     .map((r) => {
@@ -2128,7 +2123,7 @@ function powerPagesComponentLines(component, items, rows, notExpressed, caveats)
       })
       .join('; ');
     const recordPages = unique(records.map((record) => record.path).filter(Boolean))
-      .sort((a, b) => Number(a > b) - Number(a < b))
+      .sort()
       .join(', ');
     const caveat = caveats.has(item.id) ? ` — caveat: ${escapeCell(caveats.get(item.id))}` : '';
     lines.push(

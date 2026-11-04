@@ -6,7 +6,7 @@ const order = (value) => {
   if (value && typeof value === 'object')
     return Object.fromEntries(
       Object.keys(value)
-        .sort((left, right) => Number(left > right) - Number(left < right))
+        .sort()
         .map((key) => [key, order(value[key])]),
     );
   return value;

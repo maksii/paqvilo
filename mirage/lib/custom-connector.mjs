@@ -621,7 +621,9 @@ function setBodyProperty(body, p, source) {
     const value =
       whole.length === 1 && whole[0][0] === template.trim() && ['body', 'item'].includes(whole[0][1])
         ? expressionValue(source, { name: whole[0][1], path: whole[0][6] }, element)
-        : template.replace(/\{\s*(@[^{}]*?)\s*\}/g, '$1').replace(EXPRESSION, (...m) => render(source, m, element)); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+        : template
+            .replace(/\{\s*(@[^{}]*)\}/g, (_match, expression) => expression.trimEnd())
+            .replace(EXPRESSION, (...m) => render(source, m, element));
     writeAt(body, element, String(p.newPropertySubPathTemplate ?? ''), value);
   }
   return body;

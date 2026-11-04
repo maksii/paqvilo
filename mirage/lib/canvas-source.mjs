@@ -33,7 +33,70 @@ const wanted = (name) =>
   DATA_SOURCE_JSON.test(name.replaceAll('\\', '/')) ||
   LEGACY_COMPONENT_JSON.test(name.replaceAll('\\', '/'));
 // `.fx.yaml` control keys: `Name As type[.variant]`; a quoted name keeps its spaces.
-const FX_CONTROL = /^\s*(?:'((?:[^']|'')+)'|(.+?))\s+As\s+(\w+(?:\.(?:\w+|'(?:[^']|'')+'))*)\s*$/; // NOSONAR: regex kept: a rewrite would change matches or captures; regex kept: linear on bounded input, a rewrite would change matches
+function fxControlTypeStarts(text, end) {
+  const starts = new Set();
+  let cursor = end;
+  while (cursor > 0) {
+    if (/\w/.test(text[cursor - 1])) {
+      while (cursor > 0 && /\w/.test(text[cursor - 1])) cursor--;
+      starts.add(cursor);
+    } else if (text[cursor - 1] === "'") {
+      const close = --cursor;
+      cursor--;
+      while (cursor >= 0) {
+        if (text[cursor] !== "'") cursor--;
+        else if (text[cursor - 1] === "'") cursor -= 2;
+        else break;
+      }
+      if (cursor < 0 || close - cursor < 2) break;
+    } else break;
+    if (text[cursor - 1] !== '.') break;
+    cursor--;
+  }
+  return starts;
+}
+function fxControl(key) {
+  const end = key.trimEnd().length;
+  const starts = fxControlTypeStarts(key, end);
+  let leading = 0;
+  while (leading < key.length && /\s/.test(key[leading])) leading++;
+  let quotedEnd = -1;
+  if (key[leading] === "'") {
+    let cursor = leading + 1;
+    while (cursor < key.length) {
+      if (key[cursor] !== "'") cursor++;
+      else if (key[cursor + 1] === "'") cursor += 2;
+      else {
+        quotedEnd = cursor;
+        break;
+      }
+    }
+  }
+  let fallback;
+  for (const match of key.matchAll(/As/g)) {
+    const at = match.index;
+    if (!/\s/.test(key[at - 1] ?? '') || !/\s/.test(key[at + 2] ?? '')) continue;
+    let before = at,
+      after = at + 2;
+    while (before > 0 && /\s/.test(key[before - 1])) before--;
+    while (after < key.length && /\s/.test(key[after])) after++;
+    if (!starts.has(after)) continue;
+    const control = key.slice(after, end);
+    if (quotedEnd > leading + 1 && quotedEnd + 1 === before)
+      return [undefined, key.slice(leading + 1, quotedEnd), undefined, control];
+    if (fallback) continue;
+    let nameStart = leading,
+      nameEnd = before;
+    if (nameEnd <= nameStart) {
+      nameStart = at - 2;
+      while (nameStart >= 0 && /[\r\n\u2028\u2029]/.test(key[nameStart])) nameStart--;
+      nameEnd = nameStart + 1;
+    }
+    if (nameStart >= 0 && nameStart < nameEnd && !/[\r\n\u2028\u2029]/.test(key.slice(nameStart, nameEnd)))
+      fallback = [undefined, undefined, key.slice(nameStart, nameEnd), control];
+  }
+  return fallback ?? null;
+}
 
 const entriesOf = (node) =>
   isMap(node)
@@ -432,7 +495,7 @@ function processCanvasYamlSource({
  */
 function walkFxNode(node, owner, screen, parent, out, componentScope, context) {
   for (const [key, value, keyNode] of entriesOf(node)) {
-    const match = FX_CONTROL.exec(key);
+    const match = fxControl(key);
     if (!match) {
       context.result.formulas.push({
         owner,
@@ -469,7 +532,7 @@ function processFxComponent(name, body, context) {
 }
 
 function processFxTopLevel(key, body, context) {
-  const match = FX_CONTROL.exec(key);
+  const match = fxControl(key);
   const name = match ? (match[1]?.replaceAll("''", "'") ?? match[2]) : key;
   const type = match?.[3]?.toLowerCase();
   if (type === 'appinfo') walkFxNode(body, 'App', 'App', null, [], false, context);

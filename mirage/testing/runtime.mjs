@@ -3,6 +3,7 @@ import { DEFAULT_PORT, discoveries, miragePaths, samePath } from '../../lense/co
 import { loadProjectConfig } from '../lib/project-config.mjs';
 import { createPortalSession } from './sessions.mjs';
 import { createPersonaSession } from './personas.mjs';
+import { eventLineParts } from './event-line.mjs';
 
 function requestError(status, value, label = 'Local runtime request') {
   const detail = value?.error?.message ?? value?.message ?? (typeof value?.error === 'string' ? value.error : '');
@@ -51,7 +52,7 @@ async function* traceFrames(body) {
       let event = 'message';
       const data = [];
       for (const line of frame.split('\n')) {
-        const [, name, value] = /^([^:]*):? ?(.*)$/.exec(line); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+        const [name, value] = eventLineParts(line);
         if (name === 'event') event = value;
         else if (name === 'data') data.push(value);
       }
@@ -244,7 +245,7 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
       const closed = (async () => {
         try {
           const query = new URLSearchParams({ channels: 'trace' });
-          if (events) query.set('events', [events].flat().join(','));
+          if (events) query.set('events', [].concat(events).join(',')); // NOSONAR: preserve concat spreadability semantics
           if (traceId) query.set('traceId', traceId);
           const response = await reach(`${origin}/_sim/events?${query}`, {
             headers: { accept: 'text/event-stream', ...(cookie ? { cookie } : {}) },

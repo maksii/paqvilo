@@ -97,7 +97,7 @@ function configuration(snapshot, list, dataverseOn) {
           .map(relative),
       ),
     ],
-    settingsKeys: [...new Set(list.flatMap((item) => item.keys))].sort((a, b) => Number(a > b) - Number(a < b)),
+    settingsKeys: [...new Set(list.flatMap((item) => item.keys))].sort(/* NOSONAR: preserve default string coercion */),
     // The visitor sign-in provider listens on a loopback port of its own, chosen at start (null until then).
     ports: {
       portal,

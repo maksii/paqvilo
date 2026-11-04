@@ -18,7 +18,7 @@ function fieldEntry(definition) {
 /** Index of schema-complete tables from a raw solution schema (importSolutionData().schema). */
 export function schemaFieldIndex(schema, tableNames) {
   const tables = {};
-  for (const name of [...new Set(tableNames)].sort((a, b) => Number(a > b) - Number(a < b))) {
+  for (const name of [...new Set(tableNames)].sort(/* NOSONAR: preserve default string coercion */)) {
     const table = Object.hasOwn(schema.tables, name) ? schema.tables[name] : undefined;
     if (!table?.schemaComplete) continue;
     const fields = {};

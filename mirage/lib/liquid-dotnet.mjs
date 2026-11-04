@@ -64,7 +64,7 @@ export class NetDecimal {
     return NetDecimal.parse(String(value));
   }
   static parse(text) {
-    const match = /^\s*([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?\s*$/.exec(String(text)); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    const match = /^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(String(text).trim());
     if (!match || (!match[2] && !match[3])) throw formatError();
     let digits = (match[2] || '') + (match[3] || '');
     let scale = (match[3] || '').length - Number(match[4] || 0);
@@ -219,7 +219,7 @@ function parseInt32(text) {
 }
 /** Decimal parsing (NumberStyles.Number: sign, thousands separators, decimal point). */
 function parseNetDecimal(text) {
-  const match = /^\s*([+-]?)((?:\d{1,3}(?:,\d{3})+|\d+)?)(?:\.(\d+))?\s*$/.exec(String(text)); // NOSONAR: regex kept: a rewrite would change matches or captures; regex kept: linear on bounded input, a rewrite would change matches
+  const match = /^([+-]?)((?:\d{1,3}(?:,\d{3})+|\d+)?)(?:\.(\d+))?$/.exec(String(text).trim());
   if (!match || (!match[2] && !match[3])) throw formatError();
   return NetDecimal.parse(`${match[1]}${(match[2] || '0').replaceAll(',', '')}${match[3] ? '.' + match[3] : ''}`);
 }

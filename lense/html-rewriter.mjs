@@ -484,7 +484,8 @@ function liquidTokenEnd(normalized, start, delimiter) {
 function processLiquidTag(normalized, lines, starts, tokens, token, end, capture) {
   const start = token.index;
   markLogicRange(normalized, lines, starts, start, end);
-  const tag = /^\s*-?\s*([a-z]+)/i.exec(normalized.slice(start + 2, end - 2))?.[1]?.toLowerCase(); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  const body = normalized.slice(start + 2, end - 2).trimStart();
+  const tag = /^([a-z]+)/i.exec(body.startsWith('-') ? body.slice(1).trimStart() : body)?.[1]?.toLowerCase();
   if (tag === 'raw' || tag === 'comment') {
     const closing = new RegExp(String.raw`\{%-?\s*end${tag}\s*-?%\}`, 'gi');
     closing.lastIndex = end;
@@ -1244,7 +1245,7 @@ export class HtmlRewriter {
         const yml = readText(src.file.replace(/\.value\.html$/, '.yml'));
         snippetName =
           (yml &&
-            /^adx_name:\s*(.+)$/m // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+            /^adx_name:\s*(.+)$/m // NOSONAR: fixed line prefix; the first remaining non-line-terminator always succeeds at that line's end.
               .exec(yml)?.[1]
               .trim()
               .replace(/^["']|["']$/g, '')) ||
@@ -1316,7 +1317,7 @@ export class HtmlRewriter {
     const m = block.m;
     const content = m[3];
     const lead = /^\s*/.exec(content)[0];
-    const trail = /\s*$/.exec(content)[0]; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    const trail = content.slice(content.trimEnd().length);
     const eol = content.includes('\r\n') || !content.includes('\n') ? '\r\n' : '\n';
     const newContent = `${lead}${src.norm.trim().replaceAll('\n', eol)}${trail}`;
     if (!preservesInlineBoundary(block.tag, newContent, m.closing)) {
@@ -1382,9 +1383,8 @@ export class HtmlRewriter {
     let intervals = [];
     if (external) {
       // Retaining async/defer/integrity after adding src changes execution or blocks the local script.
-      const attrs = m[2].replace(
-        /\s+([^\s=/'"<>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g, // NOSONAR: regex kept: a rewrite would change matches or captures
-        (whole, name) => (/^(?:async|defer|integrity)$/i.test(name) ? '' : whole),
+      const attrs = m[2].replace(/(?<!\s)\s+([^\s=/'"<>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g, (whole, name) =>
+        /^(?:async|defer|integrity)$/i.test(name) ? '' : whole,
       );
       replacement = `<${m[1]}${attrs} src="${inlineScriptUrl(src.rel)}"></${m[1]}>`;
     } else {

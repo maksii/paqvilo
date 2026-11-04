@@ -97,7 +97,7 @@ function reportTables(schema, reasons, allFields, lcid) {
         attributes: layer.attributes,
       })),
       origin: table.origin,
-      portalUse: [...(reasons.get(table.logicalName) ?? [])].sort((a, b) => Number(a > b) - Number(a < b)),
+      portalUse: [...(reasons.get(table.logicalName) ?? [])].sort(/* NOSONAR: preserve default string coercion */),
       ...(allFields || reasons.has(table.logicalName)
         ? { fields: tableFields(schema, table.logicalName, { lcid }) }
         : {}),
@@ -107,10 +107,10 @@ function reportTables(schema, reasons, allFields, lcid) {
 function reportMissingTables(reasons, schema, state) {
   return [...reasons.keys()]
     .filter((name) => !schema.tables[name])
-    .sort((a, b) => Number(a > b) - Number(a < b))
+    .sort(/* NOSONAR: preserve default string coercion */)
     .map((name) => ({
       logicalName: name,
-      portalUse: [...reasons.get(name)].sort((a, b) => Number(a > b) - Number(a < b)),
+      portalUse: [...reasons.get(name)].sort(/* NOSONAR: preserve default string coercion */),
       mapping: state.mappings[name] ?? null,
     }));
 }

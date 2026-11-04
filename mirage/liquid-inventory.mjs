@@ -33,7 +33,7 @@ const TAG_NAME = new RegExp(String.raw`^\s*([${WORD}]+)\s*([\s\S]*)$`, 'u');
 const FRAGMENTS = /"[^"]*"|'[^']*'|(?:[^\s,|:'"]|"[^"]*"|'[^']*')+|[|,:]/gu; // NOSONAR: regex kept: a rewrite would change matches or captures
 const PATH_PARTS = new RegExp(String.raw`\[[^\]]+\]|[${WORD}-]+\??`, 'gu');
 const IDENTIFIER_START = /^[\p{L}_]/u;
-const RANGE = /^\((\S+)\.\.(\S+)\)$/; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+const RANGE_ENVELOPE = /^\(\S+\)$/;
 const QUOTED = /^(["'])([\s\S]*)\1$/;
 const LITERALS = new Set(['true', 'false', 'nil', 'null', 'empty', 'blank']);
 /** Condition operators (DotLiquid Condition.Operators, case-insensitive) and tag keywords. */
@@ -384,8 +384,8 @@ export function expressionPaths(expression) {
 }
 
 function fragmentPaths(fragment) {
-  const range = RANGE.exec(fragment);
-  if (range) return [...fragmentPaths(range[1]), ...fragmentPaths(range[2])];
+  const range = rangeParts(fragment);
+  if (range) return [...fragmentPaths(range[0]), ...fragmentPaths(range[1])];
   if (QUOTED.test(fragment) || /^[+-]?\d/.test(fragment)) return [];
   if (!IDENTIFIER_START.test(fragment) && !fragment.startsWith('[')) return [];
   const parts = fragment.match(PATH_PARTS) ?? [];
@@ -411,6 +411,14 @@ function fragmentPaths(fragment) {
     },
     ...nested,
   ];
+}
+
+function rangeParts(fragment) {
+  if (!RANGE_ENVELOPE.test(fragment)) return null;
+  const body = fragment.slice(1, fragment.lastIndexOf(')'));
+  // The old first greedy capture selected the last separator with a nonempty right operand.
+  const separator = body.lastIndexOf('..', body.length - 3);
+  return separator < 1 ? null : [body.slice(0, separator), body.slice(separator + 2)];
 }
 
 /** Attribute names (`name: value`) of a tag's markup. */

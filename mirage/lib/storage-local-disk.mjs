@@ -321,7 +321,7 @@ export function createLocalDiskStorage({
       }
       const keys = [...index.keys()]
         .filter((key) => key.startsWith(prefix) && (after === null || key > after))
-        .sort((a, b) => Number(a > b) - Number(a < b));
+        .sort(/* NOSONAR: preserve default string coercion */);
       const page = keys.slice(0, pageSize);
       const items = page.map((key) => {
         const e = index.get(key);

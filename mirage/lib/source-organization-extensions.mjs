@@ -17,11 +17,7 @@ import { uuidV5 } from './dataverse-security.mjs';
 
 // Source-owned row ids per table (state.dataverse.sourceSeeded): what the last seed wrote, so a later seed removes the rows
 // whose source definition is gone. It lives in state, so a rolled-back transaction restores it with the rows.
-const seededOf = (store) => {
-  if (store.state.dataverse == null) store.state.dataverse = {};
-  if (store.state.dataverse.sourceSeeded == null) store.state.dataverse.sourceSeeded = {};
-  return store.state.dataverse.sourceSeeded;
-};
+const seededOf = (store) => ((store.state.dataverse ??= {}).sourceSeeded ??= {}); // NOSONAR: preserve proxy access and assignment order
 const idKey = (value) =>
   String(value ?? '')
     .replace(/[{}]/g, '')

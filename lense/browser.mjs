@@ -6,6 +6,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { chromium } from 'playwright-core';
 import { windowsLaunchOptions } from '../mirage/lib/browser-launch.mjs';
+import { stripTrailingCharacters } from '../mirage/lib/text-scanning.mjs';
 import { interceptOrigin } from './intercept.mjs';
 import { createInspectionProvenanceTransport } from './inspection-provenance-transport.mjs';
 import { refreshUrl } from './navigation.mjs';
@@ -236,11 +237,13 @@ async function debuggerListening(port, targetId, attempts = 10) {
  */
 export function safeDownloadName(suggested) {
   const name =
-    path.win32
-      .basename(path.posix.basename(suggested))
-      // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
-      .replace(/[<>:"|?*\x00-\x1f]/g, '_')
-      .replace(/[. ]+$/, '') || 'download'; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    stripTrailingCharacters(
+      path.win32
+        .basename(path.posix.basename(suggested))
+        // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
+        .replace(/[<>:"|?*\x00-\x1f]/g, '_'),
+      '. ',
+    ) || 'download';
   return /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name) ? `_${name}` : name;
 }
 

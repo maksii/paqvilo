@@ -7647,7 +7647,7 @@ const render = ([tag, attrs, ...children]) => {
   return children.length ? `<${tag}${attributes}>${children.map(render).join('')}</${tag}>` : `<${tag}${attributes} />`;
 };
 const attrsOf = (text) =>
-  Object.fromEntries([...text.matchAll(/([\w:]+)="([^"]*)"/g)].map((match) => [match[1], match[2]])); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  Object.fromEntries([...text.matchAll(/(?<![\w:])([\w:]+)="([^"]*)"/g)].map((match) => [match[1], match[2]]));
 const keyOf = ([tag, attrs, ...children]) =>
   [tag, attrs.Name, attrs.IsBound === 'true' ? children.find((child) => child[0] === 'Parameter')?.[1].Type : ''].join(
     ':',

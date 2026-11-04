@@ -122,8 +122,8 @@ function annotatePageHitItem(item, hit, source, isFile, webFileState) {
   if (isFile) Object.assign(item, webFileState(hit.url), { note: source.action === 'web-file' ? null : source.action });
   else
     Object.assign(item, {
-      differs: !source.action.startsWith('injected'),
-      isNew: source.action.startsWith('injected'),
+      differs: !/^injected/.test(source.action), // NOSONAR: preserve coercion for absent action metadata
+      isNew: /^injected/.test(source.action), // NOSONAR: preserve coercion for action metadata
       note: source.action.replace(/^replaced inline block$/, 'replaced').replace(/^injected.*/, 'injected'),
     });
 }
@@ -1446,7 +1446,7 @@ export function enablePanel(context, session, opts = {}) {
         const detail = [body?.error?.message, body?.error?.innererror?.message]
           .map((value) => (typeof value === 'object' ? value?.value : value))
           .filter((value) => typeof value === 'string')
-          .map((value) => redactText(value, 2000).replace(/(\/[^\s?]+)\?[^\s]+/g, '$1?[redacted]')) // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+          .map((value) => redactText(value, 2000).replace(/(\/[^\s?]+)\?[^\s]+/g, '$1?[redacted]')) // NOSONAR: redactText enforces a 2000-code-unit bound before this expression.
           .join(' · ');
         problem(page, { type: 'http', status: entry.status, text: `${entry.method} ${entry.path}`, where: detail });
       };

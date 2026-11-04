@@ -1,3 +1,4 @@
+import { liveInputAttributes } from './live-input-attributes.mjs';
 import { parseFetchXml, withLiquidEntityId } from './data.mjs';
 
 const fail = (message, status = 502) => Object.assign(new Error(message), { status, code: 'LIVE_BRIDGE' });
@@ -417,10 +418,10 @@ export class LiveBridge {
     const response = await this.request('/_layout/tokenhtml');
     if (response.status !== 200)
       throw fail('The live portal did not issue a verification token. Complete sign-in in its browser.', 401);
-    for (const input of response.body.toString('utf8').match(/<input\b[^>]*>/gi) ?? []) {
-      const attrs = Object.fromEntries(
-        [...input.matchAll(/([\w-]+)\s*=\s*(["'])((?:(?!\2).)*)\2/g)].map((m) => [m[1].toLowerCase(), m[3]]), // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-      );
+    const html = response.body.toString('utf8');
+    const completeTags = html.slice(0, html.lastIndexOf('>') + 1);
+    for (const input of completeTags.match(/<input\b[^>]*>/gi) ?? []) {
+      const attrs = liveInputAttributes(input);
       if (attrs.name === '__RequestVerificationToken' && attrs.value) return tokenDecode(attrs.value);
     }
     throw fail('The live portal did not issue a verification token. Complete sign-in in its browser.', 401);

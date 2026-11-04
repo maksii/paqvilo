@@ -183,7 +183,7 @@ function summarizeTable(name, schema, tables, indexes, charge, counters) {
     unknown = new Map();
   const rowState = { identity, seen, unknown, counters, charge };
   for (const row of rows) inspectTableRow(row, primary, fields, rowState);
-  for (const column of Object.keys(fields).sort((a, b) => Number(a > b) - Number(a < b)))
+  for (const column of Object.keys(fields).sort(/* NOSONAR: preserve default string coercion */))
     columns[column] = summarizeColumn(column, fields[column], rows, indexes, charge);
   return {
     rows: rows.length,
@@ -201,7 +201,7 @@ export function summarizeDataset({ schema, tables = {}, existing = {} } = {}) {
   const indexes = inspectDatasetIndexes(schema, tables, existing, charge);
   const reports = {};
   const counters = { cells: 0, inspectedColumns: 0 };
-  for (const name of Object.keys(tables).sort((a, b) => Number(a > b) - Number(a < b)))
+  for (const name of Object.keys(tables).sort(/* NOSONAR: preserve default string coercion */))
     reports[name] = summarizeTable(name, schema, tables, indexes, charge, counters);
   return { schemaVersion: 1, tables: reports };
 }

@@ -15,6 +15,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'parse5';
+import { emailMatches, replaceEmails } from '../mirage/lib/text-scanning.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const readJson = async (file, fallback = null) => {
@@ -34,13 +35,16 @@ const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 const QUERY = /\?[^\s"'<>)]*/g;
 // The document is shared: ids, hosts (absolute URLs, e.g. a sign-in button naming the tenant's authority) and e-mail
 // addresses are reduced in everything printed, and the written text is scanned for any that remain.
-const EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
 const URL_HOST = /\b(https?:\/\/)[^/\s"'<>)|\\]+/gi;
 const HOST = /\b(?:[a-z0-9-]+\.)+(?:com|net|org|io|ms|cloud|windows|microsoft|azure|dynamics|invalid)\b/gi;
 export const redact = (text) =>
-  String(text).replace(GUID, '{guid}').replace(EMAIL, '{email}').replace(URL_HOST, '$1{host}');
+  replaceEmails(String(text).replace(GUID, '{guid}'), '{email}').replace(URL_HOST, '$1{host}');
 export const leaks = (text) => [
-  ...new Set([GUID, EMAIL, HOST].flatMap((pattern) => [...String(text).matchAll(pattern)].map((match) => match[0]))),
+  ...new Set(
+    [GUID, null, HOST].flatMap((pattern) =>
+      [...(pattern ? String(text).matchAll(pattern) : emailMatches(String(text)))].map((match) => match[0]),
+    ),
+  ),
 ];
 const clip = (text, max = 160) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 

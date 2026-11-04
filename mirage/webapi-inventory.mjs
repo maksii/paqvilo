@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { stripLastLineQuery } from './lib/strip-last-line-query.mjs';
 import { reportCliError } from './cli-output.mjs';
 // Static inventory of portal Web API (/_api) request shapes and FetchXML
 // features, compared with what the local Dataverse implementation supports.
@@ -212,10 +213,30 @@ function findApiLiteralStart(text, at) {
   return -1;
 }
 
+function replaceDelimited(text, open, close, replacement, standalone = false) {
+  const parts = [];
+  let cursor = 0;
+  let search = 0;
+  while (search < text.length) {
+    const start = text.indexOf(open, search);
+    if (start < 0) break;
+    if (standalone && (start === 0 || !/\s/.test(text[start - 1]))) {
+      search = start + 1;
+      continue;
+    }
+    let end = text.indexOf(close, start + open.length);
+    while (standalone && end >= 0 && !/[\s/>]/.test(text[end + close.length] ?? '')) end = text.indexOf(close, end + 1);
+    if (end < 0) break;
+    parts.push(text.slice(cursor, start), replacement);
+    cursor = end + close.length;
+    search = cursor;
+  }
+  parts.push(text.slice(cursor));
+  return parts.join('');
+}
+
 function normalizeApiUrl(url) {
-  return url
-    .replace(/\{\{(?:[^}]|}(?!}))*\}\}/g, PLACEHOLDER) // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-    .replace(/\{%[\s\S]*?%\}/g, '')
+  return replaceDelimited(replaceDelimited(url, '{{', '}}', PLACEHOLDER), '{%', '%}', '')
     .replace(/\{\d+\}/g, PLACEHOLDER)
     .trim();
 }
@@ -284,17 +305,11 @@ function concreteFilter(text, emptyDynamic = false) {
     .replaceAll(new RegExp(PLACEHOLDER, 'g'), emptyDynamic ? '' : '00000000-0000-0000-0000-000000000000');
 }
 function concreteFetch(text) {
-  return (
-    text
-      .replace(/\{%[\s\S]*?%\}/g, '')
-      // Liquid output used as a whole attribute (for example a paging-cookie
-      // attribute assembled by an include) is removed rather than guessed.
-      .replace(/(\s)\{\{[\s\S]*?\}\}(?=[\s/>])/g, '$1')
-      .replace(/\{\{(?:[^}]|}(?!}))*\}\}/g, PLACEHOLDER) // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-      .replace(/\$\{[^}]*\}/g, PLACEHOLDER)
-      .replace(/\{\d+\}/g, PLACEHOLDER)
-      .replace(/<!--[\s\S]*?-->/g, '')
-  );
+  const tagsRemoved = replaceDelimited(text, '{%', '%}', '');
+  const attributesRemoved = replaceDelimited(tagsRemoved, '{{', '}}', '', true);
+  const outputsRemoved = replaceDelimited(attributesRemoved, '{{', '}}', PLACEHOLDER);
+  const expressionsRemoved = replaceDelimited(outputsRemoved, '${', '}', PLACEHOLDER).replace(/\{\d+\}/g, PLACEHOLDER);
+  return replaceDelimited(expressionsRemoved, '<!--', '-->', '');
 }
 const dynamicValue = (value) => (String(value).includes(PLACEHOLDER) ? '(dynamic)' : value);
 
@@ -403,7 +418,7 @@ function scanFetchFallback(text, features, origins, origin) {
     const name = tag[1].toLowerCase();
     if (!FETCH_SCHEMA[name] && !['no-attrs'].includes(name)) continue;
     addFetchFeature(features, origins, origin, `fetchxml.element.${name}`);
-    /* NOSONAR */ for (const attr of tag[2].matchAll(/([\w:-]+)\s*=\s*(["'])((?:(?!\2)[\s\S])*)\2/g))
+    for (const attr of tag[2].matchAll(/(?<![\w:-])([\w:-]+)\s*=\s*(["'])((?:(?!\2)[\s\S])*)\2/g))
       recordFallbackAttribute(name, attr, features, origins, origin);
   }
 }
@@ -595,7 +610,7 @@ function classifyRouteShape(entitySet, key, segments) {
 }
 
 function routeShape(pathText) {
-  const clean = pathText.replace(/\?.*$/, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  const clean = stripLastLineQuery(pathText);
   const match = /^\/_api\/([A-Za-z_]\w*)(\([^)]*\))?((?:\/[^/]+)*)$/.exec(clean);
   if (!match) return { entitySet: null, shape: 'unparsed' };
   const [, entitySet, key, rest] = match;

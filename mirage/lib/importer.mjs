@@ -1,3 +1,4 @@
+import { stripTrailingCharacter } from './text-scanning.mjs';
 import { orderedMap as mapLimit } from '../../lense/async-map.mjs';
 import { directoryFiles } from '../../lense/directory-files.mjs';
 import { COMPONENT_KINDS as TYPES, COMPONENT_TYPE_OF_KIND } from './portal-component-types.mjs';
@@ -173,195 +174,6 @@ const localized = (value, lcid = 1033) => {
   return value;
 };
 
-const recordSignature = (record) => {
-  const { _file, ...content } = record;
-  return JSON.stringify(content);
-};
-
-function groupRecordsById(records) {
-  const groups = new Map();
-  for (const record of records) {
-    if (!record.id) continue;
-    const key = `${record.kind}\0${record.id}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(record);
-  }
-  return groups;
-}
-
-function discardIdenticalCopies(copies, dropped, diagnostics) {
-  const distinct = [];
-  for (const copy of copies) {
-    const same = distinct.find((item) => item.signature === recordSignature(copy));
-    if (!same) {
-      distinct.push({ record: copy, signature: recordSignature(copy) });
-      continue;
-    }
-    dropped.add(copy);
-    diagnostics.push({
-      code: 'DUPLICATE_RECORD_IDENTICAL',
-      kind: copy.kind,
-      id: copy.id,
-      file: copy._file,
-      firstFile: same.record._file,
-      message: 'The export contains the same record twice with identical content; the first copy is used.',
-    });
-  }
-  return distinct;
-}
-
-function recordResolvedCopies(copies, distinct, dropped, diagnostics, { record: used, reason }) {
-  for (const { record: copy } of distinct) {
-    if (copy === used) continue;
-    for (const twin of copies) if (recordSignature(twin) === recordSignature(copy)) dropped.add(twin);
-    diagnostics.push({
-      code: 'DUPLICATE_RECORD_RESOLVED',
-      kind: copy.kind,
-      id: copy.id,
-      file: copy._file,
-      usedFile: used._file,
-      reason,
-      message: `The export contains different records with the same ID; the copy in ${used._file} is used (${reason}) and this copy is ignored.`,
-    });
-  }
-}
-
-function deduplicateRecords(records, diagnostics, commitTime) {
-  const groups = groupRecordsById(records);
-  const copiesByGroup = [...groups.values()];
-  const dropped = new Set();
-  const finish = () => {
-    if (dropped.size) records.splice(0, records.length, ...records.filter((record) => !dropped.has(record)));
-  };
-  const processFrom = (start) => {
-    for (let index = start; index < copiesByGroup.length; index++) {
-      const copies = copiesByGroup[index];
-      if (copies.length < 2) continue;
-      const distinct = discardIdenticalCopies(copies, dropped, diagnostics);
-      if (distinct.length < 2) continue;
-      return chooseRecordCopy(
-        distinct.map((item) => item.record),
-        { commitTime },
-      ).then((selection) => {
-        recordResolvedCopies(copies, distinct, dropped, diagnostics, selection);
-        return processFrom(index + 1);
-      });
-    }
-    finish();
-  };
-  return processFrom(0);
-}
-
-function profileKind(raw) {
-  return (
-    {
-      entityform: 'basicform',
-      webform: 'advancedform',
-      entitylist: 'list',
-      entitypermission: 'tablepermission',
-    }[raw] ?? raw
-  );
-}
-
-function profileTargetId(entity, raw, patch) {
-  return id(
-    patch?.[`${entity}id`] ??
-      Object.entries(patch ?? {}).find(([key]) => key === `adx_${raw}id` || key === `mspp_${raw}id`)?.[1],
-  );
-}
-
-function applyDeploymentPatch({
-  patch,
-  entity,
-  raw,
-  kind,
-  profileName,
-  profileFile,
-  selectedProfileFile,
-  profileSource,
-  records,
-  diagnostics,
-  profileChanges,
-}) {
-  const targetId = profileTargetId(entity, raw, patch);
-  const record = records.find(
-    (item) => item.kind === kind && (targetId ? item.id === targetId : item.name === field(patch, 'name')),
-  );
-  if (!record) {
-    diagnostics.push({
-      code: 'DEPLOYMENT_PROFILE_TARGET_UNRESOLVED',
-      profile: profileName,
-      entity,
-      id: targetId,
-      message: 'Profile override has no matching exported record',
-    });
-    return;
-  }
-  const fields = Object.keys(patch).filter((key) => !key.endsWith('id'));
-  record._originalName ??= record.name;
-  Object.assign(record, patch);
-  record.name = field(record, 'name', record.name);
-  record._profileFields = {
-    ...record._profileFields,
-    ...Object.fromEntries(fields.map((key) => [key.replace(/^(?:adx|mspp)_/, ''), patch[key]])),
-  };
-  record._deploymentProfile = profileName;
-  record._profileSourceFiles = {
-    ...record._profileSourceFiles,
-    ...Object.fromEntries(fields.map((key) => [key.replace(/^(?:adx|mspp)_/, ''), selectedProfileFile])),
-  };
-  record._profileRevisions = {
-    ...record._profileRevisions,
-    [selectedProfileFile]: sourceRevisionOf(profileSource),
-  };
-  profileChanges.push({ recordId: record.id, kind, fields, profile: profileName, file: profileFile });
-}
-
-function applyDeploymentProfileRows(values, context) {
-  for (const [entity, rows] of Object.entries(values ?? {})) {
-    const raw = entity.replace(/^(?:adx|mspp)_/, '');
-    const kind = profileKind(raw);
-    for (const patch of Array.isArray(rows) ? rows : [rows])
-      applyDeploymentPatch({ ...context, patch, entity, raw, kind });
-  }
-}
-
-async function applyDeploymentProfile(deploymentProfile, deploymentProfileFile, files, context) {
-  const profileChanges = [];
-  let selectedProfileFile = null;
-  if (deploymentProfile) {
-    if (!/^[\w.-]+$/.test(deploymentProfile)) throw new Error('Select a deployment profile by its exported name');
-    const profileName = deploymentProfile.replace(/\.deployment\.ya?ml$/i, '');
-    const profile =
-      deploymentProfileFile ??
-      files.find(
-        (file) =>
-          /[\\/]deployment-profiles[\\/]/i.test(file) &&
-          path
-            .basename(file)
-            .replace(/\.deployment\.ya?ml$/i, '')
-            .toLowerCase() === profileName.toLowerCase(),
-      );
-    if (!profile) throw new Error(`Deployment profile '${deploymentProfile}' is absent in the export`);
-    selectedProfileFile = await fs.realpath(profile);
-    const profileSource = await fs.readFile(profile, 'utf8');
-    const values = /\.json$/i.test(profile)
-      ? JSON.parse(profileSource.replace(/^\uFEFF/, ''))
-      : YAML.parse(profileSource);
-    if (!values || typeof values !== 'object' || Array.isArray(values))
-      throw new Error('Deployment profile must map tables to record patches');
-    applyDeploymentProfileRows(values, {
-      ...context,
-      profileName,
-      profileFile: profile,
-      selectedProfileFile,
-      profileSource,
-      profileChanges,
-    });
-  }
-  return { selectedProfileFile, profileChanges };
-}
-
 function overlayRecord(previous, patch, kind, recordId, sourceDir) {
   const record = {
     ...previous,
@@ -411,9 +223,7 @@ function pageUrlFor(pageId, aliases, rootMap, urls, seen = new Set()) {
   const parent = id(field(record, 'parentpageid'));
   const base = parent ? pageUrlFor(parent, aliases, rootMap, urls, seen) : '/';
   if (base === null) return null;
-  const partial = String(field(record, 'partialurl', ''))
-    .replace(/^\/+/, '')
-    .replace(/\/+$/, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  const partial = stripTrailingCharacter(String(field(record, 'partialurl', '')).replace(/^\/+/, ''), '/');
   const url = partial ? `${base.replace(/\/$/, '')}/${partial}/` : base;
   urls.set(pageId, url);
   return url;
@@ -630,9 +440,9 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
         // <content>; it selects language copies as adx_webpagelanguageid and
         // adx_contentsnippetlanguageid do in standard exports.
         const siteLanguageId = id(
-          /* NOSONAR */ /<powerpagesitelanguageid>\s*(?:<powerpagesitelanguageid>)?\s*([^<\s][^<]*?)\s*<\/powerpagesitelanguageid>/.exec(
-            xml,
-          )?.[1],
+          /<powerpagesitelanguageid>\s*(?:<powerpagesitelanguageid>\s*)?([^<\s][^<]*)<\/powerpagesitelanguageid>/
+            .exec(xml)?.[1]
+            ?.trimEnd(),
         );
         const languageFields = siteLanguageId
           ? {
@@ -773,18 +583,139 @@ function prioritizeUrlClaims(entries, kind, diagnostics) {
       }
     }
   }
-  // A record exported twice with identical content is one record (the first copy); differing copies are resolved deterministically.
-  const deduplication = deduplicateRecords(records, diagnostics, commitTime);
-  if (deduplication) await deduplication;
+  // NOSONAR: keep deduplication and profile reads on their original await boundaries.
+  // A record exported twice with identical content is one record (the first copy).
+  // Differing copies of one record ID are resolved deterministically: the copy whose file
+  // name matches its record name, else the most recently committed file (git), else the
+  // most recently modified file, else the first in export order; ignored copies are
+  // reported with the copy that is used.
+  const groups = new Map();
+  for (const record of records) {
+    if (!record.id) continue;
+    const key = `${record.kind}\0${record.id}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(record);
+  }
+  const dropped = new Set();
+  const signatureOf = (record) => {
+    const { _file, ...content } = record;
+    return JSON.stringify(content);
+  };
+  for (const copies of groups.values()) {
+    if (copies.length < 2) continue;
+    const distinct = [];
+    for (const copy of copies) {
+      const same = distinct.find((item) => item.signature === signatureOf(copy));
+      if (!same) {
+        distinct.push({ record: copy, signature: signatureOf(copy) });
+        continue;
+      }
+      dropped.add(copy);
+      diagnostics.push({
+        code: 'DUPLICATE_RECORD_IDENTICAL',
+        kind: copy.kind,
+        id: copy.id,
+        file: copy._file,
+        firstFile: same.record._file,
+        message: 'The export contains the same record twice with identical content; the first copy is used.',
+      });
+    }
+    if (distinct.length < 2) continue;
+    const { record: used, reason } = await chooseRecordCopy(
+      distinct.map((item) => item.record),
+      { commitTime },
+    );
+    for (const { record: copy } of distinct) {
+      if (copy === used) continue;
+      for (const twin of copies) if (signatureOf(twin) === signatureOf(copy)) dropped.add(twin);
+      diagnostics.push({
+        code: 'DUPLICATE_RECORD_RESOLVED',
+        kind: copy.kind,
+        id: copy.id,
+        file: copy._file,
+        usedFile: used._file,
+        reason,
+        message: `The export contains different records with the same ID; the copy in ${used._file} is used (${reason}) and this copy is ignored.`,
+      });
+    }
+  }
+  if (dropped.size) records.splice(0, records.length, ...records.filter((record) => !dropped.has(record)));
+  const profileChanges = [];
   let selectedProfileFile = null;
-  let profileChanges = [];
   if (deploymentProfile) {
-    const profile = await applyDeploymentProfile(deploymentProfile, deploymentProfileFile, files, {
-      records,
-      diagnostics,
-    });
-    selectedProfileFile = profile.selectedProfileFile;
-    profileChanges = profile.profileChanges;
+    if (!/^[\w.-]+$/.test(deploymentProfile)) throw new Error('Select a deployment profile by its exported name');
+    const profileName = deploymentProfile.replace(/\.deployment\.ya?ml$/i, '');
+    const profile =
+      deploymentProfileFile ??
+      files.find(
+        (f) =>
+          /[\\/]deployment-profiles[\\/]/i.test(f) &&
+          path
+            .basename(f)
+            .replace(/\.deployment\.ya?ml$/i, '')
+            .toLowerCase() === profileName.toLowerCase(),
+      );
+    if (!profile) throw new Error(`Deployment profile '${deploymentProfile}' is absent in the export`);
+    selectedProfileFile = await fs.realpath(profile);
+    const profileSource = await fs.readFile(profile, 'utf8');
+    const values = /\.json$/i.test(profile)
+      ? JSON.parse(profileSource.replace(/^\uFEFF/, ''))
+      : YAML.parse(profileSource);
+    if (!values || typeof values !== 'object' || Array.isArray(values))
+      throw new Error('Deployment profile must map tables to record patches');
+    for (const [entity, rows] of Object.entries(values ?? {})) {
+      const raw = entity.replace(/^(?:adx|mspp)_/, '');
+      const kind =
+        {
+          entityform: 'basicform',
+          webform: 'advancedform',
+          entitylist: 'list',
+          entitypermission: 'tablepermission',
+        }[raw] ?? raw;
+      for (const patch of Array.isArray(rows) ? rows : [rows]) {
+        const targetId = id(
+          patch?.[`${entity}id`] ??
+            Object.entries(patch ?? {}).find(([k]) => k === `adx_${raw}id` || k === `mspp_${raw}id`)?.[1],
+        );
+        const record = records.find(
+          (r) => r.kind === kind && (targetId ? r.id === targetId : r.name === field(patch, 'name')),
+        );
+        if (!record) {
+          diagnostics.push({
+            code: 'DEPLOYMENT_PROFILE_TARGET_UNRESOLVED',
+            profile: profileName,
+            entity,
+            id: targetId,
+            message: 'Profile override has no matching exported record',
+          });
+          continue;
+        }
+        const fields = Object.keys(patch).filter((k) => !k.endsWith('id'));
+        record._originalName ??= record.name;
+        Object.assign(record, patch);
+        record.name = field(record, 'name', record.name);
+        record._profileFields = {
+          ...record._profileFields,
+          ...Object.fromEntries(fields.map((k) => [k.replace(/^(?:adx|mspp)_/, ''), patch[k]])),
+        };
+        record._deploymentProfile = profileName;
+        record._profileSourceFiles = {
+          ...record._profileSourceFiles,
+          ...Object.fromEntries(fields.map((k) => [k.replace(/^(?:adx|mspp)_/, ''), selectedProfileFile])),
+        };
+        record._profileRevisions = {
+          ...record._profileRevisions,
+          [selectedProfileFile]: sourceRevisionOf(profileSource),
+        };
+        profileChanges.push({
+          recordId: record.id,
+          kind,
+          fields,
+          profile: profileName,
+          file: profile,
+        });
+      }
+    }
   }
   // Local model-driven edits are record overlays. Reuse the normal compiler so page
   // hierarchy, language, forms and templates stay consistent without rewriting exports.

@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { portalLanguage } from '../mirage/lib/portal-languages.mjs';
+import { stripTrailingCharacter, nestedElementText } from '../mirage/lib/text-scanning.mjs';
 
 const MIME_BY_EXT = {
   '.js': 'application/javascript; charset=utf-8',
@@ -201,9 +202,7 @@ export function urlKey(urlPath) {
 }
 
 function joinUrl(parentPath, partial) {
-  const clean = String(partial ?? '')
-    .replace(/^\/+/, '')
-    .replace(/\/+$/, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  const clean = stripTrailingCharacter(String(partial ?? '').replace(/^\/+/, ''), '/');
   const base = parentPath.endsWith('/') ? parentPath : parentPath + '/';
   return clean ? base + clean : parentPath;
 }
@@ -885,7 +884,7 @@ const stableValue = (value) =>
     item && typeof item === 'object' && !Array.isArray(item)
       ? Object.fromEntries(
           Object.keys(item)
-            .sort((a, b) => Number(a > b) - Number(a < b))
+            .sort(/* NOSONAR: preserve default string coercion */)
             .map((key) => [key, item[key]]),
         )
       : item,
@@ -1226,9 +1225,7 @@ export class PortalModel {
       languageId:
         content?.webpagelanguageid?.id ??
         content?.webpagelanguageid ??
-        /* NOSONAR */ /<powerpagesitelanguageid>\s*(?:<powerpagesitelanguageid>)?\s*([^<\s][^<]*?)\s*<\/powerpagesitelanguageid>/.exec(
-          xml,
-        )?.[1],
+        nestedElementText(xml, 'powerpagesitelanguageid'),
       dir,
       file,
       rel: `powerpagecomponents/${entry.name}/powerpagecomponent.xml`,
@@ -1472,7 +1469,7 @@ export class PortalModel {
       const p = this.pagePath(pageId);
       if (p) out.add(p);
     }
-    return [...out].sort((a, b) => Number(a > b) - Number(a < b));
+    return [...out].sort(/* NOSONAR: preserve default string coercion */);
   }
 
   /** Full URL path of a web page ("/" for home), or null when the parent chain is broken. */

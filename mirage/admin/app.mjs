@@ -583,7 +583,11 @@ function rememberDraft(control) {
   const form = control?.closest?.('#content form[id], #content [data-draft-controls][id]');
   // File inputs cannot be restored programmatically; their contents are read immediately.
   if (!form || !control.id || !('value' in control) || control.type === 'file') return;
-  if ('draftControls' in form.dataset && !form.dataset.draftControls.split(/\s+/).includes(control.id)) return;
+  if (
+    /* NOSONAR: hasAttribute ignores inherited dataset properties */ form.hasAttribute('data-draft-controls') &&
+    !form.dataset.draftControls.split(/\s+/).includes(control.id)
+  )
+    return;
   if (!drafts.has(form.id)) drafts.set(form.id, new Map());
   drafts
     .get(form.id)
@@ -984,7 +988,7 @@ const entities = () =>
         .map((item) => item.logicalName || item.entity)
         .filter(Boolean),
     ]),
-  ].sort((a, b) => Number(a > b) - Number(a < b));
+  ].sort(/* NOSONAR: preserve default string coercion */);
 const preferredEntity = (names) => {
   if (powerPages()) {
     const authored = new Set(
@@ -2602,7 +2606,7 @@ function access() {
         ...(identity.roles || []),
       ].filter(Boolean),
     ),
-  ].sort((a, b) => Number(a > b) - Number(a < b));
+  ].sort(/* NOSONAR: preserve default string coercion */);
   const roleItems = roleNames
     .map(
       (role, index) =>
@@ -4859,7 +4863,10 @@ async function saveConfig(patch, { form } = {}) {
       },
     );
   }
-  if (target.dataset.apply || 'applySelected' in target.dataset) {
+  if (
+    target.dataset.apply ||
+    /* NOSONAR: hasAttribute ignores inherited dataset properties */ target.hasAttribute('data-apply-selected')
+  ) {
     const id = target.dataset.apply || $('#available-preset').value;
     const applyConfiguration = $('#preset-apply-configuration')?.checked === true;
     askConfirmation(
@@ -5195,7 +5202,7 @@ function syncConfinement() {
   }
   rememberDraft(event.target);
   if (event.target.id === 'persona-contact') contactChosen('persona-contact', event.target.value);
-  if ('roleChoice' in event.target.dataset) {
+  if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ event.target.hasAttribute('data-role-choice')) {
     const role = event.target.dataset.roleChoice;
     const values = new Set(
       $('#identity-roles')
@@ -5599,14 +5606,7 @@ document.addEventListener(
       );
     } else if (event.target.id === 'scenario-form') {
       const name = $('#scenario-name').value.trim();
-      const id =
-        $('#scenario-id').value.trim() ||
-        name
-          .toLowerCase()
-          .replace(/[^\w.-]+/g, '-')
-          .replace(/^-+/, '')
-          .replace(/-+$/, '') // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-          .slice(0, 80);
+      const id = $('#scenario-id').value.trim() || kit.scenarioSlug(name);
       const persona = $('#scenario-persona').value;
       const body = { id, name };
       if ($('#scenario-preset').value) body.preset = $('#scenario-preset').value;

@@ -17,11 +17,8 @@ const system = (name) =>
 const keyOf = (table, id) => `${table}/${lower(id)}`;
 const idOf = (table) => (table === 'systemform' ? 'formid' : `${table}id`);
 const WORKFLOW = 'workflow';
-const settingsOf = (state) => {
-  state.dataverse ??= {};
-  state.dataverse.sourceSolutionComponents ??= { version: 1, baseline: {}, overlays: {} };
-  return state.dataverse.sourceSolutionComponents;
-};
+const settingsOf = (state) =>
+  ((state.dataverse ??= {}).sourceSolutionComponents ??= { version: 1, baseline: {}, overlays: {} }); // NOSONAR: preserve proxy access and assignment order
 function deltaOf(source, row, idColumn) {
   const values = {},
     unset = [];

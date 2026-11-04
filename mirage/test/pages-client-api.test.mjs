@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of the portal client API and injected runtime; no reproduced native capture cited.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

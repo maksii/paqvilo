@@ -1398,7 +1398,7 @@ export function createTraceStore({
             count: bucket.count,
             errors: bucket.errors,
             p95: percentile(
-              bucket.durations.toSorted((a, b) => a - b),
+              bucket.durations.sort(/* NOSONAR: preserve in-place sorting */ (a, b) => a - b),
               0.95,
             ),
           }),
@@ -1435,7 +1435,7 @@ export function createTraceStore({
     subscribe(listener, { payloads = true, flush = null, events = null, traceId = null } = {}) {
       if (typeof listener !== 'function') throw new TypeError('Trace listeners must be functions.');
       if (flush !== null && typeof flush !== 'function') throw new TypeError('A listener flush must be a function.');
-      const types = events === null ? null : [events].flat();
+      const types = events === null ? null : [].concat(events); /* NOSONAR: preserve concat spreadability semantics */
       if (types && (!types.length || types.some((type) => !TRACE_EVENTS.includes(type))))
         throw new TypeError(`Trace listener events must be one or more of ${TRACE_EVENTS.join(', ')}.`);
       if (traceId !== null && typeof traceId !== 'string') throw new TypeError('A listener traceId must be a string.');

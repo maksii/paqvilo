@@ -103,7 +103,7 @@ function collectTemplateReferences(source, exportedTemplateNames, templates, lis
 }
 
 function collectDynamicTemplateReferences(source, unresolved, usages) {
-  /* NOSONAR */ for (const match of source.matchAll(/{%-?\s*(?:include|render|extends|layout)\s+[^%]*%}/gi))
+  /* NOSONAR */ for (const match of source.matchAll(/{%-?\s*(?:include|render|extends|layout)\s[^%]*%}/gi))
     if (!/^\{%-?\s*(?:include|render|extends|layout)\s+(?:'[^']+'|"[^"]+")[^%]*%}$/.test(match[0])) {
       unresolved.push({
         kind: 'web-template',
@@ -114,15 +114,52 @@ function collectDynamicTemplateReferences(source, unresolved, usages) {
     }
 }
 
+// Find candidate closers once, instead of rescanning the suffix for every
+// unterminated quoted lookup. The old dot in the value did not cross line breaks.
+function* literalReferences(source, candidates) {
+  const closers = { "'": [], '"': [] };
+  for (const match of source.matchAll(/(['"])\s*\]/g))
+    closers[match[1]].push({ start: match.index, end: match.index + match[0].length });
+  const lineBreaks = [...source.matchAll(/[\r\n\u2028\u2029]/g)].map((match) => match.index);
+  const firstAtOrAfter = (items, position, key = (value) => value) => {
+    let low = 0,
+      high = items.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (key(items[middle]) < position) low = middle + 1;
+      else high = middle;
+    }
+    return items[low];
+  };
+  for (let match; (match = candidates.exec(source));) {
+    if (match[2] !== undefined) {
+      yield { text: match[0], reference: match[2] };
+      continue;
+    }
+    const start = candidates.lastIndex;
+    const close = firstAtOrAfter(closers[match[1]], start, (item) => item.start);
+    const lineBreak = firstAtOrAfter(lineBreaks, start);
+    if (!close || (lineBreak !== undefined && close.start > lineBreak)) {
+      candidates.lastIndex = match.index + 1;
+      continue;
+    }
+    candidates.lastIndex = close.end;
+    yield { text: source.slice(match.index, close.end), reference: source.slice(start, close.start) };
+  }
+}
+
 function collectSnippetReferences(source, snippets, usages) {
-  for (const match of source.matchAll(/snippets\s*(?:\[\s*(['"])(.*?)\1\s*\]|\.([\w.-]+))/gi)) {
-    snippets.push(match[2] ?? match[3]);
-    usages.push({ kind: 'snippet', reference: match[2] ?? match[3], expression: expression(match[0]) });
+  for (const match of literalReferences(source, /snippets\s*(?:\[\s*(['"])|\.([\w.-]+))/gi)) {
+    snippets.push(match.reference);
+    usages.push({ kind: 'snippet', reference: match.reference, expression: expression(match.text) });
   }
 }
 
 function collectDynamicSnippetReferences(source, unresolved, usages) {
-  for (const match of source.matchAll(/snippets\s*\[([^\]]+)\]/gi))
+  // A match must end at a closing bracket. Excluding the unmatched suffix also
+  // prevents each opening bracket in that suffix from rescanning the rest.
+  const bracketedSource = source.slice(0, source.lastIndexOf(']') + 1);
+  for (const match of bracketedSource.matchAll(/snippets\s*\[([^\]]+)\]/gi))
     if (!/^\s*(['"])[\s\S]*\1\s*$/.test(match[1])) {
       unresolved.push({
         kind: 'content-snippet',
@@ -164,8 +201,8 @@ function collectEditableReferences(source, snippets, unresolved, usages) {
 }
 
 function collectSettingsReferences(source, settings) {
-  for (const match of source.matchAll(/settings\s*(?:\[\s*(['"])(.*?)\1\s*\]|\.([\w./-]+))/gi))
-    settings.push(match[2] ?? match[3]);
+  for (const match of literalReferences(source, /settings\s*(?:\[\s*(['"])|\.([\w./-]+))/gi))
+    settings.push(match.reference);
 }
 
 function collectComponentReferences(source, forms, lists, views, unresolved, usages) {

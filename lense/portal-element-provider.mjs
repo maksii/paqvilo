@@ -1,6 +1,7 @@
 /** Serializable early bootstrap. Only a backend-held writer can admit response descriptors. */
+// NOSONAR: window preserves the browser WindowProxy boundary when page code reassigns globalThis.
 export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlot, limit = 50000 }) {
-  if (!secret || !slot || Object.hasOwn(globalThis, slot)) return;
+  if (!secret || !slot || Object.hasOwn(window, slot)) return;
   const marker = 'data-paqvilo-source';
   const apply = Reflect.apply,
     clone = structuredClone,
@@ -86,13 +87,16 @@ export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlo
   const oldMarkersFor = (records) => {
     // A script may remove a parser marker before this microtask; MutationRecord retains the original node.
     const oldMarkers = [];
-    for (const record of records)
+    // NOSONAR: page scripts can replace the array iterator after early bootstrap.
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i];
       if (
         recordValue(record, 'type') === 'attributes' &&
         recordValue(record, 'attributeName') === marker &&
         recordValue(record, 'oldValue')
       )
         oldMarkers[oldMarkers.length] = { node: recordValue(record, 'target'), id: recordValue(record, 'oldValue') };
+    }
     return oldMarkers;
   };
   const originalMarker = (node, oldMarkers) => {
@@ -138,7 +142,8 @@ export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlo
     const seen = new NativeWeakSet(),
       budget = { nodes: 0 };
     const oldMarkers = oldMarkersFor(records);
-    for (const record of records) processRecord(record, seen, budget, oldMarkers);
+    // NOSONAR: keep mutation records independent of page-owned array iteration.
+    for (let i = 0; i < records.length; i++) processRecord(records[i], seen, budget, oldMarkers);
   };
   const observer = new MutationObserver(observe);
   const takeRecords = observer.takeRecords.bind(observer),
@@ -315,5 +320,5 @@ export function installPortalProvenanceRegistry({ secret, slot, domProvenanceSlo
       return writer;
     },
   });
-  define(globalThis, slot, { value: capability, configurable: false, writable: false });
+  define(window, slot, { value: capability, configurable: false, writable: false });
 }

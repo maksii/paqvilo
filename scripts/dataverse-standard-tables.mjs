@@ -246,7 +246,7 @@ const numberOrUndefined = (value) => (plain(value) === '' ? undefined : Number(p
 const sortObject = (object) =>
   Object.fromEntries(
     Object.keys(object)
-      .sort((a, b) => Number(a > b) - Number(a < b))
+      .sort()
       .map((key) => [key, object[key]]),
   );
 
@@ -254,8 +254,9 @@ const sortObject = (object) =>
 function details(text) {
   const out = {};
   for (const part of String(text).split('<br />')) {
-    const match = /^\s*([A-Za-z]+):\s*(.*)$/.exec(part); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-    if (match) out[match[1]] = plain(match[2]);
+    const prefix = /^\s*([A-Za-z]+):/.exec(part);
+    const value = prefix && /^(.*)$/.exec(part.slice(prefix[0].length).trim());
+    if (value) out[prefix[1]] = plain(value[1]);
   }
   return out;
 }
@@ -308,7 +309,13 @@ function choiceBody(type, block, name, complain) {
 }
 
 function processEntityHeading(line, state, complain) {
-  const h2 = /^## (.+?)\s*$/.exec(line); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  let h2 = null;
+  if (line.startsWith('## ')) {
+    const body = line.slice(3);
+    const content = body.trimEnd();
+    const lineEnd = body.search(/[\r\n\u2028\u2029]/);
+    if (body.length && lineEnd !== 0 && (lineEnd < 0 || content.length <= lineEnd)) h2 = [line, content || body[0]];
+  }
   if (h2) {
     state.section = SECTIONS[h2[1]] ?? null;
     state.block = null;
@@ -492,7 +499,7 @@ function parseEntityRelationship(item, logical) {
     };
   let entities;
   if (selfReferencing) entities = [logical, logical];
-  else if (item.otherEntity) entities = [logical, item.otherEntity].sort((a, b) => Number(a > b) - Number(a < b));
+  else if (item.otherEntity) entities = [logical, item.otherEntity].sort();
   return {
     kind: 'many-to-many',
     schemaName: item.schemaName,
@@ -593,7 +600,7 @@ function mergeRelationship(pending, rel, problems) {
 }
 
 function collectStandardPages(pages, prefixedTables, tables, optionSets, pending, problems, stats) {
-  for (const logical of Object.keys(pages).sort((a, b) => Number(a > b) - Number(a < b))) {
+  for (const logical of Object.keys(pages).sort()) {
     const parsed = parseEntityPage(pages[logical], logical, { prefixedTables });
     problems.push(...parsed.problems);
     tables[logical] = { ...parsed.table, attributes: sortObject(parsed.attributes) };
@@ -653,7 +660,7 @@ function relationshipSurvives(name, rel, pages, tables, prefixedTables, problems
 
 function collectStandardRelationships(pending, pages, tables, prefixedTables, problems, stats) {
   const relationships = {};
-  for (const name of [...pending.keys()].sort((a, b) => Number(a > b) - Number(a < b))) {
+  for (const name of [...pending.keys()].sort()) {
     const rel = pending.get(name);
     if (!relationshipSurvives(name, rel, pages, tables, prefixedTables, problems)) continue;
     relationships[name] = rel;

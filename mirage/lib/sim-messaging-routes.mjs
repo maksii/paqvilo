@@ -130,7 +130,7 @@ function handleMessagesGet(api, res, url, messaging) {
   for (const target of Object.values(messaging.endpoints ?? {}))
     names.add(String(target).slice(String(target).indexOf('/') + 1));
   const entities = [...names]
-    .sort((a, b) => Number(a > b) - Number(a < b))
+    .sort(/* NOSONAR: preserve default string coercion */)
     .map((name) => ({ entity: name, stats: typeof bus.stats === 'function' ? bus.stats(name) : null }));
   return send(res, 200, { configured: true, entities, endpoints: messaging.endpoints ?? {} });
 }

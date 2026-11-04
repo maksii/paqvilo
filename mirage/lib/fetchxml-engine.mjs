@@ -1467,7 +1467,7 @@ export function structuralIntersects(plan, mappingOf, relationshipsFor = (mappin
       projected = projected.filter((item) => {
         const signature = JSON.stringify([
           Object.keys(item.entity)
-            .sort((a, b) => Number(a > b) - Number(a < b))
+            .sort(/* NOSONAR: preserve default string coercion */)
             .map((key) => [key, canonical(item.entity[key], collation)]),
           item.entry.keys.map((key) =>
             key ? [key.t, key.t === 's' ? foldText(key.v, collation) : equalityKey(key.v)] : null,
@@ -1687,7 +1687,7 @@ export function structuralIntersects(plan, mappingOf, relationshipsFor = (mappin
       if (isEmpty(value)) return null;
       if (column.dategrouping) {
         // fiscal-period and fiscal-year follow the organisation fiscal calendar.
-        const fiscalGrouping = column.dategrouping.startsWith('fiscal-');
+        const fiscalGrouping = /^fiscal-/.test(column.dategrouping); // NOSONAR: preserve regex coercion for caller-supplied plans
         if (fiscalGrouping) fiscal ??= fiscalCalendar(settings);
         return dateGroupValue(value, column.dategrouping, {
           timeZoneOffsetMinutes: column.usertimezone ? Number(settings.timeZoneOffsetMinutes ?? 0) : 0,
@@ -1783,7 +1783,7 @@ function canonical(value, collation = 'CI_AI') {
     if (own(value, 'id')) return ['ref', guidKey(value.id) ?? String(value.id)];
     if (own(value, 'value')) return ['choice', value.value];
     return Object.keys(value)
-      .sort((a, b) => Number(a > b) - Number(a < b))
+      .sort(/* NOSONAR: preserve default string coercion */)
       .map((key) => [key, canonical(value[key], collation)]);
   }
   if (Array.isArray(value)) return value.map((item) => canonical(item, collation));

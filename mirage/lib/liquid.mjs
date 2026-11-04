@@ -739,13 +739,37 @@ class SubstitutionTag extends RawBlock {
   }
 }
 /** Editable: CMS wrapper markup for page attributes and snippets (non-editor view). */
-/* NOSONAR: pattern is assembled from parts */ const EDITABLE_SYNTAX = new RegExp(
-  String.raw`((?:"[^"]*"|'[^']*'|(?:[^\s,|'"]|"[^"]*"|'[^']*')+))(\s+((?:"[^"]*"|'[^']*'|(?:[^\s,|'"]|"[^"]*"|'[^']*')+))?)`, // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-  'u',
-);
+function editableSyntax(markup) {
+  // Record token endings for every possible start, including starts inside a
+  // malformed quoted candidate: the original unanchored matcher tried those too.
+  const atomEnds = new Array(markup.length),
+    runEnds = new Array(markup.length);
+  const nextQuote = { "'": -1, '"': -1 };
+  for (let index = markup.length - 1; index >= 0; index--) {
+    const char = markup[index];
+    let end;
+    if (char === '"' || char === "'") {
+      if (nextQuote[char] >= 0) end = nextQuote[char] + 1;
+      nextQuote[char] = index;
+    } else if (/[^\s,|'"]/.test(char)) end = index + 1;
+    if (end !== undefined) {
+      atomEnds[index] = end;
+      runEnds[index] = runEnds[end] ?? end;
+    }
+  }
+  for (let index = 0; index < markup.length; index++) {
+    let end = runEnds[index];
+    if (end === undefined || !/\s/.test(markup[end] ?? '')) continue;
+    const editable = markup.slice(index, end);
+    while (end < markup.length && /\s/.test(markup[end])) end++;
+    const keyEnd = markup[end] === '"' || markup[end] === "'" ? atomEnds[end] : runEnds[end];
+    return [undefined, editable, undefined, keyEnd === undefined ? undefined : markup.slice(end, keyEnd)];
+  }
+  return null;
+}
 class EditableTag extends Tag {
   parse() {
-    const m = EDITABLE_SYNTAX.exec(this.markup);
+    const m = editableSyntax(this.markup);
     if (!m)
       throw new LiquidSyntaxError(
         `Syntax Error in '${this.tagName}' tag - Valid syntax: ${this.tagName} [editable] ([key]) (type:[type])`,
@@ -986,34 +1010,6 @@ function communityPlacementTag(portal, kind) {
       await renderCommunityView(context, portal, placement, CMS_VIEW_TEMPLATES[`${variable}_placement`], scope, out);
     }
   };
-}
-
-function editableSettings(editOptions) {
-  return {
-    editType: editOptions.type == null ? 'html' : formatItem(editOptions.type),
-    escape: editOptions.escape === true || String(editOptions.escape ?? '').toLowerCase() === 'true',
-    liquidEnabled: !(editOptions.liquid === false || String(editOptions.liquid ?? '').toLowerCase() === 'false'),
-    tag: editOptions.tag == null ? 'div' : formatItem(editOptions.tag),
-    cssClass: editOptions.class == null ? null : formatItem(editOptions.class),
-    defaultValue: editOptions.default == null ? null : formatItem(editOptions.default),
-  };
-}
-
-function resolveEditablePageCopy(value, target, key, context) {
-  if (!target.__isCurrentPage || !['adx_copy', 'copy'].includes(key)) return value;
-  const request = context.environments[0].get('request');
-  const resolved = resolveObservedPageCopy(value ?? '', {
-    pageId: target.id,
-    path: request?.path,
-    origin: context.environments[0].get('__observationOrigin'),
-    profiles: context.environments[0].get('__pageCopyLayouts'),
-  });
-  value = resolved.source;
-  // An observed layout returns the whole live page-copy region; the wrapper is rendered here.
-  if (value.startsWith(OBSERVED_PAGE_COPY_PREFIX) && value.endsWith(OBSERVED_PAGE_COPY_SUFFIX))
-    value = value.slice(OBSERVED_PAGE_COPY_PREFIX.length, -OBSERVED_PAGE_COPY_SUFFIX.length);
-  if (resolved.diagnostic) context.diagnostic(resolved.diagnostic.code, resolved.diagnostic.message);
-  return value;
 }
 
 function createLiquidRequest(requestInput, requestUrl) {
@@ -1343,129 +1339,143 @@ export function createPortalRenderer(portal, options = {}) {
       const target = portal.sitemarkers?.[name];
       return target?.url ?? null;
     },
-    async editable(target, key, editOptions, context) {
-      const settings = editableSettings(editOptions);
-      const render = (value, sourceRef = null) =>
-        renderEditableValue(value, sourceRef, context, settings.liquidEnabled);
-      if (target instanceof SnippetsDrop) return await renderSnippetEditable(target, key, context, settings, render);
-      if (target && typeof target === 'object' && target.__liquidEditable === 'entity')
-        return await renderEntityEditable(target, key, context, settings, render);
+    /* NOSONAR: retain original await structure around render provenance */ async editable(
+      target,
+      key,
+      editOptions,
+      context,
+    ) {
+      const editType = editOptions.type == null ? 'html' : formatItem(editOptions.type);
+      const escape = editOptions.escape === true || String(editOptions.escape ?? '').toLowerCase() === 'true';
+      const liquidEnabled = !(
+        editOptions.liquid === false || String(editOptions.liquid ?? '').toLowerCase() === 'false'
+      );
+      const tag = editOptions.tag == null ? 'div' : formatItem(editOptions.tag);
+      const cssClass = editOptions.class == null ? null : formatItem(editOptions.class);
+      const defaultValue = editOptions.default == null ? null : formatItem(editOptions.default);
+      const render = async (value, sourceRef = null) => {
+        context.resolvedFragment = null;
+        if (liquidEnabled) return renderNested(engine, value, context, sourceRef, 'editable');
+        if (sourceRef)
+          context.resolvedFragment = {
+            text: value,
+            intervals: [
+              {
+                start: 0,
+                end: value.length,
+                sourceRefId: sourceRef.id,
+                sourceSpan: { start: 0, end: value.length },
+                mapping: 'literal',
+              },
+            ],
+          };
+        return value;
+      };
+      if (target instanceof SnippetsDrop) {
+        if (!key) return null;
+        const { name, source, sourceRef, fragment } = target.rawValue(key);
+        if (name === undefined || source == null) {
+          // SnippetPlaceHolder: missing snippets keep the editable wrapper.
+          return wrapEditable({
+            value: await render(defaultValue ?? ''),
+            hasValue: defaultValue != null,
+            editType,
+            cssClass,
+            escape,
+            tag,
+          });
+        }
+        // An existing snippet keeps its language context; without a value it is a no-value wrapper
+        const value = fragment ? ((context.resolvedFragment = fragment), source) : await render(source, sourceRef);
+        return wrapEditable({
+          value,
+          provenance: context.resolvedFragment,
+          context,
+          hasValue: source !== '',
+          editType,
+          cssClass,
+          escape,
+          tag,
+          languageName: snippetLanguageName(name, context),
+        });
+      }
+      if (target && typeof target === 'object' && target.__liquidEditable === 'entity') {
+        if (!key) return null;
+        let value = target[key] ?? target[key.replace(/^adx_/, '')] ?? null;
+        if (target.__isCurrentPage && ['adx_copy', 'copy'].includes(key)) {
+          const request = context.environments[0].get('request');
+          const resolved = resolveObservedPageCopy(value ?? '', {
+            pageId: target.id,
+            path: request?.path,
+            origin: context.environments[0].get('__observationOrigin'),
+            profiles: context.environments[0].get('__pageCopyLayouts'),
+          });
+          value = resolved.source;
+          // An observed layout returns the whole live page-copy region; the wrapper is rendered here.
+          if (value.startsWith(OBSERVED_PAGE_COPY_PREFIX) && value.endsWith(OBSERVED_PAGE_COPY_SUFFIX))
+            value = value.slice(OBSERVED_PAGE_COPY_PREFIX.length, -OBSERVED_PAGE_COPY_SUFFIX.length);
+          if (resolved.diagnostic) context.diagnostic(resolved.diagnostic.code, resolved.diagnostic.message);
+        }
+        // Dataverse stores empty text as null: an empty attribute renders the no-value wrapper.
+        const hasValue = value != null && value !== '';
+        const request = context.environments[0].get('request');
+        // Content-editing metadata renders for a signed-in user whose web role carries website
+        // access permissions (adx_websiteaccess), derived from the export; never from a role name.
+        const user = context.environments[0].get('user');
+        const roleNames = new Set(
+          (user?.roles ?? []).map((role) => (typeof role === 'object' && role ? role.name : role)),
+        );
+        const roleIds = new Set(
+          portalWebRoles(portal)
+            .filter((role) => roleNames.has(role.name))
+            .map((role) => role.id),
+        );
+        const contentEditor =
+          user &&
+          (portal.websiteAccess ?? []).some((access) => (access.roleIds ?? []).some((roleId) => roleIds.has(roleId)));
+        const metadata = target.__isCurrentPage
+          ? editableMetadataAttributes({
+              observed: contentEditor ? { liquidEditableMetadata: 'observed' } : (options.observed ?? portal.observed),
+              websiteId: portal.website?.id ?? portalField(portal.website ?? {}, 'websiteid'),
+              rootId: target.id,
+              contentId:
+                target.metadata?.adx_webpageid ??
+                target.metadata?.mspp_webpageid ??
+                target.metadata?.webpageid ??
+                target.id,
+              key,
+              requestPath: request?.path,
+              encoded: escape,
+              liquid: liquidEnabled,
+              workingFlag: 'False',
+            })
+          : '';
+        return wrapEditable({
+          value: await render(
+            hasValue ? formatItem(value) : (defaultValue ?? ''),
+            hasValue
+              ? (getObjectSource(target, key) ??
+                  sourceIndex(context.environments[0].get('__language')?.id).source(
+                    target.metadata,
+                    key.replace(/^(?:adx|mspp)_/, ''),
+                  ))
+              : null,
+          ),
+          provenance: context.resolvedFragment,
+          context,
+          hasValue: hasValue || defaultValue != null,
+          editType,
+          cssClass,
+          escape,
+          tag,
+          metadata,
+        });
+      }
       // Web link sets and other editable objects render editing metadata for editors only.
       return null;
     },
   };
   engine.portalHost = portalHost;
-
-  async function renderEditableValue(value, sourceRef, context, liquidEnabled) {
-    context.resolvedFragment = null;
-    if (liquidEnabled) return renderNested(engine, value, context, sourceRef, 'editable');
-    if (sourceRef)
-      context.resolvedFragment = {
-        text: value,
-        intervals: [
-          {
-            start: 0,
-            end: value.length,
-            sourceRefId: sourceRef.id,
-            sourceSpan: { start: 0, end: value.length },
-            mapping: 'literal',
-          },
-        ],
-      };
-    return value;
-  }
-
-  async function renderSnippetEditable(target, key, context, settings, render) {
-    if (!key) return null;
-    const { name, source, sourceRef, fragment } = target.rawValue(key);
-    if (name === undefined || source == null) {
-      // SnippetPlaceHolder: missing snippets keep the editable wrapper.
-      return wrapEditable({
-        value: await render(settings.defaultValue ?? ''),
-        hasValue: settings.defaultValue != null,
-        editType: settings.editType,
-        cssClass: settings.cssClass,
-        escape: settings.escape,
-        tag: settings.tag,
-      });
-    }
-    // An existing snippet keeps its language context; without a value it is a no-value wrapper
-    const value = fragment ? ((context.resolvedFragment = fragment), source) : await render(source, sourceRef);
-    return wrapEditable({
-      value,
-      provenance: context.resolvedFragment,
-      context,
-      hasValue: source !== '',
-      editType: settings.editType,
-      cssClass: settings.cssClass,
-      escape: settings.escape,
-      tag: settings.tag,
-      languageName: snippetLanguageName(name, context),
-    });
-  }
-
-  function editableEntityMetadata(target, key, context, settings) {
-    const request = context.environments[0].get('request');
-    // Content-editing metadata renders for a signed-in user whose web role carries website
-    // access permissions (adx_websiteaccess), derived from the export; never from a role name.
-    const user = context.environments[0].get('user');
-    const roleNames = new Set((user?.roles ?? []).map((role) => (typeof role === 'object' && role ? role.name : role)));
-    const roleIds = new Set(
-      portalWebRoles(portal)
-        .filter((role) => roleNames.has(role.name))
-        .map((role) => role.id),
-    );
-    const contentEditor =
-      user &&
-      (portal.websiteAccess ?? []).some((access) => (access.roleIds ?? []).some((roleId) => roleIds.has(roleId)));
-    const metadata = target.__isCurrentPage
-      ? editableMetadataAttributes({
-          observed: contentEditor ? { liquidEditableMetadata: 'observed' } : (options.observed ?? portal.observed),
-          websiteId: portal.website?.id ?? portalField(portal.website ?? {}, 'websiteid'),
-          rootId: target.id,
-          contentId:
-            target.metadata?.adx_webpageid ??
-            target.metadata?.mspp_webpageid ??
-            target.metadata?.webpageid ??
-            target.id,
-          key,
-          requestPath: request?.path,
-          encoded: settings.escape,
-          liquid: settings.liquidEnabled,
-          workingFlag: 'False',
-        })
-      : '';
-    return metadata;
-  }
-
-  async function renderEntityEditable(target, key, context, settings, render) {
-    if (!key) return null;
-    let value = target[key] ?? target[key.replace(/^adx_/, '')] ?? null;
-    value = resolveEditablePageCopy(value, target, key, context);
-    // Dataverse stores empty text as null: an empty attribute renders the no-value wrapper.
-    const hasValue = value != null && value !== '';
-    const metadata = editableEntityMetadata(target, key, context, settings);
-    return wrapEditable({
-      value: await render(
-        hasValue ? formatItem(value) : (settings.defaultValue ?? ''),
-        hasValue
-          ? (getObjectSource(target, key) ??
-              sourceIndex(context.environments[0].get('__language')?.id).source(
-                target.metadata,
-                key.replace(/^(?:adx|mspp)_/, ''),
-              ))
-          : null,
-      ),
-      provenance: context.resolvedFragment,
-      context,
-      hasValue: hasValue || settings.defaultValue != null,
-      editType: settings.editType,
-      cssClass: settings.cssClass,
-      escape: settings.escape,
-      tag: settings.tag,
-      metadata,
-    });
-  }
 
   function pageEntityReference(id, logicalName) {
     const lower = String(id).toLowerCase();

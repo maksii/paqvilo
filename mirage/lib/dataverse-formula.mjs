@@ -254,7 +254,7 @@ function securedInputs(api, table, formula) {
     Object.values(node).forEach((value) => walk(value?.node ?? value));
   };
   walk(ast);
-  return [...found].sort((a, b) => Number(a > b) - Number(a < b));
+  return [...found].sort(/* NOSONAR: preserve default string coercion */);
 }
 function reportSecuredInputs(api, state) {
   for (const [table, column] of allFormulaColumns(api)) {

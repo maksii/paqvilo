@@ -17,6 +17,7 @@ import { PortalModel, sourceText, urlKey } from '../portal-model.mjs';
 import { GitBaseline } from '../git.mjs';
 import { editSource } from '../source-edit.mjs';
 import { portalResourceUrl } from '../online.mjs';
+import { replaceDelimitedAlternatives } from '../../mirage/lib/text-scanning.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sha = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
@@ -29,7 +30,7 @@ const diagnosticLocation = (value) => {
     const url = new URL(text);
     return diagnosticText(url.origin + url.pathname);
   } catch {
-    return text.replace(/[?#].*$/, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    return text.replace(/[?#].*$/, ''); // NOSONAR: diagnosticText above enforces a 1000-code-unit bound.
   }
 };
 
@@ -394,7 +395,11 @@ function findAnchorLine(text, html, accept, wholeLine = true) {
     for (const source of templates) {
       const line = findAnchorLine(source.text, rawHtml, (literal) => {
         const match = textElement.exec(literal);
-        return match && match[2].replace(/&[^;]+;/g, ' ').trim().length >= 8 && anchorOwners.get(literal)?.size === 1; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+        return (
+          match &&
+          replaceDelimitedAlternatives(match[2], [['&', ';', 1]], ' ').trim().length >= 8 &&
+          anchorOwners.get(literal)?.size === 1
+        );
       });
       if (line >= 0) templateCandidates.push({ ...source, line });
       if (templateCandidates.length >= 100) break;

@@ -465,7 +465,7 @@ export class RecordPageSession {
       sorter?.close();
     }
   }
-  async copyTable(value) {
+  /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async copyTable(value) {
     const source = tables.get(value);
     if (!source) throw TypeError('Unknown record table');
     const table = new PagedRecords(this),
@@ -476,20 +476,54 @@ export class RecordPageSession {
       if (state) held.set(id, state);
     }
     const sorter = source.keyTree ? new KeySorter(this.directory) : null;
-    const yieldState = { yieldedAt: performance.now() },
-      yieldWork = () => yieldCopyWork(yieldState),
-      saveContext = { session: this, source, table, held, moved, sorter },
-      save = (oldId) => saveCopiedRecord(saveContext, oldId);
+    let yieldedAt = performance.now(),
+      operations = 0;
+    const yieldWork = async () => {
+      if (performance.now() - yieldedAt >= 8) {
+        await setImmediate();
+        yieldedAt = performance.now();
+      }
+    };
     // Stored JSON bytes are copied as they are; only a key column is parsed.
+    const save = (oldId) => {
+      const stored = this.putText(source.session.recordText(oldId, { bytes: true }), true),
+        id = stored.id;
+      if (held.has(oldId)) moved.set(oldId, id);
+      if (sorter) {
+        const key = JSON.parse(stored.text.toString('utf8'))[source.keyColumn];
+        if (typeof key !== 'string') throw Error('Record key index disagrees with its records');
+        table.noteKeyShape(key);
+        sorter.add([normalizeKey(key), id]);
+      }
+      return id;
+    };
     try {
       if (!source.aliases) {
-        await this.copyChunks(source, table, save, yieldWork);
+        for (const chunk of [...source.chunks]) {
+          const ids = new Array(chunk.count);
+          for (let i = 0; i < chunk.count; i++) ids[i] = chunk.ids?.[i] ? save(chunk.ids[i]) : 0;
+          table.appendIds(ids);
+          await yieldWork();
+        }
       } else {
         const positions = new KeySorter(this.directory);
         try {
-          const operations = await indexAliasPositions(source, positions, yieldWork);
+          for (let index = 0; index < source.length; index++) {
+            const id = source.id(index);
+            if (id) positions.add([String(id).padStart(16, '0'), index + 1]);
+            if (++operations % 512 === 0) await yieldWork();
+          }
           table.resize(source.length);
-          await populateAliasPositions(source, table, positions, save, yieldWork, operations);
+          let previous, id;
+          for (const [key, position] of positions.sorted()) {
+            const oldId = Number(key);
+            if (oldId !== previous) {
+              id = save(oldId);
+              previous = oldId;
+            } else table.aliases = true;
+            table.setId(position - 1, id, { updateIndex: false, preparedVersion: 0 });
+            if (++operations % 512 === 0) await yieldWork();
+          }
         } finally {
           positions.close();
         }
@@ -507,15 +541,7 @@ export class RecordPageSession {
       sorter?.close();
     }
   }
-  async copyChunks(source, table, save, yieldWork) {
-    /* NOSONAR: snapshot copy guards against mutation while iterating */ for (const chunk of [...source.chunks]) {
-      // NOSONAR: snapshot, the source chunks may change while yielding
-      const ids = new Array(chunk.count);
-      for (let i = 0; i < chunk.count; i++) ids[i] = chunk.ids?.[i] ? save(chunk.ids[i]) : 0;
-      table.appendIds(ids);
-      await yieldWork();
-    }
-  }
+
   hasLiveTables() {
     for (const ref of this.backends) {
       const table = ref.deref();
@@ -561,14 +587,154 @@ export class RecordPageSession {
     };
     return table.description;
   }
-  async restoreMany(descriptors) {
-    if (this.files.length) throw new Error('Restore requires a fresh record-page session');
-    const groups = collectRestoreGroups(this.ownerKey, descriptors);
+  /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async restoreMany(descriptors) {
+    if (this.files.length) throw Error('Restore requires a fresh record-page session');
+    const groups = new Map(),
+      names = new Map();
+    const checkLength = (n) => Number.isSafeInteger(n) && n >= 0 && n <= 4294967295;
+    for (const descriptor of descriptors) {
+      if (
+        descriptor?.format !== 'paged-records-1' ||
+        !checkLength(descriptor.length) ||
+        !checkLength(descriptor.records) ||
+        descriptor.records > descriptor.length ||
+        !Array.isArray(descriptor.files) ||
+        !Array.isArray(descriptor.chunks) ||
+        descriptor.chunks.length < Math.ceil(descriptor.length / CHUNK) ||
+        descriptor.chunks.length > descriptor.length ||
+        (descriptor.aliases !== undefined && typeof descriptor.aliases !== 'boolean')
+      )
+        throw Error('Invalid paged table descriptor');
+      if (descriptor.owner !== undefined && descriptor.owner !== this.ownerKey)
+        throw Error('Record directory belongs to a different state');
+      for (const file of descriptor.files) {
+        if (
+          !Number.isSafeInteger(file.index) ||
+          file.index < 0 ||
+          file.index >= 2097152 ||
+          !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.pages$/.test(file.name ?? '')
+        )
+          throw Error('Invalid owned record file');
+        if (names.has(file.index) && names.get(file.index) !== file.name)
+          throw Error('Contradictory record file slots');
+        names.set(file.index, file.name);
+        let group = groups.get(file.name);
+        if (!group) groups.set(file.name, (group = { slots: new Set(), prefixes: [] }));
+        group.slots.add(file.index);
+        group.prefixes.push(file.prefix);
+      }
+    }
     const opened = [];
     try {
-      await openRestoreGroups(this, groups, opened);
+      this.lease.protect(groups.keys());
+      for (const [name, group] of groups) {
+        const file = path.join(this.directory, name),
+          real = fs.realpathSync.native(file);
+        if (path.dirname(real) !== this.directory) throw Error('Record file escapes its owned directory');
+        const prefixes = group.prefixes;
+        if (prefixes.some((prefix) => !prefix || !Number.isSafeInteger(prefix.bytes)))
+          throw Error('Invalid record file prefix');
+        const latest = prefixes.reduce((max, prefix) => (prefix.bytes > max.bytes ? prefix : max));
+        const store = await RecordPageFile.open(file, latest, { prefixes, cacheBytes: 0 });
+        store.suspend();
+        opened.push(store);
+        for (const index of group.slots) this.files[index] = { name, store };
+      }
       const restored = [];
-      for (const descriptor of descriptors) restored.push(restoreDescriptor(this, descriptor));
+      for (const descriptor of descriptors) {
+        const table = new PagedRecords(this),
+          allowed = new Map(descriptor.files.map((file) => [file.index, file.prefix]));
+        if (allowed.size !== descriptor.files.length) throw Error('Duplicate record file slot');
+        let previous = 0,
+          ascending = true,
+          length = 0;
+        for (const chunk of descriptor.chunks) {
+          const count = chunk?.holes ?? chunk?.count;
+          if (!Number.isSafeInteger(count) || count < 1 || count > CHUNK) throw Error('Invalid ordinal chunk size');
+          length += count;
+          if (chunk.holes !== undefined) {
+            if (chunk.ref !== undefined) throw Error('Invalid sparse ordinal chunk');
+            table.chunks.push({ ids: null, count, present: 0, owner: table.mutationToken });
+            continue;
+          }
+          const page = partsOf(chunk.ref);
+          if (!allowed.has(page.file) || page.page > allowed.get(page.file).pages)
+            throw Error('Unlisted ordinal file or chunk size');
+          const ids = this.readIndex(chunk.ref);
+          if (ids.length !== count) throw Error('Invalid ordinal count');
+          let present = 0,
+            entry,
+            lastPage = -1,
+            lastFile = -1;
+          for (let i = 0; i < count; i++) {
+            const id = ids[i];
+            if (!id) continue;
+            if (!Number.isSafeInteger(id) || id < 0) throw Error('Dangling record locator');
+            const file = Math.floor(id / FILE),
+              within = id - file * FILE,
+              pageNumber = Math.floor(within / SLOTS);
+            if (file !== lastFile || pageNumber !== lastPage) {
+              entry =
+                allowed.has(file) && pageNumber <= allowed.get(file).pages && pageNumber > 0
+                  ? this.files[file]?.store.entries.at(pageNumber)
+                  : undefined;
+              lastFile = file;
+              lastPage = pageNumber;
+            }
+            if (!entry || entry.kind !== 1 || within - pageNumber * SLOTS >= entry.count)
+              throw Error('Dangling record locator');
+            if (id <= previous) ascending = false;
+            previous = id;
+            present++;
+          }
+          table.present += present;
+          table.chunks.push({ ids, count, present, owner: table.mutationToken, ref: chunk.ref });
+        }
+        if (length !== descriptor.length) throw Error('Invalid ordinal chunk size');
+        if (table.present !== descriptor.records) throw Error('Stored record count disagrees with its locators');
+        table.length = descriptor.length;
+        // Earlier descriptors recorded no alias flag: any out-of-order locator may be one.
+        table.aliases = descriptor.aliases ?? !ascending;
+        // Descriptors predating owner keys, alias flags or header digests are
+        // written afresh on their next publication.
+        table.description =
+          descriptor.owner === undefined ||
+          descriptor.aliases === undefined ||
+          descriptor.files.some((file) => file.prefix?.format !== 2)
+            ? undefined
+            : descriptor;
+        if (
+          descriptor.versionHighWatermark !== undefined &&
+          (!Number.isSafeInteger(descriptor.versionHighWatermark) || descriptor.versionHighWatermark < 0)
+        )
+          throw Error('Invalid stored row-version watermark');
+        table.versionHighWatermark = descriptor.versionHighWatermark;
+        if (descriptor.looseBraceKeys !== undefined && typeof descriptor.looseBraceKeys !== 'boolean')
+          throw Error('Invalid key normalization flag');
+        table.looseBraceKeys = descriptor.looseBraceKeys ?? true;
+        if (descriptor.keyIndex) {
+          const index = descriptor.keyIndex;
+          if (
+            typeof index.column !== 'string' ||
+            !Array.isArray(index.files) ||
+            index.files.some((file) => !allowed.has(file))
+          )
+            throw Error('Invalid key index descriptor');
+          table.keyColumn = index.column;
+          table.keyTree = new PersistentKeyTree(
+            this.keyStoreWithin(index.files.map((file) => [file, allowed.get(file).pages])),
+            { root: index.root, files: index.files },
+          );
+          // Verify root ownership before any query follows its descendants.
+          if (index.root) {
+            const root = partsOf(index.root.id);
+            if (!index.files.includes(root.file) || root.page > allowed.get(root.file).pages)
+              throw Error('Unlisted key index root');
+            table.keyTree.node(index.root);
+          }
+        }
+        restored.push(table.proxy);
+      }
       return restored;
     } catch (error) {
       for (const store of opened) store.close();
@@ -631,163 +797,6 @@ export class RecordPageSession {
   }
 }
 
-function collectRestoreGroups(ownerKey, descriptors) {
-  const groups = new Map(),
-    names = new Map();
-  for (const descriptor of descriptors) {
-    validateRestoreDescriptorShape(descriptor);
-    if (descriptor.owner !== undefined && descriptor.owner !== ownerKey)
-      throw new Error('Record directory belongs to a different state');
-    for (const file of descriptor.files) registerRestoreFile(file, names, groups);
-  }
-  return groups;
-}
-
-function validateRestoreDescriptorShape(descriptor) {
-  const checkLength = (n) => Number.isSafeInteger(n) && n >= 0 && n <= 4294967295;
-  if (
-    descriptor?.format !== 'paged-records-1' ||
-    !checkLength(descriptor.length) ||
-    !checkLength(descriptor.records) ||
-    descriptor.records > descriptor.length ||
-    !Array.isArray(descriptor.files) ||
-    !Array.isArray(descriptor.chunks) ||
-    descriptor.chunks.length < Math.ceil(descriptor.length / CHUNK) ||
-    descriptor.chunks.length > descriptor.length ||
-    (descriptor.aliases !== undefined && typeof descriptor.aliases !== 'boolean')
-  )
-    throw new Error('Invalid paged table descriptor');
-}
-
-function registerRestoreFile(file, names, groups) {
-  if (
-    !Number.isSafeInteger(file.index) ||
-    file.index < 0 ||
-    file.index >= 2097152 ||
-    !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.pages$/.test(file.name ?? '')
-  )
-    throw new Error('Invalid owned record file');
-  if (names.has(file.index) && names.get(file.index) !== file.name) throw new Error('Contradictory record file slots');
-  names.set(file.index, file.name);
-  let group = groups.get(file.name);
-  if (!group) {
-    group = { slots: new Set(), prefixes: [] };
-    groups.set(file.name, group);
-  }
-  group.slots.add(file.index);
-  group.prefixes.push(file.prefix);
-}
-
-async function openRestoreGroups(session, groups, opened) {
-  session.lease.protect(groups.keys());
-  for (const [name, group] of groups) {
-    const file = path.join(session.directory, name),
-      real = fs.realpathSync.native(file);
-    if (path.dirname(real) !== session.directory) throw new Error('Record file escapes its owned directory');
-    const prefixes = group.prefixes;
-    if (prefixes.some((prefix) => !prefix || !Number.isSafeInteger(prefix.bytes)))
-      throw new Error('Invalid record file prefix');
-    const latest = prefixes.reduce((max, prefix) => (prefix.bytes > max.bytes ? prefix : max));
-    const store = await RecordPageFile.open(file, latest, { prefixes, cacheBytes: 0 });
-    store.suspend();
-    opened.push(store);
-    for (const index of group.slots) session.files[index] = { name, store };
-  }
-}
-
-function restoreDescriptor(session, descriptor) {
-  const table = new PagedRecords(session),
-    allowed = new Map(descriptor.files.map((file) => [file.index, file.prefix]));
-  if (allowed.size !== descriptor.files.length) throw new Error('Duplicate record file slot');
-  const progress = { previous: 0, ascending: true, length: 0 };
-  for (const chunk of descriptor.chunks) restoreOrdinalChunk(session, table, chunk, allowed, progress);
-  if (progress.length !== descriptor.length) throw new Error('Invalid ordinal chunk size');
-  if (table.present !== descriptor.records) throw new Error('Stored record count disagrees with its locators');
-  table.length = descriptor.length;
-  table.aliases = descriptor.aliases ?? !progress.ascending;
-  table.description = isCurrentDescriptor(descriptor) ? descriptor : undefined;
-  if (
-    descriptor.versionHighWatermark !== undefined &&
-    (!Number.isSafeInteger(descriptor.versionHighWatermark) || descriptor.versionHighWatermark < 0)
-  )
-    throw new Error('Invalid stored row-version watermark');
-  table.versionHighWatermark = descriptor.versionHighWatermark;
-  if (descriptor.looseBraceKeys !== undefined && typeof descriptor.looseBraceKeys !== 'boolean')
-    throw new Error('Invalid key normalization flag');
-  table.looseBraceKeys = descriptor.looseBraceKeys ?? true;
-  if (descriptor.keyIndex) restoreKeyIndex(session, table, descriptor.keyIndex, allowed);
-  return table.proxy;
-}
-
-function isCurrentDescriptor(descriptor) {
-  return (
-    descriptor.owner !== undefined &&
-    descriptor.aliases !== undefined &&
-    !descriptor.files.some((file) => file.prefix?.format !== 2)
-  );
-}
-
-function restoreOrdinalChunk(session, table, chunk, allowed, progress) {
-  const count = chunk?.holes ?? chunk?.count;
-  if (!Number.isSafeInteger(count) || count < 1 || count > CHUNK) throw new Error('Invalid ordinal chunk size');
-  progress.length += count;
-  if (chunk.holes !== undefined) {
-    if (chunk.ref !== undefined) throw new Error('Invalid sparse ordinal chunk');
-    table.chunks.push({ ids: null, count, present: 0, owner: table.mutationToken });
-    return;
-  }
-  const page = partsOf(chunk.ref);
-  if (!allowed.has(page.file) || page.page > allowed.get(page.file).pages)
-    throw new Error('Unlisted ordinal file or chunk size');
-  const ids = session.readIndex(chunk.ref);
-  if (ids.length !== count) throw new Error('Invalid ordinal count');
-  const present = validateRestoredLocators(session, ids, allowed, progress);
-  table.present += present;
-  table.chunks.push({ ids, count, present, owner: table.mutationToken, ref: chunk.ref });
-}
-
-function validateRestoredLocators(session, ids, allowed, progress) {
-  let present = 0,
-    entry,
-    lastPage = -1,
-    lastFile = -1;
-  for (const id of ids) {
-    if (!id) continue;
-    if (!Number.isSafeInteger(id) || id < 0) throw new Error('Dangling record locator');
-    const file = Math.floor(id / FILE),
-      within = id - file * FILE,
-      pageNumber = Math.floor(within / SLOTS);
-    if (file !== lastFile || pageNumber !== lastPage) {
-      entry =
-        allowed.has(file) && pageNumber <= allowed.get(file).pages && pageNumber > 0
-          ? session.files[file]?.store.entries.at(pageNumber)
-          : undefined;
-      lastFile = file;
-      lastPage = pageNumber;
-    }
-    if (entry?.kind !== 1 || within - pageNumber * SLOTS >= entry.count) throw new Error('Dangling record locator');
-    if (id <= progress.previous) progress.ascending = false;
-    progress.previous = id;
-    present++;
-  }
-  return present;
-}
-
-function restoreKeyIndex(session, table, index, allowed) {
-  if (typeof index.column !== 'string' || !Array.isArray(index.files) || index.files.some((file) => !allowed.has(file)))
-    throw new Error('Invalid key index descriptor');
-  table.keyColumn = index.column;
-  table.keyTree = new PersistentKeyTree(
-    session.keyStoreWithin(index.files.map((file) => [file, allowed.get(file).pages])),
-    { root: index.root, files: index.files },
-  );
-  if (!index.root) return;
-  const root = partsOf(index.root.id);
-  if (!index.files.includes(root.file) || root.page > allowed.get(root.file).pages)
-    throw new Error('Unlisted key index root');
-  table.keyTree.node(index.root);
-}
-
 function decodeRecordPage(session, key, entry, parts) {
   const bytes = session.readBytes(parts),
     offsets = new Uint32Array(entry.count + 1);
@@ -811,50 +820,6 @@ function decodeRecordPage(session, key, entry, parts) {
     session.decodedSize += decoded.bytes;
   }
   return { decoded, raw: bytes };
-}
-
-async function indexAliasPositions(source, positions, yieldWork) {
-  let operations = 0;
-  for (let index = 0; index < source.length; index++) {
-    const id = source.id(index);
-    if (id) positions.add([String(id).padStart(16, '0'), index + 1]);
-    if (++operations % 512 === 0) await yieldWork();
-  }
-  return operations;
-}
-
-async function yieldCopyWork(state) {
-  if (performance.now() - state.yieldedAt >= 8) {
-    await setImmediate();
-    state.yieldedAt = performance.now();
-  }
-}
-
-function saveCopiedRecord({ session, source, table, held, moved, sorter }, oldId) {
-  const stored = session.putText(source.session.recordText(oldId, { bytes: true }), true),
-    id = stored.id;
-  if (held.has(oldId)) moved.set(oldId, id);
-  if (sorter) {
-    const key = JSON.parse(stored.text.toString('utf8'))[source.keyColumn];
-    if (typeof key !== 'string') throw new Error('Record key index disagrees with its records');
-    table.noteKeyShape(key);
-    sorter.add([normalizeKey(key), id]);
-  }
-  return id;
-}
-
-async function populateAliasPositions(source, table, positions, save, yieldWork, operations) {
-  let previous, id;
-  for (const [key, position] of positions.sorted()) {
-    const oldId = Number(key);
-    if (oldId !== previous) {
-      id = save(oldId);
-      previous = oldId;
-    } else table.aliases = true;
-    table.setId(position - 1, id, { updateIndex: false, preparedVersion: 0 });
-    if (++operations % 512 === 0) await yieldWork();
-  }
-  return operations;
 }
 
 function typed(values) {
@@ -884,7 +849,7 @@ function filesOf(chunk) {
       if (file !== last && !files.includes(file)) files.push(file);
       last = file;
     }
-    chunk.files = files.toSorted((a, b) => a - b);
+    chunk.files = files.sort(/* NOSONAR: preserve in-place sorting */ (a, b) => a - b);
   }
   return chunk.files;
 }

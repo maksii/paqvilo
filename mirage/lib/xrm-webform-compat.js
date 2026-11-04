@@ -36,7 +36,7 @@
   w.onbeforeunload = w.confirmExit;
   // The platform script replaces these built-ins on form pages (array result, word-boundary match).
   /* NOSONAR: intentional compatibility override */ String.prototype.trim = function () {
-    return this.replace(/^\s+|\s+$/g, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    return this.replace(/^\s+|(?<!\s)\s+$/g, '');
   };
   document.getElementsByClassName = function (name) {
     const pattern = new RegExp(String.raw`(\b(?!-))${name}(\b(?!-))`);

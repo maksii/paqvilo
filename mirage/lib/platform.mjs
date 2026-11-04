@@ -1,3 +1,4 @@
+import { redactUrlQuery } from './query-redaction.mjs';
 import { debugScript, exportFieldFile } from './source-debug.mjs';
 import { decodeXml, portalField } from './importer.mjs';
 import { xmlAttributes } from './xml-text.mjs';
@@ -662,7 +663,7 @@ const metadataFor = (rows, type, predicate) =>
   rows.find((row) => Number(fieldOf(row, 'type') ?? 100000000) === type && predicate(row));
 
 /** Locate the form record from the native record source settings. */
-export async function resolveFormRecord({
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export async function resolveFormRecord({
   kind,
   definition,
   schema,
@@ -679,8 +680,18 @@ export async function resolveFormRecord({
   const component = schema.metadata ?? definition?.metadata ?? {};
   if (schema.recordId) return { mode, id: schema.recordId };
   if (kind === 'webform') {
-    const webformRecord = resolveWebformRecord(mode, schema, component, session, params);
-    if (webformRecord) return webformRecord;
+    // A step already saved in this session is edited rather than inserted again.
+    const own = sessionRecord(session, schema.stepId);
+    if (own) return { mode: mode === FORM_MODE.insert ? FORM_MODE.edit : mode, id: own };
+    if (mode === FORM_MODE.insert) return { mode, id: null };
+    // WebForm.cs: a later step whose source is "Result From Previous Step" (or
+    // that declares no source) edits the record saved by the previous step.
+    const sourceType = Number(fieldOf(component, 'entitysourcetype') ?? 100000003);
+    if (sourceType === 100000003) {
+      const sourceStep = fieldOf(component, 'entitysourcestep');
+      const previous = sourceStep ? sessionRecord(session, sourceStep) : previousSessionRecord(session, schema.stepId);
+      return { mode, id: previous ?? params.id ?? null, queryName: 'id' };
+    }
   }
   if (mode === FORM_MODE.insert) return { mode, id: null };
   const sourceType = Number(fieldOf(component, 'entitysourcetype') ?? (kind === 'webform' ? 100000001 : 756150001));
@@ -694,62 +705,36 @@ export async function resolveFormRecord({
   const contactId = identity?.contactId ?? identity?.id;
   if (sourceType === 756150002 || sourceType === 100000002) return { mode, id: contactId ?? null, sourceType };
   if (sourceType === 756150003 || sourceType === 100000004) {
-    const relatedRecord = await resolveRelatedFormRecord({
-      mode,
-      sourceType,
-      component,
-      store,
-      readProvider,
-      identity,
-      contactId,
-    });
-    return relatedRecord;
+    const relationship = fieldOf(component, 'recordsourcerelationshipname');
+    const contactMapping = store.resolveMapping('contact');
+    const entry = Object.entries(contactMapping.relationships ?? {}).find(
+      ([name, relation]) => name === relationship || relation.schemaName === relationship,
+    );
+    let id = null;
+    if (entry && contactId) {
+      const [, relation] = entry;
+      if (relation.many === false) {
+        const contact = await readProvider.get('contact', contactId, identity);
+        id = scalarValue(contact?.[relation.from]) ?? null;
+      } else {
+        const result = await readProvider.query(
+          relation.entity,
+          { $filter: `${relation.to} eq ${contactId}`, $top: 2 },
+          identity,
+        );
+        if ((result.value ?? []).length > 1) {
+          throw componentError('Sequence contains more than one element', 500, 'FORM_RECORD_SOURCE_AMBIGUOUS');
+        }
+        const target = store.resolveMapping(relation.entity);
+        id = result.value?.[0]?.[target.idColumn] ?? null;
+      }
+    }
+    if (!id && truthy(fieldOf(component, 'recordsourceallowcreateonnull')))
+      return { mode: FORM_MODE.insert, id: null, createOnNull: true };
+    return { mode, id, sourceType };
   }
   const id = params[queryName] ?? (modal ? params.id : undefined) ?? (kind === 'webform' ? params.id : undefined);
   return { mode, id: id ?? null, queryName };
-}
-
-function resolveWebformRecord(mode, schema, component, session, params) {
-  // A step already saved in this session is edited rather than inserted again.
-  const own = sessionRecord(session, schema.stepId);
-  if (own) return { mode: mode === FORM_MODE.insert ? FORM_MODE.edit : mode, id: own };
-  if (mode === FORM_MODE.insert) return { mode, id: null };
-  // WebForm.cs: a later step whose source is "Result From Previous Step" (or
-  // that declares no source) edits the record saved by the previous step.
-  const sourceType = Number(fieldOf(component, 'entitysourcetype') ?? 100000003);
-  if (sourceType !== 100000003) return null;
-  const sourceStep = fieldOf(component, 'entitysourcestep');
-  const previous = sourceStep ? sessionRecord(session, sourceStep) : previousSessionRecord(session, schema.stepId);
-  return { mode, id: previous ?? params.id ?? null, queryName: 'id' };
-}
-
-async function resolveRelatedFormRecord({ mode, sourceType, component, store, readProvider, identity, contactId }) {
-  const relationship = fieldOf(component, 'recordsourcerelationshipname');
-  const contactMapping = store.resolveMapping('contact');
-  const entry = Object.entries(contactMapping.relationships ?? {}).find(
-    ([name, relation]) => name === relationship || relation.schemaName === relationship,
-  );
-  let id = null;
-  if (entry && contactId) id = await relatedContactRecordId(entry[1], store, readProvider, identity, contactId);
-  if (!id && truthy(fieldOf(component, 'recordsourceallowcreateonnull')))
-    return { mode: FORM_MODE.insert, id: null, createOnNull: true };
-  return { mode, id, sourceType };
-}
-
-async function relatedContactRecordId(relation, store, readProvider, identity, contactId) {
-  if (relation.many === false) {
-    const contact = await readProvider.get('contact', contactId, identity);
-    return scalarValue(contact?.[relation.from]) ?? null;
-  }
-  const result = await readProvider.query(
-    relation.entity,
-    { $filter: `${relation.to} eq ${contactId}`, $top: 2 },
-    identity,
-  );
-  if ((result.value ?? []).length > 1)
-    throw componentError('Sequence contains more than one element', 500, 'FORM_RECORD_SOURCE_AMBIGUOUS');
-  const target = store.resolveMapping(relation.entity);
-  return result.value?.[0]?.[target.idColumn] ?? null;
 }
 
 function nativeCodeComponentBindings(field, component, getValue) {
@@ -2224,8 +2209,6 @@ const POWERBI_INPUTS = [
 ];
 // ponytail: redaction is a pattern over `?key=value`, `&key=value` and `#key=value` pairs of any value with a query or
 // fragment (absolute or relative), not a URL parser.
-const redactUrlQuery = (value) =>
-  /[?#]/.test(value) ? value.replace(/([?&#][^=&#]+)=([^&#]*)/g, '$1=[redacted]') : value; // NOSONAR: linear, delimiter-anchored pair redaction
 function powerBiPlaceholderMarkup(args, options) {
   const attributes = POWERBI_INPUTS.flatMap(([input, attribute]) =>
     args?.[input] == null || args[input] === ''

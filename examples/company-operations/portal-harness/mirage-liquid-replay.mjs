@@ -102,8 +102,7 @@ export function createLiquidReplayClient({ store, identity, portal, templates, d
       const root = parseSolutionXml(body),
         roles = root.children.find((node) => node.name === 'roles')?.children.map((node) => node.text) ?? [];
       const sameRoles =
-        JSON.stringify([...roles].sort((a, b) => Number(a > b) - Number(a < b))) ===
-        JSON.stringify([...(capturedIdentity.roles ?? [])].sort((a, b) => Number(a > b) - Number(a < b)));
+        JSON.stringify([...roles].sort()) === JSON.stringify([...(capturedIdentity.roles ?? [])].sort());
       if (
         root.attrs['operation-id'] !== operation.id ||
         root.attrs['contact-id'] !== (capturedIdentity.contactId ?? capturedIdentity.id) ||

@@ -102,7 +102,7 @@ export async function importSolutionData(
   schema ??= buildSolutionSchema(scan, { lcid });
 
   const mappings = {};
-  for (const name of Object.keys(schema.tables).sort((a, b) => Number(a > b) - Number(a < b)))
+  for (const name of Object.keys(schema.tables).sort(/* NOSONAR: preserve default string coercion */))
     mappings[name] = mappingFor(schema, name);
   const relationships = {};
   for (const [key, rel] of Object.entries(schema.relationships)) {

@@ -207,11 +207,31 @@ const staticIdentifier = (text) => {
   }
 };
 /** Every call `Name(` (or `Source.Op(`) outside strings, outermost first: [{ start, open, end, name, member }]. */
+function callHead(text, end) {
+  while (end > 0 && /\s/.test(text[end - 1])) end--;
+  let start = end;
+  while (start > 0 && /\w/.test(text[start - 1])) start--;
+  let nameStart = start;
+  while (nameStart < end && !/[A-Za-z_]/.test(text[nameStart])) nameStart++;
+  if (nameStart === end) return null;
+  const name = text.slice(nameStart, end);
+  let dot = start;
+  while (dot > 0 && /\s/.test(text[dot - 1])) dot--;
+  if (nameStart === start && text[dot - 1] === '.') {
+    let ownerEnd = dot - 1;
+    while (ownerEnd > 0 && /\s/.test(text[ownerEnd - 1])) ownerEnd--;
+    let ownerStart = ownerEnd;
+    while (ownerStart > 0 && /\w/.test(text[ownerStart - 1])) ownerStart--;
+    while (ownerStart < ownerEnd && !/[A-Za-z_]/.test(text[ownerStart])) ownerStart++;
+    if (ownerStart < ownerEnd) return { index: ownerStart, 1: text.slice(ownerStart, ownerEnd), 2: name };
+  }
+  return { index: nameStart, 1: undefined, 2: name };
+}
 function callsIn(text, accept) {
   const calls = [];
   scan(text, (char, index) => {
     if (char !== '(') return;
-    const head = /(?:([A-Za-z_]\w*)\s*\.\s*)?([A-Za-z_]\w*)\s*$/.exec(text.slice(0, index)); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    const head = callHead(text, index);
     if (!head || /[\w.]$/.test(text.slice(0, head.index))) return;
     const call = { start: head.index, open: index, name: head[1] ?? head[2], member: head[1] ? head[2] : null };
     if (!accept(call)) return;

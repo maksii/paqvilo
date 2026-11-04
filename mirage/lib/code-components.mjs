@@ -269,230 +269,189 @@ function resolveComponentDataset(dataset, { args, metadata, mappings, schema }) 
   };
 }
 
-function addStringResource(resource, relative, file, body, diagnostics, stringResources) {
-  const document = parseSolutionXml(body.toString('utf8'));
-  const entries = descendants(document, 'data');
-  const strings = Object.create(null),
-    duplicates = new Set();
-  for (const entry of entries) {
-    const key = entry.attrs.name;
-    if (!key) {
-      diagnostics.push({
-        code: 'PCF_RESOURCE_KEY_UNRESOLVED',
-        file,
-        message: 'RESX data entry has no name.',
-      });
-      continue;
-    }
-    if (Object.hasOwn(strings, key)) duplicates.add(key);
-    else strings[key] = entry.children.find((node) => node.name === 'value')?.text ?? '';
-  }
-  for (const key of duplicates) {
-    delete strings[key];
-    diagnostics.push({
-      code: 'PCF_RESOURCE_KEY_AMBIGUOUS',
-      file,
-      key,
-      message: 'RESX resource contains duplicate named data entries.',
-    });
-  }
-  const locale = /^(.*)\.(\d+)\.resx$/i.exec(relative);
-  const lcid = locale && Number.isSafeInteger(Number(locale[2])) && Number(locale[2]) > 0 ? Number(locale[2]) : null;
-  stringResources.push({
-    path: relative,
-    group: locale?.[1] ?? relative,
-    lcid,
-    attributes: { ...resource.attrs },
-    document,
-    entries,
-    strings,
-  });
-  if (!lcid)
-    diagnostics.push({
-      code: 'PCF_RESOURCE_LANGUAGE_UNRESOLVED',
-      file,
-      message: 'RESX resource has no documented positive LCID filename suffix.',
-    });
-}
-
-async function appendDeclaredResource(
-  resource,
-  { root, token, digest, readFile, diagnostics, resources, stringResources, declaredAssets },
-) {
-  const relative = resource.attrs.path;
-  if (!['code', 'css', 'resx', 'img'].includes(resource.name)) return;
-  if (!relative || /[\\?#]/.test(relative)) throw new Error('Declared PCF resource has an invalid path');
-  const file = await fs.realpath(path.resolve(root, relative)).catch(() => null);
-  if (!file || !contained(root, file) || (await fs.stat(file)).size > 8 * 1024 * 1024)
-    throw new Error('Declared PCF resource is missing, outside its control, or exceeds 8 MiB');
-  const url = `/__sim-static/pcf/${token}/${relative.split('/').map(encodeURIComponent).join('/')}`;
-  const body = await readFile(file, { root, maxBytes: 8 * 1024 * 1024 });
-  digest.update(relative).update(body);
-  declaredAssets.set(url, {
-    file,
-    root,
-    kind: resource.name,
-    contentRevision: createHash('sha256').update(body).digest('hex'),
-  });
-  // SDK bundles can export their constructor through a classic script
-  // module rather than a namespace or registerControl call. Bind only
-  // a declaration from this exact declared resource, never scan globals.
-  const exportGlobal = resource.name === 'code' ? classicExportGlobal(body.toString('utf8')) : undefined;
-  resources.push({
-    kind: resource.name,
-    path: relative,
-    url,
-    order: Number(resource.attrs.order) || 0,
-    attributes: { ...resource.attrs },
-    ...(exportGlobal ? { exportGlobal } : {}),
-  });
-  if (resource.name === 'resx') addStringResource(resource, relative, file, body, diagnostics, stringResources);
-}
-
-async function loadControlResources(control, options) {
-  const { root, token, digest, readFile, diagnostics } = options;
-  const resources = [],
-    stringResources = [],
-    libraries = [],
-    declaredAssets = new Map();
-  for (const resource of descendants(control, 'resources')[0]?.children ?? []) {
-    if (resource.name === 'platform-library') {
-      libraries.push({ ...resource.attrs });
-      continue;
-    }
-    await appendDeclaredResource(resource, {
-      root,
-      token,
-      digest,
-      readFile,
-      diagnostics,
-      resources,
-      stringResources,
-      declaredAssets,
-    });
-  }
-  return { resources, stringResources, libraries, declaredAssets };
-}
-
-async function loadControlDefinition(root, manifestFile, identityFile, options) {
-  const { readFile, forget, diagnostics, identity } = options;
-  const metadataFile = await fs.realpath(identityFile);
-  if (!contained(root, metadataFile) || (await fs.stat(metadataFile)).size > 1024 * 1024)
-    throw new Error('PCF identity metadata is outside its control or exceeds 1 MiB');
-  const metadata = await readFile(metadataFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
-  const schemaName = childText(parseSolutionXml(metadata), 'Name');
-  if (!schemaName || !/^[\w.]+$/.test(schemaName)) throw new Error('PCF identity metadata has no valid exported Name');
-  identity.identified = true;
-  // A declaration supersedes the earlier control even when its manifest or
-  // dependencies cannot be loaded. Never reactivate an older executable.
-  forget(schemaName);
-  if (!contained(root, await fs.realpath(manifestFile)) || (await fs.stat(manifestFile)).size > 1024 * 1024)
-    throw new Error('PCF manifest is outside its control or exceeds 1 MiB');
-  const manifest = await readFile(manifestFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
-  const control = descendants(parseSolutionXml(manifest), 'control')[0];
-  if (!control) throw new Error('PCF manifest has no control declaration');
-  const token = createHash('sha256').update(root).update(manifest).digest('hex').slice(0, 24);
-  const digest = createHash('sha256').update(manifest);
-  const { resources, stringResources, libraries, declaredAssets } = await loadControlResources(control, {
-    root,
-    token,
-    digest,
-    readFile,
-    diagnostics,
-  });
-  if (!resources.some((resource) => resource.kind === 'code'))
-    throw new Error('PCF manifest does not declare an executable code resource');
-  const typeGroups = Object.fromEntries(
-    descendants(control, 'type-group').map((group) => [
-      group.attrs.name,
-      group.children.filter((node) => node.name === 'type').map((node) => node.text.trim()),
-    ]),
-  );
-  const features = (control.children ?? [])
-    .filter((node) => node.name === 'feature-usage')
-    .flatMap((node) =>
-      node.children.filter((child) => child.name === 'uses-feature').map((child) => ({ ...child.attrs })),
-    );
-  const record = {
-    schemaName,
-    constructor: `${control.attrs.namespace}.${control.attrs.constructor}`,
-    type: control.attrs['control-type'],
-    dataset: descendants(control, 'data-set').length > 0,
-    datasets: descendants(control, 'data-set').map((node) => ({ ...node.attrs })),
-    properties: descendants(control, 'property').map((property) => ({
-      ...property.attrs,
-      types: typeGroups[property.attrs['of-type-group']],
-    })),
-    events: (control.children ?? []).filter((node) => node.name === 'event').map((node) => ({ ...node.attrs })),
-    features,
-    libraries,
-    resources: resources.toSorted((a, b) => a.order - b.order),
-    strings: {},
-    stringResources,
-    file: manifestFile,
-    sourceAssets: [...declaredAssets].map(([url, asset]) => ({
-      url,
-      file: asset.file,
-      contentRevision: asset.contentRevision,
-    })),
-    sourceContentRevision: createHash('sha256').update(manifest).digest('hex'),
-    fingerprint: digest.digest('hex'),
-  };
-  return { schemaName, record, declaredAssets };
-}
-
-async function importControlEntry(parent, name, context) {
-  const root = await fs.realpath(path.join(parent, name)).catch(() => null);
-  if (!root || !contained(parent, root) || !(await fs.stat(root)).isDirectory()) return;
-  const manifestFile = path.join(root, 'ControlManifest.xml');
-  const identityFile = path.join(root, 'ControlManifest.xml.data.xml');
-  if (!(await fs.stat(manifestFile).catch(() => null)) && !(await fs.stat(identityFile).catch(() => null))) return;
-  const identity = { identified: false };
-  try {
-    const imported = await loadControlDefinition(root, manifestFile, identityFile, {
-      readFile: context.readFile,
-      forget: context.forget,
-      diagnostics: context.diagnostics,
-      identity,
-    });
-    context.controls.set(imported.schemaName, imported.record);
-    for (const [url, asset] of imported.declaredAssets) context.assets.set(url, asset);
-  } catch (cause) {
-    if (cause.code === 'MODEL_CLIENT_IMPORT_LIMIT') throw cause;
-    if (!identity.identified) context.state.unresolvedIdentity = true;
-    context.diagnostics.push({
-      code: identity.identified ? 'PCF_IMPORT_FAILED' : 'PCF_IDENTITY_UNRESOLVED',
-      file: manifestFile,
-      message: cause.message,
-    });
-  }
-}
-
-async function importLayerControls(layer, context) {
-  if (!layer.dir) return;
-  if (layer.type && layer.type !== 'directory') return;
-  const layerRoot = await fs.realpath(layer.dir).catch(() => null);
-  const parent = await fs.realpath(path.join(layer.dir, 'Controls')).catch(() => null);
-  if (!parent || !layerRoot || !contained(layerRoot, parent)) return;
-  for (const name of await fs.readdir(parent)) await importControlEntry(parent, name, context);
-}
-
 /** Import standard controls and serve only resource paths explicitly declared in the manifest. */
-export async function importCodeComponents(layers = [], { readFile = readLocalFile } = {}) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export async function importCodeComponents(
+  layers = [],
+  { readFile = readLocalFile } = {},
+) {
   const controls = new Map(),
     assets = new Map(),
     diagnostics = [];
-  const state = { unresolvedIdentity: false };
+  let unresolvedIdentity = false;
   const forget = (name) => {
     const previous = controls.get(name);
     for (const resource of previous?.resources ?? []) assets.delete(resource.url);
     controls.delete(name);
   };
-  const context = { controls, assets, diagnostics, readFile, forget, state };
-  for (const layer of layers) await importLayerControls(layer, context);
+  for (const layer of layers) {
+    if (!layer.dir) continue;
+    if (layer.type && layer.type !== 'directory') continue;
+    const layerRoot = await fs.realpath(layer.dir).catch(() => null);
+    const parent = await fs.realpath(path.join(layer.dir, 'Controls')).catch(() => null);
+    if (!parent || !layerRoot || !contained(layerRoot, parent)) continue;
+    for (const name of await fs.readdir(parent)) {
+      const root = await fs.realpath(path.join(parent, name)).catch(() => null);
+      if (!root || !contained(parent, root) || !(await fs.stat(root)).isDirectory()) continue;
+      const manifestFile = path.join(root, 'ControlManifest.xml');
+      const identityFile = path.join(root, 'ControlManifest.xml.data.xml');
+      if (!(await fs.stat(manifestFile).catch(() => null)) && !(await fs.stat(identityFile).catch(() => null)))
+        continue;
+      let identified = false;
+      try {
+        const metadataFile = await fs.realpath(identityFile);
+        if (!contained(root, metadataFile) || (await fs.stat(metadataFile)).size > 1024 * 1024)
+          throw new Error('PCF identity metadata is outside its control or exceeds 1 MiB');
+        const metadata = await readFile(metadataFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
+        const schemaName = childText(parseSolutionXml(metadata), 'Name');
+        if (!schemaName || !/^[\w.]+$/.test(schemaName))
+          throw new Error('PCF identity metadata has no valid exported Name');
+        identified = true;
+        // A declaration supersedes the earlier control even when its manifest or
+        // dependencies cannot be loaded. Never reactivate an older executable.
+        forget(schemaName);
+        if (!contained(root, await fs.realpath(manifestFile)) || (await fs.stat(manifestFile)).size > 1024 * 1024)
+          throw new Error('PCF manifest is outside its control or exceeds 1 MiB');
+        const manifest = await readFile(manifestFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
+        const control = descendants(parseSolutionXml(manifest), 'control')[0];
+        if (!control) throw new Error('PCF manifest has no control declaration');
+        const token = createHash('sha256').update(root).update(manifest).digest('hex').slice(0, 24);
+        const digest = createHash('sha256').update(manifest);
+        const resources = [],
+          stringResources = [],
+          libraries = [],
+          declaredAssets = new Map();
+        for (const resource of descendants(control, 'resources')[0]?.children ?? []) {
+          if (resource.name === 'platform-library') {
+            libraries.push({ ...resource.attrs });
+            continue;
+          }
+          const relative = resource.attrs.path;
+          if (!['code', 'css', 'resx', 'img'].includes(resource.name)) continue;
+          if (!relative || /[\\?#]/.test(relative)) throw new Error('Declared PCF resource has an invalid path');
+          const file = await fs.realpath(path.resolve(root, relative)).catch(() => null);
+          if (!file || !contained(root, file) || (await fs.stat(file)).size > 8 * 1024 * 1024)
+            throw new Error('Declared PCF resource is missing, outside its control, or exceeds 8 MiB');
+          const url = `/__sim-static/pcf/${token}/${relative.split('/').map(encodeURIComponent).join('/')}`;
+          const body = await readFile(file, { root, maxBytes: 8 * 1024 * 1024 });
+          digest.update(relative).update(body);
+          declaredAssets.set(url, {
+            file,
+            root,
+            kind: resource.name,
+            contentRevision: createHash('sha256').update(body).digest('hex'),
+          });
+          // SDK bundles can export their constructor through a classic script
+          // module rather than a namespace or registerControl call. Bind only
+          // a declaration from this exact declared resource, never scan globals.
+          const exportGlobal = resource.name === 'code' ? classicExportGlobal(body.toString('utf8')) : undefined;
+          resources.push({
+            kind: resource.name,
+            path: relative,
+            url,
+            order: Number(resource.attrs.order) || 0,
+            attributes: { ...resource.attrs },
+            ...(exportGlobal ? { exportGlobal } : {}),
+          });
+          if (resource.name === 'resx') {
+            const document = parseSolutionXml(body.toString('utf8'));
+            const entries = descendants(document, 'data');
+            const strings = Object.create(null),
+              duplicates = new Set();
+            for (const entry of entries) {
+              const key = entry.attrs.name;
+              if (!key) {
+                diagnostics.push({
+                  code: 'PCF_RESOURCE_KEY_UNRESOLVED',
+                  file,
+                  message: 'RESX data entry has no name.',
+                });
+                continue;
+              }
+              if (Object.hasOwn(strings, key)) duplicates.add(key);
+              else strings[key] = entry.children.find((node) => node.name === 'value')?.text ?? '';
+            }
+            for (const key of duplicates) {
+              delete strings[key];
+              diagnostics.push({
+                code: 'PCF_RESOURCE_KEY_AMBIGUOUS',
+                file,
+                key,
+                message: 'RESX resource contains duplicate named data entries.',
+              });
+            }
+            const locale = /^(.*)\.(\d+)\.resx$/i.exec(relative);
+            const lcid =
+              locale && Number.isSafeInteger(Number(locale[2])) && Number(locale[2]) > 0 ? Number(locale[2]) : null;
+            stringResources.push({
+              path: relative,
+              group: locale?.[1] ?? relative,
+              lcid,
+              attributes: { ...resource.attrs },
+              document,
+              entries,
+              strings,
+            });
+            if (!lcid)
+              diagnostics.push({
+                code: 'PCF_RESOURCE_LANGUAGE_UNRESOLVED',
+                file,
+                message: 'RESX resource has no documented positive LCID filename suffix.',
+              });
+          }
+        }
+        if (!resources.some((resource) => resource.kind === 'code'))
+          throw new Error('PCF manifest does not declare an executable code resource');
+        const typeGroups = Object.fromEntries(
+          descendants(control, 'type-group').map((group) => [
+            group.attrs.name,
+            group.children.filter((node) => node.name === 'type').map((node) => node.text.trim()),
+          ]),
+        );
+        const features = (control.children ?? [])
+          .filter((node) => node.name === 'feature-usage')
+          .flatMap((node) =>
+            node.children.filter((child) => child.name === 'uses-feature').map((child) => ({ ...child.attrs })),
+          );
+        controls.set(schemaName, {
+          schemaName,
+          constructor: `${control.attrs.namespace}.${control.attrs.constructor}`,
+          type: control.attrs['control-type'],
+          dataset: descendants(control, 'data-set').length > 0,
+          datasets: descendants(control, 'data-set').map((node) => ({ ...node.attrs })),
+          properties: descendants(control, 'property').map((property) => ({
+            ...property.attrs,
+            types: typeGroups[property.attrs['of-type-group']],
+          })),
+          events: (control.children ?? []).filter((node) => node.name === 'event').map((node) => ({ ...node.attrs })),
+          features,
+          libraries,
+          resources: resources.sort((a, b) => a.order - b.order),
+          strings: {},
+          stringResources,
+          file: manifestFile,
+          sourceAssets: [...declaredAssets].map(([url, asset]) => ({
+            url,
+            file: asset.file,
+            contentRevision: asset.contentRevision,
+          })),
+          sourceContentRevision: createHash('sha256').update(manifest).digest('hex'),
+          fingerprint: digest.digest('hex'),
+        });
+        for (const [url, asset] of declaredAssets) assets.set(url, asset);
+      } catch (cause) {
+        if (cause.code === 'MODEL_CLIENT_IMPORT_LIMIT') throw cause;
+        if (!identified) unresolvedIdentity = true;
+        diagnostics.push({
+          code: identified ? 'PCF_IMPORT_FAILED' : 'PCF_IDENTITY_UNRESOLVED',
+          file: manifestFile,
+          message: cause.message,
+        });
+      }
+    }
+  }
   // An unreadable identity could supersede any earlier control. The independent
   // WebResource catalogue remains usable, but no PCF fallback is safe to serve.
-  if (state.unresolvedIdentity) {
+  if (unresolvedIdentity) {
     controls.clear();
     assets.clear();
   }

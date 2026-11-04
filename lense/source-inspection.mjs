@@ -18,6 +18,7 @@ import { resolvePluginSourcePath } from '../mirage/lib/exported-plugins.mjs';
 import { buildPortalSourceIndex, sourceEditorTarget } from '../mirage/lib/portal-source-index.mjs';
 import { loadDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
 import { definitionQuery } from './definition-query.mjs';
+import { moduleImportMatches } from '../mirage/lib/text-scanning.mjs';
 
 // Keep the browser entry point serializable, with owned dependencies embedded.
 /* NOSONAR */ export const inspectRenderedPage = new Function(
@@ -110,7 +111,7 @@ async function inspectionDirectoryStamp(root) {
     });
     directories = next;
   }
-  files.sort((a, b) => Number(a > b) - Number(a < b));
+  files.sort(/* NOSONAR: preserve default string coercion */);
   return mapLimit(files, 64, async (file) => [path.relative(root, file), (await fileStamp(file)).stamp]);
 }
 async function mappedPluginStamps(sources) {
@@ -426,11 +427,11 @@ function assetPaths(text, basePath) {
     /\b(?:src|href)\s*=\s*['"]([^'"]+)['"]/gi,
     /\burl\(\s*['"]?([^'"\s)]+)['"]?\s*\)/gi,
     /@import\s+['"]([^'"]+)['"]/gi,
-    /\b(?:import|export)\s+(?:[^;'"\n]*?\s+from\s+)?['"]([^'"]+)['"]/gi, // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    null, // Static imports use a monotone scanner below; preserve this pattern's position in the result order.
     /\bimport\(\s*['"]([^'"]+)['"]\s*\)/gi,
   ];
   for (const pattern of patterns)
-    for (const match of String(text ?? '').matchAll(pattern)) {
+    for (const match of pattern ? String(text ?? '').matchAll(pattern) : moduleImportMatches(String(text ?? ''))) {
       try {
         if (!match[1] || match[1].includes('{{') || match[1].startsWith('#')) continue;
         const url = new URL(match[1], new URL(basePath, 'http://inspect.invalid')); // NOSONAR: reserved or loopback placeholder host, not a real transport

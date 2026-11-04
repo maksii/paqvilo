@@ -190,7 +190,7 @@ function generateReferencedTables({
 }) {
   const tables = {};
   const unresolved = [];
-  for (const table of [...generate.keys()].sort((a, b) => Number(a > b) - Number(a < b))) {
+  for (const table of [...generate.keys()].sort(/* NOSONAR: preserve default string coercion */)) {
     const definitions = fields(table);
     const rows = [];
     for (let index = 0; index < count; index++) {
@@ -421,7 +421,7 @@ function scaffoldReport({
       .map(([table]) => table),
     derivedFromExport: [...referenced.keys()].filter((table) => SITE_TABLES.has(table)),
     memberships: { table: membership.table, rows: tables[membership.table]?.length ?? 0 },
-    unresolvedRequiredLookups: [...new Set(unresolved)].sort((a, b) => Number(a > b) - Number(a < b)),
+    unresolvedRequiredLookups: [...new Set(unresolved)].sort(/* NOSONAR: preserve default string coercion */),
   };
 }
 

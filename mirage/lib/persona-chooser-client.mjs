@@ -123,7 +123,7 @@ if (root) {
     const link = event.target.closest('[data-chooser-more],[data-chooser-clear]');
     if (link) {
       event.preventDefault();
-      if ('chooserClear' in link.dataset) {
+      if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ link.hasAttribute('data-chooser-clear')) {
         form.reset();
         form.querySelector('[name=q]').value = '';
         for (const option of form.querySelectorAll('select option')) option.selected = false;

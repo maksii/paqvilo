@@ -248,7 +248,7 @@ function addMember(store, teamId, userId) {
 // Entity id from { "@odata.id": "widgets(<guid>)" } or a bare reference string.
 function targetRef(api, value) {
   const text = String(value?.['@odata.id'] ?? value ?? '');
-  const match = /([a-z_][a-z0-9_]*)\(\s*'?([0-9a-f-]{36})'?\s*\)\s*$/i.exec(text); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  const match = /(?<![a-z0-9_])\d*([a-z_][a-z0-9_]*)\(\s*'?([0-9a-f-]{36})'?\s*\)\s*$/i.exec(text);
   if (!match) throw invalid('Invalid argument.');
   return { mapping: api.store.resolveMapping(match[1]), id: match[2] };
 }

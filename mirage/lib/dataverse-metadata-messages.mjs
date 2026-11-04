@@ -64,7 +64,7 @@ const namesWhere = (api, test) =>
   Object.values(api.store.state.mappings)
     .filter((mapping) => mapping.logicalName && test(mapping))
     .map((mapping) => mapping.logicalName)
-    .sort((a, b) => Number(a > b) - Number(a < b));
+    .sort(/* NOSONAR: preserve default string coercion */);
 
 // ---- Autonumber (default seed 1000)
 // The counter is the next value, kept in settings.autoNumberSequences exactly where the record writer advances it.
@@ -194,7 +194,7 @@ function readZipFiles(buffer) {
   return files;
 }
 const attributesOf = (tag) =>
-  Object.fromEntries([...tag.matchAll(/(\w+)="([^"]*)"/g)].map(([, k, v]) => [k, xmlUnesc(v)])); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  Object.fromEntries([...tag.matchAll(/(?<!\w)(\w+)="([^"]*)"/g)].map(([, k, v]) => [k, xmlUnesc(v)]));
 function rowsOf(text) {
   return [...text.matchAll(/<LocLabel\b([^>]*?)\/?>/g)].map((m) => attributesOf(m[1]));
 }

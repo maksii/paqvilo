@@ -304,7 +304,11 @@ export function mountPersonaAdministration(
       if (
         !button.dataset.personaLaunch &&
         !button.dataset.personaScenario &&
-        !('personaContactChooser' in button.dataset)
+        !(
+          /* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute(
+            'data-persona-contact-chooser',
+          )
+        )
       )
         return;
       setButtonPending(button, true);
@@ -318,7 +322,12 @@ export function mountPersonaAdministration(
           } else await launch({ personaKey: key });
         }
         if (button.dataset.personaScenario) await launch({ scenario: button.dataset.personaScenario });
-        if ('personaContactChooser' in button.dataset) chooser(report, button.dataset.contactId, onContact);
+        if (
+          /* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute(
+            'data-persona-contact-chooser',
+          )
+        )
+          chooser(report, button.dataset.contactId, onContact);
       } catch (error) {
         setButtonPending(button, false, true);
         notify(error.message, true);
@@ -401,7 +410,7 @@ export function mountPersonaAdministration(
       return base;
     };
     container.addEventListener('change', (event) => {
-      if ('kind' in event.target.dataset) {
+      if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ event.target.hasAttribute('data-kind')) {
         type = event.target.value;
         page = 0;
         renderList();
@@ -417,15 +426,15 @@ export function mountPersonaAdministration(
       if (!button) return;
       setButtonPending(button, true);
       try {
-        if ('prev' in button.dataset) {
+        if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-prev')) {
           page--;
           renderList();
         }
-        if ('next' in button.dataset) {
+        if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-next')) {
           page++;
           renderList();
         }
-        if ('addEntry' in button.dataset)
+        if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-add-entry'))
           edit(type, {}, (row) =>
             save(withDependencies(structuredClone(report.stateCatalog ?? emptyCatalog()), type, row)),
           );
@@ -440,7 +449,7 @@ export function mountPersonaAdministration(
           base[type] = base[type].filter((row) => rowId(type, row) !== button.dataset.deleteEntry);
           await save(base);
         }
-        if ('export' in button.dataset) {
+        if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-export')) {
           const blob = new Blob([JSON.stringify(report.catalog, null, 2) + '\n'], { type: 'application/json' }),
             url = URL.createObjectURL(blob),
             a = document.createElement('a');
@@ -449,8 +458,11 @@ export function mountPersonaAdministration(
           a.click();
           setTimeout(() => URL.revokeObjectURL(url), 1000);
         }
-        if ('importSave' in button.dataset) await save(JSON.parse(container.querySelector('[data-import]').value));
-        if ('resetCatalog' in button.dataset) {
+        if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-import-save'))
+          await save(JSON.parse(container.querySelector('[data-import]').value));
+        if (
+          /* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-reset-catalog')
+        ) {
           await request('/persona-catalog', {
             method: 'DELETE',
             body: JSON.stringify({ expectedDigest: report.catalogDigest }),
@@ -537,9 +549,12 @@ export function mountPersonaAdministration(
     dialog.addEventListener('click', (event) => {
       const button = event.target.closest('button');
       if (!button) return;
-      if ('removeRow' in button.dataset) button.parentElement.remove();
-      if ('addMap' in button.dataset) button.previousElementSibling.insertAdjacentHTML('beforeend', maps({ '': '' }));
-      if ('addSubgroup' in button.dataset) button.previousElementSibling.insertAdjacentHTML('beforeend', subgroup({}));
+      if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-remove-row'))
+        button.parentElement.remove();
+      if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-add-map'))
+        button.previousElementSibling.insertAdjacentHTML('beforeend', maps({ '': '' }));
+      if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-add-subgroup'))
+        button.previousElementSibling.insertAdjacentHTML('beforeend', subgroup({}));
     });
     dialog.querySelector('form').addEventListener('change', (event) => {
       if (event.target.name !== 'group') return;

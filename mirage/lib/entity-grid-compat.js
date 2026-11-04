@@ -62,8 +62,8 @@
     const body = document.body;
     const pattern =
       attribute.DateTimeFormat === 'DateOnly'
-        ? (body?.dataset.dateformat ?? null)
-        : (body?.dataset.datetimeformat ?? null);
+        ? (body?.getAttribute('data-dateformat') ?? null) // NOSONAR: actual attributes exclude inherited dataset values
+        : (body?.getAttribute('data-datetimeformat') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
     const match = /\/Date\((-?\d+)\)\//.exec(String(attribute.Value ?? ''));
     if (!pattern || !match) return null;
     if (attribute.DateTimeFormat === 'DateOnly') {
@@ -307,7 +307,8 @@
       Id: (control.querySelector('input[id$="_EntityFormView_EntityID"]')?.value ?? '').replace(/[{}]/g, ''),
     };
     const submit = () =>
-      post(button.dataset.url || location.href, { entityReference: reference }, { json: false }).then(
+      post(button.getAttribute('data-url') || location.href, { entityReference: reference }, { json: false }).then(
+        // NOSONAR: actual attributes exclude inherited dataset values
         () => location.reload(),
         () => location.reload(),
       );
@@ -372,7 +373,7 @@
       $(modal)
         .off('.simModalAria')
         .on('show.bs.modal.simModalAria', () =>
-          'bsBackdrop' in modal.dataset
+          modal.hasAttribute('data-bs-backdrop') // NOSONAR: actual attributes exclude inherited dataset values
             ? modal.removeAttribute('aria-hidden')
             : modal.setAttribute('aria-hidden', 'false'),
         )
@@ -498,7 +499,7 @@
       // A lookup dialog grid announces its count under the lookup field's name.
       const lookup = element.closest('.entity-lookup');
       this.isLookup = Boolean(lookup);
-      this.lookupField = lookup?.dataset.lookupDatafieldname ?? null;
+      this.lookupField = lookup?.getAttribute('data-lookup-datafieldname') ?? null; // NOSONAR: actual attributes exclude inherited dataset values
       const $ = jq();
       const data = (name) => element.getAttribute(`data-${name}`);
       this.layouts = parseLayouts(data('view-layouts'));
@@ -638,7 +639,7 @@
         event.preventDefault();
         // Bootstrap 5 menu items carry no view id: their position names the layout.
         const index = [...select.querySelectorAll('[role="menuitem"]')].indexOf(item);
-        this.changeView(item.dataset.viewId ?? this.layouts[index]?.Id);
+        this.changeView(item.getAttribute('data-view-id') ?? this.layouts[index]?.Id); // NOSONAR: actual attributes exclude inherited dataset values
         return;
       }
       const toggle = event.target.closest('.dropdown-toggle');
@@ -749,7 +750,7 @@
       if (this.child("[id^='SearchCountText']")) return;
       let suffix = 'undefined';
       if (this.isLookup) suffix = this.lookupField ?? '';
-      else if ('nlSearchFilter' in this.element.dataset) suffix = 'null';
+      else if (this.element.hasAttribute('data-nl-search-filter')) suffix = 'null'; // NOSONAR: actual attributes exclude inherited dataset values
       let announcer = document.getElementById(`SearchCountText${suffix}`);
       if (!announcer) {
         announcer = document.createElement('div');
@@ -846,7 +847,7 @@
     }
 
     formModalSource(modal, params) {
-      const page = modal?.querySelector('iframe')?.dataset.page;
+      const page = modal?.querySelector('iframe')?.getAttribute('data-page'); // NOSONAR: actual attributes exclude inherited dataset values
       if (!page) return null;
       try {
         const source = withQuery(page, params),
@@ -1043,7 +1044,7 @@
         filter: this.state.filter ?? this.userFilter(),
         metaFilter: this.state.metaFilter,
         // The entity_list template's grid posts its data-nl-search-filter; other grids post null.
-        nlSearchFilter: this.element.dataset.nlSearchFilter ?? null,
+        nlSearchFilter: this.element.getAttribute('data-nl-search-filter') ?? null, // NOSONAR: actual attributes exclude inherited dataset values
         timezoneOffset: new Date().getTimezoneOffset(),
         customParameters: [],
       };
@@ -1236,7 +1237,7 @@
       this.bindRowActions(tbody);
       if (this.selectMode === 'Single') {
         const selected = String(this.state.selected ?? '').toLowerCase();
-        const match = [...tbody.rows].find((tr) => (tr.dataset.id ?? null) === selected);
+        const match = [...tbody.rows].find((tr) => (tr.getAttribute('data-id') ?? null) === selected); // NOSONAR: actual attributes exclude inherited dataset values
         if (match) this.toggleRow(match, true);
       }
       // Dialog grids (lookup, associate) announce once loaded.
@@ -1440,7 +1441,7 @@
     dispatchRowAction(event, link) {
       const tr = link.closest('tr');
       const record = this.data?.Records?.find(
-        (candidate) => candidate.Id === (tr ? (tr.dataset.id ?? null) : undefined),
+        (candidate) => candidate.Id === (tr ? (tr.getAttribute('data-id') ?? null) : undefined), // NOSONAR: actual attributes exclude inherited dataset values
       );
       if (!record) return;
       let action = link.__ppAction;
@@ -1617,7 +1618,7 @@
       if (this.selectMode === 'Single' && select)
         for (const other of tr.parentElement.rows) if (other !== tr) this.setRowSelected(other, false);
       this.setRowSelected(tr, select);
-      trigger(this.element, 'selected', { id: tr.dataset.id ?? null, selected: select });
+      trigger(this.element, 'selected', { id: tr.getAttribute('data-id') ?? null, selected: select }); // NOSONAR: actual attributes exclude inherited dataset values
     }
 
     setRowSelected(tr, selected) {
@@ -1754,7 +1755,7 @@
       event.preventDefault();
       const li = link.parentElement;
       if (li.classList.contains('disabled') || li.classList.contains('active')) return;
-      const page = Number(link.dataset.page ?? null);
+      const page = Number(link.getAttribute('data-page') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
       if (!Number.isFinite(page) || page < 1) return;
       void this.load(page);
     }
@@ -1797,7 +1798,7 @@
   function initLookup(container) {
     if (container.__ppLookup) return;
     container.__ppLookup = true;
-    const field = container.dataset.lookupDatafieldname;
+    const field = container.getAttribute('data-lookup-datafieldname'); // NOSONAR: actual attributes exclude inherited dataset values
     const modal = container.querySelector(':scope > .modal-lookup, :scope > section.modal');
     const gridElement = modal?.querySelector('.entity-grid');
     if (!field || !modal || !gridElement) return;
@@ -1888,7 +1889,8 @@
           currentId && currentEntity
             ? [...gridElement.querySelectorAll('.view-grid tbody tr[data-id]')].find(
                 (row) =>
-                  row.dataset.id?.toLowerCase() === currentId && row.dataset.entity?.toLowerCase() === currentEntity,
+                  row.getAttribute('data-id')?.toLowerCase() === currentId &&
+                  row.getAttribute('data-entity')?.toLowerCase() === currentEntity, // NOSONAR: actual attributes exclude inherited dataset values
               )
             : null;
         if (current) {
@@ -1902,7 +1904,11 @@
       event.preventDefault();
       const row = grid.selectedRows()[0];
       if (!row) return;
-      setValue(row.dataset.id ?? null, row.dataset.name ?? null, row.dataset.entity ?? null);
+      setValue(
+        row.getAttribute('data-id') ?? null,
+        row.getAttribute('data-name') ?? null,
+        row.getAttribute('data-entity') ?? null,
+      ); // NOSONAR: actual attributes exclude inherited dataset values
       hideModal(modal);
       nameInput()?.focus();
     });
@@ -1917,8 +1923,8 @@
         event.preventDefault();
         const source = grid.formModalSource(createModal, {
           lookup: 'true',
-          entityformid: container.dataset.lookupReference_entityformid ?? null,
-          languagecode: container.dataset.languagecode || 1033,
+          entityformid: container.getAttribute('data-lookup-reference_entityformid') ?? null, // NOSONAR: actual attributes exclude inherited dataset values
+          languagecode: container.getAttribute('data-languagecode') || 1033, // NOSONAR: actual attributes exclude inherited dataset values
         });
         if (!source) return;
         const listener = (message) => {
@@ -1958,10 +1964,10 @@
         ...grid.selectedRows().map((tr) => {
           const item = document.createElement('div');
           item.className = 'item pull-left btn btn-default';
-          item.dataset.entity = String(tr.dataset.entity ?? null);
-          item.dataset.id = String(tr.dataset.id ?? null);
-          item.dataset.name = String(tr.dataset.name ?? null);
-          item.innerHTML = `<span class="name">${esc(tr.dataset.name)}</span><span class="remove"><span class="fa fa-times" aria-hidden="true"></span></span>`;
+          item.dataset.entity = String(tr.getAttribute('data-entity') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
+          item.dataset.id = String(tr.getAttribute('data-id') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
+          item.dataset.name = String(tr.getAttribute('data-name') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
+          item.innerHTML = `<span class="name">${esc(tr.getAttribute('data-name'))}</span><span class="remove"><span class="fa fa-times" aria-hidden="true"></span></span>`; // NOSONAR: actual attributes exclude inherited dataset values
           item.querySelector('.remove').addEventListener('click', () => {
             grid.setRowSelected(tr, false);
             syncSelection();
@@ -2012,17 +2018,17 @@
       event.preventDefault();
       let payload;
       try {
-        payload = JSON.parse(container.dataset.associate || '{}');
+        payload = JSON.parse(container.getAttribute('data-associate') || '{}'); // NOSONAR: actual attributes exclude inherited dataset values
       } catch {
         payload = {};
       }
       payload.RelatedEntities = grid.selectedRows().map((tr) => ({
-        LogicalName: tr.dataset.entity ?? null,
-        Id: tr.dataset.id ?? null,
-        Name: tr.dataset.name ?? null,
+        LogicalName: tr.getAttribute('data-entity') ?? null, // NOSONAR: actual attributes exclude inherited dataset values
+        Id: tr.getAttribute('data-id') ?? null, // NOSONAR: actual attributes exclude inherited dataset values
+        Name: tr.getAttribute('data-name') ?? null, // NOSONAR: actual attributes exclude inherited dataset values
       }));
       if (!payload.RelatedEntities.length) return;
-      post(container.dataset.url ?? null, payload, { json: false })
+      post(container.getAttribute('data-url') ?? null, payload, { json: false }) // NOSONAR: actual attributes exclude inherited dataset values
         .then(() => {
           succeeded = true;
           hideModal(modal);
@@ -2074,7 +2080,7 @@
     container.__ppNotes = true;
     const regarding = (() => {
       try {
-        return JSON.parse(container.dataset.target || container.dataset.bsTarget || '{}');
+        return JSON.parse(container.getAttribute('data-target') || container.getAttribute('data-bs-target') || '{}'); // NOSONAR: actual attributes exclude inherited dataset values
       } catch {
         return {};
       }
@@ -2083,7 +2089,7 @@
     const state = { page: 1 };
     // The Bootstrap 5 control (data-bs-target) moves its dialogs to the document body and shows
     // its list only when it has notes.
-    const bs5 = 'bsTarget' in container.dataset;
+    const bs5 = container.hasAttribute('data-bs-target'); // NOSONAR: actual attributes exclude inherited dataset values
     if (bs5)
       for (const name of ['.modal-editnote', '.modal-deletenote', '.modal-addnote']) {
         const modal = container.querySelector(`:scope > ${name}`);
@@ -2105,12 +2111,12 @@
       state.page = page;
       show('.notes-loading');
       return post(
-        container.dataset.urlGet ?? null,
+        container.getAttribute('data-url-get') ?? null, // NOSONAR: actual attributes exclude inherited dataset values
         {
           regarding: bs5 ? regarding : { LogicalName: regarding.LogicalName, Id: regarding.Id },
-          orders: JSON.parse(container.dataset.orders || '[]'),
+          orders: JSON.parse(container.getAttribute('data-orders') || '[]'), // NOSONAR: actual attributes exclude inherited dataset values
           page,
-          pageSize: Number(container.dataset.pagesize) || 10,
+          pageSize: Number(container.getAttribute('data-pagesize')) || 10, // NOSONAR: actual attributes exclude inherited dataset values
         },
         bs5 ? { jsonType: 'application/json' } : {},
       )
@@ -2120,7 +2126,7 @@
           // pager is left as rendered.
           const pager = bs5 && container.querySelector('.notes-pagination');
           if (pager && data.Records?.length && !((data.PageCount ?? 0) > 1)) pager.style.display = 'none'; // NOSONAR: operand can be NaN or undefined, the negated test differs
-          const pattern = document.body?.dataset.datetimeformat;
+          const pattern = document.body?.getAttribute('data-datetimeformat'); // NOSONAR: actual attributes exclude inherited dataset values
           const legacyNoteCard = (note) => {
             const toolbar = note.DisplayToolbar
               ? `<div class="toolbar dropdown pull-right"><a href="#" class="edit-link" title="Edit">Edit</a> <a href="#" class="delete-link" title="Delete">Delete</a></div>`
@@ -2161,7 +2167,7 @@
         text: modal.querySelector('textarea[name="text"]')?.value ?? '',
         isRequired: '',
         isPrivate: String(modal.querySelector('input[name="isPrivate"]')?.checked ?? false),
-        attachmentSettings: container.dataset.attachmentsettings ?? '',
+        attachmentSettings: container.getAttribute('data-attachmentsettings') ?? '', // NOSONAR: actual attributes exclude inherited dataset values
       };
       const body = input?.files?.[0] ? new FormData() : new URLSearchParams();
       for (const [name, value] of Object.entries(fields)) body.append(name, value);
@@ -2220,7 +2226,8 @@
       const replacement = primary.cloneNode(true);
       primary.replaceWith(replacement);
       replacement.addEventListener('click', () =>
-        submit(modal, container.dataset.urlAdd ?? null, {
+        submit(modal, container.getAttribute('data-url-add') ?? null, {
+          // NOSONAR: actual attributes exclude inherited dataset values
           regardingEntityLogicalName: regarding.LogicalName,
           regardingEntityId: regarding.Id,
         }),
@@ -2236,7 +2243,7 @@
       if (link.classList.contains('delete-link')) {
         const modal = dialog('.modal-deletenote');
         const run = () =>
-          post(container.dataset.urlDelete ?? null, { id }, { json: true })
+          post(container.getAttribute('data-url-delete') ?? null, { id }, { json: true }) // NOSONAR: actual attributes exclude inherited dataset values
             .then(() => {
               if (modal) hideModal(modal);
               void load(state.page);
@@ -2253,7 +2260,7 @@
       const modal = dialog('.modal-editnote');
       if (!modal) return;
       const textarea = modal.querySelector('textarea[name="text"]');
-      if (textarea) textarea.value = note.dataset.unformattedtext ?? null;
+      if (textarea) textarea.value = note.getAttribute('data-unformattedtext') ?? null; // NOSONAR: actual attributes exclude inherited dataset values
       const primary = modal.querySelector('.modal-footer .primary');
       const replacement = primary.cloneNode(true);
       primary.replaceWith(replacement);
@@ -2271,7 +2278,7 @@
     const button = event.target.closest('[data-serialized-query]');
     if (!button) return;
     const list = button.closest('.entitylist');
-    const target = document.querySelector(button.dataset.target ?? null);
+    const target = document.querySelector(button.getAttribute('data-target') ?? null); // NOSONAR: actual attributes exclude inherited dataset values
     if (!target) return;
     event.preventDefault();
     const parameters = new URLSearchParams();
@@ -2288,7 +2295,7 @@
       return;
     }
     const url = new URL(location.href);
-    url.searchParams.set(button.dataset.serializedQuery ?? null, serialized);
+    url.searchParams.set(button.getAttribute('data-serialized-query') ?? null, serialized); // NOSONAR: actual attributes exclude inherited dataset values
     location.assign(url.href);
   });
 

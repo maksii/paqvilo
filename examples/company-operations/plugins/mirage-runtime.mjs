@@ -27,7 +27,7 @@ const canonical = (value) => {
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(
     Object.keys(value)
-      .sort((a, b) => Number(a > b) - Number(a < b))
+      .sort()
       .map((key) => [key, canonical(value[key])]),
   );
 };

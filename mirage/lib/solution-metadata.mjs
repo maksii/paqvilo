@@ -71,7 +71,7 @@ function parseFormDocument(xml, entity, file, lcid) {
   }
   return {
     forms,
-    viewRefs: [...xml.matchAll(/<DefaultViewId>\s*([^<]+)<\/DefaultViewId>/gi)].map((m) => norm(m[1])), // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    viewRefs: [...xml.matchAll(/<DefaultViewId>\s*([^\s<][^<]*|\s)<\/DefaultViewId>/gi)].map((m) => norm(m[1])),
     entityRefs: [
       ...xml.matchAll(/QuickFormId\s+entityname=(?:"|&quot;)([^"&]+)|<TargetEntityType>([^<]+)<\/TargetEntityType>/gi),
     ].map((m) => norm(m[1] ?? m[2])),
@@ -137,151 +137,6 @@ export function portalMetadataEntities(portal) {
         .map((name) => String(name).toLowerCase()),
     ),
   ];
-}
-
-async function parseSolutionMetadataFile(file, scan, lcid, diagnostics) {
-  if (file.parsed) return file.parsed;
-  try {
-    const parser = file.kind === 'form' ? parseFormDocument : parseViewDocument;
-    const { value, hash } = await scan.cache.parse(
-      file.path,
-      (file.kind === 'form' ? FORM_PARSER_ID : VIEW_PARSER_ID) + ':' + lcid,
-      (xml) => parser(xml, file.entity, file.path, lcid),
-      { stamp: file.stamp },
-    );
-    file.hash = hash;
-    file.parsed = value;
-  } catch (error) {
-    file.parsed = { forms: [], views: [], viewRefs: [], entityRefs: [] };
-    diagnostics.push({ code: 'SOLUTION_METADATA_PARSE_ERROR', file: file.path, message: error.message });
-  }
-  return file.parsed;
-}
-
-async function expandFormDependencies(names, files, parse) {
-  const viewEntities = new Map(
-    files.filter((file) => file.kind === 'view').map((file) => [norm(path.basename(file.path, '.xml')), file.entity]),
-  );
-  const inspected = new Set();
-  let expanded;
-  do {
-    expanded = false;
-    const pending = files.filter((file) => file.kind === 'form' && names.has(file.entity) && !inspected.has(file));
-    await mapLimit(pending, IO_CONCURRENCY, parse);
-    for (const file of pending) {
-      inspected.add(file);
-      if (addFormReferences(file, viewEntities, names)) expanded = true;
-    }
-  } while (expanded);
-}
-
-function addFormReferences(file, viewEntities, names) {
-  let expanded = false;
-  for (const viewId of file.parsed.viewRefs ?? []) {
-    const entity = viewEntities.get(viewId);
-    if (entity && !names.has(entity)) {
-      names.add(entity);
-      expanded = true;
-    }
-  }
-  for (const entity of file.parsed.entityRefs ?? [])
-    if (!names.has(entity)) {
-      names.add(entity);
-      expanded = true;
-    }
-  return expanded;
-}
-
-function collectEmbeddedComponents(document, names, lcid, forms, views, fingerprint) {
-  const components = document.facts.appComponents;
-  for (const form of components?.forms ?? [])
-    if (!names || names.has(form.entity))
-      forms.push({ ...form, name: pickLabel(form.nameLabels, lcid) ?? form.name, file: document.file });
-  for (const view of components?.views ?? [])
-    if (!names || names.has(view.entity))
-      views.push({ ...view, name: pickLabel(view.nameLabels, lcid) ?? view.name, file: document.file });
-  if (
-    components?.forms?.length ||
-    components?.views?.length ||
-    document.facts.apps?.length ||
-    document.facts.appMaps?.length
-  )
-    fingerprint.update(document.hash ?? '');
-}
-
-function collectParsedLayerComponents(layerIndex, candidates, forms, views) {
-  for (const file of candidates) {
-    if (file.layerIndex !== layerIndex) continue;
-    if (file.kind === 'form') forms.push(...file.parsed.forms);
-    else if (file.kind === 'view') views.push(...file.parsed.views);
-  }
-}
-
-function collectSolutionComponents(scan, candidates, names, lcid, fingerprint) {
-  const forms = [];
-  const views = [];
-  // Rows are collected layer by layer: embedded components, then that layer's parsed FormXml/SavedQueries files.
-  // The dedupe below keeps the last row, so the later selected layer wins whichever way it carries the component.
-  for (const [layerIndex, layer] of scan.layers.entries()) {
-    for (const document of layer.documents) collectEmbeddedComponents(document, names, lcid, forms, views, fingerprint);
-    collectParsedLayerComponents(layerIndex, candidates, forms, views);
-  }
-  return { forms, views };
-}
-
-function collectEntityTables(schema, names, lcid, diagnostics) {
-  const tables = {};
-  for (const [name, table] of Object.entries(schema.tables)) {
-    if (names && !names.has(name)) continue;
-    if (!table.layers?.length && table.origin !== 'dataverse-reference') continue;
-    tables[name] = {
-      entity: name,
-      label: table.labels?.[String(lcid)] ?? Object.values(table.labels ?? {})[0],
-      collectionLabel: table.collectionLabels?.[String(lcid)] ?? Object.values(table.collectionLabels ?? {})[0],
-      fields: tableFields(schema, name, { lcid, diagnostics }),
-      sources: [...table.sources],
-      entitySet: table.entitySet,
-      entitySetSource: table.entitySetSource,
-      ownership: table.ownership,
-      tableType: table.tableType,
-      grid: table.grid,
-      dataSourceId: table.dataSourceId,
-      dataProviderId: table.dataProviderId,
-      changeTrackingEnabled: table.changeTrackingEnabled,
-      isOptimisticConcurrencyEnabled: table.isOptimisticConcurrencyEnabled,
-      primaryIdAttribute: table.primaryIdAttribute,
-      primaryNameAttribute: table.primaryNameAttribute,
-      schemaComplete: table.schemaComplete,
-      completeness: table.completeness,
-    };
-  }
-  return tables;
-}
-
-function dedupeMetadataRows(rows, kind, diagnostics) {
-  const map = new Map();
-  for (const row of rows) {
-    const key = `${row.entity}/${row.id}`;
-    const before = map.get(key);
-    // One source file read both as an embedded component and as a parsed file is not a layer variant.
-    if (
-      before &&
-      before.file !== row.file &&
-      (kind === 'form' ? before.xml !== row.xml : before.fetchXml !== row.fetchXml)
-    )
-      diagnostics.push({
-        code: 'SOLUTION_LAYER_VARIANTS',
-        kind,
-        id: row.id,
-        entity: row.entity,
-        selected: row.file,
-        previous: before.file,
-        message:
-          'Multiple source layers provide this component; the last selected root and source file wins. This does not identify the deployed layer.',
-      });
-    map.set(key, row);
-  }
-  return [...map.values()];
 }
 
 function notesCell(cell, control, lcid) {
@@ -581,7 +436,7 @@ function selectFormTabs(tree, definition, lcid) {
  * Roots may be repositories, solution trees or a common parent; the shared scan
  * orders layers and caches parsed files (see solution-schema.mjs).
  */
-export async function importSolutionMetadata(
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export async function importSolutionMetadata(
   roots,
   { entities, portal, lcid = 1033, scan, schema, cache, cacheFile, order = 'explicit', observed } = {},
 ) {
@@ -597,17 +452,86 @@ export async function importSolutionMetadata(
       .filter((file) => ['entity', 'form', 'view'].includes(file.kind))
       .map((file) => ({ ...file, entity: norm(file.entityDir), layerIndex })),
   );
-  const parse = (file) => parseSolutionMetadataFile(file, scan, lcid, diagnostics);
+  const parse = async (file) => {
+    if (file.parsed) return file.parsed;
+    try {
+      const parser = file.kind === 'form' ? parseFormDocument : parseViewDocument;
+      const { value, hash } = await scan.cache.parse(
+        file.path,
+        (file.kind === 'form' ? FORM_PARSER_ID : VIEW_PARSER_ID) + ':' + lcid,
+        (xml) => parser(xml, file.entity, file.path, lcid),
+        { stamp: file.stamp },
+      );
+      file.hash = hash;
+      file.parsed = value;
+    } catch (error) {
+      file.parsed = { forms: [], views: [], viewRefs: [], entityRefs: [] };
+      diagnostics.push({ code: 'SOLUTION_METADATA_PARSE_ERROR', file: file.path, message: error.message });
+    }
+    return file.parsed;
+  };
   // Follow form dependencies into other tables (quick views and subgrids).
   // A portal's basic forms alone do not describe its complete solution inputs.
-  if (names) await expandFormDependencies(names, files, parse);
+  if (names) {
+    const viewEntities = new Map(
+      files.filter((f) => f.kind === 'view').map((f) => [norm(path.basename(f.path, '.xml')), f.entity]),
+    );
+    const inspected = new Set();
+    let expanded;
+    do {
+      expanded = false;
+      const pending = files.filter((f) => f.kind === 'form' && names.has(f.entity) && !inspected.has(f));
+      await mapLimit(pending, IO_CONCURRENCY, parse);
+      for (const file of pending) {
+        inspected.add(file);
+        for (const viewId of file.parsed.viewRefs ?? []) {
+          const entity = viewEntities.get(viewId);
+          if (entity && !names.has(entity)) {
+            names.add(entity);
+            expanded = true;
+          }
+        }
+        for (const entity of file.parsed.entityRefs ?? [])
+          if (!names.has(entity)) {
+            names.add(entity);
+            expanded = true;
+          }
+      }
+    } while (expanded);
+  }
   const candidates = files.filter((file) => !names || names.has(file.entity));
   await mapLimit(
     candidates.filter((f) => f.kind !== 'entity'),
     IO_CONCURRENCY,
     parse,
   );
-  const { forms, views } = collectSolutionComponents(scan, candidates, names, lcid, fingerprint);
+  const forms = [],
+    views = [];
+  // Rows are collected layer by layer: embedded components, then that layer's parsed FormXml/SavedQueries files.
+  // The dedupe below keeps the last row, so the later selected layer wins whichever way it carries the component.
+  for (const [layerIndex, layer] of scan.layers.entries()) {
+    for (const document of layer.documents) {
+      const components = document.facts.appComponents;
+      for (const form of components?.forms ?? [])
+        if (!names || names.has(form.entity))
+          forms.push({ ...form, name: pickLabel(form.nameLabels, lcid) ?? form.name, file: document.file });
+      for (const view of components?.views ?? [])
+        if (!names || names.has(view.entity))
+          views.push({ ...view, name: pickLabel(view.nameLabels, lcid) ?? view.name, file: document.file });
+      if (
+        components?.forms?.length ||
+        components?.views?.length ||
+        document.facts.apps?.length ||
+        document.facts.appMaps?.length
+      )
+        fingerprint.update(document.hash ?? '');
+    }
+    for (const file of candidates) {
+      if (file.layerIndex !== layerIndex) continue;
+      if (file.kind === 'form') forms.push(...file.parsed.forms);
+      else if (file.kind === 'view') views.push(...file.parsed.views);
+    }
+  }
   const entityDocs = new Map(scan.layers.flatMap((layer) => layer.documents.map((doc) => [doc.file, doc.hash])));
   for (const file of candidates) {
     fingerprint
@@ -617,7 +541,56 @@ export async function importSolutionMetadata(
       .update('\0');
   }
   // Table columns come from the merged schema; only tables with exported definitions are listed.
-  const tables = collectEntityTables(schema, names, lcid, diagnostics);
+  const tables = {};
+  for (const [name, table] of Object.entries(schema.tables)) {
+    if (names && !names.has(name)) continue;
+    if (!table.layers?.length && table.origin !== 'dataverse-reference') continue;
+    tables[name] = {
+      entity: name,
+      label: table.labels?.[String(lcid)] ?? Object.values(table.labels ?? {})[0],
+      collectionLabel: table.collectionLabels?.[String(lcid)] ?? Object.values(table.collectionLabels ?? {})[0],
+      fields: tableFields(schema, name, { lcid, diagnostics }),
+      sources: [...table.sources],
+      entitySet: table.entitySet,
+      entitySetSource: table.entitySetSource,
+      ownership: table.ownership,
+      tableType: table.tableType,
+      grid: table.grid,
+      dataSourceId: table.dataSourceId,
+      dataProviderId: table.dataProviderId,
+      changeTrackingEnabled: table.changeTrackingEnabled,
+      isOptimisticConcurrencyEnabled: table.isOptimisticConcurrencyEnabled,
+      primaryIdAttribute: table.primaryIdAttribute,
+      primaryNameAttribute: table.primaryNameAttribute,
+      schemaComplete: table.schemaComplete,
+      completeness: table.completeness,
+    };
+  }
+  const dedupe = (rows, kind) => {
+    const map = new Map();
+    for (const row of rows) {
+      const key = `${row.entity}/${row.id}`;
+      const before = map.get(key);
+      // One source file read both as an embedded component and as a parsed file is not a layer variant.
+      if (
+        before &&
+        before.file !== row.file &&
+        (kind === 'form' ? before.xml !== row.xml : before.fetchXml !== row.fetchXml)
+      )
+        diagnostics.push({
+          code: 'SOLUTION_LAYER_VARIANTS',
+          kind,
+          id: row.id,
+          entity: row.entity,
+          selected: row.file,
+          previous: before.file,
+          message:
+            'Multiple source layers provide this component; the last selected root and source file wins. This does not identify the deployed layer.',
+        });
+      map.set(key, row);
+    }
+    return [...map.values()];
+  };
   const plugins = await resolvePluginSourceFiles(
     attachSolutionAssemblyContent(
       importSolutionPlugins(scan.layers, {
@@ -644,8 +617,8 @@ export async function importSolutionMetadata(
     roots: scan.inputs.filter((input) => !['missing', 'unsupported'].includes(input.type)).map((input) => input.input),
     layers: schema.layers,
     entities: tables,
-    forms: dedupeMetadataRows(forms, 'form', diagnostics),
-    views: dedupeMetadataRows(views, 'view', diagnostics),
+    forms: dedupe(forms, 'form'),
+    views: dedupe(views, 'view'),
     sourceComponents: [
       ...new Map(
         scan.layers

@@ -84,6 +84,12 @@ test('standalone code components require a server form without native basic form
   assert.doesNotMatch(regions.content, /xrm-adx\/js\/webform\.js/);
 });
 
+// @test-kind security: request-derived form actions remain within their quoted HTML attribute.
+test('escapes a request-derived WebForms action as an HTML attribute', () => {
+  const html = webFormsForm({ action: '/form?x="<img src=x>&y=1', content: '' });
+  assert.ok(html.startsWith('<form method="post" action="/form?x=&quot;&lt;img src=x&gt;&amp;y=1"'));
+});
+
 test('the WebForms server form carries the native hidden fields, postback stub and form scripts in order', () => {
   const html = webFormsForm({
     action: '/contact-us/?a=1&b="x"',

@@ -6,12 +6,11 @@ import YAML from 'yaml';
 import { isSourceFile, isEnhancedSiteMetadata } from './portal-model.mjs';
 import { Resolver } from './resolver.mjs';
 import { inspectComponentJson } from './audit-json.mjs';
+import { hasDelimitedText } from '../mirage/lib/text-scanning.mjs';
 
 const CODE_FILE = /\.(?:[cm]?js|css|html?)$/i;
 const CODE_FIELD = /(?:javascript|stylesheet|(?:^|_)css$|(?:^|_)html$|customcss|customscript)/i;
 const MARKUP = /<(?:[a-z][\w:-]*)(?:\s[^<>]*|\/?)>/i;
-const LIQUID_MARKUP = /\{%[\s\S]*?%\}/i;
-const OUTPUT_MARKUP = /\{\{[\s\S]*?\}\}/i; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
 const SKIP = new Set(['.git', '.paqvilo', 'node_modules']);
 const compare = (a, b) => {
   if (a < b) return -1;
@@ -34,7 +33,12 @@ const SOURCE_FIELDS = new Set([
 function languageOf(key, value, context) {
   if (/javascript|customscript/i.test(key)) return 'javascript';
   if (/stylesheet|(?:^|_)css$|customcss/i.test(key)) return 'css';
-  if (/(?:^|_)html$/i.test(key) || MARKUP.test(value) || LIQUID_MARKUP.test(value) || OUTPUT_MARKUP.test(value))
+  if (
+    /(?:^|_)html$/i.test(key) ||
+    MARKUP.test(value) ||
+    hasDelimitedText(value, '{%', '%}') ||
+    hasDelimitedText(value, '{{', '}}')
+  )
     return 'html';
   if (SOURCE_FIELDS.has(key) && /(?:webpage|webtemplate|contentsnippet|type:[278])\b/i.test(context)) return 'html';
   return null;

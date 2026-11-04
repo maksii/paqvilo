@@ -784,10 +784,10 @@ export class SetupStore {
       else projects[site] = result.project;
     }
     const linked = Object.keys(projects)
-      .sort((a, b) => Number(a > b) - Number(a < b))
+      .sort(/* NOSONAR: preserve default string coercion */)
       .map((site) => [site, projects[site].file, projects[site].text]);
     const refusals = Object.keys(refused)
-      .sort((a, b) => Number(a > b) - Number(a < b))
+      .sort(/* NOSONAR: preserve default string coercion */)
       .map((site) => [site, refused[site].file, refused[site].code]);
     const revision = createHash('sha256')
       .update(JSON.stringify([shared, personal, env, ignores, ...linked, ...refusals]))

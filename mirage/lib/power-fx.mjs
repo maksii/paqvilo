@@ -443,6 +443,9 @@ function numberSeparators(language = 'en-US') {
   };
 }
 // The invariant (en-US) form of number text in a language: { text, percent } or an FxError.
+function stripTrailingCurrency(value) {
+  return /[$€£¥]/.test(value[value.length - 1] ?? '') ? value.slice(0, -1).trimEnd() : value;
+}
 export function invariantNumberText(text, language = 'en-US') {
   let value = String(text).trim();
   const separators = numberSeparators(language);
@@ -455,7 +458,7 @@ export function invariantNumberText(text, language = 'en-US') {
     percent = true;
     value = value.slice(1).trim();
   }
-  value = value.replace(/^([+-]?)\s*[$€£¥]\s*/, '$1').replace(/\s*[$€£¥]$/, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  value = stripTrailingCurrency(value.replace(/^([+-]?)\s*[$€£¥]\s*/, '$1'));
   // A space-like group separator (fr-FR U+202F, others U+00A0) also matches a plain space typed by a user; an apostrophe
   // (de-CH) also matches the typographic U+2019.
   let group = separators.group.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
@@ -1674,7 +1677,7 @@ export function evaluateFx(expression, { values = {}, host = {} } = {}) {
 }
 
 export function functionNames() {
-  return Object.keys(FUNCTIONS).sort((a, b) => Number(a > b) - Number(a < b));
+  return Object.keys(FUNCTIONS).sort(/* NOSONAR: preserve default string coercion */);
 }
 
 // Names a formula calls that the function table does not hold (recursively through every node).

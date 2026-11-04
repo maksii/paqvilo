@@ -22,6 +22,54 @@ const crmFontSource = '/resource/powerappsportal/fonts/CRMMDL2.woff';
 const crmFontTarget = '/uclient/resources/styles/CRMMDL2.woff';
 const crmPlatformFontTarget = '/resource/powerappsportal/fonts/CRMMDL2.woff2';
 const crmFontTargets = new Set([crmFontTarget, crmPlatformFontTarget]);
+function cssUrlValues(css) {
+  const quotes = { "'": [], '"': [] },
+    parens = [],
+    lines = [];
+  let next = css.length;
+  for (let index = css.length - 1; index >= 0; index--) {
+    const char = css[index];
+    if (char === ')') parens.push({ index });
+    if (/[\r\n\u2028\u2029]/.test(char)) lines.push({ index });
+    if ((char === '"' || char === "'") && css[next] === ')') quotes[char].push({ index, end: next + 1 });
+    if (!/\s/.test(char)) next = index;
+  }
+  parens.reverse();
+  lines.reverse();
+  quotes["'"].reverse();
+  quotes['"'].reverse();
+  const first = (items, position) => {
+    let low = 0,
+      high = items.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (items[middle].index < position) low = middle + 1;
+      else high = middle;
+    }
+    return items[low];
+  };
+  const values = [],
+    pattern = /url\(/gi;
+  while (pattern.exec(css)) {
+    let start = pattern.lastIndex;
+    while (start < css.length && /\s/.test(css[start])) start++;
+    const quote = css[start];
+    if (quote === '"' || quote === "'") {
+      const close = first(quotes[quote], start + 1),
+        line = first(lines, start + 1);
+      if (close && (!line || close.index < line.index)) {
+        values.push(css.slice(start + 1, close.index).trim());
+        pattern.lastIndex = close.end;
+        continue;
+      }
+    }
+    const close = first(parens, start);
+    if (!close) break;
+    values.push(css.slice(start, close.index).trim());
+    pattern.lastIndex = close.index + 1;
+  }
+  return values;
+}
 export function officeFontPath(value) {
   const url = new URL(value);
   if (
@@ -443,81 +491,6 @@ function manifestEntry(item) {
   };
 }
 
-async function copyStagedAssets(directory, root, copied) {
-  for (const file of await fs.readdir(directory)) {
-    if (!/^[\da-f]{64}\.bin$/.test(file)) throw fail('Unexpected staged asset file.');
-    try {
-      await fs.copyFile(path.join(directory, file), path.join(root, file), constants.COPYFILE_EXCL);
-      copied.push(file);
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-    }
-  }
-}
-
-async function rollbackAssetManifest(root, manifest, previous, error) {
-  try {
-    if (previous === undefined) await fs.rm(manifest, { force: true });
-    else {
-      const rollback = path.join(root, randomUUID() + '.tmp');
-      await fs.writeFile(rollback, previous);
-      await fs.rename(rollback, manifest);
-    }
-  } catch (error_) {
-    throw new AggregateError([error, error_], 'Asset publication and rollback failed.', { cause: error_ });
-  }
-}
-
-async function removeUnreferencedAssets(cache, copied) {
-  const retained = new Set(Object.values(cache.entries).map((entry) => entry.sha256 + '.bin'));
-  for (const file of copied) if (!retained.has(file)) await fs.rm(path.join(cache.directory, file), { force: true });
-}
-
-async function runCacheTransaction(cache, fn, accept, publish) {
-  const directory = path.join(cache.directory, 'staging-' + randomUUID());
-  if (path.dirname(directory) !== cache.directory) throw fail('Invalid cache staging directory.');
-  await fs.mkdir(directory);
-  const staged = Object.create(cache);
-  Object.assign(staged, {
-    directory,
-    entries: structuredClone(cache.entries),
-    queue: Promise.resolve(),
-    staging: true,
-    save: async () => {},
-  });
-  const readThrough = Object.create(staged);
-  readThrough.directory = cache.directory;
-  staged.get = async (...args) =>
-    (await AssetCache.prototype.get.call(staged, ...args)) ?? AssetCache.prototype.get.call(readThrough, ...args);
-  const manifest = path.join(cache.directory, 'manifest.json');
-  let previous;
-  let published = false;
-  const copied = [];
-  try {
-    try {
-      previous = await fs.readFile(manifest);
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-    }
-    const result = await fn(staged);
-    if (!accept(result)) return result;
-    await copyStagedAssets(directory, cache.directory, copied);
-    const publication = Object.create(staged);
-    publication.directory = cache.directory;
-    await cache.save.call(publication);
-    published = true;
-    await publish?.(result);
-    cache.entries = staged.entries;
-    return result;
-  } catch (error) {
-    if (published) await rollbackAssetManifest(cache.directory, manifest, previous, error);
-    await removeUnreferencedAssets(cache, copied);
-    throw error;
-  } finally {
-    await fs.rm(directory, { recursive: true, force: true });
-  }
-}
-
 /** Cache same-origin static bytes only; authentication stays in the browser. */
 export class AssetCache {
   constructor({ directory, origin = null, fetchImpl = globalThis.fetch } = {}) {
@@ -560,13 +533,80 @@ export class AssetCache {
   /** Stage a complete capture before publishing its manifest and optional state.
    * Immutable blobs are copied by digest; readers keep the previous manifest
    * until publication succeeds. Failed captures never replace active bytes. */
-  async transaction(fn, { accept = () => true, publish } = {}) {
+  /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async transaction(
+    fn,
+    { accept = () => true, publish } = {},
+  ) {
     if (this.staging) {
       const result = await fn(this);
       if (accept(result)) await publish?.(result);
       return result;
     }
-    const run = this.queue.then(() => runCacheTransaction(this, fn, accept, publish));
+    const run = this.queue.then(async () => {
+      const directory = path.join(this.directory, 'staging-' + randomUUID());
+      if (path.dirname(directory) !== this.directory) throw fail('Invalid cache staging directory.');
+      await fs.mkdir(directory);
+      const staged = Object.create(this);
+      Object.assign(staged, {
+        directory,
+        entries: structuredClone(this.entries),
+        queue: Promise.resolve(),
+        staging: true,
+        save: async () => {},
+      });
+      const readThrough = Object.create(staged);
+      readThrough.directory = this.directory;
+      staged.get = async (...args) =>
+        (await AssetCache.prototype.get.call(staged, ...args)) ?? AssetCache.prototype.get.call(readThrough, ...args);
+      const manifest = path.join(this.directory, 'manifest.json');
+      let previous;
+      let published = false;
+      const copied = [];
+      try {
+        try {
+          previous = await fs.readFile(manifest);
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+        const result = await fn(staged);
+        if (!accept(result)) return result;
+        for (const file of await fs.readdir(directory)) {
+          if (!/^[\da-f]{64}\.bin$/.test(file)) throw fail('Unexpected staged asset file.');
+          try {
+            await fs.copyFile(path.join(directory, file), path.join(this.directory, file), constants.COPYFILE_EXCL);
+            copied.push(file);
+          } catch (error) {
+            if (error.code !== 'EEXIST') throw error;
+          }
+        }
+        const publication = Object.create(staged);
+        publication.directory = this.directory;
+        await this.save.call(publication);
+        published = true;
+        await publish?.(result);
+        this.entries = staged.entries;
+        return result;
+      } catch (error) {
+        if (published) {
+          try {
+            if (previous === undefined) await fs.rm(manifest, { force: true });
+            else {
+              const rollback = path.join(this.directory, randomUUID() + '.tmp');
+              await fs.writeFile(rollback, previous);
+              await fs.rename(rollback, manifest);
+            }
+          } catch (rollback) {
+            throw new AggregateError([error, rollback], 'Asset publication and rollback failed.', { cause: rollback });
+          }
+        }
+        const retained = new Set(Object.values(this.entries).map((entry) => entry.sha256 + '.bin'));
+        for (const file of copied)
+          if (!retained.has(file)) await fs.rm(path.join(this.directory, file), { force: true });
+        throw error;
+      } finally {
+        await fs.rm(directory, { recursive: true, force: true });
+      }
+    });
     this.queue = run.catch(() => {});
     return run;
   }
@@ -787,10 +827,7 @@ export class AssetCache {
         for (const item of result.captured.filter((item) => item.contentType === 'text/css')) {
           const cached = await this.get(item.path, { origin });
           const css = cached.body.toString('utf8');
-          const values = [
-            ...[...css.matchAll(/url\(\s*(?:(["'])(.*?)\1\s*|([^)]*))\)/gi)].map((m) => (m[2] ?? m[3]).trim()), // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-            ...[...css.matchAll(/@import\s+(["'])(.*?)\1/gi)].map((m) => m[2]),
-          ];
+          const values = [...cssUrlValues(css), ...[...css.matchAll(/@import\s+(["'])(.*?)\1/gi)].map((m) => m[2])];
           for (const value of values) {
             if (!value || value.startsWith('data:') || value.startsWith('#')) continue;
             try {

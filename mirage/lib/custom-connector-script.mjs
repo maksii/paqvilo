@@ -1,3 +1,4 @@
+import { stripCsprojSuffix } from './strip-csproj-suffix.mjs';
 // C# custom code of a custom connector (script.csx) run through the local .NET SDK
 // (https://learn.microsoft.com/connectors/custom-connectors/write-code): a class `Script : ScriptBase` whose
 // ExecuteAsync() answers the HttpResponseMessage; Context carries CorrelationId, OperationId, Request and Logger, and
@@ -262,10 +263,7 @@ export function createScriptHost({ stateDirectory = null, command = 'dotnet', tr
               .split(/\r?\n/)
               .filter((line) => /error/i.test(line))
               .map((line) =>
-                line
-                  .split(dir)
-                  .join('')
-                  .replace(/\s*\[[^\]]*\.csproj\]$/, '') // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+                stripCsprojSuffix(line.split(dir).join(''))
                   .replace(/^[\\/]*Script\.cs/, 'script.csx')
                   .trim(),
               ),

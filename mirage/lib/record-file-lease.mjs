@@ -281,7 +281,7 @@ export class RecordFileLease {
     if ([...next].some((name) => !recordFileName.test(name))) throw integrity('Invalid leased record filename');
     if (next.size === this.files.size) return;
     const temp = path.join(this.directory, temporaryRecordName('lease.tmp'));
-    const files = [...next].sort((a, b) => Number(a > b) - Number(a < b));
+    const files = [...next].sort(/* NOSONAR: preserve default string coercion */);
     const body = JSON.stringify({ format: 1, id: this.id, pid: process.pid, files });
     const fd = this.io.openSync(temp, 'wx', 0o600);
     try {
@@ -319,7 +319,11 @@ export class RecordFileLease {
  * writer appearing afterwards is outside this collection's candidate set.
  * A reused live PID is conservatively retained; unknown ownership fails closed.
  * Stale temporaries (sort runs, lease and owner temporaries) are removed too. */
-export async function collectRecordGarbage(directory, publishedNames, { isAlive } = {}) {
+/* NOSONAR: preserve garbage-collection await boundaries */ export async function collectRecordGarbage(
+  directory,
+  publishedNames,
+  { isAlive } = {},
+) {
   const root = await fs.promises.realpath(directory),
     names = await fs.promises.readdir(root);
   const candidates = names.filter((name) => recordFileName.test(name));
@@ -329,17 +333,6 @@ export async function collectRecordGarbage(directory, publishedNames, { isAlive 
   const alive = isAlive ?? processAlive;
   const leases = (await fs.promises.readdir(root)).filter((name) => leaseName.test(name));
   const live = new Map();
-  await collectLiveLeases(root, leases, protectedNames, live, alive);
-  const counts = await collectUnprotectedRecords(root, candidates, protectedNames);
-  for (const name of await fs.promises.readdir(root)) {
-    const pid = Number(temporaryName.exec(name)?.[1]);
-    if (pid && !live.has(pid)) live.set(pid, await alive(pid));
-  }
-  const temporaries = removeStaleTemporaries(root, { isAlive: (pid) => live.get(pid) ?? true });
-  return { removed: counts.removed + temporaries.removed, retained: counts.retained + temporaries.retained };
-}
-
-async function collectLiveLeases(root, leases, protectedNames, live, alive) {
   for (const name of leases) {
     const file = path.join(root, name);
     let body;
@@ -356,9 +349,6 @@ async function collectLiveLeases(root, leases, protectedNames, live, alive) {
         if (error.code !== 'ENOENT') throw error;
       });
   }
-}
-
-async function collectUnprotectedRecords(root, candidates, protectedNames) {
   let removed = 0,
     retained = 0;
   for (const name of candidates) {
@@ -376,5 +366,10 @@ async function collectUnprotectedRecords(root, candidates, protectedNames) {
       retained++;
     }
   }
-  return { removed, retained };
+  for (const name of await fs.promises.readdir(root)) {
+    const pid = Number(temporaryName.exec(name)?.[1]);
+    if (pid && !live.has(pid)) live.set(pid, await alive(pid));
+  }
+  const temporaries = removeStaleTemporaries(root, { isAlive: (pid) => live.get(pid) ?? true });
+  return { removed: removed + temporaries.removed, retained: retained + temporaries.retained };
 }

@@ -424,7 +424,7 @@ export function buildSourceGraph({
   };
   // Identity of what is in effect: ids, layers, versions and levels (never source paths or values).
   const digest = createHash('sha256');
-  for (const id of [...nodes.keys()].sort((a, b) => Number(a > b) - Number(a < b))) {
+  for (const id of [...nodes.keys()].sort(/* NOSONAR: preserve default string coercion */)) {
     const node = nodes.get(id);
     digest.update(JSON.stringify([id, node.layer, node.version, node.level])).update('\n');
   }

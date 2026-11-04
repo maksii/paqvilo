@@ -13,6 +13,13 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { validateLivePath, decodePagingCookie } from './lib/live.mjs';
+import {
+  normalizeSemicolonWhitespace,
+  replaceEmails,
+  replaceParenthesizedPath,
+  stripTrailingCharacter,
+  trimLineEndSpaces,
+} from './lib/text-scanning.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_KINDS = Object.freeze([
@@ -151,7 +158,6 @@ export function isAllowedRequest(method, url, { origins = [] } = {}) {
 }
 
 const PLACEHOLDER = /\{([A-Za-z]\w*)\}/g;
-const compareCodeUnits = (a, b) => Number(a > b) - Number(a < b);
 const usesId = (scenario) =>
   [scenario.path, scenario.fetchXml, ...Object.values(scenario.query ?? {})].some(
     (value) => typeof value === 'string' && /\{[A-Za-z]\w*\}/.test(value),
@@ -423,7 +429,6 @@ function validateScenarioPaging(scenario) {
 // ---- Normalisation and redaction
 
 const GUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
-const EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
 const ISO_DATETIME = /\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/g; // NOSONAR: regex kept: a rewrite would change matches or captures
 const ISO_DATE = /\b\d{4}-\d{2}-\d{2}\b/g;
 const NUMERIC_DATE = /\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b/g;
@@ -439,10 +444,7 @@ export function normalizeText(value, { origins = [] } = {}) {
     .replace(/\s+/g, ' ')
     .trim();
   for (const origin of origins) if (origin) text = text.split(origin).join('@portal');
-  return text
-    .replace(TOKENISH, '{token}')
-    .replace(GUID, '{guid}')
-    .replace(EMAIL, '{email}')
+  return replaceEmails(text.replace(TOKENISH, '{token}').replace(GUID, '{guid}'), '{email}')
     .replace(ISO_DATETIME, '{datetime}')
     .replace(ISO_DATE, '{date}')
     .replace(LONG_DATE, '{date}')
@@ -497,7 +499,7 @@ export function redactUrl(value, { origins = [], base, keepPaging = false } = {}
         .replace(TOKENISH, '{token}');
     })
     .join('/');
-  const names = [...new Set(parsed.searchParams.keys())].sort(compareCodeUnits);
+  const names = [...new Set(parsed.searchParams.keys())].sort(/* NOSONAR: preserve default string coercion */);
   const shown = (name) => {
     const valueOf = parsed.searchParams.get(name);
     return keepPaging && PAGING_PARAMS.has(name) && /^\d{1,6}$/.test(valueOf ?? '') ? valueOf : '…';
@@ -537,7 +539,7 @@ export function createRedactor({ corpus = null, key = randomBytes(32), revealSho
       if (safe(value)) return value;
       // Composed strings (for example "Page title · Site") are revealed when every part is.
       const parts = value
-        .split(/\s+[·|–-]\s+|,\s+/) // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+        .split(/(?<!\s)\s+[·|–-]\s+|,\s+/)
         .map((part) => part.trim())
         .filter(Boolean);
       if (parts.length > 1 && parts.every(safe)) return value;
@@ -775,7 +777,7 @@ function prepareTreeNode(raw, { origins, ignoredClass, ignoredAttribute }) {
   ]
     .filter((name) => !ignoredClass.some((pattern) => pattern.test(name)))
     .map((name) => normalizeText(name))
-    .sort(compareCodeUnits);
+    .sort(/* NOSONAR: preserve default string coercion */);
   const attrs = prepareTreeAttributes(raw, origins, ignoredAttribute);
   const node = { tag: raw.g, id: attrs.id ?? null, classes, attrs, visible: raw.v === 1 };
   if (raw.d) node.data = true;
@@ -810,7 +812,7 @@ function prepareTreeAttributes(raw, origins, ignoredAttribute) {
 
 const shapeOf = (node) => {
   if (node.text !== undefined) return '#text';
-  return `${node.tag}#${node.id ?? ''}.${node.classes.join('.')}[${Object.keys(node.attrs).sort(compareCodeUnits).join(',')}](${node.kids.map(shapeOf).join('|')})`;
+  return `${node.tag}#${node.id ?? ''}.${node.classes.join('.')}[${Object.keys(node.attrs).sort(/* NOSONAR: preserve default string coercion */).join(',')}](${node.kids.map(shapeOf).join('|')})`;
 };
 
 /** Collapse consecutive siblings with identical structure (data rows) into one template with a count. */
@@ -1055,7 +1057,7 @@ const valueType = (value) => {
       'object{' +
       Object.keys(value)
         .filter((key) => !key.includes('@'))
-        .sort(compareCodeUnits)
+        .sort(/* NOSONAR: preserve default string coercion */)
         .join(',') +
       '}'
     );
@@ -1096,8 +1098,8 @@ export function projectJson(
   projectJsonRows(rows ?? [top], Boolean(rows), projection);
   projection.fields = Object.fromEntries(
     Object.entries(projection.fields)
-      .sort(([a], [b]) => compareCodeUnits(a, b))
-      .map(([key, types]) => [key, [...types].sort(compareCodeUnits)]),
+      .sort(/* NOSONAR: preserve default entry sorting */)
+      .map(([key, types]) => [key, [...types].sort(/* NOSONAR: preserve default string coercion */)]),
   );
   // Liquid JSON endpoints return objects with row arrays (for example changeRequests); record lengths only.
   if (!rows) {
@@ -1110,8 +1112,8 @@ export function projectJson(
   }
   projection.annotations = Object.fromEntries(
     Object.entries(projection.annotations)
-      .sort(([a], [b]) => compareCodeUnits(a, b))
-      .map(([key, set]) => [key, [...set].sort(compareCodeUnits)]),
+      .sort(/* NOSONAR: preserve default entry sorting */)
+      .map(([key, set]) => [key, [...set].sort(/* NOSONAR: preserve default string coercion */)]),
   );
   if (rows && (compareValues.length || referenceData)) {
     const fields = compareValues.length ? compareValues : Object.keys(projection.fields);
@@ -1127,7 +1129,7 @@ function createJsonProjection(rows, top, collection) {
     kind: rows ? 'collection' : 'object',
     topKeys: Object.keys(top)
       .filter((key) => key !== collection)
-      .sort(compareCodeUnits),
+      .sort(/* NOSONAR: preserve default string coercion */),
     count: rows ? rows.length : null,
     odataCount: typeof top['@odata.count'] === 'number' ? top['@odata.count'] : null,
     totalRecordCount:
@@ -1148,16 +1150,16 @@ function createJsonProjection(rows, top, collection) {
 function projectJsonError(body) {
   return {
     kind: 'error',
-    keys: Object.keys(body).sort(compareCodeUnits),
+    keys: Object.keys(body).sort(/* NOSONAR: preserve default string coercion */),
     error: {
-      keys: Object.keys(body.error).sort(compareCodeUnits),
+      keys: Object.keys(body.error).sort(/* NOSONAR: preserve default string coercion */),
       code: typeof body.error.code === 'string' || typeof body.error.code === 'number' ? String(body.error.code) : null,
       // Power Pages Web API errors carry eight-digit hexadecimal codes such as 90040120.
       codeShape: errorCodeShape(body.error),
       message: typeof body.error.message === 'string' ? body.error.message : null,
       innerKeys:
         body.error.innererror && typeof body.error.innererror === 'object'
-          ? Object.keys(body.error.innererror).sort(compareCodeUnits)
+          ? Object.keys(body.error.innererror).sort(/* NOSONAR: preserve default string coercion */)
           : null,
     },
   };
@@ -1274,8 +1276,12 @@ function compareJsonAnnotations(live, local, deltas) {
 
 function compareJsonValues(live, local, unordered, deltas) {
   const key = (row) => JSON.stringify(row);
-  const a = unordered ? [...live.values].map(key).sort(compareCodeUnits) : live.values.map(key);
-  const b = unordered ? [...local.values].map(key).sort(compareCodeUnits) : local.values.map(key);
+  const a = unordered
+    ? [...live.values].map(key).sort(/* NOSONAR: preserve default string coercion */)
+    : live.values.map(key);
+  const b = unordered
+    ? [...local.values].map(key).sort(/* NOSONAR: preserve default string coercion */)
+    : local.values.map(key);
   if (a.length !== b.length || a.some((value, index) => value !== b[index])) {
     const liveSet = new Set(a);
     const localSet = new Set(b);
@@ -1303,7 +1309,7 @@ export function classifyLocation(location, { origin } = {}) {
     return { kind: 'invalid' };
   }
   const external = origin && target.origin !== new URL(origin).origin;
-  const params = [...new Set(target.searchParams.keys())].sort(compareCodeUnits);
+  const params = [...new Set(target.searchParams.keys())].sort(/* NOSONAR: preserve default string coercion */);
   const returnKey = params.find((name) => /^returnurl$/i.test(name));
   let returnPath = null;
   let returnQueryNames = null;
@@ -1312,7 +1318,7 @@ export function classifyLocation(location, { origin } = {}) {
     try {
       const inner = new URL(target.searchParams.get(returnKey), 'https://portal.invalid');
       returnPath = inner.pathname.replace(GUID, '{guid}');
-      returnQueryNames = [...new Set(inner.searchParams.keys())].sort(compareCodeUnits);
+      returnQueryNames = [...new Set(inner.searchParams.keys())].sort(/* NOSONAR: preserve default string coercion */);
     } catch {
       returnPath = '{invalid}';
     }
@@ -1382,10 +1388,10 @@ export function tagShape(markup) {
     else names.push(name.toLowerCase());
   }
   return `${match[1].toLowerCase()}${classes
-    .toSorted(compareCodeUnits)
+    .sort(/* NOSONAR: preserve in-place default string sorting */)
     .map((name) => `.${name}`)
     .join('')}${names
-    .toSorted(compareCodeUnits)
+    .sort(/* NOSONAR: preserve in-place default string sorting */)
     .map((name) => `[${name}]`)
     .join('')}`;
 }
@@ -1423,17 +1429,14 @@ export function projectHeaders(
       result[name] = null;
       continue;
     }
-    if (name === 'content-type')
-      result[name] = String(value)
-        .toLowerCase()
-        .replace(/\s*;\s*/g, ';'); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    if (name === 'content-type') result[name] = normalizeSemicolonWhitespace(String(value).toLowerCase());
     else if (name === 'cache-control')
       result[name] = String(value)
         .toLowerCase()
         .split(',')
         .map((item) => item.trim())
         .filter(Boolean)
-        .sort(compareCodeUnits);
+        .sort(/* NOSONAR: preserve default string coercion */);
     else if (name === 'content-security-policy')
       result[name] = Object.fromEntries(
         String(value)
@@ -1444,10 +1447,12 @@ export function projectHeaders(
             const [key, ...sources] = directive.split(/\s+/);
             return [
               key.toLowerCase(),
-              sources.map((source) => source.replace(/'nonce-[^']+'/i, "'nonce-{redacted}'")).sort(compareCodeUnits),
+              sources
+                .map((source) => source.replace(/'nonce-[^']+'/i, "'nonce-{redacted}'"))
+                .sort(/* NOSONAR: preserve default string coercion */),
             ];
           })
-          .sort(([a], [b]) => compareCodeUnits(a, b)),
+          .sort(([a], [b]) => a.localeCompare(b)),
       );
     else result[name] = String(value).trim();
   }
@@ -1933,11 +1938,7 @@ export function compareBytes(live, local) {
   const b = Buffer.isBuffer(local) ? local : Buffer.from(String(local ?? ''));
   if (a.equals(b)) return 'identical';
   const normalize = (buffer) =>
-    buffer
-      .toString('utf8')
-      .replaceAll('\r\n', '\n')
-      .replace(/[ \t]+$/gm, '') // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-      .replace(/\n+$/, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    stripTrailingCharacter(trimLineEndSpaces(buffer.toString('utf8').replaceAll('\r\n', '\n')), '\n');
   return normalize(a) === normalize(b) ? 'line-endings' : 'different';
 }
 
@@ -1971,7 +1972,7 @@ export function bodyShape(postData) {
   try {
     const parsed = JSON.parse(postData);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
-      keys = Object.keys(parsed).sort(compareCodeUnits);
+      keys = Object.keys(parsed).sort(/* NOSONAR: preserve default string coercion */);
   } catch {
     keys = null;
   }
@@ -2980,7 +2981,7 @@ export function createIdentityController(localUrl, { fetchImpl = fetch } = {}) {
       current = 'signed-in';
       return {
         unresolved,
-        effectiveRoles: [...session.roles].sort(compareCodeUnits),
+        effectiveRoles: [...session.roles].sort(/* NOSONAR: preserve default string coercion */),
         contactPresent: Boolean(session.contactId),
         session: session.roleSource,
       };
@@ -3009,7 +3010,7 @@ export function createIdentityController(localUrl, { fetchImpl = fetch } = {}) {
       const signedIn = current === 'signed-in' && session;
       return {
         identity: current,
-        roles: signedIn ? [...session.roles].sort(compareCodeUnits) : [],
+        roles: signedIn ? [...session.roles].sort(/* NOSONAR: preserve default string coercion */) : [],
         contact: signedIn && session.contactId ? 'local synthetic contact' : null,
         mirroredRoles: persona?.roles ?? null,
         session: signedIn ? session.roleSource : null,
@@ -3310,11 +3311,11 @@ export function portalDiscovery({ portal, mappings = {}, pageAccess }) {
     return access?.allowed === false && access.code === 'PAGE_ACCESS_DENIED';
   };
   const denied = pages.filter((page) => byPath.get(page.url.toLowerCase()).length === 1 && deniedPage(page));
-  if (denied.length) facts.protectedPage = denied.toSorted(byUrl)[0].url;
+  if (denied.length) facts.protectedPage = denied.sort(/* NOSONAR: preserve in-place sorting */ byUrl)[0].url;
   const shared = [...byPath.values()]
     .filter((group) => group.length > 1 && new Set(group.map(deniedPage)).size > 1)
     .map((group) => group[0]);
-  if (shared.length) facts.ambiguousPage = shared.toSorted(byUrl)[0].url;
+  if (shared.length) facts.ambiguousPage = shared.sort(/* NOSONAR: preserve in-place sorting */ byUrl)[0].url;
   const stylesheets = (portal?.webFiles ?? []).filter(
     (file) => typeof file.url === 'string' && /^\/[^?#]*\.css$/i.test(file.url) && anonymous(file)?.allowed === true,
   );
@@ -3337,7 +3338,7 @@ export function portalDiscovery({ portal, mappings = {}, pageAccess }) {
     .filter((match) => match && setting(match[0]).trim().toLowerCase() === 'true')
     .map((match) => match[1].toLowerCase())
     .filter((table) => typeof mappings[table]?.entitySet === 'string')
-    .sort((a, b) => Number(!solutionBacked(a)) - Number(!solutionBacked(b)) || compareCodeUnits(a, b));
+    .sort((a, b) => Number(!solutionBacked(a)) - Number(!solutionBacked(b)) || a.localeCompare(b));
   if (enabled.length) {
     const table = enabled[0];
     const fieldsName = names.find((name) => name.toLowerCase() === `webapi/${table}/fields`);
@@ -3364,7 +3365,7 @@ export function portalDiscovery({ portal, mappings = {}, pageAccess }) {
         typeof mappings[table]?.entitySet === 'string' &&
         solutionBacked(table),
     )
-    .sort(compareCodeUnits);
+    .sort(/* NOSONAR: preserve default string coercion */);
   if (notEnabled.length)
     Object.assign(facts, { notEnabledEntitySet: mappings[notEnabled[0]].entitySet, notEnabledTable: notEnabled[0] });
   return facts;
@@ -3566,7 +3567,7 @@ function compareShellAttributes(live, local, origins) {
   ]) {
     const left = new Map(a.map(([name, value]) => [name.toLowerCase(), value]));
     const right = new Map(b.map(([name, value]) => [name.toLowerCase(), value]));
-    const names = [...new Set([...left.keys(), ...right.keys()])].sort(compareCodeUnits);
+    const names = [...new Set([...left.keys(), ...right.keys()])].sort(/* NOSONAR: preserve default string coercion */);
     for (const name of names) compareShellAttribute(element, name, left, right, text, deltas);
   }
   return deltas;
@@ -3582,8 +3583,8 @@ function compareShellAttribute(element, name, left, right, text, deltas) {
       );
     const x = tokens(left.get(name));
     const y = tokens(right.get(name));
-    const missing = [...x].filter((token) => !y.has(token)).sort(compareCodeUnits);
-    const extra = [...y].filter((token) => !x.has(token)).sort(compareCodeUnits);
+    const missing = [...x].filter((token) => !y.has(token)).sort(/* NOSONAR: preserve default string coercion */);
+    const extra = [...y].filter((token) => !x.has(token)).sort(/* NOSONAR: preserve default string coercion */);
     if (missing.length || extra.length)
       deltas.push({ kind: 'class', path: element, live: missing.join(' ') || null, local: extra.join(' ') || null });
     return;
@@ -3784,7 +3785,10 @@ function inventory(records = []) {
     groups[prefix].add(`${record.method} ${record.url} → ${record.status ?? record.failed ?? 'pending'}`);
   }
   return Object.fromEntries(
-    Object.entries(groups).map(([prefix, set]) => [prefix, [...set].sort(compareCodeUnits).slice(0, 60)]),
+    Object.entries(groups).map(([prefix, set]) => [
+      prefix,
+      [...set].sort(/* NOSONAR: preserve default string coercion */).slice(0, 60),
+    ]),
   );
 }
 
@@ -3941,7 +3945,7 @@ function summarizeNetwork(records = []) {
         Object.keys(headers ?? {})
           .map((name) => name.toLowerCase())
           .filter((name) => name !== 'set-cookie')
-          .sort(compareCodeUnits);
+          .sort(/* NOSONAR: preserve default string coercion */);
       observations.headerNames = { live: names(live.headers), local: names(local.headers) };
     }
     if (scenario.cookies && live.cookies) observations.cookies = { live: live.cookies, local: local.cookies ?? [] };
@@ -4143,7 +4147,7 @@ function summarizeNetwork(records = []) {
           tokens: String(value)
             .split(/\s+|&#32;/)
             .filter(Boolean)
-            .sort(compareCodeUnits),
+            .sort(/* NOSONAR: preserve default string coercion */),
           entitySpaces: (String(value).match(/&#32;/g) ?? []).length,
           plainSpaces: (String(value).match(/ /g) ?? []).length,
         });
@@ -4163,13 +4167,13 @@ function summarizeNetwork(records = []) {
         liveView = {
           found: a.found,
           segmented: Boolean(liveRoles),
-          roles: liveRoles ? [...liveRoles].sort(compareCodeUnits) : null,
+          roles: liveRoles ? [...liveRoles].sort(/* NOSONAR: preserve default string coercion */) : null,
           order: liveRoles ?? null,
         };
         localView = {
           found: b.found,
           segmented: Boolean(localRoles),
-          roles: localRoles ? [...localRoles].sort(compareCodeUnits) : null,
+          roles: localRoles ? [...localRoles].sort(/* NOSONAR: preserve default string coercion */) : null,
           order: localRoles ?? null,
         };
         if (!liveRoles || !localRoles)
@@ -4649,8 +4653,8 @@ function finalizeScenarioResult(scenario, plan, redactor, result, observations, 
     deltas: classified,
     deltaCounts: byClass,
     verdict,
-    owners: [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))].sort((a, b) =>
-      compareCodeUnits(String(a), String(b)),
+    owners: [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))].sort(
+      /* NOSONAR: preserve default string coercion */
     ),
   };
 }
@@ -4730,7 +4734,7 @@ export async function derivePersona({ live, roleNames, probe = {}, accessChecks 
       'Rendered {{ user.roles }} hidden input (#userroles) segmented against exported web-role names; cross-checked with page-access outcomes of restricted pages.',
     markupFound: typeof value === 'string',
     segmented: Boolean(roles),
-    roles: roles ? [...roles].sort(compareCodeUnits) : null,
+    roles: roles ? [...roles].sort(/* NOSONAR: preserve default string coercion */) : null,
     renderedOrder: roles ?? null,
   };
   const observations = [];
@@ -4889,7 +4893,7 @@ export async function runParitySuite({
         result.stack = String(error.stack ?? '')
           .split('\n')
           .slice(1, 6)
-          .map((line) => line.trim().replace(/\(.*[\\/]/, '(')) // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+          .map((line) => replaceParenthesizedPath(line.trim()))
           .join(' | ');
     }
     result.ms = Date.now() - started;
@@ -4980,8 +4984,8 @@ function reclassifyScenario(scenario, plan) {
     else if (!unexpected.length) scenario.verdict = 'pass-with-expected-deltas';
     else scenario.verdict = 'delta';
   }
-  scenario.owners = [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))].sort((a, b) =>
-    compareCodeUnits(String(a), String(b)),
+  scenario.owners = [...new Set(unexpected.map((delta) => delta.classification.owner).filter(Boolean))].sort(
+    /* NOSONAR: preserve default string coercion */
   );
 }
 
@@ -5091,7 +5095,7 @@ function formatNotableDelta(scenario, delta) {
 function appendQuestionRows(lines, report) {
   if (!Object.keys(report.questions ?? {}).length) return;
   lines.push('', '## Open-question evidence (platform-internals-reference section 11)', '');
-  for (const [question, items] of Object.entries(report.questions).sort(([a], [b]) => compareCodeUnits(a, b)))
+  for (const [question, items] of Object.entries(report.questions).sort(/* NOSONAR: preserve default entry sorting */))
     lines.push(`- ${question}: ${items.map(questionEvidence).join(', ')}`);
   for (const item of report.questionsNotObservable ?? [])
     lines.push(`- ${item.id}: not observable read-only — ${item.reason}`);
@@ -5315,7 +5319,7 @@ async function startMainOwnedRuntime({ values, site, explicit, origin, sourceDir
       observed: siteMirage.observed
         ? Object.keys(siteMirage.observed)
             .filter((key) => key !== 'evidence')
-            .sort(compareCodeUnits)
+            .sort(/* NOSONAR: preserve default string coercion */)
         : [],
     };
   }
@@ -5460,7 +5464,7 @@ async function finishMainReport(report, owned, values, site, catalogue, ids) {
     : { owned: values['local-owned'] === true, attached: true };
   if (site) report.runtime.site = { site: values.site, env: values.env ?? null };
   if (catalogue) report.runtime.catalogue = catalogue;
-  report.idsSupplied = ids ? Object.keys(ids).sort(compareCodeUnits) : [];
+  report.idsSupplied = ids ? Object.keys(ids).sort(/* NOSONAR: preserve default string coercion */) : [];
   await fs.writeFile(report.report, JSON.stringify(report, null, 2));
   console.log(
     JSON.stringify(

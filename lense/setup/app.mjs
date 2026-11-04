@@ -1075,7 +1075,7 @@ const yamlScalar = (value) =>
   /^[\w./~-][\w ./@:~-]*$/.test(value) &&
   !/: |:$| $|^- /.test(value) &&
   !/^(?:true|false|null|yes|no|on|off|~)$/i.test(value) &&
-  !/^(?:[-+]?(?:\d[\d_]*\.\d+|\d(?:[\d_]*\d)?|\.\d+)(?:e[-+]?\d+)?)$/i.test(value) // NOSONAR: regex kept: a rewrite would change matches or captures
+  !/^(?:[-+]?(?:\d[\d_]*\.\d+|\d(?:[\d_]*\d)?|\.\d+)(?:e[-+]?\d+)?)$/i.test(value)
     ? value
     : JSON.stringify(value);
 const yamlBlock = (value) => value !== null && typeof value === 'object' && Object.keys(value).length > 0;
@@ -1769,9 +1769,10 @@ function useFile(file) {
   const item = picker.data?.files.find((entry) => entry.path === file),
     into = picker.into && document.getElementById(picker.into);
   if (!item || !into?.isConnected) return $('#folder-picker').close();
-  const exportDir = String(into.closest('[data-source-dir]')?.dataset.sourceDir ?? '')
-      .replaceAll('\\', '/')
-      .replace(/\/+$/, ''), // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  const exportDir = quickUi.stripTrailingCharacter(
+      String(into.closest('[data-source-dir]')?.dataset.sourceDir ?? '').replaceAll('\\', '/'),
+      '/',
+    ),
     path = item.path.replaceAll('\\', '/');
   const inside = exportDir && path.toLowerCase().startsWith(`${exportDir.toLowerCase()}/`);
   into.value = inside ? path.slice(exportDir.length + 1) : item.value;
@@ -2930,7 +2931,13 @@ document.addEventListener('click', (event) => {
     href = link?.getAttribute('href'),
     document_ = link?.dataset.yamlLayer;
   // A Quick setup link into All settings, and the stage rail, switch to All settings first.
-  if (link && state && view === 'quick' && ('quickAll' in link.dataset || ALL_SECTIONS.has(String(href).slice(1))))
+  if (
+    link &&
+    state &&
+    view === 'quick' &&
+    /* NOSONAR: hasAttribute ignores inherited dataset properties */ (link.hasAttribute('data-quick-all') ||
+      ALL_SECTIONS.has(String(href).slice(1)))
+  )
     setView('all');
   // Links to a document (a linked-project finding, a references-only row) open it in the YAML editor first.
   if (document_ && state?.layers[document_] && document_ !== (state.layers[yamlLayer] ? yamlLayer : layer)) {

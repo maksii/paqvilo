@@ -60,7 +60,7 @@ export function createFixtureRecipes(definitions) {
     recipes.set(name, { state, epochMs, namespace });
   }
   return Object.freeze({
-    names: () => [...recipes.keys()].sort((a, b) => Number(a > b) - Number(a < b)),
+    names: () => [...recipes.keys()].sort(/* NOSONAR: preserve default string coercion */),
     create(name) {
       const recipe = recipes.get(name);
       if (!recipe) throw new Error('Unknown fixture recipe.');

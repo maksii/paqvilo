@@ -235,16 +235,7 @@ function columnField(api, attr, dataverseType, schemaName, primary) {
 }
 
 // API-created columns: state.dataverse.customColumns[table][column] is the source of truth, mapping.fields is its copy.
-const customBucket = (state, logical) => {
-  state.dataverse ??= {};
-  state.dataverse.customColumns ??= {};
-  let bucket = state.dataverse.customColumns[logical];
-  if (bucket === null || bucket === undefined) {
-    bucket = {};
-    state.dataverse.customColumns[logical] = bucket;
-  }
-  return bucket;
-};
+const customBucket = (state, logical) => (((state.dataverse ??= {}).customColumns ??= {})[logical] ??= {}); // NOSONAR: preserve proxy access and assignment order
 function remember(state, logical, mapping, name, field) {
   mapping.fields[name] = field;
   customBucket(state, logical)[name] = structuredClone(field);

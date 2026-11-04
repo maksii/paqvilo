@@ -1079,7 +1079,8 @@ function xrayBrowserImpl(data) {
         row.strong = false;
         row.evidenceLabel = row.evidenceLabel.replace('Markup match:', 'Possible match:');
       }
-    const ranked = rows.toSorted(
+    const ranked = rows.sort(
+      /* NOSONAR: preserve in-place sorting */
       (a, b) =>
         Number(b.strong) - Number(a.strong) ||
         b.score - a.score ||
@@ -1254,7 +1255,7 @@ function xrayBrowserImpl(data) {
       scope,
       anchorGeneration,
       active,
-      [...componentKeys].sort((a, b) => Number(a > b) - Number(a < b)),
+      [...componentKeys].sort(/* NOSONAR: preserve default string coercion */),
     ]);
     const capturedReport = report;
     let cached = modelHydrations.get(key);

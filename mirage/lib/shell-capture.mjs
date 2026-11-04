@@ -1,3 +1,4 @@
+import { cssUrlDependencies } from './css-url-dependencies.mjs';
 import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { validateLivePath } from './live.mjs';
@@ -66,7 +67,9 @@ export function extractShellReferences(html) {
     for (const child of node.childNodes ?? []) visit(child, inHead);
   }
   visit(document);
-  return result.toSorted((a, b) => a.offset - b.offset).map(({ offset, ...ref }) => ref);
+  return result
+    .sort(/* NOSONAR: preserve in-place sorting */ (a, b) => a.offset - b.offset)
+    .map(({ offset, ...ref }) => ref);
 }
 const references = extractShellReferences;
 
@@ -174,10 +177,7 @@ const runtimeScript = (path) => {
 };
 // An @import (a string or url()) names a stylesheet; other url() values name fonts and images.
 const cssDependencies = (css) => [
-  /* NOSONAR */ ...[...css.matchAll(/(@import\s+)?url\(\s*(?:(["'])(.*?)\2|([^)]*))\s*\)/gi)].map((m) => ({
-    value: (m[3] ?? m[4]).trim(),
-    style: Boolean(m[1]),
-  })),
+  ...cssUrlDependencies(css),
   ...[...css.matchAll(/@import\s+(["'])(.*?)\1/gi)].map((m) => ({ value: m[2], style: true })),
 ];
 

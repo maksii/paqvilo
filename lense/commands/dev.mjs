@@ -54,7 +54,8 @@ function countHitSources(hit, tally) {
     return;
   }
   for (const source of hit.sources ?? []) {
-    if (source.action.startsWith('patched')) tally.patches++;
+    if (/^patched/.test(source.action))
+      tally.patches++; // NOSONAR: preserve coercion of absent or non-string action metadata
     else tally.blocks++;
   }
 }

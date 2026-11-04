@@ -2397,6 +2397,13 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:mirage/lib/text-scanning.mjs:emailMatches",
+      "file": "mirage/lib/text-scanning.mjs",
+      "type": "exports",
+      "name": "emailMatches",
+      "reason": "The active tooling consumer scripts/baseline-reference.mjs:leaks imports this matcher to report actual email matches in GUID/email/host order; the full graph also verifies exact match tuples. Runtime-only traversal excludes that tooling consumer."
+    },
+    {
       "key": "runtime:exports:mirage/lib/trace-store.mjs:redactPayload",
       "file": "mirage/lib/trace-store.mjs",
       "type": "exports",

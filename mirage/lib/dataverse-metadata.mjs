@@ -2142,7 +2142,7 @@ export function createMetadataService({
 
     serviceDocument(origin, version) {
       const value = [...new Set([...METADATA_ENTITY_SETS, ...logicalNames().map((name) => source(name).entitySet)])]
-        .sort((a, b) => Number(a > b) - Number(a < b))
+        .sort(/* NOSONAR: preserve entity-set default coercion */)
         .map((name) => ({ name, kind: 'EntitySet', url: name }));
       return { '@odata.context': `${origin}/api/data/${version}/$metadata`, value };
     },

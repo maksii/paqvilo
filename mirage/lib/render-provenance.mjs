@@ -672,7 +672,7 @@ export function finalizePortalProvenance({ fragment, index, proofId = randomUUID
       pending.push({ node: node.content, inertTemplateId: entries.at(-1).id });
   }
   let html = fragment.text;
-  for (const edit of edits.toSorted((a, b) => b.start - a.start))
+  for (const edit of edits.sort(/* NOSONAR: preserve in-place sorting */ (a, b) => b.start - a.start))
     html = html.slice(0, edit.start) + edit.text + html.slice(edit.end);
   const result = {
     html,

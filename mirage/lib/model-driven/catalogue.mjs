@@ -431,6 +431,9 @@ function resolveDestinationErrors(item, destination) {
     item.supported = false;
     item.reason = 'This table has no imported metadata or local mapping.';
   }
+}
+
+function resolveViewError(item, destination) {
   if (item.view && !destination?.views.some((view) => view.id === item.view)) {
     item.supported = false;
     item.reason = 'This page selects a view that is not imported for its table.';
@@ -479,6 +482,7 @@ function prepareNavigationItem(app, item, tables, apps, clientExtensions, canvas
   const destination = navigationDestination(item, tables);
   resolveDestinationErrors(item, destination);
   resolveNavigationResource(item, clientExtensions);
+  resolveViewError(item, destination);
   const viewApplication = navigationApplication(app, item, apps);
   resolveScopedView(item, destination, viewApplication);
   item.title ??= destination?.label ?? item.entity ?? item.id;

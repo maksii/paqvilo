@@ -307,7 +307,7 @@ export function buildPermissionOrderProbe({ blueprint, schema, catalogue, permis
         .filter((node) => node.active && node.privileges.read && node.role !== 'TESTRUNNER')
         .map((node) => node.table),
     ),
-  ].sort((left, right) => Number(left > right) - Number(left < right));
+  ].sort();
   const cases = tables.map((table, index) => {
     const meta =
       catalogue.tables.find((meta) => meta.name === table) ?? schema.tables.find((meta) => meta.name === table);

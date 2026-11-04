@@ -53,7 +53,7 @@ export async function openNativeBrowser(config) {
           ?.filter((block) => block.type === 'text')
           .map((block) => block.text)
           .join('\n') ?? '';
-      const match = text.match(/### Result\s*([\s\S]*?)(?:\n### |$)/); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+      const match = text.match(/### Result\s*([\s\S]*?)(?:\n### |$)/); // NOSONAR: the first literal prefix always succeeds at the EOF alternative; no failed suffix retries.
       try {
         return JSON.parse(match?.[1]);
       } catch {

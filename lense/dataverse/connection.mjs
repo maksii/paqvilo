@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isLoopbackOrigin } from './client.mjs';
+import { matchNamedLine } from '../../mirage/lib/text-scanning.mjs';
 
 const GUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 export function environmentOrigin(value, { allowLoopback = false } = {}) {
@@ -80,7 +81,8 @@ export async function protectSecret(value, decrypt = false) {
 }
 
 export function parseRegistrationOutput(output) {
-  if (/^\s*Error:/im.test(output)) throw new Error('PAC reported an error, even if its process exit code was zero.'); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  if (/^[^\S\r\n\u2028\u2029]*Error:/im.test(output))
+    throw new Error('PAC reported an error, even if its process exit code was zero.');
   const start = output.search(/Tenant\s*ID\s+Application\s*ID\s+Client\s*Secret/i);
   if (start < 0) throw new Error('PAC credential table was not recognized.');
   const row = output.slice(start).match(new RegExp(String.raw`^\s*(${GUID})\s+(${GUID})\s+(\S+)\s+(.+?)\s*$`, 'im'));
@@ -210,7 +212,7 @@ export async function registerApplication({
     role,
   ]);
   // Save encrypted recovery evidence before parsing or reporting anything.
-  const reportedError = /^\s*Error:/im.test(result.stdout + '\n' + result.stderr); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  const reportedError = /^[^\S\r\n\u2028\u2029]*Error:/im.test(result.stdout + '\n' + result.stderr);
   const partialApplicationId = result.stdout.match(new RegExp(String.raw`Application\s+['"]?(${GUID})`, 'i'))?.[1];
   await privateJson(pending, {
     schemaVersion: 1,
@@ -358,7 +360,7 @@ function credentialFieldsFromLines(text, normalize) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  const named = lines.map((line) => line.match(/^([a-zA-Z _-]+)\s*[:=]\s*(.*)$/)).filter(Boolean); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  const named = lines.map(matchNamedLine).filter(Boolean);
   if (named.length === lines.length)
     return Object.fromEntries(named.map((m) => [m[1], m[2].replace(/^["']|["']$/g, '')]));
   if (lines.length === 2 && normalize(lines[0].split(',')[0]) === 'clientid')

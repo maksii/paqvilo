@@ -10,6 +10,7 @@
 // mismatches raise the .NET exception that renders as "Liquid error: ...".
 import sanitize from 'sanitize-html';
 import { parseFragment, serializeOuter } from 'parse5';
+import { stripTrailingCharacter } from './text-scanning.mjs';
 import {
   LiquidError,
   NetDecimal,
@@ -524,7 +525,9 @@ function formatN(value, decimals) {
   const text = scaled.toFixedString();
   const negative = text.startsWith('-');
   const [whole, fraction] = text.replace('-', '').split('.');
-  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ','); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  const groups = [];
+  for (let end = whole.length; end > 0; end -= 3) groups.push(whole.slice(Math.max(0, end - 3), end));
+  const grouped = groups.reverse().join(',');
   const sign = negative ? '-' : '',
     suffix = fraction ? '.' + fraction : '';
   return sign + grouped + suffix;
@@ -558,7 +561,7 @@ function formatCustomNumber(decimal, format) {
   if (!format.includes(',')) text = text.replaceAll(',', '');
   if (optional) {
     const [whole, fraction = ''] = text.split('.');
-    const trimmed = fraction.slice(0, required) + fraction.slice(required).replace(/0+$/, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    const trimmed = fraction.slice(0, required) + stripTrailingCharacter(fraction.slice(required), '0');
     text = trimmed ? `${whole}.${trimmed}` : whole;
   }
   return text;
@@ -708,6 +711,62 @@ function sliceEnumerable(input, start, len) {
   return list.slice(skip, skip + Math.max(0, take));
 }
 
+// These preserve the platform's text transformation; they are not an HTML sanitizer.
+function stripHtmlBlocks(text) {
+  // ASCII folding preserves UTF-16 offsets (full Unicode lowercasing can expand a character).
+  const folded = text.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+  const blocks = [
+    { open: '<script', close: '</script>', end: -2 },
+    { open: '<!--', close: '-->', end: -2 },
+    { open: '<style', close: '</style>', end: -2 },
+  ];
+  const parts = [];
+  let cursor = 0;
+  let search = 0;
+  while (search < text.length) {
+    const start = folded.indexOf('<', search);
+    if (start < 0) break;
+    const block = blocks.find((item) => folded.startsWith(item.open, start));
+    search = start + 1;
+    if (!block || block.end === -1) continue;
+    if (block.end < start + block.open.length) block.end = folded.indexOf(block.close, start + block.open.length);
+    if (block.end < 0) continue;
+    parts.push(text.slice(cursor, start));
+    cursor = block.end + block.close.length;
+    search = cursor;
+  }
+  parts.push(text.slice(cursor));
+  return parts.join('');
+}
+
+function stripHtmlTags(text) {
+  const parts = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    const start = text.indexOf('<', cursor);
+    if (start < 0) break;
+    const end = text.indexOf('>', start + 1);
+    if (end < 0) break;
+    parts.push(text.slice(cursor, start));
+    cursor = end + 1;
+  }
+  parts.push(text.slice(cursor));
+  return parts.join('');
+}
+
+function* searchFilterValues(text) {
+  for (const segment of text.split(';')) {
+    let start = 0;
+    while (segment[start] === ':') start++;
+    const colon = segment.indexOf(':', start + 1);
+    if (colon < 0 || colon === segment.length - 1) continue;
+    const raw = segment.slice(colon + 1);
+    // The old greedy whitespace prefix backtracked one code unit for an all-whitespace value.
+    const value = raw.trimStart() || raw.slice(-1);
+    yield value.replaceAll(' ', '');
+  }
+}
+
 // ---- Filter catalogue
 /** `this` is the LiquidContext for every filter. */
 export function createFilters(host = {}) {
@@ -790,9 +849,7 @@ export function createFilters(host = {}) {
     strip_html: (input) => {
       const s = asString(input);
       if (isNullOrWhiteSpace(s)) return s;
-      return s
-        .replace(/<script[\s\S]*?<\/script>|<!--[\s\S]*?-->|<style[\s\S]*?<\/style>/gi, '')
-        .replace(/<[^>]*>/g, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+      return stripHtmlTags(stripHtmlBlocks(s));
     },
     strip: (input) => {
       const s = asString(input);
@@ -1341,7 +1398,7 @@ export function createFilters(host = {}) {
     },
     max_decimals(number, decimals) {
       let result = formatN(toNetDecimal(number), asInt(decimals));
-      if (result.includes('.')) result = result.replace(/0+$/, '').replace(/\.$/, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+      if (result.includes('.')) result = stripTrailingCharacter(result, '0').replace(/\.$/, '');
       return result;
     },
     invariant_culture_decimal_value(number, decimals) {
@@ -1429,8 +1486,7 @@ export function createFilters(host = {}) {
       const text = input == null ? '' : formatItem(input);
       if (!text) return null;
       const options = [];
-      /* NOSONAR */ for (const m of text.matchAll(/\s*([^:;]+?)\s*:\s*([^;]+)\s*/g)) {
-        const value = m[2].replaceAll(' ', '');
+      for (const value of searchFilterValues(text)) {
         options.push({
           display_name: host.localizeRecordType ? host.localizeRecordType(value.split(',')[0]) : value.split(',')[0],
           value,

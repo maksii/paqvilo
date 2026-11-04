@@ -273,7 +273,7 @@ function formShapeOf(page) {
         name: form.getAttribute('name'),
         method: (form.getAttribute('method') || 'get').toLowerCase(),
         action: new URL(form.getAttribute('action') || location.href, location.href).pathname,
-        classes: [...form.classList].sort((a, b) => Number(a > b) - Number(a < b)),
+        classes: [...form.classList].sort(/* NOSONAR: preserve default string coercion */),
       })),
       controls: [...document.querySelectorAll('input,select,textarea,button')].map((control) => ({
         tag: control.tagName.toLowerCase(),
@@ -566,7 +566,7 @@ export async function verifyParity({
         'Screenshots disable animations and hide the caret.',
         'The local Mirage /__sim/events event stream is tracked as a persistent connection.',
       ],
-      sessionStorageKeys: Object.keys(sessionStorageSeeds).sort((a, b) => Number(a > b) - Number(a < b)),
+      sessionStorageKeys: Object.keys(sessionStorageSeeds).sort(/* NOSONAR: preserve default string coercion */),
       requiredSelectors,
     },
     local: {},

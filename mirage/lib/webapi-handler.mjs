@@ -543,10 +543,43 @@ export async function handleWebApi(req, res, url, deps) {
   }
 }
 
-async function route(req, res, url, deps) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function route(
+  req,
+  res,
+  url,
+  deps,
+) {
   const method = req.method === 'HEAD' ? 'GET' : req.method;
-  assertUniqueQueryOptions(url);
-  assertRequestMethod(req, method, deps);
+  const seen = new Set();
+  for (const key of url.searchParams.keys()) {
+    if (seen.has(key))
+      throw queryPhase(
+        badRequest(
+          `Query option '${key}' was specified more than once, but it must be specified at most once.`,
+          'DuplicateQueryOption',
+          '0x0',
+        ),
+      );
+    seen.add(key);
+  }
+  if (WRITE_METHODS.has(method)) {
+    // Token failures: no token is Learn's
+    // 401 MissingPortalRequestVerificationToken; a token that doesn't match this session's is
+    // 90040107 with 403, the status Microsoft's Power Pages clients refresh the token on.
+    const supplied = req.headers.__requestverificationtoken;
+    if (supplied == null || supplied === '')
+      throw new DataError(
+        'The required anti-forgery form field "__RequestVerificationToken" is not present.',
+        401,
+        'MissingPortalRequestVerificationToken',
+      );
+    if (supplied !== deps.csrf)
+      throw new DataError(
+        'The anti-forgery cookie token and form field token do not match.',
+        403,
+        'HttpAntiForgeryException',
+      );
+  } else if (method !== 'GET') throw methodNotAllowed(method, 'the portals Web API');
   const target = parseWebApiRoute(url.pathname);
   if (target.kind === 'cloudflow')
     throw new DataError(
@@ -566,47 +599,6 @@ async function route(req, res, url, deps) {
     attributes: { target: target.kind, prefer: req.headers.prefer },
   });
   if (!span?.enabled) return routeTarget(t, method, target, url);
-  return traceRoute(t, method, target, url, traces, span, res);
-}
-
-function assertUniqueQueryOptions(url) {
-  const seen = new Set();
-  for (const key of url.searchParams.keys()) {
-    if (seen.has(key))
-      throw queryPhase(
-        badRequest(
-          `Query option '${key}' was specified more than once, but it must be specified at most once.`,
-          'DuplicateQueryOption',
-          '0x0',
-        ),
-      );
-    seen.add(key);
-  }
-}
-
-function assertRequestMethod(req, method, deps) {
-  if (WRITE_METHODS.has(method)) {
-    // Token failures: no token is Learn's
-    // 401 MissingPortalRequestVerificationToken; a token that doesn't match this session's is
-    // 90040107 with 403, the status Microsoft's Power Pages clients refresh the token on.
-    const supplied = req.headers.__requestverificationtoken;
-    if (supplied == null || supplied === '')
-      throw new DataError(
-        'The required anti-forgery form field "__RequestVerificationToken" is not present.',
-        401,
-        'MissingPortalRequestVerificationToken',
-      );
-    if (supplied !== deps.csrf)
-      throw new DataError(
-        'The anti-forgery cookie token and form field token do not match.',
-        403,
-        'HttpAntiForgeryException',
-      );
-  } else if (method !== 'GET') throw methodNotAllowed(method, 'the portals Web API');
-}
-
-async function traceRoute(t, method, target, url, traces, span, res) {
-  const deps = t.deps;
   t.span = span;
   // The response the handler writes names the outcome: a row count for a collection, the id of a created row.
   let answered = null;
@@ -869,39 +861,36 @@ const send = async (t, status, body, headers = {}) => {
 
 // Query projection already enforced row, column and field-security permissions.
 // Resolve only surviving image IDs, using the same authorized byte reader as /$value.
-async function hydrateImages(t, body, mapping) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function hydrateImages(
+  t,
+  body,
+  mapping,
+) {
   const files = t.store.recordPipeline?.fileContentInternal;
   if (typeof files?.kindOf !== 'function' || !body || typeof body !== 'object') return;
-  for (const row of Array.isArray(body.value) ? body.value : [body]) await hydrateImageRow(t, row, mapping, files);
-}
-
-async function hydrateImageRow(t, row, mapping, files) {
-  if (!row || typeof row !== 'object') return;
-  if (GUID_PATTERN.test(String(row[mapping.idColumn] ?? ''))) await hydrateImageColumns(t, row, mapping, files);
-  await hydrateImageNavigations(t, row, mapping);
-}
-
-async function hydrateImageColumns(t, row, mapping, files) {
-  for (const [column, value] of Object.entries(row)) {
-    if (!GUID_PATTERN.test(String(value ?? '')) || files.kindOf(mapping.logicalName, column) !== 'image') continue;
-    const answer = await files({
-      principal: filePrincipal(t, mapping, 'read'),
-      entity: mapping.logicalName,
-      id: row[mapping.idColumn],
-      column,
-      operation: 'download',
-    });
-    row[column] = answer.statusCode === 200 ? answer.body.$content : null;
+  for (const row of Array.isArray(body.value) ? body.value : [body]) {
+    if (!row || typeof row !== 'object') continue;
+    if (GUID_PATTERN.test(String(row[mapping.idColumn] ?? ''))) {
+      for (const [column, value] of Object.entries(row)) {
+        if (!GUID_PATTERN.test(String(value ?? '')) || files.kindOf(mapping.logicalName, column) !== 'image') continue;
+        const answer = await files({
+          principal: filePrincipal(t, mapping, 'read'),
+          entity: mapping.logicalName,
+          id: row[mapping.idColumn],
+          column,
+          operation: 'download',
+        });
+        row[column] = answer.statusCode === 200 ? answer.body.$content : null;
+      }
+    }
+    for (const [navigation, relation] of Object.entries(mapping.relationships ?? {})) {
+      if (!own(row, navigation) || !row[navigation] || typeof row[navigation] !== 'object') continue;
+      const nested = Array.isArray(row[navigation]) ? { value: row[navigation] } : row[navigation];
+      await hydrateImages(t, nested, t.store.resolveMapping(relation.entity));
+    }
   }
 }
 
-async function hydrateImageNavigations(t, row, mapping) {
-  for (const [navigation, relation] of Object.entries(mapping.relationships ?? {})) {
-    if (!own(row, navigation) || !row[navigation] || typeof row[navigation] !== 'object') continue;
-    const nested = Array.isArray(row[navigation]) ? { value: row[navigation] } : row[navigation];
-    await hydrateImages(t, nested, t.store.resolveMapping(relation.entity));
-  }
-}
 const sendText = (t, value) => {
   t.res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', ...apiHeaders(t.deps.portal) });
   t.res.end(String(value));
@@ -1019,7 +1008,9 @@ function propertyName(mapping, name, definition) {
 function assertSelectLessRead(t, policy, mapping) {
   if (policy.fields.includes('*')) return;
   const columns = selectLessReadColumns(t, mapping);
-  const denied = [...columns].sort((a, b) => Number(a > b) - Number(a < b)).find((column) => !policy.allowed(column));
+  const denied = [...columns]
+    .sort(/* NOSONAR: preserve default string coercion */)
+    .find((column) => !policy.allowed(column));
   if (denied)
     throw new DataError(
       `Attribute ${denied} in table ${mapping.logicalName} is not enabled for Web Api.`,

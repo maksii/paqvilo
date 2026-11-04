@@ -50,10 +50,21 @@
     }
     return result;
   };
+  function fragmentSelector(href) {
+    const hash = href.lastIndexOf('#', href.length - 2);
+    if (hash < 0 || hash >= href.length - 1) return href;
+    for (let i = hash + 1; i < href.length; i++) if (/\s/.test(href[i])) return href;
+    let start = hash;
+    while (start > 0 && !/[\r\n\u2028\u2029]/.test(href[start - 1])) start--;
+    return href.slice(0, start) + href.slice(hash);
+  }
   // A trigger's targets: data-target/data-bs-target, else the #fragment of href.
   const targetsOf = (trigger) => {
-    let selector = trigger.dataset.target || trigger.dataset.bsTarget;
-    if (!selector) selector = trigger.getAttribute('href')?.replace(/.*(?=#[^\s]+$)/, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    let selector = trigger.getAttribute('data-target') || trigger.getAttribute('data-bs-target'); // NOSONAR: actual attributes exclude inherited dataset values
+    if (!selector) {
+      const href = trigger.getAttribute('href');
+      selector = href == null ? undefined : fragmentSelector(href);
+    }
     if (!selector || selector === '#') return [];
     try {
       return [...document.querySelectorAll(selector)];
@@ -65,7 +76,7 @@
     [...(toggle.parentElement?.children ?? [])].find((element) => element.classList.contains('dropdown-menu'));
   const setShown = (element, shown) => {
     // Bootstrap 5 markup (data-bs-*) carries "show" only, no hidden attribute and no aria-hidden while shown.
-    const bs5 = 'bsBackdrop' in element.dataset || 'bsToggle' in element.dataset;
+    const bs5 = element.hasAttribute('data-bs-backdrop') || element.hasAttribute('data-bs-toggle'); // NOSONAR: actual attributes exclude inherited dataset values
     if (!bs5) element.hidden = !shown;
     element.classList.toggle('in', shown && !bs5);
     element.classList.toggle('show', shown);
@@ -185,7 +196,7 @@
         });
       if (event(element, 'show.bs.modal', { relatedTarget }).isDefaultPrevented() || state.shown) return;
       state.shown = true;
-      const bs5 = 'bsBackdrop' in element.dataset || 'bsToggle' in element.dataset;
+      const bs5 = element.hasAttribute('data-bs-backdrop') || element.hasAttribute('data-bs-toggle'); // NOSONAR: actual attributes exclude inherited dataset values
       // Bootstrap 5 hides the page scrollbar and pads the body by its width (overflow: hidden; padding-right: 15px).
       const scrollbar = window.innerWidth - document.documentElement.clientWidth;
       if (bs5 && !document.body.classList.contains('modal-open')) {
@@ -224,7 +235,7 @@
       element.style.display = 'none';
       element.removeAttribute('aria-modal');
       // Bootstrap 5 drops the dialog role it set on show.
-      if ('bsBackdrop' in element.dataset) element.removeAttribute('role');
+      if (element.hasAttribute('data-bs-backdrop')) element.removeAttribute('role'); // NOSONAR: actual attributes exclude inherited dataset values
       element.removeEventListener('click', state.click);
       element.removeEventListener('keydown', state.keydown);
       state.backdrop?.remove();
@@ -272,14 +283,15 @@
   // Bootstrap 3 opens the toggle's parent (.open) and signals on it; Bootstrap 5 (data-bs-toggle) shows the
   // toggle and its menu (.show) and signals on the toggle. Both fire show/shown/hide/hidden.bs.dropdown.
   const DROPDOWN_TOGGLES = '[data-toggle="dropdown"],[data-bs-toggle="dropdown"]';
-  const dropdownTarget = (toggle) => ('bsToggle' in toggle.dataset ? toggle : (toggle.parentElement ?? toggle));
+  const dropdownTarget = (toggle) =>
+    toggle.hasAttribute('data-bs-toggle') ? toggle : (toggle.parentElement ?? toggle); // NOSONAR: actual attributes exclude inherited dataset values
   const dropdownOpen = (toggle) =>
-    'bsToggle' in toggle.dataset
+    toggle.hasAttribute('data-bs-toggle') // NOSONAR: actual attributes exclude inherited dataset values
       ? toggle.classList.contains('show')
       : Boolean(toggle.parentElement?.classList.contains('open'));
   const dropdown = {
     show(element) {
-      const bs5 = 'bsToggle' in element.dataset,
+      const bs5 = element.hasAttribute('data-bs-toggle'), // NOSONAR: actual attributes exclude inherited dataset values
         target = dropdownTarget(element);
       if (dropdownOpen(element) || event(target, 'show.bs.dropdown', { relatedTarget: element }).isDefaultPrevented())
         return;
@@ -291,7 +303,7 @@
       event(target, 'shown.bs.dropdown', { relatedTarget: element });
     },
     hide(element) {
-      const bs5 = 'bsToggle' in element.dataset,
+      const bs5 = element.hasAttribute('data-bs-toggle'), // NOSONAR: actual attributes exclude inherited dataset values
         target = dropdownTarget(element);
       if (!dropdownOpen(element) || event(target, 'hide.bs.dropdown', { relatedTarget: element }).isDefaultPrevented())
         return;
@@ -328,7 +340,7 @@
   const TAB_TOGGLES =
     '[data-toggle="tab"],[data-toggle="pill"],[data-bs-toggle="tab"],[data-bs-toggle="pill"],[data-bs-toggle="list"]';
   const tabItem = (tab) =>
-    !('bsToggle' in tab.dataset) && tab.parentElement?.tagName === 'LI' ? tab.parentElement : tab;
+    !tab.hasAttribute('data-bs-toggle') && tab.parentElement?.tagName === 'LI' ? tab.parentElement : tab; // NOSONAR: actual attributes exclude inherited dataset values
   const tab = {
     show(element) {
       if (tabItem(element).classList.contains('active')) return;
@@ -344,7 +356,7 @@
         const active = candidate === element;
         tabItem(candidate).classList.toggle('active', active);
         candidate.setAttribute('aria-selected', String(active));
-        if (!('bsToggle' in candidate.dataset)) candidate.setAttribute('aria-expanded', String(active));
+        if (!candidate.hasAttribute('data-bs-toggle')) candidate.setAttribute('aria-expanded', String(active)); // NOSONAR: actual attributes exclude inherited dataset values
         const pane = targetsOf(candidate)[0];
         if (pane) {
           pane.classList.toggle('active', active);
@@ -575,7 +587,8 @@
     $(toggle).tab('show');
   }
   function handleCollapseCompatibilityClick(click, toggle) {
-    if (toggle.tagName === 'A' || !(toggle.dataset.target || toggle.dataset.bsTarget)) click.preventDefault();
+    if (toggle.tagName === 'A' || !(toggle.getAttribute('data-target') || toggle.getAttribute('data-bs-target')))
+      click.preventDefault(); // NOSONAR: actual attributes exclude inherited dataset values
     for (const element of targetsOf(toggle)) {
       if (!instance(element, 'collapse')) create(element, 'collapse', { options: { toggle: false } });
       collapse.toggle(element);
@@ -592,7 +605,7 @@
   function handleToggleCompatibilityClick(click, source, $) {
     const toggle = source.closest('[data-toggle],[data-bs-toggle]');
     if (!toggle) return;
-    const kind = toggle.dataset.toggle || toggle.dataset.bsToggle;
+    const kind = toggle.getAttribute('data-toggle') || toggle.getAttribute('data-bs-toggle'); // NOSONAR: actual attributes exclude inherited dataset values
     if (!local({ tab: 'tab', pill: 'tab', list: 'tab', collapse: 'collapse', modal: 'modal' }[kind])) return;
     if (['tab', 'pill', 'list'].includes(kind)) {
       handleTabCompatibilityClick(click, toggle, $);

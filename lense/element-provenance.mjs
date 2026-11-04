@@ -1,4 +1,5 @@
 import { Parser, defaultTreeAdapter } from 'parse5';
+import { replaceDelimitedAlternatives } from '../mirage/lib/text-scanning.mjs';
 
 // parse5's parseFragment moves each top-level node with detachNode(firstChild), which is quadratic in the number of
 // top-level nodes (80 000 take seconds). The fragment is taken from the parser's root in one step instead.
@@ -167,8 +168,14 @@ function markupAncestors(node, ids) {
   }
   const ancestors = [];
   for (let ancestor = node.parentNode; ancestor && ancestors.length < 6; ancestor = ancestor.parentNode) {
-    const classes = (ancestor.attrs?.find((attr) => attr.name === 'class')?.value ?? '')
-      .replace(/\{\{(?:[^}]|}(?!}))*\}\}|\{%(?:[^%]|%(?!}))*%\}/g, '{dynamic}') // NOSONAR: regex kept: a rewrite would change matches or captures; regex kept: linear on bounded input, a rewrite would change matches
+    const classes = replaceDelimitedAlternatives(
+      ancestor.attrs?.find((attr) => attr.name === 'class')?.value ?? '',
+      [
+        ['{{', '}}'],
+        ['{%', '%}'],
+      ],
+      '{dynamic}',
+    )
       .split(/\s+/)
       .filter(staticMarkupValue);
     if (classes.length) ancestors.push({ tag: ancestor.tagName, classes });
@@ -194,8 +201,14 @@ function markupHint(source, node, attrs, id, ids, prepared) {
   const opening = node.sourceCodeLocation?.startTag;
   if (opening && prepared.ranges.some(([start, end]) => start < opening.endOffset && end > opening.startOffset))
     return null;
-  const staticClasses = (attrs.class ?? '')
-    .replace(/\{\{(?:[^}]|}(?!}))*\}\}|\{%(?:[^%]|%(?!}))*%\}/g, '{dynamic}') // NOSONAR: regex kept: a rewrite would change matches or captures; regex kept: linear on bounded input, a rewrite would change matches
+  const staticClasses = replaceDelimitedAlternatives(
+    attrs.class ?? '',
+    [
+      ['{{', '}}'],
+      ['{%', '%}'],
+    ],
+    '{dynamic}',
+  )
     .split(/\s+/)
     .filter(staticMarkupValue);
   const matched = selectorForMarkupNode(node, attrs, id, staticClasses);

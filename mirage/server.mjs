@@ -1,3 +1,4 @@
+import { trailingParenthesized } from './lib/trailing-parenthesized.mjs';
 import {
   dataverseEnvironmentValue,
   liveDataverseSettings as composeLiveDataverseSettings,
@@ -1800,8 +1801,7 @@ export async function createSimulator(options = {}) {
         throw error('Live form data write did not return JSON.', 502, 'LIVE_BRIDGE');
       }
     }
-    const recordId =
-      id ?? response.headers.entityid ?? /\(([^)]+)\)$/.exec(response.headers['odata-entityid'] ?? '')?.[1]; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    const recordId = id ?? response.headers.entityid ?? trailingParenthesized(response.headers['odata-entityid'] ?? '');
     if (!recordId) throw error('Live form write succeeded without returning a record identifier.', 502, 'LIVE_BRIDGE');
     return { [mapping.idColumn]: recordId };
   };

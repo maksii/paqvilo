@@ -951,10 +951,8 @@ function installRetentionMessages(api) {
       const logical = childNodes(parsed, 'entity')[0]?.attrs.name;
       if (!logical) throw invalid('FetchXml requires an entity.');
       authorize(api, c, logical, 'read');
-      const xml = String(input.FetchXml).replace(
-        /<fetch\b[^>]*>/i,
-        (opening) =>
-          opening.replace(/\s+datasource\s*=\s*(?:"[^"]*"|'[^']*')/i, '').replace(/>$/, ' datasource="retained">'), // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+      const xml = String(input.FetchXml).replace(/<fetch\b[^>]*>/i, (opening) =>
+        opening.replace(/(?<!\s)\s+datasource\s*=\s*(?:"[^"]*"|'[^']*')/i, '').replace(/>$/, ' datasource="retained">'),
       );
       // Column security as on every FetchXML read: a masked operand answers 0x80041155 and the workbook carries what the caller
       // receives (hidden columns null through datasourceRows, masked columns masked).
@@ -1028,7 +1026,7 @@ export function install(api) {
           Object.entries(store.state.mappings)
             .filter(([name, mapping]) => eligible({ logicalName: name, ...mapping }))
             .map(([name]) => name)
-            .sort((a, b) => Number(a > b) - Number(a < b)),
+            .sort(/* NOSONAR: preserve default string coercion */),
         ),
       }),
   });

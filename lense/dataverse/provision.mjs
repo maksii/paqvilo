@@ -68,7 +68,8 @@ function normalizeExpectedArray(actual, expected, key) {
           ),
         )
       : actual;
-  if (key === 'KeyAttributes') return [...actual].sort((a, b) => Number(a > b) - Number(a < b));
+  // Preserve Array#sort's string coercion for metadata returned by the service.
+  if (key === 'KeyAttributes') return [...actual].sort(); // NOSONAR: default string coercion is intentional
   return actual;
 }
 
@@ -678,7 +679,11 @@ export async function exportSolution({ client, solutionName, zipFile, unpackFold
       '--packagetype',
       'Unmanaged',
     ]);
-    /* NOSONAR */ if (result.code !== 0 || result.timedOut || /^\s*Error:/im.test(result.stdout + '\n' + result.stderr))
+    /* NOSONAR */ if (
+      result.code !== 0 ||
+      result.timedOut ||
+      /^[^\S\r\n\u2028\u2029]*Error:/im.test(result.stdout + '\n' + result.stderr)
+    )
       throw new Error('PAC unpack failed; exported ZIP preserved. PAC output withheld.');
   }
   return {

@@ -1,8 +1,9 @@
+// @test-kind tooling: invented-schema harness generation, plan execution and evidence bookkeeping contracts.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
-import { compilePlans, caseTemplate, dispatcher } from './compile.mjs';
+import { compilePlans, caseTemplate, dispatcher, hasSelfClosingTag } from './compile.mjs';
 import {
   authoredQuery,
   canonicalRows,
@@ -239,13 +240,14 @@ test('P10 saves reconciled packets before cleanup and marks failed reconciliatio
   }
 });
 
+// @test-kind contract: generated typed plans retain their explicit-tag and oracle-isolation guarantees.
 test('all36 cases plus inner/outer variant share typed plans without administrator oracle leakage', () => {
   assert.equal(manifest.cases.length, 37);
   assert.equal(new Set(manifest.cases.map((c) => c.id.slice(0, 3))).size, 36);
   for (const c of manifest.cases) {
     assert.ok(!c.expected);
     assert.ok(!c.fetchXml.includes('{{ref:'));
-    assert.ok(!/<[^>]*\/>/.test(c.fetchXml)); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    assert.ok(!hasSelfClosingTag(c.fetchXml));
     assert.match(c.fetchXml, /<filter type="or"><condition attribute="[^"]+" operator="null">/);
     assert.equal((c.fetchXml.match(/\{\{markerUtc\}\}/g) || []).length, 1);
     assert.equal((c.fetchXml.match(/\{\{markerOperation\}\}/g) || []).length, 1);

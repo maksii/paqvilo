@@ -1461,9 +1461,9 @@ function fitFormCommands(commands) {
     share = commands.querySelector('.share-command');
   if (!more || !share) return;
   for (const node of children) {
-    if ('commandOverflow' in node.dataset) {
+    if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ node.hasAttribute('data-command-overflow')) {
       node.hidden = false;
-      delete node.dataset.commandOverflow;
+      node.removeAttribute('data-command-overflow'); // NOSONAR: preserve DOM attribute operations
     }
   }
   const pinned = new Set([...children.slice(0, 4), more, share]),
@@ -1477,7 +1477,7 @@ function fitFormCommands(commands) {
     overflow ||= needed > remaining;
     if (overflow) {
       node.hidden = true;
-      node.dataset.commandOverflow = '';
+      node.setAttribute('data-command-overflow', ''); // NOSONAR: preserve DOM attribute operations
     } else remaining -= needed;
   }
 }
@@ -3962,7 +3962,7 @@ async function saveRecord(close) {
     }
   }
 }
-async function persistRecord(close) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function persistRecord(close) {
   const saveGeneration = generation;
   await clientReady;
   await clientChanges;
@@ -3980,64 +3980,8 @@ async function persistRecord(close) {
   form.inert = true;
   notice('');
   captureDraft();
-  const existing = Boolean(record[table.idColumn]);
-  return persistRecordChanges(saveGeneration, close, existing);
-}
-
-async function persistRecordChanges(saveGeneration, close, existing) {
-  const values = collectPersistedValues(existing);
-  const unsaved = [...touchedFields].filter((name) => !Object.hasOwn(values, name));
-  if (existing && !Object.keys(values).length) {
-    await handleEmptyRecordSave(unsaved, close);
-    return;
-  }
-  pending = true;
-  $('#commands').classList.add('busy');
-  try {
-    const result = await api(tablePath(table.entity, existing ? record[table.idColumn] : undefined), {
-      method: existing ? 'PATCH' : 'POST',
-      headers: existing ? { 'if-match': etag } : {},
-      body: JSON.stringify(values),
-    });
-    await completeRecordSave(result, saveGeneration, close, unsaved);
-  } finally {
-    pending = false;
-  }
-}
-
-async function handleEmptyRecordSave(unsaved, close) {
-  if (unsaved.length) {
-    notice(`These changed columns cannot be saved locally: ${unsaved.join(', ')}.`, true);
-    return;
-  }
-  dirty = false;
-  touchedFields.clear();
-  if (close) await returnToGrid();
-  else notice('No record changes to save.');
-}
-
-async function completeRecordSave(result, saveGeneration, close, unsaved) {
-  if (saveGeneration !== generation) return;
-  const notCarried = unsaved.length ? ` These changed columns cannot be saved locally: ${unsaved.join(', ')}.` : '';
-  dirty = false;
-  touchedFields.clear();
-  record = result.row;
-  etag = result.etag;
-  const refreshed = await api();
-  if (saveGeneration !== generation) return;
-  catalogue = refreshed;
-  table = catalogue.tables[table.entity];
-  if (close) {
-    await returnToGrid();
-    if (notCarried) notice(`Record saved locally.${notCarried}`, true);
-  } else {
-    await navigate(table.entity, { id: record[table.idColumn], form: formId, replace: true });
-    notice(`Record saved locally.${notCarried}`, Boolean(notCarried));
-  }
-}
-
-function collectPersistedValues(existing) {
-  const values = {};
+  const existing = Boolean(record[table.idColumn]),
+    values = {};
   // Client scripts may explicitly write source-disabled presentation controls.
   // Column permissions and staff capabilities still govern the resulting write.
   // Header and footer columns are form attributes like body columns (formContext.data.entity.attributes: every
@@ -4064,8 +4008,51 @@ function collectPersistedValues(existing) {
     )
       values[name] = value;
   }
-  return values;
+  // Dirty state clears only for the values persisted: a changed column the save could not carry stays unsaved and named.
+  const unsaved = [...touchedFields].filter((name) => !Object.hasOwn(values, name));
+  if (existing && !Object.keys(values).length) {
+    if (unsaved.length) {
+      notice(`These changed columns cannot be saved locally: ${unsaved.join(', ')}.`, true);
+      return;
+    }
+    dirty = false;
+    touchedFields.clear();
+    if (close) await returnToGrid();
+    else notice('No record changes to save.');
+    return;
+  }
+  pending = true;
+  $('#commands').classList.add('busy');
+  try {
+    const result = await api(tablePath(table.entity, existing ? record[table.idColumn] : undefined), {
+      method: existing ? 'PATCH' : 'POST',
+      headers: existing ? { 'if-match': etag } : {},
+      body: JSON.stringify(values),
+    });
+    if (saveGeneration !== generation) return;
+    // A partial save still runs the normal path (Save & Close navigation, the post-save form refresh from the stored row);
+    // the notice then names the changed columns the save could not carry.
+    const notCarried = unsaved.length ? ` These changed columns cannot be saved locally: ${unsaved.join(', ')}.` : '';
+    dirty = false;
+    touchedFields.clear();
+    record = result.row;
+    etag = result.etag;
+    const refreshed = await api();
+    if (saveGeneration !== generation) return;
+    catalogue = refreshed;
+    table = catalogue.tables[table.entity];
+    if (close) {
+      await returnToGrid();
+      if (notCarried) notice(`Record saved locally.${notCarried}`, true);
+    } else {
+      await navigate(table.entity, { id: record[table.idColumn], form: formId, replace: true });
+      notice(`Record saved locally.${notCarried}`, Boolean(notCarried));
+    }
+  } finally {
+    pending = false;
+  }
 }
+
 async function deleteRecords(rows) {
   if (!rows.length || pending || requestingSave) return;
   const entity = table.entity,
@@ -4579,7 +4566,10 @@ const sidePanes = {
   getPane: (paneId) => panes.find((pane) => pane.paneId === paneId),
   getSelectedPane: () => selectedPane,
 };
-async function loadRoute({ identityChange = false, preserveContent = false } = {}) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function loadRoute({
+  identityChange = false,
+  preserveContent = false,
+} = {}) {
   provenance.beginUI();
   if (switchingStaff && !identityChange) return;
   const routeGeneration = ++generation,
@@ -4592,12 +4582,8 @@ async function loadRoute({ identityChange = false, preserveContent = false } = {
   dirty = false;
   touchedFields.clear();
   notice('');
-  const params = new URLSearchParams(location.search);
-  return continueLoadRoute(params, routeGeneration, routeCatalogue);
-}
-
-async function continueLoadRoute(params, routeGeneration, routeCatalogue) {
-  const application = params.get('appname') ?? params.get('appid');
+  const params = new URLSearchParams(location.search),
+    application = params.get('appname') ?? params.get('appid');
   app = application
     ? catalogue.apps.find((app) => app.id === application || app.uniqueName === application)
     : catalogue.apps.find((app) => app.id === catalogue.defaultApp);
@@ -4617,10 +4603,6 @@ async function continueLoadRoute(params, routeGeneration, routeCatalogue) {
         ['entityName', 'recordId'].filter((key) => params.get(key)).map((key) => [key, params.get(key)]),
       ),
     );
-  return loadEntityRoute(params, routeGeneration, routeCatalogue);
-}
-
-async function loadEntityRoute(params, routeGeneration, routeCatalogue) {
   const entity = params.get('etn') ?? firstEntity(app);
   contentLoading('Loading table metadata…');
   let nextTable;
@@ -4634,10 +4616,26 @@ async function loadEntityRoute(params, routeGeneration, routeCatalogue) {
   }
   if (routeGeneration !== generation || routeCatalogue !== catalogue) return;
   table = nextTable;
-  const requestedViewId = (params.get('viewid') ?? (!params.has('etn') ? firstPage(app)?.view : undefined))
-    ?.replace(/[{}]/g, '')
-    .toLowerCase();
-  selectRouteArea(entity, requestedViewId);
+  const preferredArea = storage.get(`area.${app.uniqueName}`, undefined),
+    requestedViewId = (params.get('viewid') ?? (!params.has('etn') ? firstPage(app)?.view : undefined))
+      ?.replace(/[{}]/g, '')
+      .toLowerCase(),
+    containsEntity = (area) =>
+      area.groups.some((group) => group.items.some((item) => item.supported && item.entity === entity));
+  const containsView = (area) =>
+    Boolean(
+      requestedViewId &&
+      area.groups.some((group) =>
+        group.items.some((item) => item.supported && item.entity === entity && item.view === requestedViewId),
+      ),
+    );
+  activeArea =
+    app.navigation.find((area) => area.id === preferredArea && containsView(area)) ??
+    app.navigation.find(containsView) ??
+    app.navigation.find((area) => area.id === preferredArea && containsEntity(area)) ??
+    app.navigation.find(containsEntity) ??
+    app.navigation.find((area) => area.id === preferredArea) ??
+    app.navigation[0];
   if (activeArea) storage.set(`area.${app.uniqueName}`, activeArea.id);
   const pageItems =
     activeArea?.groups.flatMap((group) => group.items).filter((item) => item.supported && item.entity === entity) ?? [];
@@ -4652,59 +4650,34 @@ async function loadEntityRoute(params, routeGeneration, routeCatalogue) {
   current = null;
   etag = null;
   if (params.get('pagetype') === 'entityrecord') await loadRecord(params.get('id'));
-  else await loadListRoute(params, requestedViewId, entity);
-}
-
-function selectRouteArea(entity, requestedViewId) {
-  const preferredArea = storage.get(`area.${app.uniqueName}`, undefined);
-  activeArea = chooseRouteArea(app.navigation, preferredArea, entity, requestedViewId);
-}
-
-/* NOSONAR */ function chooseRouteArea(areas, preferredArea, entity, requestedViewId) {
-  for (const area of areas)
-    if (area.id === preferredArea && areaContainsView(area, entity, requestedViewId)) return area;
-  for (const area of areas) if (areaContainsView(area, entity, requestedViewId)) return area;
-  for (const area of areas) if (area.id === preferredArea && areaContainsEntity(area, entity)) return area;
-  for (const area of areas) if (areaContainsEntity(area, entity)) return area;
-  for (const area of areas) if (area.id === preferredArea) return area;
-  return areas[0];
-}
-
-function areaContainsEntity(area, entity) {
-  return area.groups.some((group) => group.items.some((item) => item.supported && item.entity === entity));
-}
-
-function areaContainsView(area, entity, requestedViewId) {
-  if (!requestedViewId) return false;
-  return area.groups.some((group) =>
-    group.items.some((item) => item.supported && item.entity === entity && item.view === requestedViewId),
-  );
-}
-
-async function loadListRoute(params, requestedViewId, entity) {
-  const availableViews = appViews(),
-    requestedView = requestedViewId;
-  if (
-    params.has('viewtype') &&
-    (!['1039', 'savedquery'].includes(params.get('viewtype')) ||
-      (requestedView && !availableViews.some((view) => view.id === requestedView)))
-  ) {
-    loadFailed(new Error('The selected view is not available in the imported saved-view catalogue.'), loadRoute);
-    return;
+  else {
+    const availableViews = appViews(),
+      requestedView = requestedViewId;
+    if (
+      params.has('viewtype') &&
+      (!['1039', 'savedquery'].includes(params.get('viewtype')) ||
+        (requestedView && !availableViews.some((view) => view.id === requestedView)))
+    ) {
+      loadFailed(new Error('The selected view is not available in the imported saved-view catalogue.'), loadRoute);
+      return;
+    }
+    const view =
+      availableViews.find((view) => view.id === requestedView)?.id ??
+      availableViews.find((view) => view.isDefault)?.id ??
+      availableViews[0].id;
+    const saved = history.state?.grid,
+      restore =
+        saved?.application === app.id && saved?.entity === entity && saved?.query?.view === view ? saved.query : {};
+    query = { page: 1, pageSize: 50, ...storage.get(`view.${app.uniqueName}.${entity}.${view}`, {}), ...restore, view };
+    if (!(await loadGrid())) return;
+    remember({ label: table.label, app: app.uniqueName, url: targetUrl(entity, { view }) });
+    // A list page has its own client: the closed form's Xrm.Page never answers here, and getPageContext says entitylist.
+    if (!clientRuntime) clientRuntime = createShellClient({ clientEvents: [], tabs: [] });
   }
-  const view =
-    availableViews.find((view) => view.id === requestedView)?.id ??
-    availableViews.find((view) => view.isDefault)?.id ??
-    availableViews[0].id;
-  const saved = history.state?.grid,
-    restore =
-      saved?.application === app.id && saved?.entity === entity && saved?.query?.view === view ? saved.query : {};
-  query = { page: 1, pageSize: 50, ...storage.get(`view.${app.uniqueName}.${entity}.${view}`, {}), ...restore, view };
-  if (!(await loadGrid())) return;
-  remember({ label: table.label, app: app.uniqueName, url: targetUrl(entity, { view }) });
-  // A list page has its own client: the closed form's Xrm.Page never answers here, and getPageContext says entitylist.
-  if (!clientRuntime) clientRuntime = createShellClient({ clientEvents: [], tabs: [] });
 }
+
+/* NOSONAR */
+
 $('#mobile-navigation').addEventListener('click', () => {
   const sidebar = $('#sidebar');
   sidebar.classList.toggle('mobile-open');

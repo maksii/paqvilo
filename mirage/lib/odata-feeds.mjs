@@ -1,6 +1,7 @@
 import { portalField } from './importer.mjs';
 import { contextualViewFetchXml } from './platform.mjs';
 import { parseFetchTree, serializeFetchTree } from './native-services.mjs';
+import { stripTrailingCharacter } from './text-scanning.mjs';
 
 /*
  * Entity list OData feeds: lists with adx_odata_enabled publish their OData view
@@ -494,7 +495,7 @@ export async function handleODataFeed(req, res, url, context) {
   const format = url.searchParams.get('$format');
   if (unsupportedFormat(format, accept))
     return fail(new ODataError('Only the OData JSON format is available locally ($format=json).', 406));
-  const rest = (match[1] ?? '').replace(/\/+$/, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  const rest = stripTrailingCharacter(match[1] ?? '', '/');
   try {
     if (!rest)
       return send(200, {

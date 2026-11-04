@@ -224,7 +224,8 @@ export function batchResponses(body, boundary) {
       result.push(...batchResponses(rest, nested));
       continue;
     }
-    const match = /^HTTP\/1\.1 (\d{3})([^\r\n]*)(?:\r?\n([\s\S]*?))?(?:\r?\n\r?\n([\s\S]*))?$/.exec(rest); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    // NOSONAR: anchored header scan is linear; its final body alternative accepts every remaining character, so no suffix can force repeated delimiter rescans.
+    const match = /^HTTP\/1\.1 (\d{3})([^\r\n]*)(?:\r?\n([\s\S]*?))?(?:\r?\n\r?\n([\s\S]*))?$/.exec(rest);
     if (match)
       result.push({
         status: Number(match[1]),

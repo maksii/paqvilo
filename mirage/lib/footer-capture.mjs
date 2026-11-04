@@ -98,27 +98,39 @@ function cssSafe(value) {
   if (/[\\]|@|expression\s*\(|javascript\s*:|\/\*/i.test(value)) return false;
   return [...value.matchAll(/url\s*\(([^)]*)\)/gi)].every((match) => /^\s*["']?#[\w.-]+["']?\s*$/.test(match[1]));
 }
-function topLevelCssOffset(clean, offset) {
-  let depth = 0,
-    quote;
-  for (let index = 0; index < offset; index++) {
-    const character = clean[index];
-    if (quote) {
-      if (character === '\\') index++;
-      else if (character === quote) quote = undefined;
-    } else if (character === '"' || character === "'") quote = character;
-    else if (character === '{') depth++;
-    else if (character === '}') depth--;
+function withoutCssComments(value) {
+  let from = 0;
+  const pieces = [];
+  for (;;) {
+    const opening = value.indexOf('/*', from);
+    if (opening < 0) break;
+    const closing = value.indexOf('*/', opening + 2);
+    if (closing < 0) break;
+    pieces.push(value.slice(from, opening));
+    from = closing + 2;
   }
-  return depth === 0;
+  pieces.push(value.slice(from));
+  return pieces.join('');
 }
 
 function hasIntrinsicSvgWidth(rules, clean) {
-  return rules.some(
-    (rule) =>
-      topLevelCssOffset(clean, rule.index + (rule[0].startsWith('}') ? 1 : 0)) &&
-      /(?:^|;)\s*width\s*:\s*auto\s*(?:;|$)/i.test(rule[1]),
-  );
+  let index = 0,
+    depth = 0,
+    quote;
+  for (const rule of rules) {
+    const offset = rule.index + (rule[0].startsWith('}') ? 1 : 0);
+    while (index < offset) {
+      const character = clean[index++];
+      if (quote) {
+        if (character === '\\') index++;
+        else if (character === quote) quote = undefined;
+      } else if (character === '"' || character === "'") quote = character;
+      else if (character === '{') depth++;
+      else if (character === '}') depth--;
+    }
+    if (depth === 0 && /(?:^|;)\s*width\s*:\s*auto\s*(?:;|$)/i.test(rule[1])) return true;
+  }
+  return false;
 }
 
 function applyFooterLayout(markup, layout, styleSources) {
@@ -219,7 +231,7 @@ export function observedFooterLayout({ path, sourceCss, observedCss }) {
     throw fail('Footer layout requires a mapped stylesheet and its source.');
   const classNames = footerLogoClasses();
   if (!classNames.length) throw fail('No data pack declares a footer logo container class.');
-  const clean = observedCss.replace(/\/\*[\s\S]*?\*\//g, '');
+  const clean = withoutCssComments(observedCss);
   const escapedClasses = classNames.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)).join('|');
   const rules = [
     ...clean.matchAll(new RegExp(String.raw`(?:^|})\s*\.(?:${escapedClasses})\s+svg\s*\{([^{}]*)\}`, 'g')),

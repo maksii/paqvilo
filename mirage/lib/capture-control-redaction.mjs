@@ -183,10 +183,37 @@ export function redactSecureConfigurationTokens(text) {
     .replace(
       /(\b(?:base64SecureConfiguration|x-ms-form-session-id|AttachFile_HiddenField_InstanceId)\s*:\s*\\{0,2}["'])(?:[a-z0-9+/_=%.-]|\\(?:[/\\]|u[0-9a-f]{4}))+/gi,
       '$1{token}',
-    )
-    .replace(/(^|[?&])([^=&\s]+)=([^&\s]*)/g, (match, separator, name) /* NOSONAR */ =>
-      isProtectedField(name) ? separator + name + '={token}' : match,);
-  return redactHtmlControlInputs(redactMultipartControlFields(redacted));
+    );
+  return redactHtmlControlInputs(redactMultipartControlFields(redactQueryControlFields(redacted)));
+}
+function redactQueryControlFields(text) {
+  let candidate = 0,
+    nameStart = 0,
+    copied = 0,
+    result = '';
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (char === '&' || (char === '?' && candidate < 0)) {
+      candidate = index;
+      nameStart = index + 1;
+    } else if (/\s/.test(char)) candidate = -1;
+    else if (char === '=') {
+      if (candidate < 0 || nameStart === index) {
+        candidate = -1;
+        continue;
+      }
+      const name = text.slice(nameStart, index);
+      let end = index + 1;
+      while (end < text.length && text[end] !== '&' && !/\s/.test(text[end])) end++;
+      if (isProtectedField(name)) {
+        result += text.slice(copied, index + 1) + '{token}';
+        copied = end;
+      }
+      index = end - 1;
+      candidate = -1;
+    }
+  }
+  return result + text.slice(copied);
 }
 function redactCapabilityEvidenceBase(value) {
   if (typeof value === 'string') return redactSecureConfigurationTokens(value);

@@ -2,6 +2,13 @@ import { createHash } from 'node:crypto';
 import { stable, escapeXml } from './core.mjs';
 
 export const snapshotHash = (value) => createHash('sha256').update(stable(value)).digest('hex');
+function hasPrincipalIdField(field) {
+  const suffix = /principalid_value$/.exec(field);
+  if (!suffix) return false;
+  const before = field.slice(0, suffix.index);
+  const underscore = before.lastIndexOf('_');
+  return underscore >= 0 && !/[\r\n\u2028\u2029]/.test(before.slice(underscore));
+}
 const omitVolatile = (row) =>
   Object.fromEntries(
     Object.entries(row)
@@ -92,10 +99,7 @@ function validateInactiveProjectionSources(keys, records, catalogue, resolvedIds
     const actual =
       table &&
       tables[table.name]?.find((row) => identity(row[table.primaryId]) === identity(resolvedIds[key] ?? record.id));
-    if (
-      !actual ||
-      Object.entries(actual).some(([field, value]) => /_.*principalid_value$/.test(field) && value !== null) // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-    )
+    if (!actual || Object.entries(actual).some(([field, value]) => hasPrincipalIdField(field) && value !== null))
       errors.push({ kind: 'inactive-projection-source-not-cleared', key });
   }
 }

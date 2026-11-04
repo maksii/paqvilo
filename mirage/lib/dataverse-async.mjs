@@ -798,26 +798,6 @@ export async function install(
     }
   }
 
-  async function queueNextBulkDelete(submission, done, owned) {
-    if (!owned || done?.statecode !== STATE.Completed || done.statuscode === STATUS.Canceled || !done.recurrencepattern)
-      return null;
-    const rule = parseRecurrence(done.recurrencepattern);
-    // Stepped from this occurrence's own start, so the cadence does not drift. Occurrences a late or resumed job has
-    // already passed are skipped; native handling of them is not known.
-    let next = Date.parse(nextOccurrence(Date.parse(done.recurrencestarttime ?? stamp()), rule));
-    while (next <= api.clock()) next = Date.parse(nextOccurrence(next, rule));
-    const at = new Date(next).toISOString();
-    return enqueue(submission, {
-      name: done.name,
-      postponeuntil: at,
-      recurrencepattern: done.recurrencepattern,
-      recurrencestarttime: at,
-      staged: false,
-    });
-  }
-
-  // One bulk delete run under its job span: the ids are collected (one read span per FetchXML page), then deleted under one
-  // `bulk` span (its per-row deletes open no spans; one `rows` event counts them), and the job ends with the row's outcome.
   /* NOSONAR */ async function runBulkDelete(jobId, submission, tables, span) {
     const token = {};
     const requestId = uuid();
@@ -922,8 +902,21 @@ export async function install(
     // The job span ends with the row's outcome: Canceled is cancelled, Suspended (paused) ok with its status.
     finishBulkDeleteSpan(span, done);
     // A recurring job queues its next occurrence once this one has completed (a cancelled or paused one does not recur).
-    const next = queueNextBulkDelete(submission, done, owned);
-    if (next) await next; // NOSONAR: optional pending promise, awaited only when set
+    if (owned && done?.statecode === STATE.Completed && done.statuscode !== STATUS.Canceled && done.recurrencepattern) {
+      const rule = parseRecurrence(done.recurrencepattern);
+      // Stepped from this occurrence's own start, so the cadence does not drift. Occurrences a late or resumed job has
+      // already passed are skipped; native handling of them is not known.
+      let next = Date.parse(nextOccurrence(Date.parse(done.recurrencestarttime ?? stamp()), rule));
+      while (next <= api.clock()) next = Date.parse(nextOccurrence(next, rule));
+      const at = new Date(next).toISOString();
+      await enqueue(submission, {
+        name: done.name,
+        postponeuntil: at,
+        recurrencepattern: done.recurrencepattern,
+        recurrencestarttime: at,
+        staged: false,
+      });
+    }
   }
 
   api.registry.register({

@@ -170,7 +170,7 @@
   // keeps native matching: the platform jQuery's selector engine does not use the method
   // (support.getElementsByClassName is false).
   /* NOSONAR: intentional compatibility override */ String.prototype.trim = function () {
-    return this.replace(/^\s+|\s+$/g, ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    return this.replace(/^\s+|(?<!\s)\s+$/g, '');
   };
   document.getElementsByClassName = function (name) {
     const pattern = new RegExp(String.raw`\b${name}\b`);
@@ -512,7 +512,7 @@
 
   function applyRequiredControls() {
     for (const span of document.querySelectorAll('.entity-form span[data-required]')) {
-      const required = span.dataset.required === 'true';
+      const required = span.getAttribute('data-required') === 'true'; // NOSONAR: actual attributes exclude inherited dataset values
       for (const control of span.querySelectorAll('input,select,textarea')) control.required = required;
     }
   }

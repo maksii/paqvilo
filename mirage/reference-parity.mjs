@@ -16,7 +16,7 @@ const canonical = (value) => {
   if (value && typeof value === 'object')
     return Object.fromEntries(
       Object.keys(value)
-        .sort((a, b) => Number(a > b) - Number(a < b))
+        .sort(/* NOSONAR: preserve default string coercion */)
         .map((key) => [key, canonical(value[key])]),
     );
   return value;

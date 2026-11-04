@@ -80,8 +80,8 @@ function sameIdentity(row, expectedIdentity) {
   return (
     expectedIdentity &&
     row?.contactId === (expectedIdentity.contactId ?? expectedIdentity.id ?? null) &&
-    JSON.stringify([...(row.roles ?? [])].sort((a, b) => Number(a > b) - Number(a < b))) ===
-      JSON.stringify([...(expectedIdentity.roles ?? [])].sort((a, b) => Number(a > b) - Number(a < b)))
+    JSON.stringify([...(row.roles ?? [])].sort()) === // NOSONAR: preserve default string coercion in identity comparison
+      JSON.stringify([...(expectedIdentity.roles ?? [])].sort()) // NOSONAR: preserve default string coercion in identity comparison
   );
 }
 

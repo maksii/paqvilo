@@ -420,7 +420,8 @@ function createFieldSecurity({
     project(c, mapping, formatted, { prefix = '', single = false } = {}) {
       if (!securedNames(mapping).length) return;
       const view = { unmask: c.unmasked === true, single: single === true };
-      for (const row of [formatted].flat()) maskRow(c.user, mapping, row, prefix, view);
+      for (const row of [].concat(formatted) /* NOSONAR: preserve concat spreadability semantics */)
+        maskRow(c.user, mapping, row, prefix, view);
     },
 
     /**

@@ -1,3 +1,4 @@
+import { csdlAttributes } from './lib/csdl-attributes.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -223,7 +224,7 @@ export function sealResponse(input) {
   return {
     status: input.status,
     headers,
-    withheldHeaders: [...new Set(withheldHeaders)].sort((a, b) => Number(a > b) - Number(a < b)),
+    withheldHeaders: [...new Set(withheldHeaders)].sort(/* NOSONAR: preserve default string coercion */),
     bodyBase64: input.bodyBase64,
     bodySha256: sha256(bytes),
     bytes: bytes.length,
@@ -756,23 +757,15 @@ function compareObservedResponses(id, ref, act, emit) {
   );
 }
 
+// Complete start tags must end no later than the last closing angle bracket.
+function throughLastTagClose(text) {
+  return text.slice(0, text.lastIndexOf('>') + 1);
+}
+
 // Cataloguing is intentionally separate from execution. Metadata describes many
 // administrative actions; discovering an action does not authorize invoking it.
 export function inspectCsdl(xml) {
-  const unescape = (text) =>
-    text
-      .replaceAll('&quot;', '"')
-      .replaceAll('&apos;', "'")
-      .replaceAll('&lt;', '<')
-      .replaceAll('&gt;', '>')
-      .replaceAll('&amp;', '&');
-  const attrs = (text) =>
-    Object.fromEntries(
-      [...text.matchAll(/([\w:.]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)].map((match) => /* NOSONAR */ [
-        match[1],
-        unescape(match[2] ?? match[3]),
-      ]),
-    );
+  const attrs = csdlAttributes;
   if (typeof xml !== 'string' || !/<(?:\w+:)?Edmx[\s>]/.test(xml))
     throw new Error('Expected an Edmx metadata document');
   const operations = [],
@@ -785,7 +778,9 @@ export function inspectCsdl(xml) {
     )) {
       const content = match[3] ?? '';
       const meta = attrs(match[2]),
-        parameters = [...content.matchAll(/<(?:\w+:)?Parameter\b([^>]*)\/?\s*>/g)].map((item) => attrs(item[1])); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+        parameters = [...throughLastTagClose(content).matchAll(/<(?:\w+:)?Parameter\b([^>]*)\/?\s*>/g)].map((item) =>
+          attrs(item[1]),
+        ); // NOSONAR: the input ends at its last >, and each match consumes one
       const signature = `${namespace}.${meta.Name}(${parameters.map((item) => item.Name + ':' + item.Type).join(',')})`;
       operations.push({
         id: 'operation:' + signature,
@@ -797,11 +792,11 @@ export function inspectCsdl(xml) {
         returnType: attrs(/<(?:\w+:)?ReturnType\b([^>]*)/.exec(content)?.[1] ?? '').Type ?? null,
       });
     }
-    /* NOSONAR */ for (const match of schema[2].matchAll(/<(?:\w+:)?EntitySet\b([^>]*)\/?\s*>/g)) {
+    /* NOSONAR */ for (const match of throughLastTagClose(schema[2]).matchAll(/<(?:\w+:)?EntitySet\b([^>]*)\/?\s*>/g)) {
       const meta = attrs(match[1]);
       entitySets.push({ id: 'entitySet:' + meta.Name, name: meta.Name, type: meta.EntityType });
     }
-    for (const match of schema[2].matchAll(
+    for (const match of throughLastTagClose(schema[2]).matchAll(
       /* NOSONAR */ /<(?:\w+:)?(EntityType|ComplexType|EnumType)\b([^>]*)\/?\s*>/g,
     )) {
       const meta = attrs(match[2]);

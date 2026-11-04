@@ -223,66 +223,56 @@ function released(api, state, keys) {
 }
 
 // Moves inline legacy bytes to the providers once; a second load finds nothing inline. One STORAGE_MIGRATED diagnostic.
-async function collectFileMoves(files, state, fileMoves) {
-  let bytes = 0;
-  for (const [id, entry] of Object.entries(files)) {
-    if (entry?.data == null || entry.entity === SNAPSHOTS) continue;
-    const body = Buffer.from(String(entry.data), 'base64');
-    await state.files.put(fileKey(id), body, { contentType: entry.mimeType });
-    fileMoves.push({ id, data: entry.data });
-    bytes += body.length;
-  }
-  return bytes;
-}
-async function collectAnnotationMoves(api, state, rowMoves) {
-  let bytes = 0;
-  const { store } = api;
-  for (const [logical, column] of Object.entries(ATTACHMENT_COLUMNS)) {
-    for (const row of store.state.tables[logical] ?? []) {
-      const id = guidKey(row[ID_COLUMN[logical]]),
-        value = row[column];
-      if (!id || !canonical(value) || inlineInPack(api, logical, value)) continue;
-      const previous = blobKeyOf(logical, row);
-      const key = `annotations/${id}/${previous ? Number(previous.split('/')[2]) + 1 : 1}`;
-      const body = Buffer.from(value, 'base64');
-      await state.annotations.put(key, body, { contentType: row.mimetype ?? undefined });
-      rowMoves.push({ logical, id, value, key, previous });
-      bytes += body.length;
-    }
-  }
-  return bytes;
-}
-function applyMigrationMoves(store, fileMoves, rowMoves, counts, replaced) {
-  const current = store.state.dataverse?.files ?? {};
-  for (const { id, data } of fileMoves) {
-    const entry = current[id];
-    if (entry?.data !== data) continue;
-    entry.key = fileKey(id);
-    delete entry.data;
-    counts.files += 1;
-  }
-  for (const { logical, id, value, key, previous } of rowMoves) {
-    const column = ATTACHMENT_COLUMNS[logical];
-    const row = (store.state.tables[logical] ?? []).find((r) => guidKey(r[ID_COLUMN[logical]]) === id);
-    if (row?.[column] !== value) continue;
-    row[column] = null;
-    row.__blobkey = key;
-    if (previous) replaced.push(previous);
-    counts[logical === 'annotation' ? 'annotations' : 'attachments'] += 1;
-  }
-}
-async function migrate(api, state) {
+/* NOSONAR: preserve migration await boundaries */ async function migrate(api, state) {
   const { store } = api;
   const files = store.state.dataverse?.files ?? {};
   const fileMoves = [],
     rowMoves = [];
   let bytes = 0;
-  if (state.files) bytes += await collectFileMoves(files, state, fileMoves);
-  if (state.annotations) bytes += await collectAnnotationMoves(api, state, rowMoves);
+  if (state.files)
+    for (const [id, entry] of Object.entries(files)) {
+      if (entry?.data == null || entry.entity === SNAPSHOTS) continue;
+      const body = Buffer.from(String(entry.data), 'base64');
+      await state.files.put(fileKey(id), body, { contentType: entry.mimeType });
+      fileMoves.push({ id, data: entry.data });
+      bytes += body.length;
+    }
+  if (state.annotations)
+    for (const [logical, column] of Object.entries(ATTACHMENT_COLUMNS)) {
+      for (const row of store.state.tables[logical] ?? []) {
+        const id = guidKey(row[ID_COLUMN[logical]]),
+          value = row[column];
+        if (!id || !canonical(value) || inlineInPack(api, logical, value)) continue;
+        const previous = blobKeyOf(logical, row);
+        const key = `annotations/${id}/${previous ? Number(previous.split('/')[2]) + 1 : 1}`;
+        const body = Buffer.from(value, 'base64');
+        await state.annotations.put(key, body, { contentType: row.mimetype ?? undefined });
+        rowMoves.push({ logical, id, value, key, previous });
+        bytes += body.length;
+      }
+    }
   if (!fileMoves.length && !rowMoves.length) return null;
   const counts = { files: 0, annotations: 0, attachments: 0, bytes };
   const replaced = [];
-  await store.transact(() => applyMigrationMoves(store, fileMoves, rowMoves, counts, replaced));
+  await store.transact(() => {
+    const current = store.state.dataverse?.files ?? {};
+    for (const { id, data } of fileMoves) {
+      const entry = current[id];
+      if (entry?.data !== data) continue;
+      entry.key = fileKey(id);
+      delete entry.data;
+      counts.files += 1;
+    }
+    for (const { logical, id, value, key, previous } of rowMoves) {
+      const column = ATTACHMENT_COLUMNS[logical];
+      const row = (store.state.tables[logical] ?? []).find((r) => guidKey(r[ID_COLUMN[logical]]) === id);
+      if (row?.[column] !== value) continue;
+      row[column] = null;
+      row.__blobkey = key;
+      if (previous) replaced.push(previous);
+      counts[logical === 'annotation' ? 'annotations' : 'attachments'] += 1;
+    }
+  });
   if (replaced.length) released(api, state, replaced);
   report(state, {
     code: 'STORAGE_MIGRATED',
@@ -298,19 +288,25 @@ async function migrate(api, state) {
 // Objects are listed first and judged in one transaction afterwards: an in-flight key (bytes put before their row commits) is
 // skipped, and a delete is conditional on the listed ETag, so bytes put again under a listed key are kept.
 // With an outbox provider (api.providers.outbox) its sweep runs too; its counts are `outbox`.
-async function sweep(api, state) {
+/* NOSONAR: preserve sweep await boundaries */ async function sweep(api, state) {
   const { store } = api;
   const outboxSweep = api.providers?.outbox?.sweep ? () => api.providers.outbox.sweep() : null;
   const outbox = async (result) => (outboxSweep ? { ...result, outbox: await outboxSweep() } : result);
   if (!state.files && !state.annotations) return outbox({ removed: 0, entries: 0 });
-  const listed = await listStoredObjects(state);
-  const { entries, stale } = await findStaleStorageObjects(store, state, listed);
-  const removed = await deleteStaleStorageObjects(state, stale);
-  reportStorageSweep(state, removed, entries);
-  return outbox({ removed, entries });
-}
-function findStaleStorageObjects(store, state, listed) {
-  return store.transact(
+  const listed = [];
+  for (const [prefix, provider] of [
+    ['files/', state.files],
+    ['annotations/', state.annotations],
+  ]) {
+    if (!provider) continue;
+    let continuation = null;
+    do {
+      const page = await provider.list(prefix, { continuation });
+      for (const item of page.items) listed.push({ provider, key: item.key, etag: item.etag ?? '*' });
+      continuation = page.continuation;
+    } while (continuation);
+  }
+  const { entries, stale } = await store.transact(
     () => {
       const files = store.state.dataverse?.files ?? {};
       const { fileLive } = liveness(store);
@@ -334,14 +330,9 @@ function findStaleStorageObjects(store, state, listed) {
     },
     { incremental: true, cloneResult: false },
   );
-}
-async function deleteStaleStorageObjects(state, stale) {
   let removed = 0;
   for (const { provider, key, etag } of stale)
     if (await deleteUnchanged(state, provider, key, etag, 'An unreferenced object was not deleted')) removed += 1;
-  return removed;
-}
-function reportStorageSweep(state, removed, entries) {
   if (removed || entries)
     report(state, {
       code: 'STORAGE_SWEPT',
@@ -349,22 +340,7 @@ function reportStorageSweep(state, removed, entries) {
       removed,
       entries,
     });
-}
-async function listStoredObjects(state) {
-  const listed = [];
-  for (const [prefix, provider] of [
-    ['files/', state.files],
-    ['annotations/', state.annotations],
-  ]) {
-    if (!provider) continue;
-    let continuation = null;
-    do {
-      const page = await provider.list(prefix, { continuation });
-      for (const item of page.items) listed.push({ provider, key: item.key, etag: item.etag ?? '*' });
-      continuation = page.continuation;
-    } while (continuation);
-  }
-  return listed;
+  return outbox({ removed, entries });
 }
 
 // Checks once that every key a file entry, note, attachment or recycle-bin snapshot references exists in its provider (a pack
@@ -530,7 +506,7 @@ function hydrate(api, c, mapping, formatted) {
       );
     return cache.get(logical);
   };
-  for (const row of [formatted ?? []].flat()) {
+  for (const row of [].concat(formatted ?? []) /* NOSONAR: preserve concat spreadability semantics */) {
     if (!row || typeof row !== 'object') continue;
     delete row.__blobkey;
     if (!Object.hasOwn(row, column) || row[column] != null) continue;

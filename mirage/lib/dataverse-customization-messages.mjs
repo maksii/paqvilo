@@ -88,7 +88,7 @@ function destinationOf(target) {
 function profileIdOf(target) {
   const type = String(target?.['@odata.type'] ?? '').replace(/^#?Microsoft\.Dynamics\.CRM\./, '');
   const text = String(target?.mobileofflineprofileid ?? target?.['@odata.id'] ?? '');
-  const set = /([a-z_]+)\(/i.exec(text)?.[1]?.toLowerCase(); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  const set = /(?<![a-z_])([a-z_]+)\(/i.exec(text)?.[1]?.toLowerCase();
   const id = GUID.exec(text)?.[1];
   if (!id || (type && type !== 'mobileofflineprofile') || (set && set !== 'mobileofflineprofiles')) {
     throw invalid('Target must be a mobileofflineprofile reference.'); // native message text not known

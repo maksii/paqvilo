@@ -575,7 +575,7 @@ export function configuredSettingKeys({ project = null, portal = null, catalogue
         ![JSON.stringify(row.fallback ?? null), '{}', '[]'].includes(JSON.stringify(source[key]));
   return Object.keys(MIRAGE_SETTINGS)
     .filter((key) => MIRAGE_SETTINGS[key].scopes.some((scope) => present(sources[scope], MIRAGE_SETTINGS[key], key)))
-    .sort((a, b) => Number(a > b) - Number(a < b));
+    .sort(/* NOSONAR: preserve default string coercion */);
 }
 
 /** The registered options found in an options object (for runtimes that forward their settings). */
@@ -597,7 +597,7 @@ const stable = (value) => {
   if (isPlainObject(value))
     return Object.fromEntries(
       Object.keys(value)
-        .sort((a, b) => Number(a > b) - Number(a < b))
+        .sort(/* NOSONAR: preserve default string coercion */)
         .map((key) => [key, stable(value[key])]),
     );
   return value;

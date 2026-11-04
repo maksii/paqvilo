@@ -325,7 +325,7 @@ export function reconcilePluginMessageParameters(store, specs, previous, before,
       item && typeof item === 'object' && !Array.isArray(item)
         ? Object.fromEntries(
             Object.keys(item)
-              .sort((a, b) => Number(a > b) - Number(a < b))
+              .sort(/* NOSONAR: preserve default string coercion */)
               .map((key) => [key, item[key]]),
           )
         : item,

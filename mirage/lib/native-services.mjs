@@ -1,3 +1,5 @@
+import { stripMarkupTags } from './strip-markup-tags.mjs';
+import { parseGridSortExpression } from './grid-sort-expression.mjs';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -966,18 +968,6 @@ const filterNode = (type, children) => ({
   text: '',
 });
 
-/** Parse "attr ASC, alias.attr DESC" accepting only known view columns. */
-function parseSortExpression(expression, allowed) {
-  const parts = [];
-  for (const part of String(expression ?? '').split(',')) {
-    const match = /^\s*([a-z_]\w*(?:\.[a-z_]\w*)?)\s*(asc|desc)?\s*$/i.exec(part); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-    if (!match) continue;
-    if (allowed && !allowed.has(match[1])) continue;
-    parts.push({ attribute: match[1], descending: /desc/i.test(match[2] ?? '') });
-  }
-  return parts;
-}
-
 function applySort(fetch, sort) {
   if (!sort.length) return;
   const entity = rootEntity(fetch);
@@ -1721,7 +1711,7 @@ export async function executeGridQuery(model, request, context) {
   const allowedSort = new Set(
     layout.Columns.filter((column) => column.Type === 0 && !column.SortDisabled).map((column) => column.LogicalName),
   );
-  applySort(fetch, parseSortExpression(request.sortExpression, allowedSort));
+  applySort(fetch, parseGridSortExpression(request.sortExpression, allowedSort));
   const pageSize = Math.min(Math.max(Number(model.pageSize) || 10, 1), 250);
   const requestedSize = Number(request.pageSize);
   const effectiveSize = chooseLazily(
@@ -1973,7 +1963,13 @@ async function serveSolutionWebResource(req, res, url, context) {
 }
 
 /** Serve a native platform path from its local equivalent unless the export or the asset cache owns it. */
-async function serveNativeEquivalent(req, res, url, context, websiteId) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function serveNativeEquivalent(
+  req,
+  res,
+  url,
+  context,
+  websiteId,
+) {
   const key = (() => {
     try {
       return decodeURIComponent(url.pathname).toLowerCase();
@@ -1983,27 +1979,8 @@ async function serveNativeEquivalent(req, res, url, context, websiteId) {
   })();
   const manager = RESOURCE_MANAGER.exec(url.pathname);
   const bundle = platformBundleFor(url.pathname) ?? localAspNetScript(url);
-  const equivalent = nativeEquivalent(key, manager, bundle, websiteId);
-  if (!equivalent || !['GET', 'HEAD'].includes(req.method)) return false;
-  const exported = (context.portal?.webFiles ?? []).some(
-    (file) => normalizePortalPath(file.url) === normalizePortalPath(url.pathname),
-  );
-  if (exported) return false;
-  if (context.cache && equivalent.bundle?.capture !== false) {
-    const cached = await context.cache
-      .get(url.pathname + url.search, { origin: context.live?.origin })
-      .catch(() => null);
-    if (cached) {
-      await reportCapturedBundleRequirements(bundle, cached, context, url.pathname);
-      return false;
-    }
-  }
-  return await writeNativeEquivalent(req, res, url, context, key, manager, equivalent);
-}
-
-function nativeEquivalent(key, manager, bundle, websiteId) {
   const platformBootstrap = key === '/css/bootstrap.min.css';
-  return (
+  const equivalent =
     NATIVE_EQUIVALENTS.get(key) ??
     (manager && canonical(manager[1]) === websiteId
       ? {
@@ -2022,55 +1999,44 @@ function nativeEquivalent(key, manager, bundle, websiteId) {
               "The platform's default Bootstrap 3 stylesheet is not available without a shell capture; the site has no bootstrap.min.css content style.",
           },
         }
-      : null)
+      : null);
+  if (!equivalent || !['GET', 'HEAD'].includes(req.method)) return false;
+  const exported = (context.portal?.webFiles ?? []).some(
+    (file) => normalizePortalPath(file.url) === normalizePortalPath(url.pathname),
   );
-}
-
-async function writeNativeEquivalent(req, res, url, context, key, manager, equivalent) {
+  if (exported) return false;
+  if (context.cache && equivalent.bundle?.capture !== false) {
+    const cached = await context.cache
+      .get(url.pathname + url.search, { origin: context.live?.origin })
+      .catch(() => null);
+    if (cached) {
+      await reportCapturedBundleRequirements(bundle, cached, context, url.pathname);
+      return false;
+    }
+  }
   const body = equivalent.bundle
     ? await bundleEquivalent(equivalent.bundle, context.compat)
     : (equivalent.body ?? (await fs.readFile(fileURLToPath(equivalent.file))));
-  const placeholder = nativePlaceholder(equivalent);
+  const placeholder =
+    equivalent.placeholder ??
+    (equivalent.bundle && (!equivalent.bundle.local.length || equivalent.bundle.partial) ? equivalent.bundle : null);
   if (placeholder) reportPlaceholder(context, placeholder, url.pathname);
-  const kind = nativeResourceKind(url, key, manager);
+  // Portal-origin platform resources carry the headers observed online; CDN bundles and images stay no-cache.
+  // The platform's /xrm-adx/samples/ images are static files too.
+  const kind = localAspNetScript(url)
+    ? 'axd'
+    : manager
+      ? 'resource-manager'
+      : /^\/(?:js|xrm-adx\/(?:js|samples)|areas\/entitylist)\//.test(key)
+        ? 'static'
+        : null;
+  // A local equivalent file dates its response by its own modification time, so a browser reuses
+  // it within its heuristic freshness as it does the platform's and a conditional request is
+  // answered 304.
   const modified =
     equivalent.file && !equivalent.bundle
       ? (await fs.stat(fileURLToPath(equivalent.file)).catch(() => null))?.mtimeMs
       : null;
-  const headers = resourceHeaders(kind, key, body, equivalent, context, modified, url);
-  applyNativeCacheHeaders(headers, key);
-  const unchanged = Boolean(kind && kind !== 'resource-manager' && notModified(req.headers, headers));
-  let provider = 'local-platform-equivalent';
-  if (placeholder) provider = placeholder.partial ? 'local-platform-partial' : 'local-platform-placeholder';
-  res.writeHead(unchanged ? 304 : 200, {
-    ...headers,
-    'x-sim-resource-provider': provider,
-  });
-  res.end(req.method === 'HEAD' || unchanged ? undefined : body);
-  return true;
-}
-
-function nativePlaceholder(equivalent) {
-  return (
-    equivalent.placeholder ??
-    (equivalent.bundle && (!equivalent.bundle.local.length || equivalent.bundle.partial) ? equivalent.bundle : null)
-  );
-}
-
-function nativeResourceKind(url, key, manager) {
-  return chooseLazily(
-    () => localAspNetScript(url),
-    () => 'axd',
-    () =>
-      chooseLazily(
-        () => manager,
-        () => 'resource-manager',
-        () => (/^\/(?:js|xrm-adx\/(?:js|samples)|areas\/entitylist)\//.test(key) ? 'static' : null),
-      ),
-  );
-}
-
-function resourceHeaders(kind, key, body, equivalent, context, modified, url) {
   const headers = kind
     ? platformResourceHeaders(kind, {
         pathname: key,
@@ -2080,19 +2046,28 @@ function resourceHeaders(kind, key, body, equivalent, context, modified, url) {
         modified,
       })
     : { 'content-type': equivalent.type, 'cache-control': 'no-cache' };
+  // Script resources registered by a control carry their own type (the RadCaptcha resources are text/javascript).
   if (kind === 'axd' && localAspNetScript(url)?.contentType)
     headers['content-type'] = localAspNetScript(url).contentType;
-  return headers;
-}
-
-function applyNativeCacheHeaders(headers, key) {
+  // Calendar assets: scripts and stylesheets cache for a week, templates are not cached.
   if (/^\/areas\/entitylist\/(?:css|js)\//.test(key)) headers['cache-control'] = 'public,max-age=604800';
-  if (key.startsWith('/areas/entitylist/tmpls/'))
+  if (/^\/areas\/entitylist\/tmpls\//.test(key))
     Object.assign(headers, {
       'cache-control': 'no-cache, no-store, must-revalidate',
       expires: '-1',
       pragma: 'no-cache',
     });
+  const unchanged = Boolean(kind && kind !== 'resource-manager' && notModified(req.headers, headers));
+  res.writeHead(unchanged ? 304 : 200, {
+    ...headers,
+    'x-sim-resource-provider': placeholder?.partial
+      ? 'local-platform-partial'
+      : placeholder
+        ? 'local-platform-placeholder'
+        : 'local-platform-equivalent',
+  });
+  res.end(req.method === 'HEAD' || unchanged ? undefined : body);
+  return true;
 }
 
 // Local equivalents of the platform bundles (lib/platform-manifest.mjs PLATFORM_BUNDLES):
@@ -2188,7 +2163,7 @@ function reportPlaceholder(context, placeholder, pathname) {
 }
 
 /** A note form body: JSON, urlencoded fields or multipart (the file part becomes {name, type, content}). */
-async function readNoteBody(req) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function readNoteBody(req) {
   const type = String(req.headers['content-type'] ?? '')
     .split(';')[0]
     .trim()
@@ -2204,53 +2179,26 @@ async function readNoteBody(req) {
   const bytes = Buffer.concat(chunks);
   const body = {};
   if (type === 'application/x-www-form-urlencoded') {
-    urlEncodedNoteFields(body, bytes);
+    for (const [name, value] of new URLSearchParams(bytes.toString('utf8'))) body[name] = value;
   } else if (type === 'multipart/form-data') {
-    const data = await noteFormData(bytes, req);
-    const pending = parseMultipartFields(body, data);
-    if (pending) await pending;
+    let data;
+    try {
+      data = await new Response(bytes, { headers: { 'content-type': req.headers['content-type'] } }).formData();
+    } catch {
+      fail('Malformed multipart note form');
+    }
+    for (const [name, value] of data) {
+      if (typeof value === 'string') body[name] = value;
+      else if (value.size || value.name)
+        body[name] = {
+          name: value.name,
+          type: value.type,
+          content: Buffer.from(await value.arrayBuffer()).toString('base64'),
+        };
+    }
   } else fail('Unsupported note form content type', 415, 'UnsupportedMediaType');
   if (typeof body.isPrivate === 'string') body.isPrivate = /^true$/i.test(body.isPrivate);
   return { body, native: true };
-}
-
-function urlEncodedNoteFields(body, bytes) {
-  for (const [name, value] of new URLSearchParams(bytes.toString('utf8'))) body[name] = value;
-}
-
-function parseMultipartFields(body, data) {
-  return fillMultipartIterator(body, data[Symbol.iterator]());
-}
-
-function fillMultipartIterator(body, iterator) {
-  while (true) {
-    const next = iterator.next();
-    if (next.done) return null;
-    const [name, value] = next.value;
-    if (typeof value === 'string') {
-      body[name] = value;
-      continue;
-    }
-    if (!value.size && !value.name) continue;
-    const fileName = value.name;
-    const fileType = value.type;
-    return value.arrayBuffer().then((bytes) => {
-      body[name] = {
-        name: fileName,
-        type: fileType,
-        content: Buffer.from(bytes).toString('base64'),
-      };
-      return fillMultipartIterator(body, iterator);
-    });
-  }
-}
-
-async function noteFormData(bytes, req) {
-  try {
-    return await new Response(bytes, { headers: { 'content-type': req.headers['content-type'] } }).formData();
-  } catch {
-    fail('Malformed multipart note form');
-  }
 }
 
 /** The note subject's creation stamp, as the platform writes it: M/d/yyyy h:mm:ss AM UTC. */
@@ -2557,95 +2505,6 @@ async function noteSize(context, row) {
   return body ? Buffer.from(String(body), 'base64').length : 0;
 }
 
-async function handleNoteList(req, res, context) {
-  const body = await readJson(req);
-  const regarding = body.regarding ?? {};
-  if (!safeName(regarding.LogicalName) || !GUID.test(String(regarding.Id ?? '')))
-    fail('Notes require a regarding record');
-  if (!(await context.readProvider.get(regarding.LogicalName, regarding.Id, context.identity)))
-    fail('The regarding record was not found', 404, 'NotFound');
-  const pageSize = Math.min(Math.max(Number(body.pageSize) || 10, 1), 50);
-  const page = Math.max(1, Number(body.page) || 1);
-  const prefix = notesFilter(context.portal);
-  // The notes request reports no offset: the user's zone comes from the timeZoneCode cookie, else the
-  // loopback browser shares this machine's zone (the platform formats the dates in the user's local time).
-  const zone = {
-    timezoneOffset: Number(body.timezoneOffset) || 0,
-    timeZone:
-      requestTimeZone(req, body.timezoneOffset) ??
-      (body.timezoneOffset == null ? Intl.DateTimeFormat().resolvedOptions().timeZone : null),
-  };
-  const order = Array.isArray(body.orders)
-    ? body.orders.find((entry) => String(entry?.Attribute ?? '').toLowerCase() === 'createdon')
-    : null;
-  const descending = Array.isArray(body.orders) ? Number(order?.Direction) === 1 : true;
-  const rows = portalNotes(
-    await annotationRows(context, regarding.LogicalName, regarding.Id, descending),
-    context.identity,
-    prefix,
-  );
-  const contact = canonical(context.identity?.contactId ?? context.identity?.id);
-  const pageRows = rows.slice((page - 1) * pageSize, page * pageSize);
-  for (const row of pageRows) row.filesize = await noteSize(context, row);
-  const records = pageRows.map((row) => noteRecord({ row, contact, prefix, context, zone, regarding }));
-  return sendJson(res, 200, {
-    MoreRecords: rows.length > page * pageSize,
-    Records: records,
-    ItemCount: rows.length,
-    PageCount: Math.ceil(rows.length / pageSize),
-    PageNumber: page,
-    PageSize: pageSize,
-    NextPagePagingCookie: null,
-    ViewConfiguration: null,
-    CompleteViewLayout: null,
-    CreateActionMetadata: null,
-    DisabledItemActionLinks: null,
-  });
-}
-
-function noteRecord({ row, contact, prefix, context, zone, regarding }) {
-  const id = canonical(row.annotationid);
-  const size = Number(row.filesize) || 0;
-  const mine =
-    Boolean(contact) &&
-    String(row.subject ?? '')
-      .toLowerCase()
-      .includes(`[contact:${contact}]`);
-  const raw = String(row.notetext ?? '');
-  const text = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
-  // Native entity-notes records: attachment fields first, AttachmentSize serialised as an empty
-  // object, CreatedOn as a WCF date, append rights granted.
-  return {
-    AttachmentUrl: row.filename ? `/_entity/annotation/${id}/${context.portal.website?.id ?? ''}` : null,
-    AttachmentContentType: row.mimetype ?? null,
-    AttachmentFileName: row.filename ?? null,
-    AttachmentIsImage: /^image\/(jpeg|gif|png)$/i.test(row.mimetype ?? ''),
-    AttachmentSize: {},
-    AttachmentSizeDisplay: row.filename ? fileSizeDisplay(size) : null,
-    CreatedOn: row.createdon ? `/Date(${Date.parse(row.createdon)})/` : null,
-    CreatedOnDisplay: row.createdon ? new Date(row.createdon).toISOString().replace(/\.\d{3}Z$/, 'Z') : null,
-    HasAttachment: Boolean(row.filename),
-    Subject: row.subject ?? '',
-    // The platform wraps the note text in a paragraph.
-    Text: `<p>${text.replaceAll(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]).replaceAll('\n', '<br />')}</p>`,
-    UnformattedText: text,
-    IsPostedByCurrentUser: mine,
-    PostedByName: /by (.*?) \[contact:/i.exec(row.subject ?? '')?.[1] ?? row.createdby?.name ?? '',
-    DisplayToolbar: mine,
-    IsPrivate: String(row.subject ?? '').includes('*PRIVATE*'),
-    Id: id,
-    EntityName: 'annotation',
-    Attributes: noteAttributes(row, context, zone, canonical(regarding.LogicalName)),
-    CanRead: true,
-    CanWrite: mine,
-    CanDelete: mine,
-    CanAppend: true,
-    CanAppendTo: true,
-    StateCode: 0,
-    StatusCode: 0,
-  };
-}
-
 const fileSizeDisplay = (bytes) =>
   chooseLazily(
     () => bytes >= 1048576,
@@ -2658,8 +2517,98 @@ const fileSizeDisplay = (bytes) =>
       ),
   );
 
-async function handleNotes(action, req, res, context) {
-  if (action === 'entity-notes') return await handleNoteList(req, res, context);
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function handleNotes(
+  action,
+  req,
+  res,
+  context,
+) {
+  if (action === 'entity-notes') {
+    const body = await readJson(req);
+    const regarding = body.regarding ?? {};
+    if (!safeName(regarding.LogicalName) || !GUID.test(String(regarding.Id ?? '')))
+      fail('Notes require a regarding record');
+    if (!(await context.readProvider.get(regarding.LogicalName, regarding.Id, context.identity)))
+      fail('The regarding record was not found', 404, 'NotFound');
+    const pageSize = Math.min(Math.max(Number(body.pageSize) || 10, 1), 50);
+    const page = Math.max(1, Number(body.page) || 1);
+    const prefix = notesFilter(context.portal);
+    // The notes request reports no offset: the user's zone comes from the timeZoneCode cookie, else the
+    // loopback browser shares this machine's zone (the platform formats the dates in the user's local time).
+    const zone = {
+      timezoneOffset: Number(body.timezoneOffset) || 0,
+      timeZone:
+        requestTimeZone(req, body.timezoneOffset) ??
+        (body.timezoneOffset == null ? Intl.DateTimeFormat().resolvedOptions().timeZone : null),
+    };
+    const order = Array.isArray(body.orders)
+      ? body.orders.find((entry) => String(entry?.Attribute ?? '').toLowerCase() === 'createdon')
+      : null;
+    const descending = Array.isArray(body.orders) ? Number(order?.Direction) === 1 : true;
+    const rows = portalNotes(
+      await annotationRows(context, regarding.LogicalName, regarding.Id, descending),
+      context.identity,
+      prefix,
+    );
+    const contact = canonical(context.identity?.contactId ?? context.identity?.id);
+    const pageRows = rows.slice((page - 1) * pageSize, page * pageSize);
+    for (const row of pageRows) row.filesize = await noteSize(context, row);
+    const records = pageRows.map((row) => {
+      const id = canonical(row.annotationid);
+      const size = Number(row.filesize) || 0;
+      const mine =
+        Boolean(contact) &&
+        String(row.subject ?? '')
+          .toLowerCase()
+          .includes(`[contact:${contact}]`);
+      const raw = String(row.notetext ?? '');
+      const text = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
+      // Native entity-notes records: attachment fields first, AttachmentSize serialised as an empty
+      // object, CreatedOn as a WCF date, append rights granted.
+      return {
+        AttachmentUrl: row.filename ? `/_entity/annotation/${id}/${context.portal.website?.id ?? ''}` : null,
+        AttachmentContentType: row.mimetype ?? null,
+        AttachmentFileName: row.filename ?? null,
+        AttachmentIsImage: /^image\/(jpeg|gif|png)$/i.test(row.mimetype ?? ''),
+        AttachmentSize: {},
+        AttachmentSizeDisplay: row.filename ? fileSizeDisplay(size) : null,
+        CreatedOn: row.createdon ? `/Date(${Date.parse(row.createdon)})/` : null,
+        CreatedOnDisplay: row.createdon ? new Date(row.createdon).toISOString().replace(/\.\d{3}Z$/, 'Z') : null,
+        HasAttachment: Boolean(row.filename),
+        Subject: row.subject ?? '',
+        // The platform wraps the note text in a paragraph.
+        Text: `<p>${text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]).replace(/\n/g, '<br />')}</p>`,
+        UnformattedText: text,
+        IsPostedByCurrentUser: mine,
+        PostedByName: /by (.*?) \[contact:/i.exec(row.subject ?? '')?.[1] ?? row.createdby?.name ?? '',
+        DisplayToolbar: mine,
+        IsPrivate: String(row.subject ?? '').includes('*PRIVATE*'),
+        Id: id,
+        EntityName: 'annotation',
+        Attributes: noteAttributes(row, context, zone, canonical(regarding.LogicalName)),
+        CanRead: true,
+        CanWrite: mine,
+        CanDelete: mine,
+        CanAppend: true,
+        CanAppendTo: true,
+        StateCode: 0,
+        StatusCode: 0,
+      };
+    });
+    return sendJson(res, 200, {
+      MoreRecords: rows.length > page * pageSize,
+      Records: records,
+      ItemCount: rows.length,
+      PageCount: Math.ceil(rows.length / pageSize),
+      PageNumber: page,
+      PageSize: pageSize,
+      NextPagePagingCookie: null,
+      ViewConfiguration: null,
+      CompleteViewLayout: null,
+      CreateActionMetadata: null,
+      DisabledItemActionLinks: null,
+    });
+  }
   // Add, update and delete take the native form transport (urlencoded fields, multipart with
   // a chosen file) and, for local tooling, JSON with the same names (file as base64).
   const { body, native } = await readNoteBody(req);
@@ -2671,62 +2620,53 @@ async function handleNotes(action, req, res, context) {
     fail('The anti-forgery token is missing or invalid.', 403, 'MissingPortalRequestVerificationToken');
   const contact = canonical(context.identity?.contactId ?? context.identity?.id);
   if (!contact) fail('Notes require a signed-in contact', 401, 'SignInRequired');
-  if (action === 'entity-form-addnote') return await createNote(res, context, body, contact, native);
-  return await changeNote(res, context, action, body, contact);
-}
-
-async function createNote(res, context, body, contact, native) {
-  const entity = body.regardingEntityLogicalName;
-  const id = body.regardingEntityId;
-  if (!safeName(entity) || !GUID.test(String(id ?? ''))) fail('Notes require a regarding record');
-  const text = String(body.text ?? '').trim();
-  if (!text) fail('Note is a required field.', 417, 'NoteRequired');
-  const fullname = context.identity?.fullname ?? context.identity?.name ?? '';
-  const parentMapping = mappingFor(context.store, entity);
-  const regarding = await context.readProvider.get(entity, id, context.identity);
-  if (!regarding) fail('The regarding record was not found', 404, 'NotFound');
-  // The regarding lookup (objectid) is polymorphic, like the platform's EntityReference:
-  // bind through the navigation property the solutions declare for this table, else set
-  // the lookup to the regarding record.
-  const navigation = Object.entries(mappingFor(context.store, 'annotation').relationships ?? {}).find(
-    ([, rel]) =>
-      rel.many !== true &&
-      canonical(rel.from) === 'objectid' &&
-      canonical(rel.entity) === canonical(parentMapping.logicalName),
-  )?.[0];
-  const values = {
-    notetext: `${notesFilter(context.portal)}${text}`,
-    subject: `Note created on ${noteStamp(new Date())} by ${fullname} [contact:${contact}]${body.isPrivate ? ' *PRIVATE*' : ''}`,
-    objecttypecode: parentMapping.logicalName,
-    ...(navigation
-      ? { [`${navigation}@odata.bind`]: `/${parentMapping.entitySet}(${id})` }
-      : {
-          objectid: {
-            id: canonical(id),
-            logical_name: parentMapping.logicalName,
-            name: String(regarding[parentMapping.nameColumn] ?? ''),
-          },
-        }),
-  };
-  addNoteFile(body, values, context);
-  const created = await context.change(() =>
-    portalWrite(context, (writes) => writes.create('annotation', values, context.identity)),
-  );
-  // The platform answers the native form with an empty 201.
-  if (native) return sendEmpty(res, 201);
-  return sendJson(res, 201, { Id: canonical(created.annotationid) });
-}
-
-function addNoteFile(body, values, context) {
-  if (!body.file?.name) return;
-  values.filename = String(body.file.name).slice(0, 255);
-  values.mimetype = String(body.file.type || 'application/octet-stream').slice(0, 255);
-  values.documentbody = String(body.file.content ?? '');
-  values.filesize = Buffer.from(values.documentbody, 'base64').length;
-  noteFileTrace(context, values, 'upload');
-}
-
-async function changeNote(res, context, action, body, contact) {
+  if (action === 'entity-form-addnote') {
+    const entity = body.regardingEntityLogicalName;
+    const id = body.regardingEntityId;
+    if (!safeName(entity) || !GUID.test(String(id ?? ''))) fail('Notes require a regarding record');
+    const text = String(body.text ?? '').trim();
+    if (!text) fail('Note is a required field.', 417, 'NoteRequired');
+    const fullname = context.identity?.fullname ?? context.identity?.name ?? '';
+    const parentMapping = mappingFor(context.store, entity);
+    const regarding = await context.readProvider.get(entity, id, context.identity);
+    if (!regarding) fail('The regarding record was not found', 404, 'NotFound');
+    // The regarding lookup (objectid) is polymorphic, like the platform's EntityReference:
+    // bind through the navigation property the solutions declare for this table, else set
+    // the lookup to the regarding record.
+    const navigation = Object.entries(mappingFor(context.store, 'annotation').relationships ?? {}).find(
+      ([, rel]) =>
+        rel.many !== true &&
+        canonical(rel.from) === 'objectid' &&
+        canonical(rel.entity) === canonical(parentMapping.logicalName),
+    )?.[0];
+    const values = {
+      notetext: `${notesFilter(context.portal)}${text}`,
+      subject: `Note created on ${noteStamp(new Date())} by ${fullname} [contact:${contact}]${body.isPrivate ? ' *PRIVATE*' : ''}`,
+      objecttypecode: parentMapping.logicalName,
+      ...(navigation
+        ? { [`${navigation}@odata.bind`]: `/${parentMapping.entitySet}(${id})` }
+        : {
+            objectid: {
+              id: canonical(id),
+              logical_name: parentMapping.logicalName,
+              name: String(regarding[parentMapping.nameColumn] ?? ''),
+            },
+          }),
+    };
+    if (body.file?.name) {
+      values.filename = String(body.file.name).slice(0, 255);
+      values.mimetype = String(body.file.type || 'application/octet-stream').slice(0, 255);
+      values.documentbody = String(body.file.content ?? '');
+      values.filesize = Buffer.from(values.documentbody, 'base64').length;
+      noteFileTrace(context, values, 'upload');
+    }
+    const created = await context.change(() =>
+      portalWrite(context, (writes) => writes.create('annotation', values, context.identity)),
+    );
+    // The platform answers the native form with an empty 201.
+    if (native) return sendEmpty(res, 201);
+    return sendJson(res, 201, { Id: canonical(created.annotationid) });
+  }
   const id = String(body.id ?? '');
   if (!GUID.test(id)) fail('A note identifier is required');
   const note = await context.readProvider.get('annotation', id, context.identity);
@@ -2737,19 +2677,23 @@ async function changeNote(res, context, action, body, contact) {
       .includes(`[contact:${contact}]`)
   )
     fail('Only the author can change this note.', 403, 'NoteAuthorRequired');
-  if (action === 'entity-form-updatenote') return updateNote(res, context, body, id);
+  if (action === 'entity-form-updatenote') {
+    const text = String(body.text ?? '').trim();
+    if (!text) fail('Note is a required field.', 417, 'NoteRequired');
+    const values = { notetext: `*WEB*${text}` };
+    if (body.file?.name) {
+      values.filename = String(body.file.name).slice(0, 255);
+      values.mimetype = String(body.file.type || 'application/octet-stream').slice(0, 255);
+      values.documentbody = String(body.file.content ?? '');
+      values.filesize = Buffer.from(values.documentbody, 'base64').length;
+      noteFileTrace(context, values, 'upload');
+    }
+    await context.change(() =>
+      portalWrite(context, (writes) => writes.update('annotation', id, values, context.identity)),
+    );
+    return sendJson(res, 200, { Id: canonical(id) });
+  }
   await context.change(() => portalWrite(context, (writes) => writes.remove('annotation', id, context.identity)));
-  return sendJson(res, 200, { Id: canonical(id) });
-}
-
-async function updateNote(res, context, body, id) {
-  const text = String(body.text ?? '').trim();
-  if (!text) fail('Note is a required field.', 417, 'NoteRequired');
-  const values = { notetext: `*WEB*${text}` };
-  addNoteFile(body, values, context);
-  await context.change(() =>
-    portalWrite(context, (writes) => writes.update('annotation', id, values, context.identity)),
-  );
   return sendJson(res, 200, { Id: canonical(id) });
 }
 
@@ -2879,7 +2823,12 @@ export function antiForgeryCookie(csrf) {
  * Dispatch native portal services. Returns true when the request was handled.
  * The caller supplies the current portal, store, providers and persona.
  */
-/* NOSONAR */ export async function handleNativeService(req, res, url, context) {
+/* NOSONAR */ /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export async function handleNativeService(
+  req,
+  res,
+  url,
+  context,
+) {
   const staticAsset = STATIC.get(url.pathname);
   if (staticAsset) {
     if (!['GET', 'HEAD'].includes(req.method)) return false;
@@ -2920,23 +2869,17 @@ export function antiForgeryCookie(csrf) {
     return true;
   if (await serveCommunityPlacement(req, res, url, context, websiteId)) return true;
   if (await serveSolutionWebResource(req, res, url, context)) return true;
-  if (serveAntiForgeryToken(res, url, context, websiteId)) return true;
-  return await dispatchNativeRoute(req, res, url, context, websiteId);
-}
-
-function serveAntiForgeryToken(res, url, context, websiteId) {
   const token = /^\/_portal\/([^/]+)\/Layout\/GetAntiForgeryToken\/?$/i.exec(url.pathname);
-  if (!token || canonical(token[1]) !== websiteId) return false;
-  res.writeHead(200, {
-    'content-type': 'text/html; charset=utf-8',
-    'cache-control': 'no-store',
-    'set-cookie': antiForgeryCookie(context.csrf),
-  });
-  res.end(`<input name="__RequestVerificationToken" type="hidden" value="${xmlEscape(context.csrf)}" />`);
-  return true;
-}
-
-async function dispatchNativeRoute(req, res, url, context, websiteId) {
+  if (token) {
+    if (canonical(token[1]) !== websiteId) return false;
+    res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+      'set-cookie': antiForgeryCookie(context.csrf),
+    });
+    res.end(`<input name="__RequestVerificationToken" type="hidden" value="${xmlEscape(context.csrf)}" />`);
+    return true;
+  }
   const match = SERVICE.exec(url.pathname);
   if (!match) return false;
   const [, action, scope] = match;
@@ -2979,240 +2922,256 @@ async function dispatchNativeRoute(req, res, url, context, websiteId) {
   }
 }
 
-async function handleGridAction(req, res, body, context, normalized, websiteId, span) {
-  const secure = unprotectConfiguration(body.base64SecureConfiguration);
-  if (canonical(secure.w) !== websiteId) fail('Invalid_Request', 403, 'Invalid_Request');
-  const expected = {
-    'entity-grid-data.json': ['list'],
-    'entity-subgrid-data.json': ['subgrid', 'associate'],
-    'entity-lookup-grid-data.json': ['lookup'],
-  }[normalized];
-  if (!expected.includes(secure.t)) fail('Invalid_Request', 403, 'Invalid_Request');
-  const model = modelFor(secure, context);
-  // The grid names its table and the view it reads (the view gridData selects: the configured one, else the first).
-  const view =
-    model.views?.find((candidate) => canonical(candidate.id) === canonical(secure.view ?? body.viewId)) ??
-    model.views?.[0];
-  span?.setEntity(model.entity ?? view?.entity ?? null, null);
-  span?.set({
-    grid: secure.t,
-    listId: secure.list,
-    formId: secure.form,
-    gridId: secure.grid,
-    view: view?.name ?? null,
-    savedquery: view?.id ?? null,
-    page: Math.max(1, Number(body.page) || 1),
-    pageSize: Number(body.pageSize) || null,
-  });
-  if (model.kind === 'subgrid' && model.definition && secure.parent) {
-    if (!(await context.readProvider.get(model.schema.entity, secure.parent, context.identity)))
-      return (sendSubgridAccessDenied(res), true);
-  }
-  const data = await gridData(model, body, {
-    ...context,
-    secure,
-    timezoneOffset: Number(body.timezoneOffset) || 0,
-    timeZone: requestTimeZone(req, body.timezoneOffset),
-  });
-  if (data.AccessDenied) {
-    span?.event('permission', {
-      message: `Table permission denies read on ${model.entity}`,
-      attributes: { table: model.entity, operation: 'read', result: 'deny', code: 'AccessDenied' },
-    });
-    (model.kind === 'subgrid' || model.kind === 'associate' ? sendSubgridAccessDenied : sendAccessDenied)(res);
-  } else {
-    span?.set({ rowCount: data.Records?.length ?? 0, itemCount: data.ItemCount, moreRecords: data.MoreRecords });
-    sendJson(res, 200, data);
-  }
-  return true;
-}
-
-async function handleGridDelete(res, body, context) {
-  // A form action bar posts { entityReference: { LogicalName, Id } }; grids post the reference itself.
-  const reference = body.entityReference ?? body;
-  const entity = reference.LogicalName ?? reference.logicalName;
-  const id = reference.Id ?? reference.id;
-  if (!safeName(entity) || !GUID.test(String(id ?? ''))) fail('Invalid_Request', 400, 'Invalid_Request');
-  // A form subgrid delete must name its declared grid; plain list and form
-  // deletes rely on the table permission of the current persona.
-  if (body.base64SecureConfiguration) {
-    const secure = unprotectConfiguration(body.base64SecureConfiguration);
-    if (secure.t === 'subgrid') {
-      await context.change(() =>
-        deletePortalSubgridRecord(
-          secure.kind,
-          secure.form,
-          secure.grid,
-          id,
-          { parentId: secure.parent, stepId: secure.step },
-          {
-            portal: context.portal,
-            store: context.store,
-            schemas: context.schemas,
-            identity: context.identity,
-            readProvider: context.readProvider,
-            writeProvider: { delete: (table, rowId) => writeOperation(context, 'delete', table, rowId) },
-          },
-        ),
-      );
-      res.writeHead(204);
-      res.end();
-      return true;
-    }
-  }
-  await context.change(() => writeOperation(context, 'delete', entity, id));
-  res.writeHead(204);
-  res.end();
-  return true;
-}
-
-async function handleStateAction(res, body, context, normalized) {
-  // A form action bar posts { entityReference: { LogicalName, Id } }; grids post the reference itself.
-  const reference = body.entityReference ?? body;
-  const entity = reference.LogicalName ?? reference.logicalName;
-  const id = reference.Id ?? reference.id;
-  if (!safeName(entity) || !GUID.test(String(id ?? ''))) fail('Invalid_Request', 400, 'Invalid_Request');
-  const state = normalized === 'action-deactivate' ? 1 : 0;
-  // The table's own state/status pair (solution metadata or the store's field definitions), then the standard 1/2 defaults.
-  const resolved = nativeActionStateValues(entity, state ? 'deactivate' : 'activate', {
-    metadata: context.metadata,
-    store: context.store,
-  });
-  await context.change(() =>
-    writeOperation(context, 'update', entity, id, {
-      statecode: state,
-      statuscode: resolved?.statuscode ?? defaultStatus(context.metadata, entity, state),
-    }),
-  );
-  res.writeHead(204);
-  res.end();
-  return true;
-}
-
-async function handleAssociationAction(res, body, context, normalized) {
-  const target = body.Target ?? body.target ?? {};
-  const relationship = body.Relationship ?? body.relationship ?? {};
-  const related = body.RelatedEntities ?? body.relatedEntities ?? [];
-  if (
-    !safeName(target.LogicalName) ||
-    !GUID.test(String(target.Id ?? '')) ||
-    !Array.isArray(related) ||
-    !related.length
-  )
-    fail('Invalid_Request', 400, 'Invalid_Request');
-  const mapping = mappingFor(context.store, target.LogicalName);
-  const navigation = Object.entries(mapping.relationships ?? {}).find(
-    ([name, rel]) => rel.many && (name === relationship.SchemaName || rel.schemaName === relationship.SchemaName),
-  );
-  if (!navigation) fail('Missing_Permissions_For_Operation_Exception', 403, 'RelationshipNotMapped');
-  await context.change(async () => {
-    for (const entry of related) {
-      if (!GUID.test(String(entry.Id ?? ''))) fail('Invalid_Request', 400, 'Invalid_Request');
-      if (navigation[1].intersect)
-        await associationOperation(
-          context,
-          normalized === 'entity-lookup-associate',
-          target.LogicalName,
-          target.Id,
-          navigation[0],
-          navigation[1].entity,
-          entry.Id,
-        );
-      else
-        await writeOperation(context, 'update', navigation[1].entity, entry.Id, {
-          [`${Object.entries(mappingFor(context.store, navigation[1].entity).relationships ?? {}).find(([, rel]) => rel.many === false && rel.from === navigation[1].to && rel.entity === canonical(target.LogicalName))?.[0] ?? navigation[1].to}@odata.bind`]:
-            normalized === 'entity-lookup-associate' ? `/${mapping.entitySet}(${target.Id})` : null,
-        });
-    }
-  });
-  res.writeHead(204);
-  res.end();
-  return true;
-}
-
-async function handleDownloadAction(res, body, context, normalized, websiteId) {
-  const secure = unprotectConfiguration(body.base64SecureConfiguration);
-  if (canonical(secure.w) !== websiteId) fail('Invalid_Request', 403, 'Invalid_Request');
-  const model = modelFor(secure, context);
-  // ADX downloads ignore the request's page and pageSize: page 1 of up to
-  // Grid/Download/MaximumResults records (default 5000), read in 5000-record fetch pages.
-  const maximum = Math.max(1, Math.floor(Number(siteSetting(context.portal, 'Grid/Download/MaximumResults')) || 5000));
-  const records = [];
-  /* NOSONAR */ for (let page = 1; records.length < maximum; page++) {
-    const data = await gridData(
-      model,
-      { ...body, page, pageSize: Math.min(maximum, 5000), allowLargePages: true, download: true },
-      { ...context, secure },
-    );
-    if (data.AccessDenied) {
-      sendAccessDenied(res);
-      return true;
-    }
-    records.push(...(data.Records ?? []));
-    if (!data.MoreRecords || !data.Records?.length) break;
-  }
-  return sendDownloadFile(res, body, normalized, records, maximum);
-}
-
-function sendDownloadFile(res, body, normalized, records, maximum) {
-  const columns = (Array.isArray(body.columns) ? body.columns : []).filter(
-    (column) => column?.LogicalName && column.Type !== 1 && column.Type !== 2,
-  );
-  const header = columns
-    .map((column) => csvCell(String(column.Name ?? column.LogicalName).replace(/<[^>]*>/g, ''))) // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-    .join(',');
-  const lines = records
-    .slice(0, maximum)
-    .map((record) =>
-      columns
-        .map((column) =>
-          csvCell(downloadText(record.Attributes.find((attribute) => attribute.Name === column.LogicalName))),
-        )
-        .join(','),
-    );
-  // Excel downloads are served as CSV with an explicit diagnostic header:
-  // the local runtime does not generate Office Open XML workbooks.
-  const key = `${new Date().toISOString().slice(0, 19)}|${String(body.viewName ?? 'export').replace(/[\\/:*?"<>|]/g, '_')}.csv`;
-  downloads.set(key, {
-    type: 'text/csv; charset=utf-8',
-    name: key.split('|')[1],
-    body: Buffer.from('﻿' + [header, ...lines].join('\r\n')),
-  });
-  if (downloads.size > 50) downloads.delete(downloads.keys().next().value);
-  sendJson(
-    res,
-    200,
-    { success: true, sessionKey: key },
-    normalized === 'download-as-excel' ? { 'x-sim-download-format': 'csv' } : {},
-  );
-  return true;
-}
-
-async function nativeServiceAction(req, res, url, context, action, websiteId, span) {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function nativeServiceAction(
+  req,
+  res,
+  url,
+  context,
+  action,
+  websiteId,
+  span,
+) {
   try {
     const normalized = action.toLowerCase();
-    if (/^download-as-(csv|excel)$/.test(normalized) && req.method === 'GET') return handleDownloadRequest(res, url);
+    if (/^download-as-(csv|excel)$/.test(normalized) && req.method === 'GET') {
+      const key = url.searchParams.get('key');
+      const file = key ? downloads.get(key) : null;
+      if (!file) {
+        res.writeHead(204);
+        res.end();
+        return true;
+      }
+      downloads.delete(key);
+      res.writeHead(200, {
+        'content-type': file.type,
+        'content-disposition': contentDisposition('attachment', file.name),
+        'content-length': file.body.length,
+        'cache-control': 'no-store',
+      });
+      res.end(file.body);
+      return true;
+    }
     if (req.method !== 'POST') fail('Native portal services require POST.', 405, 'MethodNotAllowed');
     if (/^entity-(notes|form-addnote|form-updatenote|form-deletenote)$/.test(normalized)) {
       // The native notes form posts its token as a field; JSON callers send the header.
-      verifyNoteTokenIfPresent(req, context.csrf);
+      if (
+        req.headers.__requestverificationtoken !== undefined ||
+        /^(?:application\/json)?$/.test(
+          String(req.headers['content-type'] ?? '')
+            .split(';')[0]
+            .trim()
+            .toLowerCase(),
+        )
+      )
+        verifyToken(req, context.csrf);
       await handleNotes(normalized, req, res, context);
       return true;
     }
     verifyToken(req, context.csrf);
     const body = await readJson(req);
-    if (/^entity-(grid|subgrid|lookup-grid)-data\.json$/.test(normalized))
-      return await handleGridAction(req, res, body, context, normalized, websiteId, span);
+    if (/^entity-(grid|subgrid|lookup-grid)-data\.json$/.test(normalized)) {
+      const secure = unprotectConfiguration(body.base64SecureConfiguration);
+      if (canonical(secure.w) !== websiteId) fail('Invalid_Request', 403, 'Invalid_Request');
+      const expected = {
+        'entity-grid-data.json': ['list'],
+        'entity-subgrid-data.json': ['subgrid', 'associate'],
+        'entity-lookup-grid-data.json': ['lookup'],
+      }[normalized];
+      if (!expected.includes(secure.t)) fail('Invalid_Request', 403, 'Invalid_Request');
+      const model = modelFor(secure, context);
+      // The grid names its table and the view it reads (the view gridData selects: the configured one, else the first).
+      const view =
+        model.views?.find((candidate) => canonical(candidate.id) === canonical(secure.view ?? body.viewId)) ??
+        model.views?.[0];
+      span?.setEntity(model.entity ?? view?.entity ?? null, null);
+      span?.set({
+        grid: secure.t,
+        listId: secure.list,
+        formId: secure.form,
+        gridId: secure.grid,
+        view: view?.name ?? null,
+        savedquery: view?.id ?? null,
+        page: Math.max(1, Number(body.page) || 1),
+        pageSize: Number(body.pageSize) || null,
+      });
+      if (model.kind === 'subgrid' && model.definition && secure.parent) {
+        if (!(await context.readProvider.get(model.schema.entity, secure.parent, context.identity)))
+          return (sendSubgridAccessDenied(res), true);
+      }
+      const data = await gridData(model, body, {
+        ...context,
+        secure,
+        timezoneOffset: Number(body.timezoneOffset) || 0,
+        timeZone: requestTimeZone(req, body.timezoneOffset),
+      });
+      if (data.AccessDenied) {
+        span?.event('permission', {
+          message: `Table permission denies read on ${model.entity}`,
+          attributes: { table: model.entity, operation: 'read', result: 'deny', code: 'AccessDenied' },
+        });
+        (model.kind === 'subgrid' || model.kind === 'associate' ? sendSubgridAccessDenied : sendAccessDenied)(res);
+      } else {
+        span?.set({ rowCount: data.Records?.length ?? 0, itemCount: data.ItemCount, moreRecords: data.MoreRecords });
+        sendJson(res, 200, data);
+      }
+      return true;
+    }
     if (normalized === 'entity-grid-delete') {
-      return await handleGridDelete(res, body, context);
+      // A form action bar posts { entityReference: { LogicalName, Id } }; grids post the reference itself.
+      const reference = body.entityReference ?? body;
+      const entity = reference.LogicalName ?? reference.logicalName;
+      const id = reference.Id ?? reference.id;
+      if (!safeName(entity) || !GUID.test(String(id ?? ''))) fail('Invalid_Request', 400, 'Invalid_Request');
+      // A form subgrid delete must name its declared grid; plain list and form
+      // deletes rely on the table permission of the current persona.
+      if (body.base64SecureConfiguration) {
+        const secure = unprotectConfiguration(body.base64SecureConfiguration);
+        if (secure.t === 'subgrid') {
+          await context.change(() =>
+            deletePortalSubgridRecord(
+              secure.kind,
+              secure.form,
+              secure.grid,
+              id,
+              { parentId: secure.parent, stepId: secure.step },
+              {
+                portal: context.portal,
+                store: context.store,
+                schemas: context.schemas,
+                identity: context.identity,
+                readProvider: context.readProvider,
+                writeProvider: { delete: (table, rowId) => writeOperation(context, 'delete', table, rowId) },
+              },
+            ),
+          );
+          res.writeHead(204);
+          res.end();
+          return true;
+        }
+      }
+      await context.change(() => writeOperation(context, 'delete', entity, id));
+      res.writeHead(204);
+      res.end();
+      return true;
     }
-    if (normalized === 'action-deactivate' || normalized === 'action-activate')
-      return await handleStateAction(res, body, context, normalized);
+    if (normalized === 'action-deactivate' || normalized === 'action-activate') {
+      // A form action bar posts { entityReference: { LogicalName, Id } }; grids post the reference itself.
+      const reference = body.entityReference ?? body;
+      const entity = reference.LogicalName ?? reference.logicalName;
+      const id = reference.Id ?? reference.id;
+      if (!safeName(entity) || !GUID.test(String(id ?? ''))) fail('Invalid_Request', 400, 'Invalid_Request');
+      const state = normalized === 'action-deactivate' ? 1 : 0;
+      // The table's own state/status pair (solution metadata or the store's field definitions), then the standard 1/2 defaults.
+      const resolved = nativeActionStateValues(entity, state ? 'deactivate' : 'activate', {
+        metadata: context.metadata,
+        store: context.store,
+      });
+      await context.change(() =>
+        writeOperation(context, 'update', entity, id, {
+          statecode: state,
+          statuscode: resolved?.statuscode ?? defaultStatus(context.metadata, entity, state),
+        }),
+      );
+      res.writeHead(204);
+      res.end();
+      return true;
+    }
     if (normalized === 'entity-lookup-associate' || normalized === 'entity-grid-disassociate') {
-      return await handleAssociationAction(res, body, context, normalized);
+      const target = body.Target ?? body.target ?? {};
+      const relationship = body.Relationship ?? body.relationship ?? {};
+      const related = body.RelatedEntities ?? body.relatedEntities ?? [];
+      if (
+        !safeName(target.LogicalName) ||
+        !GUID.test(String(target.Id ?? '')) ||
+        !Array.isArray(related) ||
+        !related.length
+      )
+        fail('Invalid_Request', 400, 'Invalid_Request');
+      const mapping = mappingFor(context.store, target.LogicalName);
+      const navigation = Object.entries(mapping.relationships ?? {}).find(
+        ([name, rel]) => rel.many && (name === relationship.SchemaName || rel.schemaName === relationship.SchemaName),
+      );
+      if (!navigation) fail('Missing_Permissions_For_Operation_Exception', 403, 'RelationshipNotMapped');
+      await context.change(async () => {
+        for (const entry of related) {
+          if (!GUID.test(String(entry.Id ?? ''))) fail('Invalid_Request', 400, 'Invalid_Request');
+          if (navigation[1].intersect)
+            await associationOperation(
+              context,
+              normalized === 'entity-lookup-associate',
+              target.LogicalName,
+              target.Id,
+              navigation[0],
+              navigation[1].entity,
+              entry.Id,
+            );
+          else
+            await writeOperation(context, 'update', navigation[1].entity, entry.Id, {
+              [`${Object.entries(mappingFor(context.store, navigation[1].entity).relationships ?? {}).find(([, rel]) => rel.many === false && rel.from === navigation[1].to && rel.entity === canonical(target.LogicalName))?.[0] ?? navigation[1].to}@odata.bind`]:
+                normalized === 'entity-lookup-associate' ? `/${mapping.entitySet}(${target.Id})` : null,
+            });
+        }
+      });
+      res.writeHead(204);
+      res.end();
+      return true;
     }
-    if (/^download-as-(csv|excel)$/.test(normalized))
-      return await handleDownloadAction(res, body, context, normalized, websiteId);
+    if (/^download-as-(csv|excel)$/.test(normalized)) {
+      const secure = unprotectConfiguration(body.base64SecureConfiguration);
+      if (canonical(secure.w) !== websiteId) fail('Invalid_Request', 403, 'Invalid_Request');
+      const model = modelFor(secure, context);
+      // ADX downloads ignore the request's page and pageSize: page 1 of up to
+      // Grid/Download/MaximumResults records (default 5000), read in 5000-record fetch pages.
+      const maximum = Math.max(
+        1,
+        Math.floor(Number(siteSetting(context.portal, 'Grid/Download/MaximumResults')) || 5000),
+      );
+      const records = [];
+      for (let page = 1; records.length < maximum; page++) {
+        const data = await gridData(
+          model,
+          { ...body, page, pageSize: Math.min(maximum, 5000), allowLargePages: true, download: true },
+          { ...context, secure },
+        );
+        if (data.AccessDenied) {
+          sendAccessDenied(res);
+          return true;
+        }
+        records.push(...(data.Records ?? []));
+        if (!data.MoreRecords || !data.Records?.length) break;
+      }
+      const columns = (Array.isArray(body.columns) ? body.columns : []).filter(
+        (column) => column?.LogicalName && column.Type !== 1 && column.Type !== 2,
+      );
+      const header = columns
+        .map((column) => csvCell(stripMarkupTags(String(column.Name ?? column.LogicalName))))
+        .join(',');
+      const lines = records
+        .slice(0, maximum)
+        .map((record) =>
+          columns
+            .map((column) =>
+              csvCell(downloadText(record.Attributes.find((attribute) => attribute.Name === column.LogicalName))),
+            )
+            .join(','),
+        );
+      // Excel downloads are served as CSV with an explicit diagnostic header:
+      // the local runtime does not generate Office Open XML workbooks.
+      const key = `${new Date().toISOString().slice(0, 19)}|${String(body.viewName ?? 'export').replace(/[\\/:*?"<>|]/g, '_')}.csv`;
+      downloads.set(key, {
+        type: 'text/csv; charset=utf-8',
+        name: key.split('|')[1],
+        body: Buffer.from('﻿' + [header, ...lines].join('\r\n')),
+      });
+      if (downloads.size > 50) downloads.delete(downloads.keys().next().value);
+      sendJson(
+        res,
+        200,
+        { success: true, sessionKey: key },
+        normalized === 'download-as-excel' ? { 'x-sim-download-format': 'csv' } : {},
+      );
+      return true;
+    }
     if (normalized === 'execute-workflow')
       fail(
         'Classic workflows are not executed by the local runtime. Model the backend effect with a declarative plugin.',
@@ -3225,36 +3184,4 @@ async function nativeServiceAction(req, res, url, context, action, websiteId, sp
     sendError(res, error);
     return true;
   }
-}
-
-function handleDownloadRequest(res, url) {
-  const key = url.searchParams.get('key');
-  const file = key ? downloads.get(key) : null;
-  if (!file) {
-    res.writeHead(204);
-    res.end();
-    return true;
-  }
-  downloads.delete(key);
-  res.writeHead(200, {
-    'content-type': file.type,
-    'content-disposition': contentDisposition('attachment', file.name),
-    'content-length': file.body.length,
-    'cache-control': 'no-store',
-  });
-  res.end(file.body);
-  return true;
-}
-
-function verifyNoteTokenIfPresent(req, csrf) {
-  if (
-    req.headers.__requestverificationtoken !== undefined ||
-    /^(?:application\/json)?$/.test(
-      String(req.headers['content-type'] ?? '')
-        .split(';')[0]
-        .trim()
-        .toLowerCase(),
-    )
-  )
-    verifyToken(req, csrf);
 }

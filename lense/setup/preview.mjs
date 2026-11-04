@@ -85,7 +85,7 @@ async function websiteKind(folder, names) {
   return {
     type: 'website',
     label: layout.label,
-    name: website ? await firstMatch(path.join(folder, website), /^(?:adx_name|mspp_name|name):\s*(.+)$/m) : null, // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    name: website ? await firstMatch(path.join(folder, website), /^(?:adx_name|mspp_name|name):\s*(.+)$/m) : null, // NOSONAR: fixed line prefixes; after whitespace, any non-line-terminator succeeds at its line's end.
     profiles: await profilesOf(folder),
   };
 }

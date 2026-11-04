@@ -78,8 +78,8 @@ export function permissionOrderGraphFingerprint(permissions) {
       entity: permission.entity,
       scope: permission.scope ?? 'global',
       enabled: permission.enabled !== false,
-      operations: [...(permission.operations ?? ['read'])].sort((a, b) => Number(a > b) - Number(a < b)),
-      roles: [...(permission.roles ?? [])].sort((a, b) => Number(a > b) - Number(a < b)),
+      operations: [...(permission.operations ?? ['read'])].sort(), // NOSONAR: preserve default string coercion in fingerprints
+      roles: [...(permission.roles ?? [])].sort(), // NOSONAR: preserve default string coercion in fingerprints
       roleIds: (permission.roleIds ?? []).map(key).sort(),
       imported: Boolean(permission.imported),
       field: permission.field ?? null,

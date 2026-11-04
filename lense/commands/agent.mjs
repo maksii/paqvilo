@@ -208,7 +208,7 @@ export async function listAgentSessions(stateDir) {
   return {
     schemaVersion: 1,
     sessions,
-    invalidFiles: invalidFiles.toSorted((a, b) => Number(a > b) - Number(a < b)),
+    invalidFiles: invalidFiles.sort(/* NOSONAR: preserve in-place default string sorting */),
     truncated: names.length > 64,
   };
 }

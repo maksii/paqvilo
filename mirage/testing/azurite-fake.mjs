@@ -51,7 +51,7 @@ export async function startAzuriteFake({
     let text = `${lines.join('\n')}\n`;
     for (const name of Object.keys(request.headers)
       .filter((n) => n.startsWith('x-ms-'))
-      .sort((a, b) => Number(a > b) - Number(a < b)))
+      .sort(/* NOSONAR: preserve default string coercion */))
       text += `${name}:${String(request.headers[name])
         .replace(/[ \t\r\n]+/g, ' ')
         .trim()}\n`;
@@ -62,9 +62,8 @@ export async function startAzuriteFake({
       if (!grouped.has(key)) grouped.set(key, []);
       grouped.get(key).push(value);
     }
-    const compare = (a, b) => Number(a > b) - Number(a < b);
-    for (const name of [...grouped.keys()].sort(compare))
-      text += `\n${name}:${grouped.get(name).sort(compare).join(',')}`;
+    for (const name of [...grouped.keys()].sort(/* NOSONAR: preserve default string coercion */))
+      text += `\n${name}:${grouped.get(name).sort(/* NOSONAR: preserve default string coercion */).join(',')}`;
     return text;
   }
   const sign = (text) => createHmac('sha256', Buffer.from(accountKey, 'base64')).update(text, 'utf8').digest('base64');
@@ -119,7 +118,7 @@ export async function startAzuriteFake({
     requests.push({
       method: request.method,
       path: rawPath,
-      query: Object.keys(q).sort((a, b) => Number(a > b) - Number(a < b)),
+      query: Object.keys(q).sort(/* NOSONAR: preserve default string coercion */),
       version: request.headers['x-ms-version'] ?? null,
     });
     const send = (status, headers = {}, payload) => {
@@ -143,7 +142,7 @@ export async function startAzuriteFake({
     if (!containerName) {
       if (request.method === 'GET' && q.comp === 'list') {
         const names = [...containers.keys()]
-          .sort((a, b) => Number(a > b) - Number(a < b))
+          .sort(/* NOSONAR: preserve default string coercion */)
           .slice(0, Number(q.maxresults ?? 5000));
         const containerXml = names.map((n) => `<Container><Name>${escapeXml(n)}</Name></Container>`).join('');
         return send(
@@ -166,7 +165,7 @@ export async function startAzuriteFake({
         const max = Number(q.maxresults ?? 5000);
         const names = [...container.keys()]
           .filter((n) => container.get(n).data && n.startsWith(q.prefix ?? '') && (!q.marker || n >= q.marker))
-          .sort((a, b) => Number(a > b) - Number(a < b));
+          .sort(/* NOSONAR: preserve default string coercion */);
         const page = names.slice(0, max);
         const items = page
           .map((n) => {

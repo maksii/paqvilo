@@ -21,7 +21,7 @@ const TAG_BODY = /^\s+([a-z]+(?:\+[a-z]+)*)\s*:\s*(\S.*)$/;
 const DECLARATION = /^\s*(?:(?:test|it|describe|suite)(?:\.(?:only|skip|todo))?\s*\(|for\s*\(|\[.*\]\.forEach\()/;
 const TOP_LEVEL = /^(?:(?:test|it|describe|suite)(?:\.(?:only|skip|todo))?\s*\(|for\s*\(|\[.*\]\.forEach\()/;
 const FILE_TAG_LINES = 40;
-const ANY_TAG = /^\s*\/\/\s*@test-kind\b/m; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+const ANY_TAG = /^[^\S\r\n\u2028\u2029]*\/\/\s*@test-kind\b/m;
 
 function legacyFiles() {
   try {

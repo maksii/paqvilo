@@ -55,7 +55,8 @@
   };
   portal.UpdateValidationSummary ||= portal.SetValidationSummary;
   portal.addRoleOnCheckboxLabel ||= function (elements) {
-    for (const element of jq() ? jq()(elements).toArray() : [elements ?? []].flat())
+    for (const element of jq() ? jq()(elements).toArray() : [].concat(elements ?? []))
+      // NOSONAR: concat preserves caller Symbol.isConcatSpreadable semantics
       element?.setAttribute?.('role', 'none');
   };
   // Liquid date output (<abbr class="timeago|posttime">) is reformatted with the site formats.
@@ -94,9 +95,15 @@
         const parsed = Date.parse(element.textContent);
         if (!parsed) continue;
         const value = globalThis.moment(parsed);
-        const dateFormat = dotNetToMoment(element.closest('[data-dateformat]')?.dataset.dateformat || 'MMMM d, yyyy');
-        const timeFormat = dotNetToMoment(element.closest('[data-timeformat]')?.dataset.timeformat || 'h:mm tt');
-        const format = element.dataset.format ? dotNetToMoment(element.dataset.format) : `${dateFormat} ${timeFormat}`;
+        const dateFormat = dotNetToMoment(
+          element.closest('[data-dateformat]')?.getAttribute('data-dateformat') || 'MMMM d, yyyy',
+        ); // NOSONAR: actual attributes exclude inherited dataset values
+        const timeFormat = dotNetToMoment(
+          element.closest('[data-timeformat]')?.getAttribute('data-timeformat') || 'h:mm tt',
+        ); // NOSONAR: actual attributes exclude inherited dataset values
+        const format = element.getAttribute('data-format')
+          ? dotNetToMoment(element.getAttribute('data-format'))
+          : `${dateFormat} ${timeFormat}`; // NOSONAR: actual attributes exclude inherited dataset values
         element.setAttribute(
           'title',
           selector === 'abbr.timeago' ? value.format('YYYY-MM-DDTHH:mm:ss') : value.format(format),
@@ -304,7 +311,7 @@
   };
   const logPollPostFailure = (...details) => console.log({ m: 'Post Failed', d: details });
   const placement = (element, after) => {
-    const url = element.dataset.url;
+    const url = element.getAttribute('data-url'); // NOSONAR: actual attributes exclude inherited dataset values
     element.style.display = 'none';
     const source = url ? load(url) : Promise.resolve(element.innerHTML);
     return source.then(
@@ -330,8 +337,8 @@
     const render = (html) => {
       show(content, html);
       const question = element.querySelector('.poll-questionpanel');
-      this.id = question?.dataset.id ?? null;
-      this.name = question?.dataset.name ?? null;
+      this.id = question?.getAttribute('data-id') ?? null; // NOSONAR: actual attributes exclude inherited dataset values
+      this.name = question?.getAttribute('data-name') ?? null; // NOSONAR: actual attributes exclude inherited dataset values
       this.submitted = !question;
       toggle(!this.submitted);
     };
@@ -341,7 +348,7 @@
       if (this.submitted) for (const back of element.querySelectorAll('.poll-return')) back.remove();
     };
     this.init = () => {
-      const url = element.dataset.url;
+      const url = element.getAttribute('data-url'); // NOSONAR: actual attributes exclude inherited dataset values
       return (url ? load(url) : Promise.resolve(content.innerHTML)).then(
         (html) => {
           render(html);
@@ -351,7 +358,7 @@
             else if (target?.closest('.poll-return')) this.viewPoll();
             else if (target?.closest('.poll-submit')) {
               const option = element.querySelector("input[id^='poll_option_']:checked")?.value;
-              const submitUrl = element.dataset.submitUrl;
+              const submitUrl = element.getAttribute('data-submit-url'); // NOSONAR: actual attributes exclude inherited dataset values
               if (!option || !submitUrl || typeof globalThis.shell?.ajaxSafePost !== 'function') return;
               globalThis.shell
                 .ajaxSafePost({
@@ -425,9 +432,9 @@
     (event) => {
       const button = event.target?.closest?.('.form-custom-actions button.create-related-record-link');
       if (!button) return;
-      const criteria = button.dataset.filtercriteriaid ?? null;
+      const criteria = button.getAttribute('data-filtercriteriaid') ?? null; // NOSONAR: actual attributes exclude inherited dataset values
       const modal = [...document.querySelectorAll('section.modal-form-createrecord')].find(
-        (candidate) => (candidate.dataset.filtercriteriaid ?? null) === criteria,
+        (candidate) => (candidate.getAttribute('data-filtercriteriaid') ?? null) === criteria, // NOSONAR: actual attributes exclude inherited dataset values
       );
       const frame = modal?.querySelector('iframe[data-page]');
       const control = button.closest('[id^="EntityFormControl"]') || document;
@@ -439,7 +446,7 @@
       }
       const formId = layout.CreateRelatedRecordActionLink?.EntityForm?.Id;
       if (!frame || !formId) return;
-      const pagePath = frame.dataset.page;
+      const pagePath = frame.getAttribute('data-page'); // NOSONAR: actual attributes exclude inherited dataset values
       if (!pagePath?.trim()) return;
       let address;
       // URL parsing accepts malformed percent escapes; validate them before deriving a frame path.

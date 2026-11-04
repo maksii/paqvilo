@@ -497,7 +497,7 @@ export function createFlowRunStore({
     },
     prune: () => write(pruneIn),
     close() {
-      for (const id of timers.keys()) disarm(id);
+      for (const id of [...timers.keys()]) disarm(id); // NOSONAR: cancellation can mutate the timer map while iterating
     },
     describe,
   };

@@ -318,8 +318,8 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
         (next.label !== original.label ||
           next.collectionLabel !== original.collectionLabel ||
           !isDeepStrictEqual(
-            Object.keys(next.fields).sort((a, b) => Number(a > b) - Number(a < b)),
-            Object.keys(original.fields ?? {}).sort((a, b) => Number(a > b) - Number(a < b)),
+            Object.keys(next.fields).sort(/* NOSONAR: preserve default string coercion */),
+            Object.keys(original.fields ?? {}).sort(/* NOSONAR: preserve default string coercion */),
           ) ||
           Object.values(next.fields).some((field) => field.sourceOriginVerified === false))
       )

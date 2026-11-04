@@ -241,7 +241,7 @@ async function connectRunningCaptureRuntime(running, cfg, target, options) {
 
 async function startLocalCaptureSimulator(cfg, target, createLocalSimulator) {
   await assertOfflineState(target.mirage.stateFile);
-  const simulator = await createLocalSimulator({
+  return createLocalSimulator({
     sourceDir: target.sourceDir,
     stateFile: target.mirage.stateFile,
     origin: cfg.origin,
@@ -252,13 +252,6 @@ async function startLocalCaptureSimulator(cfg, target, createLocalSimulator) {
     observed: cfg.mirageConfig.observed,
     localOverrides: cfg.mirageConfig.localOverrides,
   });
-  // A cached state may have been last used with another selected environment.
-  const state = simulator.store.snapshot();
-  state.simulator.live = { ...state.simulator.live, origin: cfg.origin };
-  await simulator.store.replaceState(state);
-  simulator.live.configure(state.simulator.live);
-  const client = await connectRuntime({ origin: simulator.url });
-  return { simulator, client };
 }
 
 async function captureTarget(entry, options, reports) {
@@ -274,9 +267,13 @@ async function captureTarget(entry, options, reports) {
       cfg = connection.cfg;
       client = connection.client;
     } else {
-      const started = await startLocalCaptureSimulator(cfg, target, options.createLocalSimulator);
-      simulator = started.simulator;
-      client = started.client;
+      simulator = await startLocalCaptureSimulator(cfg, target, options.createLocalSimulator);
+      // Own cleanup before state replacement or connection can fail.
+      const state = simulator.store.snapshot();
+      state.simulator.live = { ...state.simulator.live, origin: cfg.origin };
+      await simulator.store.replaceState(state);
+      simulator.live.configure(state.simulator.live);
+      client = await connectRuntime({ origin: simulator.url });
     }
     let cdpUrl = options.cdp;
     if (cdpUrl == null) {

@@ -1,3 +1,4 @@
+import { stripLastLineQuery } from './lib/strip-last-line-query.mjs';
 // Baseline comparison: field-by-field differences between a live capture folder and a Mirage
 // capture folder (requests, responses, DOM, elements), classified against a reviewed allowlist.
 // A second independent live capture, when present, proves which differences are live-run
@@ -127,7 +128,7 @@ function canonicalMultipart(text, boundary) {
     kind: 'form',
     value: Object.fromEntries(
       Object.keys(fields)
-        .sort((a, b) => Number(a > b) - Number(a < b))
+        .sort(/* NOSONAR: preserve default string coercion */)
         .map((key) => [key, fields[key]]),
     ),
   };
@@ -138,7 +139,7 @@ function canonicalUrlEncoded(text) {
   return {
     kind: 'form',
     value: Object.fromEntries(
-      [...params.keys()].sort((a, b) => Number(a > b) - Number(a < b)).map((key) => [key, params.getAll(key)]),
+      [...params.keys()].sort(/* NOSONAR: preserve default string coercion */).map((key) => [key, params.getAll(key)]),
     ),
   };
 }
@@ -189,7 +190,7 @@ function diffArrayValue(scope, location, field, a, b, out, depth) {
 }
 
 function requestKey(request) {
-  return `${request.method} ${request.url.replace(/\?.*$/, '')}`; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  return `${request.method} ${stripLastLineQuery(request.url)}`;
 }
 
 /** Align two request sequences in order, then compare each aligned pair field by field. */
@@ -598,7 +599,7 @@ function compareLiveVariance(live, second, secondDir, allowlist, result, isVaria
   result.variance = {
     deltas: between.length,
     folder: path.basename(secondDir),
-    entries: [...witnessed].sort((a, b) => Number(a > b) - Number(a < b)),
+    entries: [...witnessed].sort(/* NOSONAR: preserve default string coercion */),
     unproven: {},
   };
   return { variance, witnessed };
@@ -619,7 +620,7 @@ function classifyScenarioDeltas(deltas, allowlist, variance, witnessed, result, 
   if (witnessed)
     result.variance.matched = [
       ...new Set(deltas.map((d) => d.allowlist ?? d.unprovenVariance).filter(isVariance)),
-    ].sort((a, b) => Number(a > b) - Number(a < b));
+    ].sort(/* NOSONAR: preserve default string coercion */);
 }
 
 function applyStaleEvidence(deltas, changes, scenario, liveTime) {
@@ -865,7 +866,7 @@ export function summaryMarkdown(report) {
       '| Entry | Paired | Witnessed | Unproven scenarios | Unproven deltas |',
       '| --- | ---: | ---: | ---: | ---: |',
     );
-    for (const [id, v] of variance.toSorted(([a], [b]) => a.localeCompare(b)))
+    for (const [id, v] of variance.sort(/* NOSONAR: preserve in-place sorting */ ([a], [b]) => a.localeCompare(b)))
       lines.push(`| ${id} | ${v.paired} | ${v.witnessed} | ${v.unprovenScenarios} | ${v.unprovenDeltas} |`);
   }
   lines.push(

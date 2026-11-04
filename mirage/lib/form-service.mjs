@@ -711,495 +711,268 @@ export function submitPortalForm(kind, componentId, body, options = {}) {
   );
 }
 
-/* NOSONAR */ function validateNativeNumber(field, value, control, invalid, nativePostback) {
-  const number = typeof value === 'number' ? value : Number.NaN;
-  const exact = nativePostback && isExactNumeric(value) ? decimalParts(value) : null;
-  const valid = exact
-    ? control !== 'double' && (control !== 'integer' || exact.scale === 0)
-    : Number.isFinite(number) && (control !== 'integer' || Number.isInteger(number));
-  if (!valid) {
-    let kind = 'decimal';
-    if (control === 'integer') kind = 'integer';
-    else if (control === 'double') kind = 'floating-point';
-    invalid(field, 'FormFieldInvalid', field.validationMessage || `${field.label} must be a valid ${kind} value.`);
-  }
-  const minimum = field.minimum ?? field.minValue,
-    maximum = field.maximum ?? field.maxValue;
-  if (
-    (minimum != null || maximum != null) &&
-    (!valid ||
-      (minimum != null && (exact ? compareNumeric(value, minimum) < 0 : number < Number(minimum))) ||
-      (maximum != null && (exact ? compareNumeric(value, maximum) > 0 : number > Number(maximum))))
-  )
-    invalid(field, 'FormFieldOutOfRange', field.rangeMessage || nativeRangeMessage(field));
-}
+/* NOSONAR */
 
-function validateNativeDate(field, key, value, assigned, invalid) {
-  const behavior = field.dateTimeBehavior ?? field.behavior ?? (nativeDateOnly(field) ? 'DateOnly' : 'UserLocal');
-  const clockDateOnly = behavior === 'DateOnly' && field.prepopulateType === 100000001;
-  let native;
-  if (clockDateOnly) native = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z?$/;
-  else if (behavior === 'UserLocal') native = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/;
-  else native = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}$/;
-  if (typeof value !== 'string' || !parseDateValue(value) || (!assigned.has(key) && !native.test(value)))
-    invalid(field, 'FormFieldInvalid', field.validationMessage || `${field.label} must have a valid date format.`);
-}
+/* NOSONAR */
 
-function validateNativeControl(field, key, value, state) {
-  const { invalid, assigned, nativePostback } = state;
-  const control = nativeControlKind(field);
-  // Native lists validate posted values against the exported options, before invoking Dataverse.
-  if (
-    control === 'picklist' &&
-    field.options?.length &&
-    !field.options.some((option) => Number(option.value) === Number(value))
-  )
-    fail('Invalid postback or callback argument. Event validation is enabled.', 500, 'FormEventValidationInvalid');
-  if (control === 'email' && (typeof value !== 'string' || !/^[^\s@<>]+@[^\s@<>]+$/.test(value)))
-    invalid(field, 'FormFieldInvalid', field.validationMessage || `${field.label} must be a valid email address.`);
-  if (['integer', 'decimal', 'double', 'money'].includes(control))
-    validateNativeNumber(field, value, control, invalid, nativePostback);
-  if (control === 'boolean' && typeof value !== 'boolean')
-    invalid(field, 'FormFieldInvalid', field.validationMessage || `${field.label} must be a valid Boolean value.`);
-  if (control === 'datetime') validateNativeDate(field, key, value, assigned, invalid);
-}
-
-function validateNativeText(field, value, invalid) {
-  if (field.pattern) {
-    let expression;
-    try {
-      expression = new RegExp(field.pattern);
-    } catch {
-      fail(
-        `Field '${field.name}' has an invalid exported validation expression`,
-        501,
-        'FormValidationExpressionInvalid',
-      );
-    }
-    const match = expression.exec(value);
-    if (match?.[0] !== value)
-      invalid(field, 'FormFieldInvalid', field.patternMessage || `${field.label} is not valid.`);
-  }
-  if (field.maxLength && !field.richText && value.length > Number(field.maxLength))
-    invalid(field, 'FormFieldTooLong', `${field.label} exceeds the maximum length of ${field.maxLength} characters.`);
-}
-
-function enforceNativeReadOnlyField(field, key, value, hasChange, state) {
-  const { current, values, mapping, assigned, scalar, empty } = state;
-  if (!field.readOnly || !hasChange || assigned.has(key)) return;
-  const expected = scalar(current[field.name] ?? field.default);
-  if (!(empty(expected) && empty(scalar(value))) && String(scalar(value)) !== String(expected))
-    fail(`Field '${field.name}' is read-only in this native form`, 403, 'FormFieldReadOnly');
-  for (const name of Object.keys(values)) {
-    const relation = name.endsWith('@odata.bind') ? mapping.relationships?.[name.slice(0, -11)] : null;
-    if (canonical(relation?.from ?? name) === key) delete values[name];
-  }
-}
-
-function validateNativeField(field, state) {
-  const { changed, current, scalar, empty, invalid } = state;
-  const key = canonical(field.name),
-    hasChange = Object.hasOwn(changed, key),
-    value = hasChange ? changed[key] : (current[field.name] ?? field.default);
-  enforceNativeReadOnlyField(field, key, value, hasChange, state);
-  const requiredEmpty =
-    field.richText && !/<img\b/i.test(String(value ?? '')) ? empty(richTextRequiredText(value)) : empty(scalar(value));
-  if (field.required && !field.hidden && !field.readOnly && requiredEmpty)
-    invalid(field, 'FormFieldRequired', `${field.label} is a required field.`);
-  if (hasChange && !empty(value) && !field.hidden && !field.readOnly) validateNativeControl(field, key, value, state);
-  if (hasChange && !empty(value) && typeof value === 'string') validateNativeText(field, value, invalid);
-}
-
-function validateNativeFormFields(fields, state) {
-  for (const field of fields) validateNativeField(field, state);
-}
-
-/* NOSONAR */ function applyNativeOnSaveValue({ name, field, value, logical, values, mapping, store, scalar, empty }) {
-  for (const key of Object.keys(values)) {
-    const relation = key.endsWith('@odata.bind') ? mapping.relationships?.[key.slice(0, -11)] : null;
-    if (canonical(relation?.from ?? key) === name) delete values[key];
-  }
-  if (field.type === 'lookup') {
-    const targets = Object.entries(mapping.relationships ?? {}).filter(
-      ([, relation]) =>
-        relation.many === false && canonical(relation.from) === name && (!logical || relation.entity === logical),
-    );
-    if (targets.length !== 1)
-      fail(`On-save lookup '${name}' has an unresolved navigation target`, 501, 'FormSaveLookupUnresolved');
-    const [navigation, relation] = targets[0],
-      target = store.resolveMapping(relation.entity),
-      id = scalar(value);
-    values[navigation + '@odata.bind'] = empty(id)
-      ? null
-      : `/${target.entitySet}(${encodeURIComponent(canonical(id))})`;
-    return scalar(value);
-  }
-  value = scalar(value);
-  if (['boolean', 'checkbox'].includes(field.type)) {
-    if (value === true || value === false) {
-      /* The value is already a Boolean and needs no coercion. */
-    } else if (/^(true|false|0|1)$/i.test(String(value))) value = /^(true|1)$/i.test(String(value));
-    else fail(`On-save boolean '${name}' is invalid`, 501, 'FormSaveValueInvalid');
-  } else if (field.type === 'number') {
-    if (value === '' || !Number.isFinite(Number(value)))
-      fail(`On-save number '${name}' is invalid`, 501, 'FormSaveValueInvalid');
-    value = Number(value);
-    if ((field.options || /^(int|picklist|state|status)$/i.test(field.dataverseType ?? '')) && !Number.isInteger(value))
-      fail(`On-save integer '${name}' is invalid`, 501, 'FormSaveValueInvalid');
-  } else if (['date', 'datetime-local'].includes(field.type)) {
-    if (!Number.isFinite(new Date(value).getTime()))
-      fail(`On-save date '${name}' is invalid`, 501, 'FormSaveValueInvalid');
-    value = new Date(value).toISOString();
-  } else if (![undefined, 'text', 'textarea', 'email', 'url'].includes(field.type))
-    fail(`On-save field type '${field.type}' is unsupported`, 501, 'FormSaveAttributeUnsupported');
-  values[field.name] = value;
-  return scalar(value);
-}
-
-function attachmentMatchesAccept(file, accept) {
-  return accept.split(',').some((entry) => {
-    const pattern = entry.trim().toLowerCase();
-    if (!pattern) return false;
-    if (pattern.startsWith('.')) return file.name.toLowerCase().endsWith(pattern);
-    if (pattern.endsWith('/*'))
-      return String(file.type ?? '')
-        .toLowerCase()
-        .startsWith(pattern.slice(0, -1));
-    return String(file.type ?? '').toLowerCase() === pattern;
-  });
-}
-
-function attachmentCloudStorage(portal, cloudAttachments, diagnostic, componentId) {
-  if (!String(siteSetting(portal, 'FileStorage/CloudStorageAccount') ?? '').trim()) return null;
-  try {
-    const cloud = cloudAttachments?.() ?? null;
-    if (cloud) return cloud;
-    throw Object.assign(
-      new Error('Storage route portalCloudAttachments is not configured; set providers.routes.portalCloudAttachments.'),
-      { diagnostic: 'PROVIDER_ROUTE_MISSING' },
-    );
-  } catch (error) {
-    const code = error.diagnostic ?? 'PROVIDER_ROUTE_MISSING';
-    diagnostic({
-      code,
-      severity: 'error',
-      form: componentId,
-      message: `FileStorage/CloudStorageAccount is set, but the attachment cannot be stored: ${error.message}`,
-    });
-    fail(`The attachment cannot be stored in cloud storage: ${error.message}`, 500, code);
-  }
-}
-
-function prepareOneFormAttachment(file, state) {
-  const {
-    componentMetadata,
-    text,
-    maxKb,
-    restrict,
-    accept,
-    cloud,
-    cloudUploads,
-    notes,
-    fullname,
-    contactId,
-    portal,
-    schema,
-    objectBinding,
-    mapping,
-    now,
-  } = state;
-  if (!file || typeof file.name !== 'string' || typeof file.content !== 'string')
-    fail('Attachment requires a name and base64 content', 400, 'FormAttachmentInvalid');
-  const size = Buffer.from(file.content, 'base64').length;
-  if (maxKb && size > maxKb * 1024)
-    fail(
-      text(portalField(componentMetadata, 'attachfilesizeerrormessage'), `${file.name} exceeds the maximum file size.`),
-      400,
-      'FormAttachmentTooLarge',
-    );
-  if (restrict && accept && !attachmentMatchesAccept(file, accept))
-    fail(
-      text(
-        portalField(componentMetadata, 'attachfiletypeerrormessage'),
-        `${file.name} is not of the file type(s) "${accept}".`,
-      ),
-      400,
-      'FormAttachmentType',
-    );
-  const placeholder = cloud
-    ? { key: cloudKey(file.name), type: String(file.type || 'application/octet-stream') }
-    : null;
-  if (placeholder) cloudUploads.push({ ...placeholder, content: file.content });
-  const stored = placeholder
-    ? Buffer.from(JSON.stringify({ Name: file.name, Type: placeholder.type, Size: size, Url: placeholder.key }))
-    : null;
-  notes.push((savedId) => ({
-    subject: `Note created on ${now().toLocaleString('en-US', { timeZone: 'UTC', hour12: true, month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' }).replace(',', '')} UTC by ${fullname}${contactId ? ' [contact:' + contactId + ']' : ''}`,
-    notetext: notesFilter(portal),
-    objecttypecode: schema.entity,
-    ...(stored
-      ? {
-          filename: `${file.name}.txt`.slice(0, 255),
-          mimetype: 'text/plain',
-          documentbody: stored.toString('base64'),
-          filesize: stored.length,
-        }
-      : {
-          filename: file.name.slice(0, 255),
-          mimetype: String(file.type || 'application/octet-stream').slice(0, 255),
-          documentbody: file.content,
-          filesize: size,
-        }),
-    ...(objectBinding
-      ? { [`${objectBinding[0]}@odata.bind`]: `/${mapping.entitySet}(${savedId})` }
-      : { objectid: { id: savedId, logical_name: schema.entity } }),
-  }));
-}
-
-function prepareFormAttachments({
-  body,
+/** Native form saves have their own schema and table-permission boundary, separate from Web API site settings. */
+/* NOSONAR: single-pass routine, splitting it would change shared state */ /* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ async function submitForm(
+  kind,
   componentId,
-  componentMetadata,
-  portal,
-  identity,
-  store,
-  schema,
-  mapping,
-  cloudAttachments,
-  diagnostic,
-  text,
-  now,
-}) {
-  const attachments = Array.isArray(body.attachments) ? body.attachments : [];
-  const notes = [],
-    cloudUploads = [];
-  if (!attachments.length) return { notes, cloudUploads };
-  if (!truthy(portalField(componentMetadata, 'attachfile')))
-    fail('This native form does not accept attachments', 403, 'FormAttachmentNotEnabled');
-  // Advanced form steps name multiple files with their own column (adx_allowmultiplefiles), as the markup reads it.
-  const multiple =
-    portalField(componentMetadata, 'attachfileallowmultiple') ?? portalField(componentMetadata, 'allowmultiplefiles');
-  if (!truthy(multiple) && attachments.length > 1)
-    fail('This native form accepts one attachment', 400, 'FormAttachmentInvalid');
-  const maxKb = Number(portalField(componentMetadata, 'attachfilemaxsize')) || 0;
-  const accept = [
-    portalField(componentMetadata, 'attachfileaccept'),
-    portalField(componentMetadata, 'attachfileacceptextensions'),
-  ]
-    .filter(Boolean)
-    .join(',');
-  const restrict = truthy(portalField(componentMetadata, 'attachfilerestrictaccept'));
-  const fullname = identity?.fullname ?? identity?.name ?? '';
-  const contactId = canonical(identity?.contactId ?? identity?.id);
-  const annotationMapping = store.resolveMapping('annotation');
-  // FileStorage/CloudStorageAccount set: the file goes to storage route portalCloudAttachments and the note is the documented
-  // placeholder <name>.txt holding { Name, Type, Size, Url }. No route: PROVIDER_ROUTE_MISSING fails the save; the bytes
-  // never fall back to the note. Url is the provider key here; native carries the blob's URL.
-  const cloud = attachmentCloudStorage(portal, cloudAttachments, diagnostic, componentId);
-  const objectBinding = Object.entries(annotationMapping.relationships ?? {}).find(
-    ([, relation]) =>
-      relation.many === false && relation.from === 'objectid' && relation.entity === canonical(schema.entity),
-  );
-  const attachmentState = {
-    componentMetadata,
-    text,
-    maxKb,
-    restrict,
-    accept,
-    cloud,
-    cloudUploads,
-    notes,
-    fullname,
-    contactId,
-    portal,
-    schema,
-    objectBinding,
-    mapping,
-    now,
-  };
-  for (const file of attachments) prepareOneFormAttachment(file, attachmentState);
-  return { notes, cloudUploads };
-}
-
-function configuredNativeAction(configuredActions, stateAction, body) {
-  const matches = configuredActions
-    .map((source, index) => ({ source, index }))
-    .filter(
-      ({ source, index }) =>
-        source.Type === stateAction.type && (body.actionIndex == null || body.actionIndex === index),
-    );
-  if (matches.length !== 1)
-    fail('This record action is not configured for the native form', 403, 'FormActionNotEnabled');
-  return matches[0].source;
-}
-
-async function performNativeRecordAction({
-  kind,
-  stateAction,
-  configuredActions,
   body,
-  create,
-  action,
-  schema,
-  definition,
-  metadata,
-  query,
-  readProvider,
-  store,
-  identity,
-  recordId,
-  portal,
-  pageUrl,
-  writeProvider,
-  mapping,
-  text,
-}) {
-  const configured = configuredNativeAction(configuredActions, stateAction, body);
-  if (create) fail('Record actions require an existing record', 400, 'FormRecordRequired');
-  if (Object.keys(body.values).length || (body.attachments?.length ?? 0))
-    fail('Record actions do not accept field changes or attachments', 400, 'FormActionInvalid');
-  if (configured.FilterCriteria)
-    fail('Native record action filter criteria are unsupported', 501, 'FormActionFilterUnsupported');
-  const source = await resolveFormRecord({
-    kind,
-    definition,
-    schema,
-    metadata,
-    context: { request: { params: query } },
-    readProvider,
+  {
+    portal,
     store,
-    identity,
-  });
-  if (!source.id || canonical(source.id) !== canonical(recordId))
-    fail('The submitted record differs from the form record source', 403, 'FormRecordMismatch');
-  const current = await readProvider.get(schema.entity, recordId, identity);
-  if (!current)
-    fail(`Entity '${schema.entity}' With Id = ${canonical(recordId)} Does Not Exist`, 404, 'FormRecordNotFound');
-  const stateValues = nativeActionStateValues(schema.entity, action, { metadata, store, schema });
-  if (!stateValues)
-    fail('Native record actions require unambiguous state and status metadata', 501, 'FormActionStateUnresolved');
-  const { record } = await writeUnit(writeProvider, async (operations) => ({
-    record: await operations.update(schema.entity, recordId, stateValues, identity),
-  }));
-  const savedId = canonical(recordId),
-    savedRecord = { ...current, ...record };
-  const redirect = [1, 2].includes(Number(configured.OnComplete))
-    ? redirectTarget(
-        { adx_redirectwebpage: configured.RedirectWebpageId, adx_redirecturl: configured.RedirectUrl },
-        { portal, recordId: savedId, record: savedRecord, requestUrl: pageUrl },
-      )
-    : null;
-  return {
-    record,
-    recordId: savedId,
-    entity: schema.entity,
-    operation: action,
-    componentId: definition.id,
-    name: mapping.nameColumn ? (savedRecord[mapping.nameColumn] ?? null) : null,
-    outcome: redirect
-      ? { type: 'redirect', url: redirect }
-      : {
-          type: 'message',
-          message: text(
-            configured.SuccessMessage,
-            action === 'deactivate' ? 'The record has been deactivated.' : 'The record has been activated.',
-          ),
-          hideForm: false,
-        },
-  };
-}
-
-async function readOnlyAdvancedFormStep({
-  kind,
-  definition,
-  schema,
-  metadata,
-  query,
-  readProvider,
-  store,
-  identity,
-  session,
-  portal,
-  formSchema,
-  pageUrl,
-  startNew,
-  text,
-}) {
-  if (!session) fail('This native form is read-only', 403, 'FormReadOnly');
-  // A read-only advanced form step saves nothing: Next records the step as visited and moves on
-  // (its postback answers 302 ?stepid=<next>).
-  const source = await resolveFormRecord({
-    kind,
-    definition,
-    schema,
-    metadata,
-    context: { request: { params: query } },
-    readProvider,
-    store,
-    identity,
-    session,
-  });
-  const viewedId = source.id ? canonical(source.id) : null;
-  let viewed;
-  try {
-    viewed = (viewedId && (await readProvider.get(schema.entity, viewedId, identity))) || {};
-  } catch {
-    viewed = {};
-  }
-  const next = nextAdvancedFormStep(portal, formSchema, schema.nextStepId, viewed);
-  return {
-    record: null,
-    recordId: viewedId,
-    entity: schema.entity,
-    operation: 'navigate',
-    componentId: definition.id,
-    stepId: schema.stepId,
-    outcome: advanceSession(session, schema, next, viewedId, viewed, { portal, pageUrl, startNew, text }),
-  };
-}
-
-function resolveNativeReferenceAssociations(references, mapping, values, store, entity) {
-  const relateAfterCreate = [];
-  for (const reference of references) {
-    const lookup = Object.entries(mapping.relationships ?? {}).find(
-      ([, relation]) =>
-        relation.many === false &&
-        relation.entity === reference.entity &&
-        (reference.lookup
-          ? canonical(relation.from) === canonical(reference.lookup)
-          : relation.schemaName === reference.relationship),
-    );
-    if (lookup) {
-      values[`${lookup[0]}@odata.bind`] =
-        `/${store.resolveMapping(reference.entity).entitySet}(${encodeURIComponent(reference.id)})`;
-      continue;
+    schemas = {},
+    metadata = null,
+    identity = {},
+    writeProvider = store,
+    readProvider = store,
+    now = () => new Date(),
+    requestUrl,
+    // The runtime's advanced form sessions and the request's session owner (webFormSessionOwner).
+    sessions = librarySessions,
+    owner,
+    // The request's selected website language: { lcid, defaultLcid }.
+    language = {},
+    // Internal same-page adapter only; public JSON submissions retain their validation contract.
+    nativePostback = false,
+    // Cloud attachments (FileStorage/CloudStorageAccount): () => the guarded provider of storage route portalCloudAttachments
+    // (throws ProviderError when the route is unset or not ready); diagnostic receives the refusal.
+    cloudAttachments = null,
+    diagnostic = () => {},
+  },
+) {
+  const text = (value, fallback = '') => formText(value, fallback, language);
+  if (!['entityform', 'webform'].includes(kind)) fail('Unsupported native form kind', 404);
+  const definition = (kind === 'webform' ? portal.advancedForms : portal.forms)?.find(
+    (row) => canonical(row.id) === canonical(componentId),
+  );
+  if (!definition) fail('Native form is not exported', 404, 'FormNotFound');
+  if (
+    !body ||
+    typeof body !== 'object' ||
+    Array.isArray(body) ||
+    !body.values ||
+    typeof body.values !== 'object' ||
+    Array.isArray(body.values)
+  )
+    fail('Native form submission requires a values object');
+  const action = body.action ?? 'submit';
+  if (!['submit', 'previous', ...Object.keys(NATIVE_STATE_ACTIONS)].includes(action))
+    fail('Unsupported native form action', 400, 'InvalidFormAction');
+  const stateAction = NATIVE_STATE_ACTIONS[action];
+  if (stateAction && kind !== 'entityform') fail('Record state actions require a basic form', 400, 'InvalidFormAction');
+  const pageUrl = (() => {
+    try {
+      const base = new URL(requestUrl ?? 'http://localhost/');
+      const query = body.query && typeof body.query === 'object' && !Array.isArray(body.query) ? body.query : {};
+      const target = new URL(
+        typeof body.pageUrl === 'string' && body.pageUrl.startsWith('/') ? body.pageUrl : base.pathname,
+        base,
+      );
+      for (const [key, value] of Object.entries(query))
+        if (typeof value === 'string') target.searchParams.set(key, value);
+      return target.href;
+    } catch {
+      return requestUrl;
     }
-    const parentMapping = store.resolveMapping(reference.entity);
-    const parentNavigation = Object.entries(parentMapping.relationships ?? {}).find(
-      ([name, relation]) =>
-        relation.many &&
-        relation.intersect &&
-        (name === reference.relationship || relation.schemaName === reference.relationship) &&
-        relation.entity === canonical(entity),
-    );
-    if (!parentNavigation)
-      fail(`Reference relationship '${reference.relationship}' is not mapped`, 501, 'FormReferenceUnresolved');
-    relateAfterCreate.push({ entity: reference.entity, id: reference.id, navigation: parentNavigation[0] });
+  })();
+  const query = body.query && typeof body.query === 'object' && !Array.isArray(body.query) ? body.query : {};
+  // Forms whose systemform is absent from the solutions submit the approximated layout
+  // that the renderer displayed (lib/form-schema-fallback.mjs).
+  let formSchema = schemas[definition.id] ?? schemas[definition.name];
+  if (!formSchema && kind === 'entityform') formSchema = approximateFormSchema({ definition, portal, metadata });
+  if (kind === 'webform')
+    formSchema = approximateAdvancedFormSchema({ definition, portal, metadata, schema: formSchema });
+  if (!formSchema) fail('Native form layout is unresolved', 501, 'FormSchemaRequired');
+  let schema = formSchema;
+  let session = null;
+  const startNew = truthy(portalField(definition.metadata ?? {}, 'startnewsessiononload'));
+  if (schema.steps) {
+    owner = owner === undefined ? webFormSessionOwner(identity) : owner;
+    const access = await advancedFormAccess({
+      definition,
+      identity,
+      owner,
+      sessions,
+      initialStepId: schema.initialStepId,
+      readRecord: (entity, id) => readProvider.get(entity, id, identity),
+      language,
+    });
+    if (access?.signIn) fail('Sign in to submit this form.', 401, access.code);
+    if (access?.message) fail(access.message, 403, access.code);
+    session =
+      access?.session ??
+      webFormSession({ webformId: definition.id, owner, sessionId: query.sessionid, startNew, sessions });
+    // A submission names a step its session accepts (the current step or one it saved) or the
+    // step its page URL opened directly (stepid, as platform step URLs and portal links carry).
+    const stepId = body.stepId ?? query.stepid ?? session?.current ?? schema.initialStepId;
+    const opened = typeof query.stepid === 'string' && canonical(query.stepid) === canonical(stepId);
+    if (!opened && !sessionSteps(session, schema.initialStepId).has(canonical(stepId)))
+      fail(
+        `Step '${stepId}' is neither a step of this form session nor the step its page opened`,
+        400,
+        'InvalidFormStep',
+      );
+    schema = schema.steps.find((step) => canonical(step.stepId) === canonical(stepId));
+    if (!schema || ['redirect', 'condition'].includes(schema.type))
+      fail('Native form step does not accept a submission', 400, 'InvalidFormStep');
+    session ??= sessions.create(definition.id, owner, startNew);
+    if (action === 'previous') {
+      const index = session.history.findIndex((entry) => canonical(entry.stepId) === canonical(schema.stepId));
+      const previous = index > 0 ? session.history[index - 1] : session.history.at(-1);
+      if (!previous || canonical(previous.stepId) === canonical(schema.stepId))
+        fail('There is no previous step', 400, 'InvalidFormStep');
+      if (portalField(schema.metadata ?? {}, 'movepreviouspermitted') === false)
+        fail('Moving to the previous step is not permitted', 403, 'InvalidFormStep');
+      session.current = previous.stepId;
+      return {
+        operation: 'navigate',
+        stepId: schema.stepId,
+        recordId: previous.recordId ?? null,
+        outcome: { type: 'step', url: nextStepUrl(previous.stepId, session, pageUrl, startNew) },
+      };
+    }
+  } else if (body.stepId) fail('Basic forms do not accept an advanced step', 400, 'InvalidFormStep');
+  else if (action === 'previous') fail('Basic forms do not have a previous step', 400, 'InvalidFormAction');
+  if (schema.formXml)
+    schema = {
+      ...schema,
+      ...schemaFromFormXml(schema.formXml, { ...schema, entity: schema.entity ?? definition.entityName }),
+    };
+  if (!schema.entity) fail('Native form table is unresolved', 501, 'FormEntityRequired');
+  const componentMetadata = schema.metadata ?? definition.metadata ?? {};
+  let mode = Number(schema.mode ?? definition.mode);
+  if (mode === 100000002 && !stateAction) {
+    if (!session) fail('This native form is read-only', 403, 'FormReadOnly');
+    // A read-only advanced form step saves nothing: Next records the step as visited and moves on
+    // (its postback answers 302 ?stepid=<next>).
+    const source = await resolveFormRecord({
+      kind,
+      definition,
+      schema,
+      metadata,
+      context: { request: { params: query } },
+      readProvider,
+      store,
+      identity,
+      session,
+    });
+    const viewedId = source.id ? canonical(source.id) : null;
+    let viewed;
+    try {
+      viewed = (viewedId && (await readProvider.get(schema.entity, viewedId, identity))) || {};
+    } catch {
+      viewed = {};
+    }
+    const next = nextAdvancedFormStep(portal, formSchema, schema.nextStepId, viewed);
+    return {
+      record: null,
+      recordId: viewedId,
+      entity: schema.entity,
+      operation: 'navigate',
+      componentId: definition.id,
+      stepId: schema.stepId,
+      outcome: advanceSession(session, schema, next, viewedId, viewed, { portal, pageUrl, startNew, text }),
+    };
   }
-  return relateAfterCreate;
-}
-
-function nativeFormMetadata(portal, definition, schema) {
-  return (portal.records ?? []).filter(
+  // A multistep insert step becomes an edit once its record exists in the session.
+  const sessionRecordId = session ? sessionRecord(session, schema.stepId) : null;
+  if (session && mode === 100000000 && sessionRecordId) mode = 100000001;
+  // Allow Create If Null applies only to a record associated to the current portal user
+  // (basic form 756150003, advanced form step 100000004), as when the form renders; an
+  // advanced form step carries its own record source.
+  const sourceMetadata = kind === 'webform' ? (schema.metadata ?? {}) : (definition.metadata ?? {});
+  const sourceType = Number(portalField(sourceMetadata, 'entitysourcetype') ?? 0);
+  const create =
+    mode === 100000000 ||
+    (!body.recordId &&
+      [756150003, 100000004].includes(sourceType) &&
+      truthy(portalField(sourceMetadata, 'recordsourceallowcreateonnull')));
+  if (create && body.recordId) fail('A create form cannot select an existing record');
+  const recordId = schema.recordId ?? body.recordId ?? sessionRecordId;
+  if (!create && !recordId) fail('This native form requires its record identifier', 400, 'FormRecordRequired');
+  if (schema.recordId && body.recordId && canonical(schema.recordId) !== canonical(body.recordId))
+    fail('The submitted record differs from the form record', 403, 'FormRecordMismatch');
+  const mapping = store.resolveMapping(schema.entity);
+  const configuredActions = nativeFormActions(componentMetadata);
+  if (stateAction) {
+    const matches = configuredActions
+      .map((source, index) => ({ source, index }))
+      .filter(
+        ({ source, index }) =>
+          source.Type === stateAction.type && (body.actionIndex == null || body.actionIndex === index),
+      );
+    if (matches.length !== 1)
+      fail('This record action is not configured for the native form', 403, 'FormActionNotEnabled');
+    const configured = matches[0].source;
+    if (create) fail('Record actions require an existing record', 400, 'FormRecordRequired');
+    if (Object.keys(body.values).length || (body.attachments?.length ?? 0))
+      fail('Record actions do not accept field changes or attachments', 400, 'FormActionInvalid');
+    if (configured.FilterCriteria)
+      fail('Native record action filter criteria are unsupported', 501, 'FormActionFilterUnsupported');
+    const source = await resolveFormRecord({
+      kind,
+      definition,
+      schema,
+      metadata,
+      context: { request: { params: query } },
+      readProvider,
+      store,
+      identity,
+    });
+    if (!source.id || canonical(source.id) !== canonical(recordId))
+      fail('The submitted record differs from the form record source', 403, 'FormRecordMismatch');
+    const current = await readProvider.get(schema.entity, recordId, identity);
+    if (!current)
+      fail(`Entity '${schema.entity}' With Id = ${canonical(recordId)} Does Not Exist`, 404, 'FormRecordNotFound');
+    const stateValues = nativeActionStateValues(schema.entity, action, { metadata, store, schema });
+    if (!stateValues)
+      fail('Native record actions require unambiguous state and status metadata', 501, 'FormActionStateUnresolved');
+    const { record } = await writeUnit(writeProvider, async (operations) => ({
+      record: await operations.update(schema.entity, recordId, stateValues, identity),
+    }));
+    const savedId = canonical(recordId),
+      savedRecord = { ...current, ...record };
+    const redirect = [1, 2].includes(Number(configured.OnComplete))
+      ? redirectTarget(
+          { adx_redirectwebpage: configured.RedirectWebpageId, adx_redirecturl: configured.RedirectUrl },
+          { portal, recordId: savedId, record: savedRecord, requestUrl: pageUrl },
+        )
+      : null;
+    return {
+      record,
+      recordId: savedId,
+      entity: schema.entity,
+      operation: action,
+      componentId: definition.id,
+      name: mapping.nameColumn ? (savedRecord[mapping.nameColumn] ?? null) : null,
+      outcome: redirect
+        ? { type: 'redirect', url: redirect }
+        : {
+            type: 'message',
+            message: text(
+              configured.SuccessMessage,
+              action === 'deactivate' ? 'The record has been deactivated.' : 'The record has been activated.',
+            ),
+            hideForm: false,
+          },
+    };
+  }
+  if (
+    kind === 'entityform' &&
+    configuredActions.length &&
+    !configuredActions.some((candidate) => candidate.Type === 'SubmitAction')
+  )
+    fail('Submitting fields is not configured for this native form', 403, 'FormSubmitNotEnabled');
+  const formMetadata = (portal.records ?? []).filter(
     (row) =>
       ['basicformmetadata', 'advancedformmetadata'].includes(row.kind) &&
       (canonical(portalField(row, 'entityform')) === canonical(definition.id) ||
         (schema.stepId && canonical(portalField(row, 'webformstep')) === canonical(schema.stepId))),
   );
-}
-
-function nativeEffectiveFields(schema, definition, componentMetadata, formMetadata, create, text) {
-  return (schema.fields ?? [])
+  const effectiveFields = (schema.fields ?? [])
     .filter(
       (field) =>
         !(field.name === 'ownerid' && portalField(definition.metadata ?? {}, 'showownerfields', false) === false),
@@ -1229,13 +1002,10 @@ function nativeEffectiveFields(schema, definition, componentMetadata, formMetada
         label: text(portalField(metadata ?? {}, 'label'), field.label ?? field.name),
       };
     });
-}
-
-function nativeFormValues(postedValues, mapping, effectiveFields) {
   const fields = new Set(effectiveFields.map((field) => canonical(field.name)));
   const values = {};
   const changed = {};
-  for (const [key, value] of Object.entries(postedValues)) {
+  for (const [key, value] of Object.entries(body.values)) {
     if (['__proto__', 'prototype', 'constructor'].includes(key)) fail('Invalid native form field');
     const binding = key.endsWith('@odata.bind');
     const relation = binding ? mapping.relationships?.[key.slice(0, -11)] : null;
@@ -1243,409 +1013,14 @@ function nativeFormValues(postedValues, mapping, effectiveFields) {
     if (!fields.has(column) || (binding && !relation))
       fail(`Field '${key}' is not bound to this native form`, 403, 'FormFieldNotBound');
     values[key] = value;
-    let changedValue = value;
-    if (binding && value === null) changedValue = null;
-    else if (binding && typeof value === 'string')
-      changedValue = decodeURIComponent(/\(([^()]*)\)$/.exec(value)?.[1] ?? value);
-    changed[column] = changedValue;
+    changed[column] = binding
+      ? value === null
+        ? null
+        : typeof value === 'string'
+          ? decodeURIComponent(value.match(/\(([^()]*)\)$/)?.[1] ?? value)
+          : value
+      : value;
   }
-  return { values, changed };
-}
-
-function previousAdvancedFormOutcome(schema, session, pageUrl, startNew) {
-  const index = session.history.findIndex((entry) => canonical(entry.stepId) === canonical(schema.stepId));
-  const previous = index > 0 ? session.history[index - 1] : session.history.at(-1);
-  if (!previous || canonical(previous.stepId) === canonical(schema.stepId))
-    fail('There is no previous step', 400, 'InvalidFormStep');
-  if (portalField(schema.metadata ?? {}, 'movepreviouspermitted') === false)
-    fail('Moving to the previous step is not permitted', 403, 'InvalidFormStep');
-  session.current = previous.stepId;
-  return {
-    operation: 'navigate',
-    stepId: schema.stepId,
-    recordId: previous.recordId ?? null,
-    outcome: { type: 'step', url: nextStepUrl(previous.stepId, session, pageUrl, startNew) },
-  };
-}
-
-async function resolveAdvancedFormSession({
-  schema,
-  definition,
-  identity,
-  owner,
-  sessions,
-  readProvider,
-  language,
-  query,
-  body,
-  startNew,
-  action,
-  pageUrl,
-}) {
-  owner = owner === undefined ? webFormSessionOwner(identity) : owner;
-  const access = await advancedFormAccess({
-    definition,
-    identity,
-    owner,
-    sessions,
-    initialStepId: schema.initialStepId,
-    readRecord: (entity, id) => readProvider.get(entity, id, identity),
-    language,
-  });
-  if (access?.signIn) fail('Sign in to submit this form.', 401, access.code);
-  if (access?.message) fail(access.message, 403, access.code);
-  const session =
-    access?.session ??
-    webFormSession({ webformId: definition.id, owner, sessionId: query.sessionid, startNew, sessions });
-  // A submission names a step its session accepts (the current step or one it saved) or the
-  // step its page URL opened directly (stepid, as platform step URLs and portal links carry).
-  const stepId = body.stepId ?? query.stepid ?? session?.current ?? schema.initialStepId;
-  const opened = typeof query.stepid === 'string' && canonical(query.stepid) === canonical(stepId);
-  if (!opened && !sessionSteps(session, schema.initialStepId).has(canonical(stepId)))
-    fail(
-      `Step '${stepId}' is neither a step of this form session nor the step its page opened`,
-      400,
-      'InvalidFormStep',
-    );
-  schema = schema.steps.find((step) => canonical(step.stepId) === canonical(stepId));
-  if (!schema || ['redirect', 'condition'].includes(schema.type))
-    fail('Native form step does not accept a submission', 400, 'InvalidFormStep');
-  const activeSession = session ?? sessions.create(definition.id, owner, startNew);
-  if (action === 'previous')
-    return {
-      owner,
-      schema,
-      session: activeSession,
-      result: previousAdvancedFormOutcome(schema, activeSession, pageUrl, startNew),
-    };
-  return { owner, schema, session: activeSession, result: null };
-}
-
-function removeMaskedNativeNoopChanges({ create, store, mapping, recordId, current, values, changed, empty, scalar }) {
-  if (create) return;
-  const rows = store.tableRows?.(mapping.logicalName) ?? [],
-    stored = rows[store.rowIndex?.(mapping, rows, recordId) ?? -1];
-  for (const column of Object.keys(changed)) {
-    const read = current[column],
-      posted = changed[column];
-    if (!stored || !isSecuredField(store.fieldDefinition?.(mapping.logicalName, column)) || read === stored[column])
-      continue;
-    if (!((empty(read) && empty(posted)) || String(scalar(read)) === String(scalar(posted)))) continue;
-    delete changed[column];
-    for (const name of Object.keys(values)) if (canonical(name) === column) delete values[name];
-  }
-}
-
-async function writeNativeFormSubmission({
-  session,
-  portal,
-  formSchema,
-  schema,
-  cloudUploads,
-  cloudAttachments,
-  writeProvider,
-  create,
-  currentContactAssociation,
-  values,
-  identity,
-  mapping,
-  recordId,
-  relateAfterCreate,
-  notes,
-  current,
-}) {
-  if (session) requiredAdvancedFormStep(portal, formSchema, schema.nextStepId);
-  const cloudStore = cloudUploads.length ? cloudAttachments() : null;
-  for (const upload of cloudUploads)
-    await cloudStore.put(upload.key, Buffer.from(upload.content, 'base64'), { contentType: upload.type });
-  return writeUnit(writeProvider, async (operations) => {
-    return runNativeFormWriteOperations(operations, {
-      session,
-      portal,
-      formSchema,
-      schema,
-      create,
-      currentContactAssociation,
-      values,
-      identity,
-      mapping,
-      recordId,
-      relateAfterCreate,
-      notes,
-      current,
-    });
-  }).catch(async (error) => {
-    for (const upload of cloudUploads) await cloudStore.delete(upload.key).catch(() => {});
-    throw error;
-  });
-}
-
-async function runNativeFormWriteOperations(
-  operations,
-  {
-    session,
-    portal,
-    formSchema,
-    schema,
-    create,
-    currentContactAssociation,
-    values,
-    identity,
-    mapping,
-    recordId,
-    relateAfterCreate,
-    notes,
-    current,
-  },
-) {
-  const record = create
-    ? await withNativeFormContactAssociation(currentContactAssociation, () =>
-        operations.create(schema.entity, values, identity),
-      )
-    : await operations.update(schema.entity, recordId, values, identity);
-  const savedId = canonical(record?.[mapping.idColumn] ?? recordId);
-  for (const relation of relateAfterCreate) {
-    if (!operations.associate)
-      fail('Native form reference association requires an association provider', 501, 'FormReferenceUnsupported');
-    await operations.associate(relation.entity, relation.id, relation.navigation, savedId, identity);
-  }
-  for (const note of notes) await operations.create('annotation', note(savedId), identity);
-  const next = session ? nextAdvancedFormStep(portal, formSchema, schema.nextStepId, { ...current, ...record }) : null;
-  return { record, savedId, next };
-}
-
-function nativeFormSubmitOutcome({
-  session,
-  schema,
-  next,
-  savedId,
-  savedRecord,
-  portal,
-  pageUrl,
-  startNew,
-  text,
-  nativePostback,
-  requestUrl,
-  componentMetadata,
-}) {
-  if (session) {
-    let outcome = advanceSession(session, schema, next, savedId, savedRecord, { portal, pageUrl, startNew, text });
-    if (nativePostback && outcome.type === 'message') {
-      const target = new URL(requestUrl ?? pageUrl, 'http://localhost/');
-      target.searchParams.set('msg', 'success');
-      target.searchParams.set('stepid', schema.stepId);
-      if (startNew) target.searchParams.set('sessionid', session.id);
-      else target.searchParams.delete('sessionid');
-      outcome = { type: 'redirect', url: target.pathname + target.search };
-    }
-    return outcome;
-  }
-  const settings = (() => {
-    try {
-      return JSON.parse(portalField(componentMetadata, 'settings') || '{}');
-    } catch {
-      return {};
-    }
-  })();
-  const submitAction = (settings.Actions ?? []).find((candidate) => candidate.Type === 'SubmitAction');
-  const onSuccess = Number(portalField(componentMetadata, 'onsuccess') ?? 756150000);
-  if (onSuccess === 756150001) {
-    const url = redirectTarget(componentMetadata, {
-      portal,
-      recordId: savedId,
-      record: savedRecord,
-      requestUrl: pageUrl,
-    });
-    // A redirect without a resolvable target re-renders the page (native traces the error).
-    return url ? { type: 'redirect', url } : { type: 'none' };
-  }
-  return {
-    type: 'message',
-    message:
-      text(portalField(componentMetadata, 'successmessage'), '') ||
-      text(submitAction?.SuccessMessage, '') ||
-      'Submission completed successfully.',
-    hideForm: portalField(componentMetadata, 'hideformonsuccess') !== false,
-  };
-}
-
-function validateNativeSubmission(kind, componentId, body, portal) {
-  if (!['entityform', 'webform'].includes(kind)) fail('Unsupported native form kind', 404);
-  const definition = (kind === 'webform' ? portal.advancedForms : portal.forms)?.find(
-    (row) => canonical(row.id) === canonical(componentId),
-  );
-  if (!definition) fail('Native form is not exported', 404, 'FormNotFound');
-  if (
-    !body ||
-    typeof body !== 'object' ||
-    Array.isArray(body) ||
-    !body.values ||
-    typeof body.values !== 'object' ||
-    Array.isArray(body.values)
-  )
-    fail('Native form submission requires a values object');
-  const action = body.action ?? 'submit';
-  if (!['submit', 'previous', ...Object.keys(NATIVE_STATE_ACTIONS)].includes(action))
-    fail('Unsupported native form action', 400, 'InvalidFormAction');
-  const stateAction = NATIVE_STATE_ACTIONS[action];
-  if (stateAction && kind !== 'entityform') fail('Record state actions require a basic form', 400, 'InvalidFormAction');
-  return { definition, action, stateAction };
-}
-
-function nativeSubmissionPageUrl(requestUrl, body) {
-  try {
-    const base = new URL(requestUrl ?? 'http://localhost/');
-    const query = body.query && typeof body.query === 'object' && !Array.isArray(body.query) ? body.query : {};
-    const target = new URL(
-      typeof body.pageUrl === 'string' && body.pageUrl.startsWith('/') ? body.pageUrl : base.pathname,
-      base,
-    );
-    for (const [key, value] of Object.entries(query))
-      if (typeof value === 'string') target.searchParams.set(key, value);
-    return target.href;
-  } catch {
-    return requestUrl;
-  }
-}
-
-/** Native form saves have their own schema and table-permission boundary, separate from Web API site settings. */
-/* NOSONAR: single-pass routine, splitting it would change shared state */ async function submitForm(
-  kind,
-  componentId,
-  body,
-  {
-    portal,
-    store,
-    schemas = {},
-    metadata = null,
-    identity = {},
-    writeProvider = store,
-    readProvider = store,
-    now = () => new Date(),
-    requestUrl,
-    // The runtime's advanced form sessions and the request's session owner (webFormSessionOwner).
-    sessions = librarySessions,
-    owner,
-    // The request's selected website language: { lcid, defaultLcid }.
-    language = {},
-    // Internal same-page adapter only; public JSON submissions retain their validation contract.
-    nativePostback = false,
-    // Cloud attachments (FileStorage/CloudStorageAccount): () => the guarded provider of storage route portalCloudAttachments
-    // (throws ProviderError when the route is unset or not ready); diagnostic receives the refusal.
-    cloudAttachments = null,
-    diagnostic = () => {},
-  },
-) {
-  const text = (value, fallback = '') => formText(value, fallback, language);
-  const { definition, action, stateAction } = validateNativeSubmission(kind, componentId, body, portal);
-  const pageUrl = nativeSubmissionPageUrl(requestUrl, body);
-  const query = body.query && typeof body.query === 'object' && !Array.isArray(body.query) ? body.query : {};
-  // Forms whose systemform is absent from the solutions submit the approximated layout
-  // that the renderer displayed (lib/form-schema-fallback.mjs).
-  let formSchema = schemas[definition.id] ?? schemas[definition.name];
-  if (!formSchema && kind === 'entityform') formSchema = approximateFormSchema({ definition, portal, metadata });
-  if (kind === 'webform')
-    formSchema = approximateAdvancedFormSchema({ definition, portal, metadata, schema: formSchema });
-  if (!formSchema) fail('Native form layout is unresolved', 501, 'FormSchemaRequired');
-  let schema = formSchema;
-  let session = null;
-  const startNew = truthy(portalField(definition.metadata ?? {}, 'startnewsessiononload'));
-  if (schema.steps) {
-    const advanced = await resolveAdvancedFormSession({
-      schema,
-      definition,
-      identity,
-      owner,
-      sessions,
-      readProvider,
-      language,
-      query,
-      body,
-      startNew,
-      action,
-      pageUrl,
-    });
-    schema = advanced.schema;
-    session = advanced.session;
-    if (advanced.result) return advanced.result;
-  } else if (body.stepId) fail('Basic forms do not accept an advanced step', 400, 'InvalidFormStep');
-  else if (action === 'previous') fail('Basic forms do not have a previous step', 400, 'InvalidFormAction');
-  if (schema.formXml)
-    schema = {
-      ...schema,
-      ...schemaFromFormXml(schema.formXml, { ...schema, entity: schema.entity ?? definition.entityName }),
-    };
-  if (!schema.entity) fail('Native form table is unresolved', 501, 'FormEntityRequired');
-  const componentMetadata = schema.metadata ?? definition.metadata ?? {};
-  let mode = Number(schema.mode ?? definition.mode);
-  if (mode === 100000002 && !stateAction)
-    return readOnlyAdvancedFormStep({
-      kind,
-      definition,
-      schema,
-      metadata,
-      query,
-      readProvider,
-      store,
-      identity,
-      session,
-      portal,
-      formSchema,
-      pageUrl,
-      startNew,
-      text,
-    });
-  // A multistep insert step becomes an edit once its record exists in the session.
-  const sessionRecordId = session ? sessionRecord(session, schema.stepId) : null;
-  if (session && mode === 100000000 && sessionRecordId) mode = 100000001;
-  // Allow Create If Null applies only to a record associated to the current portal user
-  // (basic form 756150003, advanced form step 100000004), as when the form renders; an
-  // advanced form step carries its own record source.
-  const sourceMetadata = kind === 'webform' ? (schema.metadata ?? {}) : (definition.metadata ?? {});
-  const sourceType = Number(portalField(sourceMetadata, 'entitysourcetype') ?? 0);
-  const create =
-    mode === 100000000 ||
-    (!body.recordId &&
-      [756150003, 100000004].includes(sourceType) &&
-      truthy(portalField(sourceMetadata, 'recordsourceallowcreateonnull')));
-  if (create && body.recordId) fail('A create form cannot select an existing record');
-  const recordId = schema.recordId ?? body.recordId ?? sessionRecordId;
-  if (!create && !recordId) fail('This native form requires its record identifier', 400, 'FormRecordRequired');
-  if (schema.recordId && body.recordId && canonical(schema.recordId) !== canonical(body.recordId))
-    fail('The submitted record differs from the form record', 403, 'FormRecordMismatch');
-  const mapping = store.resolveMapping(schema.entity);
-  const configuredActions = nativeFormActions(componentMetadata);
-  if (stateAction)
-    return performNativeRecordAction({
-      kind,
-      stateAction,
-      configuredActions,
-      body,
-      create,
-      action,
-      schema,
-      definition,
-      metadata,
-      query,
-      readProvider,
-      store,
-      identity,
-      recordId,
-      portal,
-      pageUrl,
-      writeProvider,
-      mapping,
-      text,
-    });
-  if (
-    kind === 'entityform' &&
-    configuredActions.length &&
-    !configuredActions.some((candidate) => candidate.Type === 'SubmitAction')
-  )
-    fail('Submitting fields is not configured for this native form', 403, 'FormSubmitNotEnabled');
-  const formMetadata = nativeFormMetadata(portal, definition, schema);
-  const effectiveFields = nativeEffectiveFields(schema, definition, componentMetadata, formMetadata, create, text);
-  const { values, changed } = nativeFormValues(body.values, mapping, effectiveFields);
   // The providers retain table, relationship, plugin and validation checks. Reads
   // prevent an update form from being used to manufacture a missing record.
   const current = create ? {} : await readProvider.get(schema.entity, recordId, identity);
@@ -1656,7 +1031,19 @@ function nativeSubmissionPageUrl(requestUrl, body) {
     value === undefined || value === null || value === '' || (Array.isArray(value) && !value.length);
   // A secured column the form read masked or null (column security of the reader, data.mjs get) and posted back unchanged
   // is no change: writing it would replace the stored value with its mask or with null.
-  removeMaskedNativeNoopChanges({ create, store, mapping, recordId, current, values, changed, empty, scalar });
+  if (!create) {
+    const rows = store.tableRows?.(mapping.logicalName) ?? [],
+      stored = rows[store.rowIndex?.(mapping, rows, recordId) ?? -1];
+    for (const column of Object.keys(changed)) {
+      const read = current[column],
+        posted = changed[column];
+      if (!stored || !isSecuredField(store.fieldDefinition?.(mapping.logicalName, column)) || read === stored[column])
+        continue;
+      if (!((empty(read) && empty(posted)) || String(scalar(read)) === String(scalar(posted)))) continue;
+      delete changed[column];
+      for (const name of Object.keys(values)) if (canonical(name) === column) delete values[name];
+    }
+  }
   const assigned = new Set();
   let currentContactAssociation = null;
   let contactRecord;
@@ -1725,22 +1112,156 @@ function nativeSubmissionPageUrl(requestUrl, body) {
       }
     } else fail(`On-save type '${type}' is unsupported`, 501, 'FormSaveTypeUnsupported');
     if (value === undefined) fail(`On-save value for '${name}' is absent`, 501, 'FormSaveValueRequired');
-    changed[name] = applyNativeOnSaveValue({ name, field, value, logical, values, mapping, store, scalar, empty });
+    for (const key of Object.keys(values)) {
+      const relation = key.endsWith('@odata.bind') ? mapping.relationships?.[key.slice(0, -11)] : null;
+      if (canonical(relation?.from ?? key) === name) delete values[key];
+    }
+    if (field.type === 'lookup') {
+      const targets = Object.entries(mapping.relationships ?? {}).filter(
+        ([, relation]) =>
+          relation.many === false && canonical(relation.from) === name && (!logical || relation.entity === logical),
+      );
+      if (targets.length !== 1)
+        fail(`On-save lookup '${name}' has an unresolved navigation target`, 501, 'FormSaveLookupUnresolved');
+      const [navigation, relation] = targets[0],
+        target = store.resolveMapping(relation.entity),
+        id = scalar(value);
+      values[navigation + '@odata.bind'] = empty(id)
+        ? null
+        : `/${target.entitySet}(${encodeURIComponent(canonical(id))})`;
+    } else {
+      value = scalar(value);
+      if (['boolean', 'checkbox'].includes(field.type)) {
+        if (value === true || value === false) {
+          /* The value is already a Boolean and needs no coercion. */
+        } else if (/^(true|false|0|1)$/i.test(String(value))) value = /^(true|1)$/i.test(String(value));
+        else fail(`On-save boolean '${name}' is invalid`, 501, 'FormSaveValueInvalid');
+      } else if (field.type === 'number') {
+        if (value === '' || !Number.isFinite(Number(value)))
+          fail(`On-save number '${name}' is invalid`, 501, 'FormSaveValueInvalid');
+        value = Number(value);
+        if (
+          (field.options || /^(int|picklist|state|status)$/i.test(field.dataverseType ?? '')) &&
+          !Number.isInteger(value)
+        )
+          fail(`On-save integer '${name}' is invalid`, 501, 'FormSaveValueInvalid');
+      } else if (['date', 'datetime-local'].includes(field.type)) {
+        if (!Number.isFinite(new Date(value).getTime()))
+          fail(`On-save date '${name}' is invalid`, 501, 'FormSaveValueInvalid');
+        value = new Date(value).toISOString();
+      } else if (![undefined, 'text', 'textarea', 'email', 'url'].includes(field.type))
+        fail(`On-save field type '${field.type}' is unsupported`, 501, 'FormSaveAttributeUnsupported');
+      values[field.name] = value;
+    }
+    changed[name] = scalar(value);
     assigned.add(name);
   }
   const validationErrors = [];
   const invalid = (field, code, message) => validationErrors.push({ field: field.name, code, message });
-  validateNativeFormFields(effectiveFields, {
-    changed,
-    current,
-    values,
-    mapping,
-    assigned,
-    scalar,
-    empty,
-    invalid,
-    nativePostback,
-  });
+  for (const field of effectiveFields) {
+    const key = canonical(field.name),
+      hasChange = Object.hasOwn(changed, key),
+      value = hasChange ? changed[key] : (current[field.name] ?? field.default);
+    if (field.readOnly && hasChange && !assigned.has(key)) {
+      const expected = scalar(current[field.name] ?? field.default);
+      if (!(empty(expected) && empty(scalar(value))) && String(scalar(value)) !== String(expected))
+        fail(`Field '${field.name}' is read-only in this native form`, 403, 'FormFieldReadOnly');
+      for (const name of Object.keys(values)) {
+        const relation = name.endsWith('@odata.bind') ? mapping.relationships?.[name.slice(0, -11)] : null;
+        if (canonical(relation?.from ?? name) === key) delete values[name];
+      }
+    }
+    const requiredEmpty =
+      field.richText && !/<img\b/i.test(String(value ?? ''))
+        ? empty(richTextRequiredText(value))
+        : empty(scalar(value));
+    if (field.required && !field.hidden && !field.readOnly && requiredEmpty)
+      invalid(field, 'FormFieldRequired', `${field.label} is a required field.`);
+    // Native format CustomValidators are server-side, unlike the Web API's
+    // JSON type checks. Validate before invoking either local or live providers.
+    // Preserve a malformed numeric textbox as text so it cannot become JSON null.
+    if (hasChange && !empty(value) && !field.hidden && !field.readOnly) {
+      const control = nativeControlKind(field);
+      // Native lists validate posted values against the exported options, before
+      // invoking Dataverse. The Web API may accept unlisted integer values.
+      if (
+        control === 'picklist' &&
+        field.options?.length &&
+        !field.options.some((option) => Number(option.value) === Number(value))
+      )
+        fail('Invalid postback or callback argument. Event validation is enabled.', 500, 'FormEventValidationInvalid');
+      if (control === 'email' && (typeof value !== 'string' || !/^[^\s@<>]+@[^\s@<>]+$/.test(value)))
+        invalid(field, 'FormFieldInvalid', field.validationMessage || `${field.label} must be a valid email address.`);
+      if (['integer', 'decimal', 'double', 'money'].includes(control)) {
+        const number = typeof value === 'number' ? value : NaN;
+        const exact = nativePostback && isExactNumeric(value) ? decimalParts(value) : null;
+        const valid = exact
+          ? control !== 'double' && (control !== 'integer' || exact.scale === 0)
+          : Number.isFinite(number) && (control !== 'integer' || Number.isInteger(number));
+        if (!valid) {
+          const kind = control === 'integer' ? 'integer' : control === 'double' ? 'floating-point' : 'decimal';
+          invalid(
+            field,
+            'FormFieldInvalid',
+            field.validationMessage || `${field.label} must be a valid ${kind} value.`,
+          );
+        }
+        const minimum = field.minimum ?? field.minValue,
+          maximum = field.maximum ?? field.maxValue;
+        if (
+          (minimum != null || maximum != null) &&
+          (!valid ||
+            (minimum != null && (exact ? compareNumeric(value, minimum) < 0 : number < Number(minimum))) ||
+            (maximum != null && (exact ? compareNumeric(value, maximum) > 0 : number > Number(maximum))))
+        )
+          invalid(field, 'FormFieldOutOfRange', field.rangeMessage || nativeRangeMessage(field));
+      }
+      if (control === 'boolean' && typeof value !== 'boolean')
+        invalid(field, 'FormFieldInvalid', field.validationMessage || `${field.label} must be a valid Boolean value.`);
+      if (control === 'datetime') {
+        // Native DateFormatValidator consumes the round-trip hidden control,
+        // not the Web API's ISO date/date-time literals. Server-assigned on-save
+        // dates have already been typed and do not come from that control.
+        const behavior = field.dateTimeBehavior ?? field.behavior ?? (nativeDateOnly(field) ? 'DateOnly' : 'UserLocal');
+        const clockDateOnly = behavior === 'DateOnly' && field.prepopulateType === 100000001;
+        const native = clockDateOnly
+          ? /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z?$/
+          : behavior === 'UserLocal'
+            ? /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/
+            : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}$/;
+        if (typeof value !== 'string' || !parseDateValue(value) || (!assigned.has(key) && !native.test(value)))
+          invalid(
+            field,
+            'FormFieldInvalid',
+            field.validationMessage || `${field.label} must have a valid date format.`,
+          );
+      }
+    }
+    // Server-side counterparts of the native regular-expression and length validators.
+    if (hasChange && !empty(value) && typeof value === 'string') {
+      if (field.pattern) {
+        let expression;
+        try {
+          expression = new RegExp(field.pattern);
+        } catch {
+          fail(
+            `Field '${field.name}' has an invalid exported validation expression`,
+            501,
+            'FormValidationExpressionInvalid',
+          );
+        }
+        const match = expression.exec(value);
+        if (!match || match[0] !== value)
+          invalid(field, 'FormFieldInvalid', field.patternMessage || `${field.label} is not valid.`);
+      }
+      if (field.maxLength && !field.richText && value.length > Number(field.maxLength))
+        invalid(
+          field,
+          'FormFieldTooLong',
+          `${field.label} exceeds the maximum length of ${field.maxLength} characters.`,
+        );
+    }
+  }
   if (validationErrors.length)
     throw new DataError(validationErrors[0].message, 400, validationErrors[0].code, { validationErrors });
   // Native reference parameters (refentity/refid/refrel) relate a created child
@@ -1763,12 +1284,12 @@ function nativeSubmissionPageUrl(requestUrl, body) {
         let referenceId = query[parameter];
         if (portalField(componentMetadata, 'referencequerystringisprimarykey') === false) {
           const attribute = portalField(componentMetadata, 'referencequeryattributelogicalname');
-          if (!/^[a-z_]\w*$/i.test(attribute ?? ''))
+          if (!/^[a-z_][\w]*$/i.test(attribute ?? ''))
             fail('Entity reference query attribute is invalid', 501, 'FormReferenceUnresolved');
           const targetMapping = store.resolveMapping(entity);
           const found = await readProvider.query(
             entity,
-            { $filter: `${attribute} eq '${String(referenceId).replaceAll("'", "''")}'`, $top: 1 },
+            { $filter: `${attribute} eq '${String(referenceId).replace(/'/g, "''")}'`, $top: 1 },
             identity,
           );
           referenceId = found.value?.[0]?.[targetMapping.idColumn];
@@ -1782,58 +1303,224 @@ function nativeSubmissionPageUrl(requestUrl, body) {
           });
       }
     }
-    relateAfterCreate.push(...resolveNativeReferenceAssociations(references, mapping, values, store, schema.entity));
+    for (const reference of references) {
+      const lookup = Object.entries(mapping.relationships ?? {}).find(
+        ([, relation]) =>
+          relation.many === false &&
+          relation.entity === reference.entity &&
+          (reference.lookup
+            ? canonical(relation.from) === canonical(reference.lookup)
+            : relation.schemaName === reference.relationship),
+      );
+      if (lookup) {
+        values[`${lookup[0]}@odata.bind`] =
+          `/${store.resolveMapping(reference.entity).entitySet}(${encodeURIComponent(reference.id)})`;
+        continue;
+      }
+      const parentMapping = store.resolveMapping(reference.entity);
+      const parentNavigation = Object.entries(parentMapping.relationships ?? {}).find(
+        ([name, relation]) =>
+          relation.many &&
+          relation.intersect &&
+          (name === reference.relationship || relation.schemaName === reference.relationship) &&
+          relation.entity === canonical(schema.entity),
+      );
+      if (!parentNavigation)
+        fail(`Reference relationship '${reference.relationship}' is not mapped`, 501, 'FormReferenceUnresolved');
+      relateAfterCreate.push({ entity: reference.entity, id: reference.id, navigation: parentNavigation[0] });
+    }
   }
   // Attach file: one annotation per uploaded file, as native forms store notes. Every file
   // is checked before anything is written.
-  const { notes, cloudUploads } = prepareFormAttachments({
-    body,
-    componentId,
-    componentMetadata,
-    portal,
-    identity,
-    store,
-    schema,
-    mapping,
-    cloudAttachments,
-    diagnostic,
-    text,
-    now,
-  });
-  const { record, savedId, next } = await writeNativeFormSubmission({
-    session,
-    portal,
-    formSchema,
-    schema,
-    cloudUploads,
-    cloudAttachments,
-    writeProvider,
-    create,
-    currentContactAssociation,
-    values,
-    identity,
-    mapping,
-    recordId,
-    relateAfterCreate,
-    notes,
-    current,
+  const attachments = Array.isArray(body.attachments) ? body.attachments : [];
+  const notes = [],
+    cloudUploads = [];
+  if (attachments.length) {
+    if (!truthy(portalField(componentMetadata, 'attachfile')))
+      fail('This native form does not accept attachments', 403, 'FormAttachmentNotEnabled');
+    // Advanced form steps name multiple files with their own column (adx_allowmultiplefiles), as the markup reads it.
+    const multiple =
+      portalField(componentMetadata, 'attachfileallowmultiple') ?? portalField(componentMetadata, 'allowmultiplefiles');
+    if (!truthy(multiple) && attachments.length > 1)
+      fail('This native form accepts one attachment', 400, 'FormAttachmentInvalid');
+    const maxKb = Number(portalField(componentMetadata, 'attachfilemaxsize')) || 0;
+    const accept = [
+      portalField(componentMetadata, 'attachfileaccept'),
+      portalField(componentMetadata, 'attachfileacceptextensions'),
+    ]
+      .filter(Boolean)
+      .join(',');
+    const restrict = truthy(portalField(componentMetadata, 'attachfilerestrictaccept'));
+    const fullname = identity?.fullname ?? identity?.name ?? '';
+    const contactId = canonical(identity?.contactId ?? identity?.id);
+    const annotationMapping = store.resolveMapping('annotation');
+    // FileStorage/CloudStorageAccount set: the file goes to storage route portalCloudAttachments and the note is the documented
+    // placeholder <name>.txt holding { Name, Type, Size, Url }. No route: PROVIDER_ROUTE_MISSING fails the save; the bytes
+    // never fall back to the note. Url is the provider key here; native carries the blob's URL.
+    let cloud = null;
+    if (String(siteSetting(portal, 'FileStorage/CloudStorageAccount') ?? '').trim()) {
+      try {
+        cloud = cloudAttachments?.() ?? null;
+        if (!cloud)
+          throw Object.assign(
+            new Error(
+              'Storage route portalCloudAttachments is not configured; set providers.routes.portalCloudAttachments.',
+            ),
+            { diagnostic: 'PROVIDER_ROUTE_MISSING' },
+          );
+      } catch (error) {
+        const code = error.diagnostic ?? 'PROVIDER_ROUTE_MISSING';
+        diagnostic({
+          code,
+          severity: 'error',
+          form: componentId,
+          message: `FileStorage/CloudStorageAccount is set, but the attachment cannot be stored: ${error.message}`,
+        });
+        fail(`The attachment cannot be stored in cloud storage: ${error.message}`, 500, code);
+      }
+    }
+    const objectBinding = Object.entries(annotationMapping.relationships ?? {}).find(
+      ([, relation]) =>
+        relation.many === false && relation.from === 'objectid' && relation.entity === canonical(schema.entity),
+    );
+    for (const file of attachments) {
+      if (!file || typeof file.name !== 'string' || typeof file.content !== 'string')
+        fail('Attachment requires a name and base64 content', 400, 'FormAttachmentInvalid');
+      const size = Buffer.from(file.content, 'base64').length;
+      if (maxKb && size > maxKb * 1024)
+        fail(
+          text(
+            portalField(componentMetadata, 'attachfilesizeerrormessage'),
+            `${file.name} exceeds the maximum file size.`,
+          ),
+          400,
+          'FormAttachmentTooLarge',
+        );
+      if (
+        restrict &&
+        accept &&
+        !accept.split(',').some((entry) => {
+          const pattern = entry.trim().toLowerCase();
+          if (!pattern) return false;
+          if (pattern.startsWith('.')) return file.name.toLowerCase().endsWith(pattern);
+          if (pattern.endsWith('/*'))
+            return String(file.type ?? '')
+              .toLowerCase()
+              .startsWith(pattern.slice(0, -1));
+          return String(file.type ?? '').toLowerCase() === pattern;
+        })
+      )
+        fail(
+          text(
+            portalField(componentMetadata, 'attachfiletypeerrormessage'),
+            `${file.name} is not of the file type(s) "${accept}".`,
+          ),
+          400,
+          'FormAttachmentType',
+        );
+      const placeholder = cloud
+        ? { key: cloudKey(file.name), type: String(file.type || 'application/octet-stream') }
+        : null;
+      if (placeholder) cloudUploads.push({ ...placeholder, content: file.content });
+      const stored = placeholder
+        ? Buffer.from(JSON.stringify({ Name: file.name, Type: placeholder.type, Size: size, Url: placeholder.key }))
+        : null;
+      notes.push((savedId) => ({
+        subject: `Note created on ${now().toLocaleString('en-US', { timeZone: 'UTC', hour12: true, month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' }).replace(',', '')} UTC by ${fullname}${contactId ? ` [contact:${contactId}]` : ''}`,
+        notetext: notesFilter(portal),
+        objecttypecode: schema.entity,
+        ...(stored
+          ? {
+              filename: `${file.name}.txt`.slice(0, 255),
+              mimetype: 'text/plain',
+              documentbody: stored.toString('base64'),
+              filesize: stored.length,
+            }
+          : {
+              filename: file.name.slice(0, 255),
+              mimetype: String(file.type || 'application/octet-stream').slice(0, 255),
+              documentbody: file.content,
+              filesize: size,
+            }),
+        ...(objectBinding
+          ? { [`${objectBinding[0]}@odata.bind`]: `/${mapping.entitySet}(${savedId})` }
+          : { objectid: { id: savedId, logical_name: schema.entity } }),
+      }));
+    }
+  }
+  // The record, its reference associations and its notes are written as one unit: a failure
+  // in any of them (a table permission, a plugin, the provider) leaves none of them saved.
+  // A directly unresolved source edge can be rejected before any write. Branches
+  // depend on the saved row, including plugin changes, so resolve those inside
+  // the provider's existing write unit before changing the session history.
+  if (session) requiredAdvancedFormStep(portal, formSchema, schema.nextStepId);
+  // Cloud attachment bytes are put before the write unit; a failed unit deletes them again.
+  const cloudStore = cloudUploads.length ? cloudAttachments() : null;
+  for (const upload of cloudUploads)
+    await cloudStore.put(upload.key, Buffer.from(upload.content, 'base64'), { contentType: upload.type });
+  const { record, savedId, next } = await writeUnit(writeProvider, async (operations) => {
+    const record = create
+      ? await withNativeFormContactAssociation(currentContactAssociation, () =>
+          operations.create(schema.entity, values, identity),
+        )
+      : await operations.update(schema.entity, recordId, values, identity);
+    const savedId = canonical(record?.[mapping.idColumn] ?? recordId);
+    for (const relation of relateAfterCreate) {
+      if (!operations.associate)
+        fail('Native form reference association requires an association provider', 501, 'FormReferenceUnsupported');
+      await operations.associate(relation.entity, relation.id, relation.navigation, savedId, identity);
+    }
+    for (const note of notes) await operations.create('annotation', note(savedId), identity);
+    const next = session
+      ? nextAdvancedFormStep(portal, formSchema, schema.nextStepId, { ...current, ...record })
+      : null;
+    return { record, savedId, next };
+  }).catch(async (error) => {
+    for (const upload of cloudUploads) await cloudStore.delete(upload.key).catch(() => {});
+    throw error;
   });
   // Outcome: success message, redirect, or the next multistep step.
   const savedRecord = { ...current, ...record };
-  const outcome = nativeFormSubmitOutcome({
-    session,
-    schema,
-    next,
-    savedId,
-    savedRecord,
-    portal,
-    pageUrl,
-    startNew,
-    text,
-    nativePostback,
-    requestUrl,
-    componentMetadata,
-  });
+  let outcome;
+  if (session) {
+    outcome = advanceSession(session, schema, next, savedId, savedRecord, { portal, pageUrl, startNew, text });
+    if (nativePostback && outcome.type === 'message') {
+      const target = new URL(requestUrl ?? pageUrl, 'http://localhost/');
+      target.searchParams.set('msg', 'success');
+      target.searchParams.set('stepid', schema.stepId);
+      if (startNew) target.searchParams.set('sessionid', session.id);
+      else target.searchParams.delete('sessionid');
+      outcome = { type: 'redirect', url: target.pathname + target.search };
+    }
+  } else {
+    const settings = (() => {
+      try {
+        return JSON.parse(portalField(componentMetadata, 'settings') || '{}');
+      } catch {
+        return {};
+      }
+    })();
+    const submitAction = (settings.Actions ?? []).find((candidate) => candidate.Type === 'SubmitAction');
+    const onSuccess = Number(portalField(componentMetadata, 'onsuccess') ?? 756150000);
+    if (onSuccess === 756150001) {
+      const url = redirectTarget(componentMetadata, {
+        portal,
+        recordId: savedId,
+        record: savedRecord,
+        requestUrl: pageUrl,
+      });
+      // A redirect without a resolvable target re-renders the page (native traces the error).
+      outcome = url ? { type: 'redirect', url } : { type: 'none' };
+    } else
+      outcome = {
+        type: 'message',
+        message:
+          text(portalField(componentMetadata, 'successmessage'), '') ||
+          text(submitAction?.SuccessMessage, '') ||
+          'Submission completed successfully.',
+        hideForm: portalField(componentMetadata, 'hideformonsuccess') !== false,
+      };
+  }
   const primaryName = mapping.nameColumn;
   return {
     record,

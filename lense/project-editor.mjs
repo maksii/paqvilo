@@ -117,7 +117,7 @@ async function deploymentFolders(catalogue, resolved) {
     projects = new Map();
   const add = (profiles) => {
     for (const sections of Object.values(profiles?.profiles ?? {}))
-      for (const paths of Object.values(sections)) for (const file of [paths].flat()) files.add(file);
+      for (const paths of Object.values(sections)) for (const file of [].concat(paths)) files.add(file); // NOSONAR: preserve concat spreading semantics
   };
   for (const site of resolved.sites) {
     const mirage = resolveMirageConfig(catalogue.sites[site.name].mirage, { ...catalogue, sourceDir: site.sourceDir });

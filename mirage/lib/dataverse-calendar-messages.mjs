@@ -783,7 +783,9 @@ function operations(api) {
           }
         }
         return respond(c, 'QuerySchedule', {
-          TimeInfos: TimeInfos.toSorted((left, right) => Date.parse(left.Start) - Date.parse(right.Start)),
+          TimeInfos: TimeInfos.sort(
+            /* NOSONAR: preserve in-place sorting */ (left, right) => Date.parse(left.Start) - Date.parse(right.Start),
+          ),
         });
       },
       csdl: null,

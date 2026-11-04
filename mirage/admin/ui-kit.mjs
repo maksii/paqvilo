@@ -5,6 +5,17 @@ const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 export const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ESCAPES[char]);
 const e = escapeHtml;
 
+/** Derive a scenario identifier from the already-trimmed display name. */
+export function scenarioSlug(name) {
+  const value = name
+    .toLowerCase()
+    .replace(/[^\w.-]+/g, '-')
+    .replace(/^-+/, '');
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '-') end--;
+  return value.slice(0, end).slice(0, 80);
+}
+
 const TONES = new Set(['ok', 'warn', 'bad', 'info', 'neutral']);
 const tone = (value) => (TONES.has(value) ? value : 'neutral');
 export const STATUS_TONES = Object.freeze({
@@ -107,8 +118,9 @@ export function table({
     return `<th scope="col"${cls(column)}${sortAttr}>${column.head ?? e(column.label)}${infoHtml}</th>`;
   };
   const bodyRow = (item) => {
+    const rowAttributes = attributes(rowAttrs?.(item));
     const cells = columns.map((column) => `<td${cls(column)}>${column.render(item) ?? ''}</td>`).join('');
-    return `<tr${attributes(rowAttrs?.(item))}>${cells}</tr>${afterRow?.(item) ?? ''}`;
+    return `<tr${rowAttributes}>${cells}</tr>${afterRow?.(item) ?? ''}`;
   };
   return (
     `${tools}<div class="ui-table-wrap"><table class="ui-table" data-table="${e(key)}">${captionHtml}` +
@@ -547,10 +559,22 @@ export function sortItems(items, columns, sort) {
   });
 }
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" };
+function separateTags(text) {
+  let cursor = 0;
+  let result = '';
+  while (cursor < text.length) {
+    const start = text.indexOf('<', cursor);
+    if (start < 0) break;
+    const end = text.indexOf('>', start + 1);
+    if (end < 0) break;
+    result += text.slice(cursor, start) + ' ';
+    cursor = end + 1;
+  }
+  return result + text.slice(cursor);
+}
 /** The visible text of a cell's markup (sorting by what the row shows). */
 const cellText = (html) =>
-  String(html ?? '')
-    .replace(/<[^>]*>/g, ' ') // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+  separateTags(String(html ?? ''))
     .replace(/&(amp|lt|gt|quot|#39);/g, (_, name) => ENTITIES[name])
     .replace(/\s+/g, ' ')
     .trim();

@@ -337,6 +337,19 @@ function getDataverseItem(service, entity, p) {
   };
 }
 
+function withoutFetchPage(attrs) {
+  const valuePattern = /\s*=\s*(["'])[^"']*\1/y;
+  for (const match of attrs.matchAll(/page/gi)) {
+    if (match.index === 0 || !/\s/.test(attrs[match.index - 1])) continue;
+    valuePattern.lastIndex = match.index + 4;
+    const value = valuePattern.exec(attrs);
+    if (!value) continue;
+    let start = match.index;
+    while (start > 0 && /\s/.test(attrs[start - 1])) start--;
+    return attrs.slice(0, start) + attrs.slice(match.index + 4 + value[0].length);
+  }
+  return attrs;
+}
 function listDataverseRecords(store, service, entity, p) {
   const page = p.$skiptoken == null ? 1 : Number(/pagenumber="(\d+)"/.exec(String(p.$skiptoken))?.[1]);
   /* NOSONAR: operand can be NaN or undefined, the negated test differs */ if (!(page >= 1))
@@ -359,7 +372,7 @@ function listDataverseRecords(store, service, entity, p) {
       );
     const xml = String(p.fetchXml).replace(
       /<fetch\b([^>]*?)(\/?)>/i,
-      (_, attrs, close) => `<fetch${attrs.replace(/\s+page\s*=\s*(["'])[^"']*\1/i, '')} page="${page}"${close}>`, // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+      (_, attrs, close) => `<fetch${withoutFetchPage(attrs)} page="${page}"${close}>`,
     );
     const fetched = service.fetch(xml);
     return answer(fetched.entities, fetched.more_records === true);
@@ -757,86 +770,13 @@ async function fixtureAnswer(fixtures, req) {
 // The preflight note of a trusted script: its host build reaches the network once (custom-connector-script.mjs).
 const SCRIPT_RESTORE =
   'CONNECTOR_SCRIPT_NUGET_RESTORE: the first build of the trusted script host restores Newtonsoft.Json and Microsoft.Extensions.Logging.Abstractions from nuget.org (not loopback; offline it fails); the host runs with your user rights, unsandboxed.';
-async function refreshCustomConnectorToken(
-  credentials,
-  context,
-  { connector, tokens, time, tokenRequest, form, scope },
+
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ function customConnectorProvider(
+  connector,
+  fixtures,
+  store,
+  { tokens, scripts, now, diagnostic = () => {} },
 ) {
-  const key = context.connectionId ?? connector.name,
-    current = tokens.get(key);
-  if (!current) return credentials;
-  if (current.expiresAt == null || current.expiresAt > time + 5000)
-    return { ...credentials, token: current.access_token };
-  if (!current.refresh_token || credentials.clientId == null) {
-    await tokens.set(key, null);
-    return credentials;
-  }
-  const body = await tokenRequest(
-    form('refresh_token', credentials, { refresh_token: current.refresh_token, ...scope() }),
-    context,
-  );
-  await tokens.set(key, {
-    access_token: body.access_token,
-    refresh_token: body.refresh_token ?? current.refresh_token,
-    expiresAt: body.expires_in ? time + Number(body.expires_in) * 1000 : null,
-  });
-  return { ...credentials, token: body.access_token };
-}
-
-async function clientCredentialsToken(credentials, context, { connector, time, tokenRequest, form, scope, cached }) {
-  if (credentials.clientId == null || credentials.clientSecret == null)
-    fail(
-      'ConnectionUnauthorized',
-      'The OAuth client credentials flow needs clientId and clientSecret references and a tokenUrl in the definition.',
-    );
-  const key = connector.auth.tokenUrl + '\n' + credentials.clientId,
-    hit = cached.get(key);
-  if (hit && hit.expires > time) return { ...credentials, token: hit.token };
-  const body = await tokenRequest(form('client_credentials', credentials, scope()), context);
-  cached.set(key, { token: body.access_token, expires: time + (Number(body.expires_in) || 0) * 1000 });
-  return { ...credentials, token: body.access_token };
-}
-
-function customConnectorToken(credentials, context, dependencies) {
-  const { connector, tokens, now, tokenRequest, form, scope, cached } = dependencies;
-  const auth = connector.auth;
-  if (auth.type !== 'oauth' || credentials.token != null || !OAUTH_FLOWS.includes(auth.flow)) return credentials;
-  if (!auth.tokenUrl) fail('ConnectionUnauthorized', 'The OAuth flow needs a tokenUrl in the definition.');
-  const time = context.clock?.now?.() ?? now();
-  if (auth.flow === 'accessCode')
-    return refreshCustomConnectorToken(credentials, context, { connector, tokens, time, tokenRequest, form, scope });
-  return clientCredentialsToken(credentials, context, { connector, time, tokenRequest, form, scope, cached });
-}
-
-function customConnectorCapability(connector, level, sdkMissing, scripted, gapMessage, reasonField) {
-  return {
-    ...capability('custom-connector:' + connector.name, {
-      level,
-      operations: [
-        ...Object.keys(connector.operations).map((name) => ({
-          name,
-          level: sdkMissing && scripted(name) ? 'inventory' : level,
-        })),
-        ...connector.policies.map((policy) => ({
-          name: 'policy:' + policy.templateId,
-          level: policy.supported ? 'contract' : 'inventory',
-        })),
-        ...(connector.script
-          ? [
-              {
-                name: 'script',
-                level: sdkMissing ? 'inventory' : level,
-                reason: sdkMissing ? gapMessage() : SCRIPT_RESTORE,
-              },
-            ]
-          : []),
-      ],
-      requires: ['loopback-network', ...(connector.script ? ['dotnet-sdk'] : [])],
-    }),
-    ...reasonField,
-  };
-}
-function customConnectorProvider(connector, fixtures, store, { tokens, scripts, now, diagnostic = () => {} }) {
   const cached = new Map();
   const send = (req, context) =>
     Promise.resolve(fixtureAnswer(fixtures, req)).then((answer) => answer ?? sendLoopback(req, context));
@@ -860,6 +800,45 @@ function customConnectorProvider(connector, fixtures, store, { tokens, scripts, 
     return answer.body;
   }
   const scope = () => (connector.auth.scopes.length ? { scope: connector.auth.scopes.join(' ') } : {});
+  async function withToken(credentials, context) {
+    const auth = connector.auth;
+    if (auth.type !== 'oauth' || credentials.token != null || !OAUTH_FLOWS.includes(auth.flow)) return credentials;
+    if (!auth.tokenUrl) fail('ConnectionUnauthorized', 'The OAuth flow needs a tokenUrl in the definition.');
+    const time = context.clock?.now?.() ?? now();
+    if (auth.flow === 'accessCode') {
+      const key = context.connectionId ?? connector.name,
+        current = tokens.get(key);
+      if (!current) return credentials;
+      if (current.expiresAt == null || current.expiresAt > time + 5000)
+        return { ...credentials, token: current.access_token };
+      if (!current.refresh_token || credentials.clientId == null) {
+        await tokens.set(key, null);
+        return credentials;
+      }
+      // The refresh token grant (RFC 6749 section 6); a rotated refresh token replaces the old one.
+      const body = await tokenRequest(
+        form('refresh_token', credentials, { refresh_token: current.refresh_token, ...scope() }),
+        context,
+      );
+      await tokens.set(key, {
+        access_token: body.access_token,
+        refresh_token: body.refresh_token ?? current.refresh_token,
+        expiresAt: body.expires_in ? time + Number(body.expires_in) * 1000 : null,
+      });
+      return { ...credentials, token: body.access_token };
+    }
+    if (credentials.clientId == null || credentials.clientSecret == null)
+      fail(
+        'ConnectionUnauthorized',
+        'The OAuth client credentials flow needs clientId and clientSecret references and a tokenUrl in the definition.',
+      );
+    const key = auth.tokenUrl + '\n' + credentials.clientId,
+      hit = cached.get(key);
+    if (hit && hit.expires > time) return { ...credentials, token: hit.token };
+    const body = await tokenRequest(form('client_credentials', credentials, scope()), context);
+    cached.set(key, { token: body.access_token, expires: time + (Number(body.expires_in) || 0) * 1000 });
+    return { ...credentials, token: body.access_token };
+  }
   const variables = () => (store?.state ? effectiveEnvironmentVariables(store.state) : {});
   const reference = (value) => {
     if (typeof value !== 'string' || !REFERENCE.test(value)) return value;
@@ -881,17 +860,16 @@ function customConnectorProvider(connector, fixtures, store, { tokens, scripts, 
   // Script operations run only for a script the project trusts (connectorScripts) and with the .NET SDK: otherwise they are not
   // served and name the gap (CONNECTOR_SCRIPT_UNTRUSTED before CONNECTOR_SCRIPT_SDK_MISSING); nothing is built for them.
   const scripted = (operationId) => scriptRuns(connector, operationId);
-  let gap = null;
-  if (connector.script) {
-    if (!scripts.trusts(connector.name, connector.script)) gap = UNTRUSTED;
-    else if (!scripts.available()) gap = SDK_MISSING;
-  }
+  const gap = !connector.script
+    ? null
+    : !scripts.trusts(connector.name, connector.script)
+      ? UNTRUSTED
+      : !scripts.available()
+        ? SDK_MISSING
+        : null;
   const gapMessage = () =>
     gap === UNTRUSTED ? scripts.untrusted(connector.name, connector.script) : scripts.missing();
   const sdkMissing = gap !== null;
-  let reasonField = {};
-  if (connector.blocked) reasonField = { reason: connector.blocked.code };
-  else if (sdkMissing) reasonField = { reason: gap };
   const operations = connector.blocked
     ? []
     : Object.keys(connector.operations).filter((id) => !(sdkMissing && scripted(id)));
@@ -910,15 +888,7 @@ function customConnectorProvider(connector, fixtures, store, { tokens, scripts, 
       connection = {
         parameters: resolved(context.settings?.parameters),
         environment,
-        credentials: await customConnectorToken(resolved(context.settings?.auth), context, {
-          connector,
-          tokens,
-          now,
-          tokenRequest,
-          form,
-          scope,
-          cached,
-        }),
+        credentials: await withToken(resolved(context.settings?.auth), context),
       };
       req = nextLink
         ? buildContinuation(connector, operationId, nextLink, parameters ?? {}, connection, context.settings?.rewrites)
@@ -957,7 +927,32 @@ function customConnectorProvider(connector, fixtures, store, { tokens, scripts, 
           }
         : null,
     reason: (operationId) => (sdkMissing && scripted(operationId) && !connector.blocked ? gapMessage() : null),
-    capability: customConnectorCapability(connector, level, sdkMissing, scripted, gapMessage, reasonField),
+    capability: {
+      ...capability('custom-connector:' + connector.name, {
+        level,
+        operations: [
+          ...Object.keys(connector.operations).map((name) => ({
+            name,
+            level: sdkMissing && scripted(name) ? 'inventory' : level,
+          })),
+          ...connector.policies.map((p) => ({
+            name: 'policy:' + p.templateId,
+            level: p.supported ? 'contract' : 'inventory',
+          })),
+          ...(connector.script
+            ? [
+                {
+                  name: 'script',
+                  level: sdkMissing ? 'inventory' : level,
+                  reason: sdkMissing ? gapMessage() : SCRIPT_RESTORE,
+                },
+              ]
+            : []),
+        ],
+        requires: ['loopback-network', ...(connector.script ? ['dotnet-sdk'] : [])],
+      }),
+      ...(connector.blocked ? { reason: connector.blocked.code } : sdkMissing ? { reason: gap } : {}),
+    },
     async invoke({ operationId, parameters, nextLink }, context) {
       const { req, connection } = await request(operationId, parameters, nextLink, context);
       // The script replaces the backend request; Context.SendAsync goes through the same rewrites, fixtures and loopback rule.

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { loadConnection, connectedClient } from 'paqvilo/dataverse';
-import { prepare } from './compile.mjs';
+import { prepare, fetchXmlTagMatches } from './compile.mjs';
 import { savePrivateJson } from './private-journal.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -161,10 +161,7 @@ export async function deploy({
     page: id('page:shell'),
     liquidPage: id('page:liquid'),
     fields: Object.fromEntries(
-      Object.entries(fields).map(([table, columns]) => [
-        table,
-        [...columns].filter(Boolean).sort((a, b) => Number(a > b) - Number(a < b)),
-      ]),
+      Object.entries(fields).map(([table, columns]) => [table, [...columns].filter(Boolean).sort()]),
     ),
   };
 }
@@ -224,10 +221,7 @@ function addFieldSettings(table, names, actual, push) {
     if (name && !legal.has(name)) throw new Error(`Web API allowlist references missing ${table}.${name}`);
   push('setting:' + table + ':enabled', `Webapi/${table}/enabled`, 9, { value: 'true' });
   push('setting:' + table + ':fields', `Webapi/${table}/fields`, 9, {
-    value: [...names]
-      .filter(Boolean)
-      .sort((a, b) => Number(a > b) - Number(a < b))
-      .join(','),
+    value: [...names].filter(Boolean).sort().join(','),
   });
 }
 
@@ -250,9 +244,7 @@ function addFetchXmlFields(fields, plan, schema) {
   fields[plan.table] ||= new Set([plan.primaryId, plan.primaryName]);
   const entityStack = [],
     aliases = {};
-  for (const match of plan.fetchXml.matchAll(
-    /<(entity|link-entity)\s+([^>]+)>|<\/(entity|link-entity)>|<(?:attribute|condition|order)\s+([^>]+)>/g, // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
-  )) {
+  for (const match of fetchXmlTagMatches(plan.fetchXml)) {
     if (match[1]) {
       const table = match[2].match(/\bname="([^"]+)"/)?.[1],
         alias = match[2].match(/\balias="([^"]+)"/)?.[1];

@@ -373,10 +373,10 @@ export class SolutionFileCache {
     if (!this.dirty && !pruned) return false;
     const names = [...(prune ? this.used : this.entries.keys())]
       .filter((key) => this.entries.has(key))
-      .sort((a, b) => Number(a > b) - Number(a < b));
+      .sort(/* NOSONAR: preserve default string coercion */);
     const derived = [...(prune ? this.usedDerived : this.derived.keys())]
       .filter((key) => this.derived.has(key))
-      .sort((a, b) => Number(a > b) - Number(a < b));
+      .sort(/* NOSONAR: preserve default string coercion */);
     const temp = `${this.file}.${randomUUID()}.tmp`;
     let handle;
     try {

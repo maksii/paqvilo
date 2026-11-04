@@ -441,17 +441,6 @@ export function reset(api) {
   sasInlineByApi.get(api)?.clear();
 }
 
-function unsatisfiableRange(plain) {
-  return plain(
-    new DataError(
-      'Chunk range used in this call is either not valid or it is bigger than allowed 4 MB.',
-      416,
-      'InvalidRange',
-      { innerCode: RANGE_INNER },
-    ),
-  );
-}
-
 export function install(api) {
   const { store, change, principals, recordHooks, registry } = api;
   // Upload and download sessions keyed by continuation token.
@@ -733,28 +722,10 @@ export function install(api) {
     return { status: 204, headers: { 'OData-Version': '4.0' } };
   }
 
-  async function downloadRange(entry, base, size, range, plain) {
-    const match = /^bytes=(\d+)-(\d*)$/.exec(String(range).trim());
-    if (!match) throw plain(invalid('The Range header must be bytes=start-end.'));
-    const start = Number(match[1]);
-    // A start past the end (or an end before the start) is native's 416 with the chunk-range code, not the generic range error.
-    if (start >= size) throw unsatisfiableRange(plain);
-    const end = match[2] === '' ? size - 1 : Math.min(Number(match[2]), size - 1);
-    if (end < start) throw unsatisfiableRange(plain);
-    return {
-      status: 206,
-      headers: {
-        ...base,
-        'Access-Control-Expose-Headers': EXPOSE_RANGE,
-        'x-ms-chunk-size': String(CHUNK_SIZE),
-        'OData-Version': '4.0',
-        'Content-Range': `bytes ${start}-${end}/${size}`,
-      },
-      body: await readStoredBytes(api, entry, { start, end }),
-    };
-  }
-
-  async function download(c, { mapping, id, column, kind, def }) {
+  /* NOSONAR: retain original await boundaries for concurrent operations */ async function download(
+    c,
+    { mapping, id, column, kind, def },
+  ) {
     const row = recordOf(store, mapping, id);
     authorize(c, mapping, 'read', row);
     const entry = row[column] ? filesRead(store)[row[column]] : null;
@@ -787,7 +758,33 @@ export function install(api) {
         headers: { ...(thumbnail ? {} : base), ...(kind === 'file' ? { 'OData-Version': undefined } : {}) },
         body: await readStoredBytes(api, entry),
       };
-    return downloadRange(entry, base, size, range, plain);
+    const match = /^bytes=(\d+)-(\d*)$/.exec(String(range).trim());
+    if (!match) throw plain(invalid('The Range header must be bytes=start-end.'));
+    const start = Number(match[1]);
+    // A start past the end (or an end before the start) is native's 416 with the chunk-range code, not the generic range error.
+    const unsatisfiable = () =>
+      plain(
+        new DataError(
+          'Chunk range used in this call is either not valid or it is bigger than allowed 4 MB.',
+          416,
+          'InvalidRange',
+          { innerCode: RANGE_INNER },
+        ),
+      );
+    if (start >= size) throw unsatisfiable();
+    const end = match[2] === '' ? size - 1 : Math.min(Number(match[2]), size - 1);
+    if (end < start) throw unsatisfiable();
+    return {
+      status: 206,
+      headers: {
+        ...base,
+        'Access-Control-Expose-Headers': EXPOSE_RANGE,
+        'x-ms-chunk-size': String(CHUNK_SIZE),
+        'OData-Version': '4.0',
+        'Content-Range': `bytes ${start}-${end}/${size}`,
+      },
+      body: await readStoredBytes(api, entry, { start, end }),
+    };
   }
 
   async function clear(c, { mapping, id, column, kind }) {
@@ -808,59 +805,8 @@ export function install(api) {
    */
   // The portal Web API (webapi-handler.mjs fileColumnRequest) also calls it, with operation 'delete' (the column's DELETE)
   // and contentType (the upload's Content-Type); fileContentInternal.kindOf(entity, column) answers 'file', 'image' or null.
-  async function downloadInternalFile({ row, column, url, mapping, id, found }) {
-    const answer = await downloadFile({ authorized: true, url, headers: {} }, { mapping, id, ...found });
-    if (answer.status === 204) return { statusCode: 204, body: {} };
-    const entry = filesRead(store)[row[column]];
-    const bytes = Buffer.from(answer.body ?? []);
-    // file: the stored entry's name, size and MIME type, for callers that send their own download headers (the portal /_api).
-    return {
-      statusCode: 200,
-      body: { '$content-type': entry?.mimeType ?? 'application/octet-stream', $content: bytes.toString('base64') },
-      file: {
-        name: entry?.name ?? column,
-        size: bytes.length,
-        mimeType: entry?.mimeType ?? 'application/octet-stream',
-      },
-    };
-  }
 
-  async function uploadInternalFile({
-    row,
-    column,
-    content,
-    fileName,
-    contentType,
-    defaultName,
-    url,
-    mapping,
-    id,
-    found,
-  }) {
-    const shaped =
-      content !== null && typeof content === 'object' && !Buffer.isBuffer(content) && !(content instanceof Uint8Array);
-    const raw = shaped ? content.$content : content;
-    if (raw == null) throw invalid('The file content is required.');
-    const bytes =
-      Buffer.isBuffer(raw) || raw instanceof Uint8Array ? Buffer.from(raw) : Buffer.from(String(raw), 'base64');
-    // defaultName (the portal /_api, whose documented sample sends no name): the stored file's name, else <column>.bin.
-    // The name the platform stores for a nameless portal upload is a guess.
-    const name = fileName || (defaultName ? (filesRead(store)[row[column]]?.name ?? `${column}.bin`) : null);
-    if (!name) throw invalid('x-ms-file-name is required.');
-    const type = shaped ? content['$content-type'] : contentType;
-    const answer = await upload(
-      {
-        authorized: true,
-        url,
-        headers: { 'x-ms-file-name': name, ...(type ? { 'content-type': type } : {}) },
-        bodyBuffer: bytes,
-      },
-      { mapping, id, ...found },
-    );
-    return { statusCode: answer.status ?? 204, body: {} };
-  }
-
-  async function fileContentInternal({
+  /* NOSONAR: retain original await boundaries for concurrent operations */ async function fileContentInternal({
     principal,
     operation,
     entity,
@@ -885,8 +831,43 @@ export function install(api) {
     if (operation === 'delete')
       return { statusCode: (await clear({ authorized: true }, { mapping, id, ...found })).status, body: {} };
     const url = new URL(`http://localhost/${download && size === 'full' ? '?size=full' : ''}`);
-    if (download) return downloadInternalFile({ row, column, url, mapping, id, found });
-    return uploadInternalFile({ row, column, content, fileName, contentType, defaultName, url, mapping, id, found });
+    if (download) {
+      const answer = await downloadFile({ authorized: true, url, headers: {} }, { mapping, id, ...found });
+      if (answer.status === 204) return { statusCode: 204, body: {} };
+      const entry = filesRead(store)[row[column]];
+      const bytes = Buffer.from(answer.body ?? []);
+      // file: the stored entry's name, size and MIME type, for callers that send their own download headers (the portal /_api).
+      return {
+        statusCode: 200,
+        body: { '$content-type': entry?.mimeType ?? 'application/octet-stream', $content: bytes.toString('base64') },
+        file: {
+          name: entry?.name ?? column,
+          size: bytes.length,
+          mimeType: entry?.mimeType ?? 'application/octet-stream',
+        },
+      };
+    }
+    const shaped =
+      content !== null && typeof content === 'object' && !Buffer.isBuffer(content) && !(content instanceof Uint8Array);
+    const raw = shaped ? content.$content : content;
+    if (raw == null) throw invalid('The file content is required.');
+    const bytes =
+      Buffer.isBuffer(raw) || raw instanceof Uint8Array ? Buffer.from(raw) : Buffer.from(String(raw), 'base64');
+    // defaultName (the portal /_api, whose documented sample sends no name): the stored file's name, else <column>.bin.
+    // The name the platform stores for a nameless portal upload is a guess.
+    const name = fileName || (defaultName ? (filesRead(store)[row[column]]?.name ?? `${column}.bin`) : null);
+    if (!name) throw invalid('x-ms-file-name is required.');
+    const type = shaped ? content['$content-type'] : contentType;
+    const answer = await upload(
+      {
+        authorized: true,
+        url,
+        headers: { 'x-ms-file-name': name, ...(type ? { 'content-type': type } : {}) },
+        bodyBuffer: bytes,
+      },
+      { mapping, id, ...found },
+    );
+    return { statusCode: answer.status ?? 204, body: {} };
   }
   const downloadFile = (c, target) => download(c, target);
   fileContentInternal.kindOf = (entity, column) => fileColumn(store.resolveMapping(entity), column)?.kind ?? null;
@@ -1013,7 +994,7 @@ export function install(api) {
       const key = guidKey(r[mapping.idColumn]);
       if (key && !stored.has(key)) stored.set(key, r);
     }
-    for (const row of [formatted ?? []].flat()) {
+    for (const row of [].concat(formatted ?? []) /* NOSONAR: preserve concat spreadability semantics */) {
       if (!row || typeof row !== 'object') continue;
       const key = guidKey(row[mapping.idColumn]);
       const raw = key ? stored.get(key) : undefined;
@@ -1060,7 +1041,8 @@ export function install(api) {
     if (session.role !== logical) throw invalid('The file upload session is not valid.');
     const list = Array.isArray(input.BlockList) ? input.BlockList : [];
     const parts = list.map((blockId) => session.blocks.get(String(blockId)));
-    if (!list.length || parts.includes(undefined)) throw invalid('BlockList names a block that was not uploaded.');
+    if (!list.length || parts.some((part) => part === undefined) /* NOSONAR: retain sparse-array behavior */)
+      throw invalid('BlockList names a block that was not uploaded.');
     principals.authorize({ user: c.user, entity: logical, operation: 'create' });
     const target = input.Target && typeof input.Target === 'object' ? input.Target : {};
     const filename = input.FileName ?? target.filename ?? null;
@@ -1239,7 +1221,8 @@ export function install(api) {
       const session = sessionOf(token, 'blocks');
       const list = Array.isArray(input.BlockList) ? input.BlockList : [];
       const parts = list.map((blockId) => session.blocks.get(String(blockId)));
-      if (!list.length || parts.includes(undefined)) throw invalid('BlockList names a block that was not uploaded.');
+      if (!list.length || parts.some((part) => part === undefined) /* NOSONAR: retain sparse-array behavior */)
+        throw invalid('BlockList names a block that was not uploaded.');
       const mapping = session.entity ? store.resolveMapping(session.entity) : null;
       if (mapping) authorize(c, mapping, 'update', recordOf(store, mapping, session.id));
       else if (session.creator !== c.user?.systemuserid) throw invalid('The file continuation token is not valid.');

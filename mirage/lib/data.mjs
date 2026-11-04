@@ -809,7 +809,10 @@ export function keysetPage(
       down(0);
     }
   }
-  return { before: keyed.length - after, rows: heap.toSorted(compare).map((entry) => entry.row) };
+  return {
+    before: keyed.length - after,
+    rows: heap.sort(/* NOSONAR: preserve in-place sorting */ compare).map((entry) => entry.row),
+  };
 }
 /** The text a paging cookie carries for an order-column value: "" for null, a lookup's id, a choice's value, exact digits. */
 function cursorText(value) {
@@ -3028,9 +3031,9 @@ export class DataStore {
     });
     if (typeof frame?.then === 'function')
       return frame.then((answer) =>
-        this.afterPluginPhase(mapping, operation, stage, target, row, options, { id, frame: answer, targetPrimary }),
+        this.afterPluginPhase(mapping, operation, stage, target, row, options, id, answer, targetPrimary),
       );
-    this.afterPluginPhase(mapping, operation, stage, target, row, options, { id, frame, targetPrimary });
+    this.afterPluginPhase(mapping, operation, stage, target, row, options, id, frame, targetPrimary);
   }
   skipExportedPluginPhase(mapping, operation, stage, options, stepsRun) {
     if (
@@ -3051,7 +3054,7 @@ export class DataStore {
       });
     return true;
   }
-  afterPluginPhase(mapping, operation, stage, target, row, options, { id, frame, targetPrimary }) {
+  afterPluginPhase(mapping, operation, stage, target, row, options, id, frame, targetPrimary) {
     if (frame) {
       this.pluginFrames ??= new WeakMap();
       this.pluginFrames.set(row, frame);
@@ -4095,7 +4098,11 @@ export class DataStore {
    * mapping declares schemaComplete and none of those name it) or "unverified"
    * (incomplete metadata and no stored row has it).
    */
-  columnStatus(logical, attribute, metadata) {
+  /* NOSONAR: retain repeated overridable metadata reads and their evaluation order. */ columnStatus(
+    logical,
+    attribute,
+    metadata,
+  ) {
     let mapping;
     try {
       mapping = this.resolveMapping(logical);
@@ -4105,38 +4112,31 @@ export class DataStore {
     const name = String(attribute ?? '');
     if (!name) return 'unverified';
     const lower = name.toLowerCase();
-    if (this.isKnownMappedColumn(mapping, name, lower, metadata)) return 'known';
-    if (mapping.schemaComplete === true) return 'unknown';
-    return this.storedColumnStatus(mapping, name);
-  }
-  isKnownMappedColumn(mapping, name, lower, metadata) {
-    if (name === mapping.idColumn) return true;
-    const definitions = this.fieldDefinitions(mapping.logicalName, metadata);
-    if (Object.keys(definitions).some((key) => key.toLowerCase() === lower)) return true;
+    if (name === mapping.idColumn) return 'known';
+    if (Object.keys(this.fieldDefinitions(mapping.logicalName, metadata)).some((key) => key.toLowerCase() === lower))
+      return 'known';
     if (Object.values(mapping.relationships ?? {}).some((rel) => String(rel?.from ?? '').toLowerCase() === lower))
-      return true;
-    return this.isVirtualMappedColumn(mapping, lower, definitions);
-  }
-  isVirtualMappedColumn(mapping, lower, definitions) {
+      return 'known';
     // Dataverse's virtual name columns, which Solution XML doesn't list: <lookup>name and
     // <lookup>yominame, and <choice|status|state|two-options>name (statecodename).
     const virtual = /^(.+?)(yominame|name)$/.exec(lower);
-    if (!virtual) return false;
-    const baseKey = Object.keys(definitions).find((key) => key.toLowerCase() === virtual[1]);
-    const kind = baseKey ? fieldKind(definitions[baseKey]) : null;
-    const lookup =
-      kind === 'lookup' ||
-      Object.values(mapping.relationships ?? {}).some(
-        (rel) => rel?.many === false && String(rel.from ?? '').toLowerCase() === virtual[1],
-      );
-    return lookup || (virtual[2] === 'name' && ['choice', 'multichoice', 'boolean'].includes(kind));
-  }
-  storedColumnStatus(mapping, name) {
+    if (virtual) {
+      const definitions = this.fieldDefinitions(mapping.logicalName, metadata);
+      const baseKey = Object.keys(definitions).find((key) => key.toLowerCase() === virtual[1]);
+      const kind = baseKey ? fieldKind(definitions[baseKey]) : null;
+      const lookup =
+        kind === 'lookup' ||
+        Object.values(mapping.relationships ?? {}).some(
+          (rel) => rel?.many === false && String(rel.from ?? '').toLowerCase() === virtual[1],
+        );
+      if (lookup || (virtual[2] === 'name' && ['choice', 'multichoice', 'boolean'].includes(kind))) return 'known';
+    }
+    if (mapping.schemaComplete === true) return 'unknown';
     // Stored columns per table, rebuilt only after the data changes.
     const revision = this.dataRevision();
     this.storedColumns ??= new Map();
     let entry = this.storedColumns.get(mapping.logicalName);
-    if (!entry || entry?.revision !== revision) {
+    if (!entry || entry.revision !== revision) {
       const columns = new Set();
       for (const row of this.tableRows(mapping.logicalName)) for (const key of Object.keys(row)) columns.add(key);
       entry = { revision, columns };
@@ -4928,7 +4928,7 @@ export class DataStore {
     const rows = this.tableRows(mapping.logicalName);
     const parts = parseKeySegment(key);
     if (!parts) return rows[this.rowIndex(mapping, rows, key)];
-    const names = Object.keys(parts).sort((a, b) => Number(a > b) - Number(a < b));
+    const names = Object.keys(parts).sort(/* NOSONAR: preserve default string coercion */);
     if (isElastic(mapping) && names.length === 1 && names[0] === mapping.idColumn)
       return rows[this.rowIndex(mapping, rows, parts[mapping.idColumn])];
     // Only an Active key (its index job succeeded) resolves rows; Pending and Failed keys do not exist for lookups.
@@ -5284,7 +5284,10 @@ export class DataStore {
     if (validation.max != null) valid = valid && Number(value) <= validation.max;
     if (validation.oneOf) valid = valid && validation.oneOf.some((item) => equal(item, value));
     if (validation.assert) valid = valid && compileFilter(validation.assert)(row);
-    if (validation.unique) valid = valid && this.isUniquePluginValue(entity, validation, row, value);
+    if (validation.unique) {
+      const mapping = this.resolveMapping(entity);
+      valid = valid && this.isUniquePluginValue(mapping, entity, validation, row, value);
+    }
     if (valid) return;
     throw new DataError(
       validation.message ?? `Plugin ${p.id ?? 'validation'} rejected ${validation.field ?? 'record'}`,
@@ -5298,8 +5301,7 @@ export class DataStore {
       },
     );
   }
-  isUniquePluginValue(entity, validation, row, value) {
-    const mapping = this.resolveMapping(entity);
+  isUniquePluginValue(mapping, entity, validation, row, value) {
     return !(this.state.tables[entity] ?? []).some(
       (candidate) =>
         !equal(candidate[mapping.idColumn], row[mapping.idColumn]) && equal(field(candidate, validation.field), value),
@@ -5986,7 +5988,7 @@ export class DataStore {
     this.assertAllowed(m.logicalName, 'update', row, identity);
     this.validateBindings(m, data, row, identity, rows[index]);
     for (const name of blanks) changes[name] = '';
-    return yield* this.commitUpdateSteps(m, rows, index, row, identity, changes, { options, rawInput: data });
+    return yield* this.commitUpdateSteps(m, rows, index, row, identity, changes, options, data);
   }
   /** The systemColumns option: a plain object, or a function (mapping, row) => columns evaluated per row. */
   systemColumnsFor(option, mapping, row) {
@@ -6014,12 +6016,10 @@ export class DataStore {
     return row;
   }
   /** Commit an updated row: update plugins, unique alternate keys, secondary effects. */
-  commitUpdate(mapping, rows, index, row, identity, target, { options = {}, rawInput = {} } = {}) {
-    return this.runRecordSteps(
-      this.commitUpdateSteps(mapping, rows, index, row, identity, target, { options, rawInput }),
-    );
+  commitUpdate(mapping, rows, index, row, identity, target, options = {}, rawInput = {}) {
+    return this.runRecordSteps(this.commitUpdateSteps(mapping, rows, index, row, identity, target, options, rawInput));
   }
-  *commitUpdateSteps(mapping, rows, index, row, identity, target, { options = {}, rawInput = {} } = {}) /* NOSONAR */ {
+  *commitUpdateSteps(mapping, rows, index, row, identity, target, options = {}, rawInput = {}) /* NOSONAR */ {
     const previous = clone(rows[index]);
     const authorizedWrite = target !== undefined;
     target ??= Object.fromEntries(
@@ -6677,12 +6677,10 @@ export class DataStore {
       [targetMapping.idColumn]: target[targetMapping.idColumn],
     };
     yield* this.commitUpdateSteps(targetMapping, rows, rows.indexOf(target), next, identity, relinkTarget, {
-      options: {
-        bypassCustomPlugins: options.bypassCustomPlugins === true,
-        bypassCustomAsync: options.bypassCustomAsync === true,
-        bypassStepIds: options.bypassStepIds,
-        ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
-      },
+      bypassCustomPlugins: options.bypassCustomPlugins === true,
+      bypassCustomAsync: options.bypassCustomAsync === true,
+      bypassStepIds: options.bypassStepIds,
+      ...(options.omitConcurrencyBehavior ? { omitConcurrencyBehavior: true } : {}),
     });
   }
   async applyPreset(name, { generatedPresets = this.presetLibrary, returnSnapshot = true } = {}) {

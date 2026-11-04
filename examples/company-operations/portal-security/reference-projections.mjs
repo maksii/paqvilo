@@ -192,7 +192,7 @@ function saveReferenceAssociations(catalogue, grant, references) {
     const record = {
         relationship,
         from: grant.key,
-        to: [...set].sort((left, right) => Number(left > right) - Number(left < right)),
+        to: [...set].sort(),
       },
       existing = catalogue.associations.find((a) => a.relationship === relationship && a.from === grant.key);
     if (existing) existing.to = record.to;

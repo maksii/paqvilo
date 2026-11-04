@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { stripTrailingCharacter } from './text-scanning.mjs';
 
 /*
  * Native Power Pages platform resource manifest.
@@ -427,7 +428,7 @@ export function webFormsForm({
   if (componentState) content = String(content).replace(componentState[0], '');
   const viewState = componentState
     ? componentState[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&')
-    : `/wE${opaque('viewstate', action).replace(/=+$/, '')}`; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    : `/wE${stripTrailingCharacter(opaque('viewstate', action), '=')}`;
   const script = (src) => `<script src="${escapeAttribute(src)}" type="text/javascript"></script>`;
   const denied = DENIED_FORM_MARKER.test(String(content ?? ''));
   if (denied) eventValidation = false;
@@ -460,7 +461,7 @@ export function webFormsForm({
   onContent?.({ offset: prefix.length, length: content.length });
   const generator = createHash('sha256').update(`generator\u0000${id}`).digest('hex').slice(0, 8).toUpperCase();
   const eventValidationHtml = eventValidation
-    ? hidden('__EVENTVALIDATION', `/wE${opaque('validation', action).replace(/=+$/, '')}`) + '\n' // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    ? hidden('__EVENTVALIDATION', `/wE${stripTrailingCharacter(opaque('validation', action), '=')}`) + '\n'
     : '';
   return (
     prefix +

@@ -16,7 +16,13 @@ export function packageDependencyEvidence(sourceLock, consumerLock, packageName)
   const toolkitPath = `node_modules/${packageName}`;
   const differences = [...new Set([...source.keys(), ...consumer.keys()])]
     .filter((location) => location !== toolkitPath)
-    .sort((a, b) => Number(a > b) - Number(a < b))
+    // Locations are Object.entries keys, so both operands are primitive strings;
+    // relational comparison preserves the default sort's UTF-16 code-unit order.
+    .sort((a, b) => {
+      if (a < b) return -1;
+      if (a > b) return 1;
+      return 0;
+    })
     .flatMap((location) => {
       const expected = source.get(location),
         actual = consumer.get(location);

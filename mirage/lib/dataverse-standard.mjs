@@ -55,7 +55,10 @@ export function standardSchema() {
     relationships: data.relationships,
     optionSets: data.optionSets,
     targets: Object.fromEntries(
-      Object.entries(targets).map(([key, set]) => [key, [...set].sort((a, b) => Number(a > b) - Number(a < b))]),
+      Object.entries(targets).map(([key, set]) => [
+        key,
+        [...set].sort(/* NOSONAR: preserve default string coercion */),
+      ]),
     ),
   });
   return schema;

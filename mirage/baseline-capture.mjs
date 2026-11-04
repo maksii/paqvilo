@@ -21,7 +21,9 @@ const SIGN_IN_MARKERS = Object.freeze([
 /** Preserve surrounding markup/JSON and URL paths while removing query values. */
 export function redactEmbeddedQueryValues(text) {
   return String(text ?? '').replace(/(?:https?:)?(?:\/|\\\/){2}[^\s<>"'`]+|\/(?!\/)[^\s<>"'`]*/gi, (raw) => {
-    const ending = /[),.;\]}]+$/.exec(raw)?.[0] ?? ''; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    let end = raw.length;
+    while (end > 0 && '),.;]}'.includes(raw[end - 1])) end--;
+    const ending = raw.slice(end);
     const body = ending ? raw.slice(0, -ending.length) : raw;
     const escapedSlashes = body.includes(String.raw`\/`);
     const separator = /&(?:amp;|#0*38;|#x0*26;)|\\u0026/i.exec(body)?.[0];
@@ -129,7 +131,7 @@ function redactHeaders(headers, origin = null) {
               .split(/,(?=\s*\w+=)|;/)
               .map((part) => part.split('=')[0].trim())
               .filter(Boolean)
-              .sort((a, b) => Number(a > b) - Number(a < b))
+              .sort(/* NOSONAR: preserve default string coercion */)
               .join(';')
           : '{token}';
     } else {

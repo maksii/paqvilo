@@ -688,7 +688,7 @@ function openApiFacts(document) {
     openapi: {
       version: String(document.swagger ?? document.openapi ?? ''),
       title: document.info?.title ?? null,
-      operations: operations.toSorted((a, b) => Number(a > b) - Number(a < b)),
+      operations: operations.sort(/* NOSONAR: preserve in-place default string sorting */),
       extensions: [...extensions].sort((a, b) => Number(a > b) - Number(a < b)),
     },
     compiled: compileOpenApi(document),
@@ -822,7 +822,7 @@ function parsedInventoryEntry(file, text, component, name, size) {
 }
 
 function populateDataEntryFacts(extra, text, file, component, name, size) {
-  if (text == null || size > TEXT_LIMIT) return null;
+  if (text == null || !(size <= TEXT_LIMIT)) return null;
   if (component === 'connector') {
     Object.assign(extra, connectorFacts(text, file));
     return null;

@@ -283,7 +283,7 @@ export function createPortalAuthorization({
   const signatureOf = (grants) =>
     [...grants]
       .map(([name, grant]) => `${name}:${grant.mask}`)
-      .sort((a, b) => Number(a > b) - Number(a < b))
+      .sort(/* NOSONAR: preserve default string coercion */)
       .join('|');
   // The role's grants as stored in Dataverse, to see whether an administrator changed them since the last rewrite.
   const storedGrants = (roleId) =>

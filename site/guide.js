@@ -121,11 +121,17 @@ const scalar = (value) =>
   /^[A-Za-z0-9._/:-]+$/.test(value) && !/^[-:]|:$/.test(value) && !special.test(value) ? value : JSON.stringify(value);
 const key = (value) => (/^[A-Za-z0-9_-]+$/.test(value) && !special.test(value) ? value : JSON.stringify(value));
 
+function stripTrailingSlashes(text) {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === '/') end--;
+  return text.slice(0, end);
+}
+
 function build() {
   const data = Object.fromEntries(new FormData(form));
   const site = data.site.trim() || 'portal';
   const exportPath =
-    data.export.trim().replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/+$/, '') || 'sources/portal-export'; // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    stripTrailingSlashes(data.export.trim().replaceAll('\\', '/').replace(/^\.\//, '')) || 'sources/portal-export';
   const url = data.url.trim() || 'https://your-portal.example.test';
   const editor = data.editor.trim();
   const problems = [];
