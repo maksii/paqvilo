@@ -51,6 +51,70 @@ test('ordinary binary/image/layout base64 stays exact', () => {
   ])
     assert.equal(redact(input), input);
 });
+
+// @test-kind security: verifies malformed multipart headers bypass body-line parsing while real protected bodies still redact.
+test('multipart redaction skips inputs without a blank header/body separator', () => {
+  const input = 'name="base64SecureConfiguration"\r\n'.repeat(32);
+  const originalDescriptor = Object.getOwnPropertyDescriptor(String.prototype, 'toLowerCase');
+  const originalToLowerCase = String.prototype.toLowerCase;
+  let matchingCalls = 0,
+    output;
+  try {
+    Object.defineProperty(String.prototype, 'toLowerCase', {
+      ...originalDescriptor,
+      value: function () {
+        if (String(this) === 'name="base64SecureConfiguration"') matchingCalls++;
+        return Reflect.apply(originalToLowerCase, this, []);
+      },
+    });
+    output = redact(input);
+  } finally {
+    Object.defineProperty(String.prototype, 'toLowerCase', originalDescriptor);
+  }
+  assert.equal(output, input);
+  assert.equal(matchingCalls, 0);
+
+  assert.equal(
+    redact(
+      'Content-Disposition: form-data; name="base64SecureConfiguration"\n\nfixture-value\n--boundary\nsibling=kept',
+    ),
+    'Content-Disposition: form-data; name="base64SecureConfiguration"\n\n{token}\n--boundary\nsibling=kept',
+  );
+  assert.equal(
+    redact(
+      'Content-Disposition: form-data; name="base64SecureConfiguration"\r\n\r\nfixture-value\r\n--boundary\r\nsibling=kept',
+    ),
+    'Content-Disposition: form-data; name="base64SecureConfiguration"\r\n\r\n{token}\r\n--boundary\r\nsibling=kept',
+  );
+  assert.equal(
+    redact('Content-Disposition: form-data; name="base64SecureConfiguration"\r\n\r\n'),
+    'Content-Disposition: form-data; name="base64SecureConfiguration"\r\n\r\n{token}',
+  );
+});
+
+// @test-kind security: preserves exact query-field redaction and ordinary text across delimiter scanning.
+test('query redaction preserves protected fields and adjacent ordinary values', () => {
+  for (const [input, expected] of [
+    ['base64SecureConfiguration=fixture-value', 'base64SecureConfiguration={token}'],
+    ['?ordinary=fixture-value', '?ordinary=fixture-value'],
+    ['&&base64SecureConfiguration=fixture-value&&ordinary=x', '&&base64SecureConfiguration={token}&&ordinary=x'],
+    ['base64SecureConfiguration=&ordinary=', 'base64SecureConfiguration={token}&ordinary='],
+    ['?ordinary?base64SecureConfiguration=fixture-value', '?ordinary?base64SecureConfiguration=fixture-value'],
+    ['base64SecureConfiguration=fixture?value', 'base64SecureConfiguration={token}'],
+    [
+      'ctl00%24Main%24AttachFile_HiddenField_InstanceId=fixture-value&ordinary=kept',
+      'ctl00%24Main%24AttachFile_HiddenField_InstanceId={token}&ordinary=kept',
+    ],
+    ['BASE64SECURECONFIGURATION=fixture-value', 'BASE64SECURECONFIGURATION={token}'],
+    [
+      'ordinary=x\u00a0?base64SecureConfiguration=fixture-value\u2028other=kept\ufefftail',
+      'ordinary=x\u00a0?base64SecureConfiguration={token}\u2028other=kept\ufefftail',
+    ],
+    ['?ordinary=\ud800&next=🌌', '?ordinary=\ud800&next=🌌'],
+  ])
+    assert.equal(redact(input), expected);
+});
+
 test('direct structured field and nested response body remove raw digest input', () => {
   const body = JSON.stringify({
       base64SecureConfiguration: token,

@@ -18,8 +18,9 @@ permissions:
   contents: read
 concurrency:
   # Serialize analyses of the same source branch, including multiple PRs.
+  # A release-line push and its PR analysis must both finish so PRs do not cancel push check contexts.
   group: sonarqube-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 jobs:
   coverage:
     if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')

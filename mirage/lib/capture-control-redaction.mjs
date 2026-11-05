@@ -89,6 +89,8 @@ function multipartLineState(text, state, newline, cursor, contentEnd, line) {
 }
 
 function redactMultipartControlFields(text) {
+  // Without a blank header/body separator, multipart state cannot enter a body.
+  if (!text.includes('\n\n') && !text.includes('\n\r\n')) return text;
   const state = { parts: [], cursor: 0, last: 0, pending: false, body: false };
   while (state.cursor < text.length) {
     const newline = text.indexOf('\n', state.cursor);
@@ -188,12 +190,17 @@ export function redactSecureConfigurationTokens(text) {
 }
 function /* NOSONAR */ redactQueryControlFields(text) {
   // NOSONAR: preserve state, evaluation order, and lifecycle
+  // Match delimiters and complete whitespace runs to avoid per-character regexp work.
+  const delimiter = /[&?=]|\s+/g,
+    valueBoundary = /[&\s]/g;
   let candidate = 0,
     nameStart = 0,
     copied = 0,
     result = '';
-  for (let index = 0; index < text.length; index++) {
-    const char = text[index];
+  let match;
+  while ((match = delimiter.exec(text)) !== null) {
+    const index = match.index,
+      char = match[0][0];
     if (char === '&' || (char === '?' && candidate < 0)) {
       candidate = index;
       nameStart = index + 1;
@@ -204,13 +211,14 @@ function /* NOSONAR */ redactQueryControlFields(text) {
         continue;
       }
       const name = text.slice(nameStart, index);
-      let end = index + 1;
-      while (end < text.length && text[end] !== '&' && !/\s/.test(text[end])) end++;
+      valueBoundary.lastIndex = index + 1;
+      const boundary = valueBoundary.exec(text),
+        end = boundary ? boundary.index : text.length;
       if (isProtectedField(name)) {
         result += text.slice(copied, index + 1) + '{token}';
         copied = end;
       }
-      index = end - 1;
+      delimiter.lastIndex = end;
       candidate = -1;
     }
   }
