@@ -7,6 +7,7 @@ import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
 import { prepareClrRuntime, dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
+import { createPreparedClrRuntimePreparer } from './fixtures/prepared-clr-runtimes.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -43,12 +44,14 @@ async function fixture(t, steps, handlers = new Map(), overrides = {}, runtimes 
     extension: { name: 'bulk-http-probe', install: () => {} },
   });
   const items = pluginCatalogue({ plugins: { steps }, handlers, overrides, runtimes });
+  const descriptors = new Map([...runtimes].map(([key, runtime]) => [key, runtime.descriptor]));
   const backend = await createOrganizationBackend({
     store: f.store,
     items: () => items,
     handlers,
     runtimes,
-    descriptors: new Map([...runtimes].map(([key, runtime]) => [key, runtime.descriptor])),
+    descriptors,
+    prepareRuntime: createPreparedClrRuntimePreparer(runtimes, descriptors),
   });
   t.after(() => backend.close());
   return { ...f, items, backend };
@@ -1117,107 +1120,121 @@ test(
         mutate: true,
       },
     ];
-    for (const scenario of cases) {
-      const { supplied } = scenario;
-      const message = scenario.message;
-      const registrations = [10, 20, 40].flatMap((stage, index) => [
-        { ...step(message + 'Multiple', stage, 20, index + 1), typeName: 'Invented.Observer' },
-        { ...step(message + 'Multiple', stage, 21, index + 10), typeName: 'Invented.Snapshot' },
-      ]);
-      registrations.push(
-        { ...step(message + 'Multiple', 40, 40, 4), typeName: 'Invented.Observer' },
-        { ...step(message + 'Multiple', 40, 41, 14), typeName: 'Invented.Snapshot' },
-        ...scenario.scalar.map(({ stage, rank }, index) => ({
-          ...step(message, stage, rank, index + 20),
-          typeName: scenario.mutate ? 'Invented.Mutate' : 'Invented.Noop',
-        })),
-      );
-      const seen = [],
-        handlers = new Map([
-          [
-            'Invented.Snapshot',
-            ({ context }) => {
-              assert.equal(context.SharedVariables.ObservedIdentityStage, context.Stage);
-              assert.equal(context.SharedVariables.ObservedIdentityPrimary, context.PrimaryEntityId);
-              seen.push({
-                stage: context.Stage,
-                primary: context.PrimaryEntityId,
-                target: context.InputParameters.Targets[0],
-                observedTarget: context.SharedVariables.ObservedIdentityTarget,
-              });
-            },
-          ],
+    assert.equal(cases.length, 20, 'the matrix has exactly twenty independent CLR scenarios');
+    for (const [scenarioIndex, scenario] of cases.entries()) {
+      const scalarId = scenario.scalar.map(({ stage, rank }) => `${stage}x${rank}`).join('+') || 'none';
+      const caseId = [
+        String(scenarioIndex + 1).padStart(2, '0'),
+        scenario.message,
+        scenario.supplied ? 'provided' : 'generated',
+        `scalar-${scalarId}`,
+        scenario.mutate ? 'mutate' : 'stable',
+        scenario.seedReplacement ? 'replacement-seed' : 'no-replacement-seed',
+      ].join(' ');
+      await t.test(caseId, async (child) => {
+        const { supplied } = scenario;
+        const message = scenario.message;
+        const registrations = [10, 20, 40].flatMap((stage, index) => [
+          { ...step(message + 'Multiple', stage, 20, index + 1), typeName: 'Invented.Observer' },
+          { ...step(message + 'Multiple', stage, 21, index + 10), typeName: 'Invented.Snapshot' },
         ]);
-      const runtimes = new Map(
-        registrations
-          .filter((entry) => entry.typeName !== 'Invented.Snapshot')
-          .map((entry) => [
-            entry.id,
-            entry.typeName !== 'Invented.Observer' ? retypeClrRuntime(runtime, { typeName: entry.typeName }) : runtime,
-          ]),
-      );
-      const overrides = Object.fromEntries(
-        [...runtimes.keys()].map((entry) => ['plugin-step:' + entry, { mode: 'clr' }]),
-      );
-      const f = await fixture(t, registrations, handlers, overrides, runtimes);
-      const provided = '20000000-0000-0000-0000-000000000099';
-      if (message === 'Update')
-        assert.equal(
-          (await f.request('POST', '/x_items', { x_itemid: provided, x_name: 'Seeded update' })).status,
-          201,
+        registrations.push(
+          { ...step(message + 'Multiple', 40, 40, 4), typeName: 'Invented.Observer' },
+          { ...step(message + 'Multiple', 40, 41, 14), typeName: 'Invented.Snapshot' },
+          ...scenario.scalar.map(({ stage, rank }, index) => ({
+            ...step(message, stage, rank, index + 20),
+            typeName: scenario.mutate ? 'Invented.Mutate' : 'Invented.Noop',
+          })),
         );
-      if (scenario.seedReplacement)
-        assert.equal(
-          (
-            await f.request('POST', '/x_items', {
-              x_itemid: '20000000-0000-0000-0000-000000000098',
-              x_name: 'Replacement seed unchanged',
-            })
-          ).status,
-          201,
+        const seen = [],
+          handlers = new Map([
+            [
+              'Invented.Snapshot',
+              ({ context }) => {
+                assert.equal(context.SharedVariables.ObservedIdentityStage, context.Stage);
+                assert.equal(context.SharedVariables.ObservedIdentityPrimary, context.PrimaryEntityId);
+                seen.push({
+                  stage: context.Stage,
+                  primary: context.PrimaryEntityId,
+                  target: context.InputParameters.Targets[0],
+                  observedTarget: context.SharedVariables.ObservedIdentityTarget,
+                });
+              },
+            ],
+          ]);
+        const runtimes = new Map(
+          registrations
+            .filter((entry) => entry.typeName !== 'Invented.Snapshot')
+            .map((entry) => [
+              entry.id,
+              entry.typeName !== 'Invented.Observer'
+                ? retypeClrRuntime(runtime, { typeName: entry.typeName })
+                : runtime,
+            ]),
         );
-      const response = await f.request(
-        message === 'Create' ? 'POST' : 'PATCH',
-        message === 'Create' ? '/x_items' : `/x_items(${provided})`,
-        {
-          x_name: 'Ranked identity',
-          x_keep: supplied ? 'provided' : 'generated',
-          ...(supplied && message === 'Create' ? { x_itemid: provided } : {}),
-        },
-      );
-      const body = await response.json();
-      assert.equal(response.status, message === 'Create' ? 201 : 200, JSON.stringify(body));
-      assert.deepEqual(
-        seen.map((entry) => entry.stage),
-        [10, 20, 40, 40],
-      );
-      // Targets[0] is the single Target as it stands: a scalar step's re-pointed Target.Id reaches the multiple steps
-      // after it, until the single message binds its Target to the row again (Create at PreOperation, Update at
-      // PostOperation).
-      const mutatedAt = (stage) =>
-        scenario.mutate &&
-        (stage === scenario.scalar[0].stage ||
-          (message === 'Update' && scenario.scalar[0].stage === 10 && stage === 20));
-      assert.equal(
-        seen.every(
-          (entry) =>
-            entry.target.id === (mutatedAt(entry.stage) ? '20000000-0000-0000-0000-000000000098' : body.x_itemid) &&
-            entry.observedTarget === entry.target.id,
-        ),
-        true,
-      );
-      if (message === 'Update' && scenario.mutate) {
-        assert.equal(body.x_itemid, provided);
-        const replacement = f.store
-          .tableRows('x_item')
-          .find((row) => row.x_itemid === '20000000-0000-0000-0000-000000000098');
-        assert.equal(replacement?.x_name, scenario.seedReplacement ? 'Replacement seed unchanged' : undefined);
-      }
-      assert.equal(
-        // Native recorder corpus crud/depth: every implicit multiple step reports the single message's PrimaryEntityId.
-        seen.every((entry) => entry.primary === body.x_itemid),
-        true,
-      );
+        const overrides = Object.fromEntries(
+          [...runtimes.keys()].map((entry) => ['plugin-step:' + entry, { mode: 'clr' }]),
+        );
+        const f = await fixture(child, registrations, handlers, overrides, runtimes);
+        const provided = '20000000-0000-0000-0000-000000000099';
+        if (message === 'Update')
+          assert.equal(
+            (await f.request('POST', '/x_items', { x_itemid: provided, x_name: 'Seeded update' })).status,
+            201,
+          );
+        if (scenario.seedReplacement)
+          assert.equal(
+            (
+              await f.request('POST', '/x_items', {
+                x_itemid: '20000000-0000-0000-0000-000000000098',
+                x_name: 'Replacement seed unchanged',
+              })
+            ).status,
+            201,
+          );
+        const response = await f.request(
+          message === 'Create' ? 'POST' : 'PATCH',
+          message === 'Create' ? '/x_items' : `/x_items(${provided})`,
+          {
+            x_name: 'Ranked identity',
+            x_keep: supplied ? 'provided' : 'generated',
+            ...(supplied && message === 'Create' ? { x_itemid: provided } : {}),
+          },
+        );
+        const body = await response.json();
+        assert.equal(response.status, message === 'Create' ? 201 : 200, JSON.stringify(body));
+        assert.deepEqual(
+          seen.map((entry) => entry.stage),
+          [10, 20, 40, 40],
+        );
+        // Targets[0] is the single Target as it stands: a scalar step's re-pointed Target.Id reaches the multiple steps
+        // after it, until the single message binds its Target to the row again (Create at PreOperation, Update at
+        // PostOperation).
+        const mutatedAt = (stage) =>
+          scenario.mutate &&
+          (stage === scenario.scalar[0].stage ||
+            (message === 'Update' && scenario.scalar[0].stage === 10 && stage === 20));
+        assert.equal(
+          seen.every(
+            (entry) =>
+              entry.target.id === (mutatedAt(entry.stage) ? '20000000-0000-0000-0000-000000000098' : body.x_itemid) &&
+              entry.observedTarget === entry.target.id,
+          ),
+          true,
+        );
+        if (message === 'Update' && scenario.mutate) {
+          assert.equal(body.x_itemid, provided);
+          const replacement = f.store
+            .tableRows('x_item')
+            .find((row) => row.x_itemid === '20000000-0000-0000-0000-000000000098');
+          assert.equal(replacement?.x_name, scenario.seedReplacement ? 'Replacement seed unchanged' : undefined);
+        }
+        assert.equal(
+          // Native recorder corpus crud/depth: every implicit multiple step reports the single message's PrimaryEntityId.
+          seen.every((entry) => entry.primary === body.x_itemid),
+          true,
+        );
+      });
     }
   },
 );
@@ -1262,75 +1279,77 @@ test(
       context: { executionUserId: user, initiatingUserId: user, organizationId: user, businessUnitId: user },
     });
     for (const kind of ['Default', 'Star', 'ETag', 'SDK CLR', 'SDK JS']) {
-      const registrations = observerStages.flatMap((stage, index) => [
-        { ...step('UpdateMultiple', stage, 20, index + 1), typeName: 'Invented.Inputs' },
-        { ...step('UpdateMultiple', stage, 21, index + 10), typeName: 'Invented.InputSnapshot' },
-      ]);
-      if (kind.startsWith('SDK'))
-        registrations.push({
-          ...step('Create', 20, 1, 20),
-          typeName: kind === 'SDK CLR' ? 'Invented.Driver' : 'Invented.JSDriver',
-        });
-      const seen = [],
-        handlers = new Map([
-          [
-            'Invented.InputSnapshot',
-            ({ context }) => {
-              assert.equal(context.SharedVariables.ObservedInputStage, context.Stage);
-              // The single Update's inputs with Target as the trailing Targets (native recorder corpus crud/depth key order);
-              // FromSandbox precedes the platform's ConcurrencyBehavior (native corpora: UpdateMultiple
-              // tag,FromSandbox,ConcurrencyBehavior,Targets).
-              const keys =
-                context.Stage === 10 && kind === 'SDK CLR'
-                  ? 'FromSandbox,ConcurrencyBehavior,Targets'
-                  : 'ConcurrencyBehavior,Targets';
-              assert.equal(context.SharedVariables.ObservedInputKeys, keys);
-              seen.push({ stage: context.Stage, parent: context.ParentContext });
-            },
-          ],
+      await t.test(kind, async (child) => {
+        const registrations = observerStages.flatMap((stage, index) => [
+          { ...step('UpdateMultiple', stage, 20, index + 1), typeName: 'Invented.Inputs' },
+          { ...step('UpdateMultiple', stage, 21, index + 10), typeName: 'Invented.InputSnapshot' },
         ]);
-      let f;
-      handlers.set('Invented.JSDriver', ({ context }) => {
-        if (context.InputParameters.Target.x_name === 'Drive JS')
-          localOrganizationService(f.store, profile).update('x_item', provided, { x_name: 'SDK JS' });
-      });
-      const runtimes = new Map(
-        registrations
-          .filter((entry) => ['Invented.Inputs', 'Invented.Driver'].includes(entry.typeName))
-          .map((entry) => [
-            entry.id,
-            entry.typeName === 'Invented.Driver'
-              ? retypeClrRuntime(runtime, { typeName: entry.typeName, timeoutMs: callerInvocationBudgetMs })
-              : runtime,
-          ]),
-      );
-      f = await fixture(
-        t,
-        registrations,
-        handlers,
-        Object.fromEntries([...runtimes.keys()].map((entry) => ['plugin-step:' + entry, { mode: 'clr' }])),
-        runtimes,
-      );
-      assert.equal((await f.request('POST', '/x_items', { x_itemid: provided, x_name: 'Seed' })).status, 201);
-      let response;
-      if (kind.startsWith('SDK'))
-        response = await f.request('POST', '/x_items', { x_name: kind === 'SDK CLR' ? 'Drive CLR' : 'Drive JS' });
-      else {
-        const headers = {};
-        if (kind === 'Star') headers['If-Match'] = '*';
-        if (kind === 'ETag') {
-          const current = await f.request('GET', `/x_items(${provided})`);
-          headers['If-Match'] = current.headers.get('etag');
-          assert.ok(headers['If-Match']);
+        if (kind.startsWith('SDK'))
+          registrations.push({
+            ...step('Create', 20, 1, 20),
+            typeName: kind === 'SDK CLR' ? 'Invented.Driver' : 'Invented.JSDriver',
+          });
+        const seen = [],
+          handlers = new Map([
+            [
+              'Invented.InputSnapshot',
+              ({ context }) => {
+                assert.equal(context.SharedVariables.ObservedInputStage, context.Stage);
+                // The single Update's inputs with Target as the trailing Targets (native recorder corpus crud/depth key order);
+                // FromSandbox precedes the platform's ConcurrencyBehavior (native corpora: UpdateMultiple
+                // tag,FromSandbox,ConcurrencyBehavior,Targets).
+                const keys =
+                  context.Stage === 10 && kind === 'SDK CLR'
+                    ? 'FromSandbox,ConcurrencyBehavior,Targets'
+                    : 'ConcurrencyBehavior,Targets';
+                assert.equal(context.SharedVariables.ObservedInputKeys, keys);
+                seen.push({ stage: context.Stage, parent: context.ParentContext });
+              },
+            ],
+          ]);
+        let f;
+        handlers.set('Invented.JSDriver', ({ context }) => {
+          if (context.InputParameters.Target.x_name === 'Drive JS')
+            localOrganizationService(f.store, profile).update('x_item', provided, { x_name: 'SDK JS' });
+        });
+        const runtimes = new Map(
+          registrations
+            .filter((entry) => ['Invented.Inputs', 'Invented.Driver'].includes(entry.typeName))
+            .map((entry) => [
+              entry.id,
+              entry.typeName === 'Invented.Driver'
+                ? retypeClrRuntime(runtime, { typeName: entry.typeName, timeoutMs: callerInvocationBudgetMs })
+                : runtime,
+            ]),
+        );
+        f = await fixture(
+          child,
+          registrations,
+          handlers,
+          Object.fromEntries([...runtimes.keys()].map((entry) => ['plugin-step:' + entry, { mode: 'clr' }])),
+          runtimes,
+        );
+        assert.equal((await f.request('POST', '/x_items', { x_itemid: provided, x_name: 'Seed' })).status, 201);
+        let response;
+        if (kind.startsWith('SDK'))
+          response = await f.request('POST', '/x_items', { x_name: kind === 'SDK CLR' ? 'Drive CLR' : 'Drive JS' });
+        else {
+          const headers = {};
+          if (kind === 'Star') headers['If-Match'] = '*';
+          if (kind === 'ETag') {
+            const current = await f.request('GET', `/x_items(${provided})`);
+            headers['If-Match'] = current.headers.get('etag');
+            assert.ok(headers['If-Match']);
+          }
+          response = await f.request('PATCH', `/x_items(${provided})`, { x_name: kind }, headers);
         }
-        response = await f.request('PATCH', `/x_items(${provided})`, { x_name: kind }, headers);
-      }
-      assert.equal(response.status, kind.startsWith('SDK') ? 201 : 200, JSON.stringify(await response.json()));
-      assert.deepEqual(
-        seen.map((entry) => entry.stage),
-        [10, 20, 40],
-      );
-      assert.equal(f.store.tableRows('x_item').find((row) => row.x_itemid === provided).x_name, kind);
+        assert.equal(response.status, kind.startsWith('SDK') ? 201 : 200, JSON.stringify(await response.json()));
+        assert.deepEqual(
+          seen.map((entry) => entry.stage),
+          [10, 20, 40],
+        );
+        assert.equal(f.store.tableRows('x_item').find((row) => row.x_itemid === provided).x_name, kind);
+      });
     }
   },
 );

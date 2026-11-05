@@ -1,7 +1,8 @@
+// @test-kind tooling: synthetic write-volume, keyset traversal, cascade and permission scaling gate for the reusable runtime
 // Write-volume gate (runtime-performance.md, "Write-volume gate"): bulk creates, key upserts, single-record reads,
 // key-set paging with a concurrent insert, a 1,000-child cascade and a deep share graph, each timed at N and 2N rows.
 // It asserts the time ratio between the two sizes, never absolute milliseconds: the O(n) paths stay near 2x, and a
-// reintroduced per-row table scan (O(n^2)) lands near 4x. Run explicitly, not in the ordinary suite:
+// reintroduced per-row table scan (O(n^2)) lands near 4x. Mirage unit validation also runs this gate; run it alone with:
 //   node --test mirage/test-volume/write-volume.test.mjs
 // The record handlers run in process (no HTTP).
 import test from 'node:test';
@@ -38,7 +39,7 @@ const SETTINGS = {
 };
 const N = 2500;
 const RATIO = 3; // linear work doubles; quadratic work quadruples
-const ATTEMPTS = 3; // a noisy host may retry; a quadratic path fails every attempt
+const ATTEMPTS = 3; // any passing attempt qualifies; noisy samples may hide a genuine regression, so this is statistical evidence, not proof
 
 async function fixture() {
   const state = emptyState();
@@ -121,49 +122,60 @@ async function timed(fn) {
   return performance.now() - started;
 }
 // Times `run(size)` on fresh fixtures at N and 2N; passes when one attempt stays under the ratio.
-async function scales(name, run, { ratio = RATIO } = {}) {
+async function scales(name, run, { ratio = RATIO, diagnostic = () => {} } = {}) {
   const observed = [];
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
     const small = await run(N),
       large = await run(2 * N);
     observed.push(`${Math.round(small)} -> ${Math.round(large)} ms`);
+    diagnostic(
+      `${name} attempt ${attempt + 1}/${ATTEMPTS}: N=${Math.round(small)} ms; 2N=${Math.round(large)} ms; ratio=${(large / Math.max(small, 1)).toFixed(3)}`,
+    );
     if (large / Math.max(small, 1) < ratio) return;
   }
   assert.fail(`${name} grew faster than linearly from ${N} to ${2 * N} rows: ${observed.join('; ')}`);
 }
 
-test('CreateMultiple stays linear in the number of targets (primary and alternate key indexes)', async () => {
-  await scales('CreateMultiple', async (n) => {
-    const { send, store } = await fixture();
-    const ms = await timed(() =>
-      send('POST', 'x_items/Microsoft.Dynamics.CRM.CreateMultiple', { body: { Targets: targets(n) } }),
-    );
-    assert.equal(store.state.tables.x_item.length, n);
-    return ms;
-  });
+test('CreateMultiple stays linear in the number of targets (primary and alternate key indexes)', async (t) => {
+  await scales(
+    'CreateMultiple',
+    async (n) => {
+      const { send, store } = await fixture();
+      const ms = await timed(() =>
+        send('POST', 'x_items/Microsoft.Dynamics.CRM.CreateMultiple', { body: { Targets: targets(n) } }),
+      );
+      assert.equal(store.state.tables.x_item.length, n);
+      return ms;
+    },
+    { diagnostic: (message) => t.diagnostic(message) },
+  );
 });
 
-test('UpsertMultiple by alternate key stays linear in the number of targets', async () => {
-  await scales('UpsertMultiple', async (n) => {
-    const { send, store } = await fixture();
-    await send('POST', 'x_items/Microsoft.Dynamics.CRM.CreateMultiple', { body: { Targets: targets(n) } });
-    const ms = await timed(() =>
-      send('POST', 'x_items/Microsoft.Dynamics.CRM.UpsertMultiple', {
-        body: {
-          Targets: Array.from({ length: n }, (_, i) => ({
-            '@odata.id': `x_items(x_code='K${i}')`,
-            x_name: `Updated ${i}`,
-          })),
-        },
-      }),
-    );
-    assert.equal(store.state.tables.x_item.length, n);
-    assert.ok(store.state.tables.x_item.every((row) => row.x_name.startsWith('Updated')));
-    return ms;
-  });
+test('UpsertMultiple by alternate key stays linear in the number of targets', async (t) => {
+  await scales(
+    'UpsertMultiple',
+    async (n) => {
+      const { send, store } = await fixture();
+      await send('POST', 'x_items/Microsoft.Dynamics.CRM.CreateMultiple', { body: { Targets: targets(n) } });
+      const ms = await timed(() =>
+        send('POST', 'x_items/Microsoft.Dynamics.CRM.UpsertMultiple', {
+          body: {
+            Targets: Array.from({ length: n }, (_, i) => ({
+              '@odata.id': `x_items(x_code='K${i}')`,
+              x_name: `Updated ${i}`,
+            })),
+          },
+        }),
+      );
+      assert.equal(store.state.tables.x_item.length, n);
+      assert.ok(store.state.tables.x_item.every((row) => row.x_name.startsWith('Updated')));
+      return ms;
+    },
+    { diagnostic: (message) => t.diagnostic(message) },
+  );
 });
 
-test('single-record reads stay constant in the table size (index before the row-security filter)', async () => {
+test('single-record reads stay constant in the table size (index before the row-security filter)', async (t) => {
   await scales(
     'single-record read',
     async (n) => {
@@ -185,132 +197,158 @@ test('single-record reads stay constant in the table size (index before the row-
         }
       });
     },
-    { ratio: 1.6 },
+    { ratio: 1.6, diagnostic: (message) => t.diagnostic(message) },
   );
 });
 
-test('key-set paging visits every row once despite a concurrent insert, at a linear cost per page', async () => {
-  await scales('paging', async (n) => {
-    const { send } = await fixture();
-    await send('POST', 'x_items/Microsoft.Dynamics.CRM.CreateMultiple', { body: { Targets: targets(n) } });
-    const seen = [];
-    let next = 'x_items?$select=x_name&$orderby=x_rank',
-      pages = 0,
-      inserted = false;
-    const ms = await timed(async () => {
-      while (next) {
-        const page = await send('GET', next, { headers: { prefer: 'odata.maxpagesize=500' } });
-        pages++;
-        seen.push(...page.value.map((row) => row.x_itemid));
-        next = page['@odata.nextLink'];
-        // A row that sorts before the cursor arrives after the first page: the offset would repeat a row.
-        if (!inserted) {
-          inserted = true;
-          await send('POST', 'x_items', { body: { x_name: 'Late', x_code: 'LATE', x_rank: 0 } });
+test('key-set paging visits every row once despite a concurrent insert, at a linear cost per page', async (t) => {
+  await scales(
+    'paging',
+    async (n) => {
+      const { send } = await fixture();
+      await send('POST', 'x_items/Microsoft.Dynamics.CRM.CreateMultiple', { body: { Targets: targets(n) } });
+      const seen = [];
+      let next = 'x_items?$select=x_name&$orderby=x_rank',
+        pages = 0,
+        inserted = false;
+      const ms = await timed(async () => {
+        while (next) {
+          const page = await send('GET', next, { headers: { prefer: 'odata.maxpagesize=500' } });
+          pages++;
+          seen.push(...page.value.map((row) => row.x_itemid));
+          next = page['@odata.nextLink'];
+          // A row that sorts before the cursor arrives after the first page: the offset would repeat a row.
+          if (!inserted) {
+            inserted = true;
+            await send('POST', 'x_items', { body: { x_name: 'Late', x_code: 'LATE', x_rank: 0 } });
+          }
         }
-      }
-    });
-    assert.equal(seen.length, n);
-    assert.equal(new Set(seen).size, n);
-    return ms / pages;
-  });
+      });
+      assert.equal(seen.length, n);
+      assert.equal(new Set(seen).size, n);
+      return ms / pages;
+    },
+    { diagnostic: (message) => t.diagnostic(message) },
+  );
 });
 
-test('a cascade delete of a 1,000-child tree stays linear in the number of children', async () => {
-  await scales('cascade delete', async (n) => {
-    const children = Math.round(n / 2.5); // 1,000 children at N; 2,000 at 2N
-    const { send, store } = await fixture();
-    const {
-      Ids: [parent],
-    } = await send('POST', 'x_items/Microsoft.Dynamics.CRM.CreateMultiple', { body: { Targets: targets(1) } });
-    await send('POST', 'x_children/Microsoft.Dynamics.CRM.CreateMultiple', {
-      body: {
-        Targets: Array.from({ length: children }, (_, i) => ({
-          x_name: `Child ${i}`,
-          'x_parent@odata.bind': `/x_items(${parent})`,
-        })),
-      },
-    });
-    const ms = await timed(() => send('DELETE', `x_items(${parent})`));
-    assert.equal(store.state.tables.x_child.length, 0);
-    return ms;
-  });
+test('a cascade delete of a 1,000-child tree stays linear in the number of children', async (t) => {
+  await scales(
+    'cascade delete',
+    async (n) => {
+      const children = Math.round(n / 2.5); // 1,000 children at N; 2,000 at 2N
+      const { send, store } = await fixture();
+      const {
+        Ids: [parent],
+      } = await send('POST', 'x_items/Microsoft.Dynamics.CRM.CreateMultiple', { body: { Targets: targets(1) } });
+      await send('POST', 'x_children/Microsoft.Dynamics.CRM.CreateMultiple', {
+        body: {
+          Targets: Array.from({ length: children }, (_, i) => ({
+            x_name: `Child ${i}`,
+            'x_parent@odata.bind': `/x_items(${parent})`,
+          })),
+        },
+      });
+      const ms = await timed(() => send('DELETE', `x_items(${parent})`));
+      assert.equal(store.state.tables.x_child.length, 0);
+      return ms;
+    },
+    { diagnostic: (message) => t.diagnostic(message) },
+  );
 });
 
-test('a reader of a deep share graph sees every shared row at a linear cost', async () => {
-  await scales('share graph read', async (n) => {
-    const { store, principals, admin, reader, read } = await fixture();
-    const noun = principals.privilegeNoun('x_item');
-    const role = uuidV5(ORG, 'role:volume-share-reader'),
-      teams = Array.from({ length: 12 }, (_, i) => uuidV5(ORG, `team:volume-${i}`));
-    const ref = (logical, id) => ({ id, logical_name: logical });
-    await store.transact(() => {
-      const tables = store.state.tables;
-      // Basic read only: the reader sees a row through a share with one of its teams.
-      tables.role.push({
-        roleid: role,
-        name: 'Volume share reader',
-        businessunitid: reader.businessunitid,
-        organizationid: ref('organization', ORG),
-      });
-      tables.roleprivileges.push({
-        roleprivilegeid: uuidV5(role, 'read'),
-        roleid: ref('role', role),
-        privilegeid: ref('privilege', privilegeId(ORG, privilegeName('read', noun))),
-        privilegedepthmask: DEPTH.Basic,
-      });
-      tables.systemuserroles.push({
-        systemuserroleid: uuidV5(role, reader.systemuserid),
-        systemuserid: ref('systemuser', reader.systemuserid),
-        roleid: ref('role', role),
-      });
-      for (const team of teams) {
-        tables.team.push({
-          teamid: team,
-          name: `Volume team ${team.slice(-4)}`,
-          teamtype: 0,
+// @test-kind security: only the exact Basic-depth shares to the reader's teams may appear in the paged result
+test('a reader of a deep share graph sees every shared row at a linear cost', async (t) => {
+  await scales(
+    'share graph read',
+    async (n) => {
+      const { store, principals, admin, reader, read } = await fixture();
+      const noun = principals.privilegeNoun('x_item');
+      const role = uuidV5(ORG, 'role:volume-share-reader'),
+        teams = Array.from({ length: 12 }, (_, i) => uuidV5(ORG, `team:volume-${i}`));
+      const ref = (logical, id) => ({ id, logical_name: logical });
+      await store.transact(() => {
+        const tables = store.state.tables;
+        // Basic read only: the reader sees a row through a share with one of its teams.
+        tables.role.push({
+          roleid: role,
+          name: 'Volume share reader',
           businessunitid: reader.businessunitid,
           organizationid: ref('organization', ORG),
         });
-        tables.teammembership.push({
-          teammembershipid: uuidV5(team, reader.systemuserid),
+        tables.roleprivileges.push({
+          roleprivilegeid: uuidV5(role, 'read'),
+          roleid: ref('role', role),
+          privilegeid: ref('privilege', privilegeId(ORG, privilegeName('read', noun))),
+          privilegedepthmask: DEPTH.Basic,
+        });
+        tables.systemuserroles.push({
+          systemuserroleid: uuidV5(role, reader.systemuserid),
           systemuserid: ref('systemuser', reader.systemuserid),
-          teamid: ref('team', team),
+          roleid: ref('role', role),
         });
-      }
-      for (let i = 0; i < n; i++) {
-        const id = uuidV5(ORG, `volume-row:${i}`);
-        tables.x_item.push({
-          x_itemid: id,
-          x_name: `Shared ${i}`,
-          x_code: `S${i}`,
-          x_rank: i % 97,
-          ownerid: ref('systemuser', admin.systemuserid),
-          statecode: 0,
-          statuscode: 1,
-        });
-        // Every second row is shared; the others stay invisible to the reader.
-        if (i % 2 === 0)
-          tables.principalobjectaccess.push({
-            principalobjectaccessid: uuidV5(id, 'share'),
-            principalid: ref('team', teams[i % teams.length]),
-            objectid: id,
-            objecttypecode: 'x_item',
-            accessrightsmask: 1,
-            inheritedaccessrightsmask: 0,
+        for (const team of teams) {
+          tables.team.push({
+            teamid: team,
+            name: `Volume team ${team.slice(-4)}`,
+            teamtype: 0,
+            businessunitid: reader.businessunitid,
+            organizationid: ref('organization', ORG),
           });
-      }
-    });
-    let visible = 0;
-    const ms = await timed(async () => {
-      let next = 'x_items?$select=x_name';
-      while (next) {
-        const page = await read('GET', next, { headers: { prefer: 'odata.maxpagesize=5000' } });
-        visible += page.value.length;
-        next = page['@odata.nextLink'];
-      }
-    });
-    assert.equal(visible, n / 2);
-    return ms;
-  });
+          tables.teammembership.push({
+            teammembershipid: uuidV5(team, reader.systemuserid),
+            systemuserid: ref('systemuser', reader.systemuserid),
+            teamid: ref('team', team),
+          });
+        }
+        for (let i = 0; i < n; i++) {
+          const id = uuidV5(ORG, `volume-row:${i}`);
+          tables.x_item.push({
+            x_itemid: id,
+            x_name: `Shared ${i}`,
+            x_code: `S${i}`,
+            x_rank: i % 97,
+            ownerid: ref('systemuser', admin.systemuserid),
+            statecode: 0,
+            statuscode: 1,
+          });
+          // Every second row is shared; the others stay invisible to the reader.
+          if (i % 2 === 0)
+            tables.principalobjectaccess.push({
+              principalobjectaccessid: uuidV5(id, 'share'),
+              principalid: ref('team', teams[i % teams.length]),
+              objectid: id,
+              objecttypecode: 'x_item',
+              accessrightsmask: 1,
+              inheritedaccessrightsmask: 0,
+            });
+        }
+      });
+      let visible = 0;
+      const seen = [];
+      const ms = await timed(async () => {
+        let next = 'x_items?$select=x_name';
+        while (next) {
+          const page = await read('GET', next, { headers: { prefer: 'odata.maxpagesize=5000' } });
+          visible += page.value.length;
+          seen.push(...page.value.map((row) => row.x_itemid));
+          next = page['@odata.nextLink'];
+        }
+      });
+      assert.equal(visible, n / 2);
+      assert.equal(seen.length, new Set(seen).size, 'a shared row is visible exactly once');
+      assert.ok(
+        seen.every((id) => typeof id === 'string'),
+        'the selected projection includes the primary key',
+      );
+      const expected = new Set(Array.from({ length: n / 2 }, (_, index) => uuidV5(ORG, `volume-row:${index * 2}`)));
+      assert.equal(seen.length, expected.size);
+      assert.ok(
+        seen.every((id) => expected.has(id)),
+        'the exact visible rows are the even-index shared ids',
+      );
+      return ms;
+    },
+    { diagnostic: (message) => t.diagnostic(message) },
+  );
 });

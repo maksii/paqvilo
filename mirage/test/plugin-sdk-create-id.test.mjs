@@ -306,6 +306,7 @@ public sealed class Timing:IPlugin{public void Execute(IServiceProvider p){var c
                     return { store: new DataStore({ state }) };
                   })();
               const captured = [];
+              const hostStarts = [];
               const steps = observerStages.map((stage, index) => ({
                 id: `30000000-0000-0000-0000-00000000000${index}`,
                 enabled: true,
@@ -354,14 +355,54 @@ public sealed class Timing:IPlugin{public void Execute(IServiceProvider p){var c
                     },
                   ],
                 ]),
+                diagnostic: (event) => {
+                  if (event.code === 'PLUGIN_CLR_HOST_STARTED')
+                    hostStarts.push({
+                      code: event.code,
+                      pooled: event.pooled,
+                      stage: event.stage,
+                      entity: event.entity,
+                      operation: event.operation,
+                    });
+                },
               });
               const row = await f.store.create('trigger', { mode, named }, { admin: true });
+              const expectedStarts = [
+                {
+                  code: 'PLUGIN_CLR_HOST_STARTED',
+                  pooled,
+                  stage: 20,
+                  entity: 'trigger',
+                  operation: 'create',
+                },
+                ...(!pooled
+                  ? observerStages.map((stage) => ({
+                      code: 'PLUGIN_CLR_HOST_STARTED',
+                      pooled: false,
+                      stage,
+                      entity: 'widget',
+                      operation: 'create',
+                    }))
+                  : []),
+              ];
+              t.diagnostic(
+                JSON.stringify({
+                  scenario: `${pooled ? 'pooled' : 'isolated'}/${organization ? 'organization' : 'store'}/${named ? 'named' : 'direct'}/${mode}`,
+                  hostStarts,
+                }),
+              );
+              assert.deepEqual(
+                hostStarts,
+                expectedStarts,
+                'only the caller host and isolated stage hosts should start',
+              );
               assert.deepEqual(captured, [10, 20, 40]);
               if (pooled) {
                 const hosts = clrHostPoolStatus();
                 // One long-lived host per prepared runtime serves both types and depths (native-r2 depth: nested
                 // steps run on the caller's process); it is idle once the request completed.
-                assert(hosts.length > 0 && hosts.every((host) => !host.active));
+                assert.equal(hosts.length, 1);
+                assert(hosts.every((host) => !host.active));
               }
               const child = f.store.tableRows('widget')[0];
               assert.equal(f.store.tableRows('widget').length, 1);

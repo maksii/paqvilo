@@ -11,6 +11,7 @@ import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { exactNumeric } from '../lib/exact-numeric.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
+import { createPreparedClrRuntimePreparer } from './fixtures/prepared-clr-runtimes.mjs';
 
 test(
   'post-operation CRUD and bulk inputs cross original CLR and JavaScript ranks without modifying committed rows',
@@ -102,7 +103,14 @@ test(
         descriptors,
         overrides: Object.fromEntries([steps[0], steps[2]].map((step) => ['plugin-step:' + step.id, { mode: 'clr' }])),
       });
-      const backend = await createOrganizationBackend({ store, items: () => items, handlers, runtimes, descriptors });
+      const backend = await createOrganizationBackend({
+        store,
+        items: () => items,
+        handlers,
+        runtimes,
+        descriptors,
+        prepareRuntime: createPreparedClrRuntimePreparer(runtimes, descriptors),
+      });
       const service = localOrganizationService(store, {
         userId: user,
         evidence: 'Invented post input caller',

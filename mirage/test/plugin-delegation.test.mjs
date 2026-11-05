@@ -10,6 +10,7 @@ import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { createPreparedClrRuntimePreparer } from './fixtures/prepared-clr-runtimes.mjs';
 
 const caller = '10000000-0000-0000-0000-000000000001';
 const runAs = '10000000-0000-0000-0000-000000000002';
@@ -67,7 +68,13 @@ test(
       descriptors,
       overrides: { ['plugin-step:' + step.id]: { mode: 'clr' } },
     });
-    const backend = await createOrganizationBackend({ store, items: () => items, runtimes, descriptors });
+    const backend = await createOrganizationBackend({
+      store,
+      items: () => items,
+      runtimes,
+      descriptors,
+      prepareRuntime: createPreparedClrRuntimePreparer(runtimes, descriptors),
+    });
     t.after(() => backend.close());
     const profile = {
       userId: caller,
