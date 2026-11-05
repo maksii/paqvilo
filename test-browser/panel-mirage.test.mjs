@@ -356,9 +356,13 @@ test(
     const adminOpened = context.waitForEvent('page');
     await panelLocator('[data-act="sim"][data-hash^="audit?path="]').first().click();
     const admin = await adminOpened;
+    // URL metadata remains readable while the destination page is navigating.
+    await admin.waitForURL(
+      (url) => url.origin === app.url && url.pathname === '/_sim/' && url.hash === '#activity?path=%2Fsecure%2F',
+    );
     // The old #audit?path= address lands on Activity filtered by the page path.
     await admin.getByRole('heading', { name: 'Activity', exact: true }).waitFor();
-    assert.equal(await admin.evaluate(() => location.hash), '#activity?path=%2Fsecure%2F');
+    assert.equal(new URL(admin.url()).hash, '#activity?path=%2Fsecure%2F');
     await admin.getByRole('button', { name: 'Remove filter Path: /secure/' }).waitFor();
     await admin.waitForFunction(() => document.querySelector('#content tbody')?.textContent.includes('/secure/'));
     // No event marks a draw that never happens. Panel draws run 250 ms after a page event (schedule
@@ -370,10 +374,13 @@ test(
     const findingsOpened = context.waitForEvent('page');
     await panelLocator('[data-act="sim"][data-hash="activity?tab=findings"]').first().click();
     const findings = await findingsOpened;
+    await findings.waitForURL(
+      (url) => url.origin === app.url && url.pathname === '/_sim/' && url.hash === '#activity?tab=findings',
+    );
     await findings.waitForFunction(
       () => document.querySelector('#activity-tabs-tab-findings')?.getAttribute('aria-selected') === 'true',
     );
-    assert.equal(await findings.evaluate(() => location.hash), '#activity?tab=findings');
+    assert.equal(new URL(findings.url()).hash, '#activity?tab=findings');
     await findings.close();
 
     // Permission enforcement and a saved scenario (after confirmation) apply through the Mirage.
