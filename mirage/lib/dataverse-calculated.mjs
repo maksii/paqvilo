@@ -176,8 +176,10 @@ export function parseCalculatedFormula(text) {
 const asNumber = (value) => {
   if (value === null || value === undefined) return null;
   if (isExactNumeric(value)) return value;
-  const number =
-    typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN;
+  let number;
+  if (typeof value === 'number') number = value;
+  else if (typeof value === 'string' && value.trim() !== '') number = Number(value);
+  else number = Number.NaN;
   if (!Number.isFinite(number)) unsupported(`'${value}' is not a number.`);
   return number;
 };
@@ -199,7 +201,11 @@ function compare(kind, left, right) {
   const a = comparable(left),
     b = comparable(right);
   // Numbers compare by their exact decimal digits (store exact-numeric values included).
-  if ([a, b].every((value) => typeof value === 'number' || isExactNumeric(value)) && [a, b].some(isExactNumeric)) {
+  if (
+    [a, b].every((value) => typeof value === 'number' || isExactNumeric(value)) &&
+    [a, b].some(/* NOSONAR */ isExactNumeric)
+  ) {
+    // NOSONAR: preserve callback identity and iteration arguments
     const order = compareNumeric(a, b);
     return {
       equal: order === 0,
@@ -245,45 +251,56 @@ function evaluate(node, row, ctx) {
   if (kind === 'constant') return node.value;
   if (kind === 'field') return row[node.column] ?? null;
   if (kind === 'parent') return ctx.related(node.lookup)?.[node.column] ?? null;
-  if (kind === 'if') {
-    const [condition, then, otherwise] = node.args;
-    return evaluate(condition, row, ctx) === true
-      ? evaluate(then, row, ctx)
-      : otherwise
-        ? evaluate(otherwise, row, ctx)
-        : null;
-  }
-  if (kind === 'and') return node.args.every((arg) => evaluate(arg, row, ctx) === true);
-  if (kind === 'or') return node.args.some((arg) => evaluate(arg, row, ctx) === true);
+  if (kind === 'if' || kind === 'and' || kind === 'or') return evaluateLogic(node, row, ctx);
   const values = node.args.map((arg) => evaluate(arg, row, ctx));
   if (kind === 'not') return values[0] !== true;
   if (kind === 'isnull') return values[0] === null || values[0] === undefined || values[0] === '';
-  if (kind === 'concat')
-    return values
-      .map((value) =>
-        value === null || value === undefined
-          ? ''
-          : typeof value === 'object'
-            ? String(value.name ?? refId(value) ?? '')
-            : String(value),
-      )
-      .join('');
+  if (kind === 'concat') return concatenate(values);
   if (kind in { equal: 1, notequal: 1, greaterthan: 1, greaterequal: 1, lessthan: 1, lessequal: 1 })
     return compare(kind, values[0], values[1]);
-  if (kind.startsWith('add') && kind !== 'add') {
-    const date = asDate(values[0]),
-      amount = asNumber(values[1]);
-    if (date === null || amount === null) return null;
-    if (kind === 'addmonths') return addMonths(date, Math.trunc(amount)).toISOString();
-    if (kind === 'addyears') return addMonths(date, Math.trunc(amount) * 12).toISOString();
-    const unit = { adddays: DAY, addhours: 3_600_000, addweeks: 7 * DAY }[kind];
-    return new Date(date.getTime() + amount * unit).toISOString();
+  if (kind.startsWith('add') && kind !== 'add') return evaluateDateAdd(kind, values);
+  if (kind.startsWith('diffin')) return evaluateDateDiff(kind, values);
+  return evaluateArithmetic(kind, values);
+}
+
+function evaluateLogic(node, row, ctx) {
+  if (node.kind === 'if') {
+    const [condition, then, otherwise] = node.args;
+    if (evaluate(condition, row, ctx) === true) return evaluate(then, row, ctx);
+    if (otherwise) return evaluate(otherwise, row, ctx);
+    return null;
   }
-  if (kind.startsWith('diffin')) {
-    const from = asDate(values[0]),
-      to = asDate(values[1]);
-    return from === null || to === null ? null : diff(kind, from, to);
-  }
+  if (node.kind === 'and') return node.args.every((arg) => evaluate(arg, row, ctx) === true);
+  return node.args.some((arg) => evaluate(arg, row, ctx) === true);
+}
+
+function concatenate(values) {
+  return values
+    .map((value) => {
+      if (value === null || value === undefined) return '';
+      if (typeof value === 'object') return String(value.name ?? refId(value) ?? '');
+      return String(value);
+    })
+    .join('');
+}
+
+function evaluateDateAdd(kind, values) {
+  const date = asDate(values[0]),
+    amount = asNumber(values[1]);
+  if (date === null || amount === null) return null;
+  if (kind === 'addmonths') return addMonths(date, Math.trunc(amount)).toISOString();
+  if (kind === 'addyears') return addMonths(date, Math.trunc(amount) * 12).toISOString();
+  const unit = { adddays: DAY, addhours: 3_600_000, addweeks: 7 * DAY }[kind];
+  return new Date(date.getTime() + amount * unit).toISOString();
+}
+
+function evaluateDateDiff(kind, values) {
+  const from = asDate(values[0]),
+    to = asDate(values[1]);
+  return from === null || to === null ? null : diff(kind, from, to);
+}
+
+function evaluateArithmetic(kind, values) {
   const numbers = values.map(asNumber);
   if (numbers.includes(null)) return null;
   // Exact decimal arithmetic (power-fx.mjs decimalArithmetic over exact-numeric.mjs); divide by zero is null.

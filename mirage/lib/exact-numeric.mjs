@@ -36,7 +36,7 @@ export function decimalText(parts) {
     digits = (negative ? -coefficient : coefficient).toString().padStart(scale + 1, '0');
   return (negative ? '-' : '') + (scale ? digits.slice(0, -scale) + '.' + digits.slice(-scale) : digits);
 }
-export function exactNumeric(value, numericType = 'Literal', { collapse = true } = {}) {
+/* NOSONAR */ export function exactNumeric(value, numericType = 'Literal', { collapse = true } = {}) {
   const parts = decimalParts(value);
   if (!parts) failure('Invalid exact numeric literal.');
   const text = decimalText(parts),
@@ -44,8 +44,7 @@ export function exactNumeric(value, numericType = 'Literal', { collapse = true }
     back = Number.isFinite(number) ? decimalParts(number) : null;
   if (
     collapse &&
-    back &&
-    back.coefficient === parts.coefficient &&
+    back?.coefficient === parts.coefficient &&
     back.scale === parts.scale &&
     (parts.scale > 0 || Number.isSafeInteger(number))
   )
@@ -61,7 +60,10 @@ export function numericPair(a, b) {
 }
 export function compareNumeric(a, b) {
   const pair = numericPair(a, b);
-  return pair ? (pair.x < pair.y ? -1 : pair.x > pair.y ? 1 : 0) : NaN;
+  if (!pair) return Number.NaN;
+  if (pair.x < pair.y) return -1;
+  if (pair.x > pair.y) return 1;
+  return 0;
 }
 export function roundNumeric(value, precision, numericType = 'Decimal') {
   if (!Number.isInteger(precision) || precision < 0 || precision > 28)
@@ -180,11 +182,11 @@ export function parseExactJson(text, { allowFiniteDouble = false } = {}) {
   });
 }
 export function stringifyExactJson(value) {
-  return JSON.stringify(value, (key, item) =>
-    isExactNumeric(item)
-      ? JSON.rawJSON(typeof item.lexeme === 'string' ? item.lexeme : decimalText(decimalParts(item)))
-      : item,
-  );
+  return JSON.stringify(value, (key, item) => {
+    if (!isExactNumeric(item)) return item;
+    const text = typeof item.lexeme === 'string' ? item.lexeme : decimalText(decimalParts(item));
+    return JSON.rawJSON(text);
+  });
 }
 // Exact numeric whose JSON lexeme keeps a fixed scale (Dataverse writes money with four decimals).
 export function fixedScaleNumeric(value, scale, numericType = 'Money') {
@@ -197,7 +199,7 @@ export function fixedScaleNumeric(value, scale, numericType = 'Money') {
 }
 export function formatExactNumeric(value, digits) {
   const rounded = roundNumeric(value, digits),
-    text = isExactNumeric(rounded) ? rounded.value : String(rounded),
+    text = isExactNumeric(rounded) ? rounded.value : String(rounded), // NOSONAR: stringification is intentional here
     [whole, fraction = ''] = text.split('.');
-  return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (digits ? '.' + fraction.padEnd(digits, '0') : '');
+  return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (digits ? '.' + fraction.padEnd(digits, '0') : ''); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
 }

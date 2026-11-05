@@ -54,6 +54,19 @@ const invalid = (message) => new DataError(message, 400, 'InvalidRequest');
 
 // Every component the store holds, with its key, componenttype code and object id (a metadata component's MetadataId in the
 // store's organization, componentObjectId).
+function addMappingComponents(push, logical, mapping) {
+  push({ kind: 'entity', logical, name: null });
+  for (const name of Object.keys(mapping.fields ?? {}))
+    if (name !== mapping.idColumn) push({ kind: 'attribute', logical, name });
+  for (const key of mapping.alternateKeys ?? [])
+    if (!key.builtIn) push({ kind: 'key', logical, name: key.name, attributes: key.attributes });
+  for (const [nav, rel] of Object.entries(mapping.relationships ?? {})) {
+    if (rel.many !== false && !rel.intersect) continue; // a 1:N relationship is written once, from its referencing side
+    const schemaName = rel.schemaName ?? (rel.intersect ? rel.intersect.entity : `${logical}_${nav}`);
+    push({ kind: 'relationship', logical, name: schemaName, rel: { ...rel, nav } });
+  }
+}
+
 export function componentsOf(state, organizationId = organizationRecord(state)?.organizationid) {
   const out = [];
   const seen = new Set();
@@ -70,16 +83,7 @@ export function componentsOf(state, organizationId = organizationRecord(state)?.
   };
   for (const [logical, mapping] of Object.entries(state.mappings ?? {})) {
     if (SOLUTION_TABLES.has(logical)) continue; // the solution service tables are not solution components
-    push({ kind: 'entity', logical, name: null });
-    for (const name of Object.keys(mapping.fields ?? {}))
-      if (name !== mapping.idColumn) push({ kind: 'attribute', logical, name });
-    for (const key of mapping.alternateKeys ?? [])
-      if (!key.builtIn) push({ kind: 'key', logical, name: key.name, attributes: key.attributes });
-    for (const [nav, rel] of Object.entries(mapping.relationships ?? {})) {
-      if (rel.many !== false && !rel.intersect) continue; // a 1:N relationship is written once, from its referencing side
-      const schemaName = rel.schemaName ?? (rel.intersect ? rel.intersect.entity : `${logical}_${nav}`);
-      push({ kind: 'relationship', logical, name: schemaName, rel: { ...rel, nav } });
-    }
+    addMappingComponents(push, logical, mapping);
   }
   for (const name of Object.keys(state.dataverse?.globalOptionSets ?? {}))
     push({ kind: 'optionset', logical: name, name: null });
@@ -88,6 +92,25 @@ export function componentsOf(state, organizationId = organizationRecord(state)?.
 }
 
 // The dependency edges between components: { dependent, required }. Only edges whose ends both exist are kept.
+function linkComponentDependencies(state, component, at, link) {
+  if (component.kind === 'attribute') {
+    const field = state.mappings[component.logical]?.fields?.[component.name] ?? {};
+    link(component, at('entity', component.logical));
+    if (field.dataverseType === 'lookup' && field.targets?.[0]) link(component, at('entity', field.targets[0]));
+    if (field.globalOptionSet) link(component, at('optionset', field.globalOptionSet));
+  } else if (component.kind === 'relationship') {
+    link(component, at('entity', component.logical));
+    link(component, at('entity', component.rel.entity));
+    if (component.rel.from && !component.rel.intersect)
+      link(component, at('attribute', component.logical, component.rel.from));
+  } else if (component.kind === 'key') {
+    link(component, at('entity', component.logical));
+    for (const name of component.attributes ?? []) link(component, at('attribute', component.logical, name));
+  } else if (component.entity) {
+    link(component, at('entity', component.entity));
+  }
+}
+
 function dependenciesOf(state, components = componentsOf(state)) {
   const byKey = new Map(components.map((c) => [c.key, c]));
   const at = (kind, logical, name = null) => byKey.get(`${kind}|${lower(logical)}|${lower(name ?? '')}`) ?? null;
@@ -95,23 +118,7 @@ function dependenciesOf(state, components = componentsOf(state)) {
   const link = (dependent, required) => {
     if (dependent && required && dependent !== required) edges.push({ dependent, required });
   };
-  for (const c of components) {
-    if (c.kind === 'attribute') {
-      const field = state.mappings[c.logical]?.fields?.[c.name] ?? {};
-      link(c, at('entity', c.logical));
-      if (field.dataverseType === 'lookup' && field.targets?.[0]) link(c, at('entity', field.targets[0]));
-      if (field.globalOptionSet) link(c, at('optionset', field.globalOptionSet));
-    } else if (c.kind === 'relationship') {
-      link(c, at('entity', c.logical));
-      link(c, at('entity', c.rel.entity));
-      if (c.rel.from && !c.rel.intersect) link(c, at('attribute', c.logical, c.rel.from));
-    } else if (c.kind === 'key') {
-      link(c, at('entity', c.logical));
-      for (const name of c.attributes ?? []) link(c, at('attribute', c.logical, name));
-    } else if (c.entity) {
-      link(c, at('entity', c.entity));
-    }
-  }
+  for (const component of components) linkComponentDependencies(state, component, at, link);
   return edges;
 }
 
@@ -183,7 +190,7 @@ function requiredClosure(edges, start) {
 const HOLDING_SUFFIX = '_Upgrade';
 // asyncoperation.operationtype of the solution jobs; ImportSolutionAsync (203) is in dataverse-solutions.mjs.
 const OPERATION_TYPE = { export: 202, deleteAndPromote: 207, uninstall: 208, stageAndUpgrade: 211 };
-const VERSION_DEFAULT = '1.0.0.0';
+const VERSION_DEFAULT = '1.0.0.0'; // NOSONAR: version string or loopback address, not a network target
 const tableOf = (store, name) => (store.state.tables[name] ??= []);
 const rowsOf = (store, name) => store.state.tables[name] ?? [];
 const stampOf = (api) => new Date(api.clock?.() ?? Date.now()).toISOString();
@@ -411,7 +418,6 @@ function promotable(store, uniquename) {
 // The objectids a solution holds (its solutioncomponent rows), lower-cased.
 const heldBy = (store, solutionid) => new Set(membersOf(store, solutionid).map((r) => lower(r.objectid)));
 // Metadata id of a table or column: the id the metadata reader gives it (dataverse-metadata.mjs metadataIdOf). Managed layers are keyed by it.
-export const metadataIdOf = managedLayerId;
 
 // The plan for removing a set of solutions (uninstall deletes a managed solution's components; DeleteAndPromote deletes the
 // base solution and its patches). A component is removed when a removed solution holds it, no solution outside the removed ones
@@ -457,6 +463,22 @@ function planRemoval(store, removing, keptIds = new Set()) {
 // Applies a plan inside the caller's transaction: membership first, then the definitions in dependency order (relationships,
 // columns of the tables that stay, tables, option sets no column is bound to). The origins and managed layers of the removed
 // components go too.
+/* NOSONAR */ function removeComponentDefinitions(api, removed, dropping) {
+  const { state } = api.store;
+  for (const c of removed)
+    if (c.kind === 'key' && state.mappings[c.logical])
+      state.mappings[c.logical].alternateKeys = (state.mappings[c.logical].alternateKeys ?? []).filter(
+        (key) => lower(key.name) !== lower(c.name),
+      );
+  for (const c of removed) if (c.kind === 'relationship') dropRelationship(api, c.name);
+  for (const c of removed)
+    if (c.kind === 'attribute' && !dropping.has(lower(c.logical)) && state.mappings[c.logical]?.fields?.[c.name])
+      dropColumn(api, c.logical, c.name);
+  for (const c of removed) if (c.kind === 'entity' && state.mappings[c.logical]) dropTable(api, c.logical);
+  for (const c of removed)
+    if (c.kind === 'optionset' && boundFields(api, c.logical).length === 0) dropGlobalSet(api, c.logical);
+}
+
 function applyRemoval(api, plan) {
   const { store } = api;
   const state = store.state;
@@ -471,18 +493,7 @@ function applyRemoval(api, plan) {
   const dropping = new Set(removed.filter((c) => c.kind === 'entity').map((c) => lower(c.logical)));
   removeSolutionPayloads(state, plan.removing);
   removeSolutionAssetLayers(state, [...plan.removing]);
-  for (const c of removed)
-    if (c.kind === 'key' && state.mappings[c.logical])
-      state.mappings[c.logical].alternateKeys = (state.mappings[c.logical].alternateKeys ?? []).filter(
-        (key) => lower(key.name) !== lower(c.name),
-      );
-  for (const c of removed) if (c.kind === 'relationship') dropRelationship(api, c.name);
-  for (const c of removed)
-    if (c.kind === 'attribute' && !dropping.has(lower(c.logical)) && state.mappings[c.logical]?.fields?.[c.name])
-      dropColumn(api, c.logical, c.name);
-  for (const c of removed) if (c.kind === 'entity' && state.mappings[c.logical]) dropTable(api, c.logical);
-  for (const c of removed)
-    if (c.kind === 'optionset' && boundFields(api, c.logical).length === 0) dropGlobalSet(api, c.logical);
+  removeComponentDefinitions(api, removed, dropping);
   const origin = state.dataverse?.componentOrigin ?? {};
   for (const id of plan.removedIds) delete origin[id];
   popLayers(api, plan.removing, removed);
@@ -493,6 +504,27 @@ function applyRemoval(api, plan) {
 // restored into live metadata; an emptied stack leaves the remaining definition unmanaged. A Solution security role or field
 // security profile (SECURITY_LAYERS kinds) gets the grants of the layer below unless it was changed after its last import
 // (activeOnTop); its last layer removes the component, its grants and its user/team associations.
+function popSecurityLayer(api, id, layer, kept, topChanged, layers) {
+  const security = SECURITY_LAYERS[layer.kind];
+  if (!security) return false;
+  if (!kept.length) {
+    security.remove(api.store, layer.logical);
+    delete layers[id];
+  } else if (topChanged && !layer.activeOnTop) {
+    layer.applied = security.apply(api.store, layer.logical, kept.at(-1).body ?? []);
+  }
+  return true;
+}
+
+function popOrdinaryLayer(api, id, layer, kept, topChanged, layers) {
+  if (!kept.length) {
+    delete layers[id];
+    return;
+  }
+  if (topChanged && LAYER_KINDS.has(layer.kind) && restorable(api, layer) && !activeOnTop(api, layer))
+    restoreLayer(api, null, layer);
+}
+
 function popLayers(api, removing, removed = []) {
   const state = api.store.state;
   const layers = state.dataverse?.managedLayers ?? {};
@@ -507,21 +539,8 @@ function popLayers(api, removing, removed = []) {
     if (kept.length === stack.length) continue;
     const topChanged = kept.at(-1) !== stack.at(-1);
     layer.stack = kept;
-    const security = SECURITY_LAYERS[layer.kind];
-    if (security) {
-      if (!kept.length) {
-        security.remove(api.store, layer.logical);
-        delete layers[id];
-      } else if (topChanged && !layer.activeOnTop)
-        layer.applied = security.apply(api.store, layer.logical, kept.at(-1).body ?? []);
-      continue;
-    }
-    if (!kept.length) {
-      delete layers[id];
-      continue;
-    }
-    if (topChanged && LAYER_KINDS.has(layer.kind) && restorable(api, layer) && !activeOnTop(api, layer))
-      restoreLayer(api, null, layer);
+    if (popSecurityLayer(api, id, layer, kept, topChanged, layers)) continue;
+    popOrdinaryLayer(api, id, layer, kept, topChanged, layers);
   }
   projectManagedFlags(api);
 }
@@ -604,468 +623,482 @@ function lifecycleOperations(api, tools) {
   const ops = [];
 
   // Patches (CloneAsPatch) and roll-up (CloneAsSolution).
-  ops.push({
-    name: 'CloneAsPatch',
-    kind: 'action',
-    binding: 'unbound',
-    signature: {
-      params: [
-        ['ParentSolutionUniqueName', 'Edm.String'],
-        ['DisplayName', 'Edm.String'],
-        ['VersionNumber', 'Edm.String'],
-      ],
-      response: [['SolutionId', 'Edm.Guid']],
-    },
-    async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
-      const body = ctx.body ?? {};
-      const parent = baseOrThrow(store, requireText(body.ParentSolutionUniqueName, 'ParentSolutionUniqueName'));
-      const displayName = requireText(body.DisplayName, 'DisplayName');
-      const version = requireVersion(body.VersionNumber);
-      if (parent.ismanaged === true)
-        throw invalid(`Solution ${parent.uniquename} is managed; a patch is created from an unmanaged solution.`);
-      const [major, minor] = versionParts(version),
-        [parentMajor, parentMinor] = versionParts(parent.version);
-      if (major !== parentMajor || minor !== parentMinor)
-        throw invalid(`The patch version ${version} must have the same major.minor number as ${parent.version}.`);
-      // A patch is higher than the parent and than every patch already made.
-      const floor = patchesOf(store, parent.solutionid).reduce(
-        (max, p) => (compareVersions(p.version, max) > 0 ? p.version : max),
-        parent.version,
-      );
-      if (compareVersions(version, floor) <= 0)
-        throw invalid(`The patch version ${version} must be higher than ${floor}.`);
-      let id = null;
-      await write(() => {
-        const row = {
-          solutionid: randomUUID(),
-          uniquename: parent.uniquename,
-          friendlyname: displayName,
-          version,
-          ismanaged: false,
-          publisherid: parent.publisherid ?? null,
-          description: null,
-          parentsolutionid: parent.solutionid,
-          createdon: stampOf(api),
-          modifiedon: stampOf(api),
-        };
-        tableOf(store, 'solution').push(row);
-        id = row.solutionid;
-      });
-      return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.CloneAsPatchResponse', { SolutionId: id });
-    },
-  });
-
-  ops.push({
-    name: 'CloneAsSolution',
-    kind: 'action',
-    binding: 'unbound',
-    signature: {
-      params: [
-        ['ParentSolutionUniqueName', 'Edm.String'],
-        ['DisplayName', 'Edm.String'],
-        ['VersionNumber', 'Edm.String'],
-      ],
-      response: [['SolutionId', 'Edm.Guid']],
-    },
-    async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
-      const body = ctx.body ?? {};
-      const parent = baseOrThrow(store, requireText(body.ParentSolutionUniqueName, 'ParentSolutionUniqueName'));
-      const displayName = requireText(body.DisplayName, 'DisplayName');
-      const version = requireVersion(body.VersionNumber);
-      if (parent.ismanaged === true)
-        throw invalid(`Solution ${parent.uniquename} is managed; only an unmanaged solution is cloned.`);
-      const [a, b] = versionParts(version),
-        [c, d] = versionParts(parent.version);
-      if (!(a > c || (a === c && b > d)))
-        throw invalid(`The solution version ${version} must have a higher major.minor number than ${parent.version}.`);
-      // The patches roll up into the base solution, which becomes the new version.
-      await write(() => {
-        const patchIds = new Set(patchesOf(store, parent.solutionid).map((p) => lower(p.solutionid)));
-        const members = tableOf(store, 'solutioncomponent');
-        const held = new Set(
-          members
-            .filter((r) => lower(r.solutionid) === lower(parent.solutionid))
-            .map((r) => `${lower(r.objectid)}|${r.componenttype}`),
+  ops.push(
+    {
+      name: 'CloneAsPatch',
+      kind: 'action',
+      binding: 'unbound',
+      signature: {
+        params: [
+          ['ParentSolutionUniqueName', 'Edm.String'],
+          ['DisplayName', 'Edm.String'],
+          ['VersionNumber', 'Edm.String'],
+        ],
+        response: [['SolutionId', 'Edm.Guid']],
+      },
+      async handle(ctx) {
+        requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
+        const body = ctx.body ?? {};
+        const parent = baseOrThrow(store, requireText(body.ParentSolutionUniqueName, 'ParentSolutionUniqueName'));
+        const displayName = requireText(body.DisplayName, 'DisplayName');
+        const version = requireVersion(body.VersionNumber);
+        if (parent.ismanaged === true)
+          throw invalid(`Solution ${parent.uniquename} is managed; a patch is created from an unmanaged solution.`);
+        const [major, minor] = versionParts(version),
+          [parentMajor, parentMinor] = versionParts(parent.version);
+        if (major !== parentMajor || minor !== parentMinor)
+          throw invalid(`The patch version ${version} must have the same major.minor number as ${parent.version}.`);
+        // A patch is higher than the parent and than every patch already made.
+        const floor = patchesOf(store, parent.solutionid).reduce(
+          (max, p) => (compareVersions(p.version, max) > 0 ? p.version : max),
+          parent.version,
         );
-        for (const r of members) {
-          if (!patchIds.has(lower(r.solutionid))) continue;
-          const key = `${lower(r.objectid)}|${r.componenttype}`;
-          if (held.has(key)) continue; // a duplicate is dropped with its patch below
-          r.solutionid = parent.solutionid;
-          held.add(key);
+        if (compareVersions(version, floor) <= 0)
+          throw invalid(`The patch version ${version} must be higher than ${floor}.`);
+        let id = null;
+        await write(() => {
+          const row = {
+            solutionid: randomUUID(),
+            uniquename: parent.uniquename,
+            friendlyname: displayName,
+            version,
+            ismanaged: false,
+            publisherid: parent.publisherid ?? null,
+            description: null,
+            parentsolutionid: parent.solutionid,
+            createdon: stampOf(api),
+            modifiedon: stampOf(api),
+          };
+          tableOf(store, 'solution').push(row);
+          id = row.solutionid;
+        });
+        return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.CloneAsPatchResponse', { SolutionId: id });
+      },
+    },
+    {
+      name: 'CloneAsSolution',
+      kind: 'action',
+      binding: 'unbound',
+      signature: {
+        params: [
+          ['ParentSolutionUniqueName', 'Edm.String'],
+          ['DisplayName', 'Edm.String'],
+          ['VersionNumber', 'Edm.String'],
+        ],
+        response: [['SolutionId', 'Edm.Guid']],
+      },
+      async handle(ctx) {
+        requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
+        const body = ctx.body ?? {};
+        const parent = baseOrThrow(store, requireText(body.ParentSolutionUniqueName, 'ParentSolutionUniqueName'));
+        const displayName = requireText(body.DisplayName, 'DisplayName');
+        const version = requireVersion(body.VersionNumber);
+        if (parent.ismanaged === true)
+          throw invalid(`Solution ${parent.uniquename} is managed; only an unmanaged solution is cloned.`);
+        const [a, b] = versionParts(version),
+          [c, d] = versionParts(parent.version);
+        if (!(a > c || (a === c && b > d)))
+          throw invalid(
+            `The solution version ${version} must have a higher major.minor number than ${parent.version}.`,
+          );
+        // The patches roll up into the base solution, which becomes the new version.
+        await write(() => {
+          const patchIds = new Set(patchesOf(store, parent.solutionid).map((p) => lower(p.solutionid)));
+          const members = tableOf(store, 'solutioncomponent');
+          const held = new Set(
+            members
+              .filter((r) => lower(r.solutionid) === lower(parent.solutionid))
+              .map((r) => `${lower(r.objectid)}|${r.componenttype}`),
+          );
+          for (const r of members) {
+            if (!patchIds.has(lower(r.solutionid))) continue;
+            const key = `${lower(r.objectid)}|${r.componenttype}`;
+            if (held.has(key)) continue; // a duplicate is dropped with its patch below
+            r.solutionid = parent.solutionid;
+            held.add(key);
+          }
+          removeWhere(members, (r) => patchIds.has(lower(r.solutionid)));
+          reassignSolutionAssetLayers(store.state, [...patchIds], parent.solutionid);
+          reassignSolutionPayloads(store.state, patchIds, parent.solutionid);
+          removeWhere(tableOf(store, 'solution'), (s) => patchIds.has(lower(s.solutionid)));
+          // The transaction works on its own copy: update the row as it is inside it, not the one read before it.
+          const row = rowsOf(store, 'solution').find((s) => s.solutionid === parent.solutionid);
+          Object.assign(row, { version, friendlyname: displayName, modifiedon: stampOf(api) });
+        });
+        return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.CloneAsSolutionResponse', { SolutionId: parent.solutionid });
+      },
+    },
+    // Upgrade (StageAndUpgrade, StageAndUpgradeAsync, DeleteAndPromote, DeleteAndPromoteAsync).
+    {
+      name: 'StageAndUpgrade',
+      kind: 'action',
+      binding: 'unbound',
+      signature: {
+        params: [
+          ['OverwriteUnmanagedCustomizations', 'Edm.Boolean'],
+          ['PublishWorkflows', 'Edm.Boolean'],
+          ['CustomizationFile', 'Edm.Binary'],
+          ['ImportJobId', 'Edm.Guid'],
+        ],
+        response: [['SolutionId', 'Edm.Guid']],
+      },
+      async handle(ctx) {
+        requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
+        const body = ctx.body ?? {};
+        const archive = tools.readArchive(body.CustomizationFile);
+        assertStageable(store, archive);
+        const jobId = typeof body.ImportJobId === 'string' && body.ImportJobId ? body.ImportJobId : randomUUID();
+        await tools.importArchive(holdingArchive(archive), {
+          overwrite: body.OverwriteUnmanagedCustomizations === true,
+          jobId,
+          origin: ctx.origin,
+          version: ctx.version,
+          caller: ctx.caller,
+        });
+        return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.StageAndUpgradeResponse', {
+          SolutionId: holdingOf(store, archive.solution.uniqueName).solutionid,
+        });
+      },
+    },
+    {
+      name: 'StageAndUpgradeAsync',
+      kind: 'action',
+      binding: 'unbound',
+      signature: {
+        params: [
+          ['OverwriteUnmanagedCustomizations', 'Edm.Boolean'],
+          ['PublishWorkflows', 'Edm.Boolean'],
+          ['CustomizationFile', 'Edm.Binary'],
+          ['ImportJobId', 'Edm.Guid'],
+        ],
+        response: [
+          ['ImportJobKey', 'Edm.String'],
+          ['AsyncOperationId', 'Edm.Guid'],
+        ],
+      },
+      async handle(ctx) {
+        requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
+        const body = ctx.body ?? {};
+        const archive = tools.readArchive(body.CustomizationFile);
+        assertStageable(store, archive);
+        const jobId = typeof body.ImportJobId === 'string' && body.ImportJobId ? body.ImportJobId : randomUUID();
+        const asyncId = await api.systemJob(
+          {
+            name: `Stage upgrade ${archive.solution.uniqueName}`,
+            operationtype: OPERATION_TYPE.stageAndUpgrade,
+            callerId: ctx.caller.systemuserid,
+          },
+          () =>
+            tools.importArchive(holdingArchive(archive), {
+              overwrite: body.OverwriteUnmanagedCustomizations === true,
+              jobId,
+              origin: ctx.origin,
+              version: ctx.version,
+              caller: ctx.caller,
+            }),
+        );
+        return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.StageAndUpgradeAsyncResponse', { AsyncOperationId: asyncId });
+      },
+    },
+    {
+      name: 'DeleteAndPromote',
+      kind: 'action',
+      binding: 'unbound',
+      signature: { params: [['UniqueName', 'Edm.String']], response: [['SolutionId', 'Edm.Guid']] },
+      async handle(ctx) {
+        requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
+        requireMetadataPrivilege(api, ctx, 'prvDeleteSolution', 'solution');
+        const name = requireText(ctx.body?.UniqueName, 'UniqueName');
+        promotable(store, name);
+        let id = null;
+        await write(() => {
+          id = promote(api, name);
+        });
+        return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.DeleteAndPromoteResponse', { SolutionId: id });
+      },
+    },
+    {
+      name: 'DeleteAndPromoteAsync',
+      kind: 'action',
+      binding: 'unbound',
+      signature: { params: [['UniqueName', 'Edm.String']], response: [['AsyncOperationId', 'Edm.Guid']] },
+      async handle(ctx) {
+        requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
+        requireMetadataPrivilege(api, ctx, 'prvDeleteSolution', 'solution');
+        const name = requireText(ctx.body?.UniqueName, 'UniqueName');
+        promotable(store, name);
+        const asyncId = await api.systemJob(
+          {
+            name: `Delete and promote ${name}`,
+            operationtype: OPERATION_TYPE.deleteAndPromote,
+            callerId: ctx.caller.systemuserid,
+          },
+          async () => {
+            await write(() => promote(api, name));
+          },
+        );
+        return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.DeleteAndPromoteAsyncResponse', {
+          AsyncOperationId: asyncId,
+        });
+      },
+    },
+    // Uninstall (UninstallSolutionAsync). The supported job runs with operationtype 208.
+    // The separate internal-only UninstallSolution declaration is registered at installation below.
+    {
+      name: 'UninstallSolutionAsync',
+      kind: 'action',
+      binding: 'unbound',
+      signature: { params: [['SolutionUniqueName', 'Edm.String']], response: [['AsyncOperationId', 'Edm.Guid']] },
+      async handle(ctx) {
+        requireMetadataPrivilege(api, ctx, 'prvDeleteSolution', 'solution');
+        const name = requireText(ctx.body?.SolutionUniqueName, 'SolutionUniqueName');
+        planUninstall(store, name);
+        const asyncId = await api.systemJob(
+          { name: `Uninstall ${name}`, operationtype: OPERATION_TYPE.uninstall, callerId: ctx.caller.systemuserid },
+          async () => {
+            await write(() => applyRemoval(api, planUninstall(store, name)));
+          },
+        );
+        return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.UninstallSolutionAsyncResponse', {
+          AsyncOperationId: asyncId,
+        });
+      },
+    },
+    // Component membership, async (AddComponentToSolutionAsync, AddComponentsToSolutionAsync).
+    {
+      name: 'AddComponentToSolutionAsync',
+      kind: 'action',
+      binding: 'unbound',
+      signature: {
+        params: [
+          ['LogicalName', 'Edm.String'],
+          ['Id', 'Edm.Guid'],
+          ['SolutionUniqueName', 'Edm.String'],
+          ['AddRequiredComponents', 'Edm.Boolean'],
+        ],
+        response: [['AsyncOperationId', 'Edm.Guid']],
+      },
+      async handle(ctx) {
+        requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
+        const body = ctx.body ?? {};
+        const target = targetOf(store, body);
+        assertUnpatched(store, target);
+        const component = componentById(all(), requireText(body.Id, 'Id'), body.LogicalName);
+        const chosen = body.AddRequiredComponents === true ? requiredClosure(edges(), [component]) : [component];
+        const asyncId = await api.systemJob(
+          { name: `Add component to ${target.uniquename}`, operationtype: null, callerId: ctx.caller.systemuserid },
+          async () => {
+            await write(() => addMemberRows(store, target.solutionid, chosen));
+          },
+        );
+        return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.AddComponentToSolutionAsyncResponse', {
+          AsyncOperationId: asyncId,
+        });
+      },
+    },
+    {
+      name: 'AddComponentsToSolutionAsync',
+      kind: 'action',
+      binding: 'unbound',
+      signature: {
+        params: [
+          ['SolutionComponentParameters', 'mscrm.AddComponentToSolutionParametersCollection'],
+          ['SolutionUniqueName', 'Edm.String'],
+          ['ContinueOnError', 'Edm.Boolean'],
+        ],
+        response: [['AsyncOperationId', 'Edm.Guid']],
+      },
+      async handle(ctx) {
+        requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
+        const body = ctx.body ?? {};
+        const target = targetOf(store, body);
+        assertUnpatched(store, target);
+        const components = all();
+        const picked = [];
+        for (const item of body.SolutionComponentParameters?.ParameterCollection ?? []) {
+          let component;
+          try {
+            component = componentById(components, requireText(item.Id, 'Id'), item.LogicalName);
+          } catch (error) {
+            if (body.ContinueOnError === true) continue; // ContinueOnError skips a component that fails
+            throw error;
+          }
+          picked.push(...(item.AddRequiredComponents === true ? requiredClosure(edges(), [component]) : [component]));
         }
-        removeWhere(members, (r) => patchIds.has(lower(r.solutionid)));
-        reassignSolutionAssetLayers(store.state, [...patchIds], parent.solutionid);
-        reassignSolutionPayloads(store.state, patchIds, parent.solutionid);
-        removeWhere(tableOf(store, 'solution'), (s) => patchIds.has(lower(s.solutionid)));
-        // The transaction works on its own copy: update the row as it is inside it, not the one read before it.
-        const row = rowsOf(store, 'solution').find((s) => s.solutionid === parent.solutionid);
-        Object.assign(row, { version, friendlyname: displayName, modifiedon: stampOf(api) });
-      });
-      return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.CloneAsSolutionResponse', { SolutionId: parent.solutionid });
+        const asyncId = await api.systemJob(
+          { name: `Add components to ${target.uniquename}`, operationtype: null, callerId: ctx.caller.systemuserid },
+          async () => {
+            await write(() => addMemberRows(store, target.solutionid, picked));
+          },
+        );
+        return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.AddComponentsToSolutionAsyncResponse', {
+          AsyncOperationId: asyncId,
+        });
+      },
     },
-  });
-
-  // Upgrade (StageAndUpgrade, StageAndUpgradeAsync, DeleteAndPromote, DeleteAndPromoteAsync).
-  ops.push({
-    name: 'StageAndUpgrade',
-    kind: 'action',
-    binding: 'unbound',
-    signature: {
-      params: [
-        ['OverwriteUnmanagedCustomizations', 'Edm.Boolean'],
-        ['PublishWorkflows', 'Edm.Boolean'],
-        ['CustomizationFile', 'Edm.Binary'],
-        ['ImportJobId', 'Edm.Guid'],
-      ],
-      response: [['SolutionId', 'Edm.Guid']],
+    // Async export and download (ExportSolutionAsync, DownloadSolutionExportData). The finished zip is kept per export job.
+    {
+      name: 'ExportSolutionAsync',
+      kind: 'action',
+      binding: 'unbound',
+      signature: {
+        params: [
+          ['SolutionName', 'Edm.String'],
+          ['Managed', 'Edm.Boolean'],
+        ],
+        response: [
+          ['AsyncOperationId', 'Edm.Guid'],
+          ['ExportJobId', 'Edm.Guid'],
+        ],
+      },
+      async handle(ctx) {
+        requireMetadataPrivilege(api, ctx, 'prvExportCustomization', 'solution');
+        const name = requireText(ctx.body?.SolutionName, 'SolutionName');
+        const row = baseOrThrow(store, name);
+        assertUnpatched(store, row);
+        const managed = ctx.body?.Managed === true;
+        const exportJobId = randomUUID();
+        const asyncId = await api.systemJob(
+          { name: `Export ${name}`, operationtype: OPERATION_TYPE.export, callerId: ctx.caller.systemuserid },
+          async () => {
+            const zip = tools.exportArchive(row, { managed });
+            await write(() => {
+              const state = store.state;
+              let dataverse = state.dataverse;
+              if (dataverse === null || dataverse === undefined) {
+                dataverse = {};
+                state.dataverse = dataverse;
+              }
+              let exportJobs = dataverse.exportJobs;
+              if (exportJobs === null || exportJobs === undefined) {
+                exportJobs = {};
+                dataverse.exportJobs = exportJobs;
+              }
+              exportJobs[lower(exportJobId)] = {
+                solutionName: row.uniquename,
+                managed,
+                file: zip.toString('base64'),
+              };
+            });
+          },
+        );
+        return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.ExportSolutionAsyncResponse', {
+          AsyncOperationId: asyncId,
+          ExportJobId: exportJobId,
+        });
+      },
     },
-    async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
-      const body = ctx.body ?? {};
-      const archive = tools.readArchive(body.CustomizationFile);
-      assertStageable(store, archive);
-      const jobId = typeof body.ImportJobId === 'string' && body.ImportJobId ? body.ImportJobId : randomUUID();
-      await tools.importArchive(holdingArchive(archive), {
-        overwrite: body.OverwriteUnmanagedCustomizations === true,
-        jobId,
-        origin: ctx.origin,
-        version: ctx.version,
-        caller: ctx.caller,
-      });
-      return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.StageAndUpgradeResponse', {
-        SolutionId: holdingOf(store, archive.solution.uniqueName).solutionid,
-      });
+    {
+      name: 'DownloadSolutionExportData',
+      kind: 'action',
+      binding: 'unbound',
+      signature: { params: [['ExportJobId', 'Edm.Guid']], response: [['ExportSolutionFile', 'Edm.Binary']] },
+      handle(ctx) {
+        requireMetadataPrivilege(api, ctx, 'prvExportCustomization', 'solution');
+        const id = requireText(ctx.body?.ExportJobId, 'ExportJobId');
+        const job = store.state.dataverse?.exportJobs?.[lower(id)];
+        if (!job) throw notFound(`The solution export job ${id} does not exist or has not finished.`, 'NotFound');
+        return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.DownloadSolutionExportDataResponse', {
+          ExportSolutionFile: job.file,
+        });
+      },
     },
-  });
-  ops.push({
-    name: 'StageAndUpgradeAsync',
-    kind: 'action',
-    binding: 'unbound',
-    signature: {
-      params: [
-        ['OverwriteUnmanagedCustomizations', 'Edm.Boolean'],
-        ['PublishWorkflows', 'Edm.Boolean'],
-        ['CustomizationFile', 'Edm.Binary'],
-        ['ImportJobId', 'Edm.Guid'],
-      ],
-      response: [
-        ['ImportJobKey', 'Edm.String'],
-        ['AsyncOperationId', 'Edm.Guid'],
-      ],
+    // Staging (StageSolution). Reads the zip and reports; nothing is written to the store.
+    {
+      name: 'StageSolution',
+      kind: 'action',
+      binding: 'unbound',
+      csdl: STAGE_SOLUTION_CSDL,
+      handle(ctx) {
+        requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
+        const archive = tools.readArchive(ctx.body?.CustomizationFile);
+        const uploadId = ctx.body?.StageSolutionUploadId || randomUUID();
+        return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.StageSolutionResponse', {
+          StageSolutionResults: { ...stagingResults(store, archive), StageSolutionUploadId: uploadId },
+        });
+      },
     },
-    async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
-      const body = ctx.body ?? {};
-      const archive = tools.readArchive(body.CustomizationFile);
-      assertStageable(store, archive);
-      const jobId = typeof body.ImportJobId === 'string' && body.ImportJobId ? body.ImportJobId : randomUUID();
-      const asyncId = await api.systemJob(
-        {
-          name: `Stage upgrade ${archive.solution.uniqueName}`,
-          operationtype: OPERATION_TYPE.stageAndUpgrade,
-          callerId: ctx.caller.systemuserid,
-        },
-        () =>
-          tools.importArchive(holdingArchive(archive), {
-            overwrite: body.OverwriteUnmanagedCustomizations === true,
-            jobId,
-            origin: ctx.origin,
-            version: ctx.version,
-            caller: ctx.caller,
-          }),
-      );
-      return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.StageAndUpgradeAsyncResponse', { AsyncOperationId: asyncId });
+    {
+      name: 'RetrieveMissingComponents',
+      kind: 'function',
+      binding: 'unbound',
+      signature: {
+        params: [['CustomizationFile', 'Edm.Binary']],
+        response: [['MissingComponents', 'Collection(mscrm.MissingComponent)']],
+      }, // how a binary file travels on a GET is a guess
+      handle(ctx) {
+        const archive = tools.readArchive(ctx.params?.CustomizationFile ?? ctx.body?.CustomizationFile);
+        return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.RetrieveMissingComponentsResponse', {
+          MissingComponents: missingOf(store, archive),
+        });
+      },
     },
-  });
-  ops.push({
-    name: 'DeleteAndPromote',
-    kind: 'action',
-    binding: 'unbound',
-    signature: { params: [['UniqueName', 'Edm.String']], response: [['SolutionId', 'Edm.Guid']] },
-    async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
-      requireMetadataPrivilege(api, ctx, 'prvDeleteSolution', 'solution');
-      const name = requireText(ctx.body?.UniqueName, 'UniqueName');
-      promotable(store, name);
-      let id = null;
-      await write(() => {
-        id = promote(api, name);
-      });
-      return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.DeleteAndPromoteResponse', { SolutionId: id });
+    // Preferred solution (GetPreferredSolution, SetPreferredSolution, PreferredSolutionUsedBy). Default: the Default solution.
+    {
+      name: 'GetPreferredSolution',
+      kind: 'function',
+      binding: 'unbound',
+      signature: { returns: 'mscrm.crmbaseentity' },
+      handle(ctx) {
+        const preferred = store.state.dataverse?.preferredSolutions?.[callerKey(ctx)];
+        const row = (preferred && rowsOf(store, 'solution').find((s) => lower(s.solutionid) === lower(preferred))) ??
+          rowsOf(store, 'solution').find(isDefaultSolution) ?? {
+            solutionid: null,
+            uniquename: DEFAULT_SOLUTION,
+            friendlyname: 'Default Solution',
+            version: '1.0',
+            ismanaged: false,
+          };
+        return asyncResponse(ctx, 'solutions/$entity', solutionEntity(row));
+      },
     },
-  });
-  ops.push({
-    name: 'DeleteAndPromoteAsync',
-    kind: 'action',
-    binding: 'unbound',
-    signature: { params: [['UniqueName', 'Edm.String']], response: [['AsyncOperationId', 'Edm.Guid']] },
-    async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
-      requireMetadataPrivilege(api, ctx, 'prvDeleteSolution', 'solution');
-      const name = requireText(ctx.body?.UniqueName, 'UniqueName');
-      promotable(store, name);
-      const asyncId = await api.systemJob(
-        {
-          name: `Delete and promote ${name}`,
-          operationtype: OPERATION_TYPE.deleteAndPromote,
-          callerId: ctx.caller.systemuserid,
-        },
-        async () => {
-          await write(() => promote(api, name));
-        },
-      );
-      return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.DeleteAndPromoteAsyncResponse', { AsyncOperationId: asyncId });
+    {
+      name: 'SetPreferredSolution',
+      kind: 'action',
+      binding: 'unbound',
+      signature: { params: [['SolutionId', 'Edm.Guid']] },
+      async handle(ctx) {
+        const key = callerKey(ctx);
+        const id = requireText(ctx.body?.SolutionId, 'SolutionId');
+        const row = rowsOf(store, 'solution').find((s) => lower(s.solutionid) === lower(id));
+        if (!row) throw notFound(`Solution with Id ${id} does not exist.`, 'NotFound');
+        if (row.ismanaged === true)
+          throw invalid(`Solution ${row.uniquename} is managed; the preferred solution is unmanaged.`);
+        await write(() => {
+          store.state.dataverse ??= {};
+          store.state.dataverse.preferredSolutions ??= {};
+          store.state.dataverse.preferredSolutions[key] = row.solutionid;
+        });
+        return undefined;
+      },
     },
-  });
-
-  // Uninstall (UninstallSolutionAsync). The supported job runs with operationtype 208.
-  // The separate internal-only UninstallSolution declaration is registered at installation below.
-  ops.push({
-    name: 'UninstallSolutionAsync',
-    kind: 'action',
-    binding: 'unbound',
-    signature: { params: [['SolutionUniqueName', 'Edm.String']], response: [['AsyncOperationId', 'Edm.Guid']] },
-    async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, 'prvDeleteSolution', 'solution');
-      const name = requireText(ctx.body?.SolutionUniqueName, 'SolutionUniqueName');
-      planUninstall(store, name);
-      const asyncId = await api.systemJob(
-        { name: `Uninstall ${name}`, operationtype: OPERATION_TYPE.uninstall, callerId: ctx.caller.systemuserid },
-        async () => {
-          await write(() => applyRemoval(api, planUninstall(store, name)));
-        },
-      );
-      return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.UninstallSolutionAsyncResponse', { AsyncOperationId: asyncId });
+    {
+      name: 'PreferredSolutionUsedBy',
+      kind: 'function',
+      binding: 'unbound',
+      signature: {
+        params: [['SolutionId', 'Edm.Guid']],
+        response: [
+          ['NumberOfAssociatedUsers', 'Edm.Int32'],
+          ['PreferredSolutionDetails', 'mscrm.PreferredSolutionDetails'],
+        ],
+      },
+      handle(ctx) {
+        const id = lower(requireText(ctx.params?.SolutionId, 'SolutionId'));
+        const users = Object.entries(store.state.dataverse?.preferredSolutions ?? {})
+          .filter(([, solution]) => lower(solution) === id)
+          .map(([user]) => user);
+        const AssociatedUsers = users.map((user) => {
+          const row = rowsOf(store, 'systemuser').find((u) => lower(u.systemuserid) === user);
+          return { FirstName: row?.firstname ?? null, LastName: row?.lastname ?? null, SystemUserId: user }; // the systemuser name columns are a guess
+        });
+        return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.PreferredSolutionUsedByResponse', {
+          NumberOfAssociatedUsers: users.length,
+          PreferredSolutionDetails: { AssociatedUsers },
+        });
+      },
     },
-  });
-
-  // Component membership, async (AddComponentToSolutionAsync, AddComponentsToSolutionAsync).
-  ops.push({
-    name: 'AddComponentToSolutionAsync',
-    kind: 'action',
-    binding: 'unbound',
-    signature: {
-      params: [
-        ['LogicalName', 'Edm.String'],
-        ['Id', 'Edm.Guid'],
-        ['SolutionUniqueName', 'Edm.String'],
-        ['AddRequiredComponents', 'Edm.Boolean'],
-      ],
-      response: [['AsyncOperationId', 'Edm.Guid']],
-    },
-    async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
-      const body = ctx.body ?? {};
-      const target = targetOf(store, body);
-      assertUnpatched(store, target);
-      const component = componentById(all(), requireText(body.Id, 'Id'), body.LogicalName);
-      const chosen = body.AddRequiredComponents === true ? requiredClosure(edges(), [component]) : [component];
-      const asyncId = await api.systemJob(
-        { name: `Add component to ${target.uniquename}`, operationtype: null, callerId: ctx.caller.systemuserid },
-        async () => {
-          await write(() => addMemberRows(store, target.solutionid, chosen));
-        },
-      );
-      return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.AddComponentToSolutionAsyncResponse', {
-        AsyncOperationId: asyncId,
-      });
-    },
-  });
-  ops.push({
-    name: 'AddComponentsToSolutionAsync',
-    kind: 'action',
-    binding: 'unbound',
-    signature: {
-      params: [
-        ['SolutionComponentParameters', 'mscrm.AddComponentToSolutionParametersCollection'],
-        ['SolutionUniqueName', 'Edm.String'],
-        ['ContinueOnError', 'Edm.Boolean'],
-      ],
-      response: [['AsyncOperationId', 'Edm.Guid']],
-    },
-    async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
-      const body = ctx.body ?? {};
-      const target = targetOf(store, body);
-      assertUnpatched(store, target);
-      const components = all();
-      const picked = [];
-      for (const item of body.SolutionComponentParameters?.ParameterCollection ?? []) {
-        let component;
-        try {
-          component = componentById(components, requireText(item.Id, 'Id'), item.LogicalName);
-        } catch (error) {
-          if (body.ContinueOnError === true) continue; // ContinueOnError skips a component that fails
-          throw error;
-        }
-        picked.push(...(item.AddRequiredComponents === true ? requiredClosure(edges(), [component]) : [component]));
-      }
-      const asyncId = await api.systemJob(
-        { name: `Add components to ${target.uniquename}`, operationtype: null, callerId: ctx.caller.systemuserid },
-        async () => {
-          await write(() => addMemberRows(store, target.solutionid, picked));
-        },
-      );
-      return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.AddComponentsToSolutionAsyncResponse', {
-        AsyncOperationId: asyncId,
-      });
-    },
-  });
-
-  // Async export and download (ExportSolutionAsync, DownloadSolutionExportData). The finished zip is kept per export job.
-  ops.push({
-    name: 'ExportSolutionAsync',
-    kind: 'action',
-    binding: 'unbound',
-    signature: {
-      params: [
-        ['SolutionName', 'Edm.String'],
-        ['Managed', 'Edm.Boolean'],
-      ],
-      response: [
-        ['AsyncOperationId', 'Edm.Guid'],
-        ['ExportJobId', 'Edm.Guid'],
-      ],
-    },
-    async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, 'prvExportCustomization', 'solution');
-      const name = requireText(ctx.body?.SolutionName, 'SolutionName');
-      const row = baseOrThrow(store, name);
-      assertUnpatched(store, row);
-      const managed = ctx.body?.Managed === true;
-      const exportJobId = randomUUID();
-      const asyncId = await api.systemJob(
-        { name: `Export ${name}`, operationtype: OPERATION_TYPE.export, callerId: ctx.caller.systemuserid },
-        async () => {
-          const zip = tools.exportArchive(row, { managed });
-          await write(() => {
-            ((store.state.dataverse ??= {}).exportJobs ??= {})[lower(exportJobId)] = {
-              solutionName: row.uniquename,
-              managed,
-              file: zip.toString('base64'),
-            };
-          });
-        },
-      );
-      return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.ExportSolutionAsyncResponse', {
-        AsyncOperationId: asyncId,
-        ExportJobId: exportJobId,
-      });
-    },
-  });
-  ops.push({
-    name: 'DownloadSolutionExportData',
-    kind: 'action',
-    binding: 'unbound',
-    signature: { params: [['ExportJobId', 'Edm.Guid']], response: [['ExportSolutionFile', 'Edm.Binary']] },
-    handle(ctx) {
-      requireMetadataPrivilege(api, ctx, 'prvExportCustomization', 'solution');
-      const id = requireText(ctx.body?.ExportJobId, 'ExportJobId');
-      const job = store.state.dataverse?.exportJobs?.[lower(id)];
-      if (!job) throw notFound(`The solution export job ${id} does not exist or has not finished.`, 'NotFound');
-      return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.DownloadSolutionExportDataResponse', {
-        ExportSolutionFile: job.file,
-      });
-    },
-  });
-
-  // Staging (StageSolution). Reads the zip and reports; nothing is written to the store.
-  ops.push({
-    name: 'StageSolution',
-    kind: 'action',
-    binding: 'unbound',
-    csdl: STAGE_SOLUTION_CSDL,
-    handle(ctx) {
-      requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
-      const archive = tools.readArchive(ctx.body?.CustomizationFile);
-      const uploadId = ctx.body?.StageSolutionUploadId || randomUUID();
-      return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.StageSolutionResponse', {
-        StageSolutionResults: { ...stagingResults(store, archive), StageSolutionUploadId: uploadId },
-      });
-    },
-  });
-  ops.push({
-    name: 'RetrieveMissingComponents',
-    kind: 'function',
-    binding: 'unbound',
-    signature: {
-      params: [['CustomizationFile', 'Edm.Binary']],
-      response: [['MissingComponents', 'Collection(mscrm.MissingComponent)']],
-    }, // how a binary file travels on a GET is a guess
-    handle(ctx) {
-      const archive = tools.readArchive(ctx.params?.CustomizationFile ?? ctx.body?.CustomizationFile);
-      return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.RetrieveMissingComponentsResponse', {
-        MissingComponents: missingOf(store, archive),
-      });
-    },
-  });
-
-  // Preferred solution (GetPreferredSolution, SetPreferredSolution, PreferredSolutionUsedBy). Default: the Default solution.
-  ops.push({
-    name: 'GetPreferredSolution',
-    kind: 'function',
-    binding: 'unbound',
-    signature: { returns: 'mscrm.crmbaseentity' },
-    handle(ctx) {
-      const preferred = store.state.dataverse?.preferredSolutions?.[callerKey(ctx)];
-      const row = (preferred && rowsOf(store, 'solution').find((s) => lower(s.solutionid) === lower(preferred))) ??
-        rowsOf(store, 'solution').find(isDefaultSolution) ?? {
-          solutionid: null,
-          uniquename: DEFAULT_SOLUTION,
-          friendlyname: 'Default Solution',
-          version: '1.0',
-          ismanaged: false,
-        };
-      return asyncResponse(ctx, 'solutions/$entity', solutionEntity(row));
-    },
-  });
-  ops.push({
-    name: 'SetPreferredSolution',
-    kind: 'action',
-    binding: 'unbound',
-    signature: { params: [['SolutionId', 'Edm.Guid']] },
-    async handle(ctx) {
-      const key = callerKey(ctx);
-      const id = requireText(ctx.body?.SolutionId, 'SolutionId');
-      const row = rowsOf(store, 'solution').find((s) => lower(s.solutionid) === lower(id));
-      if (!row) throw notFound(`Solution with Id ${id} does not exist.`, 'NotFound');
-      if (row.ismanaged === true)
-        throw invalid(`Solution ${row.uniquename} is managed; the preferred solution is unmanaged.`);
-      await write(() => {
-        ((store.state.dataverse ??= {}).preferredSolutions ??= {})[key] = row.solutionid;
-      });
-      return undefined;
-    },
-  });
-  ops.push({
-    name: 'PreferredSolutionUsedBy',
-    kind: 'function',
-    binding: 'unbound',
-    signature: {
-      params: [['SolutionId', 'Edm.Guid']],
-      response: [
-        ['NumberOfAssociatedUsers', 'Edm.Int32'],
-        ['PreferredSolutionDetails', 'mscrm.PreferredSolutionDetails'],
-      ],
-    },
-    handle(ctx) {
-      const id = lower(requireText(ctx.params?.SolutionId, 'SolutionId'));
-      const users = Object.entries(store.state.dataverse?.preferredSolutions ?? {})
-        .filter(([, solution]) => lower(solution) === id)
-        .map(([user]) => user);
-      const AssociatedUsers = users.map((user) => {
-        const row = rowsOf(store, 'systemuser').find((u) => lower(u.systemuserid) === user);
-        return { FirstName: row?.firstname ?? null, LastName: row?.lastname ?? null, SystemUserId: user }; // the systemuser name columns are a guess
-      });
-      return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.PreferredSolutionUsedByResponse', {
-        NumberOfAssociatedUsers: users.length,
-        PreferredSolutionDetails: { AssociatedUsers },
-      });
-    },
-  });
+  );
   return ops;
 }
 
@@ -1324,7 +1357,7 @@ function layerOperations(api) {
         privilege(ctx);
         const id = requireText(ctx.params?.ComponentId, 'ComponentId').replace(/[{}']/g, '');
         const kind = ctx.params?.SolutionComponentName
-          ? lower(String(ctx.params.SolutionComponentName).replace(/'/g, ''))
+          ? lower(String(ctx.params.SolutionComponentName).replaceAll("'", ''))
           : null;
         return asyncResponse(ctx, 'Microsoft.Dynamics.CRM.RetrieveComponentLayersResponse', {
           Layers: componentLayers(api, kind, id),
@@ -1373,7 +1406,9 @@ export function installSolutionMessages(api, tools = {}) {
         if (!Array.isArray(settings) || settings.some((value) => typeof value !== 'string'))
           throw invalid('IncludedComponentSettingsValues must be a collection of strings.');
         await write(() => {
-          const values = ((store.state.dataverse ??= {}).solutionComponentSettings ??= {});
+          store.state.dataverse ??= {};
+          store.state.dataverse.solutionComponentSettings ??= {};
+          const values = store.state.dataverse.solutionComponentSettings;
           values[lower(membership.solutioncomponentid)] = [...settings];
         });
         return { status: 204 };
@@ -1626,3 +1661,5 @@ export function installSolutionMessages(api, tools = {}) {
     signature: { params: [['SolutionUniqueName', 'Edm.String']] },
   });
 }
+
+export { managedLayerId as metadataIdOf } from './dataverse-metadata-relationships.mjs';

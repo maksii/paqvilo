@@ -41,6 +41,101 @@ const MAX_VALUE_LENGTH = 50_000;
 // below this much literal text a pattern is only trusted where it stands on its own (>text<, "text")
 const WEAK_ANCHOR_LENGTH = 12;
 
+function sourceLineWeight(frequency, weights, line) {
+  if (!frequency.has(line)) return TRIVIAL_LINE.test(line) ? 0 : 1;
+  if (!weights.has(line)) weights.set(line, TRIVIAL_LINE.test(line) ? 0 : 1 / frequency.get(line));
+  return weights.get(line);
+}
+
+function addSourcePairs(block, candidates, weight, docKey, minSim, lineWeight, pairs) {
+  for (const src of candidates) {
+    if (src.tag !== block.tag) continue;
+    let score = similarity(block.lines, src.lines, lineWeight, weight, src.weight, minSim);
+    if (src.baseLines)
+      score = Math.max(score, similarity(block.lines, src.baseLines, lineWeight, weight, src.baseWeight, minSim));
+    if (score + 1e-12 < minSim) continue;
+    // a couple of lines is too little to tell blocks apart, unless the source belongs to this page
+    const tiny = Math.min(block.lines.size, Math.max(src.lines.size, src.baseLines?.size ?? 0)) < 3;
+    if (tiny && !src.pageKey && score < 1) continue;
+    // forms are often clones of each other: among near-equal candidates prefer the form this page is configured to show
+    pairs.push({ block, src, score, rank: score + (src.usedKeys.has(docKey) ? 0.1 : 0) });
+  }
+}
+
+function collectBlockPairs(html, candidates, docKey, minSim, lineWeight) {
+  const found = [];
+  const pairs = [];
+  for (const m of codeBlocks(html)) {
+    const tag = m[1].toLowerCase();
+    if (!isInlineCodeBlock(tag, m[2])) continue;
+    const lines = lineSet(m[3]);
+    if (!lines.size) continue;
+    let weight = 0;
+    for (const line of lines) weight += lineWeight(line);
+    const block = { m, tag, lines, norm: normEol(m[3]).trim(), src: null, score: 0 };
+    found.push(block);
+    addSourcePairs(block, candidates, weight, docKey, minSim, lineWeight, pairs);
+  }
+  return { found, pairs };
+}
+
+const blockSourceIdentity = (src) => (src.pageKey ? `${src.kind}|${src.pageKey}` : src.file);
+
+function noteAmbiguousPairs(ambiguous, best, notes) {
+  for (const block of ambiguous) {
+    const { src } = best.get(block);
+    notes.push({
+      rel: src.rel,
+      reason:
+        'multiple local sources or language variants match this inline block equally; no source was substituted because its identity cannot be determined safely',
+    });
+  }
+}
+
+function findAmbiguousBlockPairs(pairs) {
+  const ambiguous = new Set();
+  const best = new Map();
+  for (const pair of pairs) {
+    const first = best.get(pair.block);
+    if (!first) best.set(pair.block, pair);
+    else if (
+      Math.abs(pair.rank - first.rank) < 1e-12 &&
+      (blockSourceIdentity(pair.src) !== blockSourceIdentity(first.src) ||
+        differentLocalizedVariants(pair.src, first.src)) &&
+      pair.src.norm !== first.src.norm
+    )
+      ambiguous.add(pair.block);
+  }
+  return { ambiguous, best };
+}
+
+function assignBlockSources(pairs, ambiguous) {
+  const claimed = new Map();
+  for (const { block, src, score } of pairs) {
+    if (block.src || ambiguous.has(block)) continue;
+    const id = blockSourceIdentity(src);
+    if (claimed.has(id) && claimed.get(id) !== block.norm) continue;
+    claimed.set(id, block.norm);
+    block.src = src;
+    block.score = score;
+  }
+  return claimed;
+}
+
+function claimBlockPairs(pairs, notes) {
+  pairs.sort((a, b) => b.rank - a.rank || Number(isLanguageCopy(b.src)) - Number(isLanguageCopy(a.src)));
+  const { ambiguous, best } = findAmbiguousBlockPairs(pairs);
+  noteAmbiguousPairs(ambiguous, best, notes);
+  const claimed = assignBlockSources(pairs, ambiguous);
+  return { claimed, identity: blockSourceIdentity };
+}
+
+function sumLineWeights(lines, lineWeight) {
+  let total = 0;
+  if (lines) for (const line of lines) total += lineWeight(line);
+  return total;
+}
+
 function readText(file) {
   try {
     return fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
@@ -110,6 +205,61 @@ const RAW_TEXT = new Set([
 ]);
 const HTML_SPACE = /[\t\n\f\r ]/;
 
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function advanceTagState(state, char) {
+  switch (state) {
+    case 'value':
+      if (HTML_SPACE.test(char)) return state;
+      return char === '"' || char === "'" ? char : 'unquoted';
+    case 'unquoted':
+      return HTML_SPACE.test(char) ? 'before' : state;
+    case 'name':
+    case 'after':
+      if (char === '=') return 'value';
+      if (char === '/') return 'before';
+      if (HTML_SPACE.test(char)) return 'after';
+      return 'name';
+    default:
+      return !HTML_SPACE.test(char) && char !== '/' ? 'name' : state;
+  }
+}
+
+function commentEnd(html, start) {
+  if (html.startsWith('>', start + 4)) return start + 5;
+  if (html.startsWith('->', start + 4)) return start + 6;
+  const closing = /--!?>/g;
+  closing.lastIndex = start + 4;
+  return closing.exec(html) ? closing.lastIndex : html.length;
+}
+
+function declarationEnd(html, start) {
+  const end = html.indexOf('>', start + 2);
+  return end < 0 ? html.length : end + 1;
+}
+
+function nextScriptRawState(value, state) {
+  if (value === '<!--' && state === 'data') return 'escaped';
+  if (value === '-->') return 'data';
+  if (value === '<script' && state === 'escaped') return 'double';
+  if (value === '</script') return state === 'double' ? 'escaped' : 'close';
+  return state;
+}
+
+function scriptRawEnd(html, from) {
+  // Legacy HTML-comment escapes have a double-escaped state: a </script> after
+  // <!--<script> is text until that state has ended, even inside a JavaScript string.
+  const tokens = /<!--|-->|<\/?script(?=[\t\n\f\r />])/gi;
+  tokens.lastIndex = from;
+  let state = 'data';
+  for (let token; ;) {
+    token = tokens.exec(html);
+    if (!token) break;
+    const value = token[0].toLowerCase();
+    state = nextScriptRawState(value, state);
+    if (state === 'close') return readTag(html, token.index);
+  }
+  return null;
+}
+
 // Consume a tag once, including an unfinished tag at EOF. A global tag regex retries every
 // nested '<' in malformed attributes and can scan the same multi-megabyte tail quadratically.
 function readTag(html, start) {
@@ -130,17 +280,7 @@ function readTag(html, start) {
         index: start,
         end: at + 1,
       });
-    if (state === 'value') {
-      if (HTML_SPACE.test(char)) continue;
-      state = char === '"' || char === "'" ? char : 'unquoted';
-    } else if (state === 'unquoted') {
-      if (HTML_SPACE.test(char)) state = 'before';
-    } else if (state === 'name' || state === 'after') {
-      if (char === '=') state = 'value';
-      else if (char === '/') state = 'before';
-      else if (HTML_SPACE.test(char)) state = 'after';
-      else state = 'name';
-    } else if (!HTML_SPACE.test(char) && char !== '/') state = 'name';
+    state = advanceTagState(state, char);
   }
   return null;
 }
@@ -148,18 +288,9 @@ function readTag(html, start) {
 function nextTag(html, from) {
   for (let start = html.indexOf('<', from); start >= 0; start = html.indexOf('<', from)) {
     if (html.startsWith('<!--', start)) {
-      let end;
-      if (html.startsWith('>', start + 4)) end = start + 5;
-      else if (html.startsWith('->', start + 4)) end = start + 6;
-      else {
-        const closing = /--!?>/g;
-        closing.lastIndex = start + 4;
-        end = closing.exec(html) ? closing.lastIndex : html.length;
-      }
-      from = end;
+      from = commentEnd(html, start);
     } else if (html[start + 1] === '!' || html[start + 1] === '?') {
-      const end = html.indexOf('>', start + 2);
-      from = end < 0 ? html.length : end + 1;
+      from = declarationEnd(html, start);
     } else if (/[a-z]/i.test(html[start + (html[start + 1] === '/' ? 2 : 1)] ?? '')) {
       return readTag(html, start);
     } else from = start + 1;
@@ -168,25 +299,8 @@ function nextTag(html, from) {
 }
 
 function rawEnd(html, tag, from) {
-  if (tag === 'script') {
-    // Legacy HTML-comment escapes have a double-escaped state: a </script> after
-    // <!--<script> is text until that state has ended, even inside a JavaScript string.
-    const tokens = /<!--|-->|<\/?script(?=[\t\n\f\r />])/gi;
-    tokens.lastIndex = from;
-    let state = 'data';
-    for (let token; (token = tokens.exec(html));) {
-      const value = token[0].toLowerCase();
-      if (value === '<!--' && state === 'data') state = 'escaped';
-      else if (value === '-->') state = 'data';
-      else if (value === '<script' && state === 'escaped') state = 'double';
-      else if (value === '</script') {
-        if (state === 'double') state = 'escaped';
-        else return readTag(html, token.index);
-      }
-    }
-    return null;
-  }
-  const closing = new RegExp(`</${tag}(?=[\\t\\n\\f\\r />])`, 'gi');
+  if (tag === 'script') return scriptRawEnd(html, from);
+  const closing = new RegExp(String.raw`</${tag}(?=[\t\n\f\r />])`, 'gi');
   closing.lastIndex = from;
   const match = closing.exec(html);
   return match ? readTag(html, match.index) : null;
@@ -200,7 +314,9 @@ function preservesInlineBoundary(tag, content, closing = `</${tag}>`) {
 // textarea, comment, or another script is text, not a second executable block.
 function* codeBlocks(html) {
   let at = 0;
-  for (let open; (open = nextTag(html, at));) {
+  for (let open; ;) {
+    open = nextTag(html, at);
+    if (!open) break;
     at = open.end;
     if (!open[1] || open[0].startsWith('</')) continue;
     const tag = open[1].toLowerCase();
@@ -218,20 +334,30 @@ function* codeBlocks(html) {
   }
 }
 
+function closingTagOffset(tagMatch, name) {
+  return tagMatch[0].startsWith('</') && tagMatch[1].toLowerCase() === name ? tagMatch.index : -1;
+}
+
+function rawTextEnd(html, tag, at) {
+  if (tag === 'plaintext') return null;
+  return rawEnd(html, tag, at)?.end ?? null;
+}
+
 function closingElementOffset(html, name) {
   let at = 0;
   let offset = -1;
-  for (let m; (m = nextTag(html, at));) {
+  for (let m; ;) {
+    m = nextTag(html, at);
+    if (!m) break;
     at = m.end;
     if (!m[1]) continue;
     const tag = m[1].toLowerCase();
-    if (m[0].startsWith('</')) {
-      if (tag === name) offset = m.index;
-    } else if (RAW_TEXT.has(tag)) {
-      if (tag === 'plaintext') break;
-      const end = rawEnd(html, tag, at);
-      if (!end) break;
-      at = end.end;
+    const close = closingTagOffset(m, name);
+    if (close >= 0) offset = close;
+    else if (!m[0].startsWith('</') && RAW_TEXT.has(tag)) {
+      const end = rawTextEnd(html, tag, at);
+      if (end == null) break;
+      at = end;
     }
   }
   return offset;
@@ -239,7 +365,7 @@ function closingElementOffset(html, name) {
 
 function attributes(attrs) {
   const out = new Map();
-  const pattern = /([^\s=/'"<>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+  const pattern = /([^\s=/'"<>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g; // NOSONAR: regex kept: a rewrite would change matches or captures
   for (const m of attrs.matchAll(pattern)) {
     const name = m[1].toLowerCase();
     if (!out.has(name)) out.set(name, m[2] ?? m[3] ?? m[4] ?? '');
@@ -255,7 +381,7 @@ function scriptType(values, useLanguage = true) {
     .replace(/&#(?:x([\da-f]+)|(\d+));?|&(Tab|NewLine|sol|period);/gi, (whole, hex, dec, name) => {
       if (name) return named[name] ?? whole;
       const code = Number.parseInt(hex ?? dec, hex ? 16 : 10);
-      return code > 0 && code < 128 ? String.fromCharCode(code) : whole;
+      return code > 0 && code < 128 ? String.fromCodePoint(code) : whole;
     })
     .trim()
     .toLowerCase();
@@ -304,111 +430,144 @@ function normExpr(expr) {
     );
 }
 
+function lineAtOffset(starts, lines, at) {
+  let lo = 0;
+  let hi = lines.length;
+  while (lo + 1 < hi) {
+    const mid = (lo + hi) >> 1;
+    if (starts[mid] <= at) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function protectLineRange(normalized, lines, starts, from, to) {
+  const whitespaceControl = /\{[{%]-|-[}%]\}/.test(normalized.slice(from, to));
+  for (
+    let i = lineAtOffset(starts, lines, from);
+    i <= lineAtOffset(starts, lines, Math.max(from, to - 1)) && i < lines.length;
+    i++
+  ) {
+    lines[i].protected.push({
+      start: Math.max(0, from - starts[i]),
+      end: Math.min(lines[i].text.length, to - starts[i]),
+    });
+    // Trimming can affect literal text on either side of a token. Keep these lines
+    // out of the literal-segment fallback even when the token itself is unchanged.
+    if (whitespaceControl) lines[i].whitespaceControl = true;
+  }
+}
+
+function markLogicRange(normalized, lines, starts, from, to) {
+  protectLineRange(normalized, lines, starts, from, to);
+  for (
+    let i = lineAtOffset(starts, lines, from);
+    i <= lineAtOffset(starts, lines, Math.max(from, to - 1)) && i < lines.length;
+    i++
+  )
+    lines[i].logic = true;
+}
+
+function liquidTokenEnd(normalized, start, delimiter) {
+  let quote = null;
+  let end = start + 2;
+  for (; end < normalized.length; end++) {
+    const char = normalized[end];
+    if (quote) {
+      if (char === quote) quote = null;
+    } else if (char === '"' || char === "'") quote = char;
+    else if (normalized.startsWith(delimiter, end)) break;
+  }
+  return end;
+}
+
+function processLiquidTag(normalized, lines, starts, tokens, token, end, capture) {
+  const start = token.index;
+  markLogicRange(normalized, lines, starts, start, end);
+  const body = normalized.slice(start + 2, end - 2).trimStart();
+  const tag = /^([a-z]+)/i.exec(body.startsWith('-') ? body.slice(1).trimStart() : body)?.[1]?.toLowerCase();
+  if (tag === 'raw' || tag === 'comment') {
+    const closing = new RegExp(String.raw`\{%-?\s*end${tag}\s*-?%\}`, 'gi');
+    closing.lastIndex = end;
+    const close = closing.exec(normalized);
+    if (!close) {
+      markLogicRange(normalized, lines, starts, start, normalized.length);
+      return false;
+    }
+    if (tag === 'comment') markLogicRange(normalized, lines, starts, start, closing.lastIndex);
+    else markLogicRange(normalized, lines, starts, close.index, closing.lastIndex);
+    tokens.lastIndex = closing.lastIndex;
+  } else if (tag === 'capture') {
+    capture.start ??= start;
+    capture.depth++;
+  } else if (tag === 'endcapture' && capture.depth && --capture.depth === 0) {
+    markLogicRange(normalized, lines, starts, capture.start, end);
+    capture.start = null;
+  }
+  return true;
+}
+
+function processLiquidOutput(normalized, lines, starts, start, end) {
+  const first = lineAtOffset(starts, lines, start);
+  if (first !== lineAtOffset(starts, lines, end - 1) || normalized[start + 2] === '-' || normalized[end - 3] === '-') {
+    markLogicRange(normalized, lines, starts, start, end);
+    return;
+  }
+  protectLineRange(normalized, lines, starts, start, end);
+  lines[first]?.outputs.push({
+    index: start - starts[first],
+    text: normalized.slice(start, end),
+    expr: normalized.slice(start + 2, end - 2),
+  });
+}
+
+function scanLiquidTokens(normalized, lines, starts) {
+  // Only direct literal output is patchable. Comment bodies are never printed, capture bodies
+  // may be transformed before being printed, and raw bodies print {{...}} as literal text.
+  // Scan whole tokens so multiline tags/outputs cannot turn their middle lines into anchors.
+  const tokens = /\{%|\{\{/g;
+  const capture = { start: null, depth: 0 };
+  for (let token; ;) {
+    token = tokens.exec(normalized);
+    if (!token) break;
+    const start = token.index;
+    const delimiter = token[0] === '{%' ? '%}' : '}}';
+    let end = liquidTokenEnd(normalized, start, delimiter);
+    if (end === normalized.length) {
+      markLogicRange(normalized, lines, starts, start, end);
+      break;
+    }
+    end += 2;
+    tokens.lastIndex = end;
+    if (delimiter === '%}') {
+      if (!processLiquidTag(normalized, lines, starts, tokens, token, end, capture)) break;
+    } else processLiquidOutput(normalized, lines, starts, start, end);
+  }
+  if (capture.start != null) markLogicRange(normalized, lines, starts, capture.start, normalized.length);
+}
+
 function toLines(text) {
   const { text: normalized, original } = normalise(text);
   const parts = normalized.split('\n');
   const starts = [];
+  const lines = [];
   let offset = 0;
-  const lines = parts.map((t, i) => {
+  for (let i = 0; i < parts.length; i++) {
+    const lineText = parts[i];
     starts.push(offset);
-    offset += t.length + 1;
-    return {
-      text: t,
+    offset += lineText.length + 1;
+    lines.push({
+      text: lineText,
       sourceStart: original(starts.at(-1)),
       eol: i < parts.length - 1,
       logic: false,
       outputs: [],
       protected: [],
       whitespaceControl: false,
-    };
-  });
-  if (lines.length && !lines.at(-1).eol && lines.at(-1).text === '') lines.pop();
-  const lineAt = (at) => {
-    let lo = 0;
-    let hi = lines.length;
-    while (lo + 1 < hi) {
-      const mid = (lo + hi) >> 1;
-      if (starts[mid] <= at) lo = mid;
-      else hi = mid;
-    }
-    return lo;
-  };
-  const protect = (from, to) => {
-    const whitespaceControl = /\{[{%]-|-[}%]\}/.test(normalized.slice(from, to));
-    for (let i = lineAt(from); i <= lineAt(Math.max(from, to - 1)) && i < lines.length; i++) {
-      lines[i].protected.push({
-        start: Math.max(0, from - starts[i]),
-        end: Math.min(lines[i].text.length, to - starts[i]),
-      });
-      // Trimming can affect literal text on either side of a token. Keep these lines
-      // out of the literal-segment fallback even when the token itself is unchanged.
-      if (whitespaceControl) lines[i].whitespaceControl = true;
-    }
-  };
-  const markLogic = (from, to) => {
-    protect(from, to);
-    for (let i = lineAt(from); i <= lineAt(Math.max(from, to - 1)) && i < lines.length; i++) lines[i].logic = true;
-  };
-  // Only direct literal output is patchable. Comment bodies are never printed, capture bodies
-  // may be transformed before being printed, and raw bodies print {{...}} as literal text.
-  // Scan whole tokens so multiline tags/outputs cannot turn their middle lines into anchors.
-  const tokens = /\{%|\{\{/g;
-  let captureStart = null;
-  let captureDepth = 0;
-  for (let token; (token = tokens.exec(normalized));) {
-    const start = token.index;
-    const delimiter = token[0] === '{%' ? '%}' : '}}';
-    let quote = null;
-    let end = start + 2;
-    for (; end < normalized.length; end++) {
-      const c = normalized[end];
-      if (quote) {
-        if (c === quote) quote = null;
-      } else if (c === '"' || c === "'") quote = c;
-      else if (normalized.startsWith(delimiter, end)) break;
-    }
-    if (end === normalized.length) {
-      markLogic(start, end);
-      break;
-    }
-    end += 2;
-    tokens.lastIndex = end;
-    if (delimiter === '%}') {
-      markLogic(start, end);
-      const tag = /^\s*-?\s*([a-z]+)/i.exec(normalized.slice(start + 2, end - 2))?.[1]?.toLowerCase();
-      if (tag === 'raw' || tag === 'comment') {
-        const closing = new RegExp(`\\{%-?\\s*end${tag}\\s*-?%\\}`, 'gi');
-        closing.lastIndex = end;
-        const close = closing.exec(normalized);
-        if (!close) {
-          markLogic(start, normalized.length);
-          break;
-        }
-        if (tag === 'comment') markLogic(start, closing.lastIndex);
-        else markLogic(close.index, closing.lastIndex);
-        tokens.lastIndex = closing.lastIndex;
-      } else if (tag === 'capture') {
-        captureStart ??= start;
-        captureDepth++;
-      } else if (tag === 'endcapture' && captureDepth && --captureDepth === 0) {
-        markLogic(captureStart, end);
-        captureStart = null;
-      }
-    } else {
-      const first = lineAt(start);
-      if (first !== lineAt(end - 1) || normalized[start + 2] === '-' || normalized[end - 3] === '-')
-        markLogic(start, end);
-      else {
-        protect(start, end);
-        lines[first]?.outputs.push({
-          index: start - starts[first],
-          text: normalized.slice(start, end),
-          expr: normalized.slice(start + 2, end - 2),
-        });
-      }
-    }
+    });
   }
-  if (captureStart != null) markLogic(captureStart, normalized.length);
+  if (lines.length && !lines.at(-1).eol && lines.at(-1).text === '') lines.pop();
+  scanLiquidTokens(normalized, lines, starts);
   return lines;
 }
 
@@ -425,7 +584,7 @@ function buildPattern(baseLines, hunk, before, after) {
   const lit = (s) => {
     if (!s) return;
     const last = tokens.at(-1);
-    if (last && last.lit != null) last.lit += s;
+    if (last?.lit != null) last.lit += s;
     else tokens.push({ lit: s });
   };
   const lines = (from, to) => {
@@ -462,6 +621,25 @@ function buildPattern(baseLines, hunk, before, after) {
 }
 
 /** All non-overlapping matches of `pattern` in LF-normalised `text` (at most `max`). */
+function nextLiteral(text, memo, lit, pos) {
+  const cached = memo.get(lit);
+  if (cached && cached.from <= pos && (cached.at < 0 || pos <= cached.at)) return cached.at;
+  const at = text.indexOf(lit, pos);
+  memo.set(lit, { from: pos, at });
+  return at;
+}
+
+function tightenMatch(tokens, text, start, match, first, next) {
+  for (let later = next(first, start + 1); later >= 0 && later < match.end; later = next(first, later + 1)) {
+    const tighter = matchAt(tokens, text, later, next);
+    if (tighter && tighter.end <= match.end) {
+      match = tighter;
+      start = later;
+    }
+  }
+  return { match, start };
+}
+
 function findMatches(pattern, text, max = Infinity) {
   const out = [];
   if (!pattern.anchored) return out;
@@ -471,13 +649,7 @@ function findMatches(pattern, text, max = Infinity) {
   // Next occurrence of a literal at or after `pos`. Remembering the last answer keeps the whole
   // search linear: thousands of candidate starts ask for the same literal from increasing positions.
   const memo = new Map();
-  const next = (lit, pos) => {
-    const m = memo.get(lit);
-    if (m && m.from <= pos && (m.at < 0 || pos <= m.at)) return m.at;
-    const at = text.indexOf(lit, pos);
-    memo.set(lit, { from: pos, at });
-    return at;
-  };
+  const next = (lit, pos) => nextLiteral(text, memo, lit, pos);
   let from = 0;
   while (out.length < max) {
     let start = next(first, from);
@@ -489,48 +661,40 @@ function findMatches(pattern, text, max = Infinity) {
     }
     // A {{ value }} matches any text, so a look-alike line earlier in the page can reach forward to
     // the real one. Keep the tightest match: the last start that still ends at the same place.
-    for (let later = next(first, start + 1); later >= 0 && later < match.end; later = next(first, later + 1)) {
-      const tighter = matchAt(tokens, text, later, next);
-      if (tighter && tighter.end <= match.end) {
-        match = tighter;
-        start = later;
-      }
-    }
+    ({ match, start } = tightenMatch(tokens, text, start, match, first, next));
     out.push(match);
     from = Math.max(match.end, start + 1);
   }
   return out;
 }
 
-function matchAt(tokens, text, start, next) {
-  let pos = start;
-  let pending = null; // a {{ value }} whose end is not known yet
-  let waiting = []; // marks sitting directly after that value
-  const marks = {};
-  const values = new Map();
-  for (const tok of tokens) {
-    if (tok.mark) {
-      if (pending != null) waiting.push(tok.mark);
-      else marks[tok.mark] = pos;
-    } else if (tok.expr != null) {
-      pending = tok.expr;
-    } else if (pending != null) {
-      const found = next(tok.lit, pos);
-      if (found < 0 || found - pos > MAX_VALUE_LENGTH) return null;
-      const value = text.slice(pos, found);
-      if (values.has(pending) && values.get(pending) !== value) return null;
-      values.set(pending, value);
-      pos = found;
-      for (const mark of waiting) marks[mark] = pos;
-      pending = null;
-      waiting = [];
-      pos += tok.lit.length;
-    } else {
-      if (!text.startsWith(tok.lit, pos)) return null;
-      pos += tok.lit.length;
-    }
+/* NOSONAR */ function matchToken(state, tok, text, next) {
+  if (tok.mark) {
+    if (state.pending != null) state.waiting.push(tok.mark);
+    else state.marks[tok.mark] = state.pos;
+  } else if (tok.expr != null) state.pending = tok.expr;
+  else if (state.pending != null) {
+    const found = next(tok.lit, state.pos);
+    if (found < 0 || found - state.pos > MAX_VALUE_LENGTH) return false;
+    const value = text.slice(state.pos, found);
+    if (state.values.has(state.pending) && state.values.get(state.pending) !== value) return false;
+    state.values.set(state.pending, value);
+    state.pos = found;
+    for (const mark of state.waiting) state.marks[mark] = state.pos;
+    state.pending = null;
+    state.waiting = [];
+    state.pos += tok.lit.length;
+  } else {
+    if (!text.startsWith(tok.lit, state.pos)) return false;
+    state.pos += tok.lit.length;
   }
-  return { start, end: pos, core: marks.core, after: marks.after, values };
+  return true;
+}
+
+function matchAt(tokens, text, start, next) {
+  const state = { pos: start, pending: null, waiting: [], marks: {}, values: new Map() };
+  for (const tok of tokens) if (!matchToken(state, tok, text, next)) return null;
+  return { start, end: state.pos, core: state.marks.core, after: state.marks.after, values: state.values };
 }
 
 const WORD = /[\w$]/;
@@ -676,7 +840,7 @@ function normalise(html) {
   }
   // a lone \r is a line break too (the baseline is normalised the same way); same length, so
   // offsets are not affected
-  text = (text + html.slice(last)).replace(/\r/g, '\n');
+  text = (text + html.slice(last)).replaceAll('\r', '\n');
   const original = (offset) => {
     // number of dropped \r strictly before `offset`
     let lo = 0;
@@ -793,28 +957,10 @@ export class HtmlRewriter {
       this.sourceCache.delete(key);
       this.sourceStamps.delete(key);
     };
-    if (files == null) {
-      this.sourceCache.clear();
-      this.sourceStamps.clear();
-    } else for (const file of files) invalidate(sourceCacheKey(file));
+    this.#invalidateRefreshCache(files, invalidate);
     // Native realpath resolves like the startup prefetch (fs.promises.realpath), so stamps it took stay
     // comparable (8.3 names, drive-letter case), without lstat-ing every path component.
-    if (revalidate)
-      for (const key of this.sourceCache.keys()) {
-        const stamp = this.sourceStamps.get(key);
-        try {
-          if (
-            stamp &&
-            !stamp.racy &&
-            sameStamp(stamp.info, fs.statSync(stamp.file)) &&
-            fs.realpathSync.native(stamp.file) === stamp.real
-          )
-            continue;
-        } catch {
-          /* removed or replaced source */
-        }
-        invalidate(key);
-      }
+    if (revalidate) this.#revalidateSources(invalidate);
     const { site, model } = this;
     this.fieldReader = createSourceReader(model);
     this.baselineReader = createSourceReader(null, { readRaw: (file) => this.baseline.show(file) });
@@ -843,124 +989,167 @@ export class HtmlRewriter {
     this.patches = [];
     /** changes that cannot be previewed locally: [{rel, reason}] */
     this.unsupported = model.deploymentChanges?.(this.baseline, changed) ?? [];
-    for (const source of model.inactiveSources ?? []) {
+    this.#reportInactiveSources(model.inactiveSources, changed);
+    this.snippets = null;
+
+    // in how many local scripts each line occurs: the more, the less it identifies one of them
+    const frequency = new Map();
+    const weights = new Map();
+    // Never retain arbitrary lines received from the portal across navigations.
+    this.lineWeight = (line) => sourceLineWeight(frequency, weights, line);
+
+    // the deployed version of a source; several sources can live in one file (enhanced format)
+    const baseOf = (src) => this.baselineReader(src);
+    const unreadable = new Set();
+    const read = (src) => this.#readSourceForRefresh(src, unreadable);
+
+    const refreshState = {
+      changed,
+      inlineKinds,
+      markupKinds,
+      previousBlocks,
+      partial,
+      frequency,
+      restrict,
+      read,
+      baseOf,
+    };
+    for (const src of model.inlineSources) this.#refreshSource(src, refreshState);
+    for (const block of this.blocks) {
+      block.weight = sumLineWeights(block.lines, this.lineWeight);
+      block.baseWeight = sumLineWeights(block.baseLines, this.lineWeight);
+    }
+    this.activeBlocks = this.blocks.filter((b) => b.active).length;
+    this.readValidity = null;
+  }
+
+  #invalidateRefreshCache(files, invalidate) {
+    if (files == null) {
+      this.sourceCache.clear();
+      this.sourceStamps.clear();
+    } else for (const file of files) invalidate(sourceCacheKey(file));
+  }
+
+  #revalidateSources(invalidate) {
+    for (const key of this.sourceCache.keys()) {
+      const stamp = this.sourceStamps.get(key);
+      try {
+        if (
+          stamp &&
+          !stamp.racy &&
+          sameStamp(stamp.info, fs.statSync(stamp.file)) &&
+          fs.realpathSync.native(stamp.file) === stamp.real
+        )
+          continue;
+      } catch {
+        /* removed or replaced source */
+      }
+      invalidate(key);
+    }
+  }
+
+  #reportInactiveSources(sources, changed) {
+    for (const source of sources ?? [])
       if (changed.has(source.file))
         this.unsupported.push({
           rel: source.rel,
           reason:
             'the record or its parent is inactive; activate and deploy it before this local change can be previewed',
         });
+  }
+
+  #readSourceForRefresh(src, unreadable) {
+    const text = this.#readSource(src);
+    if (text == null && src.extract && !unreadable.has(src.file)) {
+      unreadable.add(src.file);
+      this.unsupported.push({
+        rel: src.rel,
+        reason:
+          'the source field cannot be read from its metadata; the record, field or localized identity is missing or invalid',
+      });
     }
-    this.snippets = null;
+    return text;
+  }
 
-    // in how many local scripts each line occurs: the more, the less it identifies one of them
-    const frequency = new Map();
-    const weights = new Map();
-    this.lineWeight = (line) => {
-      // Never retain arbitrary lines received from the portal across navigations.
-      if (!frequency.has(line)) return TRIVIAL_LINE.test(line) ? 0 : 1;
-      if (!weights.has(line)) weights.set(line, TRIVIAL_LINE.test(line) ? 0 : 1 / frequency.get(line));
-      return weights.get(line);
-    };
-
-    // the deployed version of a source; several sources can live in one file (enhanced format)
-    const baseOf = (src) => this.baselineReader(src);
-    const unreadable = new Set();
-    const read = (src) => {
-      const text = this.#readSource(src);
-      if (text == null && src.extract && !unreadable.has(src.file)) {
-        unreadable.add(src.file);
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ #refreshSource(src, state) {
+    const { changed, inlineKinds, markupKinds, read, baseOf } = state;
+    if (src.kind.startsWith('page-') && src.pageUrl == null) {
+      // Only a local edit of such a source is a limitation worth reporting; an untouched one is
+      // what the portal already serves. The model warns about the broken page hierarchy itself.
+      if (changed.has(src.file) && !this.disabled.has(src.rel))
         this.unsupported.push({
           rel: src.rel,
-          reason:
-            'the source field cannot be read from its metadata; the record, field or localized identity is missing or invalid',
+          reason: 'the page URL cannot be resolved from local metadata, so this local change cannot be previewed',
         });
-      }
-      return text;
-    };
+      return;
+    }
+    const isChanged = changed.has(src.file);
+    const enabledKinds = src.mode === 'block' ? inlineKinds : markupKinds;
+    if (isChanged && !enabledKinds.has(src.kind) && !this.disabled.has(src.rel)) {
+      const text = read(src);
+      const base = baseOf(src);
+      if (text != null && normEol(text) !== normEol(base ?? ''))
+        this.unsupported.push({
+          rel: src.rel,
+          reason: `${src.kind} preview is disabled in this site's ${src.mode === 'block' ? 'inline' : 'markup'} settings; deploy this change to apply it online`,
+        });
+    }
+    if (src.mode === 'block') {
+      this.#refreshBlockSource(src, isChanged, state);
+      return;
+    }
+    if (markupKinds.has(src.kind) && isChanged && !this.disabled.has(src.rel)) {
+      const text = read(src);
+      if (text != null) this.#preparePatch(src, text, baseOf(src));
+    }
+  }
 
-    for (const src of model.inlineSources) {
-      if (src.kind.startsWith('page-') && src.pageUrl == null) {
-        // Only a local edit of such a source is a limitation worth reporting; an untouched one is
-        // what the portal already serves. The model warns about the broken page hierarchy itself.
-        if (changed.has(src.file) && !this.disabled.has(src.rel)) {
-          this.unsupported.push({
-            rel: src.rel,
-            reason: 'the page URL cannot be resolved from local metadata, so this local change cannot be previewed',
-          });
-        }
-        continue;
-      }
-      const isChanged = changed.has(src.file);
-      const enabledKinds = src.mode === 'block' ? inlineKinds : markupKinds;
-      if (isChanged && !enabledKinds.has(src.kind) && !this.disabled.has(src.rel)) {
-        const text = read(src);
-        const base = baseOf(src);
-        if (text != null && normEol(text) !== normEol(base ?? ''))
-          this.unsupported.push({
-            rel: src.rel,
-            reason: `${src.kind} preview is disabled in this site's ${src.mode === 'block' ? 'inline' : 'markup'} settings; deploy this change to apply it online`,
-          });
-      }
-      if (src.mode === 'block') {
-        if (!inlineKinds.has(src.kind)) continue;
-        const text = read(src);
-        if (text == null) continue;
-        const base = isChanged ? baseOf(src) : null;
-        if (!text.trim() && !(base && base.trim())) continue; // empty here and in the baseline
-        if (/\{%|\{\{/.test(text) || (base && /\{%|\{\{/.test(base))) {
-          // Liquid inside a custom JS/CSS field: the portal renders it, so patch instead of replace
-          if (isChanged && !this.disabled.has(src.rel)) this.#preparePatch(src, text, base);
-          continue;
-        }
-        const previous = previousBlocks.get(src.rel);
-        const norm = previous?.text === text ? previous.norm : normEol(text);
-        const lines = previous?.text === text ? previous.lines : lineSet(norm);
-        const baseNorm = base == null ? null : normEol(base);
-        const baseLines =
-          baseNorm != null && baseNorm !== norm
-            ? previous?.base === base && previous.baseLines
-              ? previous.baseLines
-              : lineSet(baseNorm)
-            : null;
-        this.blockCache.set(src.rel, { text, norm, lines, base, baseLines });
-        if (partial?.has(sourceCacheKey(src.file)) && previous?.text !== text) {
-          this.blockChanges.set(src.rel, {
-            kind: src.kind,
-            tag: src.tag,
-            pageKey: src.pageUrl ? urlKey(src.pageUrl) : null,
-            before: previous?.text ?? null,
-            after: text,
-          });
-        }
-        for (const line of lines) frequency.set(line, (frequency.get(line) ?? 0) + 1);
-        this.blocks.push({
-          ...src,
-          text,
-          norm,
-          lines,
-          baseLines,
-          active: (!restrict || isChanged) && !this.disabled.has(src.rel),
-          isNew: isChanged && !(base && base.trim()),
-          pageKey: src.pageUrl ? urlKey(src.pageUrl) : null,
-          usedKeys: new Set((src.usedOn ?? []).map(urlKey)),
-        });
-      } else if (markupKinds.has(src.kind) && isChanged && !this.disabled.has(src.rel)) {
-        const text = read(src);
-        if (text != null) this.#preparePatch(src, text, baseOf(src));
-      }
+  #refreshBlockSource(src, isChanged, state) {
+    const { inlineKinds, read, baseOf } = state;
+    if (!inlineKinds.has(src.kind)) return;
+    const text = read(src);
+    if (text == null) return;
+    const base = isChanged ? baseOf(src) : null;
+    if (!text.trim() && !base?.trim()) return; // empty here and in the baseline
+    if (/\{%|\{\{/.test(text) || (base && /\{%|\{\{/.test(base))) {
+      // Liquid inside a custom JS/CSS field: the portal renders it, so patch instead of replace
+      if (isChanged && !this.disabled.has(src.rel)) this.#preparePatch(src, text, base);
+      return;
     }
-    const totalWeight = (lines) => {
-      let total = 0;
-      if (lines) for (const line of lines) total += this.lineWeight(line);
-      return total;
-    };
-    for (const block of this.blocks) {
-      block.weight = totalWeight(block.lines);
-      block.baseWeight = totalWeight(block.baseLines);
+    this.#cacheBlockSource(src, isChanged, text, base, state);
+  }
+
+  /* NOSONAR */ #cacheBlockSource(src, isChanged, text, base, state) {
+    const { previousBlocks, partial, frequency, restrict } = state;
+    const previous = previousBlocks.get(src.rel);
+    const norm = previous?.text === text ? previous.norm : normEol(text);
+    const lines = previous?.text === text ? previous.lines : lineSet(norm);
+    const baseNorm = base == null ? null : normEol(base);
+    let baseLines = null;
+    if (baseNorm != null && baseNorm !== norm)
+      baseLines = previous?.base === base && previous.baseLines ? previous.baseLines : lineSet(baseNorm);
+    this.blockCache.set(src.rel, { text, norm, lines, base, baseLines });
+    if (partial?.has(sourceCacheKey(src.file)) && previous?.text !== text) {
+      this.blockChanges.set(src.rel, {
+        kind: src.kind,
+        tag: src.tag,
+        pageKey: src.pageUrl ? urlKey(src.pageUrl) : null,
+        before: previous?.text ?? null,
+        after: text,
+      });
     }
-    this.activeBlocks = this.blocks.filter((b) => b.active).length;
-    this.readValidity = null;
+    for (const line of lines) frequency.set(line, (frequency.get(line) ?? 0) + 1);
+    this.blocks.push({
+      ...src,
+      text,
+      norm,
+      lines,
+      baseLines,
+      active: (!restrict || isChanged) && !this.disabled.has(src.rel),
+      isNew: isChanged && !base?.trim(),
+      pageKey: src.pageUrl ? urlKey(src.pageUrl) : null,
+      usedKeys: new Set((src.usedOn ?? []).map(urlKey)),
+    });
   }
 
   #readSource(src) {
@@ -1037,28 +1226,7 @@ export class HtmlRewriter {
 
   /** Local snippet value plus whether choosing a value would guess its language. */
   #snippetValue(name) {
-    if (!this.snippets) {
-      this.snippets = new Map();
-      for (const src of this.model.inlineSources) {
-        if (src.kind !== 'content-snippet') continue;
-        let snippetName = src.snippetName;
-        if (snippetName === undefined) {
-          const yml = readText(src.file.replace(/\.value\.html$/, '.yml'));
-          snippetName =
-            (yml &&
-              /^adx_name:\s*(.+)$/m
-                .exec(yml)?.[1]
-                .trim()
-                .replace(/^["']|["']$/g, '')) ||
-            null;
-        }
-        if (snippetName) {
-          const key = snippetName.toLowerCase();
-          if (!this.snippets.has(key)) this.snippets.set(key, []);
-          this.snippets.get(key).push(src);
-        }
-      }
-    }
+    if (!this.snippets) this.#loadSnippetIndex();
     const variants = this.snippets.get(name.toLowerCase());
     if (!variants?.length) return { value: null, ambiguous: false };
     const values = variants.map((src) => this.#readSource(src));
@@ -1066,6 +1234,29 @@ export class HtmlRewriter {
     // identical value across variants can be inserted without guessing that language.
     const ambiguous = !values.every((value) => value === values[0]);
     return { value: ambiguous ? null : values[0], ambiguous };
+  }
+
+  #loadSnippetIndex() {
+    this.snippets = new Map();
+    for (const src of this.model.inlineSources) {
+      if (src.kind !== 'content-snippet') continue;
+      let snippetName = src.snippetName;
+      if (snippetName === undefined) {
+        const yml = readText(src.file.replace(/\.value\.html$/, '.yml'));
+        snippetName =
+          (yml &&
+            /^adx_name:\s*(.+)$/m // NOSONAR: fixed line prefix; the first remaining non-line-terminator always succeeds at that line's end.
+              .exec(yml)?.[1]
+              .trim()
+              .replace(/^["']|["']$/g, '')) ||
+          null;
+      }
+      if (snippetName) {
+        const key = snippetName.toLowerCase();
+        if (!this.snippets.has(key)) this.snippets.set(key, []);
+        this.snippets.get(key).push(src);
+      }
+    }
   }
 
   /**
@@ -1122,353 +1313,334 @@ export class HtmlRewriter {
       : null;
   }
 
+  #inlineBlockReplacement(block, src, replace, provenance, notes) {
+    const m = block.m;
+    const content = m[3];
+    const lead = /^\s*/.exec(content)[0];
+    const trail = content.slice(content.trimEnd().length);
+    const eol = content.includes('\r\n') || !content.includes('\n') ? '\r\n' : '\n';
+    const newContent = `${lead}${src.norm.trim().replaceAll('\n', eol)}${trail}`;
+    if (!preservesInlineBoundary(block.tag, newContent, m.closing)) {
+      notes.push({
+        rel: src.rel,
+        reason: `the local ${block.tag} content changes its HTML closing boundary; escape the closing-tag text in the source before previewing it inline`,
+      });
+      return null;
+    }
+    const replacement = `${m.opening}${newContent}${m.closing}`;
+    const source = this.#provenanceSource(src, provenance?.index, src.text);
+    const intervals = source && replace ? this.#blockSourceIntervals(m, src, source, lead, eol) : [];
+    return { replacement, intervals };
+  }
+
+  #blockSourceIntervals(m, src, source, lead, eol) {
+    const intervals = [];
+    const normalized = normalise(src.text);
+    const trimmed = src.norm.trim();
+    const leading = src.norm.length - src.norm.trimStart().length;
+    let local = leading;
+    let generated = m.opening.length + lead.length;
+    for (const line of trimmed.split('\n')) {
+      if (line)
+        intervals.push({
+          start: generated,
+          end: generated + line.length,
+          sourceRefId: source.id,
+          sourceSpan: { start: normalized.original(local), end: normalized.original(local + line.length) },
+          mapping: 'literal',
+        });
+      local += line.length + 1;
+      generated += line.length + eol.length;
+    }
+    return intervals;
+  }
+
+  #rewriteMatchedBlock(block, { applied, matched, notes, provenance }) {
+    const { m, src } = block;
+    if (!src) return null;
+    const identical = block.norm === src.norm.trim();
+    matched.push({
+      kind: src.kind,
+      rel: src.rel,
+      file: src.file,
+      score: block.score,
+      identical,
+      active: src.active,
+      online: identical ? undefined : block.norm,
+    });
+    const replace = !identical && src.active;
+    // A script replaced by the local file can be debugged in that file, but debuggers do not
+    // follow source maps of inline scripts. Modules stay inline because moving their URL changes imports.
+    const external =
+      this.sourceMaps &&
+      !src.extract &&
+      block.tag === 'script' &&
+      canExternalize(src, scriptType(attributes(m[2]))) &&
+      (identical || src.active) &&
+      src.text.trim() !== '';
+    if (!replace && !external) return null;
+    let replacement;
+    let intervals = [];
+    if (external) {
+      // Retaining async/defer/integrity after adding src changes execution or blocks the local script.
+      const attrs = m[2].replace(
+        /* NOSONAR */ /(?<!\s)\s+([^\s=/'"<>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g,
+        (whole, name) =>
+          // NOSONAR: preserve the exact grammar and captured values
+          /^(?:async|defer|integrity)$/i.test(name) ? '' : whole,
+      );
+      replacement = `<${m[1]}${attrs} src="${inlineScriptUrl(src.rel)}"></${m[1]}>`;
+    } else {
+      const inline = this.#inlineBlockReplacement(block, src, replace, provenance, notes);
+      if (!inline) return null;
+      ({ replacement, intervals } = inline);
+    }
+    if (replace) applied.push({ kind: src.kind, rel: src.rel, action: 'replaced inline block' });
+    return { start: m.index, end: m.index + m[0].length, text: replacement, intervals };
+  }
+
+  #applyBlockReplacements(html, found, context) {
+    let out = '';
+    let at = 0;
+    const blockEdits = [];
+    for (const block of found) {
+      const edit = this.#rewriteMatchedBlock(block, context);
+      if (!edit) continue;
+      out += html.slice(at, edit.start) + edit.text;
+      blockEdits.push(edit);
+      at = edit.end;
+    }
+    out += html.slice(at);
+    if (context.provenance)
+      context.provenance.intervals = applyRenderEdits({ text: html, intervals: [] }, blockEdits).intervals;
+    return out;
+  }
+
+  /* NOSONAR */ #injectPageBlock(out, src, pending, applied, notes, provenance) {
+    if (pending.some((other) => differentLocalizedVariants(src, other) && other.norm !== src.norm)) {
+      notes.push({
+        rel: src.rel,
+        reason:
+          'new page blocks differ between language variants; no rendered baseline identifies which language to inject',
+      });
+      return out;
+    }
+    const external = src.tag === 'script' && this.sourceMaps && !src.extract && canExternalize(src);
+    const content = src.tag === 'style' ? src.text : `\n${src.text}\n`;
+    if (!external && !preservesInlineBoundary(src.tag, content)) {
+      notes.push({
+        rel: src.rel,
+        reason: `the local ${src.tag} content changes its HTML closing boundary; escape the closing-tag text in the source before previewing it inline`,
+      });
+      return out;
+    }
+    let element;
+    if (src.tag === 'style') element = `<style type="text/css">${src.text}</style>\n`;
+    else if (external) element = `<script type="text/javascript" src="${inlineScriptUrl(src.rel)}"></script>\n`;
+    else element = `<script type="text/javascript">\n${src.text}\n</script>\n`;
+    const anchor = closingElementOffset(out, src.tag === 'style' ? 'head' : 'body');
+    if (anchor < 0) return out;
+    if (provenance) {
+      const source = !external ? this.#provenanceSource(src, provenance.index, src.text) : null;
+      const start = src.tag === 'style' ? '<style type="text/css">'.length : '<script type="text/javascript">\n'.length;
+      const intervals = source
+        ? [
+            {
+              start,
+              end: start + src.text.length,
+              sourceRefId: source.id,
+              sourceSpan: { start: 0, end: src.text.length },
+              mapping: 'literal',
+            },
+          ]
+        : [];
+      provenance.intervals = applyRenderEdits({ text: out, intervals: provenance.intervals }, [
+        { start: anchor, end: anchor, text: element, intervals },
+      ]).intervals;
+    }
+    const injected = out.slice(0, anchor) + element + out.slice(anchor);
+    applied.push({ kind: src.kind, rel: src.rel, action: 'injected (not online yet)' });
+    return injected;
+  }
+
+  #injectPageBlocks(out, candidates, docKey, claimed, identity, { applied, notes, provenance }) {
+    const pending = candidates
+      .filter((b) => b.active && b.pageKey === docKey && b.isNew && b.text.trim() && !claimed.has(identity(b)))
+      .sort((a, b) => Number(isLanguageCopy(b)) - Number(isLanguageCopy(a)));
+    const done = new Set();
+    for (const src of pending) {
+      if (done.has(src.kind)) continue;
+      done.add(src.kind);
+      out = this.#injectPageBlock(out, src, pending, applied, notes, provenance);
+    }
+    return out;
+  }
+
   #rewriteBlocks(html, urlPath, applied, matched, notes, provenance) {
     if (!this.blocks.length) return html;
     const docKey = pageKey(urlPath, this.model);
     const minSim = this.site.inline?.minSimilarity ?? 0.5;
     const candidates = this.blocks.filter((b) => !b.pageKey || b.pageKey === docKey);
     if (!candidates.length) return html;
-
-    // 1. every (online block, local source) pair that is alike enough
-    const found = [];
-    const pairs = [];
-    for (const m of codeBlocks(html)) {
-      const tag = m[1].toLowerCase();
-      if (!isInlineCodeBlock(tag, m[2])) continue;
-      const lines = lineSet(m[3]);
-      if (!lines.size) continue;
-      let weight = 0;
-      for (const line of lines) weight += this.lineWeight(line);
-      const block = { m, tag, lines, norm: normEol(m[3]).trim(), src: null, score: 0 };
-      found.push(block);
-      for (const src of candidates) {
-        if (src.tag !== tag) continue;
-        let score = similarity(lines, src.lines, this.lineWeight, weight, src.weight, minSim);
-        if (src.baseLines)
-          score = Math.max(score, similarity(lines, src.baseLines, this.lineWeight, weight, src.baseWeight, minSim));
-        if (score + 1e-12 < minSim) continue;
-        // a couple of lines is too little to tell blocks apart, unless the source belongs to this page
-        const tiny = Math.min(lines.size, Math.max(src.lines.size, src.baseLines?.size ?? 0)) < 3;
-        if (tiny && !src.pageKey && score < 1) continue;
-        // forms are often clones of each other: among near-equal candidates prefer the form this
-        // page is configured to show
-        pairs.push({ block, src, score, rank: score + (src.usedKeys.has(docKey) ? 0.1 : 0) });
-      }
-    }
-
-    // 2. best pairs first; a source stands for one online script, so it cannot also claim a
-    //    different one (the same script printed twice is fine)
-    pairs.sort((a, b) => b.rank - a.rank || Number(isLanguageCopy(b.src)) - Number(isLanguageCopy(a.src)));
-    // the language copy and the root copy of a page are the same block online
-    const identity = (src) => (src.pageKey ? `${src.kind}|${src.pageKey}` : src.file);
-    const ambiguous = new Set();
-    const best = new Map();
-    for (const pair of pairs) {
-      const first = best.get(pair.block);
-      if (!first) best.set(pair.block, pair);
-      else if (
-        Math.abs(pair.rank - first.rank) < 1e-12 &&
-        (identity(pair.src) !== identity(first.src) || differentLocalizedVariants(pair.src, first.src)) &&
-        pair.src.norm !== first.src.norm
-      ) {
-        ambiguous.add(pair.block);
-      }
-    }
-    for (const block of ambiguous) {
-      const { src } = best.get(block);
-      notes.push({
-        rel: src.rel,
-        reason:
-          'multiple local sources or language variants match this inline block equally; no source was substituted because its identity cannot be determined safely',
-      });
-    }
-    const claimed = new Map();
-    for (const { block, src, score } of pairs) {
-      if (block.src || ambiguous.has(block)) continue;
-      const id = identity(src);
-      if (claimed.has(id) && claimed.get(id) !== block.norm) continue;
-      claimed.set(id, block.norm);
-      block.src = src;
-      block.score = score;
-    }
-
-    // 3. swap the content of the blocks whose source is in scope
-    let out = '';
-    let at = 0;
-    const blockEdits = [];
-    for (const block of found) {
-      const { m, src } = block;
-      if (!src) continue;
-      const identical = block.norm === src.norm.trim();
-      // `online`: what the portal printed, kept for the ones that differ so the two can be compared
-      matched.push({
-        kind: src.kind,
-        rel: src.rel,
-        file: src.file,
-        score: block.score,
-        identical,
-        active: src.active,
-        online: identical ? undefined : block.norm,
-      });
-      const replace = !identical && src.active;
-      // A script replaced by the local file can be debugged in that file, but debuggers do not
-      // follow source maps of inline scripts. So it is loaded from the overlay as a file instead;
-      // a plain <script src> runs at the same point of the page as the inline block did.
-      // (not for text that lives inside another file: there is no script file to load)
-      // A module resolves relative imports against its own URL. Moving an inline module to the
-      // overlay URL would silently change those imports, so keep modules inline.
-      const external =
-        this.sourceMaps &&
-        !src.extract &&
-        block.tag === 'script' &&
-        canExternalize(src, scriptType(attributes(m[2]))) &&
-        (identical || src.active) &&
-        src.text.trim() !== '';
-      if (!replace && !external) continue;
-      let replacement;
-      const intervals = [];
-      if (external) {
-        // async/defer and integrity do not act on inline classic scripts, but become active
-        // after adding src. Retaining a stale integrity hash would block the local script.
-        const attrs = m[2].replace(/\s+([^\s=/'"<>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g, (whole, name) =>
-          /^(?:async|defer|integrity)$/i.test(name) ? '' : whole,
-        );
-        replacement = `<${m[1]}${attrs} src="${inlineScriptUrl(src.rel)}"></${m[1]}>`;
-      } else {
-        const content = m[3];
-        const lead = /^\s*/.exec(content)[0];
-        const trail = /\s*$/.exec(content)[0];
-        const eol = content.includes('\r\n') || !content.includes('\n') ? '\r\n' : '\n';
-        const newContent = `${lead}${src.norm.trim().replace(/\n/g, eol)}${trail}`;
-        if (!preservesInlineBoundary(block.tag, newContent, m.closing)) {
-          notes.push({
-            rel: src.rel,
-            reason: `the local ${block.tag} content changes its HTML closing boundary; escape the closing-tag text in the source before previewing it inline`,
-          });
-          continue;
-        }
-        replacement = `${m.opening}${newContent}${m.closing}`;
-        const source = this.#provenanceSource(src, provenance?.index, src.text);
-        if (source && replace) {
-          const normalized = normalise(src.text),
-            trimmed = src.norm.trim(),
-            leading = src.norm.length - src.norm.trimStart().length;
-          let local = leading,
-            generated = m.opening.length + lead.length;
-          for (const line of trimmed.split('\n')) {
-            if (line)
-              intervals.push({
-                start: generated,
-                end: generated + line.length,
-                sourceRefId: source.id,
-                sourceSpan: { start: normalized.original(local), end: normalized.original(local + line.length) },
-                mapping: 'literal',
-              });
-            local += line.length + 1;
-            generated += line.length + eol.length;
-          }
-        }
-      }
-      if (replace) applied.push({ kind: src.kind, rel: src.rel, action: 'replaced inline block' });
-      out += html.slice(at, m.index) + replacement;
-      blockEdits.push({ start: m.index, end: m.index + m[0].length, text: replacement, intervals });
-      at = m.index + m[0].length;
-    }
-    out += html.slice(at);
-    if (provenance) provenance.intervals = applyRenderEdits({ text: html, intervals: [] }, blockEdits).intervals;
-
-    if (this.site.inline?.injectMissingPageBlocks !== false) {
-      // custom JS/CSS added to a page that has none online yet
-      const pending = candidates
-        .filter((b) => b.active && b.pageKey === docKey && b.isNew && b.text.trim() && !claimed.has(identity(b)))
-        .sort((a, b) => Number(isLanguageCopy(b)) - Number(isLanguageCopy(a)));
-      const done = new Set();
-      for (const src of pending) {
-        if (done.has(src.kind)) continue;
-        done.add(src.kind);
-        if (pending.some((other) => differentLocalizedVariants(src, other) && other.norm !== src.norm)) {
-          notes.push({
-            rel: src.rel,
-            reason:
-              'new page blocks differ between language variants; no rendered baseline identifies which language to inject',
-          });
-          continue;
-        }
-        const external = src.tag === 'script' && this.sourceMaps && !src.extract && canExternalize(src);
-        const content = src.tag === 'style' ? src.text : `\n${src.text}\n`;
-        if (!external && !preservesInlineBoundary(src.tag, content)) {
-          notes.push({
-            rel: src.rel,
-            reason: `the local ${src.tag} content changes its HTML closing boundary; escape the closing-tag text in the source before previewing it inline`,
-          });
-          continue;
-        }
-        const element =
-          src.tag === 'style'
-            ? `<style type="text/css">${src.text}</style>\n`
-            : external
-              ? `<script type="text/javascript" src="${inlineScriptUrl(src.rel)}"></script>\n`
-              : `<script type="text/javascript">\n${src.text}\n</script>\n`;
-        const anchor = closingElementOffset(out, src.tag === 'style' ? 'head' : 'body');
-        if (anchor < 0) continue;
-        if (provenance) {
-          const source = !external ? this.#provenanceSource(src, provenance.index, src.text) : null;
-          const start =
-            src.tag === 'style' ? '<style type="text/css">'.length : '<script type="text/javascript">\n'.length;
-          const intervals = source
-            ? [
-                {
-                  start,
-                  end: start + src.text.length,
-                  sourceRefId: source.id,
-                  sourceSpan: { start: 0, end: src.text.length },
-                  mapping: 'literal',
-                },
-              ]
-            : [];
-          provenance.intervals = applyRenderEdits({ text: out, intervals: provenance.intervals }, [
-            { start: anchor, end: anchor, text: element, intervals },
-          ]).intervals;
-        }
-        out = out.slice(0, anchor) + element + out.slice(anchor);
-        applied.push({ kind: src.kind, rel: src.rel, action: 'injected (not online yet)' });
-      }
-    }
+    const { found, pairs } = collectBlockPairs(html, candidates, docKey, minSim, this.lineWeight);
+    const { claimed, identity } = claimBlockPairs(pairs, notes);
+    let out = this.#applyBlockReplacements(html, found, { applied, matched, notes, provenance });
+    if (this.site.inline?.injectMissingPageBlocks !== false)
+      out = this.#injectPageBlocks(out, candidates, docKey, claimed, identity, { applied, notes, provenance });
     return out;
+  }
+
+  #patchSourceReference(patch, provenance) {
+    const field =
+      patch.field?.replace(/^(?:adx|mspp)_/, '') ??
+      { 'web-template': 'source', 'content-snippet': 'value', 'page-copy': 'copy', 'page-summary': 'summary' }[
+        patch.kind
+      ];
+    const sourceCandidates = provenance
+      ? [...provenance.index.sources.values()].filter(
+          (source) =>
+            source.file &&
+            source.file.toLowerCase() === patch.file.toLowerCase() &&
+            source.fieldPath?.at(-1) === field &&
+            (patch.lcid === undefined || source.lcid === patch.lcid) &&
+            (!(patch.componentId ?? patch.recordId) ||
+              source.recordId === String(patch.componentId ?? patch.recordId).toLowerCase()),
+        )
+      : [];
+    return sourceCandidates.length === 1 && sourceCandidates[0].contentRevision === patch.contentRevision
+      ? sourceCandidates[0]
+      : null;
+  }
+
+  #patchValue(whole, expr, match, state) {
+    const key = normExpr(expr);
+    if (match.values.has(key)) return match.values.get(key);
+    const snippet = /^snippets?\s*\[\s*"([^"]+)"\s*\]$/.exec(key);
+    const snippetValue = snippet ? this.#snippetValue(snippet[1]) : null;
+    const value = snippetValue?.value;
+    if (value != null && !/\{%|\{\{/.test(value)) return value;
+    state.unresolved ??= whole;
+    state.unresolvedLanguage ||= Boolean(snippetValue?.ambiguous);
+    return whole;
+  }
+
+  #appendPatchLiteral(rendered, text, from, line, sourceRef, state) {
+    if (text && sourceRef)
+      state.intervals.push({
+        start: state.outputOffset + rendered.length,
+        end: state.outputOffset + rendered.length + text.length,
+        sourceRefId: sourceRef.id,
+        sourceSpan: { start: line.sourceStart + from, end: line.sourceStart + from + text.length },
+        mapping: 'literal',
+      });
+    return rendered + text;
+  }
+
+  #renderAddedLine(line, match, sourceRef, eol, state) {
+    let at = 0;
+    let rendered = '';
+    for (const output of line.outputs) {
+      rendered = this.#appendPatchLiteral(rendered, line.text.slice(at, output.index), at, line, sourceRef, state);
+      at = output.index + output.text.length;
+      rendered += this.#patchValue(output.text, output.expr, match, state);
+    }
+    rendered = this.#appendPatchLiteral(rendered, line.text.slice(at), at, line, sourceRef, state);
+    const result = rendered + (line.eol ? eol : '');
+    state.outputOffset += result.length;
+    return result;
+  }
+
+  #renderPatchReplacement(hunk, match, sourceRef, eol) {
+    const state = { unresolved: null, unresolvedLanguage: false, intervals: [], outputOffset: 0 };
+    let replacement = '';
+    for (const line of hunk.added) replacement += this.#renderAddedLine(line, match, sourceRef, eol, state);
+    return { replacement, ...state };
+  }
+
+  #patchHunkEdits(patch, hunk, text, original, eol, sourceRef, notes) {
+    const all = findMatches(hunk.pattern, text);
+    if (!all.length) return [];
+    const found = all.filter((match) => standsAlone(hunk.pattern, text, match));
+    if (!found.length) return [];
+    if ((!hunk.unique || hunk.literalSegment) && found.length > 1) {
+      notes.push({
+        rel: patch.rel,
+        reason: `${hunk.where}: the surrounding text occurs ${found.length} times in the page, change not applied`,
+      });
+      return [];
+    }
+    const edits = [];
+    for (const match of found) {
+      const rendered = this.#renderPatchReplacement(hunk, match, sourceRef, eol);
+      if (rendered.unresolved) {
+        notes.push({
+          rel: patch.rel,
+          reason: rendered.unresolvedLanguage
+            ? `${hunk.where}: ${rendered.unresolved} has differing local language variants; the portal language cannot be determined safely for this new expression`
+            : `${hunk.where}: ${rendered.unresolved} is new and only the portal can evaluate it`,
+        });
+        continue;
+      }
+      edits.push({
+        start: original(match.core),
+        end: original(match.after),
+        text: rendered.replacement,
+        where: hunk.where,
+        intervals: rendered.intervals,
+      });
+    }
+    return edits;
+  }
+
+  #applyPatchEdits(out, patch, edits, applied, notes, provenance) {
+    if (!edits.length) return out;
+    // apply from the end so earlier offsets stay valid
+    edits.sort((a, b) => b.start - a.start || b.end - a.end);
+    let limit = out.length;
+    let hits = 0;
+    const pieces = [];
+    const acceptedEdits = [];
+    for (const edit of edits) {
+      if (edit.end > limit) {
+        notes.push({
+          rel: patch.rel,
+          reason: `${edit.where}: overlaps another change of this file in the page, not applied`,
+        });
+        continue;
+      }
+      pieces.push(out.slice(edit.end, limit), edit.text);
+      acceptedEdits.push(edit);
+      limit = edit.start;
+      hits++;
+    }
+    pieces.push(out.slice(0, limit));
+    if (provenance)
+      provenance.intervals = applyRenderEdits({ text: out, intervals: provenance.intervals }, acceptedEdits).intervals;
+    const next = pieces.toReversed().join('');
+    if (hits)
+      applied.push({ kind: patch.kind, rel: patch.rel, action: `patched ${hits} change${hits > 1 ? 's' : ''}` });
+    return next;
+  }
+
+  #applyPatch(out, patch, applied, notes, isHtml, urlPath, provenance) {
+    const sourceRef = this.#patchSourceReference(patch, provenance);
+    if (!isHtml && patch.kind !== 'web-template') return out;
+    if (patch.pageUrl && urlKey(patch.pageUrl) !== pageKey(urlPath, this.model)) return out;
+    // each file is applied to the result of the previous one, so two files changing the same
+    // spot (a template line and the snippet printed on it) both take effect
+    const { text, original, crlf } = normalise(out);
+    const eol = crlf ? '\r\n' : '\n';
+    const edits = [];
+    for (const hunk of patch.hunks) {
+      const hunkEdits = this.#patchHunkEdits(patch, hunk, text, original, eol, sourceRef, notes);
+      for (const edit of hunkEdits) edits.push(edit);
+    }
+    return this.#applyPatchEdits(out, patch, edits, applied, notes, provenance);
   }
 
   #applyPatches(body, applied, notes, isHtml, urlPath, provenance) {
     let out = body;
-    for (const patch of this.patches) {
-      const field =
-        patch.field?.replace(/^(?:adx|mspp)_/, '') ??
-        { 'web-template': 'source', 'content-snippet': 'value', 'page-copy': 'copy', 'page-summary': 'summary' }[
-          patch.kind
-        ];
-      const sourceCandidates = provenance
-        ? [...provenance.index.sources.values()].filter(
-            (source) =>
-              source.file &&
-              source.file.toLowerCase() === patch.file.toLowerCase() &&
-              source.fieldPath?.at(-1) === field &&
-              (patch.lcid === undefined || source.lcid === patch.lcid) &&
-              (!(patch.componentId ?? patch.recordId) ||
-                source.recordId === String(patch.componentId ?? patch.recordId).toLowerCase()),
-          )
-        : [];
-      const sourceRef =
-        sourceCandidates.length === 1 && sourceCandidates[0].contentRevision === patch.contentRevision
-          ? sourceCandidates[0]
-          : null;
-      if (!isHtml && patch.kind !== 'web-template') continue;
-      if (patch.pageUrl && urlKey(patch.pageUrl) !== pageKey(urlPath, this.model)) continue;
-      // each file is applied to the result of the previous one, so two files changing the same
-      // spot (a template line and the snippet printed on it) both take effect
-      const { text, original, crlf } = normalise(out);
-      const eol = crlf ? '\r\n' : '\n';
-      const edits = [];
-      for (const hunk of patch.hunks) {
-        const all = findMatches(hunk.pattern, text);
-        if (!all.length) continue; // this template/snippet is simply not part of this page
-        const found = all.filter((match) => standsAlone(hunk.pattern, text, match));
-        if (!found.length) continue;
-        if ((!hunk.unique || hunk.literalSegment) && found.length > 1) {
-          notes.push({
-            rel: patch.rel,
-            reason: `${hunk.where}: the surrounding text occurs ${found.length} times in the page, change not applied`,
-          });
-          continue;
-        }
-        for (const match of found) {
-          let unresolved = null;
-          let unresolvedLanguage = false;
-          const intervals = [];
-          let outputOffset = 0;
-          const replacement = hunk.added
-            .map((line) => {
-              let at = 0;
-              let rendered = '';
-              const literal = (text, from) => {
-                if (text && sourceRef)
-                  intervals.push({
-                    start: outputOffset + rendered.length,
-                    end: outputOffset + rendered.length + text.length,
-                    sourceRefId: sourceRef.id,
-                    sourceSpan: { start: line.sourceStart + from, end: line.sourceStart + from + text.length },
-                    mapping: 'literal',
-                  });
-                rendered += text;
-              };
-              for (const output of line.outputs) {
-                literal(line.text.slice(at, output.index), at);
-                at = output.index + output.text.length;
-                const valueOf = (whole, expr) => {
-                  const key = normExpr(expr);
-                  if (match.values.has(key)) return match.values.get(key);
-                  const snippet = /^snippets?\s*\[\s*"([^"]+)"\s*\]$/.exec(key);
-                  const snippetValue = snippet ? this.#snippetValue(snippet[1]) : null;
-                  const value = snippetValue?.value;
-                  if (value != null && !/\{%|\{\{/.test(value)) return value;
-                  unresolved ??= whole;
-                  unresolvedLanguage ||= Boolean(snippetValue?.ambiguous);
-                  return whole;
-                };
-                rendered += valueOf(output.text, output.expr);
-              }
-              literal(line.text.slice(at), at);
-              const result = rendered + (line.eol ? eol : '');
-              outputOffset += result.length;
-              return result;
-            })
-            .join('');
-          if (unresolved) {
-            notes.push({
-              rel: patch.rel,
-              reason: unresolvedLanguage
-                ? `${hunk.where}: ${unresolved} has differing local language variants; the portal language cannot be determined safely for this new expression`
-                : `${hunk.where}: ${unresolved} is new and only the portal can evaluate it`,
-            });
-            continue;
-          }
-          edits.push({
-            start: original(match.core),
-            end: original(match.after),
-            text: replacement,
-            where: hunk.where,
-            intervals,
-          });
-        }
-      }
-      if (!edits.length) continue;
-      // apply from the end so earlier offsets stay valid
-      edits.sort((a, b) => b.start - a.start || b.end - a.end);
-      let limit = out.length;
-      let hits = 0;
-      const pieces = [];
-      const acceptedEdits = [];
-      for (const e of edits) {
-        if (e.end > limit) {
-          notes.push({
-            rel: patch.rel,
-            reason: `${e.where}: overlaps another change of this file in the page, not applied`,
-          });
-          continue;
-        }
-        pieces.push(out.slice(e.end, limit), e.text);
-        acceptedEdits.push(e);
-        limit = e.start;
-        hits++;
-      }
-      pieces.push(out.slice(0, limit));
-      if (provenance)
-        provenance.intervals = applyRenderEdits(
-          { text: out, intervals: provenance.intervals },
-          acceptedEdits,
-        ).intervals;
-      out = pieces.reverse().join('');
-      if (hits)
-        applied.push({ kind: patch.kind, rel: patch.rel, action: `patched ${hits} change${hits > 1 ? 's' : ''}` });
-    }
+    for (const patch of this.patches) out = this.#applyPatch(out, patch, applied, notes, isHtml, urlPath, provenance);
     return out;
   }
 }

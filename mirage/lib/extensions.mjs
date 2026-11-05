@@ -102,7 +102,7 @@ export function validateEndpoints(packId, endpoints) {
       endpoint.methods.some((method) => !/^[A-Z]+$/.test(method))
     )
       throw new TypeError(`Pack ${packId}: endpoint ${endpoint.id} needs upper-case methods`);
-    if (!/^\^\\\/__sim\\\//.test(endpoint.pattern.source))
+    if (!endpoint.pattern.source.startsWith(String.raw`^\/__sim\/`))
       throw new TypeError(`Pack ${packId}: endpoint ${endpoint.id} must be anchored under /__sim/`);
   }
   return endpoints;

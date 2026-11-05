@@ -21,8 +21,8 @@ const SCAFFOLD_PROFILES = Object.freeze({
 
 /** Name-based UUID (SHA-1 of `seed:path`, RFC 4122 version 5 layout). */
 export function scaffoldId(seed, path) {
-  const hex = createHash('sha1').update(`${seed}:${path}`).digest('hex');
-  const variant = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+  const hex = createHash('sha1').update(`${seed}:${path}`).digest('hex'); // NOSONAR: non-security hash used for identity or checksums
+  const variant = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
@@ -31,10 +31,10 @@ const lc = (value) =>
     .trim()
     .toLowerCase();
 const validTable = (name) => /^[a-z][a-z0-9_]*$/.test(name);
-const FETCH_ENTITY = /<(?:entity|link-entity)\b[^>]*\bname\s*=\s*["']([A-Za-z][\w]*)["']/gi;
+const FETCH_ENTITY = /<(?:entity|link-entity)\b[^>]*\bname\s*=\s*["']([A-Z]\w*)["']/gi;
 // `entities.size` and similar read the collection, not a table.
 const LIQUID_COLLECTION_PROPERTIES = new Set(['size', 'first', 'last', 'count', 'length']);
-const LIQUID_ENTITY = /\bentities\s*(?:\[\s*["']([A-Za-z][\w]*)["']\s*\]|\.([A-Za-z][\w]*))/g;
+const LIQUID_ENTITY = /\bentities\s*(?:\[\s*["']([A-Za-z]\w*)["']\s*\]|\.([A-Za-z]\w*))/g;
 // Columns Dataverse maintains itself; the scaffold never writes them.
 const SYSTEM_COLUMNS = new Set([
   'createdon',
@@ -120,30 +120,35 @@ export function referencedTables(portal) {
     scan(page.html);
     scan(page.js);
   }
-  for (const [name, value] of Object.entries(portal.settings ?? {})) {
+  addWebApiTables(portal.settings ?? {}, add);
+  const pagesById = new Map((portal.pages ?? []).map((page) => [lc(page.id), page]));
+  addSiteMarkerTables(portal.siteMarkers ?? [], pagesById, formsById, listsById, add);
+  return new Map([...found].sort(([a], [b]) => (a < b ? -1 : 1)));
+}
+
+function addWebApiTables(settings, add) {
+  for (const [name, value] of Object.entries(settings)) {
     const match = /^webapi\/([^/]+)\/enabled$/i.exec(name);
     if (match && lc(typeof value === 'object' ? value?.value : value) === 'true') add(match[1], 'webapi');
   }
-  const pagesById = new Map((portal.pages ?? []).map((page) => [lc(page.id), page]));
-  for (const marker of portal.siteMarkers ?? []) {
+}
+
+function addSiteMarkerTables(markers, pagesById, formsById, listsById, add) {
+  for (const marker of markers) {
     const page = pagesById.get(lc(marker.pageId));
     if (!page) continue;
     add(formsById.get(lc(page.formId)), 'sitemarker');
     add(listsById.get(lc(page.listId)), 'sitemarker');
   }
-  return new Map([...found].sort(([a], [b]) => (a < b ? -1 : 1)));
 }
 
 function textValue(label, index, maxLength, format) {
   const kind = lc(format);
-  let text =
-    kind === 'email'
-      ? `user${index + 1}@example.invalid`
-      : kind === 'url'
-        ? `https://example.invalid/item/${index + 1}`
-        : kind === 'phone'
-          ? `+00 000 000 ${String(index + 1).padStart(3, '0')}`
-          : `${label} ${index + 1}`;
+  let text;
+  if (kind === 'email') text = `user${index + 1}@example.invalid`;
+  else if (kind === 'url') text = `https://example.invalid/item/${index + 1}`;
+  else if (kind === 'phone') text = `+00 000 000 ${String(index + 1).padStart(3, '0')}`;
+  else text = `${label} ${index + 1}`;
   if (maxLength && text.length > maxLength) text = text.slice(0, maxLength);
   return text;
 }
@@ -157,7 +162,7 @@ function autoNumber(format, index, seed, path) {
       const length = Math.min(Math.max(Number(argument) || 4, 1), 6);
       return createHash('sha1').update(`${seed}:${path}:rand`).digest('hex').slice(0, length).toUpperCase();
     }
-    return new Date(EPOCH).toISOString().slice(0, 10).replace(/-/g, '');
+    return new Date(EPOCH).toISOString().slice(0, 10).replaceAll('-', '');
   });
 }
 
@@ -170,6 +175,254 @@ function numberValue(definition, index) {
     return Number((value + 0.25).toFixed(Math.min(precision, 4)));
   }
   return Math.trunc(value);
+}
+
+function generateReferencedTables({
+  generate,
+  count,
+  settings,
+  fields,
+  seed,
+  idColumn,
+  nameColumn,
+  rowName,
+  reference,
+}) {
+  const tables = {};
+  const unresolved = [];
+  for (const table of [...generate.keys()].sort(/* NOSONAR: preserve default string coercion */)) {
+    const definitions = fields(table);
+    const rows = [];
+    for (let index = 0; index < count; index++) {
+      const row = { [idColumn(table)]: scaffoldId(seed, `${table}:${index + 1}`) };
+      const primaryName = nameColumn(table);
+      if (primaryName && definitions[primaryName]) row[primaryName] = rowName(table, index);
+      populateScaffoldRow({
+        table,
+        index,
+        row,
+        definitions,
+        settings,
+        generate,
+        count,
+        seed,
+        rowName,
+        reference,
+        unresolved,
+      });
+      rows.push(row);
+    }
+    tables[table] = rows;
+  }
+  return { tables, unresolved };
+}
+
+function populateScaffoldRow({
+  table,
+  index,
+  row,
+  definitions,
+  settings,
+  generate,
+  count,
+  seed,
+  rowName,
+  reference,
+  unresolved,
+}) {
+  for (const definition of Object.values(definitions))
+    populateScaffoldField({
+      table,
+      index,
+      row,
+      definition,
+      settings,
+      generate,
+      count,
+      seed,
+      rowName,
+      reference,
+      unresolved,
+    });
+}
+
+function populateScaffoldField({
+  table,
+  index,
+  row,
+  definition,
+  settings,
+  generate,
+  count,
+  seed,
+  rowName,
+  reference,
+  unresolved,
+}) {
+  const column = definition.name;
+  const type = lc(definition.dataverseType);
+  if (
+    column in row ||
+    SYSTEM_COLUMNS.has(column) ||
+    SKIPPED_TYPES.has(type) ||
+    definition.attributeOf ||
+    definition.isPrimaryId
+  )
+    return;
+  if (type === 'state') {
+    row[column] = 0;
+    return;
+  }
+  if (type === 'status') {
+    const status = (definition.statuses ?? []).find((option) => option.state === 0) ?? definition.options?.[0];
+    if (status) row[column] = { value: status.value, label: status.label };
+    return;
+  }
+  const required = definition.required === true;
+  if (definition.validForCreate === false) return;
+  if (['lookup', 'customer'].includes(type)) {
+    populateLookup({ row, table, column, definition, index, count, generate, reference, required, unresolved });
+    return;
+  }
+  if (!required && !settings.optionalColumns) return;
+  if (definition.autoNumberFormat) {
+    row[column] = autoNumber(definition.autoNumberFormat, index, seed, `${table}:${index + 1}:${column}`);
+    return;
+  }
+  const value = scaffoldFieldValue(type, definition, table, index, seed, rowName);
+  if (value !== undefined) row[column] = value;
+}
+
+function populateLookup({ row, table, column, definition, index, count, generate, reference, required, unresolved }) {
+  const target = (definition.targets ?? []).find((candidate) => generate.has(candidate));
+  if (target) {
+    let targetIndex = index % count;
+    if (target === table) targetIndex = index === 0 ? -1 : 0;
+    if (targetIndex >= 0) row[column] = reference(target, targetIndex);
+  } else if (required) unresolved.push(`${table}.${column}`);
+}
+
+/* NOSONAR */ function scaffoldFieldValue(type, definition, table, index, seed, rowName) {
+  switch (type) {
+    case 'picklist':
+    case 'multiselectpicklist': {
+      const options = definition.options ?? [];
+      if (!options.length) return undefined;
+      const option = options[index % options.length];
+      return type === 'picklist' ? { value: option.value, label: option.label } : String(option.value);
+    }
+    case 'bit':
+    case 'boolean':
+      return index % 2 === 0;
+    case 'datetime': {
+      const date = new Date(EPOCH + index * 86400000).toISOString();
+      return lc(definition.dateTimeBehavior) === 'dateonly' || lc(definition.format) === 'dateonly'
+        ? date.slice(0, 10)
+        : date.replace('.000Z', 'Z');
+    }
+    case 'int':
+    case 'integer':
+    case 'bigint':
+    case 'decimal':
+    case 'money':
+    case 'double':
+    case 'float':
+      return numberValue(definition, index);
+    case 'uniqueidentifier':
+      return scaffoldId(seed, `${table}:${index + 1}:${definition.name}`);
+    case 'memo':
+    case 'ntext':
+      return textValue(
+        `${definition.label ?? definition.name} for ${rowName(table, index)}.`,
+        index,
+        definition.maxLength,
+      );
+    default:
+      return textValue(definition.label ?? definition.name, index, definition.maxLength, definition.format);
+  }
+}
+
+function addPersonas({ portal, generate, tables, seed, idColumn, nameColumn }) {
+  const personas = [];
+  const contactRoles = [];
+  if (generate.has('contact')) {
+    const accountId = generate.has('account') ? scaffoldId(seed, 'account:personas') : null;
+    if (accountId)
+      tables.account.push({ [idColumn('account')]: accountId, [nameColumn('account') ?? 'name']: 'Scaffold personas' });
+    for (const role of portalWebRoles(portal).filter((candidate) => !candidate.anonymous)) {
+      const contactId = scaffoldId(seed, `contact:persona/${role.id}`);
+      const emailSeed = scaffoldId(seed, `email:${role.id}`).slice(0, 8);
+      const contact = {
+        [idColumn('contact')]: contactId,
+        firstname: 'Persona',
+        lastname: role.name,
+        fullname: `Persona ${role.name}`,
+        emailaddress1: `persona-${emailSeed}@example.invalid`,
+        ...(accountId
+          ? { parentcustomerid: { id: accountId, logical_name: 'account', name: 'Scaffold personas' } }
+          : {}),
+        statecode: 0,
+      };
+      tables.contact.push(contact);
+      contactRoles.push({ contactId, roleId: role.id });
+      personas.push({ contactId, accountId, role: role.name, roleId: role.id });
+    }
+  }
+  return { personas, contactRoles };
+}
+
+function collectRequiredTables(queue, generate, known, fields) {
+  while (queue.length) {
+    const [table, reason] = queue.shift();
+    if (generate.has(table)) continue;
+    generate.set(table, reason);
+    for (const definition of Object.values(fields(table)))
+      addRequiredTargets(table, definition, queue, known, generate);
+  }
+}
+
+function addRequiredTargets(table, definition, queue, known, generate) {
+  if (!definition.required || !['lookup', 'customer'].includes(lc(definition.dataverseType))) return;
+  for (const target of definition.targets ?? [])
+    if (known(target) && !SITE_TABLES.has(target) && !generate.has(target))
+      queue.push([target, `required by ${table}.${definition.name}`]);
+}
+
+function scaffoldReport({
+  profile,
+  seed,
+  count,
+  referenced,
+  known,
+  tables,
+  personas,
+  generate,
+  membership,
+  unresolved,
+}) {
+  const sources = {};
+  for (const [table, refs] of referenced)
+    for (const source of refs) {
+      sources[source] ??= [];
+      sources[source].push(table);
+    }
+  return {
+    profile,
+    seed,
+    rowsPerTable: count,
+    referencedTables: referenced.size,
+    referencedWithoutMetadata: [...referenced.keys()].filter((table) => !known(table)),
+    generatedTables: Object.keys(tables).length,
+    rows: Object.values(tables).reduce((sum, rows) => sum + rows.length, 0),
+    personas: personas.length,
+    sources: Object.fromEntries(Object.entries(sources).map(([source, list]) => [source, list.length])),
+    addedForRequiredLookups: [...generate]
+      .filter(([, reason]) => reason.startsWith('required by'))
+      .map(([table]) => table),
+    derivedFromExport: [...referenced.keys()].filter((table) => SITE_TABLES.has(table)),
+    memberships: { table: membership.table, rows: tables[membership.table]?.length ?? 0 },
+    unresolvedRequiredLookups: [...new Set(unresolved)].sort(/* NOSONAR: preserve default string coercion */),
+  };
 }
 
 /**
@@ -197,16 +450,7 @@ export function scaffoldData({ portal, schema, profile = 'smoke', seed = DEFAULT
     if (!fieldsOf.has(table)) fieldsOf.set(table, tableFields(schema, table, { provenance: false }));
     return fieldsOf.get(table);
   };
-  while (queue.length) {
-    const [table, reason] = queue.shift();
-    if (generate.has(table)) continue;
-    generate.set(table, reason);
-    for (const definition of Object.values(fields(table)))
-      if (definition.required && ['lookup', 'customer'].includes(lc(definition.dataverseType)))
-        for (const target of definition.targets ?? [])
-          if (known(target) && !SITE_TABLES.has(target) && !generate.has(target))
-            queue.push([target, `required by ${table}.${definition.name}`]);
-  }
+  collectRequiredTables(queue, generate, known, fields);
   const tableInfo = (table) => schema.tables[table];
   const idColumn = (table) => tableInfo(table)?.primaryIdAttribute ?? `${table}id`;
   const nameColumn = (table) =>
@@ -216,126 +460,20 @@ export function scaffoldData({ portal, schema, profile = 'smoke', seed = DEFAULT
   const rowId = (table, index) => scaffoldId(seed, `${table}:${index + 1}`);
   const rowName = (table, index) => `${table} ${index + 1}`;
   const reference = (table, index) => ({ id: rowId(table, index), logical_name: table, name: rowName(table, index) });
-  const tables = {};
-  const unresolved = [];
-  for (const table of [...generate.keys()].sort()) {
-    const definitions = fields(table);
-    const rows = [];
-    for (let index = 0; index < count; index++) {
-      const row = { [idColumn(table)]: rowId(table, index) };
-      const primaryName = nameColumn(table);
-      if (primaryName && definitions[primaryName]) row[primaryName] = rowName(table, index);
-      for (const definition of Object.values(definitions)) {
-        const column = definition.name;
-        const type = lc(definition.dataverseType);
-        if (
-          column in row ||
-          SYSTEM_COLUMNS.has(column) ||
-          SKIPPED_TYPES.has(type) ||
-          definition.attributeOf ||
-          definition.isPrimaryId
-        )
-          continue;
-        if (type === 'state') {
-          row[column] = 0;
-          continue;
-        }
-        if (type === 'status') {
-          const status = (definition.statuses ?? []).find((option) => option.state === 0) ?? definition.options?.[0];
-          if (status) row[column] = { value: status.value, label: status.label };
-          continue;
-        }
-        const required = definition.required === true;
-        if (definition.validForCreate === false) continue;
-        if (['lookup', 'customer'].includes(type)) {
-          const target = (definition.targets ?? []).find((candidate) => generate.has(candidate));
-          if (target) {
-            // Bind to a generated parent; a table's own parent lookup points at its first row.
-            const targetIndex = target === table ? (index === 0 ? -1 : 0) : index % count;
-            if (targetIndex >= 0) row[column] = reference(target, targetIndex);
-          } else if (required) unresolved.push(`${table}.${column}`);
-          continue;
-        }
-        if (!required && !settings.optionalColumns) continue;
-        if (definition.autoNumberFormat) {
-          row[column] = autoNumber(definition.autoNumberFormat, index, seed, `${table}:${index + 1}:${column}`);
-          continue;
-        }
-        switch (type) {
-          case 'picklist':
-          case 'multiselectpicklist': {
-            const options = definition.options ?? [];
-            if (!options.length) break;
-            const option = options[index % options.length];
-            row[column] = type === 'picklist' ? { value: option.value, label: option.label } : String(option.value);
-            break;
-          }
-          case 'bit':
-          case 'boolean':
-            row[column] = index % 2 === 0;
-            break;
-          case 'datetime': {
-            const date = new Date(EPOCH + index * 86400000).toISOString();
-            row[column] =
-              lc(definition.dateTimeBehavior) === 'dateonly' || lc(definition.format) === 'dateonly'
-                ? date.slice(0, 10)
-                : date.replace('.000Z', 'Z');
-            break;
-          }
-          case 'int':
-          case 'integer':
-          case 'bigint':
-          case 'decimal':
-          case 'money':
-          case 'double':
-          case 'float':
-            row[column] = numberValue(definition, index);
-            break;
-          case 'uniqueidentifier':
-            row[column] = scaffoldId(seed, `${table}:${index + 1}:${column}`);
-            break;
-          case 'memo':
-          case 'ntext':
-            row[column] = textValue(
-              `${definition.label ?? column} for ${rowName(table, index)}.`,
-              index,
-              definition.maxLength,
-            );
-            break;
-          default:
-            row[column] = textValue(definition.label ?? column, index, definition.maxLength, definition.format);
-        }
-      }
-      rows.push(row);
-    }
-    tables[table] = rows;
-  }
+  const { tables, unresolved } = generateReferencedTables({
+    generate,
+    count,
+    settings,
+    fields,
+    seed,
+    idColumn,
+    nameColumn,
+    rowName,
+    reference,
+  });
   // Personas: one contact per exported web role (anonymous excluded), a
   // shared account, and the role membership the identity model reads.
-  const personas = [];
-  const contactRoles = [];
-  if (generate.has('contact')) {
-    const accountId = generate.has('account') ? scaffoldId(seed, 'account:personas') : null;
-    if (accountId)
-      tables.account.push({ [idColumn('account')]: accountId, [nameColumn('account') ?? 'name']: 'Scaffold personas' });
-    for (const role of portalWebRoles(portal).filter((candidate) => !candidate.anonymous)) {
-      const contactId = scaffoldId(seed, `contact:persona/${role.id}`);
-      const contact = {
-        [idColumn('contact')]: contactId,
-        firstname: 'Persona',
-        lastname: role.name,
-        fullname: `Persona ${role.name}`,
-        emailaddress1: `persona-${scaffoldId(seed, `email:${role.id}`).slice(0, 8)}@example.invalid`,
-        ...(accountId
-          ? { parentcustomerid: { id: accountId, logical_name: 'account', name: 'Scaffold personas' } }
-          : {}),
-        statecode: 0,
-      };
-      tables.contact.push(contact);
-      contactRoles.push({ contactId, roleId: role.id });
-      personas.push({ contactId, accountId, role: role.name, roleId: role.id });
-    }
-  }
+  const { personas, contactRoles } = addPersonas({ portal, generate, tables, seed, idColumn, nameColumn });
   // The same memberships as rows of the data model's intersect table, so
   // FetchXML and Liquid that join web roles to contacts see them too.
   const membership = MEMBERSHIP[portal.format === 'enhanced' ? 'enhanced' : 'standard'];
@@ -345,25 +483,18 @@ export function scaffoldData({ portal, schema, profile = 'smoke', seed = DEFAULT
       contactid: entry.contactId,
       [membership.role]: entry.roleId,
     }));
-  const sources = {};
-  for (const [table, refs] of referenced) for (const source of refs) (sources[source] ??= []).push(table);
-  const report = {
+  const report = scaffoldReport({
     profile,
     seed,
-    rowsPerTable: count,
-    referencedTables: referenced.size,
-    referencedWithoutMetadata: [...referenced.keys()].filter((table) => !known(table)),
-    generatedTables: Object.keys(tables).length,
-    rows: Object.values(tables).reduce((sum, rows) => sum + rows.length, 0),
-    personas: personas.length,
-    sources: Object.fromEntries(Object.entries(sources).map(([source, list]) => [source, list.length])),
-    addedForRequiredLookups: [...generate]
-      .filter(([, reason]) => reason.startsWith('required by'))
-      .map(([table]) => table),
-    derivedFromExport: [...referenced.keys()].filter((table) => SITE_TABLES.has(table)),
-    memberships: { table: membership.table, rows: tables[membership.table]?.length ?? 0 },
-    unresolvedRequiredLookups: [...new Set(unresolved)].sort(),
-  };
+    count,
+    referenced,
+    known,
+    tables,
+    personas,
+    generate,
+    membership,
+    unresolved,
+  });
   const idColumns = Object.fromEntries(
     Object.keys(tables).map((table) => [table, table === membership.table ? `${table}id` : idColumn(table)]),
   );

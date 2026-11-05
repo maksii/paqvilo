@@ -25,10 +25,12 @@ import { DataError } from './data-error.mjs';
 // The human facts of an asynchronous step finding (D-M-2 Findings): the step's display name, the table and a sentence.
 const stepFacts = (item, itemId, event, outcome) => {
   const name = item?.name ?? itemId;
+  const onEntity = event?.entity ? ` on ${event.entity}` : '';
+  const detail = item?.message ? ` (${item.message})` : '';
   return {
     name,
     entity: event?.entity ?? item?.entity ?? null,
-    message: `${name} ${outcome}${event?.entity ? ` on ${event.entity}` : ''}${item?.message ? ` (${item.message})` : ''}.`,
+    message: `${name} ${outcome}${onEntity}${detail}.`,
   };
 };
 const runContext = (store, event, chain) =>
@@ -40,13 +42,13 @@ const runContext = (store, event, chain) =>
 // The Dataverse error number of a failed run: the inner code a plug-in fault carries (plugin-fault.mjs), else 0.
 const errorNumber = (error) => {
   const code = error?.details?.innerCode;
-  return /^0x[0-9a-f]+$/i.test(code ?? '') ? Number.parseInt(code, 16) | 0 : 0;
+  return /^0x[0-9a-f]+$/i.test(code ?? '') ? Number.parseInt(code, 16) | 0 : 0; // NOSONAR: bitwise coercion wraps to signed 32 bits on purpose
 };
 const sameId = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
 // Native asyncRetry (two captures): a step that always throws OperationStatus.Retry executes five times and ends Failed
 // with retrycount 4.
 const PLUGIN_ATTEMPTS = 5;
-const ISV_ABORTED = 0x80040265 | 0;
+const ISV_ABORTED = 0x80040265 | 0; // NOSONAR: bitwise coercion wraps to signed 32 bits on purpose
 const ORGANIZATION_SERVICE_FAULT = 'System.ServiceModel.FaultException`1[Microsoft.Xrm.Sdk.OrganizationServiceFault]';
 /** The failure columns of a plug-in job. Native asyncRetry: every plug-in exception (Retry, coded, plain) ends with
  * errorcode 0x80040265 (the authored code is not kept), the authored text as friendlymessage and the plug-in trace block
@@ -279,7 +281,7 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
         completedon: now(),
         message: 'Could not find plugin step description.',
         friendlymessage: null,
-        errorcode: 0x8004418b | 0,
+        errorcode: 0x8004418b | 0, // NOSONAR: bitwise coercion wraps to signed 32 bits on purpose
       });
     },
   };
@@ -618,6 +620,87 @@ export function createAsyncPluginRunner({
         });
     }
   };
+  const selectAsyncSteps = (event) =>
+    items()
+      .filter(
+        (item) =>
+          item.enabled &&
+          item.contract?.supportedDeployment !== 1 &&
+          item.contract?.mode === 1 &&
+          pluginStepMatchesEntity(item, event.entity) &&
+          (String(item.message).toLowerCase() === event.operation ||
+            (!event.fromBulk && String(item.message).toLowerCase() === multipleMessage(event.operation))) &&
+          item.stage === 40 &&
+          !pluginStepBypassed(
+            item,
+            { bypassCustomPlugins: event.bypassCustomAsync, bypassStepIds: event.bypassStepIds },
+            diagnostic,
+          ) &&
+          pluginStepMatchesAttributes(item, {
+            store,
+            entity: event.entity,
+            operation: event.operation,
+            changedAttributes: event.submittedAttributes,
+          }) &&
+          (event.operation !== 'onexternalupdated' ||
+            !item.filteringAttributes.length ||
+            item.filteringAttributes.some((name) =>
+              event.submittedAttributes.includes(String(name).trim().toLowerCase()),
+            )),
+      )
+      .sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
+  const queueAsyncStep = (event, item, { counts, entries, notes, start }) => {
+    // A single-origin event queues its paired multiple message's steps as jobs of the same operation.
+    const source = event.frame?.asyncSourceParent;
+    const invocation =
+      String(item.message).toLowerCase() === event.operation
+        ? event
+        : {
+            ...event,
+            bridgedMessage: multipleMessage(event.operation),
+            ...(source?.target
+              ? {
+                  frame: {
+                    ...event.frame,
+                    asyncSourceParent: {
+                      ...source,
+                      inputParameters: {
+                        $type: 'ParameterCollection',
+                        values: {
+                          ...source.inputParameters?.values,
+                          Target: recordToSdkEntity(store, event.entity, source.target, {
+                            allColumns: true,
+                            target: true,
+                          }),
+                        },
+                      },
+                    },
+                  },
+                }
+              : {}),
+          };
+    const chain = event.chain ?? { id: (store.ids ?? systemIds).uuid(), depth: 0 },
+      count = (counts.get(chain.id) ?? runs.get(chain.id) ?? 0) + 1;
+    // Native asyncLoop: the depth fault stops the next asynchronous level.
+    if (chain.depth >= Math.min(limits.maxDepth ?? PLUGIN_MAX_DEPTH, PLUGIN_MAX_DEPTH)) {
+      notes.push({ code: 'PLUGIN_ASYNC_LIMIT', stepId: item.id, chainId: chain.id });
+      return;
+    }
+    const backlog = Math.min(limits.maxPending ?? 100, 1000),
+      waiting = own.size + entries.length;
+    if (waiting >= backlog && waiting % backlog === 0)
+      notes.push({ code: 'PLUGIN_ASYNC_BACKLOG', pending: waiting + 1, stepId: item.id, chainId: chain.id });
+    counts.set(chain.id, count);
+    entries.push({
+      id: (store.ids ?? systemIds).uuid(),
+      kind: item.mode === 'webhook' ? 'webhook' : 'plugin',
+      columns: jobColumns(store, item, invocation, chain),
+      ...start,
+      itemId: item.id,
+      chain,
+      event: invocation,
+    });
+  };
   // Selection runs inside the committing transaction (a data.mjs commit stager): the Ready rows commit or roll back with
   // the triggering rows. Chain counters, diagnostics and the runner start apply only after that commit.
   const stage = (events, { sequence = 0 } = {}) => {
@@ -639,92 +722,7 @@ export function createAsyncPluginRunner({
         });
         continue;
       }
-      const selected = items()
-        .filter(
-          (item) =>
-            item.enabled &&
-            item.contract?.supportedDeployment !== 1 &&
-            item.contract?.mode === 1 &&
-            pluginStepMatchesEntity(item, event.entity) &&
-            (String(item.message).toLowerCase() === event.operation ||
-              (!event.fromBulk && String(item.message).toLowerCase() === multipleMessage(event.operation))) &&
-            item.stage === 40 &&
-            !pluginStepBypassed(
-              item,
-              { bypassCustomPlugins: event.bypassCustomAsync, bypassStepIds: event.bypassStepIds },
-              diagnostic,
-            ) &&
-            pluginStepMatchesAttributes(item, {
-              store,
-              entity: event.entity,
-              operation: event.operation,
-              changedAttributes: event.submittedAttributes,
-            }) &&
-            (event.operation !== 'onexternalupdated' ||
-              !item.filteringAttributes.length ||
-              item.filteringAttributes.some((name) =>
-                event.submittedAttributes.includes(String(name).trim().toLowerCase()),
-              )),
-        )
-        .sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
-      for (const item of selected) {
-        // A single-origin event queues its paired multiple message's steps as jobs of the same operation: they run the
-        // single event under the multiple message name (native crud, depth: CreateMultiple/40/m1 shares the Create job's
-        // request, row, Target and parent chain).
-        // JavaScript and web hook contexts name that multiple message's saved main operation as their parent.
-        const source = event.frame?.asyncSourceParent;
-        const invocation =
-          String(item.message).toLowerCase() === event.operation
-            ? event
-            : {
-                ...event,
-                bridgedMessage: multipleMessage(event.operation),
-                ...(source?.target
-                  ? {
-                      frame: {
-                        ...event.frame,
-                        asyncSourceParent: {
-                          ...source,
-                          inputParameters: {
-                            $type: 'ParameterCollection',
-                            values: {
-                              ...source.inputParameters?.values,
-                              Target: recordToSdkEntity(store, event.entity, source.target, {
-                                allColumns: true,
-                                target: true,
-                              }),
-                            },
-                          },
-                        },
-                      },
-                    }
-                  : {}),
-              };
-        // A root event (no chain) starts its own chain.
-        const chain = event.chain ?? { id: (store.ids ?? systemIds).uuid(), depth: 0 },
-          count = (counts.get(chain.id) ?? runs.get(chain.id) ?? 0) + 1;
-        // Native asyncLoop: a chain of asynchronous hops runs to Depth 12 (the depth fault stops the next level); there is
-        // no per-chain run budget.
-        if (chain.depth >= Math.min(limits.maxDepth ?? PLUGIN_MAX_DEPTH, PLUGIN_MAX_DEPTH)) {
-          notes.push({ code: 'PLUGIN_ASYNC_LIMIT', stepId: item.id, chainId: chain.id });
-          continue;
-        }
-        // Committed work is never dropped: every run is a durable Ready job, run FIFO; a large backlog is only reported.
-        const backlog = Math.min(limits.maxPending ?? 100, 1000),
-          waiting = own.size + entries.length;
-        if (waiting >= backlog && waiting % backlog === 0)
-          notes.push({ code: 'PLUGIN_ASYNC_BACKLOG', pending: waiting + 1, stepId: item.id, chainId: chain.id });
-        counts.set(chain.id, count);
-        entries.push({
-          id: (store.ids ?? systemIds).uuid(),
-          kind: item.mode === 'webhook' ? 'webhook' : 'plugin',
-          columns: jobColumns(store, item, invocation, chain),
-          ...start,
-          itemId: item.id,
-          chain,
-          event: invocation,
-        });
-      }
+      for (const item of selectAsyncSteps(event)) queueAsyncStep(event, item, { counts, entries, notes, start });
     }
     return stageCommittedJobs(store, {
       entries,

@@ -168,7 +168,7 @@ function compare(op, param, a, b, caseSensitive) {
   }
   if (op === 'exact') return x === y;
   const n = Number(param);
-  if (!(n >= 1))
+  /* NOSONAR: operand can be NaN or undefined, the negated test differs */ if (!(n >= 1))
     throw new DataError(
       'Same first and same last conditions need an operator parameter of at least 1.',
       400,

@@ -160,14 +160,23 @@ function stamp(api, state, mapping, { operation: _operation, data, existing }) {
 function baseDigits(api, definitions, name, definition, currency) {
   const column = definitions[`${name}_base`] ?? definition;
   const source = Number(column.precisionSource);
-  const sourced =
-    source === 2
-      ? currency.currencyprecision
-      : source === 1
-        ? organizationRecord(api.store)?.pricingdecimalprecision
-        : null;
+  let sourced = null;
+  if (source === 2) sourced = currency.currencyprecision;
+  else if (source === 1) sourced = organizationRecord(api.store)?.pricingdecimalprecision;
   if (isCount(sourced)) return Number(sourced);
   return isCount(column.precision) ? Number(column.precision) : 2;
+}
+
+function updateBaseAmounts(api, mapping, money, currency, rate, row) {
+  const definitions = api.store.fieldDefinitions(mapping.logicalName, api.metadataFields);
+  for (const [name, definition] of money) {
+    if (empty(row[name])) continue;
+    const amount = Number(isExactNumeric(row[name]) ? row[name].value : row[name]);
+    // The shared payload validator owns invalid decimal values and their OData
+    // error envelope. A derived amount must not replace that validation error.
+    if (!Number.isFinite(amount)) continue;
+    row[`${name}_base`] = roundTo(amount / rate, baseDigits(api, definitions, name, definition, currency));
+  }
 }
 
 // The main operation derives the exchange rate and base amounts from the row as PreOperation left it (native Create:
@@ -205,15 +214,7 @@ function settle(api, mapping, { operation, row, previous, target, identity, opti
       options,
     });
   row.exchangerate = rate;
-  const definitions = api.store.fieldDefinitions(mapping.logicalName, api.metadataFields);
-  for (const [name, definition] of money) {
-    if (empty(row[name])) continue;
-    const amount = Number(isExactNumeric(row[name]) ? row[name].value : row[name]);
-    // The shared payload validator owns invalid decimal values and their OData
-    // error envelope. A derived amount must not replace that validation error.
-    if (!Number.isFinite(amount)) continue;
-    row[`${name}_base`] = roundTo(amount / rate, baseDigits(api, definitions, name, definition, currency));
-  }
+  updateBaseAmounts(api, mapping, money, currency, rate, row);
 }
 
 // A CreateMultiple (Web API or SDK) runs RetrieveExchangeRate once per request before its first record's main operation,

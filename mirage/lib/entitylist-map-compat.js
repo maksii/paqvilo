@@ -7,8 +7,8 @@
  */
 (() => {
   'use strict';
-  if (window.__ppEntityListMap) return;
-  window.__ppEntityListMap = true;
+  if (globalThis.__ppEntityListMap) return;
+  globalThis.__ppEntityListMap = true;
   const ready = () => {
     const map = document.getElementById('entity-list-map');
     if (!map || document.getElementById('entity-list-map-status')) return;

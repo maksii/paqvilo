@@ -27,7 +27,8 @@ const deepFreeze = (value) => {
 
 /** The parsed standard file (commit, licence, source, tables, relationships, optionSets), read once and frozen. */
 function loadStandard() {
-  return (file ??= deepFreeze(JSON.parse(fs.readFileSync(FILE, 'utf8'))));
+  file ??= deepFreeze(JSON.parse(fs.readFileSync(FILE, 'utf8')));
+  return file;
 }
 
 /**
@@ -43,14 +44,22 @@ export function standardSchema() {
     tables[name] = { ...table, isActivity: table.primaryIdAttribute === 'activityid' };
   const targets = {};
   for (const rel of Object.values(data.relationships))
-    if (rel.type === 'one-to-many')
-      (targets[`${rel.referencingEntity}/${rel.referencingAttribute}`] ??= new Set()).add(rel.referencedEntity);
+    if (rel.type === 'one-to-many') {
+      const targetKey = `${rel.referencingEntity}/${rel.referencingAttribute}`;
+      targets[targetKey] ??= new Set();
+      targets[targetKey].add(rel.referencedEntity);
+    }
   schema = Object.freeze({
     lcid: LCID,
     tables,
     relationships: data.relationships,
     optionSets: data.optionSets,
-    targets: Object.fromEntries(Object.entries(targets).map(([key, set]) => [key, [...set].sort()])),
+    targets: Object.fromEntries(
+      Object.entries(targets).map(([key, set]) => [
+        key,
+        [...set].sort(/* NOSONAR: preserve default string coercion */),
+      ]),
+    ),
   });
   return schema;
 }
@@ -75,6 +84,19 @@ export function mergeFields(base, own) {
 
 let entityIndex = null;
 
+function indexStandardRelationship(rel, count, add) {
+  if (rel.type === 'one-to-many') {
+    const shared = count.get(`${rel.referencingEntity}|${rel.referencingNavigation}`) > 1;
+    const normal = shared
+      ? { ...rel, referencingNavigation: `${rel.referencingNavigation}_${rel.referencedEntity}` }
+      : rel;
+    add(rel.referencingEntity, normal);
+    if (rel.referencedEntity !== rel.referencingEntity) add(rel.referencedEntity, normal);
+  } else {
+    for (const entity of new Set(rel.entities)) add(entity, rel);
+  }
+}
+
 /**
  * Relationships per standard table. A lookup shared by several targets (email.acceptingentityid -> queue and systemuser)
  * would give both navigations one name, so each such navigation is keyed by its target: acceptingentityid_queue.
@@ -93,18 +115,7 @@ function relationshipsByEntity() {
     if (!entityIndex.has(entity)) entityIndex.set(entity, []);
     entityIndex.get(entity).push(rel);
   };
-  for (const rel of rels) {
-    if (rel.type === 'one-to-many') {
-      const shared = count.get(`${rel.referencingEntity}|${rel.referencingNavigation}`) > 1;
-      const normal = shared
-        ? { ...rel, referencingNavigation: `${rel.referencingNavigation}_${rel.referencedEntity}` }
-        : rel;
-      add(rel.referencingEntity, normal);
-      if (rel.referencedEntity !== rel.referencingEntity) add(rel.referencedEntity, normal);
-    } else {
-      for (const entity of new Set(rel.entities)) add(entity, rel);
-    }
-  }
+  for (const rel of rels) indexStandardRelationship(rel, count, add);
   return entityIndex;
 }
 
@@ -119,56 +130,61 @@ export function standardRelationshipsFor(logical, exists = () => true) {
   const out = {};
   for (const rel of relationshipsByEntity().get(name) ?? []) {
     const cascade = rel.cascade ? { cascade: { ...rel.cascade } } : {};
-    if (rel.type === 'one-to-many') {
-      if (rel.referencingEntity === name && exists(rel.referencedEntity))
-        out[rel.referencingNavigation] = {
-          entity: rel.referencedEntity,
-          from: rel.referencingAttribute,
-          to: rel.referencedAttribute,
-          many: false,
-          schemaName: rel.schemaName,
-          type: 'many-to-one',
-          partner: rel.referencedNavigation,
-          ...cascade,
-          ...(HIERARCHICAL_STANDARD.has(rel.schemaName) ? { hierarchical: true } : {}),
-        };
-      if (rel.referencedEntity === name && exists(rel.referencingEntity))
-        out[rel.referencedNavigation] = {
-          entity: rel.referencingEntity,
-          from: rel.referencedAttribute,
-          to: rel.referencingAttribute,
-          many: true,
-          schemaName: rel.schemaName,
-          type: 'one-to-many',
-          partner: rel.referencingNavigation,
-          ...cascade,
-          ...(HIERARCHICAL_STANDARD.has(rel.schemaName) ? { hierarchical: true } : {}),
-        };
-    } else {
-      // sides are keyed by entity name; a self-referencing relationship uses entity1/entity2 instead.
-      const side = (k) => rel.sides[rel.entities[k]] ?? rel.sides[`entity${k + 1}`];
-      // Index 1 is written before index 0, so a self-referencing relationship keeps the first side's values.
-      for (const i of [1, 0]) {
-        const other = rel.entities[1 - i];
-        if (rel.entities[i] !== name || !exists(other)) continue;
-        out[side(i).navigation] = {
-          entity: other,
-          from: pk(name),
-          to: pk(other),
-          many: true,
-          intersect: {
-            entity: rel.intersectEntity,
-            from: side(i).intersectAttribute,
-            to: side(1 - i).intersectAttribute,
-          },
-          schemaName: rel.schemaName,
-          type: 'many-to-many',
-          partner: side(1 - i).navigation,
-        };
-      }
-    }
+    if (rel.type === 'one-to-many') addOneToManyRelationships(out, rel, name, exists, cascade);
+    else addManyToManyRelationships(out, rel, name, exists, pk);
   }
   return out;
+}
+
+function addOneToManyRelationships(out, rel, name, exists, cascade) {
+  if (rel.referencingEntity === name && exists(rel.referencedEntity))
+    out[rel.referencingNavigation] = {
+      entity: rel.referencedEntity,
+      from: rel.referencingAttribute,
+      to: rel.referencedAttribute,
+      many: false,
+      schemaName: rel.schemaName,
+      type: 'many-to-one',
+      partner: rel.referencedNavigation,
+      ...cascade,
+      ...(HIERARCHICAL_STANDARD.has(rel.schemaName) ? { hierarchical: true } : {}),
+    };
+  if (rel.referencedEntity === name && exists(rel.referencingEntity))
+    out[rel.referencedNavigation] = {
+      entity: rel.referencingEntity,
+      from: rel.referencedAttribute,
+      to: rel.referencingAttribute,
+      many: true,
+      schemaName: rel.schemaName,
+      type: 'one-to-many',
+      partner: rel.referencingNavigation,
+      ...cascade,
+      ...(HIERARCHICAL_STANDARD.has(rel.schemaName) ? { hierarchical: true } : {}),
+    };
+}
+
+function addManyToManyRelationships(out, rel, name, exists, pk) {
+  // sides are keyed by entity name; a self-referencing relationship uses entity1/entity2 instead.
+  const side = (k) => rel.sides[rel.entities[k]] ?? rel.sides[`entity${k + 1}`];
+  // Index 1 is written before index 0, so a self-referencing relationship keeps the first side's values.
+  for (const i of [1, 0]) {
+    const other = rel.entities[1 - i];
+    if (rel.entities[i] !== name || !exists(other)) continue;
+    out[side(i).navigation] = {
+      entity: other,
+      from: pk(name),
+      to: pk(other),
+      many: true,
+      intersect: {
+        entity: rel.intersectEntity,
+        from: side(i).intersectAttribute,
+        to: side(1 - i).intersectAttribute,
+      },
+      schemaName: rel.schemaName,
+      type: 'many-to-many',
+      partner: side(1 - i).navigation,
+    };
+  }
 }
 
 /** Global option sets of the standard file, keyed by Name, in the shape state.dataverse.globalOptionSets uses. Read-only. */
@@ -255,7 +271,10 @@ export function fieldsWithStandard(store, logical, own) {
   const seeded = store.state.mappings?.[name]?.standardTable === true;
   const key = `${name}|${seeded}`;
   let byKey = combinedFields.get(own);
-  if (!byKey) combinedFields.set(own, (byKey = new Map()));
+  if (!byKey) {
+    byKey = new Map();
+    combinedFields.set(own, byKey);
+  }
   if (!byKey.has(key)) {
     const extra = seeded
       ? Object.fromEntries(
@@ -297,7 +316,10 @@ function standardNavsOf(store, name) {
   const mappings = store.state.mappings ?? {};
   const count = Object.keys(mappings).length;
   let byName = standardNavCache.get(mappings);
-  if (!byName) standardNavCache.set(mappings, (byName = new Map()));
+  if (!byName) {
+    byName = new Map();
+    standardNavCache.set(mappings, byName);
+  }
   const hit = byName.get(name);
   if (hit?.count === count) return hit.value;
   const value = standardRelationshipsFor(name, (other) => Boolean(mappings[other]));

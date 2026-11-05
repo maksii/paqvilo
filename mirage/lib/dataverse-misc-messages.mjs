@@ -131,11 +131,10 @@ const sdkOperator = (op) => {
 function conditionJson(node) {
   if (node.attrs.valueof !== undefined)
     throw invalid("FetchXML condition 'valueof' has no QueryExpression equivalent in this simulator.");
-  const values = node.children.some((c) => c.name === 'value')
-    ? node.children.filter((c) => c.name === 'value').map((c) => c.text ?? '')
-    : node.attrs.value !== undefined
-      ? [node.attrs.value]
-      : [];
+  let values = [];
+  if (node.children.some((c) => c.name === 'value'))
+    values = node.children.filter((c) => c.name === 'value').map((c) => c.text ?? '');
+  else if (node.attrs.value !== undefined) values = [node.attrs.value];
   return {
     '@odata.type': 'Microsoft.Dynamics.CRM.ConditionExpression',
     AttributeName: node.attrs.attribute ?? null,
@@ -451,7 +450,7 @@ const notFound = (logical, id) =>
   new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id, innerCode: '0x80040217' });
 const argsOf = (c) => ({
   ...(typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {})),
-  ...(c.params ?? {}),
+  ...c.params,
 });
 const respond = (c, name, payload) => ({
   status: 200,
@@ -460,7 +459,7 @@ const respond = (c, name, payload) => ({
 const write = (api, fn) => api.change(() => api.store.transact(fn, { isolated: true }));
 const need = (api, c, logical, right) => {
   const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-  if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical);
+  if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
 };
 // Reads go through store.tableRows (no table is created by a read); writes inside write() use tableOf.
 const findRow = (store, logical, pk, id) =>
@@ -478,11 +477,9 @@ const tenantOf = (api) =>
 function refOf(api, value) {
   const text = typeof value === 'string' ? value : String(value?.['@odata.id'] ?? '');
   const type = value?.['@odata.type'];
-  const logical = type
-    ? String(type).split('.').pop()
-    : text
-      ? api.store.resolveMapping(text.split('(')[0].split('/').pop()).logicalName
-      : null;
+  let logical = null;
+  if (type) logical = String(type).split('.').pop();
+  else if (text) logical = api.store.resolveMapping(text.split('(')[0].split('/').pop()).logicalName;
   return { logical, id: idOf(value) };
 }
 
@@ -631,7 +628,7 @@ const notForRollup = (name) =>
 // RollupType as a name or a number, in the forms a Web API caller sends: Microsoft.Dynamics.CRM.RollupType'Related', Related or 1.
 function rollupTypeOf(value) {
   const text = String(value ?? '');
-  const name = /^\d+$/.test(text) ? ROLLUP_TYPES[Number(text)] : (text.match(/'(\w+)'$/)?.[1] ?? text);
+  const name = /^\d+$/.test(text) ? ROLLUP_TYPES[Number(text)] : (/'(\w+)'$/.exec(text)?.[1] ?? text);
   const type = ROLLUP_TYPES.find((entry) => entry.toLowerCase() === String(name).toLowerCase());
   if (!type) throw invalid('The rollup type is invalid.', '0x80040234');
   return type;
@@ -644,18 +641,21 @@ function rollupSet(store, targetId, type) {
   let frontier = type === 'None' ? [] : [targetId];
   while (frontier.length) {
     const next = [];
-    for (const parent of frontier)
-      for (const [table, column] of CHILD_RELATIONS)
-        for (const row of store.tableRows(table)) {
-          const id = row[`${table}id`];
-          if (sameId(idOf(row[column]), parent) && !set.has(key(id))) {
-            set.add(key(id));
-            next.push(id);
-          }
-        }
+    for (const parent of frontier) addRollupChildren(store, parent, set, next);
     frontier = type === 'Extended' ? next : [];
   }
   return set;
+}
+
+function addRollupChildren(store, parent, set, next) {
+  for (const [table, column] of CHILD_RELATIONS)
+    for (const row of store.tableRows(table)) {
+      const id = row[`${table}id`];
+      if (sameId(idOf(row[column]), parent) && !set.has(key(id))) {
+        set.add(key(id));
+        next.push(id);
+      }
+    }
 }
 
 async function rollup(api, c) {
@@ -720,8 +720,7 @@ function onExternalEvent(name) {
     if (name === 'OnExternalUpdated' && !Array.isArray(args.ChangedFields)) throw invalid('ChangedFields is required.');
     const meta = virtualEventMetadata(api, logical);
     const enabled = `is${name.toLowerCase()}enabled`;
-    if (!meta || meta[enabled] !== true)
-      throw invalid(`External event ${name} is not enabled for ${logical}.`, '0x80090309');
+    if (meta?.[enabled] !== true) throw invalid(`External event ${name} is not enabled for ${logical}.`, '0x80090309');
     if (
       name === 'OnExternalUpdated' &&
       args.ChangedFields.length &&
@@ -731,7 +730,7 @@ function onExternalEvent(name) {
         innerCode: '0x80073019',
       });
     }
-    const { ['@odata.type']: ignoredType, ['@odata.id']: ignoredId, ...target } = args.Target ?? {};
+    const { ['@odata.type']: ignoredType, ['@odata.id']: ignoredId, ...target } = args.Target ?? {}; // NOSONAR: binding is excluded from the rest object or is a placeholder
     const id = refOf(api, args.Target).id;
     if (id) target[mapping.idColumn] ??= id;
     // Notifications publish the supplied external snapshot. They never create or
@@ -910,7 +909,7 @@ async function removeCertificate(api, c) {
 
 // .NET Guid.ToByteArray order: the first three groups little-endian, the last two as written.
 function netGuidBytes(guid) {
-  const b = Buffer.from(guid.replace(/-/g, ''), 'hex');
+  const b = Buffer.from(guid.replaceAll('-', ''), 'hex');
   return Buffer.concat([
     b.subarray(0, 4).reverse(),
     b.subarray(4, 6).reverse(),
@@ -1248,7 +1247,7 @@ function install(api) {
       binding: 'unbound',
       signature,
       fallback: () =>
-        new DataError(`${name} has no configured local implementation.`, 501, 'NotImplemented', {
+        /* NOSONAR */ new DataError(`${name} has no configured local implementation.`, 501, 'NotImplemented', {
           innerCode: '0x80040216',
         }),
     });

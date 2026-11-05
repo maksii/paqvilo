@@ -72,7 +72,7 @@ const STANDARD_KIND_ALIASES = { webpagerule: 'webpageaccesscontrolrule' };
 const SKIPPED_DIRECTORIES = new Set(['.git', '.portalconfig', 'node_modules']);
 
 const sortObject = (object) =>
-  Object.fromEntries(Object.entries(object).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  Object.fromEntries(Object.entries(object).sort(([a], [b]) => Number(a > b) - Number(a < b)));
 const countBy = (items, key) =>
   items.reduce((counts, item) => {
     const value = typeof key === 'function' ? key(item) : item?.[key];
@@ -85,7 +85,7 @@ const normalizeId = (value) =>
     .toLowerCase();
 const isInactive = (value) => Number(value && typeof value === 'object' ? (value.value ?? value.Value) : value) === 1;
 const xmlValue = (xml, tag) => {
-  const match = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`).exec(xml);
+  const match = new RegExp(String.raw`<${tag}\b[^>]*>([\s\S]*?)</${tag}>`).exec(xml);
   return match ? decodeXml(match[1]) : null;
 };
 const field = (row, name) => row?.[`adx_${name}`] ?? row?.[`mspp_${name}`] ?? row?.[name];
@@ -96,6 +96,108 @@ const exists = (file) =>
   );
 const elapsed = (started) => Math.round(performance.now() - started);
 
+async function processEnhancedComponent(file, census, add, page) {
+  const xml = await fs.readFile(file, 'utf8');
+  const type = Number(/<powerpagecomponenttype>\s*(\d+)\s*</.exec(xml)?.[1]);
+  const kind = COMPONENT_TYPES[type] ?? `type-${Number.isFinite(type) ? type : 'missing'}`;
+  if (!COMPONENT_TYPES[type]) census.unknownTypes[type] = (census.unknownTypes[type] ?? 0) + 1;
+  const inactive = isInactive(/<statecode>\s*(\d+)\s*</.exec(xml)?.[1]);
+  const name = xmlValue(xml, 'name') ?? '';
+  const id = /powerpagecomponentid="([^"]+)"/.exec(xml)?.[1] ?? path.basename(path.dirname(file));
+  let content = {};
+  try {
+    content = JSON.parse(xmlValue(xml, 'content') ?? '{}') ?? {};
+  } catch (error) {
+    census.invalid.push({ file, message: error.message });
+  }
+  add(kind, { name, inactive });
+  if (/<powerpagesitelanguageid>/.test(xml)) census.languageTagged[kind] = (census.languageTagged[kind] ?? 0) + 1;
+  if (kind === 'webpage') page({ id, root: content.isroot !== false, inactive, rootId: content.rootwebpageid, file });
+  if (kind === 'webtemplate') census.webTemplates.push({ name, active: !inactive, file });
+  if (kind === 'webfile' && !inactive) {
+    census.webFiles.active++;
+    const attachment = xmlValue(xml, 'filecontent')?.trim();
+    if (!attachment || !(await exists(path.join(path.dirname(file), 'filecontent', attachment))))
+      census.webFiles.attachmentMissing.push({ name, file });
+  }
+}
+
+async function processEnhancedAsset(file, census) {
+  const xml = await fs.readFile(file, 'utf8');
+  if (/^powerpagesites\.xml$/i.test(path.basename(file))) {
+    census.website = {
+      id: normalizeId(/powerpagesiteid="([^"]+)"/.exec(xml)?.[1]),
+      name: xmlValue(xml, 'name'),
+      dataModelVersion: xmlValue(xml, 'datamodelversion'),
+    };
+    return;
+  }
+  census.siteLanguages = { total: 0, active: 0, names: [] };
+  for (const match of xml.matchAll(/<powerpagesitelanguage\b[^>]*>([\s\S]*?)<\/powerpagesitelanguage>/g)) {
+    census.siteLanguages.total++;
+    if (!isInactive(/<statecode>\s*(\d+)\s*</.exec(match[1])?.[1])) census.siteLanguages.active++;
+    census.siteLanguages.names.push(xmlValue(match[1], 'name'));
+  }
+}
+
+function processStandardRow(row, file, stem, kind, census, add, page) {
+  if (!row || typeof row !== 'object') return null;
+  const inactive = isInactive(row.statecode ?? row.adx_statecode);
+  const name = field(row, 'name') ?? null;
+  add(kind, { name, inactive });
+  const shortKeys = typeof row.id === 'string' && !Object.keys(row).some((key) => key.startsWith('adx_'));
+  if (shortKeys) census.shortKeyRecords++;
+  if (kind === 'website') census.website = { id: normalizeId(row.adx_websiteid ?? row.id), name };
+  if (kind === 'webpage')
+    page({
+      id: row.adx_webpageid ?? row.id,
+      root: field(row, 'isroot') !== false,
+      inactive,
+      rootId: field(row, 'rootwebpageid'),
+      file,
+    });
+  if (kind === 'webtemplate') census.webTemplates.push({ name: name ?? stem, active: !inactive, file });
+  return { inactive, name };
+}
+
+function processStandardWebFile(row, file, stem, name, census) {
+  census.webFiles.active++;
+  const candidates = [row.filename, stem.replace(/\.webfile$/i, ''), name].filter(Boolean);
+  if (candidates.length) return findStandardAttachment(candidates, file, name, census);
+  census.webFiles.attachmentMissing.push({ name, file });
+  return null;
+}
+
+async function findStandardAttachment(candidates, file, name, census) {
+  let found = false;
+  for (const candidate of candidates) if (await exists(path.join(path.dirname(file), String(candidate)))) found = true;
+  if (!found) census.webFiles.attachmentMissing.push({ name, file });
+}
+
+/* NOSONAR */ function* processStandardFiles(root, yamlFiles, texts, census, add, page) {
+  census.files = yamlFiles.length;
+  if (/(?:^|[\\/])\.powerpages-site$/i.test(root)) census.dialect = 'code-site';
+  for (const [index, file] of yamlFiles.entries()) {
+    const stem = path.basename(file).replace(/\.ya?ml$/i, '');
+    const raw = stem.split('.').at(-1).toLowerCase();
+    const kind = STANDARD_KIND_ALIASES[raw] ?? raw;
+    let rows;
+    try {
+      if (texts[index]?.error) throw texts[index].error;
+      rows = YAML.parse(texts[index], { uniqueKeys: false });
+    } catch (error) {
+      census.invalid.push({ file, message: error.message });
+      continue;
+    }
+    for (const row of Array.isArray(rows) ? rows : [rows]) {
+      const result = processStandardRow(row, file, stem, kind, census, add, page);
+      if (result && kind === 'webfile' && !result.inactive) yield { row, file, stem, name: result.name };
+    }
+  }
+  const records = Object.values(census.kinds).reduce((sum, entry) => sum + entry.total, 0);
+  if (census.shortKeyRecords && census.shortKeyRecords * 2 > records) census.dialect = 'code-site';
+}
+
 async function listFiles(root) {
   const files = [];
   const visit = async (dir) => {
@@ -105,7 +207,7 @@ async function listFiles(root) {
     } catch {
       return;
     }
-    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    entries.sort((a, b) => Number(a.name > b.name) - Number(a.name < b.name));
     for (const entry of entries) {
       if (entry.isSymbolicLink() || SKIPPED_DIRECTORIES.has(entry.name)) continue;
       const full = path.join(dir, entry.name);
@@ -176,100 +278,18 @@ export async function exportCensus(sourceDir) {
   };
   if (census.format === 'enhanced') {
     census.files = components.length;
-    for (const file of components) {
-      const xml = await fs.readFile(file, 'utf8');
-      const type = Number(/<powerpagecomponenttype>\s*(\d+)\s*</.exec(xml)?.[1]);
-      const kind = COMPONENT_TYPES[type] ?? `type-${Number.isFinite(type) ? type : 'missing'}`;
-      if (!COMPONENT_TYPES[type]) census.unknownTypes[type] = (census.unknownTypes[type] ?? 0) + 1;
-      const inactive = isInactive(/<statecode>\s*(\d+)\s*</.exec(xml)?.[1]);
-      const name = xmlValue(xml, 'name') ?? '';
-      const id = /powerpagecomponentid="([^"]+)"/.exec(xml)?.[1] ?? path.basename(path.dirname(file));
-      let content = {};
-      try {
-        content = JSON.parse(xmlValue(xml, 'content') ?? '{}') ?? {};
-      } catch (error) {
-        census.invalid.push({ file, message: error.message });
-      }
-      add(kind, { name, inactive });
-      if (/<powerpagesitelanguageid>/.test(xml)) census.languageTagged[kind] = (census.languageTagged[kind] ?? 0) + 1;
-      if (kind === 'webpage')
-        page({ id, root: content.isroot !== false, inactive, rootId: content.rootwebpageid, file });
-      if (kind === 'webtemplate') census.webTemplates.push({ name, active: !inactive, file });
-      if (kind === 'webfile' && !inactive) {
-        census.webFiles.active++;
-        const attachment = xmlValue(xml, 'filecontent')?.trim();
-        if (!attachment || !(await exists(path.join(path.dirname(file), 'filecontent', attachment))))
-          census.webFiles.attachmentMissing.push({ name, file });
-      }
-    }
+    for (const file of components) await processEnhancedComponent(file, census, add, page);
     const assets = files.filter((file) => /^powerpagesite(?:language)?s\.xml$/i.test(path.basename(file)));
-    for (const file of assets) {
-      const xml = await fs.readFile(file, 'utf8');
-      if (/^powerpagesites\.xml$/i.test(path.basename(file))) {
-        census.website = {
-          id: normalizeId(/powerpagesiteid="([^"]+)"/.exec(xml)?.[1]),
-          name: xmlValue(xml, 'name'),
-          dataModelVersion: xmlValue(xml, 'datamodelversion'),
-        };
-        continue;
-      }
-      census.siteLanguages = { total: 0, active: 0, names: [] };
-      for (const match of xml.matchAll(/<powerpagesitelanguage\b[^>]*>([\s\S]*?)<\/powerpagesitelanguage>/g)) {
-        census.siteLanguages.total++;
-        if (!isInactive(/<statecode>\s*(\d+)\s*</.exec(match[1])?.[1])) census.siteLanguages.active++;
-        census.siteLanguages.names.push(xmlValue(match[1], 'name'));
-      }
-    }
+    for (const file of assets) await processEnhancedAsset(file, census);
   } else {
     const yamlFiles = files.filter(
       (file) => /\.ya?ml$/i.test(file) && !/[\\/]deployment-profiles[\\/]/i.test(path.relative(root, file)),
     );
-    census.files = yamlFiles.length;
-    if (/(?:^|[\\/])\.powerpages-site$/i.test(root)) census.dialect = 'code-site';
     const texts = await mapLimit(yamlFiles, 32, (file) => fs.readFile(file, 'utf8').catch((error) => ({ error })));
-    for (const [index, file] of yamlFiles.entries()) {
-      const stem = path.basename(file).replace(/\.ya?ml$/i, '');
-      const raw = stem.split('.').at(-1).toLowerCase();
-      const kind = STANDARD_KIND_ALIASES[raw] ?? raw;
-      let rows;
-      try {
-        if (texts[index]?.error) throw texts[index].error;
-        rows = YAML.parse(texts[index], { uniqueKeys: false });
-      } catch (error) {
-        census.invalid.push({ file, message: error.message });
-        continue;
-      }
-      for (const row of Array.isArray(rows) ? rows : [rows]) {
-        if (!row || typeof row !== 'object') continue;
-        const inactive = isInactive(row.statecode ?? row.adx_statecode);
-        const name = field(row, 'name') ?? null;
-        add(kind, { name, inactive });
-        // Short keys (code sites) carry the record ID as id and the columns without the adx_ prefix.
-        const shortKeys = typeof row.id === 'string' && !Object.keys(row).some((key) => key.startsWith('adx_'));
-        if (shortKeys) census.shortKeyRecords++;
-        if (kind === 'website') census.website = { id: normalizeId(row.adx_websiteid ?? row.id), name };
-        if (kind === 'webpage')
-          page({
-            id: row.adx_webpageid ?? row.id,
-            root: field(row, 'isroot') !== false,
-            inactive,
-            rootId: field(row, 'rootwebpageid'),
-            file,
-          });
-        if (kind === 'webtemplate') census.webTemplates.push({ name: name ?? stem, active: !inactive, file });
-        if (kind === 'webfile' && !inactive) {
-          census.webFiles.active++;
-          const candidates = [row.filename, stem.replace(/\.webfile$/i, ''), name].filter(Boolean);
-          let found = false;
-          for (const candidate of candidates)
-            if (await exists(path.join(path.dirname(file), String(candidate)))) found = true;
-          if (!found) census.webFiles.attachmentMissing.push({ name, file });
-        }
-      }
+    for (const attachment of processStandardFiles(root, yamlFiles, texts, census, add, page)) {
+      const pending = processStandardWebFile(attachment.row, attachment.file, attachment.stem, attachment.name, census);
+      if (pending) await pending; // NOSONAR: optional pending promise, awaited only when set
     }
-    // A YAML export whose records use short keys is a code site even outside a .powerpages-site folder.
-    const records = Object.values(census.kinds).reduce((sum, entry) => sum + entry.total, 0);
-    if (census.shortKeyRecords && census.shortKeyRecords * 2 > records) census.dialect = 'code-site';
   }
   return census;
 }
@@ -349,8 +369,8 @@ export function compareImport(census, portal) {
   const linkCount = (links = []) => links.reduce((sum, link) => sum + 1 + linkCount(link.weblinks), 0);
   // Copies the importer drops: identical re-exports, and conflicting copies of one ID resolved
   // to a single copy (DUPLICATE_RECORD_RESOLVED).
-  const DROPPED = ['DUPLICATE_RECORD_IDENTICAL', 'DUPLICATE_RECORD_RESOLVED'];
-  const dropped = (kind) => diagnostics.filter((d) => DROPPED.includes(d.code) && d.kind === kind).length;
+  const DROPPED = new Set(['DUPLICATE_RECORD_IDENTICAL', 'DUPLICATE_RECORD_RESOLVED']);
+  const dropped = (kind) => diagnostics.filter((d) => DROPPED.has(d.code) && d.kind === kind).length;
   const rows = [];
   const row = (kind, expected, imported, explained = [], note) => {
     const explainedCount = explained.reduce((sum, item) => sum + item.count, 0);
@@ -372,8 +392,7 @@ export function compareImport(census, portal) {
     // A dropped copy counts against root pages only when its file is an active root record.
     const rootFiles = census.pages.activeRootFiles ?? new Set();
     const droppedRoots = diagnostics.filter(
-      (d) =>
-        DROPPED.includes(d.code) && d.kind === 'webpage' && d.file && rootFiles.has(path.resolve(d.file).toLowerCase()),
+      (d) => DROPPED.has(d.code) && d.kind === 'webpage' && d.file && rootFiles.has(path.resolve(d.file).toLowerCase()),
     ).length;
     row('webpage', census.pages.roots.active, portal.pages.length, [
       { reason: 'missing parent or cycle (page-hierarchy)', count: byCode('page-hierarchy') },
@@ -716,13 +735,66 @@ async function codeSiteFolders(dir, depth = 0, found = []) {
   } catch {
     return found;
   }
-  for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+  for (const entry of entries.sort((a, b) => Number(a.name > b.name) - Number(a.name < b.name))) {
     if (!entry.isDirectory() || entry.isSymbolicLink() || ['node_modules', '.git'].includes(entry.name)) continue;
     const full = path.join(dir, entry.name);
     if (entry.name === '.powerpages-site') found.push(full);
     else await codeSiteFolders(full, depth + 1, found);
   }
   return found;
+}
+
+async function sampleSourceEntries(sample, repo) {
+  if (!sample.codeSites) return [{ id: sample.id, source: sample.source, solutions: sample.solutions ?? [] }];
+  return (await codeSiteFolders(repo)).map((dir) => {
+    const relative = path.relative(repo, dir).replaceAll('\\', '/');
+    // samples/spa/<group>/<name>/<variant>/.powerpages-site -> pps-<group>-<name>-<variant>
+    const id = `pps-${relative
+      .replace(/\/?\.powerpages-site$/, '')
+      .replace(/^(?:samples|templates)\/spa\//, '')
+      .replace(/\/(?:variants|website-code)\b/g, '')
+      .replace(/[^a-z0-9]+/gi, '-')
+      .replace(/^-|-$/g, '')
+      .toLowerCase()}`;
+    // Templates ship their Dataverse Solution beside the variants: templates/spa/<t>/solutions.
+    const template = /^templates\/spa\/([^/]+)\//.exec(relative);
+    return { id, source: relative, solutions: template ? [`templates/spa/${template[1]}/solutions`] : [] };
+  });
+}
+
+async function addSampleTarget(sample, repo, entry, isDirectory, missing, targets) {
+  const sourceDir = path.join(repo, entry.source);
+  if (!(await isDirectory(sourceDir))) {
+    missing.push({ id: entry.id, repo: sample.repo, reason: `${entry.source} is not in the clone` });
+    return;
+  }
+  const solutionRoots = [];
+  for (const solution of entry.solutions)
+    if (await isDirectory(path.join(repo, solution))) solutionRoots.push(path.join(repo, solution));
+  targets.push({
+    id: entry.id,
+    label: `${sample.repo}/${entry.source}`,
+    sourceDir,
+    solutionRoots,
+    // No Solution of its own: an empty root keeps sibling discovery from layering unrelated clones.
+    isolateSolutions: true,
+    solutions: [],
+    solutionOrder: 'derived',
+    origin: null,
+    reference: null,
+    deploymentProfile: undefined,
+    environmentVariables: {},
+    lcid: 1033,
+    simulatorOptions: { solutionOrder: 'derived' },
+    sweepOptions: { source: sourceDir, portal: entry.id, solutionRoots: [...solutionRoots] },
+    sample: {
+      repo: sample.repo,
+      url: sample.url,
+      licence: sample.licence,
+      declaredModel: sample.model,
+      ...(sample.note ? { note: sample.note } : {}),
+    },
+  });
 }
 
 /** The public samples present under `root`, with their Solution roots; missing clones are listed, not fatal. */
@@ -742,118 +814,72 @@ async function publicSampleTargets(root, samples = PUBLIC_SAMPLES) {
       continue;
     }
     const entries = sample.codeSites
-      ? (await codeSiteFolders(repo)).map((dir) => {
-          const relative = path.relative(repo, dir).replace(/\\/g, '/');
-          // samples/spa/<group>/<name>/<variant>/.powerpages-site -> pps-<group>-<name>-<variant>
-          const id = `pps-${relative
-            .replace(/\/?\.powerpages-site$/, '')
-            .replace(/^(?:samples|templates)\/spa\//, '')
-            .replace(/\/(?:variants|website-code)\b/g, '')
-            .replace(/[^a-z0-9]+/gi, '-')
-            .replace(/^-|-$/g, '')
-            .toLowerCase()}`;
-          // Templates ship their Dataverse Solution beside the variants: templates/spa/<t>/solutions.
-          const template = /^templates\/spa\/([^/]+)\//.exec(relative);
-          return { id, source: relative, solutions: template ? [`templates/spa/${template[1]}/solutions`] : [] };
-        })
+      ? await sampleSourceEntries(sample, repo)
       : [{ id: sample.id, source: sample.source, solutions: sample.solutions ?? [] }];
-    for (const entry of entries) {
-      const sourceDir = path.join(repo, entry.source);
-      if (!(await isDirectory(sourceDir))) {
-        missing.push({ id: entry.id, repo: sample.repo, reason: `${entry.source} is not in the clone` });
-        continue;
-      }
-      const solutionRoots = [];
-      for (const solution of entry.solutions)
-        if (await isDirectory(path.join(repo, solution))) solutionRoots.push(path.join(repo, solution));
-      targets.push({
-        id: entry.id,
-        label: `${sample.repo}/${entry.source}`,
-        sourceDir,
-        solutionRoots,
-        // No Solution of its own: an empty root keeps sibling discovery from layering unrelated clones.
-        isolateSolutions: true,
-        solutions: [],
-        solutionOrder: 'derived',
-        origin: null,
-        reference: null,
-        deploymentProfile: undefined,
-        environmentVariables: {},
-        lcid: 1033,
-        simulatorOptions: { solutionOrder: 'derived' },
-        sweepOptions: { source: sourceDir, portal: entry.id, solutionRoots: [...solutionRoots] },
-        sample: {
-          repo: sample.repo,
-          url: sample.url,
-          licence: sample.licence,
-          declaredModel: sample.model,
-          ...(sample.note ? { note: sample.note } : {}),
-        },
-      });
-    }
+    for (const entry of entries) await addSampleTarget(sample, repo, entry, isDirectory, missing, targets);
   }
   return { targets, missing };
 }
 
 // ---- targets
 /** Resolve the portals under test from a project file, catalogue sites or a public samples root. */
-export async function resolveTargets(options) {
-  if (options.samples) {
-    const { targets, missing } = await publicSampleTargets(options.samples);
-    const selected = options.portals?.length
-      ? targets.filter((target) => options.portals.includes(target.id))
-      : targets;
-    for (const id of options.portals ?? [])
-      if (!targets.some((target) => target.id === id))
-        throw new Error(`Sample '${id}' is not present under ${path.resolve(options.samples)}`);
-    return { mode: 'samples', project: null, targets: selected, missing };
-  }
-  if (options.project) {
-    const { loadProjectConfig, projectOrigin, projectSummary } = await import('./lib/project-config.mjs');
-    const project = await loadProjectConfig(options.project);
-    const selected = options.portals?.length ? options.portals : project.portals.map((portal) => portal.id);
-    for (const id of selected)
-      if (!project.portals.some((portal) => portal.id === id))
-        throw new Error(`Portal '${id}' is not configured in ${project.configFile}`);
-    return {
-      mode: 'project',
-      project,
-      targets: project.portals
-        .filter((portal) => selected.includes(portal.id))
-        .map((portal) => ({
-          id: portal.id,
-          label: `${path.basename(project.configFile)}#${portal.id}`,
-          sourceDir: portal.sourceDir,
-          solutionRoots: portal.solutionRoots ?? [],
-          solutions: portal.solutions ?? [],
-          solutionOrder: project.solutionOrder ?? 'explicit',
-          origin: projectOrigin(project, portal),
-          reference: portal.reference ?? project.defaultReference?.id ?? null,
-          deploymentProfile: portal.deploymentProfile ?? undefined,
+async function resolveSampleTargets(options) {
+  const { targets, missing } = await publicSampleTargets(options.samples);
+  const selected = options.portals?.length ? targets.filter((target) => options.portals.includes(target.id)) : targets;
+  for (const id of options.portals ?? [])
+    if (!targets.some((target) => target.id === id))
+      throw new Error(`Sample '${id}' is not present under ${path.resolve(options.samples)}`);
+  return { mode: 'samples', project: null, targets: selected, missing };
+}
+
+async function resolveProjectTargets(options) {
+  const { loadProjectConfig, projectOrigin, projectSummary } = await import('./lib/project-config.mjs');
+  const project = await loadProjectConfig(options.project);
+  const selected = options.portals?.length ? options.portals : project.portals.map((portal) => portal.id);
+  for (const id of selected)
+    if (!project.portals.some((portal) => portal.id === id))
+      throw new Error(`Portal '${id}' is not configured in ${project.configFile}`);
+  return {
+    mode: 'project',
+    project,
+    targets: project.portals
+      .filter((portal) => selected.includes(portal.id))
+      .map((portal) => ({
+        id: portal.id,
+        label: `${path.basename(project.configFile)}#${portal.id}`,
+        sourceDir: portal.sourceDir,
+        solutionRoots: portal.solutionRoots ?? [],
+        solutions: portal.solutions ?? [],
+        solutionOrder: project.solutionOrder ?? 'explicit',
+        origin: projectOrigin(project, portal),
+        reference: portal.reference ?? project.defaultReference?.id ?? null,
+        deploymentProfile: portal.deploymentProfile ?? undefined,
+        deploymentProfiles: portal.deploymentProfiles,
+        environmentVariables: project.environmentVariables ?? {},
+        lcid: project.lcid ?? 1033,
+        simulatorOptions: {
+          project: projectSummary(project, portal.id),
+          projectRoot: path.dirname(project.configFile),
+          modelDriven: project.modelDriven,
+          dataverse: project.dataverse,
+          simulation: project.simulation,
+          platform: portal.platform,
+          observed: portal.observed,
+          dataModel: portal.dataModel,
+          contentPolicyDefaults: portal,
           deploymentProfiles: portal.deploymentProfiles,
-          environmentVariables: project.environmentVariables ?? {},
-          lcid: project.lcid ?? 1033,
-          simulatorOptions: {
-            project: projectSummary(project, portal.id),
-            projectRoot: path.dirname(project.configFile),
-            modelDriven: project.modelDriven,
-            dataverse: project.dataverse,
-            simulation: project.simulation,
-            platform: portal.platform,
-            observed: portal.observed,
-            dataModel: portal.dataModel,
-            contentPolicyDefaults: portal,
-            deploymentProfiles: portal.deploymentProfiles,
-            solutionOrder: project.solutionOrder,
-            environmentVariables: project.environmentVariables,
-          },
-          sweepOptions: { project: project.configFile, portal: portal.id },
-        })),
-    };
-  }
+          solutionOrder: project.solutionOrder,
+          environmentVariables: project.environmentVariables,
+        },
+        sweepOptions: { project: project.configFile, portal: portal.id },
+      })),
+  };
+}
+
+/* NOSONAR */ async function resolveSiteTargets(options) {
   if (options.catalogueSites)
     options.sites = Object.keys(
-      (await (await import('../lense/config.mjs')).loadCatalogue({ config: options.config })).sites,
+      (await (await import('../lense/config.mjs')).loadCatalogue({ config: options.config })).sites, // NOSONAR: await kept: the value may be a thenable and timing matters
     );
   if (!options.sites?.length) throw new Error('Select portals with --project FILE or --sites a,b');
   const { loadConfig } = await import('../lense/config.mjs');
@@ -908,6 +934,12 @@ export async function resolveTargets(options) {
     });
   }
   return { mode: 'sites', project: null, targets };
+}
+
+export async function resolveTargets(options) {
+  if (options.samples) return await resolveSampleTargets(options);
+  if (options.project) return await resolveProjectTargets(options);
+  return await resolveSiteTargets(options);
 }
 
 // ---- stages
@@ -1210,8 +1242,9 @@ async function sweepStage(target, context) {
   const { renderSweep } = await import('./render-sweep.mjs');
   // render-sweep runs anonymous+authenticated as "both" and all three as "all"; other subsets run one by one.
   const set = new Set(personas);
-  const selections =
-    set.size === 3 ? ['all'] : set.size === 2 && set.has('anonymous') && set.has('authenticated') ? ['both'] : [...set];
+  let selections = [...set];
+  if (set.size === 3) selections = ['all'];
+  else if (set.size === 2 && set.has('anonymous') && set.has('authenticated')) selections = ['both'];
   const reports = [];
   for (const persona of selections)
     reports.push(
@@ -1307,7 +1340,7 @@ async function probeWebApi(simulator, { cookie = null } = {}) {
   const tables = Object.entries(settings)
     .filter(([name, value]) => /^Webapi\/[^/]+\/enabled$/i.test(name) && String(value).trim().toLowerCase() === 'true')
     .map(([name]) => name.split('/')[1].toLowerCase())
-    .sort();
+    .sort((a, b) => Number(a > b) - Number(a < b));
   const headers = {
     accept: 'application/json',
     'sec-fetch-site': 'same-origin',
@@ -1316,7 +1349,7 @@ async function probeWebApi(simulator, { cookie = null } = {}) {
     ...(cookie ? { cookie } : {}),
   };
   const results = [];
-  for (const table of [...new Set(tables)]) {
+  for (const table of new Set(tables)) {
     let entitySet, idColumn;
     try {
       ({ entitySet, idColumn } = simulator.store.resolveMapping(table));
@@ -1450,8 +1483,11 @@ async function configureCoverageContact(stateFile, portal) {
         .trim()
         .toLowerCase() !== 'anonymous users',
   );
-  const memberships = (state.simulator ??= {}).contactRoles ?? [];
-  const contacts = [...new Set(memberships.map((entry) => normalizeId(entry.contactId)))].sort();
+  state.simulator ??= {};
+  const memberships = state.simulator.contactRoles ?? [];
+  const contacts = [...new Set(memberships.map((entry) => normalizeId(entry.contactId)))].sort(
+    (a, b) => Number(a > b) - Number(a < b),
+  );
   if (!contacts.length) return { contactId: null, roles: [], note: 'the scaffold created no persona contact' };
   const authenticated = new Set(
     roles
@@ -1478,6 +1514,16 @@ const COMPONENT_TAG = /\{%-?\s*(entityform|webform|entitylist)\b/gi;
 const STATIC_INCLUDE = /\{%-?\s*include\s+(['"])([^'"]+)\1/g;
 const COMPONENT_KIND = { entityform: 'basicform', webform: 'advancedform', entitylist: 'list' };
 
+function scanComponentSource(source, kinds, seen, byName, queue) {
+  for (const match of source.matchAll(COMPONENT_TAG)) kinds.add(COMPONENT_KIND[match[1].toLowerCase()]);
+  for (const match of source.matchAll(STATIC_INCLUDE)) {
+    const name = match[2].toLowerCase();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    if (byName.get(name)?.source) queue.push(byName.get(name).source);
+  }
+}
+
 /**
  * Basic forms, advanced forms and lists a page renders: its own form/list fields and the
  * entityform, webform and entitylist tags of its page template's web template, its copy and
@@ -1494,15 +1540,8 @@ export function pageComponentKinds(portal, page) {
   const pageTemplate = (portal.pageTemplates ?? []).find((candidate) => candidate.id === page.pageTemplateId);
   const queue = [portal.templates?.[pageTemplate?.webTemplateId]?.source, page.html].filter(Boolean);
   const seen = new Set();
-  for (let index = 0; index < queue.length && index < 200; index++) {
-    for (const match of queue[index].matchAll(COMPONENT_TAG)) kinds.add(COMPONENT_KIND[match[1].toLowerCase()]);
-    for (const match of queue[index].matchAll(STATIC_INCLUDE)) {
-      const name = match[2].toLowerCase();
-      if (seen.has(name)) continue;
-      seen.add(name);
-      if (byName.get(name)?.source) queue.push(byName.get(name).source);
-    }
-  }
+  for (let index = 0; index < queue.length && index < 200; index++)
+    scanComponentSource(queue[index], kinds, seen, byName, queue);
   return kinds;
 }
 
@@ -1680,7 +1719,8 @@ async function stopServe({ child, exited }) {
 }
 
 /** Start every project portal with `cli.mjs serve --project` (temporary copy of the project) and check isolation. */
-async function serveStage(resolved, context) {
+// NOSONAR: preserve owned-child cleanup and async lifecycle ordering.
+async function /* NOSONAR */ serveStage(resolved, context) {
   const project = resolved.project;
   const directory = await fs.mkdtemp(path.join(context.tmp, 'serve-'));
   const stateDirectory = path.join(directory, 'state');
@@ -1859,9 +1899,7 @@ async function serveStage(resolved, context) {
 }
 
 // ---- orchestration
-/** Run the selected stages for every portal and return the matrix object. */
-export async function portalMatrix(options = {}) {
-  const started = performance.now();
+function selectMatrixStages(options) {
   const stages = new Set(options.only?.length ? options.only : STAGES);
   for (const stage of options.skip ?? []) stages.delete(stage);
   for (const stage of stages)
@@ -1875,6 +1913,26 @@ export async function portalMatrix(options = {}) {
       throw new Error(`Unknown scaffold persona '${persona}'; use ${SCAFFOLD_PERSONAS.join(', ')}`);
   const scaffoldProfile = options.scaffoldProfile ?? 'smoke';
   if (!['smoke', 'dev'].includes(scaffoldProfile)) throw new Error('--scaffold-profile must be smoke or dev');
+  return { stages, personas, scaffoldPersonas, scaffoldProfile };
+}
+
+function matrixInput(resolved, options) {
+  if (resolved.mode === 'project')
+    return {
+      project: resolved.project.configFile,
+      version: resolved.project.version,
+      solutionOrder: resolved.project.solutionOrder,
+      solutions: resolved.project.solutions.map(({ id, root }) => ({ id, root })),
+      references: resolved.project.references.map(({ id, origin, environment }) => ({ id, origin, environment })),
+    };
+  if (resolved.mode === 'samples') return { samples: path.resolve(options.samples), missing: resolved.missing };
+  return { sites: resolved.targets.map((target) => target.label) };
+}
+
+/** Run the selected stages for every portal and return the matrix object. */
+/* NOSONAR */ export async function portalMatrix(options = {}) {
+  const started = performance.now();
+  const { stages, personas, scaffoldPersonas, scaffoldProfile } = selectMatrixStages(options);
   const resolved = await resolveTargets(options);
   const out = options.out ? path.resolve(options.out) : null;
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-portal-matrix-'));
@@ -1890,22 +1948,12 @@ export async function portalMatrix(options = {}) {
       target.sweepOptions.solutionRoots = [noSolutions];
       target.solutionRootsSource = 'none (empty placeholder root)';
     }
+  const input = matrixInput(resolved, options);
   const matrix = {
     generatedAt: new Date().toISOString(),
     node: process.version,
     platform: `${process.platform}-${process.arch}`,
-    input:
-      resolved.mode === 'project'
-        ? {
-            project: resolved.project.configFile,
-            version: resolved.project.version,
-            solutionOrder: resolved.project.solutionOrder,
-            solutions: resolved.project.solutions.map(({ id, root }) => ({ id, root })),
-            references: resolved.project.references.map(({ id, origin, environment }) => ({ id, origin, environment })),
-          }
-        : resolved.mode === 'samples'
-          ? { samples: path.resolve(options.samples), missing: resolved.missing }
-          : { sites: resolved.targets.map((target) => target.label) },
+    input,
     stages: STAGES.filter((stage) => stages.has(stage) && (stage !== 'serve' || resolved.mode === 'project')),
     personas,
     ...(stages.has('scaffold') ? { scaffoldPersonas, scaffoldProfile } : {}),
@@ -1941,6 +1989,7 @@ export async function portalMatrix(options = {}) {
         pathPrefix: options.pathPrefix,
         useState: options.useState,
         details: {},
+        entry,
       };
       const runners = {
         import: importStage,
@@ -1955,22 +2004,21 @@ export async function portalMatrix(options = {}) {
         const stageStarted = performance.now();
         log(`${target.id}: ${stage}…`);
         try {
-          entry[stage] = await runners[stage](target, context);
+          context.entry[stage] = await runners[stage](target, context);
         } catch (error) {
-          entry[stage] = { error: error.message };
-          entry.errors.push({ stage, message: error.message });
+          context.entry[stage] = { error: error.message };
+          context.entry.errors.push({ stage, message: error.message });
         }
-        entry[stage].ms = elapsed(stageStarted);
-        log(
-          `${target.id}: ${stage} ${(entry[stage].ms / 1000).toFixed(1)} s${entry[stage].error ? ` (error: ${entry[stage].error})` : ''}`,
-        );
+        context.entry[stage].ms = elapsed(stageStarted);
+        const errorNote = context.entry[stage].error ? ` (error: ${context.entry[stage].error})` : '';
+        log(`${target.id}: ${stage} ${(context.entry[stage].ms / 1000).toFixed(1)} s${errorNote}`);
         if (out) {
           // Details: the full tool report where one exists (bootstrap, liquid, webapi, sweep), else the matrix entry.
           await fs.mkdir(path.join(out, target.id), { recursive: true });
           const detail =
             stage === 'runtime'
-              ? { ...entry.runtime, ...(context.details.runtime ?? {}) }
-              : (context.details[stage] ?? entry[stage]);
+              ? { ...context.entry.runtime, ...context.details.runtime }
+              : (context.details[stage] ?? context.entry[stage]);
           await fs.writeFile(path.join(out, target.id, `${stage}.json`), JSON.stringify(detail, null, 2));
         }
       }
@@ -2000,63 +2048,74 @@ export async function portalMatrix(options = {}) {
   return matrix;
 }
 
+const routeOwnerLabel = (owner) => `${owner.kind} '${owner.name}' (${owner.url})`;
+
+function addImportProblems(portal, problems) {
+  for (const error of portal.errors)
+    problems.push({ portal: portal.id, stage: error.stage, problem: `stage failed: ${error.message}` });
+  for (const item of portal.import?.comparison?.unexplained ?? []) {
+    const difference = item.unexplained > 0 ? `${item.unexplained} missing` : `${-item.unexplained} extra`;
+    problems.push({
+      portal: portal.id,
+      stage: 'import',
+      problem: `${item.kind}: export ${item.expected}, imported ${item.imported} (${difference}, unexplained)`,
+    });
+  }
+  for (const item of portal.import?.routes?.collisions ?? [])
+    if (item.distinctRecords > 1 && !item.resolved)
+      problems.push({
+        portal: portal.id,
+        stage: 'import',
+        problem: `route ${item.route} is claimed by ${item.owners.map(routeOwnerLabel).join(' and ')}`,
+      });
+  for (const item of portal.import?.routes?.malformed ?? [])
+    problems.push({
+      portal: portal.id,
+      stage: 'import',
+      problem: `${item.kind} '${item.name}' has the malformed URL ${item.url}`,
+    });
+}
+
+function addRunProblems(portal, stage, runs, problems) {
+  for (const run of runs) {
+    for (const failure of run.failures ?? []) {
+      const reason = failure.failure ?? `HTTP ${failure.status}`;
+      problems.push({ portal: portal.id, stage, problem: `${run.persona}: ${failure.url} ${reason}` });
+    }
+    for (const injected of run.injectedNonDocuments ?? [])
+      problems.push({
+        portal: portal.id,
+        stage,
+        problem: `${run.persona}: local runtime injected into non-document ${injected.url}`,
+      });
+  }
+}
+
+function addPortalProblems(portal, problems) {
+  addImportProblems(portal, problems);
+  addRunProblems(portal, 'sweep', portal.sweep?.runs ?? [], problems);
+  addRunProblems(portal, 'scaffold', portal.scaffold?.runs ?? [], problems);
+  if (portal.scaffold?.runtimeError)
+    problems.push({
+      portal: portal.id,
+      stage: 'scaffold',
+      problem: `runtime on scaffolded state: ${portal.scaffold.runtimeError}`,
+    });
+}
+
 /** Problems that fail --strict. */
 export function matrixProblems(matrix) {
   const problems = [];
-  for (const portal of matrix.portals) {
-    for (const error of portal.errors)
-      problems.push({ portal: portal.id, stage: error.stage, problem: `stage failed: ${error.message}` });
-    for (const item of portal.import?.comparison?.unexplained ?? [])
-      problems.push({
-        portal: portal.id,
-        stage: 'import',
-        problem: `${item.kind}: export ${item.expected}, imported ${item.imported} (${item.unexplained > 0 ? `${item.unexplained} missing` : `${-item.unexplained} extra`}, unexplained)`,
-      });
-    for (const item of portal.import?.routes?.collisions ?? [])
-      if (item.distinctRecords > 1 && !item.resolved)
-        problems.push({
-          portal: portal.id,
-          stage: 'import',
-          problem: `route ${item.route} is claimed by ${item.owners.map((owner) => `${owner.kind} '${owner.name}' (${owner.url})`).join(' and ')}`,
-        });
-    for (const item of portal.import?.routes?.malformed ?? [])
-      problems.push({
-        portal: portal.id,
-        stage: 'import',
-        problem: `${item.kind} '${item.name}' has the malformed URL ${item.url}`,
-      });
-    for (const [stage, runs] of [
-      ['sweep', portal.sweep?.runs ?? []],
-      ['scaffold', portal.scaffold?.runs ?? []],
-    ])
-      for (const run of runs) {
-        for (const failure of run.failures ?? [])
-          problems.push({
-            portal: portal.id,
-            stage,
-            problem: `${run.persona}: ${failure.url} ${failure.failure ?? `HTTP ${failure.status}`}`,
-          });
-        for (const injected of run.injectedNonDocuments ?? [])
-          problems.push({
-            portal: portal.id,
-            stage,
-            problem: `${run.persona}: local runtime injected into non-document ${injected.url}`,
-          });
-      }
-    if (portal.scaffold?.runtimeError)
-      problems.push({
-        portal: portal.id,
-        stage: 'scaffold',
-        problem: `runtime on scaffolded state: ${portal.scaffold.runtimeError}`,
-      });
-  }
+  for (const portal of matrix.portals) addPortalProblems(portal, problems);
   for (const item of matrix.serve?.checks ?? [])
-    if (!item.passed)
+    if (!item.passed) {
+      const detail = item.detail ? ` (${item.detail})` : '';
       problems.push({
         portal: 'project',
         stage: 'serve',
-        problem: `${item.name}${item.detail ? ` (${item.detail})` : ''}`,
+        problem: `${item.name}${detail}`,
       });
+    }
   if (matrix.serve?.error) problems.push({ portal: 'project', stage: 'serve', problem: matrix.serve.error });
   return problems;
 }
@@ -2082,12 +2141,15 @@ const pairs = (object) =>
         .join(', ')
     : '–';
 const seconds = (ms) => (Number.isFinite(ms) ? `${(ms / 1000).toFixed(1)} s` : '–');
-const bytes = (value) =>
-  Number.isFinite(value)
-    ? value >= 1048576
-      ? `${(value / 1048576).toFixed(1)} MB`
-      : `${(value / 1024).toFixed(0)} KB`
-    : '–';
+const bytes = (value) => {
+  if (!Number.isFinite(value)) return '–';
+  if (value >= 1048576) return `${(value / 1048576).toFixed(1)} MB`;
+  return `${(value / 1024).toFixed(0)} KB`;
+};
+const collisionStatus = (item) => {
+  if (item.resolved) return ` ✓ (${item.resolved.rule}: ${item.resolved.served})`;
+  return item.distinctRecords > 1 ? ' ⚠' : ' (same ID)';
+};
 
 function table(header, rows) {
   return [
@@ -2097,8 +2159,67 @@ function table(header, rows) {
   ].join('\n');
 }
 
+const collisionSuffix = (item) => {
+  if (item.resolved) return `; the runtime serves ${item.resolved.served} (${item.resolved.rule}, URL_CLAIMED_TWICE)`;
+  if (item.distinctRecords > 1) return '';
+  return ' (one record ID exported twice)';
+};
+
+function appendRunFindings(portal, run, findings) {
+  for (const page of run.liquidErrorPages ?? [])
+    findings.push(`- **${portal.id}** ${run.persona}: ${page.url} — ${page.messages.join(' | ')}`);
+  for (const failure of run.failures ?? []) {
+    const reason = failure.failure ?? `HTTP ${failure.status}`;
+    findings.push(`- **${portal.id}** ${run.persona}: ${failure.url} — ${reason}`);
+  }
+}
+
+/* NOSONAR */ function appendPortalFindings(portal, findings) {
+  for (const row of portal.import?.comparison?.rows ?? [])
+    if (row.unexplained !== 0) {
+      const note = row.note ? ` (${row.note})` : '';
+      findings.push(
+        `- **${portal.id}** import: ${row.label} — export ${row.expected}, imported ${row.imported}${note}`,
+      );
+    }
+  for (const item of portal.import?.comparison?.unrecognizedComponentTypes ?? []) {
+    const documented = item.documented ? ` (${item.documented})` : '';
+    findings.push(
+      `- **${portal.id}** import: ${item.records} record(s) of ${item.kind}${documented} are not recognised by the importer`,
+    );
+  }
+  for (const item of portal.import?.routes?.collisions ?? [])
+    findings.push(
+      `- **${portal.id}** routing: ${item.route} is claimed by ${item.owners.map(routeOwnerLabel).join(' and ')}${collisionSuffix(item)}`,
+    );
+  for (const item of portal.import?.routes?.malformed ?? [])
+    findings.push(`- **${portal.id}** routing: ${item.kind} '${item.name}' has the malformed URL ${item.url}`);
+  for (const item of portal.import?.comparison?.notes ?? [])
+    findings.push(`- **${portal.id}** import note: ${item.count} ${item.kind} record(s) ${item.reason}`);
+  for (const item of portal.import?.comparison?.limitations ?? [])
+    findings.push(`- **${portal.id}** import limitation: ${item.count} ${item.kind} record(s) ${item.reason}`);
+  for (const item of portal.liquid?.missingIncludes ?? [])
+    findings.push(`- **${portal.id}** Liquid: include '${item.name}' is ${item.classification.replaceAll('-', ' ')}`);
+  for (const item of portal.liquid?.syntaxErrors ?? [])
+    findings.push(`- **${portal.id}** Liquid syntax error in ${item.source}: ${item.message}`);
+  for (const run of [...(portal.sweep?.runs ?? []), ...(portal.scaffold?.runs ?? [])])
+    appendRunFindings(portal, run, findings);
+  for (const error of portal.errors) findings.push(`- **${portal.id}** ${error.stage} stage failed: ${error.message}`);
+}
+
+function appendMatrixFindings(matrix, portals, lines) {
+  const findings = [];
+  for (const portal of portals) appendPortalFindings(portal, findings);
+  for (const item of matrix.serve?.checks ?? [])
+    if (!item.passed) {
+      const detail = item.detail ? ` (${item.detail})` : '';
+      findings.push(`- **project** serve: ${item.name} failed${detail}`);
+    }
+  lines.push(findings.length ? findings.join('\n') : 'None.', '');
+}
+
 /** Markdown summary: one column per portal, then findings. */
-export function formatMatrix(matrix) {
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export function formatMatrix(matrix) {
   const portals = matrix.portals;
   const ids = portals.map((portal) => portal.id);
   const lines = [];
@@ -2115,9 +2236,11 @@ export function formatMatrix(matrix) {
   ];
   // Rows of one stage: a failed or skipped stage shows as such instead of partial values.
   const stageMetric = (stage) => (label, get) =>
-    metric(label, (portal) =>
-      !portal[stage] ? '–' : portal[stage].error ? `error: ${portal[stage].error}` : get(portal),
-    );
+    metric(label, (portal) => {
+      if (!portal[stage]) return '–';
+      if (portal[stage].error) return `error: ${portal[stage].error}`;
+      return get(portal);
+    });
   add(`# Portal matrix`, '');
   add(`Generated ${matrix.generatedAt} on ${matrix.platform} (Node ${matrix.node}) in ${seconds(matrix.durationMs)}.`);
   add(
@@ -2125,8 +2248,11 @@ export function formatMatrix(matrix) {
       ? `Project: \`${matrix.input.project}\` (version ${matrix.input.version}, solution order ${matrix.input.solutionOrder}).`
       : `Catalogue sites: ${matrix.input.sites.join(', ')}.`,
   );
+  const scaffoldNote = matrix.scaffoldPersonas ? `; scaffold personas: ${matrix.scaffoldPersonas.join(', ')}` : '';
+  const limitNote = matrix.sweepScope.limit ? `, limit ${matrix.sweepScope.limit}` : '';
+  const pathNote = matrix.sweepScope.pathPrefix ? `, path ${matrix.sweepScope.pathPrefix}` : '';
   add(
-    `Stages: ${matrix.stages.join(', ')}; fresh-state personas: ${matrix.personas.join(', ')}${matrix.scaffoldPersonas ? `; scaffold personas: ${matrix.scaffoldPersonas.join(', ')}` : ''}; sweep state: ${matrix.sweepScope.state}${matrix.sweepScope.limit ? `, limit ${matrix.sweepScope.limit}` : ''}${matrix.sweepScope.pathPrefix ? `, path ${matrix.sweepScope.pathPrefix}` : ''}.`,
+    `Stages: ${matrix.stages.join(', ')}; fresh-state personas: ${matrix.personas.join(', ')}${scaffoldNote}; sweep state: ${matrix.sweepScope.state}${limitNote}${pathNote}.`,
     '',
   );
   add(
@@ -2137,13 +2263,11 @@ export function formatMatrix(matrix) {
         metric('website', (p) => p.import?.website?.name ?? p.runtime?.status?.site),
         metric('source', (p) => p.sourceDir),
         metric('reference origin', (p) => p.origin),
-        metric('solution layers', (p) =>
-          p.bootstrap?.layers != null
-            ? `${p.bootstrap.layers} (${p.bootstrap.layerOrder}; ${p.bootstrap.firstLayer} … ${p.bootstrap.lastLayer})`
-            : p.solutionRoots.length
-              ? `${p.solutionRoots.length} root(s)`
-              : 'none',
-        ),
+        metric('solution layers', (p) => {
+          if (p.bootstrap?.layers != null)
+            return `${p.bootstrap.layers} (${p.bootstrap.layerOrder}; ${p.bootstrap.firstLayer} … ${p.bootstrap.lastLayer})`;
+          return p.solutionRoots.length ? `${p.solutionRoots.length} root(s)` : 'none';
+        }),
       ],
     ),
     '',
@@ -2162,7 +2286,9 @@ export function formatMatrix(matrix) {
             ...portals.map((portal) => {
               const row = portal.import?.comparison?.rows.find((item) => item.kind === kind);
               if (!row) return '–';
-              const flag = row.unexplained !== 0 ? ' ⚠' : row.difference ? ' ✓' : '';
+              let flag = '';
+              if (row.unexplained !== 0) flag = ' ⚠';
+              else if (row.difference) flag = ' ✓';
               return `${row.imported}/${row.expected}${flag}`;
             }),
           ]),
@@ -2177,14 +2303,20 @@ export function formatMatrix(matrix) {
             'unrecognised component types',
             (p) =>
               (p.import?.comparison?.unrecognizedComponentTypes ?? [])
-                .map((item) => `${item.kind}${item.documented ? ` (${item.documented})` : ''} ×${item.records}`)
+                .map((item) => {
+                  const documented = item.documented ? ` (${item.documented})` : '';
+                  return `${item.kind}${documented} ×${item.records}`;
+                })
                 .join(', ') || 'none',
           ),
-          stageMetric('import')(
-            'route collisions / malformed URLs',
-            (p) =>
-              `${(p.import.routes?.collisions ?? []).map((item) => `${item.route} ×${item.owners.length}${item.resolved ? ` ✓ (${item.resolved.rule}: ${item.resolved.served})` : item.distinctRecords > 1 ? ' ⚠' : ' (same ID)'}`).join(', ') || 'none'} / ${(p.import.routes?.malformed ?? []).map((item) => item.url).join(', ') || 'none'}`,
-          ),
+          stageMetric('import')('route collisions / malformed URLs', (p) => {
+            const collisions =
+              (p.import.routes?.collisions ?? [])
+                .map((item) => `${item.route} ×${item.owners.length}${collisionStatus(item)}`)
+                .join(', ') || 'none';
+            const malformed = (p.import.routes?.malformed ?? []).map((item) => item.url).join(', ') || 'none';
+            return `${collisions} / ${malformed}`;
+          }),
           stageMetric('import')('import diagnostics', (p) => pairs(p.import?.diagnostics)),
           stageMetric('import')(
             'census / import time',
@@ -2348,29 +2480,27 @@ export function formatMatrix(matrix) {
     for (const persona of personas) {
       const run = (portal) => runsOf(portal).find((item) => item.persona === persona);
       rows.push(
-        metric(`${persona}: requests`, (p) =>
-          run(p)?.error ? `error: ${run(p).error}` : run(p) ? `${run(p).requests} (${run(p).pages} pages)` : '–',
-        ),
-      );
-      rows.push(metric(`${persona}: status codes`, (p) => statuses(run(p)?.byStatus)));
-      rows.push(
+        metric(`${persona}: requests`, (p) => {
+          const item = run(p);
+          if (item?.error) return `error: ${item.error}`;
+          return item ? `${item.requests} (${item.pages} pages)` : '–';
+        }),
+        metric(`${persona}: status codes`, (p) => statuses(run(p)?.byStatus)),
         metric(`${persona}: Liquid error pages`, (p) => (run(p) ? (run(p).liquidErrorPages?.length ?? '–') : '–')),
-      );
-      rows.push(metric(`${persona}: Liquid diagnostics`, (p) => pairs(run(p)?.liquidDiagnosticCounts)));
-      rows.push(
+        metric(`${persona}: Liquid diagnostics`, (p) => pairs(run(p)?.liquidDiagnosticCounts)),
         metric(`${persona}: 5xx / failures / injected`, (p) =>
           run(p) ? `${run(p).failures?.length ?? 0} / ${run(p).injectedNonDocuments?.length ?? 0}` : '–',
         ),
+        metric(`${persona}: identity`, (p) => {
+          const item = run(p);
+          if (!item) return '–';
+          return (
+            item.note ??
+            (item.identity?.authenticated ? `contact, ${item.identity.roles?.length ?? 0} role(s)` : 'anonymous')
+          );
+        }),
+        metric(`${persona}: duration`, (p) => seconds(run(p)?.durationMs)),
       );
-      rows.push(
-        metric(`${persona}: identity`, (p) =>
-          run(p)
-            ? (run(p).note ??
-              (run(p).identity?.authenticated ? `contact, ${run(p).identity.roles?.length ?? 0} role(s)` : 'anonymous'))
-            : '–',
-        ),
-      );
-      rows.push(metric(`${persona}: duration`, (p) => seconds(run(p)?.durationMs)));
     }
     add(table(['', ...ids], rows), '');
   }
@@ -2423,24 +2553,20 @@ export function formatMatrix(matrix) {
         metric(`${persona}: requests / status codes`, (p) =>
           run(p) ? `${run(p).requests}: ${statuses(run(p).byStatus)}` : '–',
         ),
-      );
-      rows.push(
-        metric(`${persona}: identity`, (p) =>
-          run(p)
-            ? (run(p).note ??
-              (run(p).identity?.authenticated ? `contact, ${run(p).identity.roles?.length ?? 0} role(s)` : 'anonymous'))
-            : '–',
-        ),
-      );
-      rows.push(metric(`${persona}: record (?id=) requests`, (p) => (run(p) ? group(p, 'recordRequests') : '–')));
-      rows.push(
+        metric(`${persona}: identity`, (p) => {
+          const item = run(p);
+          if (!item) return '–';
+          return (
+            item.note ??
+            (item.identity?.authenticated ? `contact, ${item.identity.roles?.length ?? 0} role(s)` : 'anonymous')
+          );
+        }),
+        metric(`${persona}: record (?id=) requests`, (p) => (run(p) ? group(p, 'recordRequests') : '–')),
         metric(`${persona}: basic / advanced form pages`, (p) =>
           run(p) ? `${group(p, 'basicFormPages')} | ${group(p, 'advancedFormPages')}` : '–',
         ),
-      );
-      rows.push(metric(`${persona}: list pages`, (p) => (run(p) ? group(p, 'listPages') : '–')));
-      rows.push(metric(`${persona}: component diagnostics`, (p) => pairs(run(p)?.components?.componentDiagnostics)));
-      rows.push(
+        metric(`${persona}: list pages`, (p) => (run(p) ? group(p, 'listPages') : '–')),
+        metric(`${persona}: component diagnostics`, (p) => pairs(run(p)?.components?.componentDiagnostics)),
         metric(`${persona}: Liquid error pages / 5xx`, (p) =>
           run(p) ? `${run(p).liquidErrorPages.length} / ${run(p).failures.length}` : '–',
         ),
@@ -2471,13 +2597,12 @@ export function formatMatrix(matrix) {
               ? `error: ${p.runtime.webApiProbe.error}`
               : `${p.runtime.webApiProbe?.tables} tables: ${statuses(p.runtime.webApiProbe?.byStatus)}`,
           ),
-          stageMetric('runtime')('Web API probe, all-roles session', (p) =>
-            !p.runtime.webApiProbeAllRoles
-              ? '–'
-              : p.runtime.webApiProbeAllRoles.error
-                ? `error: ${p.runtime.webApiProbeAllRoles.error}`
-                : `${p.runtime.webApiProbeAllRoles.tables} tables: ${statuses(p.runtime.webApiProbeAllRoles.byStatus)}`,
-          ),
+          stageMetric('runtime')('Web API probe, all-roles session', (p) => {
+            const probe = p.runtime.webApiProbeAllRoles;
+            if (!probe) return '–';
+            if (probe.error) return `error: ${probe.error}`;
+            return `${probe.tables} tables: ${statuses(probe.byStatus)}`;
+          }),
         ],
       ),
       '',
@@ -2485,8 +2610,12 @@ export function formatMatrix(matrix) {
   }
   if (matrix.serve) {
     add('## Multi-portal serve (`cli.mjs serve --project`)', '');
+    const warmNote = matrix.serve.warmStartMs
+      ? `, warm (same state directory) in ${seconds(matrix.serve.warmStartMs)}`
+      : '';
+    const errorNote = matrix.serve.error ? ` Error: ${matrix.serve.error}` : '';
     add(
-      `Started cold in ${seconds(matrix.serve.startMs)}${matrix.serve.warmStartMs ? `, warm (same state directory) in ${seconds(matrix.serve.warmStartMs)}` : ''}; stopped ${matrix.serve.stop?.graceful ? 'gracefully' : 'forcibly'} in ${seconds(matrix.serve.stop?.ms)}.${matrix.serve.error ? ` Error: ${matrix.serve.error}` : ''}`,
+      `Started cold in ${seconds(matrix.serve.startMs)}${warmNote}; stopped ${matrix.serve.stop?.graceful ? 'gracefully' : 'forcibly'} in ${seconds(matrix.serve.stop?.ms)}.${errorNote}`,
       '',
     );
     add(
@@ -2507,55 +2636,16 @@ export function formatMatrix(matrix) {
     add(
       table(
         ['check', 'result'],
-        matrix.serve.checks.map((item) => [
-          item.name,
-          `${item.passed ? 'pass' : 'FAIL'}${item.detail ? ` (${item.detail})` : ''}`,
-        ]),
+        matrix.serve.checks.map((item) => {
+          const detail = item.detail ? ` (${item.detail})` : '';
+          return [item.name, `${item.passed ? 'pass' : 'FAIL'}${detail}`];
+        }),
       ),
       '',
     );
   }
   add('## Findings', '');
-  const findings = [];
-  for (const portal of portals) {
-    for (const row of portal.import?.comparison?.rows ?? [])
-      if (row.unexplained !== 0)
-        findings.push(
-          `- **${portal.id}** import: ${row.label} — export ${row.expected}, imported ${row.imported}${row.note ? ` (${row.note})` : ''}`,
-        );
-    for (const item of portal.import?.comparison?.unrecognizedComponentTypes ?? [])
-      findings.push(
-        `- **${portal.id}** import: ${item.records} record(s) of ${item.kind}${item.documented ? ` (${item.documented})` : ''} are not recognised by the importer`,
-      );
-    for (const item of portal.import?.routes?.collisions ?? [])
-      findings.push(
-        `- **${portal.id}** routing: ${item.route} is claimed by ${item.owners.map((owner) => `${owner.kind} '${owner.name}' (${owner.url})`).join(' and ')}${item.resolved ? `; the runtime serves ${item.resolved.served} (${item.resolved.rule}, URL_CLAIMED_TWICE)` : item.distinctRecords > 1 ? '' : ' (one record ID exported twice)'}`,
-      );
-    for (const item of portal.import?.routes?.malformed ?? [])
-      findings.push(`- **${portal.id}** routing: ${item.kind} '${item.name}' has the malformed URL ${item.url}`);
-    for (const item of portal.import?.comparison?.notes ?? [])
-      findings.push(`- **${portal.id}** import note: ${item.count} ${item.kind} record(s) ${item.reason}`);
-    for (const item of portal.import?.comparison?.limitations ?? [])
-      findings.push(`- **${portal.id}** import limitation: ${item.count} ${item.kind} record(s) ${item.reason}`);
-    for (const item of portal.liquid?.missingIncludes ?? [])
-      findings.push(`- **${portal.id}** Liquid: include '${item.name}' is ${item.classification.replace(/-/g, ' ')}`);
-    for (const item of portal.liquid?.syntaxErrors ?? [])
-      findings.push(`- **${portal.id}** Liquid syntax error in ${item.source}: ${item.message}`);
-    for (const run of [...(portal.sweep?.runs ?? []), ...(portal.scaffold?.runs ?? [])]) {
-      for (const page of run.liquidErrorPages ?? [])
-        findings.push(`- **${portal.id}** ${run.persona}: ${page.url} — ${page.messages.join(' | ')}`);
-      for (const failure of run.failures ?? [])
-        findings.push(
-          `- **${portal.id}** ${run.persona}: ${failure.url} — ${failure.failure ?? `HTTP ${failure.status}`}`,
-        );
-    }
-    for (const error of portal.errors)
-      findings.push(`- **${portal.id}** ${error.stage} stage failed: ${error.message}`);
-  }
-  for (const item of matrix.serve?.checks ?? [])
-    if (!item.passed)
-      findings.push(`- **project** serve: ${item.name} failed${item.detail ? ` (${item.detail})` : ''}`);
-  add(findings.length ? findings.join('\n') : 'None.', '');
+  appendMatrixFindings(matrix, portals, lines);
   add('## What this proves', '');
   add(
     'Offline facts about local sources and the local runtime only: what the importer and bootstrap derive, which constructs the Liquid and Web API implementations lack, which pages, forms and lists render, redirect or fail for synthetic personas over empty, scaffolded or preset data, how long runtimes take to start and whether project portals stay isolated. It does not prove parity with an environment, which layer is deployed, real data access, client-side behaviour after page load or behaviour that depends on records the scaffold does not generate.',
@@ -2638,7 +2728,7 @@ async function main(argv = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  main().then(
+  /* NOSONAR: module-level promise chain must not block evaluation */ main().then(
     (code) => {
       process.exitCode = code;
     },

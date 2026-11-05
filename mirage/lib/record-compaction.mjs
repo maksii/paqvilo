@@ -32,7 +32,7 @@ export async function compactRecordGraph(state, directory, owner) {
       });
     }
     if (sources.some(({ source, fingerprint }) => source.fingerprint() !== fingerprint))
-      throw Object.assign(Error('Local records changed during compaction'), { code: 'StateConflict', status: 409 });
+      throw Object.assign(new Error('Local records changed during compaction'), { code: 'StateConflict', status: 409 });
     return {
       state: encoded.value,
       session,

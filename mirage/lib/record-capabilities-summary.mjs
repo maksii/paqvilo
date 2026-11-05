@@ -22,7 +22,10 @@ export function createRecordCapabilitiesSummary(store) {
   };
   // Only the private immutable result may reuse serialized bytes. Adapter and
   // public results never enter this cache. Keep buffers for pending writes alive.
-  summary.encoded = (value) =>
-    value === previous && previous ? (encoded ??= Buffer.from(JSON.stringify(previous))) : undefined;
+  summary.encoded = (value) => {
+    if (value !== previous || !previous) return undefined;
+    encoded ??= Buffer.from(JSON.stringify(previous));
+    return encoded;
+  };
   return summary;
 }

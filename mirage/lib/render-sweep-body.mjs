@@ -19,7 +19,8 @@ export function retainedResponseBody(body, contentType) {
     if (node.content) pending.push(node.content);
   }
   let authored = html;
-  for (const { startOffset, endOffset } of ranges.sort((a, b) => b.startOffset - a.startOffset))
+  ranges.sort((a, b) => b.startOffset - a.startOffset);
+  for (const { startOffset, endOffset } of ranges)
     authored = authored.slice(0, startOffset) + authored.slice(endOffset);
   return {
     body: authored.slice(0, 20_000),

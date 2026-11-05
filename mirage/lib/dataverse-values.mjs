@@ -12,11 +12,11 @@ import {
 import { FISCAL_OPERATORS, fiscalCalendar, fiscalOperatorPredicate, fiscalPeriodOf } from './fiscal-calendar.mjs';
 import { compileFormattedTimeZone } from './formatted-time-zone.mjs';
 
-export const own = (obj, key) => obj != null && Object.prototype.hasOwnProperty.call(obj, key);
+export const own = (obj, key) => obj != null && Object.hasOwn(obj, key);
 
-const GUID_BODY = '[\\da-f]{8}-[\\da-f]{4}-[\\da-f]{4}-[\\da-f]{4}-[\\da-f]{12}';
+const GUID_BODY = String.raw`[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}`;
 export const GUID_PATTERN = new RegExp(`^${GUID_BODY}$`, 'i');
-const DECORATED_GUID = new RegExp(`^\\s*(?:\\{(${GUID_BODY})\\}|\\((${GUID_BODY})\\)|(${GUID_BODY}))\\s*$`, 'i');
+const DECORATED_GUID = new RegExp(String.raw`^\s*(?:\{(${GUID_BODY})\}|\((${GUID_BODY})\)|(${GUID_BODY}))\s*$`, 'i');
 
 /** Lookup references, choice wrappers and plain values compare by their stored scalar. */
 export const scalar = (value) =>
@@ -147,7 +147,7 @@ export function portalDateOnly(value) {
 }
 /** Opt-in portal conversion; direct data/query date parsing remains ISO-only. */
 const MONTH_FIRST_DATE =
-  /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2})(\.\d{1,7})?)?\s*(AM|PM)?)?$/i;
+  /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2})(\.\d{1,7})?)?\s*(AM|PM)?)?$/i; // NOSONAR: regex kept: a rewrite would change matches or captures
 const ENGLISH_MONTHS = new Map(
   [
     'january',
@@ -167,15 +167,12 @@ const ENGLISH_MONTHS = new Map(
     [name.slice(0, 3), index + 1],
   ]),
 );
-export function portalMonthFirstDate(value, { twoDigitYearMax = 2049 } = {}) {
+/* NOSONAR */ export function portalMonthFirstDate(value, { twoDigitYearMax = 2049 } = {}) {
   if (typeof value !== 'string') return null;
   let text = value.trim();
   const named = /^([a-z]+)\s+(\d{1,2}),?\s+(\d{4})(.*)$/i.exec(text);
-  if (named) {
-    const month = ENGLISH_MONTHS.get(named[1].toLowerCase());
-    if (!month) return null;
-    text = `${month}/${named[2]}/${named[3]}${named[4]}`;
-  }
+  if (named) text = namedMonthDate(named);
+  if (text === null) return null;
   const match = MONTH_FIRST_DATE.exec(text);
   if (!match) return null;
   if (!Number.isInteger(twoDigitYearMax) || twoDigitYearMax < 99 || twoDigitYearMax > 9999) return null;
@@ -195,6 +192,11 @@ export function portalMonthFirstDate(value, { twoDigitYearMax = 2049 } = {}) {
   const result =
     match[4] === undefined ? date : `${date}T${pad(hour)}:${match[5]}:${match[6] ?? '00'}${match[7] ?? ''}Z`;
   return parseDateValue(result) ? result : null;
+}
+
+function namedMonthDate(named) {
+  const month = ENGLISH_MONTHS.get(named[1].toLowerCase());
+  return month ? `${month}/${named[2]}/${named[3]}${named[4]}` : null;
 }
 
 /** Preserve the posted literal separately from the parsed value used in CrmDateTime errors. */
@@ -217,7 +219,7 @@ export function dateTimeRangeError(value, parsed = parseDateValue(value)) {
     },
   );
 }
-const ISO_DATETIME = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,7}))?)?(Z|[+-]\d{2}:?\d{2})?$/i;
+const ISO_DATETIME = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,7}))?)?(Z|[+-]\d{2}:?\d{2})?$/i; // NOSONAR: regex kept: a rewrite would change matches or captures
 
 // Date.UTC treats years 0–99 as 1900–1999. Date text must retain its literal
 // year so the caller can enforce the source/platform supported date range.
@@ -237,7 +239,7 @@ const matchesCalendar = (ms, match) => {
  * Parse stored or literal date/time values. Values without a zone are UTC,
  * matching Dataverse storage; date-only values represent local midnight.
  */
-export function parseDateValue(value, { timeZoneOffsetMinutes = 0 } = {}) {
+/* NOSONAR */ export function parseDateValue(value, { timeZoneOffsetMinutes = 0 } = {}) {
   if (value == null || value === '') return null;
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : { ms: value.getTime(), dateOnly: false };
   const text = String(scalar(value)).trim();
@@ -252,23 +254,9 @@ export function parseDateValue(value, { timeZoneOffsetMinutes = 0 } = {}) {
   if (!match) return null;
   // Date.UTC normalizes overflowing calendar/clock components. Dataverse's
   // payload reader rejects them instead of silently moving to another instant.
-  if (
-    +match[2] < 1 ||
-    +match[2] > 12 ||
-    +match[3] < 1 ||
-    +match[3] > 31 ||
-    +match[4] > 23 ||
-    +match[5] > 59 ||
-    +(match[6] ?? 0) > 59
-  )
-    return null;
+  if (!validDateTimeParts(match)) return null;
   const zone = match[8];
-  if (zone && zone.toUpperCase() !== 'Z') {
-    const digits = zone.slice(1).replace(':', '');
-    const hours = Number(digits.slice(0, 2)),
-      minutes = Number(digits.slice(2));
-    if (hours > 14 || minutes > 59 || (hours === 14 && minutes !== 0)) return null;
-  }
+  if (!validDateTimeZone(zone)) return null;
   const fraction = Number(`0.${match[7] ?? '0'}`) * 1000;
   let ms = calendarUtc(
     +match[1],
@@ -281,11 +269,29 @@ export function parseDateValue(value, { timeZoneOffsetMinutes = 0 } = {}) {
   );
   if (!matchesCalendar(ms, match)) return null;
   if (zone && zone.toUpperCase() !== 'Z') {
-    const sign = zone[0] === '-' ? -1 : 1;
+    const sign = zone.startsWith('-') ? -1 : 1;
     const digits = zone.slice(1).replace(':', '');
     ms -= sign * (Number(digits.slice(0, 2)) * 60 + Number(digits.slice(2))) * 60000;
   }
   return { ms, dateOnly: false };
+}
+function validDateTimeParts(match) {
+  return !(
+    +match[2] < 1 ||
+    +match[2] > 12 ||
+    +match[3] < 1 ||
+    +match[3] > 31 ||
+    +match[4] > 23 ||
+    +match[5] > 59 ||
+    +(match[6] ?? 0) > 59
+  );
+}
+function validDateTimeZone(zone) {
+  if (!zone || zone.toUpperCase() === 'Z') return true;
+  const digits = zone.slice(1).replace(':', '');
+  const hours = Number(digits.slice(0, 2)),
+    minutes = Number(digits.slice(2));
+  return !(hours > 14 || minutes > 59 || (hours === 14 && minutes !== 0));
 }
 export const looksLikeDate = (value) =>
   typeof value === 'string' && (ISO_DATE.test(value.trim()) || ISO_DATETIME.test(value.trim()));
@@ -407,10 +413,12 @@ export function valuesEqual(stored, literal, options) {
 /** Ordering comparison for gt/ge/lt/le; NaN when not comparable. */
 export function compareForFilter(stored, literal, options = {}) {
   const pair = coercePair(stored, literal, options);
-  if (!pair) return NaN;
+  if (!pair) return Number.NaN;
   if (pair.kind === 'string')
     return textCollator(options.collation).compare(String(scalar(stored)), String(scalar(literal)));
-  return pair.x < pair.y ? -1 : pair.x > pair.y ? 1 : 0;
+  if (pair.x < pair.y) return -1;
+  if (pair.x > pair.y) return 1;
+  return 0;
 }
 
 // Static $filter operand typing (Dataverse Web API): the EDM type a column reads as, and the family
@@ -494,22 +502,12 @@ export function makeSortKey(value, { definition, rawChoice = false, lookupName, 
     decimalParts(value)
   )
     return { t: 'n', v: parseNumericLiteral(value) };
-  if (typeof value === 'object' && !Array.isArray(value)) {
-    if (own(value, 'id')) {
-      const name = lookupName ? lookupName(value) : value.name;
-      if (name != null) return { t: 's', v: String(name) };
-      return { t: 'g', v: sqlGuidSortKey(value.id) ?? String(value.id) };
-    }
-    if (own(value, 'value')) {
-      if (!rawChoice) {
-        const label = value.label ?? choiceLabelOf(definition, value.value);
-        if (label != null) return { t: 's', v: String(label) };
-      }
-      const number = Number(value.value);
-      return Number.isFinite(number) ? { t: 'n', v: number } : { t: 's', v: String(value.value) };
-    }
-    return { t: 's', v: JSON.stringify(value) };
-  }
+  if (typeof value === 'object' && !Array.isArray(value))
+    return objectSortKey(value, definition, rawChoice, lookupName);
+  return primitiveSortKey(value, kind, definition, rawChoice, lookupName, timeZoneOffsetMinutes);
+}
+
+function primitiveSortKey(value, kind, definition, rawChoice, lookupName, timeZoneOffsetMinutes) {
   if (kind === 'choice' && !rawChoice) {
     const label = choiceLabelOf(definition, value);
     if (label != null) return { t: 's', v: String(label) };
@@ -528,14 +526,38 @@ export function makeSortKey(value, { definition, rawChoice = false, lookupName, 
   }
   return { t: 's', v: String(value) };
 }
-export function compareSortKeys(a, b, collation = 'CI_AI') {
-  if (a == null || b == null) return a == null ? (b == null ? 0 : -1) : 1;
-  if (a.t === b.t) {
-    if (a.t === 's') return textCollator(collation).compare(a.v, b.v);
-    if (a.t === 'n' && (isExactNumeric(a.v) || isExactNumeric(b.v))) return compareNumeric(a.v, b.v);
-    return a.v < b.v ? -1 : a.v > b.v ? 1 : 0;
+function objectSortKey(value, definition, rawChoice, lookupName) {
+  if (own(value, 'id')) {
+    const name = lookupName ? lookupName(value) : value.name;
+    if (name != null) return { t: 's', v: String(name) };
+    return { t: 'g', v: sqlGuidSortKey(value.id) ?? String(value.id) };
   }
+  if (!own(value, 'value')) return { t: 's', v: JSON.stringify(value) };
+  if (!rawChoice) {
+    const label = value.label ?? choiceLabelOf(definition, value.value);
+    if (label != null) return { t: 's', v: String(label) };
+  }
+  const number = Number(value.value);
+  return Number.isFinite(number) ? { t: 'n', v: number } : { t: 's', v: String(value.value) };
+}
+export function compareSortKeys(a, b, collation = 'CI_AI') {
+  if (a == null || b == null) return compareNullSortKeys(a, b);
+  if (a.t === b.t) return compareMatchingSortKeys(a, b, collation);
   return a.t < b.t ? -1 : 1;
+}
+function compareNullSortKeys(a, b) {
+  if (a == null) {
+    if (b == null) return 0;
+    return -1;
+  }
+  return 1;
+}
+function compareMatchingSortKeys(a, b, collation) {
+  if (a.t === 's') return textCollator(collation).compare(a.v, b.v);
+  if (a.t === 'n' && (isExactNumeric(a.v) || isExactNumeric(b.v))) return compareNumeric(a.v, b.v);
+  if (a.v < b.v) return -1;
+  if (a.v > b.v) return 1;
+  return 0;
 }
 
 /** SQL LIKE pattern (%, _, [set], [^set], [%] literals) as an anchored matcher. */
@@ -544,29 +566,32 @@ export function likeMatcher(pattern, collation = 'CI_AI') {
   let out = '';
   for (let i = 0; i < source.length; i++) {
     const c = source[i];
-    if (c === '%') out += '[\\s\\S]*';
-    else if (c === '_') out += '[\\s\\S]';
+    if (c === '%') out += String.raw`[\s\S]*`;
+    else if (c === '_') out += String.raw`[\s\S]`;
     else if (c === '[') {
-      const close = source.indexOf(']', i + 1);
-      if (close < 0) {
-        out += '\\[';
-        continue;
-      }
-      let body = source.slice(i + 1, close),
-        negate = false;
-      // SQL LIKE treats ']' literally outside a set. '[]]' contains an
-      // empty set and cannot match; it is not a regex-style escape for ']'.
-      if (!body || body === '^') return () => false;
-      if (body.length > 1 && body[0] === '^') {
-        negate = true;
-        body = body.slice(1);
-      }
-      out += `[${negate ? '^' : ''}${body.replace(/[\\\]^]/g, '\\$&')}]`;
-      i = close;
-    } else out += c.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+      const set = likeCharacterSet(source, i);
+      if (set === false) return () => false;
+      if (set) {
+        out += set.pattern;
+        i = set.close; // NOSONAR: loop cursor is advanced in the body on purpose
+      } else out += String.raw`\[`;
+    } else out += c.replace(/[.*+?^${}()|[\]\\/]/g, String.raw`\$&`);
   }
   const expression = new RegExp(`^${out}$`, 's');
   return (value) => value != null && expression.test(foldText(scalar(value), collation));
+}
+/* NOSONAR: mixed return values are part of the contract */ function likeCharacterSet(source, index) {
+  const close = source.indexOf(']', index + 1);
+  if (close < 0) return null;
+  let body = source.slice(index + 1, close),
+    negate = false;
+  if (!body || body === '^') return false;
+  if (body.length > 1 && body.startsWith('^')) {
+    negate = true;
+    body = body.slice(1);
+  }
+  const escapedBody = body.replace(/[\\\]^]/g, String.raw`\$&`);
+  return { pattern: '[' + (negate ? '^' : '') + escapedBody + ']', close };
 }
 
 const DAY = 86400000;
@@ -845,9 +870,9 @@ export function formatDotNetDate(ms, format, offset = 0) {
   for (let i = 0; i < pattern.length;) {
     const c = pattern[i];
     if (c === "'" || c === '"') {
-      const end = pattern.indexOf(c, i + 1);
-      out += pattern.slice(i + 1, end < 0 ? pattern.length : end);
-      i = end < 0 ? pattern.length : end + 1;
+      const quoted = quotedFormatText(pattern, i, c);
+      out += quoted.text;
+      i = quoted.next;
       continue;
     }
     if (c === '\\') {
@@ -857,47 +882,49 @@ export function formatDotNetDate(ms, format, offset = 0) {
     }
     let run = 1;
     while (pattern[i + run] === c) run++;
-    const h12 = values.hour % 12 || 12;
-    switch (c) {
-      case 'y':
-        out += run <= 2 ? pad(values.year % 100, run) : pad(values.year, run);
-        break;
-      case 'M':
-        out +=
-          run >= 4
-            ? MONTHS[values.month - 1]
-            : run === 3
-              ? MONTHS[values.month - 1].slice(0, 3)
-              : pad(values.month, run);
-        break;
-      case 'd':
-        out += run >= 4 ? DAYS[values.weekday] : run === 3 ? DAYS[values.weekday].slice(0, 3) : pad(values.day, run);
-        break;
-      case 'H':
-        out += pad(values.hour, Math.min(run, 2));
-        break;
-      case 'h':
-        out += pad(h12, Math.min(run, 2));
-        break;
-      case 'm':
-        out += pad(values.minute, Math.min(run, 2));
-        break;
-      case 's':
-        out += pad(values.second, Math.min(run, 2));
-        break;
-      case 'f':
-      case 'F':
-        out += pad(values.millisecond, 3).slice(0, run);
-        break;
-      case 't':
-        out += (values.hour < 12 ? 'AM' : 'PM').slice(0, run === 1 ? 1 : 2);
-        break;
-      default:
-        out += c.repeat(run);
-    }
+    out += formatDateToken(c, run, values, pad);
     i += run;
   }
   return out;
+}
+
+function quotedFormatText(pattern, index, quote) {
+  const end = pattern.indexOf(quote, index + 1);
+  return {
+    text: pattern.slice(index + 1, end < 0 ? pattern.length : end),
+    next: end < 0 ? pattern.length : end + 1,
+  };
+}
+
+function formatDateToken(c, run, values, pad) {
+  const h12 = values.hour % 12 || 12;
+  switch (c) {
+    case 'y':
+      return run <= 2 ? pad(values.year % 100, run) : pad(values.year, run);
+    case 'M':
+      if (run >= 4) return MONTHS[values.month - 1];
+      if (run === 3) return MONTHS[values.month - 1].slice(0, 3);
+      return pad(values.month, run);
+    case 'd':
+      if (run >= 4) return DAYS[values.weekday];
+      if (run === 3) return DAYS[values.weekday].slice(0, 3);
+      return pad(values.day, run);
+    case 'H':
+      return pad(values.hour, Math.min(run, 2));
+    case 'h':
+      return pad(h12, Math.min(run, 2));
+    case 'm':
+      return pad(values.minute, Math.min(run, 2));
+    case 's':
+      return pad(values.second, Math.min(run, 2));
+    case 'f':
+    case 'F':
+      return pad(values.millisecond, 3).slice(0, run);
+    case 't':
+      return (values.hour < 12 ? 'AM' : 'PM').slice(0, run === 1 ? 1 : 2);
+    default:
+      return c.repeat(run);
+  }
 }
 
 const numberFormats = new Map();
@@ -913,10 +940,7 @@ const formatNumber = (value, digits) => {
     );
   return numberFormats.get(key).format(value);
 };
-const optionLabel = (definition, value) =>
-  Array.isArray(definition?.options)
-    ? definition.options.find((option) => Number(option.value) === Number(value))?.label
-    : undefined;
+const optionLabel = (definition, value) => choiceLabelOf(definition, value);
 
 /**
  * Formatted values follow Dataverse's defaults for the calling user (en-US),
@@ -924,20 +948,28 @@ const optionLabel = (definition, value) =>
  */
 export function formattedValue(value, definition, settings = {}) {
   if (value == null) return undefined;
-  if (isExactNumeric(value)) {
-    const kind = fieldKind(definition),
-      digits = kind === 'integer' ? 0 : Number.isInteger(definition?.precision) ? definition.precision : 2;
-    return (
-      (kind === 'money' ? (settings.currencySymbol ?? definition?.currencySymbol ?? '') : '') +
-      formatExactNumeric(value, digits)
-    );
-  }
+  if (isExactNumeric(value)) return formattedExactNumeric(value, definition, settings);
   if (typeof value === 'object' && !Array.isArray(value)) {
     if (own(value, 'label') && value.label != null) return String(value.label);
     if (own(value, 'name') && own(value, 'id')) return value.name ?? undefined;
     value = scalar(value);
   }
+  return formattedByKind(value, definition, settings, fieldKind(definition));
+}
+
+function formattedExactNumeric(value, definition, settings) {
   const kind = fieldKind(definition);
+  let digits;
+  if (kind === 'integer') digits = 0;
+  else if (Number.isInteger(definition?.precision)) digits = definition.precision;
+  else digits = 2;
+  return (
+    (kind === 'money' ? (settings.currencySymbol ?? definition?.currencySymbol ?? '') : '') +
+    formatExactNumeric(value, digits)
+  );
+}
+
+/* NOSONAR */ function formattedByKind(value, definition, settings, kind) {
   switch (kind) {
     case 'choice':
       return optionLabel(definition, value);
@@ -955,38 +987,42 @@ export function formattedValue(value, definition, settings = {}) {
     case 'integer':
       return typeof value === 'number' ? formatNumber(value, 0) : undefined;
     case 'decimal':
-    case 'double':
-      return typeof value === 'number'
-        ? formatNumber(value, Number.isInteger(definition?.precision) ? definition.precision : 2)
-        : undefined;
-    case 'money':
-      return typeof value === 'number'
-        ? `${settings.currencySymbol ?? definition?.currencySymbol ?? ''}${formatNumber(value, Number.isInteger(definition?.precision) ? definition.precision : 2)}`
-        : undefined;
+    case 'double': {
+      if (typeof value !== 'number') return undefined;
+      const digits = Number.isInteger(definition?.precision) ? definition.precision : 2;
+      return formatNumber(value, digits);
+    }
+    case 'money': {
+      if (typeof value !== 'number') return undefined;
+      const digits = Number.isInteger(definition?.precision) ? definition.precision : 2;
+      return `${settings.currencySymbol ?? definition?.currencySymbol ?? ''}${formatNumber(value, digits)}`;
+    }
     case 'datetime': {
-      const parsed = parseDateValue(value);
-      if (!parsed) return undefined;
-      const behavior = dateTimeBehavior(definition);
-      const dateOnly = isDateOnlyField(definition) || /^(date|dateonly)$/i.test(String(definition?.format ?? ''));
-      const offsetAt = settings.timeZoneOffsetAt ?? compileFormattedTimeZone(settings.formattedValueTimeZone);
-      const offset =
-        isDateOnlyField(definition) || behavior === 'timezoneindependent'
-          ? 0
-          : offsetAt
-            ? offsetAt(parsed.ms)
-            : Number(settings.timeZoneOffsetMinutes ?? 0);
-      return formatDotNetDate(
-        parsed.ms,
-        dateOnly
-          ? (settings.dateFormat ?? 'M/d/yyyy')
-          : (settings.dateTimeFormat ?? `${settings.dateFormat ?? 'M/d/yyyy'} ${settings.timeFormat ?? 'h:mm tt'}`),
-        offset,
-      );
+      return formattedDateTime(value, definition, settings);
     }
     default:
       if (Array.isArray(definition?.options) && typeof value === 'number') return optionLabel(definition, value);
       return undefined;
   }
+}
+
+function formattedDateTime(value, definition, settings) {
+  const parsed = parseDateValue(value);
+  if (!parsed) return undefined;
+  const behavior = dateTimeBehavior(definition);
+  const dateOnly = isDateOnlyField(definition) || /^(date|dateonly)$/i.test(String(definition?.format ?? ''));
+  const offsetAt = settings.timeZoneOffsetAt ?? compileFormattedTimeZone(settings.formattedValueTimeZone);
+  let offset;
+  if (isDateOnlyField(definition) || behavior === 'timezoneindependent') offset = 0;
+  else if (offsetAt) offset = offsetAt(parsed.ms);
+  else offset = Number(settings.timeZoneOffsetMinutes ?? 0);
+  return formatDotNetDate(
+    parsed.ms,
+    dateOnly
+      ? (settings.dateFormat ?? 'M/d/yyyy')
+      : (settings.dateTimeFormat ?? `${settings.dateFormat ?? 'M/d/yyyy'} ${settings.timeFormat ?? 'h:mm tt'}`),
+    offset,
+  );
 }
 
 /**

@@ -8,7 +8,7 @@ import { clockFunction, systemClock, systemIds } from './runtime-clock.mjs';
 /** createMemoryStorage({ id, clock, ids }): clock is a function or { now() } in epoch milliseconds; ids is accepted for the
  * provider-factory shape (etags are a per-provider sequence). */
 export function createMemoryStorage({ id = 'memory', clock = systemClock, ids = systemIds } = {}) {
-  void ids;
+  void ids; // NOSONAR: void is intentional here
   const now = clockFunction(clock);
   const objects = new Map(),
     staged = new Map(),
@@ -124,7 +124,7 @@ export function createMemoryStorage({ id = 'memory', clock = systemClock, ids = 
       alive();
       const keys = [...objects.keys()]
         .filter((k) => k.startsWith(prefix) && (!continuation || k > continuation))
-        .sort();
+        .sort(/* NOSONAR: preserve default string coercion */);
       const page = keys.slice(0, pageSize);
       return {
         items: page.map((k) => ({

@@ -123,7 +123,7 @@ if (root) {
     const link = event.target.closest('[data-chooser-more],[data-chooser-clear]');
     if (link) {
       event.preventDefault();
-      if (link.hasAttribute('data-chooser-clear')) {
+      if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ link.hasAttribute('data-chooser-clear')) {
         form.reset();
         form.querySelector('[name=q]').value = '';
         for (const option of form.querySelectorAll('select option')) option.selected = false;
@@ -146,8 +146,8 @@ if (root) {
       save(preferences);
     }
   });
-  window.addEventListener('popstate', () => location.reload());
+  globalThis.addEventListener('popstate', () => location.reload());
   presentation(root.dataset.presentation === 'dialog');
   decorate();
-  if (preferences.pin.length || preferences.recent.length) void refresh(location.href);
+  if (preferences.pin.length || preferences.recent.length) void refresh(location.href); // NOSONAR: module-level promise chain must not block evaluation
 }

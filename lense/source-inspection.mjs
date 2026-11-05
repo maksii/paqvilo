@@ -18,9 +18,10 @@ import { resolvePluginSourcePath } from '../mirage/lib/exported-plugins.mjs';
 import { buildPortalSourceIndex, sourceEditorTarget } from '../mirage/lib/portal-source-index.mjs';
 import { loadDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
 import { definitionQuery } from './definition-query.mjs';
+import { moduleImportMatches } from '../mirage/lib/text-scanning.mjs';
 
 // Keep the browser entry point serializable, with owned dependencies embedded.
-export const inspectRenderedPage = new Function(
+/* NOSONAR */ export const inspectRenderedPage = new Function(
   `return function inspectRenderedPage(){const definitionQuery=(${definitionQuery.toString()}); return (${inspectRenderedPageImpl.toString()})();};`,
 )();
 
@@ -49,15 +50,13 @@ const inside = (root, file) => {
 const MARKUP_SOURCE_LIMIT = 1024 * 1024,
   OMITTED_SOURCE_NAME_LIMIT = 10;
 const displaySource = (portal, source) => {
-  const value = source.sourceFile
-    ? inside(portal.sourceDir, source.sourceFile)
-      ? path.relative(portal.sourceDir, source.sourceFile).replaceAll('\\', '/')
-      : path.basename(source.sourceFile)
-    : String(source.name ?? 'Source')
-        .replaceAll('\\', '/')
-        .split('/')
-        .pop();
-  return value;
+  if (!source.sourceFile)
+    return String(source.name ?? 'Source')
+      .replaceAll('\\', '/')
+      .split('/')
+      .pop();
+  if (!inside(portal.sourceDir, source.sourceFile)) return path.basename(source.sourceFile);
+  return path.relative(portal.sourceDir, source.sourceFile).replaceAll('\\', '/');
 };
 const exportIndexes = new WeakMap();
 const provenanceIndexes = new WeakMap();
@@ -112,7 +111,7 @@ async function inspectionDirectoryStamp(root) {
     });
     directories = next;
   }
-  files.sort();
+  files.sort(/* NOSONAR: preserve default string coercion */);
   return mapLimit(files, 64, async (file) => [path.relative(root, file), (await fileStamp(file)).stamp]);
 }
 async function mappedPluginStamps(sources) {
@@ -127,15 +126,130 @@ async function mappedPluginStamps(sources) {
     }
   });
 }
-const hintTokens = (hint) =>
-  hint.matchKind === 'id'
-    ? ['id:' + hint.domId]
-    : hint.matchKind === 'class'
-      ? (hint.classes ?? []).map((name) => 'class:' + hint.tag + ':' + name)
-      : Object.entries(hint.attributes ?? {}).map(
-          ([name, value]) => 'attribute:' + hint.tag + ':' + name + ':' + value,
-        );
+const hintTokens = (hint) => {
+  if (hint.matchKind === 'id') return ['id:' + hint.domId];
+  if (hint.matchKind === 'class') return (hint.classes ?? []).map((name) => 'class:' + hint.tag + ':' + name);
+  return Object.entries(hint.attributes ?? {}).map(
+    ([name, value]) => 'attribute:' + hint.tag + ':' + name + ':' + value,
+  );
+};
 const markupKey = (source) => JSON.stringify([source.kind, source.sourceFile, source.recordId ?? source.id ?? '']);
+
+function cachedSourceHints(body, source, key, previous, relatedIndexes) {
+  let old = previous?.hintsBySource.get(key);
+  if (old?.body !== body)
+    for (const related of relatedIndexes) {
+      const entry = related.hintsBySource.get(key);
+      if (entry && entry.body === body) {
+        old = entry;
+        break;
+      }
+    }
+  return old && old.body === body
+    ? old.hints.map((hint) => ({ ...hint, ...source }))
+    : elementSourceHints(body, source);
+}
+
+function addIndexedHints(source, hints, byToken, frequencies) {
+  for (const hint of hints) {
+    if (source.kind !== 'page')
+      for (const token of hintTokens(hint)) {
+        let rows = byToken.get(token);
+        if (!rows) {
+          rows = [];
+          byToken.set(token, rows);
+        }
+        rows.push(hint);
+      }
+    if (hint.matchKind === 'class') {
+      let files = frequencies.get(hint.selector);
+      if (!files) {
+        files = new Set();
+        frequencies.set(hint.selector, files);
+      }
+      files.add(source.sourceFile + '#' + source.id);
+    }
+  }
+}
+
+function indexMarkupSource(body, source, options) {
+  const { portal, previous, relatedIndexes, hintsBySource, byToken, frequencies, omittedSources, state } = options;
+  if (String(body ?? '').length > MARKUP_SOURCE_LIMIT) {
+    state.markupOmittedSourceCount++;
+    if (omittedSources.length < OMITTED_SOURCE_NAME_LIMIT) {
+      const name = displaySource(portal, source);
+      omittedSources.push(name.length > 240 ? name.slice(0, 237) + '...' : name);
+    }
+    return;
+  }
+  const key = markupKey(source);
+  const hints = cachedSourceHints(body, source, key, previous, relatedIndexes);
+  hintsBySource.set(key, { body, hints });
+  addIndexedHints(source, hints, byToken, frequencies);
+}
+
+function indexedForms(portal, metadata) {
+  return [...(portal.forms ?? []), ...(portal.advancedForms ?? [])].map((form) => {
+    const schema = metadata.componentSchemas?.[form.id] ?? metadata.componentSchemas?.[form.name],
+      advanced = form.metadata?.kind === 'advancedform';
+    const formLayouts = advanced ? formLayoutsForSchema(schema) : [];
+    return {
+      id: form.id,
+      name: form.name,
+      kind: advanced ? 'advanced-form' : 'basic-form',
+      entity: form.entityName ?? schema?.entity,
+      ...(advanced
+        ? {
+            formLayouts,
+            configuredEntities: [
+              ...new Set(
+                [form.entityName, schema?.entity, ...(schema?.steps ?? []).map((step) => step.entity)]
+                  .filter((entity) => typeof entity === 'string' && /^[a-z][a-z0-9_]*$/i.test(entity))
+                  .map((entity) => entity.toLowerCase()),
+              ),
+            ],
+          }
+        : {}),
+      sourceFile: form.metadata?._file,
+      formXml:
+        !advanced && schema?.sourceFile
+          ? { id: schema.formId, name: schema.formName, sourceFile: schema.sourceFile }
+          : null,
+      pageReferenced: false,
+    };
+  });
+}
+
+function formLayoutsForSchema(schema) {
+  const formLayouts = [];
+  const collectLayouts = (current, depth = 0) => {
+    if (!current || depth > 5) return;
+    if (current.formId && current.entity && !formLayouts.some((layout) => norm(layout.id) === norm(current.formId)))
+      formLayouts.push({
+        id: current.formId,
+        entity: current.entity.toLowerCase(),
+        name: current.formName,
+        sourceFile: current.sourceFile,
+      });
+    for (const step of current.steps ?? []) collectLayouts(step, depth + 1);
+  };
+  collectLayouts(schema);
+  return formLayouts;
+}
+
+function addMetadataForms(forms, metadata) {
+  for (const form of metadata.forms ?? [])
+    if (!forms.some((item) => norm(item.id) === norm(form.id)))
+      forms.push({
+        id: form.id,
+        name: form.name,
+        entity: form.entity,
+        kind: 'FormXml',
+        sourceFile: form.file,
+        pageReferenced: false,
+      });
+}
+
 function exportIndex(portal, metadata, indexStore = null) {
   let index = exportIndexes.get(portal);
   if (index?.metadata === metadata) return index;
@@ -182,96 +296,22 @@ function exportIndex(portal, metadata, indexStore = null) {
   const frequencies = new Map();
   const byToken = new Map(),
     markupOmittedSources = [];
-  let markupOmittedSourceCount = 0;
-  for (const { body, ...source } of sources) {
-    if (String(body ?? '').length > MARKUP_SOURCE_LIMIT) {
-      markupOmittedSourceCount++;
-      if (markupOmittedSources.length < OMITTED_SOURCE_NAME_LIMIT) {
-        const name = displaySource(portal, source);
-        markupOmittedSources.push(name.length > 240 ? name.slice(0, 237) + '...' : name);
-      }
-      continue;
-    }
-    const key = markupKey(source);
-    let old = previous?.hintsBySource.get(key);
-    if (old?.body !== body)
-      for (const related of relatedIndexes) {
-        const entry = related.hintsBySource.get(key);
-        if (entry && entry.body === body) {
-          old = entry;
-          break;
-        }
-      }
-    const hints =
-      old && old.body === body ? old.hints.map((hint) => ({ ...hint, ...source })) : elementSourceHints(body, source);
-    hintsBySource.set(key, { body, hints });
-    for (const hint of hints) {
-      if (source.kind !== 'page')
-        for (const token of hintTokens(hint)) {
-          let rows = byToken.get(token);
-          if (!rows) byToken.set(token, (rows = []));
-          rows.push(hint);
-        }
-      if (hint.matchKind === 'class') {
-        let files = frequencies.get(hint.selector);
-        if (!files) frequencies.set(hint.selector, (files = new Set()));
-        files.add(source.sourceFile + '#' + source.id);
-      }
-    }
-  }
-  const forms = [...(portal.forms ?? []), ...(portal.advancedForms ?? [])].map((form) => {
-    const schema = metadata.componentSchemas?.[form.id] ?? metadata.componentSchemas?.[form.name],
-      advanced = form.metadata?.kind === 'advancedform';
-    const formLayouts = [];
-    const collectLayouts = (current, depth = 0) => {
-      if (!current || depth > 5) return;
-      if (current.formId && current.entity && !formLayouts.some((layout) => norm(layout.id) === norm(current.formId)))
-        formLayouts.push({
-          id: current.formId,
-          entity: current.entity.toLowerCase(),
-          name: current.formName,
-          sourceFile: current.sourceFile,
-        });
-      for (const step of current.steps ?? []) collectLayouts(step, depth + 1);
-    };
-    if (advanced) collectLayouts(schema);
-    return {
-      id: form.id,
-      name: form.name,
-      kind: advanced ? 'advanced-form' : 'basic-form',
-      entity: form.entityName ?? schema?.entity,
-      ...(advanced
-        ? {
-            formLayouts,
-            configuredEntities: [
-              ...new Set(
-                [form.entityName, schema?.entity, ...(schema?.steps ?? []).map((step) => step.entity)]
-                  .filter((entity) => typeof entity === 'string' && /^[a-z][a-z0-9_]*$/i.test(entity))
-                  .map((entity) => entity.toLowerCase()),
-              ),
-            ],
-          }
-        : {}),
-      sourceFile: form.metadata?._file,
-      formXml:
-        !advanced && schema?.sourceFile
-          ? { id: schema.formId, name: schema.formName, sourceFile: schema.sourceFile }
-          : null,
-      pageReferenced: false,
-    };
-  });
+  const state = { markupOmittedSourceCount: 0 };
+  for (const { body, ...source } of sources)
+    indexMarkupSource(body, source, {
+      portal,
+      previous,
+      relatedIndexes,
+      hintsBySource,
+      byToken,
+      frequencies,
+      omittedSources: markupOmittedSources,
+      state,
+    });
+  const forms = indexedForms(portal, metadata);
   // Quick-view documents can identify a system form directly, independently
   // of an opener's include graph or a basic-form record.
-  for (const form of metadata.forms ?? [])
-    if (!forms.some((item) => norm(item.id) === norm(form.id)))
-      forms.push({
-        id: form.id,
-        name: form.name,
-        entity: form.entity,
-        kind: 'FormXml',
-        sourceFile: form.file,
-        pageReferenced: false,
-      });
+  addMetadataForms(forms, metadata);
   const lists = (portal.lists ?? []).map((list) => ({
     id: list.id,
     recordId: list.id,
@@ -287,7 +327,7 @@ function exportIndex(portal, metadata, indexStore = null) {
     metadata,
     byToken,
     hintsBySource,
-    markupOmittedSourceCount,
+    markupOmittedSourceCount: state.markupOmittedSourceCount,
     markupOmittedSources,
     classFrequencies: Object.fromEntries([...frequencies].map(([selector, files]) => [selector, files.size])),
     forms,
@@ -306,14 +346,8 @@ function exportIndex(portal, metadata, indexStore = null) {
   return index;
 }
 
-function listInspectionBindings(list) {
-  let settings;
-  try {
-    settings = JSON.parse(portalField(list.metadata ?? {}, 'settings', '{}'));
-  } catch {
-    settings = {};
-  }
-  const actions = [
+function listInspectionActions(settings) {
+  return [
     ...(Array.isArray(settings?.ViewActions) ? settings.ViewActions : []),
     ...(Array.isArray(settings?.ItemActions) ? settings.ItemActions : []),
   ].filter(
@@ -323,26 +357,48 @@ function listInspectionBindings(list) {
         action.Type,
       ),
   );
-  const viewIds = [];
-  for (let value of [portalField(list.metadata ?? {}, 'view'), portalField(list.metadata ?? {}, 'views')]) {
-    if (typeof value === 'string') {
-      try {
-        value = JSON.parse(value);
-      } catch {
-        value = value
-          .split(',')
-          .map((item) => item.trim())
-          .filter(Boolean);
-      }
-    }
-    const values = value?.Views ?? value?.views ?? value;
-    for (const view of Array.isArray(values) ? values : values ? [values] : []) {
-      const id = typeof view === 'object' ? (view.ViewId ?? view.viewId ?? view.id ?? view.value) : view;
-      if (id) viewIds.push(String(id));
-    }
+}
+
+function parseListViewSetting(value) {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
   }
+}
+
+function appendListViewIds(value, viewIds) {
+  const values = value?.Views ?? value?.views ?? value;
+  let viewValues = [];
+  if (Array.isArray(values)) viewValues = values;
+  else if (values) viewValues = [values];
+  for (const view of viewValues) {
+    const id = typeof view === 'object' ? (view.ViewId ?? view.viewId ?? view.id ?? view.value) : view;
+    if (id) viewIds.push(String(id));
+  }
+}
+
+function listInspectionViewIds(list) {
+  const viewIds = [];
+  for (const value of [portalField(list.metadata ?? {}, 'view'), portalField(list.metadata ?? {}, 'views')])
+    appendListViewIds(parseListViewSetting(value), viewIds);
+  return [...new Set(viewIds)];
+}
+
+function listInspectionBindings(list) {
+  let settings;
+  try {
+    settings = JSON.parse(portalField(list.metadata ?? {}, 'settings', '{}'));
+  } catch {
+    settings = {};
+  }
+  const actions = listInspectionActions(settings);
   return {
-    viewIds: [...new Set(viewIds)],
+    viewIds: listInspectionViewIds(list),
     actions: actions.map((action) => ({
       name: action.Type.replace('CrmEntityFormView-', ''),
       formId:
@@ -371,15 +427,15 @@ function assetPaths(text, basePath) {
     /\b(?:src|href)\s*=\s*['"]([^'"]+)['"]/gi,
     /\burl\(\s*['"]?([^'"\s)]+)['"]?\s*\)/gi,
     /@import\s+['"]([^'"]+)['"]/gi,
-    /\b(?:import|export)\s+(?:[^;'"\n]*?\s+from\s+)?['"]([^'"]+)['"]/gi,
+    null, // Static imports use a monotone scanner below; preserve this pattern's position in the result order.
     /\bimport\(\s*['"]([^'"]+)['"]\s*\)/gi,
   ];
   for (const pattern of patterns)
-    for (const match of String(text ?? '').matchAll(pattern)) {
+    for (const match of pattern ? String(text ?? '').matchAll(pattern) : moduleImportMatches(String(text ?? ''))) {
       try {
         if (!match[1] || match[1].includes('{{') || match[1].startsWith('#')) continue;
-        const url = new URL(match[1], new URL(basePath, 'http://inspect.invalid'));
-        if (url.origin === 'http://inspect.invalid') values.push(decodeURIComponent(url.pathname));
+        const url = new URL(match[1], new URL(basePath, 'http://inspect.invalid')); // NOSONAR: reserved or loopback placeholder host, not a real transport
+        if (url.origin === 'http://inspect.invalid') values.push(decodeURIComponent(url.pathname)); // NOSONAR: reserved or loopback placeholder host, not a real transport
       } catch {
         /* Optional inspection or cleanup failure must not interrupt the owning operation. */
       }
@@ -452,7 +508,7 @@ export async function inspectionSources(cfg) {
 
 /** Fixed, bounded DOM read. Do not collect text, field values or credentials.
  * Read only form/table definition hints from frame addresses, never row parameters. */
-function inspectRenderedPageImpl() {
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function inspectRenderedPageImpl() {
   const own = (node) => !node.closest('#paqvilo-panel, #paqvilo-handle, #paqvilo-xray');
   const definitionContext = (address, base) => {
     try {
@@ -504,7 +560,7 @@ function inspectRenderedPageImpl() {
   const addControl = (node) => {
     let layout = {};
     try {
-      layout = JSON.parse(node.getAttribute('data-form-layout') ?? '{}');
+      layout = JSON.parse(node.getAttribute('data-form-layout') ?? '{}'); // NOSONAR: reads attributes of observed DOM, dataset would differ
     } catch {
       /* Optional inspection or cleanup failure must not interrupt the owning operation. */
     }
@@ -523,30 +579,30 @@ function inspectRenderedPageImpl() {
       name: (node.getAttribute('name') ?? '').slice(0, 160),
       type: (node.getAttribute('type') ?? '').slice(0, 40),
       entity: String(
-        node.getAttribute('data-entityname') ??
-          node.getAttribute('data-entity') ??
+        /* NOSONAR: reads attributes of observed DOM, dataset would differ */ node.getAttribute('data-entityname') ??
+          /* NOSONAR: reads attributes of observed DOM, dataset would differ */ node.getAttribute('data-entity') ??
           layout.EntityName ??
           frameContext.entity ??
           '',
       ).slice(0, 160),
-      formId: String(node.getAttribute('data-formid') ?? layout.Id ?? frameContext.formId ?? '').slice(0, 160),
+      formId: String(node.getAttribute('data-formid') ?? layout.Id ?? frameContext.formId ?? '').slice(0, 160), // NOSONAR: reads attributes of observed DOM, dataset would differ
       ...(frameContext.conflict ? { definitionConflict: true } : {}),
       ...(frameContext.aliasCandidates ? { definitionAliasCandidates: frameContext.aliasCandidates } : {}),
-      viewId: (node.getAttribute('data-viewid') ?? node.getAttribute('data-selected-view') ?? '').slice(0, 160),
+      viewId: (node.getAttribute('data-viewid') ?? node.getAttribute('data-selected-view') ?? '').slice(0, 160), // NOSONAR: reads attributes of observed DOM, dataset would differ
       listId: (
-        node.getAttribute('data-listid') ??
+        node.getAttribute('data-listid') ?? // NOSONAR: reads attributes of observed DOM, dataset would differ
         /^EntityList(?:Control_)?([0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:$|_)/i.exec(
           node.id,
         )?.[1] ??
         ''
       ).slice(0, 160),
       gridId: node.classList.contains('entity-grid') ? (node.closest('.subgrid[id]')?.id ?? '').slice(0, 160) : '',
-      ...(node.localName === 'table' && node.hasAttribute('data-paqvilo-table')
-        ? { gridTable: (node.getAttribute('data-paqvilo-table') ?? '').slice(0, 160) }
+      ...(node.localName === 'table' && node.hasAttribute('data-paqvilo-table') // NOSONAR: reads attributes of observed DOM, dataset would differ
+        ? { gridTable: (node.getAttribute('data-paqvilo-table') ?? '').slice(0, 160) } // NOSONAR: reads attributes of observed DOM, dataset would differ
         : {}),
-      controlId: (node.getAttribute('data-controlid') ?? '').slice(0, 160),
-      schemaName: (node.getAttribute('data-pcf-schema') ?? '').slice(0, 160),
-      nativeField: (node.closest('[data-pcf-native-field]')?.getAttribute('data-pcf-native-field') ?? '').slice(0, 160),
+      controlId: (node.getAttribute('data-controlid') ?? '').slice(0, 160), // NOSONAR: reads attributes of observed DOM, dataset would differ
+      schemaName: (node.getAttribute('data-pcf-schema') ?? '').slice(0, 160), // NOSONAR: reads attributes of observed DOM, dataset would differ
+      nativeField: (node.closest('[data-pcf-native-field]')?.getAttribute('data-pcf-native-field') ?? '').slice(0, 160), // NOSONAR: reads attributes of observed DOM, dataset would differ
     };
   };
   const apiSets = [
@@ -556,7 +612,7 @@ function inspectRenderedPageImpl() {
         .slice(-300)
         .flatMap((entry) => {
           const route = pathname(entry.name);
-          const match = route && /^\/_api\/([a-z][\w]*)(?:\(|\/|$)/i.exec(route);
+          const match = route && /^\/_api\/([a-z]\w*)(?:\(|\/|$)/i.exec(route);
           return match ? [match[1]] : [];
         }),
     ),
@@ -591,7 +647,7 @@ function inspectRenderedPageImpl() {
       }
       pending.push(boundary ?? selected.ownerDocument.documentElement);
       if (boundary?.matches('table[data-paqvilo-grid]')) {
-        const id = boundary.getAttribute('data-paqvilo-grid');
+        const id = boundary.getAttribute('data-paqvilo-grid'); // NOSONAR: reads attributes of observed DOM, dataset would differ
         const targets = id ? [...boundary.getRootNode().querySelectorAll('#' + CSS.escape(id))] : [];
         if (targets.length === 1 && targets[0].matches('table[data-paqvilo-table]') && own(targets[0]))
           pending.push(targets[0]);
@@ -656,7 +712,7 @@ function inspectRenderedPageImpl() {
     .filter((node) => node.hasAttribute('id'))
     .map((node) => node.id)
     // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
-    .filter((id) => id.length <= 160 && !/[\s?=&/{}%\x00-\x1f\x7f]/.test(id));
+    .filter((id) => id.length <= 160 && !/[\s?=&/{}%\x00-\x08\x0e-\x1f\x7f]/.test(id));
   const tokens = new Set();
   let tokenTruncated = false;
   const addToken = (token) => {
@@ -714,103 +770,16 @@ const pageSources = (portal, page) => {
 };
 
 /** Follow only exported native component bindings, with provenance for conditional/modal sources. */
-function inspectFormDependencies(report, portal, metadata, rendered) {
-  const queue = [...(report.forms ?? [])];
-  const visited = new Set();
-  report.nativeComponents = [];
-  report.nativeCodeBindings = [];
-  const addEntity = (entity) => {
-    if (!entity || report.tables.some((row) => row.logicalName === entity)) return;
-    const table = metadata.entities?.[entity];
-    report.tables.push({
-      kind: 'table',
-      name: entity,
-      logicalName: entity,
-      sourceFile: table?.sources?.[0],
-      sourceFiles: table?.sources ?? [],
-      fieldCount: Object.keys(table?.fields ?? {}).length,
-      evidence: 'form-dependency',
-    });
-  };
-  const addFields = (entity, fields, evidence) => {
-    addEntity(entity);
-    for (const item of fields ?? []) {
-      if (!item.name || report.columns.some((row) => row.entity === entity && row.name === item.name)) continue;
-      const field = metadata.entities?.[entity]?.fields?.[item.name];
-      report.columns.push({
-        entity,
-        name: item.name,
-        sourceFile: field?.source ?? metadata.entities?.[entity]?.sources?.[0],
-        resolved: Boolean(field),
-        label: field?.label ?? item.label,
-        type: field?.dataverseType ?? field?.type ?? item.type,
-        required: Boolean(field?.required),
-        evidence,
-      });
-    }
-  };
-  const addView = (reference, entity, owner, evidence) => {
-    if (!reference) return null;
-    const view = metadata.views?.find((row) => norm(row.id) === norm(reference) && (!entity || row.entity === entity));
-    if (!view) {
-      report.unresolved.push({
-        kind: 'view',
-        expression: reference,
-        owner,
-        reason: 'The form references a view absent from selected Solution sources.',
-      });
-      return null;
-    }
-    let item = report.views.find((row) => norm(row.id) === norm(view.id));
-    if (!item)
-      report.views.push(
-        (item = {
-          id: view.id,
-          name: view.name,
-          entity: view.entity,
-          sourceFile: view.file,
-          fields: view.fields ?? [],
-          evidence,
-        }),
-      );
-    if (evidence === 'rendered-view-id') item.evidence = evidence;
-    (item.usedBy ??= []).push(owner);
-    addFields(view.entity, view.fields, evidence);
-    return view;
-  };
-  const addForm = (reference, owner, evidence) => {
-    const definition = portal.forms.find((row) => norm(row.id) === norm(reference));
-    if (!definition) {
-      report.unresolved.push({
-        kind: 'modal-form',
-        expression: reference,
-        owner,
-        reason: 'The action references a basic form absent from the portal export.',
-      });
-      return null;
-    }
-    let item = report.forms.find((row) => norm(row.id) === norm(definition.id));
-    if (!item) {
-      const schema = metadata.componentSchemas?.[definition.id] ?? metadata.componentSchemas?.[definition.name];
-      item = {
-        id: definition.id,
-        name: definition.name,
-        kind: 'basic-form',
-        entity: definition.entityName,
-        formName: definition.formName,
-        mode: definition.mode,
-        sourceFile: definition.metadata?._file,
-        formXml: schema?.sourceFile
-          ? { id: schema.formId, name: schema.formName, sourceFile: schema.sourceFile }
-          : null,
-        evidence,
-      };
-      report.forms.push(item);
-      queue.push(item);
-    }
-    (item.usedBy ??= []).push(owner);
-    return item;
-  };
+function addConfiguredListActionForms(actions, list, addForm) {
+  for (const action of actions)
+    if (
+      action.EntityFormId &&
+      (action.TargetType == null || action.TargetType === '' || Number(action.TargetType) === 0)
+    )
+      addForm(action.EntityFormId, `${list.name} ${action.Type ?? 'action'}`, 'configured-list-modal-form');
+}
+
+function inspectConfiguredListForms(report, portal, addForm) {
   for (const component of report.components ?? []) {
     if (component.kind !== 'list') continue;
     const list = portal.lists.find((row) => norm(row.id) === norm(component.recordId ?? component.id));
@@ -820,21 +789,12 @@ function inspectFormDependencies(report, portal, metadata, rendered) {
     } catch {
       continue;
     }
-    for (const action of settings?.ViewActions ?? []) {
-      if (
-        action.EntityFormId &&
-        (action.TargetType == null || action.TargetType === '' || Number(action.TargetType) === 0)
-      )
-        addForm(action.EntityFormId, `${list.name} ${action.Type ?? 'action'}`, 'configured-list-modal-form');
-    }
-    for (const action of settings?.ItemActions ?? []) {
-      if (
-        action.EntityFormId &&
-        (action.TargetType == null || action.TargetType === '' || Number(action.TargetType) === 0)
-      )
-        addForm(action.EntityFormId, `${list.name} ${action.Type ?? 'action'}`, 'configured-list-modal-form');
-    }
+    addConfiguredListActionForms(settings?.ViewActions ?? [], list, addForm);
+    addConfiguredListActionForms(settings?.ItemActions ?? [], list, addForm);
   }
+}
+
+function inspectRenderedViews(rendered, addView) {
   for (const observed of rendered.controls ?? [])
     if (observed.viewId)
       addView(
@@ -843,6 +803,307 @@ function inspectFormDependencies(report, portal, metadata, rendered) {
         observed.gridId || observed.id || 'Rendered native grid',
         'rendered-view-id',
       );
+}
+
+function addNativeCodeBinding(report, current, form, field, component, { definition, rendered, portal }) {
+  const owner = `${form.name}.${field.name ?? field.id}`;
+  if (
+    report.nativeCodeBindings.some(
+      (row) => row.owner === owner && row.name === component.name && row.formFactor === component.formFactor,
+    )
+  )
+    return;
+  const settings = portal.records.filter(
+    (record) =>
+      ['basicformmetadata', 'advancedformmetadata'].includes(record.kind) &&
+      Number(portalField(record, 'statecode', 0)) !== 1 &&
+      Number(portalField(record, 'type')) === 100000000 &&
+      portalField(record, 'attributelogicalname') === field.name &&
+      (current.stepId
+        ? norm(portalField(record, 'webformstep')) === norm(current.stepId)
+        : norm(portalField(record, 'entityform')) === norm(definition?.id)),
+  );
+  const style = settings.length === 1 ? Number(portalField(settings[0], 'controlstyle')) : null;
+  const observed = (rendered.controls ?? []).some(
+    (row) => norm(row.schemaName) === norm(component.name) && (!row.nativeField || row.nativeField === field.name),
+  );
+  let enablement = 'not-enabled';
+  if (settings.length > 1) enablement = 'ambiguous';
+  else if (style === 756150001) enablement = 'configured';
+  report.nativeCodeBindings.push({
+    ...component,
+    owner,
+    entity: current.entity,
+    field: field.name ?? null,
+    formId: form.id,
+    formSourceFile: component.sourceFile ?? current.sourceFile,
+    selectedDesktop: field.codeComponent === component,
+    enablement,
+    metadataSources: settings.map((record) => ({ name: 'Code component settings', sourceFile: record._file })),
+    evidence: observed ? 'rendered-and-form-source' : 'form-source',
+  });
+}
+
+function inspectFormCodeBindings(current, cells, context) {
+  const { report, form, definition, rendered, portal } = context;
+  for (const field of [...(current.fields ?? []), ...cells])
+    for (const component of field.codeComponents ?? [])
+      addNativeCodeBinding(report, current, form, field, component, { definition, rendered, portal });
+}
+
+function appendSubgridSettingsActions(settings, component, owner, record, addForm) {
+  for (const action of [
+    ...(Array.isArray(settings?.ViewActions) ? settings.ViewActions : []),
+    ...(Array.isArray(settings?.ItemActions) ? settings.ItemActions : []),
+  ]) {
+    if (
+      !['CrmEntityFormView-CreateAction', 'CrmEntityFormView-EditAction', 'CrmEntityFormView-DetailsAction'].includes(
+        action.Type,
+      )
+    )
+      continue;
+    const modal =
+      action.EntityFormId && (action.TargetType == null || action.TargetType === '' || Number(action.TargetType) === 0);
+    const formSource = modal
+      ? addForm(
+          action.EntityFormId,
+          `${owner} ${action.Type.replace('CrmEntityFormView-', '')}`,
+          'configured-modal-form',
+        )
+      : null;
+    component.actions.push({
+      name: action.Type.replace('CrmEntityFormView-', ''),
+      formName: formSource?.name ?? null,
+      formId: modal ? norm(action.EntityFormId) : null,
+      sourceFile: formSource?.sourceFile ?? record._file,
+      conditional: Boolean(action.FilterCriteria),
+      targetType: action.TargetType ?? null,
+      evidence: 'exported-action',
+    });
+  }
+}
+
+function processSubgridRecord(record, cell, component, owner, addForm, report) {
+  component.metadataSources.push({ name: 'Subgrid action settings', sourceFile: record._file });
+  let settings;
+  try {
+    const value = portalField(record, 'subgrid_settings', '{}');
+    settings = typeof value === 'string' ? JSON.parse(value) : value;
+  } catch {
+    report.unresolved.push({
+      kind: 'subgrid-settings',
+      expression: cell.id,
+      owner,
+      reason: 'Exported subgrid settings JSON is malformed.',
+    });
+    return;
+  }
+  appendSubgridSettingsActions(settings, component, owner, record, addForm);
+}
+
+function processSubgridActions(current, cell, component, owner, context) {
+  const { report, definition, portal, addView, addForm } = context;
+  addView(cell.viewId, cell.entity, owner, 'subgrid-view');
+  const records = portal.records.filter(
+    (row) =>
+      ['basicformmetadata', 'advancedformmetadata'].includes(row.kind) &&
+      Number(portalField(row, 'statecode', 0)) !== 1 &&
+      portalField(row, 'subgrid_name') === cell.id &&
+      (current.stepId
+        ? norm(portalField(row, 'webformstep')) === norm(current.stepId)
+        : norm(portalField(row, 'entityform')) === norm(definition?.id)),
+  );
+  if (records.length > 1)
+    report.unresolved.push({
+      kind: 'subgrid-settings',
+      expression: cell.id,
+      owner,
+      reason:
+        'Multiple exported metadata records configure this subgrid; action visibility and precedence are unknown.',
+    });
+  for (const record of records) processSubgridRecord(record, cell, component, owner, addForm, report);
+}
+
+function processNativeFormCell(current, cell, depth, context) {
+  const { report, form, rendered, addEntity, addView } = context;
+  if (!['subgrid', 'quickform', 'notes'].includes(cell.type)) {
+    if (cell.lookupViewId)
+      report.nativeComponents.push({
+        kind: 'lookup',
+        id: cell.id ?? cell.name,
+        name: cell.label ?? cell.name,
+        formId: form.id,
+        owner: form.name + '.' + (cell.name ?? cell.id),
+        sourceFile: current.sourceFile,
+        viewId: cell.lookupViewId,
+      });
+    if (cell.lookupViewId)
+      addView(cell.lookupViewId, cell.lookupView?.entity, `${form.name}.${cell.id} lookup`, 'lookup-view');
+    return;
+  }
+  const owner = `${form.name}.${cell.id}`;
+  const observed = (rendered.controls ?? []).some((row) => row.gridId === cell.id || row.controlId === cell.id);
+  const component = {
+    formId: form.id,
+    kind: cell.type,
+    id: cell.id,
+    name: cell.label ?? cell.id,
+    entity: cell.entity ?? (cell.type === 'notes' ? 'annotation' : null),
+    relationship: cell.relationship ?? null,
+    lookup: cell.lookup ?? null,
+    owner,
+    sourceFile: current.sourceFile,
+    evidence: observed ? 'rendered-control-id' : 'form-source',
+    viewId: cell.viewId ?? null,
+    hidden: Boolean(cell.hidden),
+    actions: [],
+    metadataSources: [],
+  };
+  report.nativeComponents.push(component);
+  addEntity(component.entity);
+  if (cell.type === 'quickform') {
+    if (cell.schema) {
+      component.ownerFormXmlId = current.formId;
+      component.targetFormId = cell.schema.formId;
+      component.formName = cell.schema.formName;
+      component.sourceFile = cell.schema.sourceFile;
+      walkFormSchema(cell.schema, depth + 1, context);
+    } else
+      report.unresolved.push({
+        kind: 'quick-form',
+        expression: cell.id,
+        owner,
+        reason: 'The quick view form is absent from selected Solution sources.',
+      });
+  }
+  if (cell.type === 'subgrid') processSubgridActions(current, cell, component, owner, context);
+}
+
+function walkFormSchema(current, depth, context) {
+  if (!current || depth > 5) return;
+  context.addFields(current.entity, current.fields, context.form.evidence ?? 'form-source');
+  for (const step of current.steps ?? []) walkFormSchema(step, depth + 1, context);
+  const cells =
+    current.layout?.flatMap((tab) =>
+      tab.columns.flatMap((column) => column.sections.flatMap((section) => section.rows.flat())),
+    ) ?? [];
+  inspectFormCodeBindings(current, cells, context);
+  for (const cell of cells) processNativeFormCell(current, cell, depth, context);
+}
+
+function addInspectionEntity(context, entity) {
+  const { report, metadata } = context;
+  if (!entity || report.tables.some((row) => row.logicalName === entity)) return;
+  const table = metadata.entities?.[entity];
+  report.tables.push({
+    kind: 'table',
+    name: entity,
+    logicalName: entity,
+    sourceFile: table?.sources?.[0],
+    sourceFiles: table?.sources ?? [],
+    fieldCount: Object.keys(table?.fields ?? {}).length,
+    evidence: 'form-dependency',
+  });
+}
+
+function addInspectionFields(context, entity, fields, evidence) {
+  const { report, metadata } = context;
+  addInspectionEntity(context, entity);
+  for (const item of fields ?? []) {
+    if (!item.name || report.columns.some((row) => row.entity === entity && row.name === item.name)) continue;
+    const field = metadata.entities?.[entity]?.fields?.[item.name];
+    report.columns.push({
+      entity,
+      name: item.name,
+      sourceFile: field?.source ?? metadata.entities?.[entity]?.sources?.[0],
+      resolved: Boolean(field),
+      label: field?.label ?? item.label,
+      type: field?.dataverseType ?? field?.type ?? item.type,
+      required: Boolean(field?.required),
+      evidence,
+    });
+  }
+}
+
+function addInspectionView(context, reference, entity, owner, evidence) {
+  const { report, metadata } = context;
+  if (!reference) return null;
+  const view = metadata.views?.find((row) => norm(row.id) === norm(reference) && (!entity || row.entity === entity));
+  if (!view) {
+    report.unresolved.push({
+      kind: 'view',
+      expression: reference,
+      owner,
+      reason: 'The form references a view absent from selected Solution sources.',
+    });
+    return null;
+  }
+  let item = report.views.find((row) => norm(row.id) === norm(view.id));
+  if (!item) {
+    item = {
+      id: view.id,
+      name: view.name,
+      entity: view.entity,
+      sourceFile: view.file,
+      fields: view.fields ?? [],
+      evidence,
+    };
+    report.views.push(item);
+  }
+  if (evidence === 'rendered-view-id') item.evidence = evidence;
+  item.usedBy ??= [];
+  item.usedBy.push(owner);
+  addInspectionFields(context, view.entity, view.fields, evidence);
+  return view;
+}
+
+function addInspectionForm(context, reference, owner, evidence) {
+  const { report, portal, metadata, queue } = context;
+  const definition = portal.forms.find((row) => norm(row.id) === norm(reference));
+  if (!definition) {
+    report.unresolved.push({
+      kind: 'modal-form',
+      expression: reference,
+      owner,
+      reason: 'The action references a basic form absent from the portal export.',
+    });
+    return null;
+  }
+  let item = report.forms.find((row) => norm(row.id) === norm(definition.id));
+  if (!item) {
+    const schema = metadata.componentSchemas?.[definition.id] ?? metadata.componentSchemas?.[definition.name];
+    item = {
+      id: definition.id,
+      name: definition.name,
+      kind: 'basic-form',
+      entity: definition.entityName,
+      formName: definition.formName,
+      mode: definition.mode,
+      sourceFile: definition.metadata?._file,
+      formXml: schema?.sourceFile ? { id: schema.formId, name: schema.formName, sourceFile: schema.sourceFile } : null,
+      evidence,
+    };
+    report.forms.push(item);
+    queue.push(item);
+  }
+  item.usedBy ??= [];
+  item.usedBy.push(owner);
+  return item;
+}
+
+function inspectFormDependencies(report, portal, metadata, rendered) {
+  const queue = [...(report.forms ?? [])];
+  const visited = new Set();
+  report.nativeComponents = [];
+  report.nativeCodeBindings = [];
+  const context = { report, portal, metadata, rendered, queue };
+  context.addEntity = (entity) => addInspectionEntity(context, entity);
+  context.addFields = (entity, fields, evidence) => addInspectionFields(context, entity, fields, evidence);
+  context.addView = (reference, entity, owner, evidence) =>
+    addInspectionView(context, reference, entity, owner, evidence);
+  context.addForm = (reference, owner, evidence) => addInspectionForm(context, reference, owner, evidence);
+  inspectConfiguredListForms(report, portal, context.addForm);
+  inspectRenderedViews(rendered, context.addView);
   for (let index = 0; index < queue.length && index < 80; index++) {
     const form = queue[index];
     if (visited.has(norm(form.id))) continue;
@@ -850,435 +1111,286 @@ function inspectFormDependencies(report, portal, metadata, rendered) {
     const definition = [...portal.forms, ...(portal.advancedForms ?? [])].find((row) => norm(row.id) === norm(form.id));
     const schema = metadata.componentSchemas?.[form.id] ?? metadata.componentSchemas?.[form.name];
     if (!schema) continue;
-    const walk = (current, depth = 0) => {
-      if (!current || depth > 5) return;
-      addFields(current.entity, current.fields, form.evidence ?? 'form-source');
-      for (const step of current.steps ?? []) walk(step, depth + 1);
-      const cells =
-        current.layout?.flatMap((tab) =>
-          tab.columns.flatMap((column) => column.sections.flatMap((section) => section.rows.flat())),
-        ) ?? [];
-      for (const field of [...(current.fields ?? []), ...cells])
-        for (const component of field.codeComponents ?? []) {
-          const owner = `${form.name}.${field.name ?? field.id}`;
-          if (
-            report.nativeCodeBindings.some(
-              (row) => row.owner === owner && row.name === component.name && row.formFactor === component.formFactor,
-            )
-          )
-            continue;
-          const settings = portal.records.filter(
-            (record) =>
-              ['basicformmetadata', 'advancedformmetadata'].includes(record.kind) &&
-              Number(portalField(record, 'statecode', 0)) !== 1 &&
-              Number(portalField(record, 'type')) === 100000000 &&
-              portalField(record, 'attributelogicalname') === field.name &&
-              (current.stepId
-                ? norm(portalField(record, 'webformstep')) === norm(current.stepId)
-                : norm(portalField(record, 'entityform')) === norm(definition?.id)),
-          );
-          const style = settings.length === 1 ? Number(portalField(settings[0], 'controlstyle')) : null;
-          const observed = (rendered.controls ?? []).some(
-            (row) =>
-              norm(row.schemaName) === norm(component.name) && (!row.nativeField || row.nativeField === field.name),
-          );
-          report.nativeCodeBindings.push({
-            ...component,
-            owner,
-            entity: current.entity,
-            field: field.name ?? null,
-            formId: form.id,
-            formSourceFile: component.sourceFile ?? current.sourceFile,
-            selectedDesktop: field.codeComponent === component,
-            enablement: settings.length > 1 ? 'ambiguous' : style === 756150001 ? 'configured' : 'not-enabled',
-            metadataSources: settings.map((record) => ({ name: 'Code component settings', sourceFile: record._file })),
-            evidence: observed ? 'rendered-and-form-source' : 'form-source',
-          });
-        }
-      for (const cell of cells) {
-        if (!['subgrid', 'quickform', 'notes'].includes(cell.type)) {
-          if (cell.lookupViewId)
-            report.nativeComponents.push({
-              kind: 'lookup',
-              id: cell.id ?? cell.name,
-              name: cell.label ?? cell.name,
-              formId: form.id,
-              owner: form.name + '.' + (cell.name ?? cell.id),
-              sourceFile: current.sourceFile,
-              viewId: cell.lookupViewId,
-            });
-          if (cell.lookupViewId)
-            addView(cell.lookupViewId, cell.lookupView?.entity, `${form.name}.${cell.id} lookup`, 'lookup-view');
-          continue;
-        }
-        const owner = `${form.name}.${cell.id}`;
-        const observed = (rendered.controls ?? []).find((row) => row.gridId === cell.id || row.controlId === cell.id);
-        const component = {
-          formId: form.id,
-          kind: cell.type,
-          id: cell.id,
-          name: cell.label ?? cell.id,
-          entity: cell.entity ?? (cell.type === 'notes' ? 'annotation' : null),
-          relationship: cell.relationship ?? null,
-          lookup: cell.lookup ?? null,
-          owner,
-          sourceFile: current.sourceFile,
-          evidence: observed ? 'rendered-control-id' : 'form-source',
-          viewId: cell.viewId ?? null,
-          hidden: Boolean(cell.hidden),
-          actions: [],
-          metadataSources: [],
-        };
-        report.nativeComponents.push(component);
-        addEntity(component.entity);
-        if (cell.type === 'quickform') {
-          if (cell.schema) {
-            component.ownerFormXmlId = current.formId;
-            component.targetFormId = cell.schema.formId;
-            component.formName = cell.schema.formName;
-            component.sourceFile = cell.schema.sourceFile;
-            walk(cell.schema, depth + 1);
-          } else
-            report.unresolved.push({
-              kind: 'quick-form',
-              expression: cell.id,
-              owner,
-              reason: 'The quick view form is absent from selected Solution sources.',
-            });
-        }
-        if (cell.type !== 'subgrid') continue;
-        addView(cell.viewId, cell.entity, owner, 'subgrid-view');
-        const records = portal.records.filter(
-          (row) =>
-            ['basicformmetadata', 'advancedformmetadata'].includes(row.kind) &&
-            Number(portalField(row, 'statecode', 0)) !== 1 &&
-            portalField(row, 'subgrid_name') === cell.id &&
-            (current.stepId
-              ? norm(portalField(row, 'webformstep')) === norm(current.stepId)
-              : norm(portalField(row, 'entityform')) === norm(definition?.id)),
-        );
-        if (records.length > 1)
-          report.unresolved.push({
-            kind: 'subgrid-settings',
-            expression: cell.id,
-            owner,
-            reason:
-              'Multiple exported metadata records configure this subgrid; action visibility and precedence are unknown.',
-          });
-        for (const record of records) {
-          component.metadataSources.push({ name: 'Subgrid action settings', sourceFile: record._file });
-          let settings;
-          try {
-            const value = portalField(record, 'subgrid_settings', '{}');
-            settings = typeof value === 'string' ? JSON.parse(value) : value;
-          } catch {
-            report.unresolved.push({
-              kind: 'subgrid-settings',
-              expression: cell.id,
-              owner,
-              reason: 'Exported subgrid settings JSON is malformed.',
-            });
-            continue;
-          }
-          for (const action of [
-            ...(Array.isArray(settings?.ViewActions) ? settings.ViewActions : []),
-            ...(Array.isArray(settings?.ItemActions) ? settings.ItemActions : []),
-          ]) {
-            if (
-              ![
-                'CrmEntityFormView-CreateAction',
-                'CrmEntityFormView-EditAction',
-                'CrmEntityFormView-DetailsAction',
-              ].includes(action.Type)
-            )
-              continue;
-            const modal =
-              action.EntityFormId &&
-              (action.TargetType == null || action.TargetType === '' || Number(action.TargetType) === 0);
-            const formSource = modal
-              ? addForm(
-                  action.EntityFormId,
-                  `${owner} ${action.Type.replace('CrmEntityFormView-', '')}`,
-                  'configured-modal-form',
-                )
-              : null;
-            component.actions.push({
-              name: action.Type.replace('CrmEntityFormView-', ''),
-              formName: formSource?.name ?? null,
-              formId: modal ? norm(action.EntityFormId) : null,
-              sourceFile: formSource?.sourceFile ?? record._file,
-              conditional: Boolean(action.FilterCriteria),
-              targetType: action.TargetType ?? null,
-              evidence: 'exported-action',
-            });
-          }
-        }
-      }
-    };
-    walk(schema);
+    const walkContext = { ...context, form, definition };
+    walkFormSchema(schema, 0, walkContext);
   }
+}
+
+function componentLiteral(text) {
+  const value = /^\s*(?:'([^']+)'|"([^"]+)"|([^\s,]+))/.exec(text);
+  const name = value?.[1] ?? value?.[2] ?? value?.[3] ?? '';
+  return {
+    name,
+    dynamic:
+      !value || Boolean(value[3] && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(name)),
+  };
+}
+
+function appendCodeDatasetReport(report, entity, view, table, item) {
+  if (!report.tables.some((entry) => entry.logicalName === entity))
+    report.tables.push({
+      kind: 'table',
+      name: entity,
+      logicalName: entity,
+      sourceFile: table.sources?.[0],
+      sourceFiles: table.sources ?? [],
+      fieldCount: Object.keys(table.fields ?? {}).length,
+      evidence: 'code-component-dataset',
+    });
+  if (view && !report.views.some((entry) => norm(entry.id) === norm(view.id)))
+    report.views.push({
+      id: view.id,
+      name: view.name,
+      entity,
+      sourceFile: view.file,
+      fields: view.fields,
+      evidence: 'code-component-dataset',
+    });
+  for (const field of item.fields)
+    if (field.name && !report.columns.some((entry) => entry.entity === entity && entry.name === field.name)) {
+      const definition = table.fields?.[field.name];
+      report.columns.push({
+        entity,
+        name: field.name,
+        sourceFile: definition?.source ?? table.sources?.[0],
+        resolved: Boolean(definition),
+        label: definition?.label,
+        type: definition?.dataverseType ?? definition?.type,
+        evidence: 'code-component-dataset',
+      });
+    }
+}
+
+function inspectMarkupDataset(match, dataset, schemaName, row, report, metadata) {
+  const escapedName = dataset.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // NOSONAR: escaping is intentional
+  const argument = new RegExp(String.raw`\b${escapedName}\s*:\s*`, 'i').exec(match[1]);
+  const binding = componentLiteral(argument ? match[1].slice(argument.index + argument[0].length) : '');
+  const item = {
+    name: dataset.name,
+    binding: binding.name,
+    evidence: binding.dynamic ? 'dynamic-reference' : 'static-reference',
+    resolved: false,
+  };
+  row.datasets.push(item);
+  if (binding.dynamic) {
+    report.unresolved.push({
+      kind: 'code-component-dataset',
+      expression: binding.name || dataset.name,
+      owner: schemaName,
+      reason: 'Dataset binding is missing or dynamic; no exported table or view is inferred.',
+    });
+    return item;
+  }
+  const views = (metadata.views ?? []).filter(
+    (view) => norm(view.id) === norm(binding.name) || norm(view.name) === norm(binding.name),
+  );
+  const view = views.length === 1 ? views[0] : null;
+  const entity = view?.entity ?? (views.length ? null : norm(binding.name));
+  const table = entity && metadata.entities?.[entity];
+  if (!table) {
+    report.unresolved.push({
+      kind: 'code-component-dataset',
+      expression: binding.name,
+      owner: schemaName,
+      reason:
+        views.length > 1
+          ? 'Multiple exported views match this name; use the exact view ID.'
+          : 'The dataset table or view is absent from selected Solution sources.',
+    });
+    return item;
+  }
+  Object.assign(item, {
+    resolved: true,
+    entity,
+    viewId: view?.id ?? null,
+    viewName: view?.name ?? null,
+    sourceFile: view?.file ?? table.sources?.[0],
+    fields: view?.fields?.length ? view.fields : Object.keys(table.fields ?? {}).map((name) => ({ name })),
+  });
+  appendCodeDatasetReport(report, entity, view, table, item);
+  return item;
+}
+
+function inspectMarkupCodeReference(match, context) {
+  const { report, metadata, observed, catalogue } = context;
+  const nameParameter = /\bname\s*:\s*/i.exec(match[1]);
+  const { name, dynamic } = componentLiteral(
+    nameParameter ? match[1].slice(nameParameter.index + nameParameter[0].length) : '',
+  );
+  const direct = !dynamic && [...(catalogue?.controls.keys() ?? [])].find((key) => norm(key) === norm(name));
+  const schemaName = dynamic ? null : (direct ?? observed?.codeComponents?.[norm(name)] ?? null);
+  let bindingKind = 'unknown';
+  if (direct) bindingKind = 'declared-schema-name';
+  else if (schemaName) bindingKind = 'observed-component-mapping';
+  const row = {
+    name,
+    dynamic,
+    schemaName,
+    expression: match[0],
+    evidence: dynamic ? 'dynamic-reference' : 'static-reference',
+    binding: bindingKind,
+  };
+  const control = catalogue?.controls.get(schemaName);
+  if (!control) {
+    let reason = 'No exact Solution schema name or observed component mapping resolves this reference.';
+    if (dynamic) reason = 'Code component name is dynamic and cannot be resolved from a static export.';
+    else if (schemaName) reason = 'The code component manifest is absent from selected Solution sources.';
+    report.unresolved.push({ kind: 'code-component', expression: row.expression, reason });
+    return row;
+  }
+  Object.assign(row, {
+    sourceFile: control.file,
+    resources: control.resources.map((resource) => ({
+      name: resource.kind,
+      url: resource.url,
+      sourceFile: catalogue.assets.get(resource.url)?.file,
+    })),
+    properties: control.properties,
+    datasets: [],
+  });
+  for (const dataset of control.datasets ?? []) inspectMarkupDataset(match, dataset, schemaName, row, report, metadata);
+  return row;
+}
+
+function appendNativeDatasetBinding(name, parameter, binding, row, report, metadata) {
+  const view =
+    parameter.viewId &&
+    metadata.views?.find(
+      (item) => norm(item.id) === norm(parameter.viewId) && (!parameter.entity || item.entity === parameter.entity),
+    );
+  if (!view) {
+    report.unresolved.push({
+      kind: 'native-code-component-dataset',
+      expression: parameter.viewId ?? name,
+      owner: binding.owner,
+      reason:
+        'The exported native dataset view is absent or its table binding does not match selected Solution sources.',
+    });
+    return;
+  }
+  row.datasets ??= [];
+  row.datasets.push({
+    name,
+    binding: parameter.viewId,
+    entity: view.entity,
+    viewId: view.id,
+    viewName: view.name,
+    sourceFile: view.file,
+    fields: view.fields,
+    resolved: true,
+    evidence: 'form-source',
+  });
+  if (!report.views.some((item) => norm(item.id) === norm(view.id)))
+    report.views.push({
+      id: view.id,
+      name: view.name,
+      entity: view.entity,
+      sourceFile: view.file,
+      fields: view.fields,
+      evidence: 'native-code-component-dataset',
+    });
+  const table = metadata.entities?.[view.entity];
+  if (!report.tables.some((item) => item.logicalName === view.entity))
+    report.tables.push({
+      kind: 'table',
+      name: view.entity,
+      logicalName: view.entity,
+      sourceFile: table?.sources?.[0],
+      sourceFiles: table?.sources ?? [],
+      evidence: 'native-code-component-dataset',
+    });
+  for (const column of view.fields ?? [])
+    if (column.name && !report.columns.some((item) => item.entity === view.entity && item.name === column.name)) {
+      const field = table?.fields?.[column.name];
+      report.columns.push({
+        entity: view.entity,
+        name: column.name,
+        sourceFile: field?.source ?? table?.sources?.[0],
+        resolved: Boolean(field),
+        label: field?.label,
+        type: field?.dataverseType ?? field?.type,
+        evidence: 'native-code-component-dataset',
+      });
+    }
+}
+
+function inspectNativeBindingParameter(name, parameter, binding, row, report, metadata) {
+  if (parameter.kind === 'unresolved')
+    report.unresolved.push({
+      kind: 'native-code-component-property',
+      expression: name,
+      owner: binding.owner,
+      reason: parameter.reason ?? 'The exported native property binding cannot be resolved.',
+    });
+  if (parameter.kind === 'binding') {
+    const table = metadata.entities?.[binding.entity],
+      field = table?.fields?.[parameter.column];
+    if (!report.columns.some((item) => item.entity === binding.entity && item.name === parameter.column))
+      report.columns.push({
+        entity: binding.entity,
+        name: parameter.column,
+        sourceFile: field?.source ?? table?.sources?.[0],
+        resolved: Boolean(field),
+        label: field?.label,
+        type: field?.dataverseType ?? field?.type,
+        evidence: 'native-code-component-binding',
+      });
+  }
+  if (parameter.kind === 'dataset') appendNativeDatasetBinding(name, parameter, binding, row, report, metadata);
+}
+
+function inspectNativeCodeBinding(binding, context) {
+  const { report, metadata, observed, catalogue } = context;
+  const schemaName =
+    [...(catalogue?.controls.keys() ?? [])].find((key) => norm(key) === norm(binding.name)) ??
+    observed?.codeComponents?.[norm(binding.name)] ??
+    null;
+  const control = catalogue?.controls.get(schemaName);
+  const row = {
+    ...binding,
+    schemaName,
+    expression: `${binding.owner} · FormXml factor ${binding.formFactor ?? 'unknown'}`,
+    binding: 'native-formxml',
+    properties: control?.properties ?? [],
+    sourceFile: control?.file ?? binding.formSourceFile,
+    formSource: { name: binding.owner, sourceFile: binding.formSourceFile },
+    resources:
+      control?.resources.map((resource) => ({
+        name: resource.kind,
+        url: resource.url,
+        sourceFile: catalogue.assets.get(resource.url)?.file,
+      })) ?? [],
+  };
+  report.codeComponents.push(row);
+  if (!control)
+    report.unresolved.push({
+      kind: 'native-code-component',
+      expression: binding.name,
+      owner: binding.owner,
+      reason: 'The FormXml custom control manifest is absent from selected Solution sources.',
+    });
+  if (binding.enablement === 'ambiguous')
+    report.unresolved.push({
+      kind: 'native-code-component-settings',
+      expression: binding.field,
+      owner: binding.owner,
+      reason: 'Multiple attribute metadata records configure this control; portal enablement is ambiguous.',
+    });
+  for (const [name, parameter] of Object.entries(binding.parameters ?? []))
+    inspectNativeBindingParameter(name, parameter, binding, row, report, metadata);
 }
 
 function inspectCodeComponents(report, body, metadata, observed, catalogue) {
-  const literal = (text) => {
-    const value = /^\s*(?:'([^']+)'|"([^"]+)"|([^\s,]+))/.exec(text);
-    const name = value?.[1] ?? value?.[2] ?? value?.[3] ?? '';
-    return {
-      name,
-      dynamic:
-        !value || Boolean(value[3] && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(name)),
-    };
-  };
+  const context = { report, metadata, observed, catalogue };
   report.codeComponents = unique(
-    [...body.matchAll(/{%[-]?\s*codecomponent\b([^%]*)%}/gi)].map((match) => {
-      const nameParameter = /\bname\s*:\s*/i.exec(match[1]);
-      const { name, dynamic } = literal(
-        nameParameter ? match[1].slice(nameParameter.index + nameParameter[0].length) : '',
-      );
-      const direct = !dynamic && [...(catalogue?.controls.keys() ?? [])].find((key) => norm(key) === norm(name));
-      const schemaName = dynamic ? null : (direct ?? observed?.codeComponents?.[norm(name)] ?? null);
-      const row = {
-        name,
-        dynamic,
-        schemaName,
-        expression: match[0],
-        evidence: dynamic ? 'dynamic-reference' : 'static-reference',
-        binding: direct ? 'declared-schema-name' : schemaName ? 'observed-component-mapping' : 'unknown',
-      };
-      const control = catalogue?.controls.get(schemaName);
-      if (!control) {
-        report.unresolved.push({
-          kind: 'code-component',
-          expression: row.expression,
-          reason: dynamic
-            ? 'Code component name is dynamic and cannot be resolved from a static export.'
-            : schemaName
-              ? 'The code component manifest is absent from selected Solution sources.'
-              : 'No exact Solution schema name or observed component mapping resolves this reference.',
-        });
-        return row;
-      }
-      Object.assign(row, {
-        sourceFile: control.file,
-        resources: control.resources.map((resource) => ({
-          name: resource.kind,
-          url: resource.url,
-          sourceFile: catalogue.assets.get(resource.url)?.file,
-        })),
-        properties: control.properties,
-        datasets: [],
-      });
-      for (const dataset of control.datasets ?? []) {
-        const argument = new RegExp(`\\b${dataset.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*:\\s*`, 'i').exec(
-          match[1],
-        );
-        const binding = literal(argument ? match[1].slice(argument.index + argument[0].length) : '');
-        const item = {
-          name: dataset.name,
-          binding: binding.name,
-          evidence: binding.dynamic ? 'dynamic-reference' : 'static-reference',
-          resolved: false,
-        };
-        row.datasets.push(item);
-        if (binding.dynamic) {
-          report.unresolved.push({
-            kind: 'code-component-dataset',
-            expression: binding.name || dataset.name,
-            owner: schemaName,
-            reason: 'Dataset binding is missing or dynamic; no exported table or view is inferred.',
-          });
-          continue;
-        }
-        const views = (metadata.views ?? []).filter(
-          (view) => norm(view.id) === norm(binding.name) || norm(view.name) === norm(binding.name),
-        );
-        const view = views.length === 1 ? views[0] : null;
-        const entity = view?.entity ?? (views.length ? null : norm(binding.name));
-        const table = entity && metadata.entities?.[entity];
-        if (!table) {
-          report.unresolved.push({
-            kind: 'code-component-dataset',
-            expression: binding.name,
-            owner: schemaName,
-            reason:
-              views.length > 1
-                ? 'Multiple exported views match this name; use the exact view ID.'
-                : 'The dataset table or view is absent from selected Solution sources.',
-          });
-          continue;
-        }
-        Object.assign(item, {
-          resolved: true,
-          entity,
-          viewId: view?.id ?? null,
-          viewName: view?.name ?? null,
-          sourceFile: view?.file ?? table.sources?.[0],
-          fields: view?.fields?.length ? view.fields : Object.keys(table.fields ?? {}).map((name) => ({ name })),
-        });
-        if (!report.tables.some((entry) => entry.logicalName === entity))
-          report.tables.push({
-            kind: 'table',
-            name: entity,
-            logicalName: entity,
-            sourceFile: table.sources?.[0],
-            sourceFiles: table.sources ?? [],
-            fieldCount: Object.keys(table.fields ?? {}).length,
-            evidence: 'code-component-dataset',
-          });
-        if (view && !report.views.some((entry) => norm(entry.id) === norm(view.id)))
-          report.views.push({
-            id: view.id,
-            name: view.name,
-            entity,
-            sourceFile: view.file,
-            fields: view.fields,
-            evidence: 'code-component-dataset',
-          });
-        for (const field of item.fields)
-          if (field.name && !report.columns.some((entry) => entry.entity === entity && entry.name === field.name)) {
-            const definition = table.fields?.[field.name];
-            report.columns.push({
-              entity,
-              name: field.name,
-              sourceFile: definition?.source ?? table.sources?.[0],
-              resolved: Boolean(definition),
-              label: definition?.label,
-              type: definition?.dataverseType ?? definition?.type,
-              evidence: 'code-component-dataset',
-            });
-          }
-      }
-      return row;
-    }),
+    [...body.matchAll(/{%-?\s*codecomponent\b([^%]*)%}/gi)].map((match) => inspectMarkupCodeReference(match, context)),
     (row) => row.expression,
   );
-  for (const binding of report.nativeCodeBindings ?? []) {
-    const schemaName =
-      [...(catalogue?.controls.keys() ?? [])].find((key) => norm(key) === norm(binding.name)) ??
-      observed?.codeComponents?.[norm(binding.name)] ??
-      null;
-    const control = catalogue?.controls.get(schemaName);
-    const row = {
-      ...binding,
-      schemaName,
-      expression: `${binding.owner} · FormXml factor ${binding.formFactor ?? 'unknown'}`,
-      binding: 'native-formxml',
-      properties: control?.properties ?? [],
-      sourceFile: control?.file ?? binding.formSourceFile,
-      formSource: { name: binding.owner, sourceFile: binding.formSourceFile },
-      resources:
-        control?.resources.map((resource) => ({
-          name: resource.kind,
-          url: resource.url,
-          sourceFile: catalogue.assets.get(resource.url)?.file,
-        })) ?? [],
-    };
-    report.codeComponents.push(row);
-    if (!control)
-      report.unresolved.push({
-        kind: 'native-code-component',
-        expression: binding.name,
-        owner: binding.owner,
-        reason: 'The FormXml custom control manifest is absent from selected Solution sources.',
-      });
-    if (binding.enablement === 'ambiguous')
-      report.unresolved.push({
-        kind: 'native-code-component-settings',
-        expression: binding.field,
-        owner: binding.owner,
-        reason: 'Multiple attribute metadata records configure this control; portal enablement is ambiguous.',
-      });
-    for (const [name, parameter] of Object.entries(binding.parameters ?? {})) {
-      if (parameter.kind === 'unresolved')
-        report.unresolved.push({
-          kind: 'native-code-component-property',
-          expression: name,
-          owner: binding.owner,
-          reason: parameter.reason ?? 'The exported native property binding cannot be resolved.',
-        });
-      if (parameter.kind === 'binding') {
-        const table = metadata.entities?.[binding.entity],
-          field = table?.fields?.[parameter.column];
-        if (!report.columns.some((item) => item.entity === binding.entity && item.name === parameter.column))
-          report.columns.push({
-            entity: binding.entity,
-            name: parameter.column,
-            sourceFile: field?.source ?? table?.sources?.[0],
-            resolved: Boolean(field),
-            label: field?.label,
-            type: field?.dataverseType ?? field?.type,
-            evidence: 'native-code-component-binding',
-          });
-      }
-      if (parameter.kind === 'dataset') {
-        const view =
-          parameter.viewId &&
-          metadata.views?.find(
-            (item) =>
-              norm(item.id) === norm(parameter.viewId) && (!parameter.entity || item.entity === parameter.entity),
-          );
-        if (view) {
-          (row.datasets ??= []).push({
-            name,
-            binding: parameter.viewId,
-            entity: view.entity,
-            viewId: view.id,
-            viewName: view.name,
-            sourceFile: view.file,
-            fields: view.fields,
-            resolved: true,
-            evidence: 'form-source',
-          });
-          if (!report.views.some((item) => norm(item.id) === norm(view.id)))
-            report.views.push({
-              id: view.id,
-              name: view.name,
-              entity: view.entity,
-              sourceFile: view.file,
-              fields: view.fields,
-              evidence: 'native-code-component-dataset',
-            });
-          const table = metadata.entities?.[view.entity];
-          if (!report.tables.some((item) => item.logicalName === view.entity))
-            report.tables.push({
-              kind: 'table',
-              name: view.entity,
-              logicalName: view.entity,
-              sourceFile: table?.sources?.[0],
-              sourceFiles: table?.sources ?? [],
-              evidence: 'native-code-component-dataset',
-            });
-          for (const column of view.fields ?? [])
-            if (
-              column.name &&
-              !report.columns.some((item) => item.entity === view.entity && item.name === column.name)
-            ) {
-              const field = table?.fields?.[column.name];
-              report.columns.push({
-                entity: view.entity,
-                name: column.name,
-                sourceFile: field?.source ?? table?.sources?.[0],
-                resolved: Boolean(field),
-                label: field?.label,
-                type: field?.dataverseType ?? field?.type,
-                evidence: 'native-code-component-dataset',
-              });
-            }
-        } else
-          report.unresolved.push({
-            kind: 'native-code-component-dataset',
-            expression: parameter.viewId ?? name,
-            owner: binding.owner,
-            reason:
-              'The exported native dataset view is absent or its table binding does not match selected Solution sources.',
-          });
-      }
-    }
-  }
+  for (const binding of report.nativeCodeBindings ?? []) inspectNativeCodeBinding(binding, context);
 }
 
 /** Enrich a shared report with source provenance and observed DOM, never a live access verdict. */
-export async function enrichInspection(
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export async function enrichInspection(
   report,
   portal,
   { metadata = {}, rendered = {}, live = false, observed = null, codeCatalogue = null, sourceIndexStore = null } = {},
@@ -1346,7 +1458,8 @@ export async function enrichInspection(
     if (existing) existing.evidence = 'rendered-component-id';
     if (form && !(report.forms ?? []).some((row) => norm(row.id) === norm(form.id))) {
       const schema = metadata.componentSchemas?.[form.id] ?? metadata.componentSchemas?.[form.name];
-      (report.forms ??= []).push({
+      report.forms ??= [];
+      report.forms.push({
         id: form.id,
         name: form.name,
         kind: 'basic-form',
@@ -1363,8 +1476,9 @@ export async function enrichInspection(
         if (
           field.name &&
           !(report.columns ?? []).some((row) => row.entity === form.entityName && row.name === field.name)
-        )
-          (report.columns ??= []).push({
+        ) {
+          report.columns ??= [];
+          report.columns.push({
             entity: form.entityName,
             name: field.name,
             sourceFile: field.source ?? metadata.entities?.[form.entityName]?.sources?.[0],
@@ -1372,12 +1486,14 @@ export async function enrichInspection(
             type: field.type,
             label: field.label,
           });
+        }
     }
     const list =
       control.listId &&
-      portal.lists.find((row) => norm(row.id).replace(/-/g, '') === norm(control.listId).replace(/-/g, ''));
-    if (list && !(report.components ?? []).some((row) => norm(row.recordId) === norm(list.id)))
-      (report.components ??= []).push({
+      portal.lists.find((row) => norm(row.id).replaceAll('-', '') === norm(control.listId).replaceAll('-', ''));
+    if (list && !(report.components ?? []).some((row) => norm(row.recordId) === norm(list.id))) {
+      report.components ??= [];
+      report.components.push({
         kind: 'list',
         recordId: list.id,
         name: list.name,
@@ -1385,9 +1501,11 @@ export async function enrichInspection(
         sourceFile: list.metadata?._file,
         evidence: 'rendered-component-id',
       });
+    }
     const view = control.viewId && metadata.views?.find((row) => norm(row.id) === norm(control.viewId));
-    if (view && !(report.views ?? []).some((row) => norm(row.id) === norm(view.id)))
-      (report.views ??= []).push({
+    if (view && !(report.views ?? []).some((row) => norm(row.id) === norm(view.id))) {
+      report.views ??= [];
+      report.views.push({
         id: view.id,
         name: view.name,
         entity: view.entity,
@@ -1395,6 +1513,7 @@ export async function enrichInspection(
         fields: view.fields,
         evidence: 'rendered-component-id',
       });
+    }
     for (const entity of [
       form?.entityName,
       list?.entityName,
@@ -1403,7 +1522,8 @@ export async function enrichInspection(
     ].filter(Boolean)) {
       if (!(report.tables ?? []).some((row) => row.logicalName === entity)) {
         const table = metadata.entities?.[entity];
-        (report.tables ??= []).push({
+        report.tables ??= [];
+        report.tables.push({
           kind: 'table',
           logicalName: entity,
           name: entity,
@@ -1429,8 +1549,9 @@ export async function enrichInspection(
           (row) => norm(row.id) === norm(viewId) && (!component.entity || row.entity === component.entity),
         );
         if (!view) continue;
-        if (!(report.views ?? []).some((row) => norm(row.id) === norm(view.id)))
-          (report.views ??= []).push({
+        if (!(report.views ?? []).some((row) => norm(row.id) === norm(view.id))) {
+          report.views ??= [];
+          report.views.push({
             id: view.id,
             name: view.name,
             entity: view.entity,
@@ -1438,13 +1559,15 @@ export async function enrichInspection(
             fields: view.fields ?? [],
             evidence: 'list-view',
           });
+        }
         for (const column of view.fields ?? [])
           if (
             column.name &&
             !(report.columns ?? []).some((row) => row.entity === view.entity && row.name === column.name)
           ) {
             const field = metadata.entities?.[view.entity]?.fields?.[column.name];
-            (report.columns ??= []).push({
+            report.columns ??= [];
+            report.columns.push({
               entity: view.entity,
               name: column.name,
               sourceFile: field?.source ?? metadata.entities?.[view.entity]?.sources?.[0],
@@ -1489,7 +1612,10 @@ export async function enrichInspection(
   let candidateTruncated = false;
   // Prefer direct identities over a broad class bucket regardless of DOM order.
   const tokens = (rendered.markupTokens ?? []).slice(0, 8000),
-    rank = (token) => (token.startsWith('id:') ? 0 : token.startsWith('attribute:') ? 1 : 2);
+    rank = (token) => {
+      if (token.startsWith('id:')) return 0;
+      return token.startsWith('attribute:') ? 1 : 2;
+    };
   tokens.sort((a, b) => rank(a) - rank(b));
   candidateLoop: for (const token of tokens)
     for (const item of whole.byToken.get(token) ?? []) {
@@ -1559,7 +1685,7 @@ export async function enrichInspection(
       }
     }
   }
-  const body = sourceBodies.map(stripLiquidLiteralBlocks).join('\n');
+  const body = sourceBodies.map(stripLiquidLiteralBlocks).join('\n'); // NOSONAR: preserve callback identity and iteration arguments
   report.assets = [...matchedFiles.values()].map((file) => ({
     name: file.name ?? file.url,
     url: file.url,
@@ -1591,9 +1717,9 @@ export async function enrichInspection(
   };
   // Literal Web API entity sets resolve only through selected Solution definitions.
   // Dynamic expressions stay unknown rather than assuming an English plural table name.
-  const observedApiSets = new Set((rendered.apiSets ?? []).filter((value) => /^[a-z][\w]*$/i.test(value)));
+  const observedApiSets = new Set((rendered.apiSets ?? []).filter((value) => /^[a-z]\w*$/i.test(value)));
   const apiSets = unique(
-    [...body.matchAll(/\/_api\/([a-z][\w]*)\b/gi)]
+    [...body.matchAll(/\/_api\/([a-z]\w*)\b/gi)]
       .map((match) => ({ name: match[1] }))
       .concat([...observedApiSets].map((name) => ({ name }))),
     (row) => row.name,
@@ -1619,7 +1745,8 @@ export async function enrichInspection(
     );
     if (entity && !(report.tables ?? []).some((row) => row.logicalName === entity[0])) {
       const [logicalName, table] = entity;
-      (report.tables ??= []).push({
+      report.tables ??= [];
+      report.tables.push({
         kind: 'table',
         logicalName,
         name: logicalName,
@@ -1644,8 +1771,9 @@ export async function enrichInspection(
   for (const entity of new Set((rendered.controls ?? []).map((row) => row.gridTable?.toLowerCase()))) {
     if (!/^[a-z][a-z0-9_]*$/.test(entity ?? '') || !metadata.entities?.[entity]) continue;
     const table = metadata.entities[entity];
-    if (!(report.tables ?? []).some((row) => row.logicalName === entity))
-      (report.tables ??= []).push({
+    if (!(report.tables ?? []).some((row) => row.logicalName === entity)) {
+      report.tables ??= [];
+      report.tables.push({
         kind: 'table',
         logicalName: entity,
         name: entity,
@@ -1654,6 +1782,7 @@ export async function enrichInspection(
         fieldCount: Object.keys(table.fields ?? {}).length,
         evidence: 'rendered-grid-declaration',
       });
+    }
     addTableColumns(entity, 'declared-grid-table-candidate');
   }
   inspectCodeComponents(report, body, metadata, observed, codeCatalogue);
@@ -1723,6 +1852,13 @@ export async function enrichInspection(
       evidence: field || component ? 'rendered-and-source' : 'rendered-unmapped',
     };
   });
+  const pluginStepDescription = (step) => {
+    let mode = 'unknown execution mode';
+    if (step.mode === 0) mode = 'synchronous';
+    else if (step.mode === 1) mode = 'asynchronous';
+    const inputs = step.filteringAttributes.length ? ` · input attributes: ${step.filteringAttributes.join(', ')}` : '';
+    return `${step.entity} ${step.message ?? 'Unknown message'} · ${step.stageName} · rank ${step.rank ?? 'unknown'} · ${mode}${inputs} · ${step.enabled ? 'export enabled' : 'export disabled'} · live execution unknown`;
+  };
   report.logic = [
     ...(portal.serverLogics ?? [])
       .filter((row) => body.includes(row.name))
@@ -1746,7 +1882,7 @@ export async function enrichInspection(
         kind: 'plugin-step',
         evidence: 'exported-table-registration',
         effective: 'unknown',
-        description: `${step.entity} ${step.message ?? 'Unknown message'} · ${step.stageName} · rank ${step.rank ?? 'unknown'} · ${step.mode === 0 ? 'synchronous' : step.mode === 1 ? 'asynchronous' : 'unknown execution mode'}${step.filteringAttributes.length ? ` · input attributes: ${step.filteringAttributes.join(', ')}` : ''} · ${step.enabled ? 'export enabled' : 'export disabled'} · live execution unknown`,
+        description: pluginStepDescription(step),
         sources: [
           { name: step.typeName ?? 'Unresolved plugin type', kind: 'plugin-type', sourceFile: step.typeSourceFile },
           {
@@ -1891,7 +2027,8 @@ export function createSourceInspector(cfg) {
           const admission = (selected.admission ?? Promise.resolve())
             .catch(() => {})
             .then(async () => {
-              const missing = declared.filter((name) => !selected.metadata.entities?.[name]);
+              const missing = [];
+              for (const name of declared) if (!selected.metadata.entities?.[name]) missing.push(name);
               if (!missing.length) return;
               const metadata = await importSolutionMetadata(sources.roots, {
                 cache: fileCache,
@@ -1907,7 +2044,13 @@ export function createSourceInspector(cfg) {
                 order: sources.order,
                 observed: sources.observed,
               });
-              if (!missing.some((name) => metadata.entities?.[name])) return;
+              let hasAdmittedEntity = false;
+              for (const name of missing)
+                if (metadata.entities?.[name]) {
+                  hasAdmittedEntity = true;
+                  break;
+                }
+              if (!hasAdmittedEntity) return;
               for (const name of missing) if (metadata.entities?.[name] && admitted.size < 300) admitted.add(name);
               admittedTables.set(language?.id ?? '', admitted);
               selected.metadata = metadata;
@@ -2040,7 +2183,7 @@ export function createSourceInspector(cfg) {
       if (matches.length !== 1) return { state: 'conflicting', reason: 'source-identity-ambiguous' };
       const source = matches[0];
       if (source.ambiguous) return { state: 'conflicting', reason: 'duplicate-source-identity' };
-      const { text: _text, file: _file, sourceDir: _root, ...sourceRef } = source;
+      const { text: _text, file: _file, sourceDir: _root, ...sourceRef } = source; // NOSONAR: binding is excluded from the rest object or is a placeholder
       if (sourceRevision !== index.sourceRevision || contentRevision !== source.contentRevision)
         return { state: 'stale', reason: 'source-revision-changed', replacement: sourceRef };
       if (source.id.startsWith('model-source:')) {

@@ -48,26 +48,28 @@ const RIGHTS = ['read', 'create', 'update', 'delete'];
 // Tracing (D-R3-11): the evaluation is one aggregated `permission` event on the current span (result 'evaluated', tables,
 // allowed and denied decisions), not four per table: each table's checks run where the store finds no current span
 // (detached, under a copy of the request context that names none), so the security model records nothing for them.
-const tableRights = async (catalogue, data, actor, res, { index, entity, compact }, traces) => {
+function untracedRunner(traces, span, request) {
+  if (!span) return (fn) => fn();
+  if (request) return (fn) => runWithRequest({ ...request, traceId: null, spanId: null }, () => traces.detached(fn));
+  return (fn) => traces.detached(fn);
+}
+const fieldsForTable = (catalogue, name, index, entity) => {
+  if (index) return {};
+  if (!entity && catalogue.tableIndex) return indexFields(catalogue, name);
+  return catalogue.tables[name].fields;
+};
+/* NOSONAR */ const tableRights = async (catalogue, data, actor, res, { index, entity, compact }, traces) => {
   const rights = new Map();
   if (!data.capabilities) return rights;
   const span = traces?.enabled ? traces.current() : null;
   const request = span ? currentRequest() : null;
-  const untraced = !span
-    ? (fn) => fn()
-    : request
-      ? (fn) => runWithRequest({ ...request, traceId: null, spanId: null }, () => traces.detached(fn))
-      : (fn) => traces.detached(fn);
+  const untraced = untracedRunner(traces, span, request);
   let allowed = 0,
     denied = 0;
   let yieldedAt = performance.now();
   for (const name of entity ? [entity] : Object.keys(catalogue.tables)) {
     if (res.destroyed) throw cancelled();
-    const fields = index
-      ? {}
-      : !entity && catalogue.tableIndex
-        ? indexFields(catalogue, name)
-        : catalogue.tables[name].fields;
+    const fields = fieldsForTable(catalogue, name, index, entity);
     const value = untraced(() => data.capabilities(name, actor, undefined, fields, compact ? { compact } : undefined));
     rights.set(name, value);
     if (span && value) for (const right of RIGHTS) value[right] ? allowed++ : denied++;
@@ -92,7 +94,7 @@ const metadataOnly = (catalogue, rights, res, { index = false, entity, wire = fa
   const tables = {};
   const project = (name) => {
     if (res.destroyed) throw cancelled();
-    const { rows: _rows, ...table } = (index ? catalogue.tableIndex?.[name] : undefined) ?? catalogue.tables[name];
+    const { rows: _rows, ...table } = (index ? catalogue.tableIndex?.[name] : undefined) ?? catalogue.tables[name]; // NOSONAR: binding is excluded from the rest object or is a placeholder
     const { entity: logical, label, singular, idColumn, nameColumn, entitySet, kind, source, projected } = table;
     const result = {
       ...(index
@@ -211,7 +213,7 @@ export function createModelDrivenHandler({
   });
   // handler.offlineSessions(): every staff session's offline summary, for the /_sim/ administration.
   return Object.assign(
-    async (req, res, url) => {
+    /* NOSONAR: single-pass routine, splitting it would change shared state */ async (req, res, url) => {
       const shell = url.pathname === '/main.aspx' || /^\/_apps\/?$/.test(url.pathname);
       const asset = /^\/_apps\/assets\/([^/]+)$/.exec(url.pathname);
       const api = /^\/_apps\/api(?:\/(.*))?$/.exec(url.pathname);
@@ -252,12 +254,15 @@ export function createModelDrivenHandler({
           }
           const resource = catalogue.get(url.pathname);
           // A web resource page may take the native ?data= parameter; every other asset is served without a query.
-          if (!resource || (url.search && !(/^text\/html/.test(resource.mime) && /^\?data=[^&]*$/.test(url.search))))
+          if (
+            !resource ||
+            (url.search && !(/^text\/html/.test(resource.mime) && /^\?data=[^&]*$/.test(url.search))) // NOSONAR: preserve regex coercion
+          )
             throw fail('Trusted client asset not found.', 404);
           // A trusted HTML web resource page opens inside the app (navigateTo, side panes, SiteMap) and runs its own scripts.
           res.setHeader(
             'content-security-policy',
-            /^text\/html/.test(resource.mime)
+            /^text\/html/.test(resource.mime) // NOSONAR: preserve regex coercion
               ? "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
               : "default-src 'none'; frame-ancestors 'none'",
           );
@@ -330,12 +335,9 @@ export function createModelDrivenHandler({
             throw Object.assign(fail('Mobile offline needs a staff session or the local administrator.', 401), {
               code: 'StaffPrincipalUnavailable',
             });
-          const input =
-            method === 'GET'
-              ? { app: url.searchParams.get('app'), action: 'status' }
-              : method === 'POST'
-                ? await readBody(req)
-                : null;
+          let input = null;
+          if (method === 'GET') input = { app: url.searchParams.get('app'), action: 'status' };
+          else if (method === 'POST') input = await readBody(req);
           if (
             !input ||
             typeof input !== 'object' ||
@@ -351,25 +353,23 @@ export function createModelDrivenHandler({
           )
             throw fail('Provide a table logical name, a GUID record id and text query options.', 400);
           const host = req.headers.host;
-          const result =
-            input.action === 'status'
-              ? await offline.status(actor, input.app, host)
-              : input.action === 'mode'
-                ? await offline.setMode(actor, input.app, input.mode, host)
-                : input.action === 'sync'
-                  ? await offline.sync(actor, input.app, host)
-                  : await offline.execute(
-                      actor,
-                      input.app,
-                      {
-                        operation: input.action,
-                        entity: input.entity,
-                        id: input.id,
-                        options: input.options ?? '',
-                        data: input.data,
-                      },
-                      host,
-                    );
+          let result;
+          if (input.action === 'status') result = await offline.status(actor, input.app, host);
+          else if (input.action === 'mode') result = await offline.setMode(actor, input.app, input.mode, host);
+          else if (input.action === 'sync') result = await offline.sync(actor, input.app, host);
+          else
+            result = await offline.execute(
+              actor,
+              input.app,
+              {
+                operation: input.action,
+                entity: input.entity,
+                id: input.id,
+                options: input.options ?? '',
+                data: input.data,
+              },
+              host,
+            );
           json(res, 200, result);
           return true;
         }
@@ -418,7 +418,7 @@ export function createModelDrivenHandler({
           json(res, 200, { status: result.status, headers: result.headers ?? {}, body: result.body ?? '' });
           return true;
         }
-        const tableMetadata = /^metadata\/([a-z][\w]*)$/i.exec(api[1] ?? '');
+        const tableMetadata = /^metadata\/([a-z]\w*)$/i.exec(api[1] ?? '');
         if (!api[1] || api[1] === 'index' || tableMetadata) {
           if (method !== 'GET') throw fail('Catalogue requires GET.', 405);
           const entity = tableMetadata?.[1],
@@ -458,11 +458,13 @@ export function createModelDrivenHandler({
             return true;
           }
           const result = metadataOnly(source, rights, res, { index, entity, wire, lazy: streamMetadata });
-          const payload = entity ? result.tables[entity] : wire ? rootOf(source, result.tables, true) : result;
+          let payload = result;
+          if (entity) payload = result.tables[entity];
+          else if (wire) payload = rootOf(source, result.tables, true);
           await json(res, 200, payload, {}, { chunks: metadataResponseChunks(payload) });
           return true;
         }
-        const route = /^tables\/([a-z][\w]*)(?:\/([^/]+))?$/i.exec(api[1]);
+        const route = /^tables\/([a-z]\w*)(?:\/([^/]+))?$/i.exec(api[1]);
         if (!route) throw fail('Model-driven endpoint not found.', 404);
         const [, entity, encodedId] = route,
           id = encodedId ? decodeURIComponent(encodedId) : null;

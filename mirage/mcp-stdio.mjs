@@ -90,26 +90,28 @@ export function startMcpServer({ command, args = [], env = process.env, cwd, onS
       return (await request('tools/list', {}, 60000)).tools ?? [];
     },
     close() {
-      return (closePromise ??= (async () => {
-        stop(new Error('MCP client closed.'));
-        try {
-          child.stdin.end();
-        } catch {
-          /* already closed */
-        }
-        let timer;
-        try {
-          const exited = await Promise.race([
-            exit.then(() => true),
-            new Promise((resolve) => {
-              timer = setTimeout(() => resolve(false), 5000);
-            }),
-          ]);
-          if (!exited) child.kill();
-        } finally {
-          clearTimeout(timer);
-        }
-      })());
+      if (closePromise == null)
+        closePromise = (async () => {
+          stop(new Error('MCP client closed.'));
+          try {
+            child.stdin.end();
+          } catch {
+            /* already closed */
+          }
+          let timer;
+          try {
+            const exited = await Promise.race([
+              exit.then(() => true),
+              new Promise((resolve) => {
+                timer = setTimeout(() => resolve(false), 5000);
+              }),
+            ]);
+            if (!exited) child.kill();
+          } finally {
+            clearTimeout(timer);
+          }
+        })();
+      return closePromise;
     },
   };
 }

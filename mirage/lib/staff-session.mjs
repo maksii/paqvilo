@@ -19,24 +19,33 @@ const SAMPLE = new Date(Date.UTC(2026, 0, 5, 3, 4, 5));
 function pattern(locale, options) {
   return new Intl.DateTimeFormat(locale, { ...options, timeZone: 'UTC' })
     .formatToParts(SAMPLE)
-    .map(({ type, value }) => {
-      const two = value.length === 2;
-      if (type === 'year') return value.length === 2 ? 'yy' : 'yyyy';
-      if (type === 'month') return /^\d+$/.test(value) ? (two ? 'MM' : 'M') : value.length > 4 ? 'MMMM' : 'MMM';
-      if (type === 'day') return two ? 'dd' : 'd';
-      if (type === 'weekday') return value.length > 4 ? 'dddd' : 'ddd';
-      if (type === 'hour') {
-        const h24 = new Intl.DateTimeFormat(locale, { hour: 'numeric', timeZone: 'UTC' })
-          .resolvedOptions()
-          .hourCycle?.startsWith('h2');
-        return (h24 ? 'H' : 'h').repeat(two ? 2 : 1);
-      }
-      if (type === 'minute') return 'mm';
-      if (type === 'second') return 'ss';
-      if (type === 'dayPeriod') return 'tt';
-      return /[A-Za-z]/.test(value) ? `'${value}'` : value;
-    })
+    .map(({ type, value }) => patternPart(locale, type, value))
     .join('');
+}
+
+function patternPart(locale, type, value) {
+  const two = value.length === 2;
+  if (type === 'year') return value.length === 2 ? 'yy' : 'yyyy';
+  if (type === 'month') return monthPattern(value, two);
+  if (type === 'day') return two ? 'dd' : 'd';
+  if (type === 'weekday') return value.length > 4 ? 'dddd' : 'ddd';
+  if (type === 'hour') return hourPattern(locale, two);
+  if (type === 'minute') return 'mm';
+  if (type === 'second') return 'ss';
+  if (type === 'dayPeriod') return 'tt';
+  return /[A-Za-z]/.test(value) ? `'${value}'` : value;
+}
+
+function monthPattern(value, two) {
+  if (!/^\d+$/.test(value)) return value.length > 4 ? 'MMMM' : 'MMM';
+  return two ? 'MM' : 'M';
+}
+
+function hourPattern(locale, two) {
+  const h24 = new Intl.DateTimeFormat(locale, { hour: 'numeric', timeZone: 'UTC' })
+    .resolvedOptions()
+    .hourCycle?.startsWith('h2');
+  return (h24 ? 'H' : 'h').repeat(two ? 2 : 1);
 }
 
 /** The one staff context the model-driven host gives both the PCF context and
@@ -122,7 +131,7 @@ export function staffContext(runtime, user) {
       negativeSign: numberPart('minusSign') ?? '-',
       positiveSign: numberPart('plusSign', 1, { signDisplay: 'always' }) ?? '+',
       percentSymbol: numberPart('percentSign', 0.5, { style: 'percent' }) ?? '%',
-      nanSymbol: numberPart('nan', NaN) ?? 'NaN',
+      nanSymbol: numberPart('nan', Number.NaN) ?? 'NaN',
       positiveInfinitySymbol: numberPart('infinity', Infinity) ?? 'Infinity',
       negativeInfinitySymbol: `${numberPart('minusSign') ?? '-'}${numberPart('infinity', Infinity) ?? 'Infinity'}`,
     },
@@ -164,15 +173,15 @@ export function staffContext(runtime, user) {
 // usersettings (seeded rows win on reset). Secrets are never stored there: only language, locale, time zone, currency and formats.
 // ponytail: a caller reads and updates its own row only; another user's row (prvReadUserSettings/prvWriteUserSettings) is refused.
 const USER_SETTINGS_ROUTE = /^\/api\/data\/v\d+\.\d+\/usersettingscollection\(([^)]*)\)\/?$/i;
-const USER_SETTINGS_NUMBERS = ['uilanguageid', 'localeid', 'timezonecode'];
-const USER_SETTINGS_TEXT = [
+const USER_SETTINGS_NUMBERS = new Set(['uilanguageid', 'localeid', 'timezonecode']);
+const USER_SETTINGS_TEXT = new Set([
   'dateformatstring',
   'timeformatstring',
   'dateseparator',
   'timeseparator',
   'decimalsymbol',
   'numberseparator',
-];
+]);
 const userSettingsJson = (status, body) => ({
   status,
   headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -191,40 +200,12 @@ function installUserSettings(api) {
         throw new DataError("Only the caller's own usersettings row is available locally.", 403, 'Forbidden');
       const org = store.tableRows('organization')[0] ?? {};
       const rowOf = () => store.tableRows('usersettings').find((row) => bare(row.systemuserid) === id);
-      if (c.method === 'GET') {
-        const row = rowOf() ?? {
-          uilanguageid: org.languagecode ?? null,
-          localeid: org.localeid ?? null,
-          timezonecode: UTC_CODE,
-        };
-        return userSettingsJson(200, {
-          '@odata.context': `${c.origin}/api/data/${c.version}/$metadata#usersettingscollection/$entity`,
-          systemuserid: id,
-          ...Object.fromEntries(
-            [...USER_SETTINGS_NUMBERS, ...USER_SETTINGS_TEXT].map((name) => [name, row[name] ?? null]),
-          ),
-          _transactioncurrencyid_value: row.transactioncurrencyid ? bare(row.transactioncurrencyid) : null,
-        });
-      }
-      const body = c.body ?? {},
-        patch = {};
-      for (const [name, value] of Object.entries(body)) {
-        if (USER_SETTINGS_NUMBERS.includes(name) && Number.isInteger(value)) patch[name] = value;
-        else if (USER_SETTINGS_TEXT.includes(name) && typeof value === 'string' && value.length <= 255)
-          patch[name] = value;
-        else if (
-          name === 'transactioncurrencyid@odata.bind' &&
-          /^\/?transactioncurrencies\(([^)]+)\)$/i.test(String(value))
-        ) {
-          const currency = bare(/\(([^)]+)\)/.exec(value)[1]);
-          if (!store.tableRows('transactioncurrency').some((row) => bare(row.transactioncurrencyid) === currency))
-            throw new DataError(`transactioncurrency With Id = ${currency} Does Not Exist`, 404, 'NotFound');
-          patch.transactioncurrencyid = currency;
-        } else throw new DataError(`The usersettings property '${name}' cannot be updated locally.`, 400, 'BadRequest');
-      }
+      if (c.method === 'GET') return getUserSettings(c, id, org, rowOf);
+      const patch = makeUserSettingsPatch(c.body ?? {}, store);
       await api.change(() =>
         store.transact(() => {
-          const rows = ((store.state.tables ??= {}).usersettings ??= []);
+          store.state.tables ??= {};
+          const rows = (store.state.tables.usersettings ??= []);
           const row = rows.find((item) => bare(item.systemuserid) === id);
           if (row) Object.assign(row, patch);
           else rows.push({ systemuserid: id, ...patch });
@@ -233,6 +214,45 @@ function installUserSettings(api) {
       return { status: 204, headers: {}, body: undefined };
     },
   );
+}
+
+function getUserSettings(c, id, org, rowOf) {
+  const row = rowOf() ?? {
+    uilanguageid: org.languagecode ?? null,
+    localeid: org.localeid ?? null,
+    timezonecode: UTC_CODE,
+  };
+  return userSettingsJson(200, {
+    '@odata.context': `${c.origin}/api/data/${c.version}/$metadata#usersettingscollection/$entity`,
+    systemuserid: id,
+    ...Object.fromEntries([...USER_SETTINGS_NUMBERS, ...USER_SETTINGS_TEXT].map((name) => [name, row[name] ?? null])),
+    _transactioncurrencyid_value: row.transactioncurrencyid ? bare(row.transactioncurrencyid) : null,
+  });
+}
+
+function makeUserSettingsPatch(body, store) {
+  const patch = {};
+  for (const [name, value] of Object.entries(body)) applyUserSetting(patch, name, value, store);
+  return patch;
+}
+
+function applyUserSetting(patch, name, value, store) {
+  if (USER_SETTINGS_NUMBERS.has(name) && Number.isInteger(value)) {
+    patch[name] = value;
+    return;
+  }
+  if (USER_SETTINGS_TEXT.has(name) && typeof value === 'string' && value.length <= 255) {
+    patch[name] = value;
+    return;
+  }
+  if (name === 'transactioncurrencyid@odata.bind' && /^\/?transactioncurrencies\(([^)]+)\)$/i.test(String(value))) {
+    const currency = bare(/\(([^)]+)\)/.exec(value)[1]); // NOSONAR: regex kept: linear on bounded input, a rewrite would change matches
+    if (!store.tableRows('transactioncurrency').some((row) => bare(row.transactioncurrencyid) === currency))
+      throw new DataError(`transactioncurrency With Id = ${currency} Does Not Exist`, 404, 'NotFound');
+    patch.transactioncurrencyid = currency;
+    return;
+  }
+  throw new DataError(`The usersettings property '${name}' cannot be updated locally.`, 400, 'BadRequest');
 }
 export const USER_SETTINGS_EXTENSION = {
   name: 'usersettings',
@@ -259,7 +279,7 @@ export const USER_SETTINGS_EXTENSION = {
  * on every request. Absence retains explicit local administration compatibility. */
 export function createStaffSessions({ organization, port = () => '', secret = randomBytes(32) }) {
   const core = () => (typeof organization === 'function' ? organization() : organization);
-  const name = () => `paqvilo-mirage-staff${port() ? `-${port()}` : ''}`;
+  const name = () => (port() ? `paqvilo-mirage-staff-${port()}` : 'paqvilo-mirage-staff');
   const sign = (value) => createHmac('sha256', secret).update(value).digest('base64url');
   const selected = (req) => {
     const runtime = core();
@@ -276,8 +296,10 @@ export function createStaffSessions({ organization, port = () => '', secret = ra
     if (!user || user.isdisabled === true || user.applicationid || user.accessmode === 4) throw unavailable();
     return { principalId: user.systemuserid, kind: 'staff' };
   };
-  const cookie = (id) =>
-    `${name()}=${id ? `${id}.${sign(id)}` : ''}; Path=/; HttpOnly; SameSite=Lax${id ? '' : '; Max-Age=0'}`;
+  const cookie = (id) => {
+    const value = id ? `${id}.${sign(id)}` : '';
+    return `${name()}=${value}; Path=/; HttpOnly; SameSite=Lax${id ? '' : '; Max-Age=0'}`;
+  };
   const describe = (req) => {
     const runtime = core(),
       current = selected(req),

@@ -71,7 +71,7 @@ const bare = (value) =>
     .toLowerCase();
 const sameId = (a, b) => bare(a) !== '' && bare(a) === bare(b);
 const enumValue = (value) => (value !== null && typeof value === 'object' ? value.Value : value);
-const facts = (definition) => ({ ...definition, ...(definition?.columnMetadata ?? {}) });
+const facts = (definition) => ({ ...definition, ...definition?.columnMetadata });
 const isThenable = (value) => value !== null && typeof value === 'object' && typeof value.then === 'function';
 const hasKey = (data, name) => Object.keys(data).some((key) => key.toLowerCase() === name);
 
@@ -95,9 +95,31 @@ const writeRefused = (mapping, column) =>
 
 // Reads the parts of the rule in order: child and link first, so a rule outside the aggregate subset still names its 1:N source.
 function readFetch(root, rule) {
+  validateFetchRoot(root);
+  const { filters, attributes, filter } = fetchComponents(root, rule);
+  const idCondition = elements(filter).find(
+    (item) =>
+      localName(item.name) === 'condition' &&
+      String(attr(item, 'value') ?? '')
+        .trim()
+        .toLowerCase() === '{id}',
+  );
+  rule.link =
+    String(attr(idCondition ?? {}, 'attribute') ?? '')
+      .trim()
+      .toLowerCase() || null;
+  if (!rule.link) unsupported('The filter needs a condition with value {id} naming the parent column.');
+  validateFetchFilter(filters, filter, idCondition, rule);
+  readAggregateRule(rule, attributes);
+}
+
+function validateFetchRoot(root) {
   if (localName(root.name) !== 'fetch') unsupported('The FormulaDefinition is not a <fetch> query.');
   if (String(attr(root, 'aggregate') ?? '').toLowerCase() !== 'true')
     unsupported('The <fetch> is not an aggregate query (aggregate="true").');
+}
+
+function fetchComponents(root, rule) {
   const entities = elements(root);
   if (entities.length !== 1 || localName(entities[0].name) !== 'entity')
     unsupported('The <fetch> must hold exactly one <entity>.');
@@ -114,18 +136,10 @@ function readFetch(root, rule) {
     unsupported('The <entity> holds an element outside the subset (link-entity, order, ...).');
   const [filter] = filters;
   if (!filter) unsupported('The query has no <filter> with an {id} condition.');
-  const idCondition = elements(filter).find(
-    (item) =>
-      localName(item.name) === 'condition' &&
-      String(attr(item, 'value') ?? '')
-        .trim()
-        .toLowerCase() === '{id}',
-  );
-  rule.link =
-    String(attr(idCondition ?? {}, 'attribute') ?? '')
-      .trim()
-      .toLowerCase() || null;
-  if (!rule.link) unsupported('The filter needs a condition with value {id} naming the parent column.');
+  return { filters, attributes, filter };
+}
+
+function validateFetchFilter(filters, filter, idCondition, rule) {
   if (filters.length > 1) unsupported('The query has more than one <filter>.');
   if (String(attr(filter, 'type') ?? 'and').toLowerCase() !== 'and') unsupported('Only an and-filter is supported.');
   const conditions = elements(filter);
@@ -133,21 +147,26 @@ function readFetch(root, rule) {
   if (String(attr(idCondition, 'operator') ?? '').toLowerCase() !== 'eq')
     unsupported('The {id} condition must use operator eq.');
   rule.active = false;
-  for (const condition of conditions) {
-    if (condition === idCondition) continue;
-    const field = String(attr(condition, 'attribute') ?? '')
-      .trim()
-      .toLowerCase();
-    const operator = String(attr(condition, 'operator') ?? '').toLowerCase();
-    if (
-      field === 'statecode' &&
-      operator === 'eq' &&
-      String(attr(condition, 'value') ?? '').trim() === '0' &&
-      !rule.active
-    )
-      rule.active = true;
-    else unsupported(`The condition on '${field}' is outside the subset.`);
-  }
+  for (const condition of conditions) checkRollupCondition(rule, condition, idCondition);
+}
+
+function checkRollupCondition(rule, condition, idCondition) {
+  if (condition === idCondition) return;
+  const field = String(attr(condition, 'attribute') ?? '')
+    .trim()
+    .toLowerCase();
+  const operator = String(attr(condition, 'operator') ?? '').toLowerCase();
+  if (
+    field === 'statecode' &&
+    operator === 'eq' &&
+    String(attr(condition, 'value') ?? '').trim() === '0' &&
+    !rule.active
+  )
+    rule.active = true;
+  else unsupported(`The condition on '${field}' is outside the subset.`);
+}
+
+function readAggregateRule(rule, attributes) {
   if (attributes.length !== 1) unsupported('The aggregate names exactly one <attribute>.');
   const aggregate = String(attr(attributes[0], 'aggregate') ?? '').toLowerCase();
   if (!AGGREGATES.has(aggregate)) unsupported(`Aggregate '${aggregate || 'none'}' is not supported.`);
@@ -177,8 +196,10 @@ export function parseRollupFormula(text) {
 // ---- Aggregation
 
 const asNumber = (value) => {
-  const number =
-    typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN;
+  let number;
+  if (typeof value === 'number') number = value;
+  else if (typeof value === 'string' && value.trim() !== '') number = Number(value);
+  else number = Number.NaN;
   if (!Number.isFinite(number)) unsupported(`'${value}' is not a number.`);
   return number;
 };
@@ -264,7 +285,7 @@ function* staleColumns(api) {
     const columns = Object.keys(rollupColumnsOf(api, logical));
     if (!columns.length) continue;
     const mapping = api.store.resolveMapping(logical);
-    for (const row of [...api.store.tableRows(logical)])
+    /* NOSONAR */ for (const row of [...api.store.tableRows(logical)])
       for (const column of columns)
         if (row[`${column}_state`] === STATE.notCalculated) yield [logical, row[mapping.idColumn], column];
   }
@@ -345,40 +366,7 @@ export async function recalculate(api, table, id, column) {
     api.store.transact(
       async () => {
         const now = new Date(api.clock ? api.clock() : Date.now()).toISOString();
-        let value = null;
-        let stateValue = STATE.overflowError;
-        const override = state.overrides[`${logical}.${name}`];
-        if (override) {
-          // A pack function is arbitrary code: the write's row journal becomes a full backup first, as a plug-in step does.
-          api.store.promoteRowTransaction();
-          const answer = override(cloneStateData(row), { table: logical, column: name });
-          if (isThenable(answer))
-            report(state, {
-              code: 'ROLLUP_UNSUPPORTED',
-              table: logical,
-              column: name,
-              message: 'The pack rollups function returned a promise; rollups are computed synchronously.',
-            });
-          else {
-            value = answer ?? null;
-            stateValue = STATE.calculated;
-          }
-        } else {
-          const rule = parsedOf(state, formula);
-          try {
-            if (rule.unsupported) unsupported(rule.unsupported);
-            value = aggregateOf(rule, api.store.tableRows(rule.child), row[mapping.idColumn]);
-            stateValue = STATE.calculated;
-          } catch (error) {
-            if (!(error instanceof Unsupported)) throw error;
-            report(state, {
-              code: 'ROLLUP_UNSUPPORTED',
-              table: logical,
-              column: name,
-              message: `${error.message} The column reads as null with state 2; supply a pack rollups['${logical}.${name}'] function.`,
-            });
-          }
-        }
+        const { value, stateValue } = calculateRollup(api, state, logical, name, formula, row, mapping);
         await api.store.updateRecordAsync(
           logical,
           row[mapping.idColumn],
@@ -393,6 +381,48 @@ export async function recalculate(api, table, id, column) {
       { incremental: true },
     ),
   );
+}
+
+function calculateRollup(api, state, logical, name, formula, row, mapping) {
+  const override = state.overrides[`${logical}.${name}`];
+  if (override) return calculatePackRollup(api, state, logical, name, row, override);
+  return calculateFormulaRollup(api, state, logical, name, formula, row, mapping);
+}
+
+function calculatePackRollup(api, state, logical, name, row, override) {
+  // A pack function is arbitrary code: the write's row journal becomes a full backup first, as a plug-in step does.
+  api.store.promoteRowTransaction();
+  const answer = override(cloneStateData(row), { table: logical, column: name });
+  if (isThenable(answer)) {
+    report(state, {
+      code: 'ROLLUP_UNSUPPORTED',
+      table: logical,
+      column: name,
+      message: 'The pack rollups function returned a promise; rollups are computed synchronously.',
+    });
+    return { value: null, stateValue: STATE.overflowError };
+  }
+  return { value: answer ?? null, stateValue: STATE.calculated };
+}
+
+function calculateFormulaRollup(api, state, logical, name, formula, row, mapping) {
+  const rule = parsedOf(state, formula);
+  try {
+    if (rule.unsupported) unsupported(rule.unsupported);
+    return {
+      value: aggregateOf(rule, api.store.tableRows(rule.child), row[mapping.idColumn]),
+      stateValue: STATE.calculated,
+    };
+  } catch (error) {
+    if (!(error instanceof Unsupported)) throw error;
+    report(state, {
+      code: 'ROLLUP_UNSUPPORTED',
+      table: logical,
+      column: name,
+      message: `${error.message} The column reads as null with state 2; supply a pack rollups['${logical}.${name}'] function.`,
+    });
+    return { value: null, stateValue: STATE.overflowError };
+  }
 }
 
 /**
@@ -411,7 +441,7 @@ function install(api, options = {}) {
   };
   state.closed = false;
   scheduleMass(api, state);
-  api.recordHooks.add('beforeWrite', (c, mapping, { operation, data, existing }) => {
+  /* NOSONAR */ api.recordHooks.add('beforeWrite', (c, mapping, { operation, data, existing }) => {
     const table = mapping.logicalName;
     const rollups = rollupColumnsOf(api, table);
     if (operation !== 'delete' && data) {

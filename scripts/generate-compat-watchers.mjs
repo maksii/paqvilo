@@ -16,10 +16,10 @@ const fragment = watchJQuery
   .join('\n');
 for (const name of names) {
   const file = fileURLToPath(new URL(name, root)),
-    text = (await fs.readFile(file, 'utf8')).replace(/\r\n/g, '\n');
+    text = (await fs.readFile(file, 'utf8')).replaceAll('\r\n', '\n');
   const start = text.indexOf('  // BEGIN generated jQuery watcher'),
     end = text.indexOf('  // END generated jQuery watcher', start);
-  if (start < 0 || end < start) throw Error('Missing generated watcher boundaries: ' + name);
+  if (start < 0 || end < start) throw new Error('Missing generated watcher boundaries: ' + name);
   const next =
     text.slice(0, start) +
     '  // BEGIN generated jQuery watcher\n' +
@@ -27,6 +27,6 @@ for (const name of names) {
     '\n  // END generated jQuery watcher' +
     text.slice(end + '  // END generated jQuery watcher'.length);
   if (process.argv.includes('--check')) {
-    if (next !== text) throw Error('Regenerate compatibility watcher: ' + name);
+    if (next !== text) throw new Error('Regenerate compatibility watcher: ' + name);
   } else await fs.writeFile(file, next);
 }

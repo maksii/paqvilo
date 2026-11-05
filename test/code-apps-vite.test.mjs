@@ -1,3 +1,4 @@
+// @test-kind contract: Vite integration of the local code-apps bootstrap designed by this project (activation, proxy guards, entry wrappers).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -103,25 +104,28 @@ test('Vite module entry wrappers install bootstrap before the application entry'
   assert.deepEqual(evaluated, ['first', 'second']);
 });
 
+// @test-kind tooling: verifies the published declarations typecheck a consumer.
 test('published Vite and browser client declarations typecheck a consumer', async () => {
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
   const { fileURLToPath } = await import('node:url');
   const compiler = fileURLToPath(import.meta.resolve('typescript/bin/tsc'));
   const fixture = fileURLToPath(new URL('./fixtures/code-apps-consumer.mts', import.meta.url));
-  await promisify(execFile)(process.execPath, [
-    compiler,
-    '--noEmit',
-    '--strict',
-    '--skipLibCheck',
-    '--module',
-    'nodenext',
-    '--moduleResolution',
-    'nodenext',
-    '--target',
-    'es2022',
-    fixture,
-  ]);
+  await assert.doesNotReject(() =>
+    promisify(execFile)(process.execPath, [
+      compiler,
+      '--noEmit',
+      '--strict',
+      '--skipLibCheck',
+      '--module',
+      'nodenext',
+      '--moduleResolution',
+      'nodenext',
+      '--target',
+      'es2022',
+      fixture,
+    ]),
+  );
 });
 
 test('inline module scripts are gated separately and relative imports resolve from their HTML file', async () => {

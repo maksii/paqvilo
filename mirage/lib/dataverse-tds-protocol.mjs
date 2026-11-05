@@ -196,7 +196,7 @@ export function createTdsServer({
     }
 
     function reject(error) {
-      reply(errorToken({ ...LOGIN_FAILED, ...(error ?? {}) }), doneToken({ error: true }));
+      reply(errorToken({ ...LOGIN_FAILED, ...error }), doneToken({ error: true }));
       stream.end();
     }
 
@@ -242,8 +242,11 @@ function resultTokens(result, rpc) {
   const tokens = [];
   if (sets.length === 0) tokens.push(endOfSet({ more: rpc, rowCount: result?.rowCount }));
   sets.forEach((set, i) => {
-    tokens.push(columnMetadata(set.columns), ...set.rows.map((values) => row(set.columns, values)));
-    tokens.push(endOfSet({ more: rpc || i < sets.length - 1, rowCount: set.rows.length, curCmd: CUR_CMD_SELECT }));
+    tokens.push(
+      columnMetadata(set.columns),
+      ...set.rows.map((values) => row(set.columns, values)),
+      endOfSet({ more: rpc || i < sets.length - 1, rowCount: set.rows.length, curCmd: CUR_CMD_SELECT }),
+    );
   });
   if (rpc) tokens.push(returnStatus(0), doneProc());
   return tokens;
@@ -327,17 +330,29 @@ function takeMessage(buffer) {
   let type;
   let at = 0;
   for (;;) {
-    if (buffer.length - at < HEADER_BYTES) return null;
-    const length = buffer.readUInt16BE(at + 2);
-    if (length < HEADER_BYTES) throw new Error(`TDS packet length ${length} is below the header size`);
-    if (buffer.length - at < length) return null;
-    if (type === undefined) type = buffer[at];
-    else if (buffer[at] !== type) throw new Error('TDS message packets mix message types');
-    parts.push(buffer.subarray(at + HEADER_BYTES, at + length));
-    const endOfMessage = (buffer[at + 1] & 0x01) !== 0;
+    const packet = takePacket(buffer, at, type);
+    if (!packet) return null;
+    type = packet.type;
+    parts.push(packet.payload);
+    const endOfMessage = packet.endOfMessage;
+    const length = packet.length;
     at += length;
     if (at > MAX_MESSAGE_BYTES) throw new Error(`TDS message exceeds ${MAX_MESSAGE_BYTES} bytes`);
     if (endOfMessage)
       return { type, payload: parts.length === 1 ? parts[0] : Buffer.concat(parts), rest: buffer.subarray(at) };
   }
+}
+
+function takePacket(buffer, at, type) {
+  if (buffer.length - at < HEADER_BYTES) return null;
+  const length = buffer.readUInt16BE(at + 2);
+  if (length < HEADER_BYTES) throw new Error(`TDS packet length ${length} is below the header size`);
+  if (buffer.length - at < length) return null;
+  if (type !== undefined && buffer[at] !== type) throw new Error('TDS message packets mix message types');
+  return {
+    length,
+    type: type === undefined ? buffer[at] : type,
+    payload: buffer.subarray(at + HEADER_BYTES, at + length),
+    endOfMessage: (buffer[at + 1] & 0x01) !== 0,
+  };
 }

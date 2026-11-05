@@ -22,7 +22,7 @@ const AUTH_CODE = 'authorization_code';
 const DEVICE_GRANT = GRANT_TYPES.device_code;
 const JWT_BEARER = GRANT_TYPES.on_behalf_of;
 const SUPPORTED_GRANTS = Object.values(GRANT_TYPES);
-const ASSERTION_ALGS = ['RS256', 'PS256'];
+const ASSERTION_ALGS = new Set(['RS256', 'PS256']);
 const FEDERATED_ALG = 'RS256'; // Entra workload identity federation documents RS256 only
 const NON_INTERACTIVE = 4; // systemuser accessmode NonInteractive
 // Live Entra responses omit error_uri for these codes.
@@ -151,7 +151,7 @@ export function certificateThumbprints(pem) {
   }
   const der = createPublicKey(pem).export({ type: 'spki', format: 'der' });
   return {
-    thumbprint: createHash('sha1').update(der).digest('hex').toUpperCase(),
+    thumbprint: createHash('sha1').update(der).digest('hex').toUpperCase(), // NOSONAR: non-security hash used for identity or checksums
     thumbprint256: createHash('sha256').update(der).digest('hex').toUpperCase(),
   };
 }
@@ -169,10 +169,10 @@ const certificateMatches = (cert, header) => {
 };
 // Numeric dates as JSON numbers or numeric strings (MSAL.NET serialises nbf and exp as strings).
 const numeric = (value) =>
-  typeof value === 'number' || (typeof value === 'string' && /^\d+(\.\d+)?$/.test(value)) ? Number(value) : NaN;
+  typeof value === 'number' || (typeof value === 'string' && /^\d+(\.\d+)?$/.test(value)) ? Number(value) : Number.NaN;
 // Object id in UUID v5 layout, derived from a seed (service principal ids are deterministic per app).
 const guid = (seed) => {
-  const bytes = createHash('sha1').update(seed).digest().subarray(0, 16);
+  const bytes = createHash('sha1').update(seed).digest().subarray(0, 16); // NOSONAR: non-security hash used for identity or checksums
   bytes[6] = (bytes[6] & 0x0f) | 0x50;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = bytes.toString('hex');
@@ -215,7 +215,7 @@ const lifetimeProblem = (claims, nowMs) => {
   const exp = numeric(claims.exp);
   if (!Number.isFinite(exp)) return 'malformed';
   if (exp + SKEW_SECONDS < nowMs / 1000) return 'expired';
-  if (claims.nbf !== undefined && !(numeric(claims.nbf) - SKEW_SECONDS <= nowMs / 1000)) return 'not-yet-valid';
+  if (claims.nbf !== undefined && !(numeric(claims.nbf) - SKEW_SECONDS <= nowMs / 1000)) return 'not-yet-valid'; // NOSONAR: operand can be NaN or undefined, the negated test differs
   return null;
 };
 const hasToken = (value, token) =>
@@ -242,7 +242,7 @@ const formPost = (action, fields) =>
 // Query and form fields merged; form (POST body) wins. Accepts a URL, a query object or a string.
 const fieldsOf = ({ url, query, form }) => ({
   ...Object.fromEntries(new URLSearchParams(query ?? url?.searchParams ?? '')),
-  ...(form ?? {}),
+  ...form,
 });
 const normalizeUserCode = (value) =>
   String(value ?? '')
@@ -319,7 +319,7 @@ export function createAuthority({
       const { privateKey, publicKey } = signingKey ?? generateKeyPairSync('rsa', { modulusLength: 2048 });
       const { kty, n, e } = publicKey.export({ format: 'jwk' });
       // kid doubles as x5t: base64url of the SHA-1 of the DER SPKI (no X.509 certificate exists for this key).
-      const kid = createHash('sha1')
+      const kid = createHash('sha1') // NOSONAR: non-security hash used for identity or checksums
         .update(publicKey.export({ type: 'spki', format: 'der' }))
         .digest('base64url');
       keys = { privateKey, publicKey, kty, n, e, kid };
@@ -363,7 +363,8 @@ export function createAuthority({
     const { privateKey, kid } = signingKeys();
     const head = b64json({ typ: 'JWT', alg: 'RS256', kid, x5t: kid });
     const body = b64json(claims);
-    return `${head}.${body}.${sign('sha256', Buffer.from(`${head}.${body}`), privateKey).toString('base64url')}`;
+    const signingInput = `${head}.${body}`;
+    return `${signingInput}.${sign('sha256', Buffer.from(signingInput), privateKey).toString('base64url')}`;
   };
 
   // Access tokens are always v1.0 format, which Dataverse accepts regardless of the endpoint version.
@@ -506,6 +507,54 @@ export function createAuthority({
     }
   };
 
+  const assertionSignerFailure = ({
+    app,
+    header,
+    claims,
+    audiences,
+    data,
+    signature,
+    origin,
+    tenantSegment,
+    reject,
+  }) => {
+    const cert = (app.certificates ?? []).find((item) => certificateMatches(item, header));
+    const federated = cert
+      ? null
+      : (app.federatedCredentials ?? []).find(
+          (item) =>
+            item.issuer === claims.iss &&
+            item.subject === claims.sub &&
+            audiences.some((aud) => item.audiences.includes(aud)),
+        );
+    if (cert) {
+      if (!ASSERTION_ALGS.has(header.alg) || !verifies(data, signature, cert.publicKeyPem, header.alg))
+        return { cert, failure: reject('The client assertion signature is invalid.') };
+      const subject = app.appId.toLowerCase();
+      if (String(claims.iss).toLowerCase() !== subject || String(claims.sub).toLowerCase() !== subject)
+        return { cert, failure: reject("The client assertion's iss and sub must be the client_id.") };
+      const endpoints = new Set(
+        [tenantSegment, tenantId].flatMap((segment) => [
+          `${origin}/${segment}/oauth2/v2.0/token`,
+          `${origin}/${segment}/oauth2/token`,
+        ]),
+      );
+      if (!audiences.some((item) => endpoints.has(item)))
+        return { cert, failure: reject("The client assertion's audience is not this token endpoint.") };
+    } else if (federated) {
+      if (
+        header.alg !== FEDERATED_ALG ||
+        !verifies(data, signature, federatedKey(claims.iss, header.kid), FEDERATED_ALG)
+      )
+        return { cert, failure: reject('The client assertion signature is invalid.') };
+    } else if ((app.federatedCredentials ?? []).length) {
+      return { cert, failure: reject('No matching federated identity record found for presented assertion.', 70021) };
+    } else {
+      return { cert, failure: reject('The client assertion is not signed with a registered certificate.') };
+    }
+    return { cert, failure: null };
+  };
+
   const verifyAssertion = (app, form, { origin, tenantSegment, now }) => {
     const reject = (description, code = 700027) => ({ code, description });
     if (form.client_assertion_type !== ASSERTION_TYPE || !form.client_assertion)
@@ -523,39 +572,20 @@ export function createAuthority({
       return reject('The client assertion is not a JSON Web Token.');
     const data = `${head}.${body}`;
     const audiences = [claims.aud].flat();
-    const cert = (app.certificates ?? []).find((item) => certificateMatches(item, header));
     // A federated credential matches the assertion's issuer, subject and audience; no certificate may match first.
-    const federated = cert
-      ? null
-      : (app.federatedCredentials ?? []).find(
-          (item) =>
-            item.issuer === claims.iss &&
-            item.subject === claims.sub &&
-            audiences.some((aud) => item.audiences.includes(aud)),
-        );
-    if (cert) {
-      if (!ASSERTION_ALGS.includes(header.alg) || !verifies(data, signature, cert.publicKeyPem, header.alg))
-        return reject('The client assertion signature is invalid.');
-      const subject = app.appId.toLowerCase();
-      if (String(claims.iss).toLowerCase() !== subject || String(claims.sub).toLowerCase() !== subject)
-        return reject("The client assertion's iss and sub must be the client_id.");
-      const endpoints = [tenantSegment, tenantId].flatMap((segment) => [
-        `${origin}/${segment}/oauth2/v2.0/token`,
-        `${origin}/${segment}/oauth2/token`,
-      ]);
-      if (!audiences.some((item) => endpoints.includes(item)))
-        return reject("The client assertion's audience is not this token endpoint.");
-    } else if (federated) {
-      if (
-        header.alg !== FEDERATED_ALG ||
-        !verifies(data, signature, federatedKey(claims.iss, header.kid), FEDERATED_ALG)
-      )
-        return reject('The client assertion signature is invalid.');
-    } else if ((app.federatedCredentials ?? []).length) {
-      return reject('No matching federated identity record found for presented assertion.', 70021);
-    } else {
-      return reject('The client assertion is not signed with a registered certificate.');
-    }
+    const signer = assertionSignerFailure({
+      app,
+      header,
+      claims,
+      audiences,
+      data,
+      signature,
+      origin,
+      tenantSegment,
+      reject,
+    });
+    if (signer.failure) return signer.failure;
+    const { cert } = signer;
     const nowSeconds = now / 1000;
     const exp = numeric(claims.exp);
     const nbf = claims.nbf === undefined ? 0 : numeric(claims.nbf);
@@ -958,10 +988,7 @@ export function createAuthority({
     });
   };
 
-  const handleToken = ({ origin, tenantSegment, form = {}, headers = {}, version = 'v2.0' }) => {
-    const now = clock();
-    const reply = (result) => ({ ...result, headers: { ...TOKEN_HEADERS } });
-    const failure = (code, description) => reply(aadError(code, { description, origin, now }));
+  const validateTokenGrant = (tenantSegment, form, failure) => {
     if (!knownTenant(tenantSegment))
       return failure(
         90002,
@@ -979,24 +1006,67 @@ export function createAuthority({
         9001023,
         "The grant type isn't supported on the /common or /consumers authentication contexts. Use /organizations or a tenant ID instead.",
       );
+    return null;
+  };
+
+  const resolveTokenClient = (form, headers, failure) => {
     const basic = parseBasic(headers.authorization);
     const clientId = form.client_id ?? basic?.clientId;
-    if (!clientId) return failure(900144, "The request body must contain the following parameter: 'client_id'.");
+    if (!clientId)
+      return { result: failure(900144, "The request body must contain the following parameter: 'client_id'.") };
     const app = findApp(clientId);
     if (!app) {
-      // An unregistered client on the on-behalf-of grant is reported as no consent (AADSTS65001).
       if (form.grant_type === JWT_BEARER)
-        return failure(
-          65001,
-          `The user or administrator has not consented to use the application with ID '${clientId}'. Send an interactive authorization request for this user and resource.`,
-        );
-      return failure(
-        700016,
-        `Application with identifier '${clientId}' was not found in the directory '${tenantId}'. This can happen if the application has not been installed by the administrator of the tenant or consented to by any user in the tenant. You may have sent your authentication request to the wrong tenant.`,
-      );
+        return {
+          result: failure(
+            65001,
+            `The user or administrator has not consented to use the application with ID '${clientId}'. Send an interactive authorization request for this user and resource.`,
+          ),
+        };
+      return {
+        result: failure(
+          700016,
+          `Application with identifier '${clientId}' was not found in the directory '${tenantId}'. This can happen if the application has not been installed by the administrator of the tenant or consented to by any user in the tenant. You may have sent your authentication request to the wrong tenant.`,
+        ),
+      };
     }
     if (!grantAllowed(app, form.grant_type))
-      return failure(700016, `The client is not permitted to use the grant type '${form.grant_type}'.`);
+      return { result: failure(700016, `The client is not permitted to use the grant type '${form.grant_type}'.`) };
+    return { basic, clientId, app };
+  };
+
+  const tokenResource = (form, version, origin, failure) => {
+    if (version === 'v1.0') {
+      if (!form.resource)
+        return { result: failure(900144, "The request body must contain the following parameter: 'resource'.") };
+      if (!acceptedResource(form.resource, origin, applications()))
+        return {
+          result: failure(500011, `The resource '${form.resource}' was not found in the directory '${tenantId}'.`),
+        };
+      return { resource: form.resource };
+    }
+    if (!form.scope)
+      return { result: failure(900144, "The request body must contain the following parameter: 'scope'.") };
+    const resource = scopeResource(form.scope, origin, true, applications());
+    if (!resource)
+      return {
+        result: failure(
+          70011,
+          "The provided value for the input parameter 'scope' isn't valid. The scope must name exactly one resource and end in '/.default'.",
+        ),
+      };
+    return { resource };
+  };
+
+  const handleToken = ({ origin, tenantSegment, form = {}, headers = {}, version = 'v2.0' }) => {
+    const now = clock();
+    const reply = (result) => ({ ...result, headers: { ...TOKEN_HEADERS } });
+    const failure = (code, description) => reply(aadError(code, { description, origin, now }));
+    const grantFailure = validateTokenGrant(tenantSegment, form, failure);
+    if (grantFailure) return grantFailure;
+    const client = resolveTokenClient(form, headers, failure);
+    if (client.result) return client.result;
+    const { basic, app } = client;
     const auth = authenticateClient(app, form, basic, { origin, tenantSegment, now });
     if (auth.code) return failure(auth.code, auth.description);
 
@@ -1009,21 +1079,9 @@ export function createAuthority({
     }[form.grant_type];
     if (grant) return grant({ origin, app, auth, form, version, now, reply, failure });
 
-    let resource;
-    if (version === 'v1.0') {
-      if (!form.resource) return failure(900144, "The request body must contain the following parameter: 'resource'.");
-      if (!acceptedResource(form.resource, origin, applications()))
-        return failure(500011, `The resource '${form.resource}' was not found in the directory '${tenantId}'.`);
-      resource = form.resource;
-    } else {
-      if (!form.scope) return failure(900144, "The request body must contain the following parameter: 'scope'.");
-      resource = scopeResource(form.scope, origin, true, applications());
-      if (!resource)
-        return failure(
-          70011,
-          "The provided value for the input parameter 'scope' isn't valid. The scope must name exactly one resource and end in '/.default'.",
-        );
-    }
+    const resolvedResource = tokenResource(form, version, origin, failure);
+    if (resolvedResource.result) return resolvedResource.result;
+    const { resource } = resolvedResource;
     const access = issueAccessToken({ origin, appId: app.appId, audience: resource, appidacr: auth.appidacr, now });
     return reply({ status: 200, body: tokenBody({ version, access, now, audience: resource }) });
   };

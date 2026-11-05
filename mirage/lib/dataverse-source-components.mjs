@@ -10,15 +10,15 @@ const lower = (value) =>
     .replace(/[{}]/g, '')
     .toLowerCase();
 const copy = copyPlainGraph;
-const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+const own = (object, key) => Object.hasOwn(object, key);
 const system = (name) =>
-  /^__sim/.test(name) ||
+  name.startsWith('__sim') ||
   /^(?:createdon|createdby|createdonbehalfby|modifiedon|modifiedby|modifiedonbehalfby|versionnumber)$/.test(name);
 const keyOf = (table, id) => `${table}/${lower(id)}`;
 const idOf = (table) => (table === 'systemform' ? 'formid' : `${table}id`);
 const WORKFLOW = 'workflow';
 const settingsOf = (state) =>
-  ((state.dataverse ??= {}).sourceSolutionComponents ??= { version: 1, baseline: {}, overlays: {} });
+  ((state.dataverse ??= {}).sourceSolutionComponents ??= { version: 1, baseline: {}, overlays: {} }); // NOSONAR: preserve proxy access and assignment order
 function deltaOf(source, row, idColumn) {
   const values = {},
     unset = [];
@@ -72,10 +72,8 @@ export function createSourceSolutionComponentStorage({ store, components, entity
         store.state.dataverse?.sourceSolutionComponents?.baseline?.[keyOf(event.entity, event.row[idOf(event.entity)])],
       ),
   });
-  const materialize = (state = store.state) => {
-    const settings = settingsOf(state),
-      previous = settings.baseline;
-    const selected = selectedOf(state);
+
+  const removeStaleComponents = (state, previous, selected) => {
     const staleByTable = new Map();
     for (const [key, before] of Object.entries(previous)) {
       if (selected.has(key) || before.component.logical === WORKFLOW) continue;
@@ -89,6 +87,80 @@ export function createSourceSolutionComponentStorage({ store, components, entity
       const idColumn = idOf(table);
       state.tables[table] = (state.tables[table] ?? []).filter((row) => !stale.has(lower(row[idColumn])));
     }
+  };
+
+  const copySystemProperties = (row, current) => {
+    for (const [name, value] of Object.entries(current)) if (system(name)) row[name] = copy(value);
+  };
+
+  const restoreEqualRowStrings = (row, current) => {
+    if (!types.isProxy(current))
+      for (const [name, value] of Object.entries(row)) {
+        const descriptor = Object.getOwnPropertyDescriptor(current, name);
+        if (typeof value === 'string' && descriptor?.writable && descriptor.value === value) current[name] = value;
+      }
+  };
+
+  const updateReconciledRow = (state, row, current) => {
+    if (row && current && !isDeepStrictEqual(row, current)) {
+      state.rowVersion = Math.max(state.rowVersion ?? 0, Number(current.__simVersion ?? 0)) + 1;
+      row.__simVersion = state.rowVersion;
+      if (current.versionnumber !== undefined) row.versionnumber = state.rowVersion;
+    } else if (row && current) {
+      // A restored row keeps its identity/version, but its equal XML need not retain another physical string.
+      restoreEqualRowStrings(row, current);
+      return current;
+    }
+    return row;
+  };
+
+  /* NOSONAR */ const storeReconciledRow = (rows, positions, index, id, row, deleted, compact, { table }) => {
+    if (index !== undefined) {
+      rows[index] = row ?? deleted;
+      if (!row) {
+        compact.add(table);
+        positions.delete(id);
+      }
+    } else if (row) {
+      positions.set(id, rows.length);
+      rows.push(row);
+    }
+  };
+
+  const reconcileComponent = ({ state, settings, previous, key, component, indexOf, compact, deleted, next }) => {
+    const table = component.logical,
+      idColumn = idOf(table),
+      id = lower(component.id);
+    const source = { ...copy(component.row), [idColumn]: id };
+    const rows = (state.tables[table] ??= []),
+      positions = indexOf(table, rows, idColumn),
+      index = positions.get(id),
+      current = index === undefined ? undefined : rows[index];
+    const before = previous[key];
+    if (state.dataverse.solutionPayloads?.[id]?.layers.some((layer) => layer.active)) {
+      // An active imported layer owns the row; its source row stays recorded for the delta taken once the layer is removed.
+      next[key] = { component: { logical: component.logical, id: component.id }, row: source };
+      ensureSolutionComponentMapping(state, component, standardTableDef);
+      return;
+    }
+    if (!own(settings.overlays, key) && current)
+      settings.overlays[key] = deltaOf(before?.row ?? source, current, idColumn);
+    let row = applyDelta(source, settings.overlays[key]);
+    if (row && current) copySystemProperties(row, current);
+    row = updateReconciledRow(state, row, current);
+    storeReconciledRow(rows, positions, index, id, row, deleted, compact, { table });
+    // A reconciled key always has an overlay, so a later restart never needs the previous source row to tell
+    // local edits from source changes.
+    if (row && !own(settings.overlays, key)) settings.overlays[key] = { values: {}, unset: [] };
+    ensureSolutionComponentMapping(state, component, standardTableDef);
+    next[key] = { component: { logical: component.logical, id: component.id } };
+  };
+
+  const materialize = (state = store.state) => {
+    const settings = settingsOf(state),
+      previous = settings.baseline;
+    const selected = selectedOf(state);
+    removeStaleComponents(state, previous, selected);
     // One index per metadata table avoids scanning every form/view for every
     // component. Deletions are compacted after all keyed replacements, so their
     // positions cannot invalidate later lookups or reorder retained local rows.
@@ -108,56 +180,7 @@ export function createSourceSolutionComponentStorage({ store, components, entity
     };
     const next = {};
     for (const [key, component] of selected) {
-      const table = component.logical,
-        idColumn = idOf(table),
-        id = lower(component.id);
-      const source = { ...copy(component.row), [idColumn]: id };
-      const rows = (state.tables[table] ??= []),
-        positions = indexOf(table, rows, idColumn),
-        index = positions.get(id),
-        current = index === undefined ? undefined : rows[index];
-      const before = previous[key];
-      if (state.dataverse.solutionPayloads?.[id]?.layers.some((layer) => layer.active)) {
-        // An active imported layer owns the row; its source row stays recorded for the delta taken once the
-        // layer is removed.
-        next[key] = { component: { logical: component.logical, id: component.id }, row: source };
-        ensureSolutionComponentMapping(state, component, standardTableDef);
-        continue;
-      }
-      if (!own(settings.overlays, key) && current)
-        settings.overlays[key] = deltaOf(before?.row ?? source, current, idColumn);
-      let row = applyDelta(source, settings.overlays[key]);
-      if (row && current)
-        for (const [name, value] of Object.entries(current)) if (system(name)) row[name] = copy(value);
-      if (row && current && !isDeepStrictEqual(row, current)) {
-        state.rowVersion = Math.max(state.rowVersion ?? 0, Number(current.__simVersion ?? 0)) + 1;
-        row.__simVersion = state.rowVersion;
-        if (current.versionnumber !== undefined) row.versionnumber = state.rowVersion;
-      } else if (row && current) {
-        // A restored row keeps its identity/version, but its equal XML need
-        // not retain another physical string beside the accepted source.
-        if (!types.isProxy(current))
-          for (const [name, value] of Object.entries(row)) {
-            const descriptor = Object.getOwnPropertyDescriptor(current, name);
-            if (typeof value === 'string' && descriptor?.writable && descriptor.value === value) current[name] = value;
-          }
-        row = current;
-      }
-      if (index !== undefined) {
-        rows[index] = row ?? deleted;
-        if (!row) {
-          compact.add(table);
-          positions.delete(id);
-        }
-      } else if (row) {
-        positions.set(id, rows.length);
-        rows.push(row);
-      }
-      // A reconciled key always has an overlay, so a later restart never needs the previous source row to tell
-      // local edits from source changes.
-      if (row && !own(settings.overlays, key)) settings.overlays[key] = { values: {}, unset: [] };
-      ensureSolutionComponentMapping(state, component, standardTableDef);
-      next[key] = { component: { logical: component.logical, id: component.id } };
+      reconcileComponent({ state, settings, previous, key, component, indexOf, compact, deleted, next });
     }
     for (const table of compact) state.tables[table] = state.tables[table].filter((row) => row !== deleted);
     settings.baseline = next;

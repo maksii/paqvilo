@@ -49,7 +49,7 @@ const write = (api, fn) => api.change(() => api.store.transact(fn, { incremental
 const authorize = (api, ctx, mapping, operation, row) =>
   api.principals.authorize({ user: ctx.user, entity: mapping.logicalName, operation, row, mapping });
 // Exported metadata nests column facts under columnMetadata; runtime definitions may hold them at the top level.
-const facts = (definition) => ({ ...definition, ...(definition?.columnMetadata ?? {}) });
+const facts = (definition) => ({ ...definition, ...definition?.columnMetadata });
 const fieldOf = (api, mapping, column) =>
   facts(api.store.fieldDefinition(mapping.logicalName, column, api.metadataFields));
 // Secured columns the caller cannot read are nulled; without a fieldSecurity module the row passes through.

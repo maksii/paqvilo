@@ -1,10 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { loadCatalogue, mirageOnlySite, resolveMirageConfig } from './config.mjs';
+import { loadCatalogue, mirageOnlySite, resolveMirageConfig, loadConfig } from './config.mjs';
 import YAML from 'yaml';
 import { readLocalFileSync } from './local-file.mjs';
-import { loadConfig } from './config.mjs';
 import { detectSourceDialect } from '../mirage/lib/source-dialect.mjs';
 import { discoverSolutionTrees } from '../mirage/lib/solution-schema.mjs';
 import { developmentScriptDrift } from './project-workflows.mjs';
@@ -37,14 +36,20 @@ function safeTextFile(directory, name) {
 }
 function projectFiles(directory) {
   // Include untracked starter files, and honor project ignores once Git is initialized.
-  const git = spawnSync('git', ['-C', directory, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
-    encoding: 'utf8',
-    windowsHide: true,
-    timeout: 10000,
-    maxBuffer: 4 * 1024 * 1024,
-  });
+  const git = spawnSync(
+    'git', // NOSONAR: fixed tool name resolved through PATH by developer tooling
+    ['-C', directory, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+    {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 10000,
+      maxBuffer: 4 * 1024 * 1024,
+    },
+  );
   if (git.status === 0)
-    return [...new Set(git.stdout.split('\0').filter(Boolean))].filter((name) => safeTextFile(directory, name)).sort();
+    return [...new Set(git.stdout.split('\0').filter(Boolean))]
+      .filter((name) => safeTextFile(directory, name))
+      .sort(/* NOSONAR: preserve default string coercion */);
   const names = [];
   const walk = (folder, prefix = '') => {
     for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
@@ -55,7 +60,7 @@ function projectFiles(directory) {
     }
   };
   walk(directory);
-  return names.sort();
+  return names.sort(/* NOSONAR: preserve default string coercion */);
 }
 
 export function scaffoldMarkers(directory) {
@@ -89,6 +94,60 @@ export function scaffoldWarning(directory) {
   return null;
 }
 
+function checkCatalogueSite(name, site, catalogue, folder, origin, add) {
+  const mirageOnly = mirageOnlySite(site);
+  if (!mirageOnly && !Object.keys(site.environments).length)
+    add('selection', `sites.${name}: configure at least one environment`, `sites.${name}.environments`);
+  if (site.defaultEnv && !Object.hasOwn(site.environments, site.defaultEnv))
+    add('selection', `sites.${name}.defaultEnv does not name a configured environment`, `sites.${name}.defaultEnv`);
+  if (site.sourceDir) folder(site.sourceDir, `sites.${name}.source`);
+  else if (!mirageOnly)
+    add('missing-source', `sites.${name}.source: select a portal export folder`, `sites.${name}.source`, 'warning');
+  for (const [env, settings] of Object.entries(site.environments))
+    origin(settings.url, `sites.${name}.environments.${env}`);
+  const mirage = resolveMirageConfig(site.mirage, { ...catalogue, sourceDir: site.sourceDir });
+  for (const root of mirage.solutionRoots) folder(root, `sites.${name}.mirage.solutionRoots`);
+  for (const pack of mirage.dataPacks) {
+    try {
+      if (fs.statSync(pack.module).isFile()) continue;
+    } catch {
+      /* diagnostic below */
+    }
+    add(
+      'missing-pack',
+      `sites.${name}.mirage.dataPacks: module does not exist: ${pack.module}`,
+      `sites.${name}.mirage.dataPacks`,
+    );
+  }
+}
+
+function checkCatalogueCompletion(catalogue, document, folder, add) {
+  if (!Object.keys(catalogue.sites).length)
+    add('selection', 'Configure at least one site before completing the scaffold', 'sites');
+  if (catalogue.root.defaultSite && !Object.hasOwn(catalogue.sites, catalogue.root.defaultSite))
+    add('selection', 'defaultSite does not name a configured site', 'defaultSite');
+  const originFields = new Set();
+  const origin = (value, field) => {
+    let url;
+    try {
+      url = new URL(value);
+    } catch {
+      return;
+    } // The effective catalogue validator reports malformed URLs.
+    if ((url.hostname === 'example.test' || url.hostname.endsWith('.example.test')) && !originFields.has(field)) {
+      originFields.add(field);
+      add('placeholder-origin', `${field}: replace the placeholder origin`, field);
+    }
+  };
+  // A personal environment must not hide an unfinished shared placeholder.
+  for (const [name, site] of Object.entries(document?.toJS()?.sites ?? {}))
+    for (const [env, settings] of Object.entries(site?.environments ?? {}))
+      origin(typeof settings === 'string' ? settings : settings?.url, `sites.${name}.environments.${env}`);
+  folder(catalogue.sourceRoot, 'sourceRoot');
+  for (const [name, site] of Object.entries(catalogue.sites))
+    checkCatalogueSite(name, site, catalogue, folder, origin, add);
+}
+
 export function checkProject(directory, { config, processEnv = process.env } = {}) {
   const target = path.resolve(directory);
   const todo = scaffoldMarkers(target);
@@ -118,33 +177,11 @@ export function checkProject(directory, { config, processEnv = process.env } = {
     add(
       'schema',
       error.message,
-      error.message.match(/(?:Unknown setting )?([\w.-]+)(?: must| is|$)/)?.[1]?.replace(/^config\./, '') ?? '',
+      error.message.match(/(?:Unknown setting )?(?<![\w.-])([\w.-]+)(?: must| is|$)/)?.[1]?.replace(/^config\./, '') ??
+        '',
     );
   }
   if (catalogue) {
-    if (!Object.keys(catalogue.sites).length)
-      add('selection', 'Configure at least one site before completing the scaffold', 'sites');
-    if (catalogue.root.defaultSite && !Object.hasOwn(catalogue.sites, catalogue.root.defaultSite)) {
-      add('selection', 'defaultSite does not name a configured site', 'defaultSite');
-    }
-    const originFields = new Set();
-    const origin = (value, field) => {
-      let url;
-      try {
-        url = new URL(value);
-      } catch {
-        return;
-      } // The effective catalogue validator reports malformed URLs.
-      if ((url.hostname === 'example.test' || url.hostname.endsWith('.example.test')) && !originFields.has(field)) {
-        originFields.add(field);
-        add('placeholder-origin', `${field}: replace the placeholder origin`, field);
-      }
-    };
-    // A personal environment must not hide an unfinished shared placeholder.
-    for (const [name, site] of Object.entries(document?.toJS()?.sites ?? {})) {
-      for (const [env, settings] of Object.entries(site?.environments ?? {}))
-        origin(typeof settings === 'string' ? settings : settings?.url, `sites.${name}.environments.${env}`);
-    }
     const folder = (value, field) => {
       try {
         if (fs.statSync(value).isDirectory()) return;
@@ -153,107 +190,139 @@ export function checkProject(directory, { config, processEnv = process.env } = {
       }
       add('missing-source', `${field}: folder does not exist: ${value}`, field, 'warning');
     };
-    folder(catalogue.sourceRoot, 'sourceRoot');
-    for (const [name, site] of Object.entries(catalogue.sites)) {
-      // A Mirage-only site (standalone runtime) needs no environment and no portal export.
-      const mirageOnly = mirageOnlySite(site);
-      if (!mirageOnly && !Object.keys(site.environments).length)
-        add('selection', `sites.${name}: configure at least one environment`, `sites.${name}.environments`);
-      if (site.defaultEnv && !Object.hasOwn(site.environments, site.defaultEnv))
-        add('selection', `sites.${name}.defaultEnv does not name a configured environment`, `sites.${name}.defaultEnv`);
-      if (site.sourceDir) folder(site.sourceDir, `sites.${name}.source`);
-      else if (!mirageOnly)
-        add('missing-source', `sites.${name}.source: select a portal export folder`, `sites.${name}.source`, 'warning');
-      for (const [env, settings] of Object.entries(site.environments)) {
-        origin(settings.url, `sites.${name}.environments.${env}`);
-      }
-      const mirage = resolveMirageConfig(site.mirage, { ...catalogue, sourceDir: site.sourceDir });
-      for (const root of mirage.solutionRoots) folder(root, `sites.${name}.mirage.solutionRoots`);
-      for (const pack of mirage.dataPacks) {
-        try {
-          if (fs.statSync(pack.module).isFile()) continue;
-        } catch {
-          /* diagnostic below */
-        }
-        add(
-          'missing-pack',
-          `sites.${name}.mirage.dataPacks: module does not exist: ${pack.module}`,
-          `sites.${name}.mirage.dataPacks`,
-        );
-      }
-    }
+    checkCatalogueCompletion(catalogue, document, folder, add);
   }
   return { schemaVersion: 1, ok: todo.length === 0, directory: target, todo };
 }
 
-/** Read-only adoption guidance. Existing manifests, scripts and ignores are never rewritten. */
-export function inspectProjectAdoption(directory, { config = 'paqvilo.config.yml', processEnv = process.env } = {}) {
-  const diagnostics = [],
-    target = path.resolve(directory);
-  const add = (code, file, action) => diagnostics.push({ code, file, action });
-  let manifest;
-  try {
-    manifest = JSON.parse(fs.readFileSync(path.join(target, 'package.json'), 'utf8'));
-    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) throw new Error();
-  } catch {
-    manifest = null;
-    add('PACKAGE_MANIFEST_INVALID', 'package.json', 'Create or repair the project package manifest.');
-  }
-  if (manifest) {
+function checkManifestScripts(target, manifest, add) {
+  if (
+    !['dependencies', 'devDependencies'].some(
+      (key) => typeof manifest[key]?.paqvilo === 'string' && manifest[key].paqvilo.trim(),
+    )
+  )
+    add(
+      'PAQVILO_DEPENDENCY_MISSING',
+      'package.json',
+      'Add the intended installed Paqvilo release to devDependencies and update the lockfile deliberately.',
+    );
+  const required = ['check:setup', 'check:scaffold', 'check:project', 'configure', 'validate', 'validate:configured'];
+  if (manifest.paqvilo?.vscode || fs.existsSync(path.join(target, '.vscode'))) required.push('editor:refresh');
+  for (const name of required)
     if (
-      !['dependencies', 'devDependencies'].some(
-        (key) => typeof manifest[key]?.paqvilo === 'string' && manifest[key].paqvilo.trim(),
-      )
+      !Object.hasOwn(manifest.scripts ?? {}, name) ||
+      typeof manifest.scripts[name] !== 'string' ||
+      !manifest.scripts[name].trim()
     )
       add(
-        'PAQVILO_DEPENDENCY_MISSING',
+        'PROJECT_SCRIPT_MISSING',
         'package.json',
-        'Add the intended installed Paqvilo release to devDependencies and update the lockfile deliberately.',
+        `Add the ${name} script; review the generated project workflow guide for its command.`,
       );
-    const required = ['check:setup', 'check:scaffold', 'check:project', 'configure', 'validate', 'validate:configured'];
-    if (manifest.paqvilo?.vscode || fs.existsSync(path.join(target, '.vscode'))) required.push('editor:refresh');
-    for (const name of required)
-      if (
-        !Object.hasOwn(manifest.scripts ?? {}, name) ||
-        typeof manifest.scripts[name] !== 'string' ||
-        !manifest.scripts[name].trim()
-      )
-        add(
-          'PROJECT_SCRIPT_MISSING',
-          'package.json',
-          `Add the ${name} script; review the generated project workflow guide for its command.`,
-        );
-    try {
-      const catalogue = loadCatalogue({ config: path.resolve(target, config) }, processEnv);
-      for (const change of developmentScriptDrift({
-        scripts: manifest.scripts,
-        sites: Object.keys(catalogue.sites),
-        config: slash(config.startsWith('.') || path.isAbsolute(config) ? config : './' + config),
-      }))
-        diagnostics.push({
-          code: 'DEVELOPMENT_SCRIPT_DRIFT',
-          file: 'package.json',
-          script: change.name,
-          severity: change.custom ? 'warning' : 'error',
-          action: `${change.action === 'remove' ? 'Remove the obsolete shortcut' : 'Review the proposed shortcut'} ${change.name}. ${change.reason}`,
-          ...(change.proposed ? { proposed: change.proposed } : {}),
-          requiresReview: change.requiresReview,
-        });
-    } catch {
-      /* Completion/path diagnostics explain catalogue failures. */
-    }
-  }
-  if (!fs.existsSync(path.resolve(target, config)))
-    add('CATALOGUE_MISSING', slash(config), 'Create a project catalogue or select it with --config.');
-  let ignore = '';
+}
+
+function checkDevelopmentScripts(target, config, processEnv, manifest, diagnostics) {
   try {
-    ignore = fs.readFileSync(path.join(target, '.gitignore'), 'utf8');
+    const catalogue = loadCatalogue({ config: path.resolve(target, config) }, processEnv);
+    for (const change of developmentScriptDrift({
+      scripts: manifest.scripts,
+      sites: Object.keys(catalogue.sites),
+      config: slash(config.startsWith('.') || path.isAbsolute(config) ? config : './' + config),
+    }))
+      diagnostics.push({
+        code: 'DEVELOPMENT_SCRIPT_DRIFT',
+        file: 'package.json',
+        script: change.name,
+        severity: change.custom ? 'warning' : 'error',
+        action: `${change.action === 'remove' ? 'Remove the obsolete shortcut' : 'Review the proposed shortcut'} ${change.name}. ${change.reason}`,
+        ...(change.proposed ? { proposed: change.proposed } : {}),
+        requiresReview: change.requiresReview,
+      });
   } catch {
-    /* diagnostics below */
+    /* Completion/path diagnostics explain catalogue failures. */
   }
-  // Accept the documented root patterns (including slash-prefixed variants). Complex custom
-  // rules require review rather than claiming a private file is safe from a partial match.
-  const rules = new Set(ignore.split(/\r?\n/).map((line) => line.trim().replace(/^\//, '')));
+}
+
+function checkManifestAdoption(target, config, processEnv, manifest, diagnostics) {
+  const add = (code, file, action) => diagnostics.push({ code, file, action });
+  checkManifestScripts(target, manifest, add);
+  checkDevelopmentScripts(target, config, processEnv, manifest, diagnostics);
+}
+
+function checkProbeExclusions(probes, excluded, diagnostics) {
+  for (const file of probes)
+    if (!excluded.has(file))
+      diagnostics.push({
+        code: 'PRIVATE_IGNORE_REVIEW',
+        file: '.gitignore',
+        action: `Ensure ${file.split('/')[0]} is ignored; Git reports that its representative private path is not excluded.`,
+      });
+}
+
+function checkTrackedPrivatePaths(target, diagnostics) {
+  const index = spawnSync(
+    'git', // NOSONAR: fixed tool name resolved through PATH by developer tooling
+    ['--no-optional-locks', '-C', target, 'ls-files', '--cached', '-z', '--', '.'],
+    {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 10000,
+      maxBuffer: 4 * 1024 * 1024,
+    },
+  );
+  if (index.status !== 0) {
+    diagnostics.push({
+      code: 'PRIVATE_INDEX_REVIEW',
+      file: '.gitignore',
+      action: 'Git index path inspection failed; review tracked private paths before declaring adoption complete.',
+    });
+    return;
+  }
+  for (const file of new Set(index.stdout.split('\0').filter(Boolean)))
+    if (file.split('/').some(privateLocalName))
+      diagnostics.push({
+        code: 'PRIVATE_FILE_TRACKED',
+        file,
+        action:
+          'This private local path is already tracked. Preserve needed evidence and deliberately remove it from the index; ignore rules alone do not untrack it.',
+      });
+}
+
+function checkGitIgnore(target, rules, diagnostics) {
+  const probes = [
+    '.paqvilo/readiness-private-probe',
+    'node_modules/readiness-private-probe',
+    '.env',
+    '.env.local',
+    'paqvilo.config.local.yml',
+  ];
+  const git = spawnSync(
+    'git', // NOSONAR: fixed tool name resolved through PATH by developer tooling
+    ['--no-optional-locks', '-C', target, 'check-ignore', '--no-index', '-z', '--stdin'],
+    {
+      input: probes.join('\0') + '\0',
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 10000,
+      maxBuffer: 64 * 1024,
+    },
+  );
+  if (git.status === 0 || git.status === 1) {
+    checkProbeExclusions(probes, new Set(git.stdout.split('\0').filter(Boolean)), diagnostics);
+    // Ignore rules do not remove files already present in Git's index. Inspect only
+    // indexed path names, never their contents, and leave removal to the project owner.
+    checkTrackedPrivatePaths(target, diagnostics);
+  } else if ([...rules].some((rule) => rule.startsWith('!') && rule !== '!.env.example')) {
+    diagnostics.push({
+      code: 'PRIVATE_IGNORE_REVIEW',
+      file: '.gitignore',
+      action:
+        'Review custom ignore exceptions after initializing Git; documented patterns alone cannot establish that private paths remain excluded.',
+    });
+  }
+}
+
+function checkIgnoreRules(rules, diagnostics) {
   // A representative probe cannot certify every private filename: e.g. excluding
   // .paqvilo/* and then unignoring one discovery file still excludes the probe.
   // Require review for private-targeted or wildcard exceptions, even inside Git.
@@ -267,71 +336,53 @@ export function inspectProjectAdoption(directory, { config = 'paqvilo.config.yml
     );
   });
   if (privateException)
-    add(
-      'PRIVATE_IGNORE_REVIEW',
-      '.gitignore',
-      'Review private-path or wildcard ignore exceptions; representative probes cannot establish that every private evidence or environment file remains excluded.',
-    );
+    diagnostics.push({
+      code: 'PRIVATE_IGNORE_REVIEW',
+      file: '.gitignore',
+      action:
+        'Review private-path or wildcard ignore exceptions; representative probes cannot establish that every private evidence or environment file remains excluded.',
+    });
   for (const rule of ['.paqvilo/', 'node_modules/', 'paqvilo.config.local.yml'])
     if (!rules.has(rule))
-      add('PRIVATE_IGNORE_REVIEW', '.gitignore', `Ensure ${rule} is ignored; preserve existing project rules.`);
+      diagnostics.push({
+        code: 'PRIVATE_IGNORE_REVIEW',
+        file: '.gitignore',
+        action: `Ensure ${rule} is ignored; preserve existing project rules.`,
+      });
   if (!rules.has('.env*') && !(rules.has('.env') && rules.has('.env.*')))
-    add('PRIVATE_IGNORE_REVIEW', '.gitignore', 'Ignore personal .env files while allowing .env.example.');
-  // Ask Git about representative, nonexistent paths: no private files are opened or
-  // created. This catches overrides later in .gitignore and nested negation rules.
-  const probes = [
-    '.paqvilo/readiness-private-probe',
-    'node_modules/readiness-private-probe',
-    '.env',
-    '.env.local',
-    'paqvilo.config.local.yml',
-  ];
-  const git = spawnSync('git', ['--no-optional-locks', '-C', target, 'check-ignore', '--no-index', '-z', '--stdin'], {
-    input: probes.join('\0') + '\0',
-    encoding: 'utf8',
-    windowsHide: true,
-    timeout: 10000,
-    maxBuffer: 64 * 1024,
-  });
-  if (git.status === 0 || git.status === 1) {
-    const excluded = new Set(git.stdout.split('\0').filter(Boolean));
-    for (const file of probes)
-      if (!excluded.has(file))
-        add(
-          'PRIVATE_IGNORE_REVIEW',
-          '.gitignore',
-          `Ensure ${file.split('/')[0]} is ignored; Git reports that its representative private path is not excluded.`,
-        );
-    // Ignore rules do not remove files already present in Git's index. Inspect only
-    // indexed path names, never their contents, and leave removal to the project owner.
-    const index = spawnSync('git', ['--no-optional-locks', '-C', target, 'ls-files', '--cached', '-z', '--', '.'], {
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 10000,
-      maxBuffer: 4 * 1024 * 1024,
+    diagnostics.push({
+      code: 'PRIVATE_IGNORE_REVIEW',
+      file: '.gitignore',
+      action: 'Ignore personal .env files while allowing .env.example.',
     });
-    if (index.status !== 0)
-      add(
-        'PRIVATE_INDEX_REVIEW',
-        '.gitignore',
-        'Git index path inspection failed; review tracked private paths before declaring adoption complete.',
-      );
-    else
-      for (const file of new Set(index.stdout.split('\0').filter(Boolean))) {
-        if (file.split('/').some(privateLocalName))
-          add(
-            'PRIVATE_FILE_TRACKED',
-            file,
-            'This private local path is already tracked. Preserve needed evidence and deliberately remove it from the index; ignore rules alone do not untrack it.',
-          );
-      }
-  } else if ([...rules].some((rule) => rule.startsWith('!') && rule !== '!.env.example')) {
-    add(
-      'PRIVATE_IGNORE_REVIEW',
-      '.gitignore',
-      'Review custom ignore exceptions after initializing Git; documented patterns alone cannot establish that private paths remain excluded.',
-    );
+}
+
+/** Read-only adoption guidance. Existing manifests, scripts and ignores are never rewritten. */
+export function inspectProjectAdoption(directory, { config = 'paqvilo.config.yml', processEnv = process.env } = {}) {
+  const diagnostics = [],
+    target = path.resolve(directory);
+  const add = (code, file, action) => diagnostics.push({ code, file, action });
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(target, 'package.json'), 'utf8'));
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest))
+      throw new Error('Invalid package manifest');
+  } catch {
+    manifest = null;
+    add('PACKAGE_MANIFEST_INVALID', 'package.json', 'Create or repair the project package manifest.');
   }
+  if (manifest) checkManifestAdoption(target, config, processEnv, manifest, diagnostics);
+  if (!fs.existsSync(path.resolve(target, config)))
+    add('CATALOGUE_MISSING', slash(config), 'Create a project catalogue or select it with --config.');
+  let ignore = '';
+  try {
+    ignore = fs.readFileSync(path.join(target, '.gitignore'), 'utf8');
+  } catch {
+    /* diagnostics below */
+  }
+  const rules = new Set(ignore.split(/\r?\n/).map((line) => line.trim().replace(/^\//, '')));
+  checkIgnoreRules(rules, diagnostics);
+  checkGitIgnore(target, rules, diagnostics);
   return { ok: diagnostics.every((item) => item.severity === 'warning'), diagnostics };
 }
 
@@ -342,6 +393,131 @@ const pathExists = (file, kind) => {
     return false;
   }
 };
+
+async function configuredProject(name, configured, add) {
+  if (!configured.project) return undefined;
+  if (!pathExists(configured.project, 'isFile')) {
+    add(
+      name,
+      'PROJECT_FILE_MISSING',
+      configured.project,
+      'Create the configured Mirage project file or correct its path.',
+    );
+    return undefined;
+  }
+  try {
+    const { resolveProjectConfig } = await import('../mirage/lib/project-config.mjs');
+    const source = fs.readFileSync(configured.project, 'utf8');
+    return await resolveProjectConfig(
+      /\.json$/i.test(configured.project) ? JSON.parse(source) : YAML.parse(source),
+      configured.project,
+      { checkSources: false },
+    );
+  } catch {
+    add(name, 'PROJECT_FILE_INVALID', configured.project, 'Repair the configured Mirage project structure.');
+    return undefined;
+  }
+}
+
+async function checkSolutionRoots(name, roots, add) {
+  for (const root of roots)
+    if (!(await discoverSolutionTrees(root)).length)
+      add(
+        name,
+        'SOLUTION_LAYOUT_MISSING',
+        root,
+        'Select an unpacked Solution root containing Other/Solution.xml, directly or one directory below.',
+      );
+}
+
+function checkProjectPortals(name, project, diagnostics) {
+  for (const portal of project?.portals ?? [])
+    if (!detectSourceDialect(portal.sourceDir).imported)
+      diagnostics.push({
+        site: name,
+        portal: portal.id,
+        code: 'PROJECT_PORTAL_LAYOUT_UNSUPPORTED',
+        file: portal.sourceDir,
+        action: 'Select a supported portal export for this project portal.',
+      });
+}
+
+function checkPackModules(name, packs, add) {
+  for (const pack of packs)
+    if (!pathExists(pack.module, 'isFile'))
+      add(
+        name,
+        'PACK_MODULE_MISSING',
+        pack.module,
+        'Create the registered pack module or correct its registration. No pack code was executed.',
+      );
+}
+
+function checkMappedFiles(name, profile, section, files, seen, diagnostics) {
+  for (const file of /* NOSONAR */ [].concat(files)) {
+    // NOSONAR: concat preserves spreadability and sparse input behavior
+    // NOSONAR: preserve concat spreading semantics
+    const key = JSON.stringify([profile, section, file]);
+    if (!seen.has(key) && !pathExists(file, 'isFile'))
+      diagnostics.push({
+        site: name,
+        code: 'PROFILE_FILE_MISSING',
+        profile,
+        section,
+        file,
+        action: 'Create the mapped deployment file or correct its mapping, including nonselected profiles.',
+      });
+    seen.add(key);
+  }
+}
+
+function checkProfileFiles(name, profileGroups, diagnostics) {
+  const seen = new Set();
+  for (const profiles of profileGroups)
+    for (const [profile, sections] of Object.entries(profiles.profiles))
+      for (const [section, files] of Object.entries(sections))
+        checkMappedFiles(name, profile, section, files, seen, diagnostics);
+}
+
+async function inspectSitePaths(name, configFile, catalogue, processEnv, sites, diagnostics, add) {
+  try {
+    const cfg = await loadConfig(
+      {
+        config: configFile,
+        site: name,
+        env: catalogue.sites[name].defaultEnv ?? Object.keys(catalogue.sites[name].environments)[0],
+      },
+      processEnv,
+      { checkSource: false },
+    );
+    const layout = detectSourceDialect(cfg.sourceDir);
+    sites.push({ site: name, source: cfg.sourceDir, dialect: layout.dialect, imported: layout.imported });
+    if (!layout.imported)
+      add(
+        name,
+        'PORTAL_LAYOUT_UNSUPPORTED',
+        cfg.sourceDir,
+        'Select a supported portal export containing pages; an existing empty directory is insufficient.',
+      );
+    const configured = cfg.mirageConfig;
+    const project = await configuredProject(name, configured, add);
+    await checkSolutionRoots(name, project?.solutionRoots ?? configured.solutionRoots, add);
+    checkProjectPortals(name, project, diagnostics);
+    checkPackModules(name, [...configured.dataPacks, ...(project?.dataPacks ?? [])], add);
+    const profileGroups = [
+      configured.deploymentProfiles,
+      ...(project?.portals.map((portal) => portal.deploymentProfiles) ?? []),
+    ].filter(Boolean);
+    checkProfileFiles(name, profileGroups, diagnostics);
+  } catch {
+    add(
+      name,
+      'SITE_CONFIGURATION_INVALID',
+      configFile,
+      'Repair this site configuration; init --check supplies completion diagnostics.',
+    );
+  }
+}
 
 /** Cheap layout/path checks share the runtime's dialect and Solution discovery rules. */
 export async function inspectProjectPaths(directory, { config, processEnv = process.env } = {}) {
@@ -367,103 +543,7 @@ export async function inspectProjectPaths(directory, { config, processEnv = proc
     };
   }
   for (const name of Object.keys(catalogue.sites)) {
-    try {
-      const cfg = await loadConfig(
-        {
-          config: configFile,
-          site: name,
-          env: catalogue.sites[name].defaultEnv ?? Object.keys(catalogue.sites[name].environments)[0],
-        },
-        processEnv,
-        { checkSource: false },
-      );
-      const layout = detectSourceDialect(cfg.sourceDir);
-      sites.push({ site: name, source: cfg.sourceDir, dialect: layout.dialect, imported: layout.imported });
-      if (!layout.imported)
-        add(
-          name,
-          'PORTAL_LAYOUT_UNSUPPORTED',
-          cfg.sourceDir,
-          'Select a supported portal export containing pages; an existing empty directory is insufficient.',
-        );
-      const configured = cfg.mirageConfig;
-      let project;
-      if (configured.project) {
-        if (!pathExists(configured.project, 'isFile'))
-          add(
-            name,
-            'PROJECT_FILE_MISSING',
-            configured.project,
-            'Create the configured Mirage project file or correct its path.',
-          );
-        else {
-          try {
-            const { resolveProjectConfig } = await import('../mirage/lib/project-config.mjs');
-            const source = fs.readFileSync(configured.project, 'utf8');
-            project = await resolveProjectConfig(
-              /\.json$/i.test(configured.project) ? JSON.parse(source) : YAML.parse(source),
-              configured.project,
-              { checkSources: false },
-            );
-          } catch {
-            add(name, 'PROJECT_FILE_INVALID', configured.project, 'Repair the configured Mirage project structure.');
-          }
-        }
-      }
-      for (const root of project?.solutionRoots ?? configured.solutionRoots)
-        if (!(await discoverSolutionTrees(root)).length)
-          add(
-            name,
-            'SOLUTION_LAYOUT_MISSING',
-            root,
-            'Select an unpacked Solution root containing Other/Solution.xml, directly or one directory below.',
-          );
-      for (const portal of project?.portals ?? [])
-        if (!detectSourceDialect(portal.sourceDir).imported)
-          diagnostics.push({
-            site: name,
-            portal: portal.id,
-            code: 'PROJECT_PORTAL_LAYOUT_UNSUPPORTED',
-            file: portal.sourceDir,
-            action: 'Select a supported portal export for this project portal.',
-          });
-      for (const pack of [...configured.dataPacks, ...(project?.dataPacks ?? [])])
-        if (!pathExists(pack.module, 'isFile'))
-          add(
-            name,
-            'PACK_MODULE_MISSING',
-            pack.module,
-            'Create the registered pack module or correct its registration. No pack code was executed.',
-          );
-      const profileGroups = [
-        configured.deploymentProfiles,
-        ...(project?.portals.map((portal) => portal.deploymentProfiles) ?? []),
-      ].filter(Boolean);
-      const seen = new Set();
-      for (const profiles of profileGroups)
-        for (const [profile, sections] of Object.entries(profiles.profiles))
-          for (const [section, files] of Object.entries(sections))
-            for (const file of [].concat(files)) {
-              const key = JSON.stringify([profile, section, file]);
-              if (!seen.has(key) && !pathExists(file, 'isFile'))
-                diagnostics.push({
-                  site: name,
-                  code: 'PROFILE_FILE_MISSING',
-                  profile,
-                  section,
-                  file,
-                  action: 'Create the mapped deployment file or correct its mapping, including nonselected profiles.',
-                });
-              seen.add(key);
-            }
-    } catch {
-      add(
-        name,
-        'SITE_CONFIGURATION_INVALID',
-        configFile,
-        'Repair this site configuration; init --check supplies completion diagnostics.',
-      );
-    }
+    await inspectSitePaths(name, configFile, catalogue, processEnv, sites, diagnostics, add);
   }
   return { ok: sites.length > 0 && diagnostics.length === 0, sites, diagnostics };
 }

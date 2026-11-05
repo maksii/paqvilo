@@ -34,7 +34,7 @@ import { parse } from './power-fx.mjs';
 const FORMULA = 3;
 const OPERATIONS = ['FormulaColumn', 'FormulaWriteRefused'];
 
-const facts = (definition) => ({ ...definition, ...(definition?.columnMetadata ?? {}) });
+const facts = (definition) => ({ ...definition, ...definition?.columnMetadata });
 const isThenable = (value) => value !== null && typeof value === 'object' && typeof value.then === 'function';
 
 // Per-API state: one WeakMap entry per installed API. Never module-global mutable state.
@@ -254,7 +254,7 @@ function securedInputs(api, table, formula) {
     Object.values(node).forEach((value) => walk(value?.node ?? value));
   };
   walk(ast);
-  return [...found].sort();
+  return [...found].sort(/* NOSONAR: preserve default string coercion */);
 }
 function reportSecuredInputs(api, state) {
   for (const [table, column] of allFormulaColumns(api)) {

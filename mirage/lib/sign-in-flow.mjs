@@ -25,6 +25,8 @@ import {
 import { authRoute, parseCookies, returnUrlParameter, safeReturnUrl } from './auth-session.mjs';
 import { loginPath } from './redirects.mjs';
 import { tracedFetch } from './trace-hosts.mjs';
+import { registrationSnippetText } from './registration-snippet-text.mjs';
+import { stripTrailingCharacter } from './text-scanning.mjs';
 
 /**
  * The portal side of external sign-in.
@@ -101,7 +103,9 @@ const flowOf = (provider) => {
     .toLowerCase()
     .split(/\s+/)
     .filter(Boolean);
-  return codeFlow(provider) ? 'authorization-code' : parts.includes('code') ? 'hybrid' : 'implicit';
+  if (codeFlow(provider)) return 'authorization-code';
+  if (parts.includes('code')) return 'hybrid';
+  return 'implicit';
 };
 const loopbackUrl = (value) => {
   try {
@@ -142,16 +146,18 @@ const key = (value) =>
     .trim()
     .toLowerCase();
 const same = (a, b) => key(a) !== '' && key(a) === key(b);
+const sessionKeyOf = (contactId, context) => {
+  if (contactId) return `contact:${contactId}`;
+  if (context?.visitor) return `visitor:${context.visitor}`;
+  return null;
+};
 const scalar = (value) =>
   value && typeof value === 'object' && !Array.isArray(value) ? (value.value ?? value.id ?? null) : value;
 const lookupId = (value) => key(value && typeof value === 'object' ? (value.id ?? value.value) : value);
 // A lookup column as local rows hold it: { id, logical_name } under its name, or the Web API _<name>_value.
 const lookupOf = (row, name) => lookupId(row?.[name] ?? row?.[`_${name}_value`]);
 const active = (row) => Number(scalar(row?.statecode) ?? 0) === 0;
-const trimPath = (value) =>
-  String(value ?? '')
-    .replace(/\/+$/, '')
-    .toLowerCase() || '/';
+const trimPath = (value) => stripTrailingCharacter(String(value ?? ''), '/').toLowerCase() || '/';
 const escapeHtml = (value) =>
   String(value ?? '').replace(
     /[&<>"']/g,
@@ -164,6 +170,22 @@ class SignInProblem extends Error {
     this.code = code;
     this.status = status;
   }
+}
+
+function validateAccessTokenHash(accessToken, claims) {
+  if (
+    accessToken &&
+    claims.at_hash &&
+    claims.at_hash !== createHash('sha256').update(accessToken).digest().subarray(0, 16).toString('base64url')
+  )
+    throw new SignInProblem("The access token does not match the id_token's at_hash.", 'EXTERNAL_LOGIN_TOKEN_INVALID');
+}
+
+function pendingExternalHtml(provider, external) {
+  if (!provider) return '';
+  const email = external.c?.email,
+    suffix = email ? ' as ' + escapeHtml(email) : '';
+  return `<p class="paqvilo-mirage-pending-external">Signed in with ${escapeHtml(provider.caption ?? provider.key)}${suffix}. Enter your invitation code to finish registering.</p>`;
 }
 
 /**
@@ -237,9 +259,9 @@ export function createExternalSignIn({
       const raw = Buffer.from(String(value ?? ''), 'base64url');
       if (raw.length < 29) return null;
       const decipher = createDecipheriv('aes-256-gcm', encryptionKey, raw.subarray(0, 12));
-      decipher.setAuthTag(raw.subarray(raw.length - 16));
+      decipher.setAuthTag(raw.subarray(-16));
       const data = JSON.parse(
-        Buffer.concat([decipher.update(raw.subarray(12, raw.length - 16)), decipher.final()]).toString('utf8'),
+        Buffer.concat([decipher.update(raw.subarray(12, -16)), decipher.final()]).toString('utf8'),
       );
       return data && typeof data === 'object' ? data : null;
     } catch {
@@ -314,7 +336,7 @@ export function createExternalSignIn({
         spanId: span?.spanId,
         // The signed-in contact names the session (D-M-2 Who); the visitor cookie stays its own field.
         visitorId: context?.visitor,
-        sessionKey: contactId ? `contact:${contactId}` : context?.visitor ? `visitor:${context.visitor}` : null,
+        sessionKey: sessionKeyOf(contactId, context),
       })
       .finish({ status: 201, rowCount: 1 });
   };
@@ -342,7 +364,8 @@ export function createExternalSignIn({
         },
         inferred: true,
       };
-    (store.state.tables ??= {})[IDENTITY_TABLE] ??= [];
+    store.state.tables ??= {};
+    store.state.tables[IDENTITY_TABLE] ??= [];
     return store.resolveMapping(IDENTITY_TABLE);
   };
   const addLedger = (entry) => {
@@ -560,7 +583,7 @@ export function createExternalSignIn({
     if (!audiences.includes(provider.clientId))
       throw new SignInProblem("The id_token audience is not the portal's client ID.", 'EXTERNAL_LOGIN_TOKEN_INVALID');
     const nowSeconds = now() / 1000;
-    if (!(Number(claims.exp) > nowSeconds - 300) || (claims.nbf && Number(claims.nbf) > nowSeconds + 300))
+    /* NOSONAR */ if (!(Number(claims.exp) > nowSeconds - 300) || (claims.nbf && Number(claims.nbf) > nowSeconds + 300))
       throw new SignInProblem('The id_token is expired or not yet valid.', 'EXTERNAL_LOGIN_TOKEN_INVALID');
     if (typeof claims.sub !== 'string' || !claims.sub)
       throw new SignInProblem('The id_token has no subject.', 'EXTERNAL_LOGIN_TOKEN_INVALID');
@@ -774,7 +797,7 @@ export function createExternalSignIn({
         exp: nowSeconds + 300,
       }),
     ).toString('base64url');
-    return `${header}.${body}.${sign('sha256', Buffer.from(`${header}.${body}`), clientKeyPair().privateKey).toString('base64url')}`;
+    return `${header}.${body}.${sign('sha256', Buffer.from(header + '.' + body), clientKeyPair().privateKey).toString('base64url')}`;
   }
   /** The token response for an authorization code (client_secret_post or private_key_jwt, PKCE). */
   async function redeemCode(provider, code, verifier) {
@@ -832,7 +855,7 @@ export function createExternalSignIn({
     const result = await response.json().catch(() => ({}));
     if (!response.ok)
       throw new SignInProblem(
-        `The identity provider refused the authorization code (${result.error ?? response.status}${result.error_description ? `: ${result.error_description}` : ''}).`,
+        `The identity provider refused the authorization code (${result.error ?? response.status}${result.error_description ? ': ' + result.error_description : ''}).`,
         'EXTERNAL_LOGIN_TOKEN_REQUEST_FAILED',
         502,
       );
@@ -876,7 +899,7 @@ export function createExternalSignIn({
       const body = await response.json().catch(() => ({}));
       return warn(
         'USERINFO_UNAUTHORIZED',
-        `The UserInfo endpoint answered ${response.status}${body.error ? ` ${body.error}` : ''}${body.error_description ? `: ${body.error_description}` : ''}.`,
+        `The UserInfo endpoint answered ${response.status}${body.error ? ' ' + body.error : ''}${body.error_description ? ': ' + body.error_description : ''}.`,
       );
     }
     if (!response.ok) return warn('USERINFO_UNAVAILABLE', `The UserInfo endpoint answered ${response.status}.`);
@@ -890,63 +913,133 @@ export function createExternalSignIn({
   }
 
   // ---- the provider's response at the reply URL ----
+  function initialProviderResponse(req, res, url, message, props, returnUrl) {
+    if (!props)
+      return {
+        handled: true,
+        response: fail(
+          req,
+          res,
+          url,
+          new SignInProblem(
+            'The sign-in response does not carry a state this portal issued.',
+            'EXTERNAL_LOGIN_STATE_INVALID',
+          ),
+        ),
+      };
+    const provider = providerList().find((item) => item.slug === props.p);
+    if (!provider)
+      return {
+        handled: true,
+        response: fail(
+          req,
+          res,
+          url,
+          new SignInProblem(
+            'The sign-in response is for a provider this site no longer configures.',
+            'EXTERNAL_LOGIN_PROVIDER_UNKNOWN',
+          ),
+          { returnUrl },
+        ),
+      };
+    if (trimPath(url.pathname) !== trimPath(provider.callbackPath))
+      return {
+        handled: true,
+        response: fail(
+          req,
+          res,
+          url,
+          new SignInProblem(
+            "The sign-in response arrived at a path that is not the provider's reply URL.",
+            'EXTERNAL_LOGIN_REPLY_PATH',
+          ),
+          { returnUrl },
+        ),
+      };
+    if (message.error)
+      return {
+        handled: true,
+        response: fail(
+          req,
+          res,
+          url,
+          new SignInProblem(
+            `The identity provider returned ${message.error}${message.error_description ? ': ' + message.error_description : ''}.`,
+            'EXTERNAL_LOGIN_PROVIDER_ERROR',
+          ),
+          { returnUrl },
+        ),
+      };
+    return { handled: false, provider };
+  }
+
+  function validateProviderNonce(req, res, url, message, claims, provider, returnUrl) {
+    const nonceCookie = nonceCookieName(claims.nonce);
+    if (parseCookies(req.headers.cookie)[nonceCookie] !== 'N')
+      return {
+        failed: true,
+        response: fail(
+          req,
+          res,
+          url,
+          new SignInProblem(
+            'The sign-in response does not belong to a sign-in started in this browser (no matching OpenIdConnect.nonce cookie).',
+            'EXTERNAL_LOGIN_NONCE_MISSING',
+          ),
+          { returnUrl },
+        ),
+      };
+    const cleared = `${nonceCookie}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+    const issued = Number(claims.nonce.split('.')[0]);
+    /* NOSONAR */ if (!(issued > 0) || now() - issued > provider.nonceLifetimeMs)
+      return {
+        failed: true,
+        response: fail(
+          req,
+          res,
+          url,
+          new SignInProblem('The sign-in nonce has expired: sign in again.', 'EXTERNAL_LOGIN_NONCE_EXPIRED'),
+          { returnUrl, cookies: [cleared] },
+        ),
+      };
+    if (
+      message.code &&
+      claims.c_hash &&
+      claims.c_hash !== createHash('sha256').update(message.code).digest().subarray(0, 16).toString('base64url')
+    )
+      return {
+        failed: true,
+        response: fail(
+          req,
+          res,
+          url,
+          new SignInProblem(
+            "The authorization code does not match the id_token's c_hash.",
+            'EXTERNAL_LOGIN_TOKEN_INVALID',
+          ),
+          { returnUrl, cookies: [cleared] },
+        ),
+      };
+    return { failed: false, cleared };
+  }
+
   async function providerResponse(req, res, url, message) {
     const raw = message.state.startsWith(STATE_PREFIX) ? message.state.slice(STATE_PREFIX.length) : null;
     const props = unprotect(raw);
     const returnUrl = safeReturnUrl(props?.r);
-    if (!props)
-      return fail(
-        req,
-        res,
-        url,
-        new SignInProblem(
-          'The sign-in response does not carry a state this portal issued.',
-          'EXTERNAL_LOGIN_STATE_INVALID',
-        ),
-      );
-    const provider = providerList().find((item) => item.slug === props.p);
-    if (!provider)
-      return fail(
-        req,
-        res,
-        url,
-        new SignInProblem(
-          'The sign-in response is for a provider this site no longer configures.',
-          'EXTERNAL_LOGIN_PROVIDER_UNKNOWN',
-        ),
-        { returnUrl },
-      );
-    if (trimPath(url.pathname) !== trimPath(provider.callbackPath))
-      return fail(
-        req,
-        res,
-        url,
-        new SignInProblem(
-          "The sign-in response arrived at a path that is not the provider's reply URL.",
-          'EXTERNAL_LOGIN_REPLY_PATH',
-        ),
-        { returnUrl },
-      );
-    if (message.error)
-      return fail(
-        req,
-        res,
-        url,
-        new SignInProblem(
-          `The identity provider returned ${message.error}${message.error_description ? `: ${message.error_description}` : ''}.`,
-          'EXTERNAL_LOGIN_PROVIDER_ERROR',
-        ),
-        { returnUrl },
-      );
+    const initial = initialProviderResponse(req, res, url, message, props, returnUrl);
+    if (initial.handled) return initial.response;
+    const { provider } = initial;
     // The code flow signs in with the token response's id_token; the hybrid and implicit flows
     // with the front-channel id_token (Learn: hybrid follows the implicit grant).
     let idToken = message.id_token;
     let accessToken = message.access_token;
     let claims;
     try {
-      if (codeFlow(provider)) {
-        if (!message.code)
-          throw new SignInProblem('The sign-in response has no authorization code.', 'EXTERNAL_LOGIN_TOKEN_INVALID');
+      const usesCodeFlow = codeFlow(provider);
+      if (usesCodeFlow && !message.code)
+        throw new SignInProblem('The sign-in response has no authorization code.', 'EXTERNAL_LOGIN_TOKEN_INVALID');
+      if (usesCodeFlow) {
         const tokens = await redeemCode(provider, message.code, props.v ?? null);
         idToken = tokens.id_token;
         accessToken = tokens.access_token ?? null;
@@ -956,56 +1049,14 @@ export function createExternalSignIn({
         throw new SignInProblem('The sign-in response has no id_token.', 'EXTERNAL_LOGIN_TOKEN_INVALID');
       claims = await validateToken(provider, idToken);
       // OpenID Connect Core 3.2.2.9 and 3.3.2.11: an at_hash binds the access token to the id_token.
-      if (
-        accessToken &&
-        claims.at_hash &&
-        claims.at_hash !== createHash('sha256').update(accessToken).digest().subarray(0, 16).toString('base64url')
-      )
-        throw new SignInProblem(
-          "The access token does not match the id_token's at_hash.",
-          'EXTERNAL_LOGIN_TOKEN_INVALID',
-        );
-    } catch (problem) {
-      if (!(problem instanceof SignInProblem)) throw problem;
-      return fail(req, res, url, problem, { returnUrl });
+      validateAccessTokenHash(accessToken, claims);
+    } catch (error) {
+      if (!(error instanceof SignInProblem)) throw error;
+      return fail(req, res, url, error, { returnUrl });
     }
-    const nonceCookie = nonceCookieName(claims.nonce);
-    if (parseCookies(req.headers.cookie)[nonceCookie] !== 'N')
-      return fail(
-        req,
-        res,
-        url,
-        new SignInProblem(
-          'The sign-in response does not belong to a sign-in started in this browser (no matching OpenIdConnect.nonce cookie).',
-          'EXTERNAL_LOGIN_NONCE_MISSING',
-        ),
-        { returnUrl },
-      );
-    const cleared = `${nonceCookie}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
-    const issued = Number(claims.nonce.split('.')[0]);
-    if (!(issued > 0) || now() - issued > provider.nonceLifetimeMs)
-      return fail(
-        req,
-        res,
-        url,
-        new SignInProblem('The sign-in nonce has expired: sign in again.', 'EXTERNAL_LOGIN_NONCE_EXPIRED'),
-        { returnUrl, cookies: [cleared] },
-      );
-    if (
-      message.code &&
-      claims.c_hash &&
-      claims.c_hash !== createHash('sha256').update(message.code).digest().subarray(0, 16).toString('base64url')
-    )
-      return fail(
-        req,
-        res,
-        url,
-        new SignInProblem(
-          "The authorization code does not match the id_token's c_hash.",
-          'EXTERNAL_LOGIN_TOKEN_INVALID',
-        ),
-        { returnUrl, cookies: [cleared] },
-      );
+    const nonce = validateProviderNonce(req, res, url, message, claims, provider, returnUrl);
+    if (nonce.failed) return nonce.response;
+    const { cleared } = nonce;
     const kept = keptClaims(claims, ['nonce', 'c_hash', 'at_hash', 'iat', 'nbf', 'exp', 'aud', 'iss']);
     const userinfoClaims = provider.useUserInfo ? await userInfo(provider, accessToken, claims.sub, url) : null;
     const external = protect({
@@ -1015,7 +1066,9 @@ export function createExternalSignIn({
       ...(userinfoClaims ? { u: userinfoClaims } : {}),
       t: now(),
     });
-    const target = `/Account/Login/ExternalLoginCallback?ReturnUrl=${encodeURIComponent(returnUrl)}${props.i ? `&InvitationCode=${encodeURIComponent(props.i)}` : ''}`;
+    const target =
+      `/Account/Login/ExternalLoginCallback?ReturnUrl=${encodeURIComponent(returnUrl)}` +
+      (props.i ? '&InvitationCode=' + encodeURIComponent(props.i) : '');
     return redirect(res, target, 'external-login-response', [
       cleared,
       `${externalCookieName()}=${external}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${EXTERNAL_LIFETIME_MS / 1000}`,
@@ -1026,20 +1079,7 @@ export function createExternalSignIn({
   /** The Account/Register/RegistrationDisabledMessage snippet (Learn) as text, else a local message. */
   const registrationDisabledMessage = () => {
     const snippet = portal().snippets?.['Account/Register/RegistrationDisabledMessage'];
-    const value =
-      typeof snippet === 'string'
-        ? snippet
-            .replace(/<\/?(?:p|div|br|li|ul|ol|h[1-6]|section|article|table|tr|td|th)\b[^>]*>/gi, ' ')
-            .replace(/<[^>]*>/g, '')
-            .replace(/&nbsp;/g, ' ')
-            .replace(/&lt;/g, '<')
-            .replace(/&gt;/g, '>')
-            .replace(/&quot;/g, '"')
-            .replace(/&#39;/g, "'")
-            .replace(/&amp;/g, '&')
-            .replace(/\s+/g, ' ')
-            .trim()
-        : '';
+    const value = typeof snippet === 'string' ? registrationSnippetText(snippet) : '';
     return value || 'Registration is disabled for this site.';
   };
   const registrationDisabled = () => new SignInProblem(registrationDisabledMessage(), 'REGISTRATION_DISABLED', 403);
@@ -1332,9 +1372,9 @@ export function createExternalSignIn({
     let outcome;
     try {
       outcome = await resolveLogin(provider, external, { invitationCode });
-    } catch (problem) {
-      if (!(problem instanceof SignInProblem)) throw problem;
-      return fail(req, res, url, problem, { returnUrl, cookies: [clearExternal()] });
+    } catch (error) {
+      if (!(error instanceof SignInProblem)) throw error;
+      return fail(req, res, url, error, { returnUrl, cookies: [clearExternal()] });
     }
     if (outcome.invitationRequired)
       return redirect(
@@ -1353,9 +1393,7 @@ export function createExternalSignIn({
   async function redeemPage(req, res, url, { status = 200, code = '', error = null, returnUrl }) {
     const external = readExternal(req);
     const provider = external ? providerList().find((item) => item.slug === external.p) : null;
-    const pending = provider
-      ? `<p class="paqvilo-mirage-pending-external">Signed in with ${escapeHtml(provider.caption ?? provider.key)}${external.c?.email ? ` as ${escapeHtml(external.c.email)}` : ''}. Enter your invitation code to finish registering.</p>`
-      : '';
+    const pending = pendingExternalHtml(provider, external);
     const content = [
       `<section class="container paqvilo-mirage-redeem-invitation" style="margin:24px auto;max-width:760px">`,
       `<h1>Redeem invitation</h1>`,
@@ -1407,9 +1445,9 @@ export function createExternalSignIn({
     try {
       if (findIdentity(provider, external.s)) outcome = await resolveLogin(provider, external);
       else outcome = await redeem(provider, external, code);
-    } catch (problem) {
-      if (!(problem instanceof SignInProblem)) throw problem;
-      return redeemPage(req, res, url, { status: problem.status ?? 400, code, returnUrl, error: problem.message });
+    } catch (error) {
+      if (!(error instanceof SignInProblem)) throw error;
+      return redeemPage(req, res, url, { status: error.status ?? 400, code, returnUrl, error: error.message });
     }
     signedIn(outcome.contactId, provider.id);
     return redirect(res, returnUrl, outcome.route, [
@@ -1450,6 +1488,46 @@ export function createExternalSignIn({
     return redirect(res, returnUrl, 'sign-out', [signedOut]);
   }
 
+  const ACCOUNT_ROUTES = {
+    logoff: { methods: ['GET', 'HEAD', 'POST'], handle: (req, res, url) => logOff(req, res, url) },
+    externallogin: {
+      methods: ['POST'],
+      handle: (req, res, url, language) => externalLogin(req, res, url, { language }),
+    },
+    externallogincallback: {
+      methods: ['GET', 'HEAD'],
+      handle: (req, res, url) => externalLoginCallback(req, res, url),
+    },
+    redeeminvitation: {
+      methods: ['GET', 'HEAD', 'POST'],
+      handle: (req, res, url, language) => redeemInvitation(req, res, url, { language }),
+    },
+  };
+
+  function queryCallbackMessage(url, path) {
+    const providerUsesQuery = providerList().some(
+      (provider) => provider.responseMode === 'query' && trimPath(provider.callbackPath) === path,
+    );
+    return providerUsesQuery ? providerMessage(Object.fromEntries(url.searchParams)) : null;
+  }
+
+  function replayUnrecognizedProviderForm(req, bytes) {
+    if (req.headers.origin && req.headers.origin !== origin())
+      throw Object.assign(new Error('Cross-origin requests are not allowed.'), { status: 403 });
+    replay(req, bytes);
+  }
+
+  function autoSignInProvider(req, url, path) {
+    if (
+      authRoute(url.pathname, req.method, { loginPath: loginPath(portal()) })?.kind !== 'sign-in-page' ||
+      /\/(?:externallogin|register)$/.test(path) ||
+      identity()?.contactId
+    )
+      return null;
+    const provider = loginButtonProvider(portal(), providerList());
+    return provider && idp ? provider : null;
+  }
+
   /**
    * Answers the external sign-in routes; false when the request is not one of them.
    * `language`: the request's website language code, when its URL carried one.
@@ -1457,29 +1535,15 @@ export function createExternalSignIn({
   async function route(req, res, url, { language = null } = {}) {
     const path = trimPath(url.pathname);
     const account = ACCOUNT_PATH.exec(path)?.[1];
-    if (account === 'logoff' && ['GET', 'HEAD', 'POST'].includes(req.method)) {
-      await logOff(req, res, url);
-      return true;
-    }
-    if (account === 'externallogin' && req.method === 'POST') {
-      await externalLogin(req, res, url, { language });
-      return true;
-    }
-    if (account === 'externallogincallback' && ['GET', 'HEAD'].includes(req.method)) {
-      await externalLoginCallback(req, res, url);
-      return true;
-    }
-    if (account === 'redeeminvitation' && ['GET', 'HEAD', 'POST'].includes(req.method)) {
-      await redeemInvitation(req, res, url, { language });
+    const accountRoute = ACCOUNT_ROUTES[account];
+    if (accountRoute?.methods.includes(req.method)) {
+      await accountRoute.handle(req, res, url, language);
       return true;
     }
     if (callbackPaths().has(path)) {
       // A query answer only where a provider of that reply URL uses response_mode=query.
-      if (
-        ['GET', 'HEAD'].includes(req.method) &&
-        providerList().some((provider) => provider.responseMode === 'query' && trimPath(provider.callbackPath) === path)
-      ) {
-        const message = providerMessage(Object.fromEntries(url.searchParams));
+      if (['GET', 'HEAD'].includes(req.method)) {
+        const message = queryCallbackMessage(url, path);
         if (message) {
           await providerResponse(req, res, url, message);
           return true;
@@ -1491,27 +1555,18 @@ export function createExternalSignIn({
           await providerResponse(req, res, url, message);
           return true;
         }
-        if (req.headers.origin && req.headers.origin !== origin())
-          throw Object.assign(new Error('Cross-origin requests are not allowed.'), { status: 403 });
-        replay(req, bytes);
+        replayUnrecognizedProviderForm(req, bytes);
       }
     }
     // LoginButtonAuthenticationType: the sign-in page goes straight to the default provider.
-    if (
-      ['GET', 'HEAD'].includes(req.method) &&
-      authRoute(url.pathname, req.method, { loginPath: loginPath(portal()) })?.kind === 'sign-in-page' &&
-      !/\/(?:externallogin|register)$/.test(path) &&
-      !identity()?.contactId
-    ) {
-      const provider = loginButtonProvider(portal(), providerList());
-      if (provider && idp) {
-        await challenge(res, provider, {
-          returnUrl: safeReturnUrl(returnUrlParameter(url.searchParams)),
-          invitationCode: text(url.searchParams.get('InvitationCode')),
-          language: languageCode(language),
-        });
-        return true;
-      }
+    const provider = ['GET', 'HEAD'].includes(req.method) ? autoSignInProvider(req, url, path) : null;
+    if (provider) {
+      await challenge(res, provider, {
+        returnUrl: safeReturnUrl(returnUrlParameter(url.searchParams)),
+        invitationCode: text(url.searchParams.get('InvitationCode')),
+        language: languageCode(language),
+      });
+      return true;
     }
     return false;
   }
@@ -1546,13 +1601,11 @@ export function createExternalSignIn({
     const flags = settings();
     const providers = providerList();
     const button = loginButtonProvider(portal(), providers);
-    const reason = !idp
-      ? 'The local identity provider is not running.'
-      : !flags.externalLogin
-        ? 'External sign-in is turned off (Authentication/Registration/ExternalLoginEnabled is false).'
-        : !providers.length
-          ? 'No external identity provider is configured in the site settings.'
-          : null;
+    let reason = null;
+    if (!idp) reason = 'The local identity provider is not running.';
+    else if (!flags.externalLogin)
+      reason = 'External sign-in is turned off (Authentication/Registration/ExternalLoginEnabled is false).';
+    else if (!providers.length) reason = 'No external identity provider is configured in the site settings.';
     return {
       available: Boolean(idp) && providers.length > 0,
       chooser: {

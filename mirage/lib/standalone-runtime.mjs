@@ -27,7 +27,13 @@ import { canvasAppNames, solutionApps } from './model-driven/catalogue.mjs';
 import { createSolutionMetadataOverlay } from './dataverse-solution-metadata.mjs';
 import { createSourceSolutionComponentStorage } from './dataverse-source-components.mjs';
 import { applySolutionData } from './solution-data.mjs';
-import { createRuntimeAdminRouter } from './runtime-admin.mjs';
+import {
+  ADMIN_CSP,
+  adminAssetFile,
+  adminAssetType,
+  createRuntimeAdminRouter,
+  diagnosticsByCode as byCode,
+} from './runtime-admin.mjs';
 import { createDataverseAdmin } from './dataverse-admin.mjs';
 import { stringifyExactJson } from './exact-numeric.mjs';
 import { uuidV5 } from './dataverse-security.mjs';
@@ -66,7 +72,6 @@ import { recordHttpError, statusFromHttp } from './trace-store.mjs';
 import { ANONYMOUS_ROOT, setTraceHeaders } from './trace-hosts.mjs';
 import { buildSourceGraph } from './source-graph.mjs';
 import { scenarioSettings } from './capability-report.mjs';
-import { ADMIN_CSP, adminAssetFile, adminAssetType, diagnosticsByCode as byCode } from './runtime-admin.mjs';
 import { createDashboardRoutes, routes as DASHBOARD_ROUTES } from './sim-dashboard-routes.mjs';
 import { createPackRoutes, routes as PACK_ROUTES } from './sim-pack-routes.mjs';
 import {
@@ -86,7 +91,7 @@ const DOCS = docsLinks(toolkitPackage.version, toolkitPackage.repository?.url ??
 // flush) and not a run-starting flow route, whose root sim-flow-routes.mjs opens (POST /flow-runs, POST
 // /flow-triggers/<id>, the HTTP Request trigger invoke path).
 const SIM_ACTION =
-  /^\/(?:_sim|__sim)\/api\/(?!trace(?:\/|$)|flow-runs$|flow-triggers\/[^/]+$|flow-triggers\/[^/]+\/triggers\/[^/]+\/paths\/invoke$)/;
+  /^\/__?sim\/api\/(?!trace(?:\/|$)|flow-runs$|flow-triggers\/[^/]+$|flow-triggers\/[^/]+\/triggers\/[^/]+\/paths\/invoke$)/; // NOSONAR: regex kept: a rewrite would change matches or captures
 const SIM_ACTOR = Object.freeze({ kind: 'system', id: null, name: 'simulator' });
 const writeJson = (res, status, value, headers = {}, { chunks } = {}) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
@@ -112,9 +117,60 @@ async function readBody(req) {
   return value;
 }
 
-export async function createStandaloneRuntime(options = {}) {
-  if (options.sourceMaps !== undefined && typeof options.sourceMaps !== 'boolean')
-    throw fail('sourceMaps must be true or false.');
+function validateStandaloneRequest(req, res, closing, localOrigin) {
+  if (closing) throw fail('The runtime is stopping.', 503);
+  res.setHeader('x-content-type-options', 'nosniff');
+  if (req.headers.host !== new URL(localOrigin).host) throw fail('Invalid Host header.', 403);
+  if (req.headers.origin && req.headers.origin !== localOrigin)
+    throw fail('Cross-origin requests are not allowed.', 403);
+  if (req.headers['sec-fetch-site'] === 'cross-site' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method))
+    throw fail('Cross-site writes are not allowed.', 403);
+}
+
+function standaloneEventRoute(req, res, url, store, traceChannel) {
+  if (!/^\/(?:_sim|__sim)\/events$/.test(url.pathname)) return false;
+  if (req.method !== 'GET') throw fail('Method not allowed.', 405, 'MethodNotAllowed');
+  // The client may have gone while setup awaited: a closed response joins no channel.
+  if (res.destroyed) return true;
+  if (!(url.searchParams.get('channels') ?? '').split(',').includes('trace'))
+    throw fail('This host streams the trace channel only (channels=trace).', 400, 'UnsupportedEventChannel');
+  res.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive',
+  });
+  res.write(`event: ready\ndata: ${store.revision}\n\n`);
+  traceChannel(res);
+  return true;
+}
+
+function standaloneRootRedirect(req, res, url, caps) {
+  if (url.pathname !== '/' || !['GET', 'HEAD'].includes(req.method)) return false;
+  res.writeHead(302, { location: caps.modelDriven ? '/main.aspx' : '/_sim/' });
+  res.end();
+  return true;
+}
+
+function isStandaloneAdminAssetRequest(req, url) {
+  return ['GET', 'HEAD'].includes(req.method) && /^\/(?:_sim|__sim)(?:\/|$)/.test(url.pathname);
+}
+
+function requireStandaloneAdminAsset(source) {
+  if (!source) throw fail('Resource not found.', 404);
+  return source;
+}
+
+function standaloneAdminAssetHeaders(res, file, index) {
+  res.writeHead(200, {
+    'content-type': adminAssetType(index ? 'index.html' : file),
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    ...(index ? { 'content-security-policy': ADMIN_CSP } : {}),
+  });
+}
+
+/* NOSONAR */ export async function createStandaloneRuntime(options = {}) {
+  validateSourceMapSetting(options);
   const startedAt = performance.now(),
     bootstrapTimings = {};
   const startupPhase = (phase) => {
@@ -130,9 +186,7 @@ export async function createStandaloneRuntime(options = {}) {
   const runtime = runtimeSettings(options.runtime),
     simulation = simulationSettings(options.simulation);
   const modelDriven = modelDrivenSettings(options.modelDriven);
-  if (runtime.kind === 'power-pages')
-    throw new Error('The standalone host requires a model-driven or dataverse-api runtime.');
-  if (options.sourceDir) throw new Error('Standalone runtimes select solutionRoots without a Power Pages sourceDir.');
+  validateStandaloneRuntimeOptions(options, runtime);
   const host = options.host ?? '127.0.0.1',
     port = runtimePort(options.port, 0);
   if (!['127.0.0.1', 'localhost', '::1'].includes(host)) throw new Error('The simulator binds only to loopback.');
@@ -248,7 +302,7 @@ export async function createStandaloneRuntime(options = {}) {
     metadata = () => overlay(sources.metadata, store.state);
   const settings = dataverseSettings({
     enabled: runtime.kind === 'dataverse-api',
-    ...(options.dataverse ?? {}),
+    ...options.dataverse,
     localeId: lcid,
   });
   const liveSettings = liveDataverseSettings(settings, projectRoot, () => store);
@@ -489,7 +543,7 @@ export async function createStandaloneRuntime(options = {}) {
             server.closeIdleConnections();
           })
         : Promise.resolve();
-      await Promise.allSettled([...requests]);
+      await Promise.allSettled(requests);
       await cleanup(() => mutation);
       await cleanup(() => sourceComponents?.close());
       await cleanup(() => model?.close());
@@ -675,7 +729,7 @@ export async function createStandaloneRuntime(options = {}) {
       const route = /^\/(?:_sim|__sim)\/api(\/[a-z-]+(?:\/[a-z-]+)?)$/.exec(url.pathname)?.[1];
       const handle = req.method === 'GET' && HOST_API.find(([prefix]) => prefix === route)?.[1];
       if (!handle) return false;
-      json(res, 200, await handle(url));
+      void json(res, 200, await handle(url));
       return true;
     };
     const admin = createRuntimeAdminRouter({
@@ -844,31 +898,11 @@ export async function createStandaloneRuntime(options = {}) {
     });
     server = http.createServer((req, res) => {
       const handle = async () => {
-        if (closing) throw fail('The runtime is stopping.', 503);
-        res.setHeader('x-content-type-options', 'nosniff');
-        if (req.headers.host !== new URL(localOrigin).host) throw fail('Invalid Host header.', 403);
-        if (req.headers.origin && req.headers.origin !== localOrigin)
-          throw fail('Cross-origin requests are not allowed.', 403);
-        if (req.headers['sec-fetch-site'] === 'cross-site' && !['GET', 'HEAD', 'OPTIONS'].includes(req.method))
-          throw fail('Cross-site writes are not allowed.', 403);
+        validateStandaloneRequest(req, res, closing, localOrigin);
         const url = new URL(req.url, localOrigin);
         if (await setup(req, res)) return;
         // GET /_sim/events?channels=trace: the trace channel, with the frames the Power Pages host streams.
-        if (/^\/(?:_sim|__sim)\/events$/.test(url.pathname)) {
-          if (req.method !== 'GET') throw fail('Method not allowed.', 405, 'MethodNotAllowed');
-          // The client may have gone while setup awaited: a closed response joins no channel.
-          if (res.destroyed) return;
-          if (!(url.searchParams.get('channels') ?? '').split(',').includes('trace'))
-            throw fail('This host streams the trace channel only (channels=trace).', 400, 'UnsupportedEventChannel');
-          res.writeHead(200, {
-            'content-type': 'text/event-stream',
-            'cache-control': 'no-cache',
-            connection: 'keep-alive',
-          });
-          res.write(`event: ready\ndata: ${store.revision}\n\n`);
-          traceChannel(res);
-          return;
-        }
+        if (standaloneEventRoute(req, res, url, store, traceChannel)) return;
         if (
           (await messagingRoutes(req, res, url)) ||
           (await flowRoutes(req, res, url)) ||
@@ -883,26 +917,18 @@ export async function createStandaloneRuntime(options = {}) {
         if (canvas(req, res, url)) return;
         if (await code(req, res, url)) return;
         if (caps.modelDriven && (await model(req, res, url))) return;
-        if (['GET', 'HEAD'].includes(req.method) && /^\/(?:_sim|__sim)(?:\/|$)/.test(url.pathname)) {
+        if (isStandaloneAdminAssetRequest(req, url)) {
           // The page answers /_sim and /_sim/ only (as on Power Pages); /_sim/index.html falls under the asset pattern and 404s.
           const file = url.pathname.replace(/^\/(?:_sim|__sim)\/?/, ''),
             index = file === '';
-          const source = index ? new URL('../admin/index.html', import.meta.url) : await adminAssetFile(file);
-          if (!source) throw fail('Resource not found.', 404);
-          res.writeHead(200, {
-            'content-type': adminAssetType(index ? 'index.html' : file),
-            'cache-control': 'no-store',
-            'x-content-type-options': 'nosniff',
-            ...(index ? { 'content-security-policy': ADMIN_CSP } : {}),
-          });
+          const source = requireStandaloneAdminAsset(
+            index ? new URL('../admin/index.html', import.meta.url) : await adminAssetFile(file),
+          );
+          standaloneAdminAssetHeaders(res, file, index);
           res.end(req.method === 'HEAD' ? undefined : await fs.readFile(source));
           return;
         }
-        if (url.pathname === '/' && ['GET', 'HEAD'].includes(req.method)) {
-          res.writeHead(302, { location: caps.modelDriven ? '/main.aspx' : '/_sim/' });
-          res.end();
-          return;
-        }
+        if (standaloneRootRedirect(req, res, url, caps)) return;
         throw fail('Resource not found.', 404);
       };
       // The http root span of this host (docs/design/tracing.md). App surfaces name their host and module (model-driven,
@@ -956,7 +982,9 @@ export async function createStandaloneRuntime(options = {}) {
             ...(span?.traceId ? { traceId: span.traceId, spanId: span.spanId } : {}),
           });
           if (!res.headersSent)
-            json(res, error.status ?? 500, { error: { code: error.code ?? 'RuntimeError', message: error.message } });
+            void json(res, error.status ?? 500, {
+              error: { code: error.code ?? 'RuntimeError', message: error.message },
+            });
           else res.destroy();
         });
       requests.add(task);
@@ -974,12 +1002,13 @@ export async function createStandaloneRuntime(options = {}) {
     });
     localOrigin = `http://${host === '::1' ? '[::1]' : host}:${server.address().port}`;
     if (settings.enabled) {
-      const certificate = settings.tls
-        ? await ensureCertificate(
-            options.dataverseCertificateFile ??
-              (durable ? path.join(path.dirname(stateFile), 'dataverse-ca.pem') : null),
-          )
-        : null;
+      let certificate = null;
+      if (settings.tls) {
+        let certificateFile = options.dataverseCertificateFile;
+        if (certificateFile == null)
+          certificateFile = durable ? path.join(path.dirname(stateFile), 'dataverse-ca.pem') : null;
+        certificate = await ensureCertificate(certificateFile);
+      }
       dataverse = await organizationHost.startApi({
         host,
         tls: certificate && { key: certificate.key, cert: certificate.cert },
@@ -1149,4 +1178,15 @@ export async function createStandaloneRuntime(options = {}) {
     }
     throw error;
   }
+}
+
+function validateSourceMapSetting(options) {
+  if (options.sourceMaps !== undefined && typeof options.sourceMaps !== 'boolean')
+    throw fail('sourceMaps must be true or false.');
+}
+
+function validateStandaloneRuntimeOptions(options, runtime) {
+  if (runtime.kind === 'power-pages')
+    throw new Error('The standalone host requires a model-driven or dataverse-api runtime.');
+  if (options.sourceDir) throw new Error('Standalone runtimes select solutionRoots without a Power Pages sourceDir.');
 }

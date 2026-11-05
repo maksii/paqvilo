@@ -73,7 +73,7 @@ export function selectSdkEntryParent(entry, frameworkSource) {
  * asynchronousParentChain). */
 export function asyncOriginParent(entry) {
   if (entry?.values?.Mode !== 1 || entry.rootOrigin) return entry;
-  const { ParentContext: _, OperationCreatedOn: __, ...values } = cloneStateData(entry.values);
+  const { ParentContext: _, OperationCreatedOn: __, ...values } = cloneStateData(entry.values); // NOSONAR: binding is excluded from the rest object or is a placeholder
   return {
     $type: 'ExecutionContext',
     rootOrigin: true,
@@ -88,7 +88,7 @@ export function asyncOriginParent(entry) {
  * savepoint still holds the writes. */
 export function sdkRootOperationParent(caller, correlationId) {
   if (!caller?.values) return null;
-  const { ParentContext: _, OperationCreatedOn: __, ...values } = cloneStateData(caller.values);
+  const { ParentContext: _, OperationCreatedOn: __, ...values } = cloneStateData(caller.values); // NOSONAR: binding is excluded from the rest object or is a placeholder
   return {
     $type: 'ExecutionContext',
     rootOrigin: true,
@@ -203,15 +203,16 @@ export function recordRequestRootChange(
   const roots = (store.pluginRequestRoots ??= new Map());
   let root = roots.get(requestId);
   if (!root) {
-    roots.set(requestId, (root = {}));
+    root = {};
+    roots.set(requestId, root);
     if (roots.size > REQUEST_ROOT_LIMIT) roots.delete(roots.keys().next().value);
   }
   // A sharing change lists principalobjectaccess before the shared table (native webApiNamed, mergeAccount).
   for (const key of [sharing ? 'principalobjectaccess' : null, table].filter(Boolean))
-    root.ChangedEntityTypes = { ...(root.ChangedEntityTypes ?? {}), [key]: 'Update' };
+    root.ChangedEntityTypes = { ...root.ChangedEntityTypes, [key]: 'Update' };
   // The platform's asynchronous job attachment (recorded value 'Create'), once per request.
   if (asyncQueued && !root.ChangedEntityTypes?.fileattachment)
-    root.ChangedEntityTypes = { ...(root.ChangedEntityTypes ?? {}), fileattachment: 'Create' };
+    root.ChangedEntityTypes = { ...root.ChangedEntityTypes, fileattachment: 'Create' };
   // The recorded platform value: 10760 after GrantAccess, ModifyAccess and RevokeAccess, 1 for Merge (native
   // sdkMessages, webApiNamed, mergeAccount).
   if (sharing) root.POADistributionChanged = distribution;
@@ -230,10 +231,39 @@ export function requestRootSnapshot(store, requestId) {
 export function withRequestRootChanges(values, root) {
   if (!root) return values;
   const shared = { ...values };
-  if (root.ChangedEntityTypes)
-    shared.ChangedEntityTypes = { ...(shared.ChangedEntityTypes ?? {}), ...root.ChangedEntityTypes };
+  if (root.ChangedEntityTypes) shared.ChangedEntityTypes = { ...shared.ChangedEntityTypes, ...root.ChangedEntityTypes };
   if (root.POADistributionChanged !== undefined) shared.POADistributionChanged = root.POADistributionChanged;
   return shared;
+}
+
+function copyObservedParentFacts(values, context) {
+  for (const key of OBSERVED_FACTS)
+    if (!Object.hasOwn(values, key) && Object.hasOwn(context, key)) values[key] = cloneStateData(context[key]);
+}
+function setObservedUserAadId(values, context, objectId) {
+  if (!Object.hasOwn(values, 'UserAzureActiveDirectoryObjectId'))
+    values.UserAzureActiveDirectoryObjectId =
+      values.UserId?.value === context.UserId?.value
+        ? cloneStateData(context.UserAzureActiveDirectoryObjectId)
+        : { $type: 'Guid', value: objectId(values.UserId?.value) };
+}
+function ensureObservedParentValues(values, context) {
+  // An asynchronous job reports its own (unnamed) step on every level.
+  values.OwningExtension ??=
+    context.Mode === 1
+      ? cloneStateData(context.OwningExtension)
+      : mainOperationStep(values.MessageName, values.PrimaryEntityName);
+  values.InputParameters ??= emptyParameters();
+  values.OutputParameters ??= emptyParameters();
+  values.SharedVariables ??= emptyParameters();
+}
+function mergeObservedRootChanges(values, context, roots) {
+  const root = values.ParentContext?.values ? null : roots?.get(values.RequestId?.value);
+  if ((values.Stage === 30 && Object.hasOwn(values.SharedVariables.values ?? {}, 'telemetryrootcontext')) || root) {
+    const { telemetryrootcontext, ...shared } = values.SharedVariables.values ?? {};
+    if (values.Stage !== 30 && telemetryrootcontext !== undefined) shared.telemetryrootcontext = telemetryrootcontext;
+    values.SharedVariables = { $type: 'ParameterCollection', values: withRequestRootChanges(shared, root) };
+  }
 }
 
 /** The ParentContext chain as a step observes it. Native never leaves an ancestor property unavailable: a platform
@@ -247,30 +277,14 @@ export function observedParentChain(node, context, objectId, roots) {
   if (node?.rootOrigin) return null;
   if (!node?.values) return node ?? null;
   const values = { ...node.values };
-  for (const key of OBSERVED_FACTS)
-    if (!Object.hasOwn(values, key) && Object.hasOwn(context, key)) values[key] = cloneStateData(context[key]);
+  copyObservedParentFacts(values, context);
   // Every ancestor reports the observing context's initiating identity; each keeps its own UserId (native sdkSurface,
   // readNested: inside a run-as SYSTEM or other-user SDK call the ancestors carry that initiating user).
+  // The first helper covers observed facts; initiating identity values are applied after them.
   for (const key of INITIATING_FACTS) if (Object.hasOwn(context, key)) values[key] = cloneStateData(context[key]);
-  if (!Object.hasOwn(values, 'UserAzureActiveDirectoryObjectId'))
-    values.UserAzureActiveDirectoryObjectId =
-      values.UserId?.value === context.UserId?.value
-        ? cloneStateData(context.UserAzureActiveDirectoryObjectId)
-        : { $type: 'Guid', value: objectId(values.UserId?.value) };
-  // An asynchronous job reports its own (unnamed) step on every level.
-  values.OwningExtension ??=
-    context.Mode === 1
-      ? cloneStateData(context.OwningExtension)
-      : mainOperationStep(values.MessageName, values.PrimaryEntityName);
-  values.InputParameters ??= emptyParameters();
-  values.OutputParameters ??= emptyParameters();
-  values.SharedVariables ??= emptyParameters();
-  const root = values.ParentContext?.values ? null : roots?.get(values.RequestId?.value);
-  if ((values.Stage === 30 && Object.hasOwn(values.SharedVariables.values ?? {}, 'telemetryrootcontext')) || root) {
-    const { telemetryrootcontext, ...shared } = values.SharedVariables.values ?? {};
-    if (values.Stage !== 30 && telemetryrootcontext !== undefined) shared.telemetryrootcontext = telemetryrootcontext;
-    values.SharedVariables = { $type: 'ParameterCollection', values: withRequestRootChanges(shared, root) };
-  }
+  setObservedUserAadId(values, context, objectId);
+  ensureObservedParentValues(values, context);
+  mergeObservedRootChanges(values, context, roots);
   values.PreEntityImages ??= { $type: 'EntityImageCollection', values: {} };
   values.PostEntityImages ??= { $type: 'EntityImageCollection', values: {} };
   values.PreEntityImagesCollection ??= emptyImageCollections();

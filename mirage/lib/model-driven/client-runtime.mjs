@@ -8,6 +8,56 @@ const blockedNames = new Set(['__proto__', 'prototype', 'constructor']);
 const unsupported = (name) => {
   throw new Error(`Mirage client API does not support ${name}.`);
 };
+const isSingleValuedRelationship = (candidate, name) => candidate.many === false && candidate.from === name;
+const isLookupTarget = (entity, match, relationship, tables) =>
+  tables[entity]?.entitySet === match?.[1] && (!relationship?.entity || relationship.entity === entity);
+function writeLookupValue(key, value, data, values, table, tables) {
+  const navigation = key.slice(0, -11),
+    relationship = table?.relationships?.[navigation];
+  const name = relationship?.many === false ? relationship.from : navigation;
+  const field = table?.fields?.[name];
+  if (field?.type !== 'lookup' || relationship?.many === true)
+    unsupported(`Xrm.WebApi lookup binding ${navigation}; import its single-valued relationship metadata`);
+  if (
+    !relationship &&
+    Object.values(table?.relationships ?? {}).some((candidate) => isSingleValuedRelationship(candidate, name))
+  )
+    unsupported(`Xrm.WebApi lookup binding ${navigation}; use its exported navigation-property name`);
+  const match =
+    value === null
+      ? null
+      : typeof value === 'string' && /^\/([A-Z]\w*)\(([a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12})\)$/i.exec(value);
+  if (value !== null && !match) throw new Error('Xrm.WebApi lookup binding requires a local entity-set record path.');
+  const targets = (field.targets ?? []).filter((entity) => isLookupTarget(entity, match, relationship, tables));
+  if (value !== null && targets.length !== 1)
+    throw new Error(`Xrm.WebApi lookup binding ${navigation} does not resolve an imported target.`);
+  if (Object.hasOwn(values, name) || Object.hasOwn(data, name))
+    throw new Error(`Xrm.WebApi provides conflicting values for ${name}.`);
+  values[name] = value === null ? null : { id: match[2].toLowerCase(), entity: targets[0] };
+}
+function writeMultiSelectValue(key, value, values) {
+  if (!/^\s*[+-]?\d+(?:\s*,\s*[+-]?\d+)*\s*$/.test(value))
+    throw new Error(`Xrm.WebApi ${key} requires comma-separated choice values.`);
+  values[key] = value.split(',').map(Number);
+}
+function entityFunctionValue(value, host, recordPath) {
+  const entity = value.entityType ?? String(value['@odata.type'] ?? '').replace(/^#?Microsoft\.Dynamics\.CRM\./, '');
+  const id = value.id ?? (entity && host.tables?.[entity] ? value[host.tables[entity].idColumn] : undefined);
+  return JSON.stringify(entity && id ? { '@odata.id': recordPath({ entityType: entity, id }) } : value);
+}
+function enumFunctionValue(value, type) {
+  const name = typeof value === 'number' ? type.enumProperties?.find((entry) => entry.value === value)?.name : value;
+  if (name === undefined) throw executeError(`Xrm.WebApi.execute: ${value} is not a member of ${type.typeName}.`, 400);
+  return `${type.typeName}'${name}'`;
+}
+const matchingClientEvent = (event, name, attribute) =>
+  event.active !== false && event.name === name && (name !== 'onchange' || event.attribute === attribute);
+const enabledClientHandler = (handler) => handler.enabled !== false;
+function* matchingRegisteredHandlers(host, name, attribute) {
+  for (const event of host.extensions?.trusted === true ? (host.form.clientEvents ?? []) : [])
+    if (matchingClientEvent(event, name, attribute))
+      for (const handler of event.handlers ?? []) if (enabledClientHandler(handler)) yield handler;
+}
 const bounded = (value, path) =>
   new Proxy(value, {
     get(target, key) {
@@ -19,14 +69,12 @@ const bounded = (value, path) =>
 const collection = (items, matches = (item, key) => item.getName() === key) =>
   bounded(
     {
-      get: (key) =>
-        key === undefined
-          ? items
-          : typeof key === 'number'
-            ? items[key]
-            : typeof key === 'function'
-              ? items.filter(key)
-              : items.find((item) => matches(item, key)),
+      get: (key) => {
+        if (key === undefined) return items;
+        if (typeof key === 'number') return items[key];
+        if (typeof key === 'function') return items.filter(key);
+        return items.find((item) => matches(item, key));
+      },
       getLength: () => items.length,
       forEach: (callback) => items.forEach(callback),
     },
@@ -125,39 +173,9 @@ function writeData(data, table, tables) {
   for (const [key, value] of Object.entries(data)) {
     if (blockedNames.has(key)) throw new Error('Xrm.WebApi column name is invalid.');
     if (key.endsWith('@odata.bind')) {
-      const navigation = key.slice(0, -11),
-        relationship = table?.relationships?.[navigation];
-      const name = relationship?.many === false ? relationship.from : navigation;
-      const field = table?.fields?.[name];
-      if (field?.type !== 'lookup' || relationship?.many === true)
-        unsupported(`Xrm.WebApi lookup binding ${navigation}; import its single-valued relationship metadata`);
-      if (
-        !relationship &&
-        Object.values(table?.relationships ?? {}).some(
-          (candidate) => candidate.many === false && candidate.from === name,
-        )
-      )
-        unsupported(`Xrm.WebApi lookup binding ${navigation}; use its exported navigation-property name`);
-      const match =
-        value === null
-          ? null
-          : typeof value === 'string' &&
-            /^\/([A-Za-z][\w]*)\(([a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12})\)$/i.exec(value);
-      if (value !== null && !match)
-        throw new Error('Xrm.WebApi lookup binding requires a local entity-set record path.');
-      const targets = (field.targets ?? []).filter(
-        (entity) =>
-          tables[entity]?.entitySet === match?.[1] && (!relationship?.entity || relationship.entity === entity),
-      );
-      if (value !== null && targets.length !== 1)
-        throw new Error(`Xrm.WebApi lookup binding ${navigation} does not resolve an imported target.`);
-      if (Object.hasOwn(values, name) || Object.hasOwn(data, name))
-        throw new Error(`Xrm.WebApi provides conflicting values for ${name}.`);
-      values[name] = value === null ? null : { id: match[2].toLowerCase(), entity: targets[0] };
+      writeLookupValue(key, value, data, values, table, tables);
     } else if (table?.fields?.[key]?.type === 'multiselect' && typeof value === 'string') {
-      if (!/^\s*[+-]?\d+(?:\s*,\s*[+-]?\d+)*\s*$/.test(value))
-        throw new Error(`Xrm.WebApi ${key} requires comma-separated choice values.`);
-      values[key] = value.split(',').map(Number);
+      writeMultiSelectValue(key, value, values);
     } else values[key] = value;
   }
   return values;
@@ -206,6 +224,7 @@ export function batchResponses(body, boundary) {
       result.push(...batchResponses(rest, nested));
       continue;
     }
+    // NOSONAR: anchored header scan is linear; its final body alternative accepts every remaining character, so no suffix can force repeated delimiter rescans.
     const match = /^HTTP\/1\.1 (\d{3})([^\r\n]*)(?:\r?\n([\s\S]*?))?(?:\r?\n\r?\n([\s\S]*))?$/.exec(rest);
     if (match)
       result.push({
@@ -251,20 +270,11 @@ export function createWebApiExecute(host, assertLive = () => {}) {
       : value;
   const functionValue = (value, type) => {
     if (value === null || value === undefined) return 'null';
-    if (type?.structuralProperty === 3) {
-      const name =
-        typeof value === 'number' ? type.enumProperties?.find((entry) => entry.value === value)?.name : value;
-      if (name === undefined)
-        throw executeError(`Xrm.WebApi.execute: ${value} is not a member of ${type.typeName}.`, 400);
-      return `${type.typeName}'${name}'`;
-    }
+    if (type?.structuralProperty === 3) return enumFunctionValue(value, type);
     if (type?.structuralProperty === 5 && typeof value === 'object') {
-      const entity =
-        value.entityType ?? String(value['@odata.type'] ?? '').replace(/^#?Microsoft\.Dynamics\.CRM\./, '');
-      const id = value.id ?? (entity && host.tables?.[entity] ? value[host.tables[entity].idColumn] : undefined);
-      return JSON.stringify(entity && id ? { '@odata.id': recordPath({ entityType: entity, id }) } : value);
+      return entityFunctionValue(value, host, recordPath);
     }
-    if (typeof value === 'string') return `'${value.replace(/'/g, "''")}'`;
+    if (typeof value === 'string') return `'${value.replaceAll("'", "''")}'`;
     if (value instanceof Date) return value.toISOString();
     return typeof value === 'object' ? JSON.stringify(value) : String(value);
   };
@@ -273,61 +283,46 @@ export function createWebApiExecute(host, assertLive = () => {}) {
       throw executeError('Xrm.WebApi.execute Create and Update need a payload object.', 400);
     return request.payload;
   };
-  function toHttp(request) {
-    const meta = typeof request?.getMetadata === 'function' ? request.getMetadata() : null;
-    if (
-      !meta ||
-      typeof meta.operationName !== 'string' ||
-      !meta.operationName ||
-      ![0, 1, 2].includes(meta.operationType)
-    )
-      throw executeError(
-        'Xrm.WebApi.execute requires a request whose getMetadata() gives operationName and operationType 0, 1 or 2.',
-        400,
-      );
-    const { operationName: name, operationType: type, boundParameter, parameterTypes = {} } = meta;
-    const json = (body) => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    if (type === 2) {
-      if (name === 'Create')
-        return { method: 'POST', path: `${API_ROOT}/${tableOf(request.etn).entitySet}`, ...json(payloadOf(request)) };
-      if (name === 'Retrieve')
-        return {
-          method: 'GET',
-          path: `${API_ROOT}/${recordPath(request.entityReference)}${request.columns?.length ? `?$select=${request.columns.map(encodeURIComponent).join(',')}` : ''}`,
-        };
-      if (name === 'Update')
-        return {
-          method: 'PATCH',
-          path: `${API_ROOT}/${recordPath({ entityType: request.etn, id: request.id })}`,
-          ...json(payloadOf(request)),
-        };
-      if (name === 'Delete') return { method: 'DELETE', path: `${API_ROOT}/${recordPath(request.entityReference)}` };
-      if (name === 'Associate' || name === 'Disassociate') {
-        if (typeof request.relationship !== 'string' || !/^[A-Za-z_]\w*$/.test(request.relationship))
-          throw executeError(`Xrm.WebApi.execute ${name} needs a relationship name.`, 400);
-        const target = `${API_ROOT}/${recordPath(request.target)}/${request.relationship}`;
-        if (name === 'Disassociate')
-          return { method: 'DELETE', path: `${target}(${bareId(request.relatedEntityId)})/$ref` };
-        if (!Array.isArray(request.relatedEntities) || request.relatedEntities.length !== 1)
-          throw executeError(
-            'Xrm.WebApi.execute Associate sends one related record per request locally; use executeMultiple for several.',
-            400,
-          );
-        return {
-          method: 'POST',
-          path: `${target}/$ref`,
-          ...json({ '@odata.id': `${API_ROOT}/${recordPath(request.relatedEntities[0])}` }),
-        };
-      }
-      throw executeError(`Xrm.WebApi.execute does not know the CRUD operation ${name}.`, 400);
+  const crudHttp = (request, name, json, retrieveSelect) => {
+    if (name === 'Create')
+      return { method: 'POST', path: `${API_ROOT}/${tableOf(request.etn).entitySet}`, ...json(payloadOf(request)) };
+    if (name === 'Retrieve')
+      return {
+        method: 'GET',
+        path: `${API_ROOT}/${recordPath(request.entityReference)}${retrieveSelect(request)}`,
+      };
+    if (name === 'Update')
+      return {
+        method: 'PATCH',
+        path: `${API_ROOT}/${recordPath({ entityType: request.etn, id: request.id })}`,
+        ...json(payloadOf(request)),
+      };
+    if (name === 'Delete') return { method: 'DELETE', path: `${API_ROOT}/${recordPath(request.entityReference)}` };
+    if (name === 'Associate' || name === 'Disassociate') {
+      if (typeof request.relationship !== 'string' || !/^[A-Za-z_]\w*$/.test(request.relationship))
+        throw executeError(`Xrm.WebApi.execute ${name} needs a relationship name.`, 400);
+      const target = `${API_ROOT}/${recordPath(request.target)}/${request.relationship}`;
+      if (name === 'Disassociate')
+        return { method: 'DELETE', path: `${target}(${bareId(request.relatedEntityId)})/$ref` };
+      if (!Array.isArray(request.relatedEntities) || request.relatedEntities.length !== 1)
+        throw executeError(
+          'Xrm.WebApi.execute Associate sends one related record per request locally; use executeMultiple for several.',
+          400,
+        );
+      return {
+        method: 'POST',
+        path: `${target}/$ref`,
+        ...json({ '@odata.id': `${API_ROOT}/${recordPath(request.relatedEntities[0])}` }),
+      };
     }
+    throw executeError(`Xrm.WebApi.execute does not know the CRUD operation ${name}.`, 400);
+  };
+  const operationHttp = ({ request, name, type, boundParameter, parameterTypes, json, actionValue, functionValue }) => {
     if (!/^[A-Za-z_][\w.]*$/.test(name)) throw executeError('Xrm.WebApi.execute operation name is invalid.', 400);
-    const bound =
-      boundParameter === 'entity'
-        ? `${recordPath(request.entity)}/Microsoft.Dynamics.CRM.${name}`
-        : boundParameter == null
-          ? name
-          : null;
+    let bound;
+    if (boundParameter === 'entity') bound = `${recordPath(request.entity)}/Microsoft.Dynamics.CRM.${name}`;
+    else if (boundParameter == null) bound = name;
+    else bound = null;
     if (!bound)
       throw executeError(
         `Xrm.WebApi.execute bound parameter ${boundParameter} is not supported; use null or entity.`,
@@ -348,11 +343,33 @@ export function createWebApiExecute(host, assertLive = () => {}) {
       .join('&');
     return {
       method: 'GET',
-      path: `${API_ROOT}/${bound}(${aliases.map(([key, alias]) => `${key}=${alias}`).join(',')})${query ? `?${query}` : ''}`,
+      path: `${API_ROOT}/${bound}(${aliases.map(([key, alias]) => key + '=' + alias).join(',')})${query ? '?' + query : ''}`,
     };
+  };
+  function toHttp(request) {
+    const meta = typeof request?.getMetadata === 'function' ? request.getMetadata() : null;
+    if (
+      !meta ||
+      typeof meta.operationName !== 'string' ||
+      !meta.operationName ||
+      ![0, 1, 2].includes(meta.operationType)
+    )
+      throw executeError(
+        'Xrm.WebApi.execute requires a request whose getMetadata() gives operationName and operationType 0, 1 or 2.',
+        400,
+      );
+    const { operationName: name, operationType: type, boundParameter, parameterTypes = {} } = meta;
+    const json = (body) => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const retrieveSelect = (request) =>
+      request.columns?.length ? '?$select=' + request.columns.map(encodeURIComponent).join(',') : '';
+    if (type === 2) return crudHttp(request, name, json, retrieveSelect);
+    return operationHttp({ request, name, type, boundParameter, parameterTypes, json, actionValue, functionValue });
   }
   const response = (http, result) => {
-    const text = typeof result.body === 'string' ? result.body : result.body == null ? '' : JSON.stringify(result.body);
+    let text;
+    if (typeof result.body === 'string') text = result.body;
+    else if (result.body == null) text = '';
+    else text = JSON.stringify(result.body);
     if (result.status >= 400) {
       let error;
       try {
@@ -450,16 +467,7 @@ export function createWebApiExecute(host, assertLive = () => {}) {
  * dashboard") and rejects with DashboardPageUnsupported when the sources hold no such dashboard. */
 export function pageRequest(pageInput, navigationOptions = {}, tables = {}, dashboards = []) {
   const type = pageInput?.pageType;
-  if (type === 'custom') {
-    if (typeof pageInput.name !== 'string' || !pageInput.name.trim())
-      throw new Error('navigateTo needs the logical name of the custom page in name.');
-    // Documented for custom pages: "The recordId parameter must be a GUID".
-    if (
-      pageInput.recordId !== undefined &&
-      !/^{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}}?$/i.test(String(pageInput.recordId))
-    )
-      throw new Error('navigateTo: the custom page recordId must be a GUID.');
-  }
+  validateCustomPage(type, pageInput);
   const dashboard =
     type === 'dashboard' &&
     (pageInput.dashboardId
@@ -470,12 +478,45 @@ export function pageRequest(pageInput, navigationOptions = {}, tables = {}, dash
       new Error(`Dashboard ${pageInput.dashboardId || '(default)'} is not in this app's Solution sources.`),
       { code: 'DashboardPageUnsupported' },
     );
+  validatePageType(type);
+  validatePageTable(type, pageInput, tables);
+  validatePageDetails(type, pageInput, tables);
+  const options = navigationOptions ?? {};
+  if (![undefined, 1, 2].includes(options.target) || ![undefined, 1, 2].includes(options.position))
+    throw new Error('navigateTo target must be 1 (inline) or 2 (dialog) and position 1 (center) or 2 (side).');
+  const input = pageRequestInput(type, pageInput, dashboard);
+  return [
+    input,
+    {
+      target: options.target ?? 1,
+      position: options.position ?? 1,
+      ...(options.width !== undefined ? { width: options.width } : {}),
+      ...(options.height !== undefined ? { height: options.height } : {}),
+      ...(options.title ? { title: String(options.title) } : {}),
+    },
+  ];
+}
+
+function validateCustomPage(type, pageInput) {
+  if (type !== 'custom') return;
+  if (typeof pageInput.name !== 'string' || !pageInput.name.trim())
+    throw new Error('navigateTo needs the logical name of the custom page in name.');
+  // Documented for custom pages: "The recordId parameter must be a GUID".
+  if (
+    pageInput.recordId !== undefined &&
+    !/^{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}}?$/i.test(String(pageInput.recordId))
+  )
+    throw new Error('navigateTo: the custom page recordId must be a GUID.');
+}
+
+function validatePageType(type) {
   if (!['entityrecord', 'entitylist', 'webresource', 'dashboard', 'custom'].includes(type))
     throw new Error('navigateTo needs pageType entityrecord, entitylist, webresource, dashboard or custom.');
+}
+
+function validatePageTable(type, pageInput, tables) {
   if (!['webresource', 'dashboard', 'custom'].includes(type) && !Object.hasOwn(tables, pageInput.entityName ?? ''))
     throw new Error(`navigateTo: table ${pageInput.entityName ?? ''} is not imported.`);
-  if (type === 'webresource' && (typeof pageInput.webresourceName !== 'string' || !pageInput.webresourceName))
-    throw new Error('navigateTo needs a webresourceName for a web resource page.');
   if (
     type === 'entityrecord' &&
     pageInput.formId &&
@@ -486,12 +527,21 @@ export function pageRequest(pageInput, navigationOptions = {}, tables = {}, dash
     throw Object.assign(new Error('The requested form is unavailable in the imported source forms.'), {
       code: 'FormUnavailable',
     });
+}
+
+function validatePageDetails(type, pageInput, tables) {
+  if (type === 'webresource' && (typeof pageInput.webresourceName !== 'string' || !pageInput.webresourceName))
+    throw new Error('navigateTo needs a webresourceName for a web resource page.');
   if (
     type === 'entityrecord' &&
     pageInput.tabName !== undefined &&
     (typeof pageInput.tabName !== 'string' || !pageInput.tabName.trim() || pageInput.tabName.length > 256)
   )
     throw new Error('navigateTo tabName must name an exported form tab.');
+  validatePageViews(type, pageInput, tables);
+}
+
+function validatePageViews(type, pageInput, tables) {
   if (type === 'entitylist' && pageInput.viewType !== undefined && pageInput.viewType !== 'savedquery')
     throw Object.assign(
       new Error(
@@ -508,50 +558,41 @@ export function pageRequest(pageInput, navigationOptions = {}, tables = {}, dash
     !tables[pageInput.entityName].views.some((view) => bareId(view.id) === bareId(pageInput.viewId))
   )
     throw Object.assign(new Error('The selected saved view is not imported.'), { code: 'ViewUnavailable' });
-  const options = navigationOptions ?? {};
-  if (![undefined, 1, 2].includes(options.target) || ![undefined, 1, 2].includes(options.position))
-    throw new Error('navigateTo target must be 1 (inline) or 2 (dialog) and position 1 (center) or 2 (side).');
-  const input =
-    type === 'entityrecord'
-      ? {
-          pageType: type,
-          entityName: pageInput.entityName,
-          ...(pageInput.entityId ? { entityId: bareId(pageInput.entityId) } : {}),
-          ...(pageInput.formId ? { formId: bareId(pageInput.formId) } : {}),
-          ...(pageInput.tabName !== undefined ? { tabName: pageInput.tabName } : {}),
-          ...(pageInput.data ? { data: pageInput.data } : {}),
-        }
-      : type === 'entitylist'
-        ? {
-            pageType: type,
-            entityName: pageInput.entityName,
-            ...(pageInput.viewId ? { viewId: bareId(pageInput.viewId) } : {}),
-            ...(pageInput.viewType !== undefined ? { viewType: pageInput.viewType } : {}),
-          }
-        : type === 'dashboard'
-          ? { pageType: type, dashboardId: dashboard.id }
-          : type === 'custom'
-            ? {
-                pageType: type,
-                name: pageInput.name.trim(),
-                ...(pageInput.entityName ? { entityName: String(pageInput.entityName) } : {}),
-                ...(pageInput.recordId !== undefined ? { recordId: bareId(pageInput.recordId) } : {}),
-              }
-            : {
-                pageType: type,
-                webresourceName: pageInput.webresourceName,
-                ...(pageInput.data !== undefined ? { data: String(pageInput.data) } : {}),
-              };
-  return [
-    input,
-    {
-      target: options.target ?? 1,
-      position: options.position ?? 1,
-      ...(options.width !== undefined ? { width: options.width } : {}),
-      ...(options.height !== undefined ? { height: options.height } : {}),
-      ...(options.title ? { title: String(options.title) } : {}),
-    },
-  ];
+}
+
+/* NOSONAR */ function pageRequestInput(type, pageInput, dashboard) {
+  let input;
+  if (type === 'entityrecord')
+    input = {
+      pageType: type,
+      entityName: pageInput.entityName,
+      ...(pageInput.entityId ? { entityId: bareId(pageInput.entityId) } : {}),
+      ...(pageInput.formId ? { formId: bareId(pageInput.formId) } : {}),
+      ...(pageInput.tabName !== undefined ? { tabName: pageInput.tabName } : {}),
+      ...(pageInput.data ? { data: pageInput.data } : {}),
+    };
+  else if (type === 'entitylist')
+    input = {
+      pageType: type,
+      entityName: pageInput.entityName,
+      ...(pageInput.viewId ? { viewId: bareId(pageInput.viewId) } : {}),
+      ...(pageInput.viewType !== undefined ? { viewType: pageInput.viewType } : {}),
+    };
+  else if (type === 'dashboard') input = { pageType: type, dashboardId: dashboard.id };
+  else if (type === 'custom')
+    input = {
+      pageType: type,
+      name: pageInput.name.trim(),
+      ...(pageInput.entityName ? { entityName: String(pageInput.entityName) } : {}),
+      ...(pageInput.recordId !== undefined ? { recordId: bareId(pageInput.recordId) } : {}),
+    };
+  else
+    input = {
+      pageType: type,
+      webresourceName: pageInput.webresourceName,
+      ...(pageInput.data !== undefined ? { data: String(pageInput.data) } : {}),
+    };
+  return input;
 }
 
 export function createFormClientRuntime(host) {
@@ -656,14 +697,13 @@ export function createFormClientRuntime(host) {
           getInitialValue: () => clientValue(name, initial[name]),
           setValue: (value) => {
             assertLive();
-            const next =
-              field.type === 'date' && value instanceof Date
-                ? value.toISOString()
-                : field.type === 'lookup' && Array.isArray(value)
-                  ? value.length
-                    ? { id: String(value[0].id).replace(/[{}]/g, ''), entity: value[0].entityType, name: value[0].name }
-                    : null
-                  : value;
+            let next;
+            if (field.type === 'date' && value instanceof Date) next = value.toISOString();
+            else if (field.type === 'lookup' && Array.isArray(value))
+              next = value.length
+                ? { id: String(value[0].id).replace(/[{}]/g, ''), entity: value[0].entityType, name: value[0].name }
+                : null;
+            else next = value;
             host.write(name, next);
           },
           getIsDirty: () => host.isDirty(name),
@@ -703,7 +743,9 @@ export function createFormClientRuntime(host) {
               : (field.options?.find((option) => option.value === fieldValue(name))?.label ?? null),
           getRequiredLevel: () => {
             const level = host.required?.(name);
-            return typeof level === 'string' ? level : level ? 'required' : 'none';
+            if (typeof level === 'string') return level;
+            if (level) return 'required';
+            return 'none';
           },
           setRequiredLevel: (value) => {
             if (!['none', 'required', 'recommended'].includes(value)) throw new Error('Invalid required level.');
@@ -910,16 +952,12 @@ export function createFormClientRuntime(host) {
       'executionContext',
     );
     try {
-      for (const event of host.extensions?.trusted === true ? (host.form.clientEvents ?? []) : [])
-        if (event.active !== false && event.name === name && (name !== 'onchange' || event.attribute === attribute))
-          for (const handler of event.handlers ?? []) {
-            if (handler.enabled === false) continue;
-            await call(handler, [
-              ...(handler.passExecutionContext ? [context] : []),
-              ...parseHandlerParameters(handler.parameters),
-            ]);
-          }
-      for (const handler of [...(events.get(name === 'onchange' ? `onchange:${attribute}` : name) ?? [])])
+      for (const handler of matchingRegisteredHandlers(host, name, attribute))
+        await call(handler, [
+          ...(handler.passExecutionContext ? [context] : []),
+          ...parseHandlerParameters(handler.parameters),
+        ]);
+      /* NOSONAR */ for (const handler of [...(events.get(name === 'onchange' ? `onchange:${attribute}` : name) ?? [])])
         await call(handler, [context]);
       return { prevented };
     } finally {
@@ -1097,7 +1135,7 @@ export function createFormClientRuntime(host) {
               {
                 getClientUrl: () => (host.environment?.location ?? globalThis.location).origin,
                 // getGlobalContext.getVersion: the Web API version this organization serves.
-                getVersion: () => host.version ?? '9.2.0.0',
+                getVersion: () => host.version ?? '9.2.0.0', // NOSONAR: version string or loopback address, not a network target
                 // getGlobalContext.userSettings: the server-built staff context, the same one the PCF context reads.
                 userSettings: client(
                   {
@@ -1153,19 +1191,16 @@ export function createFormClientRuntime(host) {
       assertLive();
       if (!command.supported) throw new Error(command.reason ?? 'Unsupported exported ribbon command.');
       for (const action of command.actions) {
-        const args = action.parameters.map((parameter) =>
-          parameter.kind === 'crm'
-            ? parameter.value === 'PrimaryControl'
-              ? formContext
-              : parameter.value === 'SelectedControlSelectedItemIds'
-                ? selection
-                : host.table.entity
-            : parameter.kind === 'number'
-              ? Number(parameter.value)
-              : parameter.kind === 'boolean'
-                ? parameter.value === 'true'
-                : parameter.value,
-        );
+        const args = action.parameters.map((parameter) => {
+          if (parameter.kind === 'crm') {
+            if (parameter.value === 'PrimaryControl') return formContext;
+            if (parameter.value === 'SelectedControlSelectedItemIds') return selection;
+            return host.table.entity;
+          }
+          if (parameter.kind === 'number') return Number(parameter.value);
+          if (parameter.kind === 'boolean') return parameter.value === 'true';
+          return parameter.value;
+        });
         await call(action, args);
       }
     },

@@ -86,7 +86,9 @@ async function ensure(set, primary, key, body, type) {
     await client.request(set, { method: 'POST', body: { [primary]: guid, ...body }, solution });
   }
   if (type) await include(guid, type);
-  rows.push({ key, id: guid, status: existing ? (changed ? 'updated' : 'exists') : 'created' });
+  let status = 'created';
+  if (existing) status = changed ? 'updated' : 'exists';
+  rows.push({ key, id: guid, status });
   if (rows.length % 10 === 0) console.log(JSON.stringify({ completed: rows.length, last: key }));
   await writeFile(
     resolve(privateRoot, 'deployment-progress.json'),
@@ -122,7 +124,7 @@ for (const assembly of registry.assemblies) {
     `assembly/${assembly.name}`,
     {
       name: assembly.name,
-      version: '1.0.0.0',
+      version: '1.0.0.0', // NOSONAR: version string or loopback address, not a network target
       culture: 'neutral',
       publickeytoken: '',
       content: bytes.toString('base64'),

@@ -14,7 +14,7 @@ export function decodeXml(value = '') {
   parts.push(text.slice(cursor));
   return parts.join('').replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (match, entity) => {
     if (entity[0] !== '#') return { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }[entity.toLowerCase()];
-    const code = entity[1].toLowerCase() === 'x' ? parseInt(entity.slice(2), 16) : Number(entity.slice(1));
+    const code = entity[1].toLowerCase() === 'x' ? Number.parseInt(entity.slice(2), 16) : Number(entity.slice(1));
     return Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
   });
 }
@@ -35,6 +35,21 @@ function searcher(text, needle) {
   };
 }
 
+function attributeAt(text, cursor, quoted) {
+  const start = cursor;
+  while (cursor < text.length && nameChar(text[cursor])) cursor++;
+  let next = cursor;
+  while (next < text.length && space(text[next])) next++;
+  if (text[next] !== '=') return { cursor };
+  next++;
+  while (next < text.length && space(text[next])) next++;
+  const quote = text[next];
+  if (quote !== '"' && quote !== "'") return { cursor };
+  const end = quoted[quote](next + 1);
+  if (end < 0) return { cursor };
+  return { pair: [text.slice(start, cursor), text.slice(next + 1, end)], cursor: end + 1 };
+}
+
 /**
  * Attribute name/raw value pairs (`name="value"` or `name='value'`) in start-tag markup, found by one linear
  * scan. Text that is not a complete quoted attribute is skipped.
@@ -49,21 +64,21 @@ export function xmlAttributes(markup = '') {
       cursor++;
       continue;
     }
-    const start = cursor;
-    while (cursor < text.length && nameChar(text[cursor])) cursor++;
-    let next = cursor;
-    while (next < text.length && space(text[next])) next++;
-    if (text[next] !== '=') continue;
-    next++;
-    while (next < text.length && space(text[next])) next++;
-    const quote = text[next];
-    if (quote !== '"' && quote !== "'") continue;
-    const end = quoted[quote](next + 1);
-    if (end < 0) continue;
-    pairs.push([text.slice(start, cursor), text.slice(next + 1, end)]);
-    cursor = end + 1;
+    const attribute = attributeAt(text, cursor, quoted);
+    if (attribute.pair) pairs.push(attribute.pair);
+    cursor = attribute.cursor;
   }
   return pairs;
+}
+
+function markupTokenAt(text, cursor, commentEnd, instructionEnd, tagEnd) {
+  const comment = text.startsWith('<!--', cursor) ? commentEnd(cursor + 4) : -1;
+  if (comment >= 0) return { token: text.slice(cursor, comment + 3), cursor: comment + 3 };
+  const instruction = text.startsWith('<?', cursor) ? instructionEnd(cursor + 2) : -1;
+  if (instruction >= 0) return { token: text.slice(cursor, instruction + 2), cursor: instruction + 2 };
+  const close = tagEnd(cursor + 1);
+  if (close > cursor + 1) return { token: text.slice(cursor, close + 1), cursor: close + 1 };
+  return { cursor: cursor + 1 };
 }
 
 /**
@@ -85,23 +100,9 @@ export function xmlTokens(source = '') {
       cursor = stop;
       continue;
     }
-    const comment = text.startsWith('<!--', cursor) ? commentEnd(cursor + 4) : -1;
-    if (comment >= 0) {
-      tokens.push(text.slice(cursor, comment + 3));
-      cursor = comment + 3;
-      continue;
-    }
-    const instruction = text.startsWith('<?', cursor) ? instructionEnd(cursor + 2) : -1;
-    if (instruction >= 0) {
-      tokens.push(text.slice(cursor, instruction + 2));
-      cursor = instruction + 2;
-      continue;
-    }
-    const close = tagEnd(cursor + 1);
-    if (close > cursor + 1) {
-      tokens.push(text.slice(cursor, close + 1));
-      cursor = close + 1;
-    } else cursor++;
+    const markup = markupTokenAt(text, cursor, commentEnd, instructionEnd, tagEnd);
+    if (markup.token) tokens.push(markup.token);
+    cursor = markup.cursor;
   }
   return tokens;
 }

@@ -11,6 +11,83 @@ import { GitBaseline } from './git.mjs';
 import { compareWebFile } from './online.mjs';
 import { devDialogs } from './dev-dialogs.mjs';
 
+function retryExpiredTarget(origin, failedAt, pending) {
+  if (failedAt.has(origin) && Date.now() - failedAt.get(origin) >= 5000) {
+    pending.delete(origin);
+    failedAt.delete(origin);
+  }
+}
+
+function developmentTargetConfig(configs, origin, devTargets) {
+  const cfg = { ...configs.get(origin), devTargets };
+  if (!isExtract(cfg.sourceDir))
+    throw new Error(
+      `Portal extract not found: ${cfg.sourceDir}. Restore the checkout and reload this portal; other portal sessions remain active.`,
+    );
+  // Default HEAD means the state at session start. Committing during the working day
+  // must not erase active template/snippet patches. Explicit branch refs remain dynamic.
+  if (cfg.site.markup?.baseline === 'HEAD') {
+    const baseline = new GitBaseline(cfg.sourceDir, 'HEAD');
+    if (baseline.available && baseline.commit)
+      cfg.site = {
+        ...cfg.site,
+        markup: { ...cfg.site.markup, baseline: baseline.commit, requestedBaseline: 'HEAD' },
+      };
+  }
+  return cfg;
+}
+
+async function initializeDevelopmentTarget(origin, context) {
+  const cfg = developmentTargetConfig(context.configs, origin, context.devTargets);
+  const log = context.log;
+  const session = await OverlaySession.create(cfg);
+  session.provenanceSlot = context.provenance.slot;
+  session.domProvenanceSlot = context.provenance.domSlot;
+  const record = { session };
+  context.records.add(record);
+  try {
+    if (context.isClosed()) throw new Error('Development browser is stopping');
+    printSummary(session, log);
+    record.stopLogs = logHits(session, log);
+    if (!cfg.mirage) {
+      // Compare with the browser's own sign-in: a signed-in portal serves its files to that session only.
+      record.stopComparisons = trackOnlineState(session, {
+        compare: (targetOrigin, target, options) =>
+          compareWebFile(targetOrigin, target, { ...options, request: context.request }),
+      });
+    }
+    session.liveReload = cfg.mirage ? true : Boolean(cfg.liveReload && !context.noReload);
+    // Reference captures want the site exactly as the environment serves it: no overlay at all.
+    if (!cfg.mirage && context.noOverrides) session.bypass = true;
+    if (cfg.panel) record.panel = enablePanel(context.browserContext, session);
+    await record.panel?.ready;
+    // Mirage watches and reloads its own renderer. Keep this watcher only to refresh
+    // the toolkit's source inventory; a second page reload can execute handlers twice.
+    record.watcher = watchSources(session, context.browserContext, { log: context.log, reload: !cfg.mirage });
+    await record.watcher.ready;
+    if (context.isClosed()) throw new Error('Development browser is stopping');
+    record.agent = await startAgentServer({
+      session,
+      context: context.browserContext,
+      panel: record.panel,
+      attached: context.attached,
+      stop: context.stop,
+      runtime: { watching: true, debugPort: context.debugPort, portals: context.mode },
+    });
+    if (context.isClosed()) throw new Error('Development browser is stopping');
+    if (record.agent) log(`agent API   ${cfg.siteName} @ ${cfg.envName}: ${record.agent.discoveryFile}`);
+    context.active.set(origin, record);
+    return record;
+  } catch (error) {
+    try {
+      await context.dispose(record);
+    } catch (cleanupError) {
+      throw context.combine([error, cleanupError], 'Development target initialization and cleanup failed.');
+    }
+    throw error;
+  }
+}
+
 export async function startDevSessions(
   context,
   selection,
@@ -89,74 +166,27 @@ export async function startDevSessions(
     if (!configs.has(origin)) return Promise.reject(new Error('Portal is not configured for this browser'));
     // A temporarily missing checkout can be restored during the working day. Bound retries
     // instead of poisoning the target permanently or rebuilding for every asset request.
-    if (failedAt.has(origin) && Date.now() - failedAt.get(origin) >= 5000) {
-      pending.delete(origin);
-      failedAt.delete(origin);
-    }
+    retryExpiredTarget(origin, failedAt, pending);
     if (!pending.has(origin)) {
-      const initializing = (async () => {
-        const cfg = { ...configs.get(origin), devTargets };
-        if (!isExtract(cfg.sourceDir))
-          throw new Error(
-            `Portal extract not found: ${cfg.sourceDir}. Restore the checkout and reload this portal; other portal sessions remain active.`,
-          );
-        // Default HEAD means the state at session start. Committing during the working day
-        // must not erase active template/snippet patches. Explicit branch refs remain dynamic.
-        if (cfg.site.markup?.baseline === 'HEAD') {
-          const baseline = new GitBaseline(cfg.sourceDir, 'HEAD');
-          if (baseline.available && baseline.commit)
-            cfg.site = {
-              ...cfg.site,
-              markup: { ...cfg.site.markup, baseline: baseline.commit, requestedBaseline: 'HEAD' },
-            };
-        }
-        const session = await OverlaySession.create(cfg);
-        session.provenanceSlot = provenance.slot;
-        session.domProvenanceSlot = provenance.domSlot;
-        const record = { session };
-        records.add(record);
-        try {
-          if (closed) throw new Error('Development browser is stopping');
-          printSummary(session, log);
-          record.stopLogs = logHits(session, log);
-          if (!cfg.mirage) {
-            // Compare with the browser's own sign-in: a signed-in portal serves its files to that session only.
-            record.stopComparisons = trackOnlineState(session, {
-              compare: (origin, target, options) =>
-                compareWebFile(origin, target, { ...options, request: context.request }),
-            });
-          }
-          session.liveReload = cfg.mirage ? true : Boolean(cfg.liveReload && !args['no-reload']);
-          // Reference captures want the site exactly as the environment serves it: no overlay at all.
-          if (!cfg.mirage && args['no-overrides']) session.bypass = true;
-          if (cfg.panel) record.panel = enablePanel(context, session);
-          await record.panel?.ready;
-          // Mirage watches and reloads its own renderer. Keep this watcher only to refresh
-          // the toolkit's source inventory; a second page reload can execute handlers twice.
-          record.watcher = watchSources(session, context, { log, reload: !cfg.mirage });
-          await record.watcher.ready;
-          if (closed) throw new Error('Development browser is stopping');
-          record.agent = await startAgentServer({
-            session,
-            context,
-            panel: record.panel,
-            attached,
-            stop,
-            runtime: { watching: true, debugPort, portals: mode },
-          });
-          if (closed) throw new Error('Development browser is stopping');
-          if (record.agent) log(`agent API   ${cfg.siteName} @ ${cfg.envName}: ${record.agent.discoveryFile}`);
-          active.set(origin, record);
-          return record;
-        } catch (error) {
-          try {
-            await dispose(record);
-          } catch (cleanupError) {
-            throw combine([error, cleanupError], 'Development target initialization and cleanup failed.');
-          }
-          throw error;
-        }
-      })();
+      const initializing = initializeDevelopmentTarget(origin, {
+        configs,
+        devTargets,
+        provenance,
+        records,
+        active,
+        isClosed: () => closed,
+        log,
+        request: context.request,
+        noReload: args['no-reload'],
+        noOverrides: args['no-overrides'],
+        browserContext: context,
+        attached,
+        stop,
+        debugPort,
+        mode,
+        dispose,
+        combine,
+      });
       pending.set(origin, initializing);
       initializing.catch((error) => {
         failedAt.set(origin, Date.now());

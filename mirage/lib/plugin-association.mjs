@@ -108,6 +108,74 @@ export function associationRequestBinding(store, parameters, identity, options) 
     related: parameters.RelatedEntities,
   };
 }
+
+function authorizeIntersectBefore(store, rel, source, records, associate, authorize) {
+  const edges = store.snapshot().tables[rel.intersect.entity] ?? [];
+  for (const row of records) {
+    const values = { [rel.intersect.from]: scalar(source[rel.from]), [rel.intersect.to]: scalar(row[rel.to]) };
+    const existing = edges.filter((edge) => Object.keys(values).every((key) => scalar(edge[key]) === values[key]));
+    for (const edge of existing.length ? existing : [values])
+      authorize(rel.intersect.entity, associate ? 'create' : 'delete', edge);
+  }
+}
+
+function authorizeLookupBefore(entity, rel, source, records, associate, authorize) {
+  const affected = rel.many === false ? [source] : records;
+  for (const row of affected) {
+    const table = rel.many === false ? entity : rel.entity,
+      column = rel.many === false ? rel.from : rel.to,
+      value = scalar(rel.many === false ? records[0][rel.to] : source[rel.from]);
+    authorize(table, 'update', row);
+    if (associate || scalar(row[column]) === value)
+      authorize(table, 'update', { ...row, [column]: associate ? value : null });
+  }
+}
+
+function checkAssociationPermissions({ store, entity, id, rel, related, operation, associate, get, authorize }) {
+  const source = get(entity, id),
+    records = related.values.map((ref) => get(ref.logicalName, ref.id));
+  authorize(entity, operation, source);
+  for (const row of records) authorize(rel.entity, operation, row);
+  if (rel.intersect) authorizeIntersectBefore(store, rel, source, records, associate, authorize);
+  else authorizeLookupBefore(entity, rel, source, records, associate, authorize);
+  return { source, records };
+}
+
+function authorizeIntersectAfter(store, rel, source, records, authorize) {
+  const edges = store.snapshot().tables[rel.intersect.entity] ?? [];
+  for (const row of records) {
+    const values = { [rel.intersect.from]: scalar(source[rel.from]), [rel.intersect.to]: scalar(row[rel.to]) };
+    for (const edge of edges)
+      if (Object.keys(values).every((key) => scalar(edge[key]) === values[key]))
+        authorize(rel.intersect.entity, 'create', edge);
+  }
+}
+
+function authorizeAssociationResult({ store, entity, id, rel, related, source, records, get, authorize, associate }) {
+  if (rel.intersect && associate) authorizeIntersectAfter(store, rel, source, records, authorize);
+  if (rel.intersect) return;
+  const table = rel.many === false ? entity : rel.entity,
+    keys = rel.many === false ? [id] : related.values.map((ref) => ref.id);
+  for (const key of keys) authorize(table, 'update', get(table, key));
+}
+
+function* associationWrites({ store, entity, id, rel, related, mapping, identity, navigation, change, associate }) {
+  if (rel.many !== false) {
+    for (const ref of related.values) yield change(entity, id, navigation, ref.id, identity, associate);
+    return;
+  }
+  const targetMapping = store.resolveMapping(rel.entity),
+    reverse = Object.entries(store.relationshipsFor(targetMapping, identity)).filter(
+      ([nav, candidate]) =>
+        nav === rel.partner &&
+        candidate.schemaName === rel.schemaName &&
+        candidate.entity === mapping.logicalName &&
+        candidate.many !== false &&
+        !candidate.intersect,
+    );
+  if (reverse.length !== 1) fail('Referencing SDK relationship requires its exact source-defined collection partner.');
+  yield change(rel.entity, related.values[0].id, reverse[0][0], id, identity, associate);
+}
 /** The SDK Associate/Disassociate: explicit grants, plug-in stages 10/20/40 and the store association write. executeAssociation
  * runs them synchronously (a synchronous service endpoint step posts through the synchronous I/O bridge: the SDK inside a
  * plug-in); executeAssociationAsync awaits each stage's post and the related row's update steps (a flow Relate/Unrelate rows
@@ -165,33 +233,18 @@ function* associationSteps(
     if (!row) fail('SDK association row not found.', 'NotFound', 404);
     return row;
   };
-  let source, records;
-  const checkPermissions = () => {
-    source = get(entity, id);
-    records = related.values.map((ref) => get(ref.logicalName, ref.id));
-    authorize(entity, operation, source);
-    for (const row of records) authorize(rel.entity, operation, row);
-    if (rel.intersect) {
-      const edges = store.snapshot().tables[rel.intersect.entity] ?? [];
-      for (const row of records) {
-        const values = { [rel.intersect.from]: scalar(source[rel.from]), [rel.intersect.to]: scalar(row[rel.to]) };
-        const existing = edges.filter((edge) => Object.keys(values).every((key) => scalar(edge[key]) === values[key]));
-        for (const edge of existing.length ? existing : [values])
-          authorize(rel.intersect.entity, associate ? 'create' : 'delete', edge);
-      }
-    } else {
-      const affected = rel.many === false ? [source] : records;
-      for (const row of affected) {
-        const table = rel.many === false ? entity : rel.entity,
-          column = rel.many === false ? rel.from : rel.to,
-          value = scalar(rel.many === false ? records[0][rel.to] : source[rel.from]);
-        authorize(table, 'update', row);
-        if (associate || scalar(row[column]) === value)
-          authorize(table, 'update', { ...row, [column]: associate ? value : null });
-      }
-    }
-  };
-  checkPermissions();
+  let records;
+  let { source } = checkAssociationPermissions({
+    store,
+    entity,
+    id,
+    rel,
+    related,
+    operation,
+    associate,
+    get,
+    authorize,
+  });
   const parameters = {
       Target: { $type: 'EntityReference', logicalName: mapping.logicalName, id, name: null },
       Relationship: {
@@ -244,40 +297,22 @@ function* associationSteps(
     yield* phase(10);
     yield* phase(20);
     ({ mapping, navigation, rel, entity, id, related } = associationRequestBinding(store, parameters, identity));
-    checkPermissions();
+    ({ source, records } = checkAssociationPermissions({
+      store,
+      entity,
+      id,
+      rel,
+      related,
+      operation,
+      associate,
+      get,
+      authorize,
+    }));
     onRebind?.({ mapping, entity, id, navigation, relatedIds: related.values.map((reference) => reference.id) });
     for (const key of Object.keys(holder)) delete holder[key];
     Object.assign(holder, structuredClone(source));
-    if (rel.many !== false) {
-      for (const ref of related.values) yield change(entity, id, navigation, ref.id, identity, associate);
-    } else {
-      const targetMapping = store.resolveMapping(rel.entity),
-        reverse = Object.entries(store.relationshipsFor(targetMapping, identity)).filter(
-          ([nav, candidate]) =>
-            nav === rel.partner &&
-            candidate.schemaName === rel.schemaName &&
-            candidate.entity === mapping.logicalName &&
-            candidate.many !== false &&
-            !candidate.intersect,
-        );
-      if (reverse.length !== 1)
-        fail('Referencing SDK relationship requires its exact source-defined collection partner.');
-      yield change(rel.entity, related.values[0].id, reverse[0][0], id, identity, associate);
-    }
-    if (rel.intersect && associate) {
-      const edges = store.snapshot().tables[rel.intersect.entity] ?? [];
-      for (const row of records) {
-        const values = { [rel.intersect.from]: scalar(source[rel.from]), [rel.intersect.to]: scalar(row[rel.to]) };
-        for (const edge of edges)
-          if (Object.keys(values).every((key) => scalar(edge[key]) === values[key]))
-            authorize(rel.intersect.entity, 'create', edge);
-      }
-    }
-    if (!rel.intersect) {
-      const table = rel.many === false ? entity : rel.entity,
-        keys = rel.many === false ? [id] : related.values.map((ref) => ref.id);
-      for (const key of keys) authorize(table, 'update', get(table, key));
-    }
+    yield* associationWrites({ store, entity, id, rel, related, mapping, identity, navigation, change, associate });
+    authorizeAssociationResult({ store, entity, id, rel, related, source, records, get, authorize, associate });
     yield* phase(40);
     store.recordCommittedEvent(mapping.logicalName, operation, holder, [], {
       target: {},

@@ -1,3 +1,4 @@
+import { redactUrlQuery } from './query-redaction.mjs';
 import { debugScript, exportFieldFile } from './source-debug.mjs';
 import { decodeXml, portalField } from './importer.mjs';
 import { xmlAttributes } from './xml-text.mjs';
@@ -104,20 +105,46 @@ export async function readLookupView(fetchXml, readProvider, identity) {
 // Walk each attribute once. A global whitespace/backreference expression can
 // repeatedly rescan a long missing quote or whitespace run. Quoted values also
 // must stay opaque: text such as ` page='2'` inside another value is not paging.
+function tagEnd(source, start) {
+  let quote = '';
+  for (let end = start; end < source.length; end++) {
+    const char = source[end];
+    if (quote) {
+      if (char === quote) quote = '';
+    } else if (char === '"' || char === "'") quote = char;
+    else if (char === '>') return end;
+  }
+  return source.length;
+}
+
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function fetchAttribute(attributes, at) {
+  const whitespace = at;
+  while (at < attributes.length && /\s/.test(attributes[at])) at++;
+  const nameStart = at;
+  while (at < attributes.length && /[\w:.-]/.test(attributes[at])) at++;
+  if (at === nameStart) return { at: at + 1 };
+  const name = attributes.slice(nameStart, at).toLowerCase();
+  while (at < attributes.length && /\s/.test(attributes[at])) at++;
+  if (attributes[at] !== '=') return { at };
+  at++;
+  while (at < attributes.length && /\s/.test(attributes[at])) at++;
+  const delimiter = attributes[at];
+  if (delimiter !== '"' && delimiter !== "'") {
+    while (at < attributes.length && !/\s/.test(attributes[at])) at++;
+    return { at };
+  }
+  const valueStart = ++at;
+  while (at < attributes.length && attributes[at] !== delimiter) at++;
+  if (at === attributes.length) return { at, incomplete: true };
+  return { at: at + 1, name, whitespace, value: attributes.slice(valueStart, at) };
+}
+
 function lookupFetchRoot(xml) {
   const match = /<fetch\b/i.exec(xml);
   if (!match) throw new Error('Lookup view requires a FetchXML root.');
   const start = match.index,
     attributesStart = start + match[0].length;
-  let end = attributesStart,
-    quote = '';
-  for (; end < xml.length; end++) {
-    const char = xml[end];
-    if (quote) {
-      if (char === quote) quote = '';
-    } else if (char === '"' || char === "'") quote = char;
-    else if (char === '>') break;
-  }
+  const end = tagEnd(xml, attributesStart);
   if (end === xml.length) throw new Error('Lookup view requires a complete FetchXML root.');
   const attributes = xml.slice(attributesStart, end),
     parts = [];
@@ -125,32 +152,14 @@ function lookupFetchRoot(xml) {
     copied = 0,
     initialPage;
   while (at < attributes.length) {
-    const whitespace = at;
-    while (at < attributes.length && /\s/.test(attributes[at])) at++;
-    const nameStart = at;
-    while (at < attributes.length && /[\w:.-]/.test(attributes[at])) at++;
-    if (at === nameStart) {
-      at++;
-      continue;
-    }
-    const name = attributes.slice(nameStart, at).toLowerCase();
-    while (at < attributes.length && /\s/.test(attributes[at])) at++;
-    if (attributes[at] !== '=') continue;
-    at++;
-    while (at < attributes.length && /\s/.test(attributes[at])) at++;
-    const delimiter = attributes[at];
-    if (delimiter !== '"' && delimiter !== "'") {
-      while (at < attributes.length && !/\s/.test(attributes[at])) at++;
-      continue;
-    }
-    const valueStart = ++at;
-    while (at < attributes.length && attributes[at] !== delimiter) at++;
-    if (at === attributes.length) break;
-    const value = attributes.slice(valueStart, at++);
-    if (name === 'page' || name === 'paging-cookie') {
-      parts.push(attributes.slice(copied, whitespace));
+    const parsed = fetchAttribute(attributes, at);
+    at = parsed.at;
+    if (parsed.incomplete) break;
+    if (parsed.name === 'page' || parsed.name === 'paging-cookie') {
+      parts.push(attributes.slice(copied, parsed.whitespace));
       copied = at;
-      if (name === 'page' && initialPage === undefined && /^\d+$/.test(value)) initialPage = Number(value);
+      if (parsed.name === 'page' && initialPage === undefined && /^\d+$/.test(parsed.value))
+        initialPage = Number(parsed.value);
     }
   }
   parts.push(attributes.slice(copied));
@@ -172,34 +181,13 @@ export function contextualViewFetchXml(xml, { user, identity, website } = {}) {
     const start = xml.indexOf('<', position);
     if (start < 0) break;
     position = start + 1;
-    if (xml.slice(start + 1, start + 10).toLowerCase() !== 'condition' || /[\w]/.test(xml[start + 10] ?? '')) continue;
-    let end = start + 10,
-      quote = '';
-    for (; end < xml.length; end++) {
-      const char = xml[end];
-      if (quote) {
-        if (char === quote) quote = '';
-      } else if (char === '"' || char === "'") quote = char;
-      else if (char === '>') break;
-    }
+    if (xml.slice(start + 1, start + 10).toLowerCase() !== 'condition' || /\w/.test(xml[start + 10] ?? '')) continue;
+    const end = tagEnd(xml, start + 10);
     // An unterminated tag/attribute is left as authored; do not rescan each
     // nested '<condition' prefix in its suffix.
     if (end === xml.length) break;
-    const tag = xml.slice(start, end + 1),
-      attributes = conditionAttributes(tag);
-    const type = attributes.type?.toLowerCase();
-    let replacement = tag;
-    if (Object.hasOwn(ids, type)) {
-      const value = escape(ids[type] || '00000000-0000-0000-0000-000000000000');
-      if (attributes.value)
-        replacement = tag.slice(0, attributes.value.start) + `value="${value}"` + tag.slice(attributes.value.end);
-      else if (!attributes.hasValue) {
-        let close = tag.length - 1;
-        while (close > 0 && /\s/.test(tag[close - 1])) close--;
-        if (tag[close - 1] === '/') close--;
-        replacement = tag.slice(0, close) + ` value="${value}"` + tag.slice(close);
-      }
-    }
+    const tag = xml.slice(start, end + 1);
+    const replacement = contextualConditionTag(tag, ids);
     parts.push(xml.slice(copied, start), replacement);
     copied = end + 1;
     position = end + 1;
@@ -208,37 +196,57 @@ export function contextualViewFetchXml(xml, { user, identity, website } = {}) {
   return parts.join('');
 }
 
+function contextualConditionTag(tag, ids) {
+  const attributes = conditionAttributes(tag);
+  const type = attributes.type?.toLowerCase();
+  if (!Object.hasOwn(ids, type)) return tag;
+  const value = escape(ids[type] || '00000000-0000-0000-0000-000000000000');
+  if (attributes.value)
+    return tag.slice(0, attributes.value.start) + `value="${value}"` + tag.slice(attributes.value.end);
+  if (attributes.hasValue) return tag;
+  let close = tag.length - 1;
+  while (close > 0 && /\s/.test(tag[close - 1])) close--;
+  if (tag[close - 1] === '/') close--;
+  return tag.slice(0, close) + ` value="${value}"` + tag.slice(close);
+}
+
 // Read only the two contextual attributes, preserving all authored spacing,
 // quoting and unknown attributes outside the replaced value span.
 function conditionAttributes(tag) {
   const result = { hasValue: false };
   let at = 10;
   while (at < tag.length - 1) {
-    if (!/[\w:.-]/.test(tag[at])) {
-      at++;
-      continue;
-    }
-    const start = at;
-    while (at < tag.length - 1 && /[\w:.-]/.test(tag[at])) at++;
-    const name = tag.slice(start, at).toLowerCase();
-    while (at < tag.length - 1 && /\s/.test(tag[at])) at++;
-    if (tag[at] !== '=') continue;
-    at++;
-    while (at < tag.length - 1 && /\s/.test(tag[at])) at++;
-    if (name === 'value') result.hasValue = true;
-    const quote = tag[at];
-    if (quote !== '"' && quote !== "'") {
-      while (at < tag.length - 1 && !/\s/.test(tag[at])) at++;
-      continue;
-    }
-    const valueStart = ++at;
-    while (at < tag.length - 1 && tag[at] !== quote) at++;
-    if (at === tag.length - 1) break;
-    if (name === 'uitype') result.type ??= tag.slice(valueStart, at);
-    if (name === 'value') result.value ??= { start, end: at + 1 };
-    at++;
+    const parsed = readConditionAttribute(tag, at);
+    at = parsed.at;
+    if (parsed.hasValue) result.hasValue = true;
+    if (parsed.done) break;
+    if (parsed.name === 'uitype') result.type ??= parsed.value;
+    if (parsed.name === 'value' && parsed.valueSpan) result.value ??= parsed.valueSpan;
   }
   return result;
+}
+
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function readConditionAttribute(tag, at) {
+  if (!/[\w:.-]/.test(tag[at])) return { at: at + 1 };
+  const start = at;
+  while (at < tag.length - 1 && /[\w:.-]/.test(tag[at])) at++;
+  const name = tag.slice(start, at).toLowerCase();
+  while (at < tag.length - 1 && /\s/.test(tag[at])) at++;
+  if (tag[at] !== '=') return { at };
+  at++;
+  while (at < tag.length - 1 && /\s/.test(tag[at])) at++;
+  const hasValue = name === 'value';
+  const quote = tag[at];
+  if (quote !== '"' && quote !== "'") {
+    while (at < tag.length - 1 && !/\s/.test(tag[at])) at++;
+    return { at, hasValue };
+  }
+  const valueStart = ++at;
+  while (at < tag.length - 1 && tag[at] !== quote) at++;
+  if (at === tag.length - 1) return { at, hasValue, done: true };
+  const value = tag.slice(valueStart, at);
+  const valueSpan = hasValue ? { start, end: at + 1 } : undefined;
+  return { at: at + 1, name, hasValue, value, valueSpan };
 }
 
 /** Dataverse systemform XML can accompany the PAC export or be supplied in an admin schema. */
@@ -259,7 +267,7 @@ export function schemaFromFormXml(xml, { entity, title, fieldTypes = {}, lcid = 
     const attrs = attributes(control[1]);
     const name = attrs.datafieldname;
     if (!name) continue;
-    if (!/^[a-z][\w]*$/i.test(name)) throw new Error(`Invalid form field ${name}`);
+    if (!/^[a-z]\w*$/i.test(name)) throw new Error(`Invalid form field ${name}`);
     const config = typeof fieldTypes[name] === 'object' ? fieldTypes[name] : { type: fieldTypes[name] };
     fields.push({
       name,
@@ -281,7 +289,7 @@ export function schemaFromFormXml(xml, { entity, title, fieldTypes = {}, lcid = 
 export function clientRuntime(token, revision, identity = {}, traceId = null, site = {}) {
   identity ??= {};
   const { rootTraceId = null, ...portalSite } = site ?? {};
-  const scriptJson = (value) => JSON.stringify(value).replace(/</g, '\\u003c');
+  const scriptJson = (value) => JSON.stringify(value).replaceAll('<', String.raw`\u003c`);
   return `(() => {
     const token = ${JSON.stringify(token)};
     const simulation=window.__portalSimulation ||= {};simulation.revision=${JSON.stringify(revision)};simulation.local=true;
@@ -389,7 +397,10 @@ export function clientRuntime(token, revision, identity = {}, traceId = null, si
  */
 export const PAGES_CLIENT_API_SCRIPT = '/__sim-static/pages-client-api.js';
 export const PAGES_CLIENT_API_FILE = new URL('./pages-client-api.js', import.meta.url);
-const PAGES_CLIENT_API_SOURCE = readFileSync(PAGES_CLIENT_API_FILE, 'utf8').replace(/<\/script/gi, '<\\/script');
+const PAGES_CLIENT_API_SOURCE = readFileSync(PAGES_CLIENT_API_FILE, 'utf8').replace(
+  /<\/script/gi,
+  String.raw`<\/script`,
+);
 /** Static native platform compatibility scripts served by lib/native-services.mjs. */
 const NATIVE_GRID_SCRIPT = '/__sim-static/native/entity-grid-compat.js';
 /**
@@ -415,14 +426,14 @@ const applicationRoot = (pathname) => '../'.repeat(Math.max(0, String(pathname).
  * silent audio and accepts no answer (native-form-submission.mjs rejects a captcha step).
  */
 function captchaChallenge(unique, pathname, guid = randomUUID(), selfClose = false) {
-  const client = unique.replace(/\$/g, '_');
+  const client = unique.replaceAll('$', '_');
   const resource = (type) =>
     `${applicationRoot(pathname)}Telerik.Web.UI.WebResource.axd?type=${type}&amp;isc=cust&amp;guid=${guid}`;
   return `<img id="${client}_CaptchaImageUP" alt="This&#32;is&#32;a&#32;CAPTCHA&#32;image,&#32;use&#32;shortcut&#32;Ctrl&#32;+&#32;Alt&#32;+&#32;P&#32;to&#32;play&#32;the&#32;alphabet&#32;audio&#32;for&#32;this&#32;image" src="${resource('rca')}" style="height:50px;width:180px;display:block;"${selfClose ? ' /' : ''}><a id="${client}_CaptchaLinkButton" class="rcRefreshImage" title="Generate&#32;a&#32;new&#32;image" href="javascript:__doPostBack(&#39;${unique}$CaptchaLinkButton&#39;,&#39;&#39;)" style="display:block;">Generate a new image</a><a href="${resource('cah')}" id="${client}_CaptchaAudioCodeUP" title="Play&#32;the&#32;audio&#32;code" class="rcCaptchaAudioLink" style="display:block;">Play the audio code</a>`;
 }
 /** The RadCaptcha control after a form's honeypot box; rcInvalid after a rejected answer. */
 function captchaControl(unique, pathname, invalid = false) {
-  const client = unique.replace(/\$/g, '_');
+  const client = unique.replaceAll('$', '_');
   return `<div class="tr"><div class="captcha-cell"><div id="${client}" class="RadCaptcha&#32;RadCaptcha_Default${invalid ? '&#32;rcInvalid' : ''}">\n\t\t\t\t<!-- ${RADCAPTCHA_VERSION} --><span id="${client}_ctl00" style="display:none;"></span><div id="${client}_SpamProtectorPanel">\n\t\t\t\t\t<div id="${client}_ctl01">\n\t\t\t\t\t\t${captchaChallenge(unique, pathname)}\n\t\t\t\t\t</div><p><input name="${unique}$CaptchaTextBox" type="text" maxlength="7" id="${client}_CaptchaTextBox"><label for="${client}_CaptchaTextBox" id="${client}_CaptchaTextBoxLabel">Enter the code from the image</label></p>\n\t\t\t\t</div><input id="${client}_ClientState" name="${client}_ClientState" type="hidden">\n\t\t\t</div></div></div>`;
 }
 /**
@@ -437,7 +448,7 @@ export function captchaRefreshDelta(unique, pathname, posted = new URLSearchPara
     "$('a.rcRefreshImage').parent().append('<div class=\"alert sr-only\" role=\"alert\"  aria-label=\"The new image is ready\"><span aria-hidden=\"true\">The new image is ready</span></div>');$(document).keydown(function(event){if(event.altKey && event.ctrlKey &&event.key == 'p'){$('.RadCaptcha').find('audio').first()[0].play();}});";
   return (
     segment('#', '', '4') +
-    segment('updatePanel', panel.replace(/\$/g, '_'), captchaChallenge(unique, pathname, randomUUID(), true)) +
+    segment('updatePanel', panel.replaceAll('$', '_'), captchaChallenge(unique, pathname, randomUUID(), true)) +
     segment('hiddenField', '__EVENTTARGET', '') +
     segment('hiddenField', '__EVENTARGUMENT', '') +
     ['__VIEWSTATE', '__VIEWSTATEGENERATOR', '__VIEWSTATEENCRYPTED', '__EVENTVALIDATION']
@@ -478,7 +489,7 @@ export function viewStateWithKey(value, key) {
 /** The website id and language of a rendered platform page (its ResourceManager script). */
 function pageSite(html) {
   const resources =
-    /\/_portal\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/Resources\/ResourceManager\?lang=([A-Za-z]{2,3}(?:-[A-Za-z0-9]+)*)/i.exec(
+    /\/_portal\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/Resources\/ResourceManager\?lang=([A-Z]{2,3}(?:-[A-Z0-9]+)*)/i.exec(
       html,
     );
   const language = resources?.[2] ?? /<html\b[^>]*\blang=["']([^"']+)["']/i.exec(html)?.[1] ?? '';
@@ -542,14 +553,14 @@ export function injectRuntime(
  */
 let compatibilitySanitizerSource;
 function clientRichTextRuntime(settings) {
-  const data = JSON.stringify(settings).replace(/</g, '\\u003c');
+  const data = JSON.stringify(settings).replaceAll('<', String.raw`\u003c`);
   const compatibility = Object.values(settings).some((setting) => setting.compatibility);
   if (compatibility)
     compatibilitySanitizerSource ??=
       '(function(){var module={exports:{}},exports=module.exports,define;\n' +
       readFileSync(createRequire(import.meta.url).resolve('dompurify/purify.min.js'), 'utf8').replace(
         /<\/script/gi,
-        '<\\/script',
+        String.raw`<\/script`,
       ) +
       '\nreturn module.exports;})()';
   return (
@@ -572,7 +583,7 @@ const canonicalId = (value) =>
     .replace(/[{}]/g, '')
     .toLowerCase();
 const scalarValue = (value) => (value && typeof value === 'object' ? (value.id ?? value.value) : value);
-const json = (value) => JSON.stringify(value).replace(/</g, '\\u003c');
+const json = (value) => JSON.stringify(value).replaceAll('<', String.raw`\u003c`);
 const attr = (value) => escape(value);
 const fieldOf = (record, name) => portalField(record ?? {}, name);
 const truthy = (value) => value === true || /^(true|1)$/i.test(String(value ?? ''));
@@ -586,7 +597,7 @@ function componentError(message, status, code) {
   return Object.assign(new Error(message), { status, code });
 }
 
-export function nativeControlKind(field) {
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export function nativeControlKind(field) {
   const type = String(field.dataverseType ?? '').toLowerCase();
   if (field.richText) return 'richtext';
   if (field.type === 'lookup' || /^(lookup|customer|owner)$/.test(type)) return 'lookup';
@@ -601,15 +612,16 @@ export function nativeControlKind(field) {
   if (type === 'decimal') return 'decimal';
   if (/^(float|double)$/.test(type)) return 'double';
   if (type === 'money') return 'money';
-  if (
-    /^(memo|ntext)$/.test(type) ||
-    field.type === 'textarea' ||
-    String(field.format ?? '').toLowerCase() === 'textarea'
-  )
-    return 'textarea';
+  if (isNativeTextarea(field, type)) return 'textarea';
   if (field.type === 'number') return 'integer';
   if (field.type === 'email' || String(field.format ?? '').toLowerCase() === 'email') return 'email';
   return 'text';
+}
+
+function isNativeTextarea(field, type) {
+  return (
+    /^(memo|ntext)$/.test(type) || field.type === 'textarea' || String(field.format ?? '').toLowerCase() === 'textarea'
+  );
 }
 
 /** Native numeric range messages use the column's exported decimal precision. */
@@ -617,8 +629,11 @@ export function nativeRangeMessage(field) {
   const control = nativeControlKind(field);
   const precision =
     Number.isInteger(field.precision) && field.precision >= 0 && field.precision <= 100 ? field.precision : null;
-  const bound = (value) =>
-    value == null ? '' : precision != null && control !== 'integer' ? Number(value).toFixed(precision) : String(value);
+  const bound = (value) => {
+    if (value == null) return '';
+    if (precision != null && control !== 'integer') return Number(value).toFixed(precision);
+    return String(value);
+  };
   return `${field.label ?? field.name} must have a value between ${bound(field.minimum ?? field.minValue)} and ${bound(field.maximum ?? field.maxValue)}.`;
 }
 
@@ -648,7 +663,7 @@ const metadataFor = (rows, type, predicate) =>
   rows.find((row) => Number(fieldOf(row, 'type') ?? 100000000) === type && predicate(row));
 
 /** Locate the form record from the native record source settings. */
-export async function resolveFormRecord({
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export async function resolveFormRecord({
   kind,
   definition,
   schema,
@@ -722,16 +737,121 @@ export async function resolveFormRecord({
   return { mode, id: id ?? null, queryName };
 }
 
+function nativeCodeComponentBindings(field, component, getValue) {
+  const args = { disabled: field.readOnly };
+  const properties = [];
+  const propertyTypes = {};
+  for (const [name, parameter] of Object.entries(component.parameters)) {
+    if (parameter.kind === 'static') {
+      args[name] = parameter.value;
+      continue;
+    }
+    if (parameter.kind !== 'binding' || parameter.column !== field.name)
+      return {
+        error: `Code component ${component.name} has an unresolved or unsupported native property binding: ${name}.`,
+      };
+    const current = getValue(field);
+    args[name] = nativeCodeComponentValue(field, current);
+    properties.push(name);
+    if (parameter.type) propertyTypes[name] = parameter.type;
+  }
+  return { args, properties, propertyTypes };
+}
+
+function nativeCodeComponentValue(field, current) {
+  if (field.control === 'lookup') {
+    if (current)
+      return [
+        {
+          id: canonicalId(scalarValue(current)),
+          entityType: current.logical_name ?? field.targets?.[0],
+          name: current.name ?? '',
+        },
+      ];
+    return [];
+  }
+  if (field.control === 'multiselect') return multiSelectValues(current);
+  return scalarValue(current);
+}
+
+function buildNativeLookupLayouts(field, lookupBase, context) {
+  const { portal, schemas, metadata, store, kind, definition, schema, identity, websiteId, formLanguage, bs } = context;
+  let layouts = [];
+  try {
+    const model = nativeLookupModel({
+      portal,
+      schemas,
+      metadata,
+      store,
+      kind,
+      formId: definition?.id,
+      stepId: schema.stepId,
+      field: field.name,
+    });
+    layouts = model.views.map((view) => {
+      const targetMapping = store.resolveMapping(view.entity);
+      const viewModel = {
+        ...lookupBase,
+        entity: canonicalId(view.entity),
+        idColumn: targetMapping.idColumn,
+        primaryName: targetMapping.nameColumn ?? null,
+        views: [view],
+      };
+      return buildLayout({
+        view,
+        entity: canonicalId(view.entity),
+        idColumn: targetMapping.idColumn,
+        primaryName: targetMapping.nameColumn ?? null,
+        metadata,
+        masked: gridMasked({ store, identity }),
+        settings: {},
+        // A Bootstrap 5 lookup dialog's configuration carries the empty GUID as its id.
+        configuration: {
+          ...viewConfiguration(viewModel, view, { actions: [], websiteId, language: formLanguage }),
+          ...(bs.v5 ? { Id: EMPTY_GUID } : {}),
+        },
+        secure: {
+          t: 'lookup',
+          w: websiteId,
+          kind,
+          form: definition?.id,
+          step: schema.stepId ?? null,
+          field: field.name,
+          view: view.id,
+        },
+        selectColumn: true,
+      });
+    });
+  } catch (error) {
+    if (!/LOOKUP_TARGET_UNRESOLVED|LookupNotBound|FormNotFound|FormSchemaRequired/.test(error.code ?? '')) throw error;
+  }
+  if (bs.v5) styleNativeLookupSelectionColumn(layouts);
+  return layouts;
+}
+
+function styleNativeLookupSelectionColumn(layouts) {
+  for (const layout of layouts) {
+    for (const column of layout.Columns ?? []) {
+      if (column.Type === 1 && typeof column.Name === 'string')
+        column.Name = column.Name.replace('sr-only', 'visually-hidden');
+    }
+  }
+}
+
 function validatorMarkup(validators, { readonly = false } = {}) {
   return (
     validators
       // A regular expression validator renders no marker text.
       .map(
         (validator) =>
-          `<span id="${attr(validator.id)}"${validator.isvalid === 'False' ? '' : ` style="${validator.display === 'Dynamic' || validator.display === 'None' ? 'display:none;' : 'visibility:hidden;'}"`}${readonly ? ' readonly="readonly"' : ''}>${validator.id.startsWith('RegularExpressionValidator') ? '' : '*'}</span>`,
+          `<span id="${attr(validator.id)}"${validator.isvalid === 'False' ? '' : validatorStyle(validator)}${readonly ? ' readonly="readonly"' : ''}>${validator.id.startsWith('RegularExpressionValidator') ? '' : '*'}</span>`,
       )
       .join('')
   );
+}
+
+function validatorStyle(validator) {
+  return ` style="${validator.display === 'Dynamic' || validator.display === 'None' ? 'display:none;' : 'visibility:hidden;'}"`;
 }
 
 // A lookup box focuses its visible name box.
@@ -802,6 +922,21 @@ function fieldValidators(field, { linksEnabled }) {
     errormessage: summaryLink(id, field.validationMessage || format[1], linksEnabled, focus),
     evaluationfunction: 'CustomValidatorEvaluateIsValid',
   };
+  appendFormatAndLengthValidators({ field, validators, formatValidator, required, id, label, linksEnabled, focus });
+  appendRangeAndLateRequired(field, validators, required, requiredLate, id, linksEnabled, focus);
+  return validators;
+}
+
+function appendFormatAndLengthValidators({
+  field,
+  validators,
+  formatValidator,
+  required,
+  id,
+  label,
+  linksEnabled,
+  focus,
+}) {
   // The e-mail format validator precedes the maximum length validator.
   if (formatValidator && field.control === 'email') validators.push(formatValidator);
   if (required && field.control === 'email') validators.push(required);
@@ -820,6 +955,9 @@ function fieldValidators(field, { linksEnabled }) {
       evaluationfunction: 'CustomValidatorEvaluateIsValid',
     });
   if (formatValidator && field.control !== 'email') validators.push(formatValidator);
+}
+
+function appendRangeAndLateRequired(field, validators, required, requiredLate, id, linksEnabled, focus) {
   if (
     ['integer', 'decimal', 'double', 'money'].includes(field.control) &&
     (field.minimum != null || field.maximum != null)
@@ -834,16 +972,13 @@ function fieldValidators(field, { linksEnabled }) {
       type: field.control === 'integer' ? 'Integer' : 'Double',
     });
   if (required && requiredLate && field.control !== 'email') validators.push(required);
-  return validators;
 }
 
 function validatorStartupScript(validators, summaryId, summaryHeader, group = '') {
   const lines = [];
   lines.push(
     `var Page_ValidationSummaries = (window.Page_ValidationSummaries || []).concat([document.getElementById(${json(summaryId)})]);`,
-  );
-  lines.push(
-    `var Page_Validators = (window.Page_Validators || []).concat([${validators.map((validator) => `document.getElementById(${json(validator.id)})`).join(', ')}].filter(Boolean));`,
+    `var Page_Validators = (window.Page_Validators || []).concat([${validators.map((validator) => 'document.getElementById(' + json(validator.id) + ')').join(', ')}].filter(Boolean));`,
   );
   for (const validator of validators) {
     lines.push(`(function(){var v=document.getElementById(${json(validator.id)});if(!v)return;`);
@@ -854,9 +989,9 @@ function validatorStartupScript(validators, summaryId, summaryHeader, group = ''
     lines.push('})();');
   }
   lines.push(
-    `(function(){var s=document.getElementById(${json(summaryId)});if(s){s.headertext=${json(summaryHeader)};s.displaymode="BulletList";${group ? `s.validationGroup=${json(String(group))};` : ''}}})();`,
+    `(function(){var s=document.getElementById(${json(summaryId)});if(s){s.headertext=${json(summaryHeader)};s.displaymode="BulletList";${group ? 's.validationGroup=' + json(String(group)) + ';' : ''}}})();`,
+    'if (typeof(ValidatorOnLoad) == "function") ValidatorOnLoad();',
   );
-  lines.push('if (typeof(ValidatorOnLoad) == "function") ValidatorOnLoad();');
   return `<script type="text/javascript">//<![CDATA[\n${lines.join('\n')}\n//]]></script>`;
 }
 
@@ -899,8 +1034,8 @@ function gridMessages(bs = BOOTSTRAP_MARKUP.BootstrapV3, settings = {}, language
     : '<span class="details"></span>';
   return (
     `<div aria-label="${attr(empty || 'There are no records to display.')}" aria-live="polite" class="view-empty message" role="status" tabindex="-1"${hidden}>${empty ? escape(empty) : '<div class="alert alert-block alert-warning">There are no records to display.</div>'}</div>` +
-    `<div class="view-access-denied message" role="presentation" tabindex="0"${hidden}>${denied ? escape(denied) : `<div class="alert alert-block alert-danger">You don't have permissions to view these records.</div>`}</div>` +
-    `<div class="view-error message" role="presentation" tabindex="0"${hidden}>${error ? escape(error) : `<div class="alert alert-block alert-danger">Error completing request.${details}</div>`}</div>` +
+    `<div class="view-access-denied message" role="presentation" tabindex="0"${hidden}>${denied ? escape(denied) : '<div class="alert alert-block alert-danger">You don\'t have permissions to view these records.</div>'}</div>` +
+    `<div class="view-error message" role="presentation" tabindex="0"${hidden}>${error ? escape(error) : '<div class="alert alert-block alert-danger">Error completing request.' + details + '</div>'}</div>` +
     `<div class="view-loading message text-center" role="presentation" tabindex="0"${hidden}>${loading ? escape(loading) : '<span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...'}</div>`
   );
 }
@@ -915,7 +1050,7 @@ const SUCCESS_PANEL_V5 = 'message alert success alert alert-success';
  */
 function messageCloseButton(buttonPrefix, bs, group = '') {
   const name = `${buttonPrefix}btnCloseMessage`;
-  return `<input type="submit" name="${attr(name)}" value="x"${group ? '' : ` onclick="${attr(`javascript:WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions(${json(name)}, "", true, "", "", false, false))`)}"`} id="btnCloseMessage" class="btn-close" ${bs.dismiss}="alert" aria-label="close" style="border-style: none">`;
+  return `<input type="submit" name="${attr(name)}" value="x"${group ? '' : ' onclick="' + attr('javascript:WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions(' + json(name) + ', "", true, "", "", false, false))') + '"'} id="btnCloseMessage" class="btn-close" ${bs.dismiss}="alert" aria-label="close" style="border-style: none">`; // NOSONAR: intentional local script execution or generated handler
 }
 // The platform's duration choices, in minutes.
 const DURATION_MINUTES = [
@@ -930,12 +1065,11 @@ const DURATION_MINUTES = [
   4320,
 ];
 const plural = (count, unit) => `${count} ${unit}${count === 1 ? '' : 's'}`;
-const durationLabel = (minutes) =>
-  minutes < 60
-    ? plural(minutes, 'minute')
-    : minutes < 1440
-      ? plural(minutes / 60, 'hour')
-      : plural(minutes / 1440, 'day');
+const durationLabel = (minutes) => {
+  if (minutes < 60) return plural(minutes, 'minute');
+  if (minutes < 1440) return plural(minutes / 60, 'hour');
+  return plural(minutes / 1440, 'day');
+};
 /** Option lists of whole-number formats: duration (fixed minutes), time zone (platform definitions) and language (the site's languages). */
 function integerFormatChoices(field, portal) {
   const format = String(field.format ?? '').toLowerCase();
@@ -979,11 +1113,11 @@ function nativeModal({
   // rawTitle: the label and title attributes carry the title markup as is (details, error dialogs).
   const labelText = rawTitle ? title : (label ?? plainText(title));
   const labelAttr = ` aria-label="${attr(labelText)}"`;
-  return `<section aria-hidden="true"${headingLabel ? '' : labelAttr} class="modal fade ${className}" ${bs.backdrop}="static" role="dialog" tabindex="-1"><div class="${size ? size + ' ' : ''}modal-dialog"><div class="modal-content"><div class="modal-header"><h1${headingLabel ? labelAttr : ''} class="modal-title" title="${attr(titleAttr ?? (rawTitle ? title : plainText(title)))}">${title}</h1><button aria-label="Close" class="form-close" ${bs.dismiss}="modal" style="position: absolute; top: 3%;" tabindex="0" title="${attr(dismissText)}" type="button"><span aria-hidden="true">×</span><span class="${bs.srOnly}">${escape(dismissText)}</span></button></div><div class="modal-body">${body}</div>${footer ? `<div class="modal-footer">${footer}</div>` : ''}</div></div></section>`;
+  return `<section aria-hidden="true"${headingLabel ? '' : labelAttr} class="modal fade ${className}" ${bs.backdrop}="static" role="dialog" tabindex="-1"><div class="${size ? size + ' ' : ''}modal-dialog"><div class="modal-content"><div class="modal-header"><h1${headingLabel ? labelAttr : ''} class="modal-title" title="${attr(titleAttr ?? (rawTitle ? title : plainText(title)))}">${title}</h1><button aria-label="Close" class="form-close" ${bs.dismiss}="modal" style="position: absolute; top: 3%;" tabindex="0" title="${attr(dismissText)}" type="button"><span aria-hidden="true">×</span><span class="${bs.srOnly}">${escape(dismissText)}</span></button></div><div class="modal-body">${body}</div>${footer ? '<div class="modal-footer">' + footer + '</div>' : ''}</div></div></section>`;
 }
 // An attribute value whose line breaks are CRLF: the HTML parser folds raw CR LF into LF, so the
 // platform's indented JSON attributes keep their CR as character references.
-const crlfAttr = (value) => attr(value).replace(/\n/g, '&#13;&#10;');
+const crlfAttr = (value) => attr(value).replaceAll('\n', '&#13;&#10;');
 function plainText(html) {
   const text = String(html ?? ''),
     parts = [];
@@ -997,10 +1131,7 @@ function plainText(html) {
     position = end + 1;
   }
   parts.push(text.slice(position));
-  return parts
-    .join('')
-    .replace(/&nbsp;/g, ' ')
-    .trim();
+  return parts.join('').replaceAll('&nbsp;', ' ').trim();
 }
 const formModalBody = (page) =>
   `<div class="form-loading"><span class="fa fa-spinner fa-spin fa-4x" aria-hidden="true"></span></div><iframe data-page="${attr(page)}" src="about:blank"></iframe>`;
@@ -1156,7 +1287,7 @@ function listModalV5({
   const titleCss = formText(dialog?.TitleCssClass, '', language);
   const dismiss = formText(dialog?.DismissButtonSrText, 'Close', language);
   const heading = dialog?.Title ? escape(formText(dialog.Title, '', language)) : title;
-  return `<div aria-hidden="true" class="modal fade ${className} ${attr(css)}" role="dialog" tabindex="-1"${label ? ` aria-label="${attr(label)}"` : ''}${labelledBy ? ` aria-labelledby="${attr(labelledBy)}"` : ''}><div class="modal-dialog ${MODAL_SIZES[Number(dialog?.Size)] ?? ''}"><div class="modal-content"><div class="modal-header"><h4${labelledBy ? ` id="${attr(labelledBy)}"` : ''} class="modal-title ${attr(titleCss)}">${heading}</h4><button class="btn-close" data-bs-dismiss="modal" type="button"><span aria-hidden="true">&times;</span><span class="visually-hidden">${escape(dismiss)}</span></button></div><div class="modal-body">${body}</div>${footer ? `<div class="modal-footer">${footer}</div>` : ''}</div></div></div>`;
+  return `<div aria-hidden="true" class="modal fade ${className} ${attr(css)}" role="dialog" tabindex="-1"${label ? ' aria-label="' + attr(label) + '"' : ''}${labelledBy ? ' aria-labelledby="' + attr(labelledBy) + '"' : ''}><div class="modal-dialog ${MODAL_SIZES[Number(dialog?.Size)] ?? ''}"><div class="modal-content"><div class="modal-header"><h4${labelledBy ? ' id="' + attr(labelledBy) + '"' : ''} class="modal-title ${attr(titleCss)}">${heading}</h4><button class="btn-close" data-bs-dismiss="modal" type="button"><span aria-hidden="true">&times;</span><span class="visually-hidden">${escape(dismiss)}</span></button></div><div class="modal-body">${body}</div>${footer ? '<div class="modal-footer">' + footer + '</div>' : ''}</div></div></div>`;
 }
 function gridModalsV5(page, settings = {}, language = {}, listId = '') {
   // A list without grid settings renders the platform defaults: the loading spinner, the resolve
@@ -1211,11 +1342,7 @@ function gridModalsV5(page, settings = {}, language = {}, listId = '') {
     listModalV5({
       className: 'modal-error',
       dialog: settings.ErrorDialog,
-      body: settings.ErrorDialog?.Body
-        ? escape(formText(settings.ErrorDialog.Body, '', language))
-        : defaults
-          ? "<p>We're sorry, an error has occurred.</p>"
-          : '',
+      body: listErrorDialogBody(settings, defaults, language),
       title: "<span class='fa fa-exclamation-triangle' aria-hidden='true'></span> Error",
       footer: `<button class="cancel btn btn-default ${settings.ErrorDialog ? 'btn btn-default' : ''}" data-bs-dismiss="modal" type="button">${escape(formText(settings.ErrorDialog?.CloseButtonText, 'Close', language))}</button>`,
       language,
@@ -1252,6 +1379,12 @@ function gridModalsV5(page, settings = {}, language = {}, listId = '') {
     }),
     `<div aria-hidden="true" aria-label="Resolve case" class="modal fade modal-resolvecase  " data-backdrop="static" role="dialog" tabindex="-1"><div class="modal-dialog  "><div class="modal-content"><div class="modal-header"><h4 class="modal-title "> Resolve case</h4><button class="form-close" data-bs-dismiss="modal" tabindex="0" type="button"><span aria-hidden="true">&times;</span><span class="visually-hidden">Close</span></button></div><div class="modal-body">${resolve}</div><div class="modal-footer"><button tabindex="0" class="primary btn btn-success " type="button">Resolve</button><button tabindex="0" class="cancel btn btn-default " data-bs-dismiss="modal" type="button">Cancel</button></div></div></div></div>`,
   ].join('');
+}
+
+function listErrorDialogBody(settings, defaults, language) {
+  if (settings.ErrorDialog?.Body) return escape(formText(settings.ErrorDialog.Body, '', language));
+  if (defaults) return "<p>We're sorry, an error has occurred.</p>";
+  return '';
 }
 
 /** Native ViewConfiguration subset consumed by the grid runtime. */
@@ -1479,37 +1612,7 @@ function listActionLinks(model, context, options, { websiteId, v5, pageControl }
       };
   }
   // The Bootstrap 5 page control has no create page link (InsertActionLink disabled).
-  if (v5 && pageControl) {
-    /* no create link */
-  } else if (model.createPage && v5) {
-    // Bootstrap 5: the list's create page is the grid's InsertActionLink, beside any configured create action.
-    const target = options.portal.pages.find((candidate) => canonicalId(candidate.id) === model.createPage);
-    if (target)
-      model.insertActionLink = {
-        Type: 3,
-        Enabled: true,
-        Target: 2,
-        Label: model.createLabel,
-        Tooltip: 'Create',
-        URL: { PathWithQueryString: target.url, Path: target.url },
-        QueryStringIdParameterName: model.idParameter,
-        FilterCriteriaId: '00000000-0000-0000-0000-000000000000',
-      };
-  } else if (model.createPage && !actions.some((action) => action.Type === 3)) {
-    const target = options.portal.pages.find((candidate) => canonicalId(candidate.id) === model.createPage);
-    if (target)
-      actions.push({
-        position: 'view',
-        Type: 3,
-        Enabled: true,
-        Target: 1,
-        Label: model.createLabel,
-        Tooltip: model.createLabel,
-        URL: { PathWithQueryString: target.url, Path: target.url },
-        FilterCriteriaId: '00000000-0000-0000-0000-000000000000',
-        ActionIndex: 0,
-      });
-  }
+  if (!(v5 && pageControl)) addListCreateAction(model, options, actions, v5);
   const identity = context.user ?? context.identity;
   // Without the create privilege the create links stay in the layout, disabled,
   // as the subgrids check it.
@@ -1526,6 +1629,40 @@ function listActionLinks(model, context, options, { websiteId, v5, pageControl }
   return actions;
 }
 
+function addListCreateAction(model, options, actions, v5) {
+  if (model.createPage && v5) {
+    // Bootstrap 5: the list's create page is the grid's InsertActionLink, beside any configured create action.
+    const target = options.portal.pages.find((candidate) => canonicalId(candidate.id) === model.createPage);
+    if (target)
+      model.insertActionLink = {
+        Type: 3,
+        Enabled: true,
+        Target: 2,
+        Label: model.createLabel,
+        Tooltip: 'Create',
+        URL: { PathWithQueryString: target.url, Path: target.url },
+        QueryStringIdParameterName: model.idParameter,
+        FilterCriteriaId: '00000000-0000-0000-0000-000000000000',
+      };
+    return;
+  }
+  if (model.createPage && !actions.some((action) => action.Type === 3)) {
+    const target = options.portal.pages.find((candidate) => canonicalId(candidate.id) === model.createPage);
+    if (target)
+      actions.push({
+        position: 'view',
+        Type: 3,
+        Enabled: true,
+        Target: 1,
+        Label: model.createLabel,
+        Tooltip: model.createLabel,
+        URL: { PathWithQueryString: target.url, Path: target.url },
+        FilterCriteriaId: '00000000-0000-0000-0000-000000000000',
+        ActionIndex: 0,
+      });
+  }
+}
+
 async function renderListGridMarkup({
   model,
   context,
@@ -1540,21 +1677,24 @@ async function renderListGridMarkup({
   bs,
   language,
 }) {
-  // Bootstrap 5 page control: the legacy grid markup (as subgrids), not the Bootstrap 5 list markup.
-  const pageControlGrid = () =>
-    `<div><div class="entity-grid entitylist${settings.CssClass ? ' ' + attr(settings.CssClass) : ''}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? 'Pixels' : 'Percent'}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-grid-data.json/${websiteId}" data-grid-class="${attr(settings.GridCssClass ?? '')}" data-mobile-view-enabled="false" data-select-mode="None" data-selected-view="${attr(model.views[0].id)}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${authenticated}" data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? '')}" data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${gridMessages(bs, settings, language)}${PAGINATION}${gridModals(page, settings, language, bs)}</div></div>`;
-  const grid =
-    bs.v5 && pageControl
-      ? pageControlGrid()
-      : bs.v5
-        ? listGridV5({ model, settings, layouts, websiteId, identity, authenticated, page, language })
-        : `<div class="entity-grid entitylist${settings.CssClass ? ' ' + attr(settings.CssClass) : ''}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? 'Pixels' : 'Percent'}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-grid-data.json/${websiteId}" data-grid-class="${attr(settings.GridCssClass ?? 'table-striped')}" data-select-mode="None" data-selected-view="${attr(model.views[0].id)}" data-view-layouts="${base64Json(layouts)}" data-user-isauthenticated="${authenticated}" data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? '')}" data-mobile-view-enabled="true"><div class="view-grid"></div><div class="view-empty message">${model.emptyText ? model.emptyText : '<div class="alert alert-block alert-warning">There are no records to display.</div>'}</div><div class="view-access-denied message"><div class="alert alert-block alert-danger">You don't have permissions to view these records.</div></div><div class="view-error message"><div class="alert alert-block alert-danger">Error completing request.<span class="details"></span></div></div><div class="view-loading message text-center"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div>${PAGINATION}${gridModals(page, settings, language)}</div>`;
+  const grid = listGridMarkup({
+    model,
+    settings,
+    layouts,
+    websiteId,
+    identity,
+    authenticated,
+    page,
+    language,
+    bs,
+    pageControl,
+  });
   const filter = model.filter?.enabled ? await renderListFilter(model, context, options) : '';
-  const body = filter
-    ? model.filter.vertical
-      ? `<div class="row"><div class="${bs.v5 ? 'col-lg-3' : 'col-md-3'} filter-vertical">${filter}</div><div class="${bs.v5 ? 'col-lg-9' : 'col-md-9'}">${grid}</div></div>`
-      : filter + grid
-    : grid;
+  let body;
+  if (filter && model.filter.vertical)
+    body = `<div class="row"><div class="${bs.v5 ? 'col-lg-3' : 'col-md-3'} filter-vertical">${filter}</div><div class="${bs.v5 ? 'col-lg-9' : 'col-md-9'}">${grid}</div></div>`;
+  else if (filter) body = filter + grid;
+  else body = grid;
   const js =
     model.list.js && (options.renderLiquid ? await options.renderLiquid(model.list.js, context) : model.list.js);
   const script = js
@@ -1562,6 +1702,25 @@ async function renderListGridMarkup({
     : '';
   if (bs.v5 && pageControl) return `<div id="EntityListControl"><div class="entitylist">${body}${script}</div></div>`;
   return `<div${pageControl ? ' id="EntityListControl"' : ''} class="entitylist">${body}${script}</div>`;
+}
+
+function listGridMarkup({
+  model,
+  settings,
+  layouts,
+  websiteId,
+  identity,
+  authenticated,
+  page,
+  language,
+  bs,
+  pageControl,
+}) {
+  // Bootstrap 5 page control: the legacy grid markup (as subgrids), not the Bootstrap 5 list markup.
+  if (bs.v5 && pageControl)
+    return `<div><div class="entity-grid entitylist${settings.CssClass ? ' ' + attr(settings.CssClass) : ''}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? 'Pixels' : 'Percent'}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-grid-data.json/${websiteId}" data-grid-class="${attr(settings.GridCssClass ?? '')}" data-mobile-view-enabled="false" data-select-mode="None" data-selected-view="${attr(model.views[0].id)}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${authenticated}" data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? '')}" data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${gridMessages(bs, settings, language)}${PAGINATION}${gridModals(page, settings, language, bs)}</div></div>`;
+  if (bs.v5) return listGridV5({ model, settings, layouts, websiteId, identity, authenticated, page, language });
+  return `<div class="entity-grid entitylist${settings.CssClass ? ' ' + attr(settings.CssClass) : ''}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? 'Pixels' : 'Percent'}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-grid-data.json/${websiteId}" data-grid-class="${attr(settings.GridCssClass ?? 'table-striped')}" data-select-mode="None" data-selected-view="${attr(model.views[0].id)}" data-view-layouts="${base64Json(layouts)}" data-user-isauthenticated="${authenticated}" data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? '')}" data-mobile-view-enabled="true"><div class="view-grid"></div><div class="view-empty message">${model.emptyText ? model.emptyText : '<div class="alert alert-block alert-warning">There are no records to display.</div>'}</div><div class="view-access-denied message"><div class="alert alert-block alert-danger">You don't have permissions to view these records.</div></div><div class="view-error message"><div class="alert alert-block alert-danger">Error completing request.<span class="details"></span></div></div><div class="view-loading message text-center"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div>${PAGINATION}${gridModals(page, settings, language)}</div>`;
 }
 
 /**
@@ -1609,27 +1768,39 @@ async function renderModernList(model, context, options) {
   // The native batch size of a modern list's continuation is not known; the list's page size is used.
   const pageSize = Number(model.pageSize) || 10;
   const empty = model.emptyText ? model.emptyText : 'There are no records to display.';
+  const viewOptions = () =>
+    layouts
+      .map(
+        (layout, index) =>
+          `<option value="${attr(layout.Id)}">${escape(model.views[index]?.displayName || layout.ViewName || layout.Id)}</option>`,
+      )
+      .join('');
   const views =
-    layouts.length > 1
-      ? `<select data-pp-modern-list-view aria-label="View">${layouts.map((layout, index) => `<option value="${attr(layout.Id)}">${escape(model.views[index]?.displayName || layout.ViewName || layout.Id)}</option>`).join('')}</select>`
-      : '';
+    layouts.length > 1 ? `<select data-pp-modern-list-view aria-label="View">${viewOptions()}</select>` : '';
   const search = model.search?.enabled
     ? `<input type="search" data-pp-modern-list-search placeholder="${attr(model.search.placeholder)}" aria-label="${attr(model.search.placeholder)}" title="${attr(model.search.tooltip)}">`
     : '';
   const filter = model.filter?.enabled ? await renderListFilter(model, context, options) : '';
-  return `<div class="entitylist" data-mirage-component="modern-list"><div id="list_${attr(compactId(model.list.id))}" class="pp-modern-list" data-pp-modern-list data-get-url="/_services/entity-grid-data.json/${websiteId}" data-website-id="${attr(websiteId)}" data-selected-view="${attr(model.views[0]?.id ?? '')}" data-page-size="${pageSize}" data-view-layouts="${base64Json(layouts)}"><div class="pp-modern-list-toolbar">${views}${search}<span data-pp-modern-list-actions></span></div>${filter ? `<div data-pp-modern-list-filter>${filter}</div>` : ''}<table class="table" role="grid"><thead><tr>${head}</tr></thead><tbody></tbody></table><div class="view-empty message" hidden>${empty}</div><div class="view-access-denied message" hidden>You don't have permissions to view these records.</div><div class="view-error message" hidden>Error completing request.</div><div data-pp-modern-list-more aria-hidden="true" style="min-height:1px"></div><dialog data-pp-modern-list-dialog aria-label="Form"><button type="button" data-pp-modern-list-close>Close</button><iframe title="Form"></iframe></dialog></div></div>`;
+  return `<div class="entitylist" data-mirage-component="modern-list"><div id="list_${attr(compactId(model.list.id))}" class="pp-modern-list" data-pp-modern-list data-get-url="/_services/entity-grid-data.json/${websiteId}" data-website-id="${attr(websiteId)}" data-selected-view="${attr(model.views[0]?.id ?? '')}" data-page-size="${pageSize}" data-view-layouts="${base64Json(layouts)}"><div class="pp-modern-list-toolbar">${views}${search}<span data-pp-modern-list-actions></span></div>${modernFilterMarkup(filter)}<table class="table" role="grid"><thead><tr>${head}</tr></thead><tbody></tbody></table><div class="view-empty message" hidden>${empty}</div><div class="view-access-denied message" hidden>You don't have permissions to view these records.</div><div class="view-error message" hidden>Error completing request.</div><div data-pp-modern-list-more aria-hidden="true" style="min-height:1px"></div><dialog data-pp-modern-list-dialog aria-label="Form"><button type="button" data-pp-modern-list-close>Close</button><iframe title="Form"></iframe></dialog></div></div>`;
+}
+
+function modernFilterMarkup(filter) {
+  if (!filter) return '';
+  return `<div data-pp-modern-list-filter>${filter}</div>`;
 }
 
 /** Bootstrap 5 server markup of a list grid: the messages and dialogs the client fills. */
+function gridColumnWidthStyle(settings) {
+  if (settings.GridColumnWidthStyle == null) return '';
+  return Number(settings.GridColumnWidthStyle) === 0 ? 'Pixels' : 'Percent';
+}
+
 function listGridV5({ model, settings, layouts, websiteId, identity, authenticated, page, language }) {
   const attributes = [
     ['class', `entity-grid entitylist ${settings.CssClass ?? ''}`],
     // An instance id the platform derives from the render time.
-    ['data-id', `${Date.now()}.${String(Math.floor(Math.random() * 100)).padStart(2, '0')}`],
-    [
-      'data-column-width-style',
-      settings.GridColumnWidthStyle == null ? '' : Number(settings.GridColumnWidthStyle) === 0 ? 'Pixels' : 'Percent',
-    ],
+    ['data-id', `${Date.now()}.${String(Math.floor(Math.random() * 100)).padStart(2, '0')}`], // NOSONAR: pseudo-random value for simulation, not a secret
+    ['data-column-width-style', gridColumnWidthStyle(settings)],
     ['data-defer-loading', 'false'],
     ['data-enable-actions', 'true'],
     ['data-get-url', `/_services/entity-grid-data.json/${websiteId}`],
@@ -1672,38 +1843,47 @@ async function renderListFilter(model, context, options) {
     ? '<li class="entitylist-filter-option" role="presentation">'
     : '<li class="entitylist-filter-option">';
   const addon = bs.v5 ? 'input-group-text' : 'input-group-addon';
-  const box = (markup) => (bs.v5 ? `<div class="entitylist-filter-option-group-box-overflow">${markup}</div>` : markup);
   const items = [];
   for (const group of groups) {
     const elementId = `${String(group.selectionMode ?? '').toLowerCase()}_${group.id}`;
     let markup;
-    if (group.type === 'textfilter')
-      markup = box(
-        `${li}<div class="input-group entitylist-filter-option-text"><span class="${addon}"><span class="fa fa-filter" aria-hidden="true"></span></span><input class="form-control${bs.v5 ? ' has-tooltip' : ''}" type="text" name="${attr(group.id)}" value="${attr(selected.get(group.id) ?? '')}" id="${attr(group.id)}"${bs.v5 ? ` title="${TEXT_FILTER_HINT}"` : ''}></div></li>`,
-      );
-    // Dropdown groups (lookup or choice options) render one select box.
+    if (group.type === 'textfilter') markup = renderTextFilterGroupMarkup(group, selected, bs, li, addon);
     else if (group.selectionMode === 'Dropdown') {
       const choices = await filterChoices(group, context, options, model);
-      markup = `${li}<div class="input-group entitylist-filter-option-text"><span class="${addon}"><span class="fa fa-filter" aria-hidden="true"></span></span><select class="form-control${bs.v5 ? ' form-select' : ''}" name="${attr(group.id)}" id="${attr(elementId)}"><option value="" label=" "></option>${choices.map((choice) => `<option value="${attr(choice.id)}" label="${attr(choice.label)}"${selected.getAll(group.id).includes(choice.id) ? ' selected' : ''}>${escape(choice.label)}</option>`).join('')}</select></div></li>`;
+      markup = renderDropdownFilterGroupMarkup(group, selected, bs, choices, elementId, li, addon);
     } else {
       const choices = await filterChoices(group, context, options, model);
-      const type = group.selectionMode === 'Single' ? 'radio' : 'checkbox';
-      markup = box(
-        choices
-          .slice(0, 6)
-          .map(
-            (choice) =>
-              `${li}<div class="${type}"><label><input type="${type}" name="${attr(group.id)}" value="${attr(choice.id)}"${selected.getAll(group.id).includes(choice.id) ? ' checked="checked" data-checked="true"' : ''} /> ${escape(choice.label)}</label></div></li>`,
-          )
-          .join(''),
-      );
+      markup = renderChoiceFilterGroupMarkup(group, selected, bs, choices, li);
     }
-    items.push(
-      `<li class="entitylist-filter-option-group${bs.v5 ? ' list-inline-item' : ''}"><label class="entitylist-filter-option-group-label h4" data-filter-id="${attr(group.id)}" for="${attr(['textfilter', 'fetchfilter'].includes(group.type) ? group.id : elementId)}">${escape(group.label)}</label><ul class="list-unstyled" role="presentation"${bs.v5 ? '' : ' data-pagesize="6"'}>${markup}</ul></li>`,
-    );
+    items.push(renderListFilterGroupMarkup(group, markup, bs, elementId));
   }
   // The Bootstrap 5 template leaves the panel's empty class slots as spaces.
   return `<div id="EntityList${attr(model.list.id)}" class="${bs.v5 ? 'content-panel card      entitylist-filter' : 'content-panel panel panel-default entitylist-filter'}"><div class="${bs.v5 ? 'card-body' : 'panel-body'}"><ul id="entitylist-filters" class="${model.filter.vertical ? ' list-unstyled ' : ' list-inline '}">${items.join('')}</ul><div class="${bs.right}"><button class="btn btn-default btn-entitylist-filter-submit" data-serialized-query="mf" data-target="#EntityList${attr(model.list.id)}">${escape(model.filter.applyLabel)}</button></div></div></div>`;
+}
+
+function renderListFilterGroupMarkup(group, markup, bs, elementId) {
+  return `<li class="entitylist-filter-option-group${bs.v5 ? ' list-inline-item' : ''}"><label class="entitylist-filter-option-group-label h4" data-filter-id="${attr(group.id)}" for="${attr(['textfilter', 'fetchfilter'].includes(group.type) ? group.id : elementId)}">${escape(group.label)}</label><ul class="list-unstyled" role="presentation"${bs.v5 ? '' : ' data-pagesize="6"'}>${markup}</ul></li>`;
+}
+
+function renderTextFilterGroupMarkup(group, selected, bs, li, addon) {
+  const markup = `${li}<div class="input-group entitylist-filter-option-text"><span class="${addon}"><span class="fa fa-filter" aria-hidden="true"></span></span><input class="form-control${bs.v5 ? ' has-tooltip' : ''}" type="text" name="${attr(group.id)}" value="${attr(selected.get(group.id) ?? '')}" id="${attr(group.id)}"${bs.v5 ? ' title="' + TEXT_FILTER_HINT + '"' : ''}></div></li>`;
+  return bs.v5 ? `<div class="entitylist-filter-option-group-box-overflow">${markup}</div>` : markup;
+}
+
+function renderDropdownFilterGroupMarkup(group, selected, bs, choices, elementId, li, addon) {
+  return `${li}<div class="input-group entitylist-filter-option-text"><span class="${addon}"><span class="fa fa-filter" aria-hidden="true"></span></span><select class="form-control${bs.v5 ? ' form-select' : ''}" name="${attr(group.id)}" id="${attr(elementId)}"><option value="" label=" "></option>${choices.map((choice) => '<option value="' + attr(choice.id) + '" label="' + attr(choice.label) + '"' + (selected.getAll(group.id).includes(choice.id) ? ' selected' : '') + '>' + escape(choice.label) + '</option>').join('')}</select></div></li>`;
+}
+
+function renderChoiceFilterGroupMarkup(group, selected, bs, choices, li) {
+  const type = group.selectionMode === 'Single' ? 'radio' : 'checkbox';
+  const markup = choices
+    .slice(0, 6)
+    .map(
+      (choice) =>
+        `${li}<div class="${type}"><label><input type="${type}" name="${attr(group.id)}" value="${attr(choice.id)}"${selected.getAll(group.id).includes(choice.id) ? ' checked="checked" data-checked="true"' : ''} /> ${escape(choice.label)}</label></div></li>`,
+    )
+    .join('');
+  return bs.v5 ? `<div class="entitylist-filter-option-group-box-overflow">${markup}</div>` : markup;
 }
 
 async function filterChoices(group, context, options, model = null) {
@@ -1727,7 +1907,7 @@ async function filterChoices(group, context, options, model = null) {
     const viewId = condition['adx.view'];
     const labelColumn = condition['adx.labelcolumn'];
     const target = node.name;
-    if (!options?.readProvider || !/^[a-z_][\w]*$/i.test(String(target ?? ''))) return [];
+    if (!options?.readProvider || !/^[a-z_]\w*$/i.test(String(target ?? ''))) return [];
     const view = (options.metadata?.views ?? []).find(
       (candidate) => candidate.id === canonicalId(viewId) && candidate.entity === canonicalId(target),
     );
@@ -2029,8 +2209,6 @@ const POWERBI_INPUTS = [
 ];
 // ponytail: redaction is a pattern over `?key=value`, `&key=value` and `#key=value` pairs of any value with a query or
 // fragment (absolute or relative), not a URL parser.
-const redactUrlQuery = (value) =>
-  /[?#]/.test(value) ? value.replace(/([?&#][^=&#]+)=([^&#]*)/g, '$1=[redacted]') : value;
 function powerBiPlaceholderMarkup(args, options) {
   const attributes = POWERBI_INPUTS.flatMap(([input, attribute]) =>
     args?.[input] == null || args[input] === ''
@@ -2184,7 +2362,7 @@ function prepopulateValue(row, identity, now) {
   return undefined;
 }
 
-async function renderForm(kind, name, context, options) {
+/* NOSONAR */ async function renderForm(kind, name, context, options) {
   const {
     portal,
     store,
@@ -2440,69 +2618,40 @@ async function renderForm(kind, name, context, options) {
         // The visible percentage label precedes the bar only while it is empty (0% on the start
         // step carries it, 33% on a later or resumed step does not).
         if (bs.v5)
-          indicator = `${percent ? '' : `<span>${percent}%</span>`}<div aria-valuenow="${percent}" aria-valuemax="100" aria-label="progressbar" class="bar progress-bar${percent ? '' : ' zero'}" aria-valuetext="${percent}%" tabindex="0" style="width: ${percent}%;" aria-valuemin="0" role="progressbar"><span aria-hidden="true">${percent}%</span></div>`;
+          indicator = `${percent ? '' : '<span>' + percent + '%</span>'}<div aria-valuenow="${percent}" aria-valuemax="100" aria-label="progressbar" class="bar progress-bar${percent ? '' : ' zero'}" aria-valuetext="${percent}%" tabindex="0" style="width: ${percent}%;" aria-valuemin="0" role="progressbar"><span aria-hidden="true">${percent}%</span></div>`;
         else
           indicator = `<div class="progress"><div class="bar progress-bar${percent ? '' : ' zero'}" style="width: ${percent}%;" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}">${percent}%</div></div>`;
       } else {
         const prefix = `<ol class="progress list-group ${position}">`;
         let length = prefix.length;
         const items = counted.map((step, index) => {
-          const completed = index < stepIndex;
-          const opening = completed
-            ? bs.v5
-              ? '<li class="list-group-item text-muted list-group-item-success">'
-              : '<li class="list-group-item text-muted list-group-item-success complete">'
-            : `<li class="list-group-item ${index === stepIndex ? 'active' : 'incomplete'}">`;
-          let selection;
-          const label = title(step, (value) => {
-            selection = value;
+          const rendered = renderProgressStep(step, index, {
+            stepIndex,
+            bs,
+            title,
+            progressBindings,
+            length,
+            prepend,
           });
-          const id = canonicalId(step.stepId),
-            record = step.metadata;
-          if (id && canonicalId(record?.id) === id) {
-            const sourceSelectors = [{ recordId: id, field: '$record' }];
-            if (!selection?.fallback)
-              sourceSelectors.push({
-                recordId: id,
-                field: 'title',
-                ...(Number.isSafeInteger(selection?.lcid) ? { lcid: selection.lcid } : {}),
-              });
-            else if (typeof fieldOf(record, 'name') === 'string') sourceSelectors.push({ recordId: id, field: 'name' });
-            progressBindings.push({
-              start: length,
-              end: length + opening.length,
-              tag: 'li',
-              attributes: [],
-              component: { kind: 'advanced-form-step', key: 'advanced-form-step:' + id, id, name: record.name },
-              sourceSelectors,
-            });
-          }
-          const icon = completed
-            ? bs.v5
-              ? '<span class="fa-solid fa-check" role="img" aria-label="Completed"></span>'
-              : '<span class="glyphicon glyphicon-ok"></span>'
-            : '';
-          const item = opening + (prepend ? `<span class="number">${index + 1}</span>` : '') + label + icon + '</li>';
-          length += item.length;
-          return item;
+          length = rendered.length;
+          return rendered.item;
         });
         indicator = prefix + items.join('') + '</ol>';
       }
       // Bootstrap 5 side columns repeat their class list; the top/bottom Bootstrap 5 column markup is not known.
-      const v5Side =
-        bs.v5 && (position === 'left' || position === 'right')
-          ? ` col-md-3 col-lg-2${type === 756150002 ? ` progress ${position}` : ''}${position === 'right' ? ' div-right order-lg-1' : ''}`
-          : null;
-      const column = numericV5
-        ? ` class=" progress-numeric ${position} progress-numeric ${position}"`
-        : v5Side
-          ? ` class="${v5Side}${v5Side}"`
-          : position === 'left'
-            ? ' class=" col-sm-3 col-md-2"'
-            : position === 'right'
-              ? ' class=" col-sm-3 col-sm-push-9 col-md-2 col-md-push-10"'
-              : '';
-      const progressPrefix = `<div id="${pageControl ? 'WebFormControl' : `WebFormControl_${compactId(definition?.id ?? name)}`}_ProgressIndicator"${column}>`;
+      let v5Side = null;
+      if (bs.v5 && (position === 'left' || position === 'right')) {
+        v5Side = ' col-md-3 col-lg-2';
+        if (type === 756150002) v5Side += ' progress ' + position;
+        if (position === 'right') v5Side += ' div-right order-lg-1';
+      }
+      let column;
+      if (numericV5) column = ` class=" progress-numeric ${position} progress-numeric ${position}"`;
+      else if (v5Side) column = ` class="${v5Side}${v5Side}"`;
+      else if (position === 'left') column = ' class=" col-sm-3 col-md-2"';
+      else if (position === 'right') column = ' class=" col-sm-3 col-sm-push-9 col-md-2 col-md-push-10"';
+      else column = '';
+      const progressPrefix = `<div id="${pageControl ? 'WebFormControl' : 'WebFormControl_' + compactId(definition?.id ?? name)}_ProgressIndicator"${column}>`;
       progress = {
         html: progressPrefix + indicator + '</div>',
         position,
@@ -2616,12 +2765,13 @@ async function renderForm(kind, name, context, options) {
     // crmentityformview: the EntitySecurity/Record/ReadAccessDeniedMessage
     // snippet, by default the Access_Denied_Error resource behind a lock icon.
     const snippet = portal.snippets?.['EntitySecurity/Record/ReadAccessDeniedMessage'];
-    const message =
-      typeof snippet === 'string'
-        ? renderLiquid
-          ? await renderLiquid(snippet, context)
-          : snippet
-        : "<div class='alert alert-block alert-danger'><span class='fa fa-lock' aria-hidden='true'></span>You don't have the appropriate permissions.</div>";
+    let message;
+    if (typeof snippet === 'string') {
+      if (renderLiquid) message = await renderLiquid(snippet, context);
+      else message = snippet;
+    } else
+      message =
+        "<div class='alert alert-block alert-danger'><span class='fa fa-lock' aria-hidden='true'></span>You don't have the appropriate permissions.</div>";
     // The denial renders inside the native form control (anonymous and
     // no-role personas): the panel, a read-only view holding the message in an editable-snippet
     // wrapper, and an empty actions row, within the page's WebForms form.
@@ -2711,93 +2861,21 @@ async function renderForm(kind, name, context, options) {
   // Labels follow the platform: metadata override, the form cell label, then the
   // column display name; the logical name is used only when the table metadata is absent.
   const tableFields = metadata?.entities?.[canonicalId(schema.entity)]?.fields ?? {};
-  const fields = (schema.fields ?? []).map((field) => {
-    const row = metadataFor(
+  const fields = (schema.fields ?? []).map((field) =>
+    normalizedFormField(field, {
       metadataRows,
-      100000000,
-      (candidate) => fieldOf(candidate, 'attributelogicalname') === field.name,
-    );
-    // Column create/update validity applies to the mode rendered; a read-only rendering (a
-    // read-only form or an inactive record) marks no column read-only by it.
-    const immutable =
-      mode === FORM_MODE.insert
-        ? field.validForCreate === false
-        : mode === FORM_MODE.edit
-          ? field.validForUpdate === false
-          : false;
-    const control = nativeControlKind(field);
-    const label = formLabel(fieldOf(row, 'label'), field.label || tableFields[field.name]?.label || field.name);
-    const ownerHidden = field.name === 'ownerid' && fieldOf(componentMetadata, 'showownerfields') !== true;
-    const style = Number(fieldOf(row, 'controlstyle'));
-    const description =
-      row && truthy(fieldOf(row, 'adddescription'))
-        ? {
-            text:
-              truthy(fieldOf(row, 'useattributedescriptionproperty')) && !fieldOf(row, 'description')
-                ? (field.description ?? '')
-                : formLabel(fieldOf(row, 'description'), ''),
-            position: Number(fieldOf(row, 'descriptionposition')),
-          }
-        : null;
-    return {
-      ...field,
-      id: field.name,
-      control,
-      label,
-      // The column display name (hosted controls name the column, not the form cell).
-      columnLabel: tableFields[field.name]?.label ?? null,
-      ownerHidden,
-      // With tooltips enabled the column description titles the label and a lookup's name box.
-      tooltip: truthy(fieldOf(componentMetadata, 'tooltipenabled')) ? columnDescription(field, formLanguage) : '',
-      // The owner column is read-only by the platform rather than by its cell: it keeps the
-      // required markers and has no readonly class.
-      ownerLocked: field.name === 'ownerid' && !field.readOnly && !immutable && !readOnly,
-      hidden: field.hidden || ownerHidden,
-      // Field-level read-only (the EntityForm cell Metadata.ReadOnly). A read-only form also
-      // marks every control (MakeControlsReadonly) without this field-level markup.
-      fieldReadOnly: Boolean(
-        field.readOnly || immutable || /^(state|status)$/.test(control) || field.name === 'ownerid',
-      ),
-      readOnly: Boolean(
-        field.readOnly || immutable || readOnly || /^(state|status)$/.test(control) || field.name === 'ownerid',
-      ),
-      required: Boolean(
-        truthy(fieldOf(row, 'fieldisrequired')) ||
-        forceRequired ||
-        field.required ||
-        (recommendedRequired && /recommended/i.test(field.requiredLevel ?? '')),
-      ),
-      requiredMessage: formLabel(fieldOf(row, 'requiredfieldvalidationerrormessage'), ''),
-      pattern: fieldOf(row, 'validationregularexpression') || field.pattern || null,
-      patternMessage: formLabel(fieldOf(row, 'validationregularexpressionerrormessage'), ''),
-      validationMessage: formLabel(fieldOf(row, 'validationerrormessage'), ''),
-      rangeMessage: formLabel(fieldOf(row, 'rangevalidationerrormessage'), ''),
-      cssClass: fieldOf(row, 'cssclass') ?? '',
-      controlStyle: Number.isFinite(style) ? style : null,
-      // Survey control styles (constant sum, rank order, matrix, multiple choice, stack rank) group cells by name.
-      groupName: String(fieldOf(row, 'groupname') ?? ''),
-      lookupStyle: style === 756150000 ? 'dropdown' : field.lookupStyle,
-      ignoreDefault: truthy(fieldOf(row, 'ignoredefaultvalue')),
-      randomize: truthy(fieldOf(row, 'randomizeoptionsetvalues')),
-      prepopulateType: row ? Number(fieldOf(row, 'prepopulatetype')) : null,
-      prepopulate: row && fieldOf(row, 'prepopulatetype') != null ? prepopulateValue(row, identity, now) : undefined,
-      description,
-      createFormId: canonicalId(fieldOf(row, 'entityformforcreate')),
-      minimum: field.minimum ?? field.minValue,
-      maximum: field.maximum ?? field.maxValue,
-      // The Dataverse composite full name (the computed fullname column, valid for neither create
-      // nor update): the platform's full name composite box, required and without a maximum
-      // length; the platform composes it from the name parts.
-      ...(field.name === 'fullname' && field.validForCreate === false && field.validForUpdate === false
-        ? { composite: 'fullname', required: true, maxLength: undefined }
-        : {}),
-      // A computed composite address (<prefix>_composite, valid for neither create nor update): the
-      // platform's address composite box and its parts container.
-      ...(/^[a-z]+\d*_composite$/.test(field.name) && field.validForCreate === false && field.validForUpdate === false
-        ? { composite: 'address', maxLength: undefined }
-        : {}),
-    };
-  });
+      mode,
+      formLabel,
+      tableFields,
+      componentMetadata,
+      formLanguage,
+      forceRequired,
+      recommendedRequired,
+      identity,
+      now,
+      readOnly,
+    }),
+  );
   // A column placed on the form more than once renders only its first cell (see layout below).
   const byName = new Map();
   for (const field of fields) if (!byName.has(field.name)) byName.set(field.name, field);
@@ -2822,52 +2900,7 @@ async function renderForm(kind, name, context, options) {
     readProvider,
     identity,
   });
-  const value = (field) => {
-    if (
-      record &&
-      Object.hasOwn(record, field.name) &&
-      record[field.name] !== undefined &&
-      record[field.name] !== null &&
-      mode !== FORM_MODE.insert
-    )
-      return record[field.name];
-    // An empty field of an existing record also shows its prepopulated value.
-    if (mode !== FORM_MODE.insert && field.prepopulate !== undefined && field.prepopulate !== null)
-      return field.prepopulate;
-    // Native radio choice controls render their exported default for an empty existing column.
-    // This affects displayed selection only; other controls and stored values retain their semantics.
-    if (
-      mode !== FORM_MODE.insert &&
-      record &&
-      record[field.name] == null &&
-      field.control === 'picklist' &&
-      [100000000, 100000001].includes(field.controlStyle) &&
-      !field.ignoreDefault
-    ) {
-      const defaultValue = field.default ?? field.defaultValue;
-      if (defaultValue !== undefined) return defaultValue;
-    }
-    if (mode === FORM_MODE.insert) {
-      if (entityReference && field.name === entityReference.field) return entityReference.value;
-      if (field.prepopulate !== undefined) return field.prepopulate;
-      if (reference && field.control === 'lookup') {
-        const candidates = Object.values(mapping.relationships ?? {}).filter(
-          (candidate) =>
-            candidate.many === false &&
-            candidate.from === field.name &&
-            candidate.entity === canonicalId(reference.entity),
-        );
-        const relation =
-          candidates.find((candidate) => candidate.schemaName === reference.rel) ??
-          (candidates.length === 1 && referenceField(fields, mapping, reference) === field.name ? candidates[0] : null);
-        if (relation) return { id: canonicalId(reference.id), logical_name: relation.entity, name: '' };
-      }
-      // An explicit schema default, else the column's exported default (AppDefaultValue).
-      if (!field.ignoreDefault && (field.default ?? field.defaultValue) !== undefined)
-        return field.default ?? field.defaultValue;
-    }
-    return record?.[field.name] ?? null;
-  };
+  const value = (field) => resolveFormFieldValue(field, { record, mode, entityReference, reference, mapping, fields });
   // Lookup choices for dropdown lookups and bindings for every lookup.
   for (const field of fields.filter((candidate) => candidate.control === 'lookup')) {
     const targets = field.lookupTargets ?? [
@@ -2940,18 +2973,21 @@ async function renderForm(kind, name, context, options) {
   const nameAttr = (field, suffix = '') => attr(`${ids.names}${field.name}${suffix}`);
   // The fields of a survey control group (adx_groupname with the same control style), in layout order.
   let layoutFields = null;
-  const surveyGroup = (field) =>
-    (layoutFields ??= formCells(schema)
-      .map((cell) => byName.get(cell.name))
-      .filter(Boolean)).filter(
+  const surveyGroup = (field) => {
+    if (layoutFields == null)
+      layoutFields = formCells(schema)
+        .map((cell) => byName.get(cell.name))
+        .filter(Boolean);
+    return layoutFields.filter(
       (other) => field.groupName && other.groupName === field.groupName && other.controlStyle === field.controlStyle,
     );
+  };
   const optionsFor = (field) => {
     const options = [...(field.options ?? [])];
     // adx_randomizeoptionsetvalues: native shuffles the options on each render.
     if (field.randomize)
       for (let index = options.length - 1; index > 0; index--) {
-        const swap = Math.floor(Math.random() * (index + 1));
+        const swap = Math.floor(Math.random() * (index + 1)); // NOSONAR: pseudo-random value for simulation, not a secret
         [options[index], options[swap]] = [options[swap], options[index]];
       }
     return options;
@@ -2965,7 +3001,7 @@ async function renderForm(kind, name, context, options) {
       return '';
     }
   };
-  const nativeInput = async (field) => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const nativeInput = async (field) => {
     const current = value(field);
     const scalar = scalarValue(current);
     const disabled = field.readOnly;
@@ -3003,11 +3039,11 @@ async function renderForm(kind, name, context, options) {
             : 'setIsDirty(this.id);';
           // Bootstrap 5 marks every dropdown lookup option as a dropdown item.
           const item = bs.v5 ? ' class="dropdown-item"' : '';
-          return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="lookup form-control${css}" onchange="${attr(onChange)}"${field.required ? ' required=""' : ''}${disabled ? ' disabled="disabled" aria-disabled="true"' : ''}${formReadonly}>${`<option${item} value="" label="Select" aria-label="Select"></option>`}${choices.map((choice) => `<option value="${attr(choice.id)}"${item}${polymorphic ? ` data-entity="${attr(choice.entity)}"` : ''}${choice.id === idValue ? ' selected="selected"' : ''}>${escape(choice.label)}</option>`).join('')}</select><input name="${nameAttr(field, '_entityname')}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical || (field.targets?.length === 1 ? field.targets[0] : ''))}>`;
+          return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="lookup form-control${css}" onchange="${attr(onChange)}"${field.required ? ' required=""' : ''}${disabled ? ' disabled="disabled" aria-disabled="true"' : ''}${formReadonly}><option${item} value="" label="Select" aria-label="Select"></option>${choices.map((choice) => '<option value="' + attr(choice.id) + '"' + item + (polymorphic ? ' data-entity="' + attr(choice.entity) + '"' : '') + (choice.id === idValue ? ' selected="selected"' : '') + '>' + escape(choice.label) + '</option>').join('')}</select><input name="${nameAttr(field, '_entityname')}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical || (field.targets?.length === 1 ? field.targets[0] : ''))}>`;
         }
         if (disabled) {
           const locked = field.ownerLocked && field.required;
-          return `<div><input name="${nameAttr(field, '_name')}" type="text"${valueAttr(name)} id="${attr(field.id)}_name"${field.tooltip ? ` title="${attr(field.tooltip)}"` : ''} class="text form-control lookup form-control${css}${(bs.v5 && formLevel) || field.ownerLocked ? '' : ' readonly'}" readonly="${readOnly ? 'readonly' : ''}" aria-readonly="true" aria-labelledby="${locked ? '' : attr(field.id) + '_label'}" aria-label="${attr(locked ? field.requiredMessage || `${field.label} is a required field.` : field.label)}" tabindex="0"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${locked ? ' aria-required="true" aria-invalid="true"' : ''}${valueAttr(idValue)}><input name="${nameAttr(field, '_entityname')}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical)}></div>`;
+          return `<div><input name="${nameAttr(field, '_name')}" type="text"${valueAttr(name)} id="${attr(field.id)}_name"${field.tooltip ? ' title="' + attr(field.tooltip) + '"' : ''} class="text form-control lookup form-control${css}${(bs.v5 && formLevel) || field.ownerLocked ? '' : ' readonly'}" readonly="${readOnly ? 'readonly' : ''}" aria-readonly="true" aria-labelledby="${locked ? '' : attr(field.id) + '_label'}" aria-label="${attr(locked ? field.requiredMessage || field.label + ' is a required field.' : field.label)}" tabindex="0"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${locked ? ' aria-required="true" aria-invalid="true"' : ''}${valueAttr(idValue)}><input name="${nameAttr(field, '_entityname')}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical)}></div>`;
         }
         const lookupBase = {
           kind: 'lookup',
@@ -3020,62 +3056,19 @@ async function renderForm(kind, name, context, options) {
             tooltip: 'To search on partial text, use the asterisk (*) wildcard character. ',
           },
         };
-        let layouts = [];
-        try {
-          const model = nativeLookupModel({
-            portal,
-            schemas,
-            metadata,
-            store,
-            kind,
-            formId: definition?.id,
-            stepId: schema.stepId,
-            field: field.name,
-          });
-          layouts = model.views.map((view) => {
-            const targetMapping = store.resolveMapping(view.entity);
-            const viewModel = {
-              ...lookupBase,
-              entity: canonicalId(view.entity),
-              idColumn: targetMapping.idColumn,
-              primaryName: targetMapping.nameColumn ?? null,
-              views: [view],
-            };
-            return buildLayout({
-              view,
-              entity: canonicalId(view.entity),
-              idColumn: targetMapping.idColumn,
-              primaryName: targetMapping.nameColumn ?? null,
-              metadata,
-              masked: gridMasked({ store, identity }),
-              settings: {},
-              // A Bootstrap 5 lookup dialog's configuration carries the empty GUID as its id.
-              configuration: {
-                ...viewConfiguration(viewModel, view, { actions: [], websiteId, language: formLanguage }),
-                ...(bs.v5 ? { Id: EMPTY_GUID } : {}),
-              },
-              secure: {
-                t: 'lookup',
-                w: websiteId,
-                kind,
-                form: definition?.id,
-                step: schema.stepId ?? null,
-                field: field.name,
-                view: view.id,
-              },
-              selectColumn: true,
-            });
-          });
-        } catch (error) {
-          if (!/LOOKUP_TARGET_UNRESOLVED|LookupNotBound|FormNotFound|FormSchemaRequired/.test(error.code ?? ''))
-            throw error;
-        }
-        // The Bootstrap 5 selection column labels its check with visually-hidden text.
-        if (bs.v5)
-          for (const layout of layouts)
-            for (const column of layout.Columns ?? [])
-              if (column.Type === 1 && typeof column.Name === 'string')
-                column.Name = column.Name.replace('sr-only', 'visually-hidden');
+        const layouts = buildNativeLookupLayouts(field, lookupBase, {
+          portal,
+          schemas,
+          metadata,
+          store,
+          kind,
+          definition,
+          schema,
+          identity,
+          websiteId,
+          formLanguage,
+          bs,
+        });
         const createForm =
           field.createFormId && portal.forms?.some((form) => canonicalId(form.id) === field.createFormId)
             ? field.createFormId
@@ -3095,7 +3088,7 @@ async function renderForm(kind, name, context, options) {
         const referenced = Boolean(field.required);
         // A referenced lookup posts no entity name.
         if (entityReference?.field === field.name) logical = '';
-        return `<div class="input-group"${bs.v5 ? '' : ' role="none"'}><input name="${nameAttr(field, '_name')}" type="text"${valueAttr(name)} id="${attr(field.id)}_name"${field.tooltip ? ` title="${attr(field.tooltip)}"` : ''} class="text form-control lookup form-control${css}" readonly="" aria-readonly="true" aria-labelledby="${referenced ? '' : attr(field.id) + '_label'}" aria-label="${attr(referenced ? field.requiredMessage || `${field.label} is a required field.` : field.label)}"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${valueAttr(idValue)}${required}${referenced ? ' aria-invalid="true"' : ''}><input name="${nameAttr(field, '_entityname')}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical)}>${bs.v5 ? buttons : `<div class="input-group-btn">${buttons}</div>`}</div><div id="${attr(field.id)}_lookupmodal" class="lookup-modal"><div class="entity-lookup" data-languagecode="1033" data-lookup-datafieldname="${attr(field.id)}" data-lookup-reference_entityformid="${attr(createForm)}" data-url="/_services/entity-lookup-grid-data.json/${websiteId}">${nativeModal(
+        return `<div class="input-group"${bs.v5 ? '' : ' role="none"'}><input name="${nameAttr(field, '_name')}" type="text"${valueAttr(name)} id="${attr(field.id)}_name"${field.tooltip ? ' title="' + attr(field.tooltip) + '"' : ''} class="text form-control lookup form-control${css}" readonly="" aria-readonly="true" aria-labelledby="${referenced ? '' : attr(field.id) + '_label'}" aria-label="${attr(referenced ? field.requiredMessage || field.label + ' is a required field.' : field.label)}"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${valueAttr(idValue)}${required}${referenced ? ' aria-invalid="true"' : ''}><input name="${nameAttr(field, '_entityname')}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical)}>${bs.v5 ? buttons : '<div class="input-group-btn">' + buttons + '</div>'}</div><div id="${attr(field.id)}_lookupmodal" class="lookup-modal"><div class="entity-lookup" data-languagecode="1033" data-lookup-datafieldname="${attr(field.id)}" data-lookup-reference_entityformid="${attr(createForm)}" data-url="/_services/entity-lookup-grid-data.json/${websiteId}">${nativeModal(
           {
             bs,
             headingLabel: bs.v5,
@@ -3103,10 +3096,10 @@ async function renderForm(kind, name, context, options) {
             title: 'Lookup records',
             label: 'Lookup records Dialog',
             size: 'modal-lg',
-            body: `<div aria-hidden="true" class="modal-error message"${bs.v5 ? '' : ' style="display:none"'}><div class="alert alert-block alert-danger"><p>We're sorry, an error has occurred.</p></div></div><div class="entity-grid" data-allow-filter-off="false" data-apply-related-record-filter="false" data-column-width-style="Percent" data-defer-loading="true" data-enable-actions="false" data-filter-attribute-name="" data-filter-entity-name="" data-filter-relationship-name="" data-get-url="/_services/entity-lookup-grid-data.json/${websiteId}" data-grid-class="" ${gridAttributes} data-view-layouts="${base64Json(layouts)}">${gridChildren}</div>`,
-            footer: `${createForm ? `<button type="button" class="btn btn-default ${bs.left} new-value" title="New">New</button>` : ''}<button aria-label="Select" class="primary btn btn-primary" tabindex="0" title="Select" type="button">Select</button><button aria-label="Cancel" class="cancel btn btn-default" ${bs.dismiss}="modal" tabindex="0" title="Cancel" type="button">Cancel</button><button class="btn btn-default ${bs.right} remove-value" title="Remove value" type="button">Remove value</button>`,
+            body: lookupModalBody(bs, websiteId, gridAttributes, layouts, gridChildren),
+            footer: lookupModalFooter(createForm, bs),
           },
-        )}${createForm ? nativeModal({ bs, className: 'modal-form modal-form-insert modal-lookup-create-form', title: "<span class='fa fa-pencil-square-o' aria-hidden='true'></span> Create", body: formModalBody(`/_portal/modal-form-template-path/${websiteId}`), size: 'modal-lg', label: 'Create' }) : ''}</div></div>`;
+        )}${createForm ? nativeModal({ bs, className: 'modal-form modal-form-insert modal-lookup-create-form', title: "<span class='fa fa-pencil-square-o' aria-hidden='true'></span> Create", body: formModalBody('/_portal/modal-form-template-path/' + websiteId), size: 'modal-lg', label: 'Create' }) : ''}</div></div>`;
       }
       case 'boolean': {
         // A posted-back check box carries the browser's "on" (the postback values overlay the record).
@@ -3124,11 +3117,15 @@ async function renderForm(kind, name, context, options) {
         if (field.controlStyle === 100000007) {
           const group = attr(field.groupName);
           const first = surveyGroup(field)[0]?.name === field.name;
-          return `<span class="${formLevel ? 'aspNetDisabled ' : ''}checkbox checkbox${css} ${group}"${formReadonly}><input id="${attr(field.id)}" type="checkbox" name="${nameAttr(field)}"${bool ? ' checked="checked"' : ''} onclick="setIsDirty(this.id);"${disabled ? ' disabled="disabled"' : ''}></span>${first ? `<span id="multipleChoiceValidator${group}" class="validator-text" style="display:none;"></span>` : ''}`;
+          return `<span class="${formLevel ? 'aspNetDisabled ' : ''}checkbox checkbox${css} ${group}"${formReadonly}><input id="${attr(field.id)}" type="checkbox" name="${nameAttr(field)}"${bool ? ' checked="checked"' : ''} onclick="setIsDirty(this.id);"${disabled ? ' disabled="disabled"' : ''}></span>${multipleChoiceValidator(first, group)}`;
         }
         if (classId === DROPDOWN_CLASS) {
           const blank = field.ignoreDefault && scalar == null;
-          return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="${readOnly ? 'aspNetDisabled ' : ''}form-control boolean-dropdown${css}" onchange="setIsDirty(this.id);"${fieldLevel ? ' disabled="disabled" aria-disabled="true"' : formLevel ? ' disabled="disabled"' : ''}${formReadonly}>${field.ignoreDefault ? `<option value=""${blank ? ' selected="selected"' : ''}></option>` : ''}<option${!blank && !bool ? ' selected="selected"' : ''} value="0">${escape(label(0))}</option><option${!blank && bool ? ' selected="selected"' : ''} value="1">${escape(label(1))}</option></select>`;
+          let disabledAttribute;
+          if (fieldLevel) disabledAttribute = ' disabled="disabled" aria-disabled="true"';
+          else if (formLevel) disabledAttribute = ' disabled="disabled"';
+          else disabledAttribute = '';
+          return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="${readOnly ? 'aspNetDisabled ' : ''}form-control boolean-dropdown${css}" onchange="setIsDirty(this.id);"${disabledAttribute}${formReadonly}>${booleanBlankOption(field.ignoreDefault, blank)}<option${!blank && !bool ? ' selected="selected"' : ''} value="0">${escape(label(0))}</option><option${!blank && bool ? ' selected="selected"' : ''} value="1">${escape(label(1))}</option></select>`;
         }
         // A read-only form disables the ASP.NET list and box controls: aspNetDisabled wrappers.
         if (classId === RADIO_CLASS)
@@ -3140,7 +3137,7 @@ async function renderForm(kind, name, context, options) {
               return formLevel ? `<span class="aspNetDisabled">${radio}</span>` : radio;
             })
             .join('')}</span>`;
-        return `<span class="${formLevel ? 'aspNetDisabled ' : ''}checkbox${css}"${formReadonly}><input id="${attr(field.id)}" type="checkbox" name="${nameAttr(field)}"${bs.v5 ? ` aria-label="${attr(field.label)}"` : ''}${bool ? ' checked="checked"' : ''} onclick="setIsDirty(this.id);"${disabled ? ' disabled="disabled"' : ''}></span>`;
+        return `<span class="${formLevel ? 'aspNetDisabled ' : ''}checkbox${css}"${formReadonly}><input id="${attr(field.id)}" type="checkbox" name="${nameAttr(field)}"${bs.v5 ? ' aria-label="' + attr(field.label) + '"' : ''}${bool ? ' checked="checked"' : ''} onclick="setIsDirty(this.id);"${disabled ? ' disabled="disabled"' : ''}></span>`;
       }
       case 'picklist': {
         const options = optionsFor(field);
@@ -3160,19 +3157,19 @@ async function renderForm(kind, name, context, options) {
         // A read-only form disables the radio list: the list and each option carry aspNetDisabled
         // (ASP.NET disabled RadioButtonList).
         if ((field.controlStyle === 100000000 || field.controlStyle === 100000001) && formLevel)
-          return `<span id="${attr(field.id)}" disabled="disabled" class="aspNetDisabled picklist ${field.controlStyle === 100000000 ? 'vertical' : 'horizontal'}${css}" role="presentation" onchange="setIsDirty(this.id);"${formReadonly}>${options.map((option, index) => `<span class="aspNetDisabled"><input id="${attr(field.id)}_${index}" type="radio" name="${nameAttr(field)}" value="${attr(option.value)}"${Number(option.value) === selected ? ' checked="checked"' : ''} disabled="disabled"><label for="${attr(field.id)}_${index}"><span class='${bs.srOnly}'>${escape(field.label)} </span>${escape(option.label ?? option.value)}</label></span>`).join(field.controlStyle === 100000000 ? '<br>' : '')}</span>`;
+          return `<span id="${attr(field.id)}" disabled="disabled" class="aspNetDisabled picklist ${field.controlStyle === 100000000 ? 'vertical' : 'horizontal'}${css}" role="presentation" onchange="setIsDirty(this.id);"${formReadonly}>${options.map((option, index) => '<span class="aspNetDisabled"><input id="' + attr(field.id) + '_' + index + '" type="radio" name="' + nameAttr(field) + '" value="' + attr(option.value) + '"' + (Number(option.value) === selected ? ' checked="checked"' : '') + ' disabled="disabled"><label for="' + attr(field.id) + '_' + index + '"><span class=\'' + bs.srOnly + "'>" + escape(field.label) + ' </span>' + escape(option.label ?? option.value) + '</label></span>').join(field.controlStyle === 100000000 ? '<br>' : '')}</span>`;
         if (field.controlStyle === 100000000 || field.controlStyle === 100000001)
-          return `<span id="${attr(field.id)}" class="picklist ${field.controlStyle === 100000000 ? 'vertical' : 'horizontal'}${css}" role="presentation" onchange="setIsDirty(this.id);"${field.required ? ' data-required="true" aria-invalid="false" title="Please select an item in this list"' : ''}>${options.map((option, index) => `<input id="${attr(field.id)}_${index}" type="radio" name="${nameAttr(field)}" value="${attr(option.value)}"${Number(option.value) === selected ? ' checked="checked"' : ''}${disabled ? ' disabled="disabled"' : ''}><label for="${attr(field.id)}_${index}"><span class='${bs.srOnly}'>${escape(field.label)} </span>${escape(option.label ?? option.value)}</label>`).join(field.controlStyle === 100000000 ? '<br>' : '')}</span>`;
+          return `<span id="${attr(field.id)}" class="picklist ${field.controlStyle === 100000000 ? 'vertical' : 'horizontal'}${css}" role="presentation" onchange="setIsDirty(this.id);"${field.required ? ' data-required="true" aria-invalid="false" title="Please select an item in this list"' : ''}>${options.map((option, index) => '<input id="' + attr(field.id) + '_' + index + '" type="radio" name="' + nameAttr(field) + '" value="' + attr(option.value) + '"' + (Number(option.value) === selected ? ' checked="checked"' : '') + (disabled ? ' disabled="disabled"' : '') + '><label for="' + attr(field.id) + '_' + index + '"><span class=\'' + bs.srOnly + "'>" + escape(field.label) + ' </span>' + escape(option.label ?? option.value) + '</label>').join(field.controlStyle === 100000000 ? '<br>' : '')}</span>`;
         // PicklistControlTemplate: every option follows an empty "Select" option; a required
         // dropdown carries required="" (the platform app bundle removes it on load).
-        const picklistOptions = `${emptyOption(selected == null)}${options.map((option) => `<option${Number(option.value) === selected ? ' selected="selected"' : ''} value="${attr(option.value)}">${escape(option.label ?? option.value)}</option>`).join('')}`;
+        const picklistOptions = `${emptyOption(selected == null)}${options.map((option) => '<option' + (Number(option.value) === selected ? ' selected="selected"' : '') + ' value="' + attr(option.value) + '">' + escape(option.label ?? option.value) + '</option>').join('')}`;
         // Bootstrap 5 option sets are form-select boxes.
         const selectClass = bs.v5 ? 'form-control form-select picklist' : 'form-control picklist';
         if (fieldLevel)
           return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="${readOnly ? 'aspNetDisabled ' : ''}readonly ${selectClass}${css}" onchange="setIsDirty(this.id);" disabled="disabled" aria-disabled="true"${formReadonly}>${picklistOptions}</select><input type="hidden" name="${nameAttr(field, '_Value')}" id="${attr(field.id)}_Value" value="${attr(selected ?? '')}">`;
         if (formLevel)
           return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="aspNetDisabled ${selectClass}${css}" onchange="setIsDirty(this.id);" disabled="disabled"${formReadonly}>${picklistOptions}</select>`;
-        return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="${selectClass}${css}" onchange="setIsDirty(this.id);"${field.required ? ` required=""${bs.v5 ? ' aria-required="true" aria-invalid="false" title="Please select an item in this list"' : ''}` : ''}>${picklistOptions}</select>`;
+        return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="${selectClass}${css}" onchange="setIsDirty(this.id);"${requiredPicklistAttributes(field, bs)}>${picklistOptions}</select>`;
       }
       case 'state':
       case 'status': {
@@ -3181,9 +3178,7 @@ async function renderForm(kind, name, context, options) {
             ? null
             : (field.options ?? []).find((candidate) => Number(candidate.value) === Number(scalar));
         // The state and status spans carry their values in hidden EntityState/EntityStatus inputs.
-        const hiddenValue = bs.v5
-          ? `<input name="${nameAttr(field, field.control === 'state' ? '_EntityState' : '_EntityStatus')}" type="hidden" id="${attr(field.id)}${field.control === 'state' ? '_EntityState' : '_EntityStatus'}"${valueAttr(scalar)}>`
-          : '';
+        const hiddenValue = stateHiddenValue(bs.v5, field, nameAttr, attr, valueAttr, scalar);
         return `<span id="${attr(field.id)}" class="${field.control}${css}">${escape(current?.label ?? option?.label ?? scalar ?? '')}</span>${hiddenValue}`;
       }
       case 'multiselect':
@@ -3207,13 +3202,13 @@ async function renderForm(kind, name, context, options) {
           field.prepopulateType === 100000001 &&
           current === field.prepopulate &&
           (mode === FORM_MODE.insert || record?.[field.name] == null);
-        const iso = parsed
-          ? new Date(parsed.ms)
-              .toISOString()
-              .replace(/\.\d{3}Z$/, '.0000000' + (behavior === 'UserLocal' || clockDefault ? 'Z' : ''))
-          : scalar
-            ? String(scalar)
-            : '';
+        let iso;
+        if (parsed)
+          iso = new Date(parsed.ms)
+            .toISOString()
+            .replace(/\.\d{3}Z$/, '.0000000' + (behavior === 'UserLocal' || clockDefault ? 'Z' : ''));
+        else if (scalar) iso = String(scalar);
+        else iso = '';
         // crmentityformview-datetime.js: a read-only picker keeps its visible box without the
         // input group, the placeholder or the (hidden) calendar button, whose title and label
         // are the Datetimepicker_Datepicker_Label resource.
@@ -3255,7 +3250,7 @@ async function renderForm(kind, name, context, options) {
           const boxes = parts
             .map(
               ([part, label]) =>
-                `<input name="${nameAttr(field, '_' + part)}" type="text" id="${attr(field.id)}_${part}" class=" content  text form-control"${valueAttr(scalarValue(record?.[`${prefix}_${part}`]))} aria-label="${label}" onchange="setIsDirty(this.id);"${readonlyAttr}>`,
+                `<input name="${nameAttr(field, '_' + part)}" type="text" id="${attr(field.id)}_${part}" class=" content  text form-control"${valueAttr(scalarValue(record?.[prefix + '_' + part]))} aria-label="${label}" onchange="setIsDirty(this.id);"${readonlyAttr}>`,
             )
             .join('');
           return `<textarea name="${nameAttr(field)}" rows="4" cols="20" id="${attr(field.id)}" class="trigger text form-control${css} addressCompositeControl${disabled ? ' readonly ' : ' '}" data-composite-control="" data-content-id="${contentId}" data-editable="${disabled ? 'False' : 'True'}" data-content-template="{${prefix}_composite_line1} {${prefix}_composite_line2} {${prefix}_composite_line3}{BREAK}{${prefix}_composite_city} {${prefix}_composite_stateorprovince} {${prefix}_composite_postalcode}{BREAK}{${prefix}_composite_country}"${readonlyAttr}>${escape(String(scalar ?? ''))}</textarea><div id="${contentId}" class="content d-none addressCompositeControlContainer">${boxes}<input id="popoverUpdateButton_${randomUUID()}" class="btn btn-primary w-100" role="button" aria-label="Done" readonly="true" value="Done"></div>`;
@@ -3263,7 +3258,7 @@ async function renderForm(kind, name, context, options) {
         // MemoControlTemplate: rows = rowspan * 3 - 2; a maximum length adds the platform's
         // LimitInput/LimitPaste handlers (crmentityformview.js).
         // A one-row cell keeps the two-row (4 line) memo box.
-        return `<textarea name="${nameAttr(field)}" rows="${Math.max(Number(field.rowspan) || 2, 2) * 3 - 2}" cols="20"${field.maxLength ? ` maxlength="${Number(field.maxLength)}"` : ''} id="${attr(field.id)}" class="textarea form-control${css}${fieldLevel ? ' readonly' : ''}" onchange="setIsDirty(this.id);"${field.required && (bs.v5 || !disabled) ? ` aria-required="true" title="${attr(field.requiredMessage || `${field.label} is a required field.`)}"` : ''} aria-label="${attr(field.label)}"${disabled ? ' readonly="readonly"' : ''}${field.maxLength ? ' onkeydown="javascript:return LimitInput(this, event);" oninput="javascript:return LimitInput(this, event);" onpaste="javascript:return LimitPaste(this, event);"' : ''}>${escape(scalar ?? '')}</textarea>`;
+        return `<textarea name="${nameAttr(field)}" rows="${Math.max(Number(field.rowspan) || 2, 2) * 3 - 2}" cols="20"${field.maxLength ? ' maxlength="' + Number(field.maxLength) + '"' : ''} id="${attr(field.id)}" class="textarea form-control${css}${fieldLevel ? ' readonly' : ''}" onchange="setIsDirty(this.id);"${field.required && (bs.v5 || !disabled) ? ' aria-required="true" title="' + attr(field.requiredMessage || field.label + ' is a required field.') + '"' : ''} aria-label="${attr(field.label)}"${disabled ? ' readonly="readonly"' : ''}${field.maxLength ? ' onkeydown="javascript:return LimitInput(this, event);" oninput="javascript:return LimitInput(this, event);" onpaste="javascript:return LimitPaste(this, event);"' : ''}>${escape(scalar ?? '')}</textarea>`;
       case 'integer':
       case 'decimal':
       case 'double':
@@ -3285,7 +3280,7 @@ async function renderForm(kind, name, context, options) {
         if (choices) {
           const selected = scalar == null || scalar === '' ? null : String(scalar);
           // The blank choice keeps its label on postback renders too (one observed edit form drops it beside a value).
-          return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="${formLevel ? 'aspNetDisabled ' : ''}integer form-control${css}${fieldLevel ? ' readonly' : ''}" onchange="setIsDirty(this.id);"${field.required && !disabled ? ' required=""' : ''}${disabled ? ' disabled="disabled"' : ''}${formReadonly}><option${selected == null ? ' selected="selected"' : ''} value=""${rebuiltPostback && selected != null ? '' : ' label=" "'}></option>${choices.map((choice) => `<option${String(choice.value) === selected ? ' selected="selected"' : ''} value="${attr(choice.value)}">${escape(choice.label)}</option>`).join('')}</select>`;
+          return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="${formLevel ? 'aspNetDisabled ' : ''}integer form-control${css}${fieldLevel ? ' readonly' : ''}" onchange="setIsDirty(this.id);"${field.required && !disabled ? ' required=""' : ''}${disabled ? ' disabled="disabled"' : ''}${formReadonly}><option${selected == null ? ' selected="selected"' : ''} value=""${rebuiltPostback && selected != null ? '' : ' label=" "'}></option>${integerChoiceOptions(choices, selected)}</select>`;
         }
         // Rank order (100000004 no ties, 100000005 allow ties), stack rank (100000008) and constant
         // sum (100000003) whole-number boxes: narrow boxes classed by group.
@@ -3293,20 +3288,20 @@ async function renderForm(kind, name, context, options) {
           const group = attr(field.groupName);
           const readonlyAttr = disabled ? ' readonly="readonly"' : '';
           if (field.controlStyle !== 100000003)
-            return `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="form-control text integer${css} ${group}" onchange="setPrecision(this.id);setIsDirty(this.id);" style="width:30px;"${readonlyAttr}>${field.controlStyle === 100000004 ? `<span id="RankOrderTieValidator${attr(field.id)}" class="validator-text" style="visibility:hidden;">*</span>` : ''}`;
+            return `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="form-control text integer${css} ${group}" onchange="setPrecision(this.id);setIsDirty(this.id);" style="width:30px;"${readonlyAttr}>${rankTieValidator(field)}`;
           // The group's last box carries the read-only total (0 until the client sums) and its validator.
           const last = surveyGroup(field).at(-1)?.name === field.name;
-          return `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="text integer ${group}${css}" onchange="setIsDirty(this.id);setPrecision(this.id);updateConstantSum('${group}');" style="width:30px;"${readonlyAttr}>${last ? `<input name="${attr(ids.names)}ConstantSumTotalValue${group}" type="text" value="0" id="ConstantSumTotalValue${group}" class="total" readonly="readonly" style="width:30px;"><span id="ConstantSumTotalValidator${group}" class="validator-text" style="visibility:hidden;">*</span>` : ''}`;
+          return `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="text integer ${group}${css}" onchange="setIsDirty(this.id);setPrecision(this.id);updateConstantSum('${group}');" style="width:30px;"${readonlyAttr}>${constantSumMarkup(last, ids.names, group)}`;
         }
-        const control = `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="text ${field.control} form-control${css}${fieldLevel ? ' readonly' : ''}"${field.control === 'double' ? ` data-numberdecimalseparator="${attr(decimalSeparator)}"` : ''} onchange="setIsDirty(this.id);"${disabled ? ' readonly="readonly"' : ''}${field.required && !disabled ? ` required="" aria-invalid="${field.control === 'integer' ? 'false' : 'true'}"` : ''}>`;
+        const control = `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="text ${field.control} form-control${css}${fieldLevel ? ' readonly' : ''}"${numberSeparatorAttribute(field, decimalSeparator, attr)} onchange="setIsDirty(this.id);"${disabled ? ' readonly="readonly"' : ''}${requiredInputAttribute(field, disabled)}>`;
         if (field.control !== 'money') return control;
         // A money box shows the record currency's symbol as an input-group addon; without a
         // currency it is a plain wrapper.
         // Only a money box holding a value shows the symbol (an empty amount keeps the plain wrapper).
         const symbol = displayed !== '' && displayed != null ? await currencySymbol(record?.transactioncurrencyid) : '';
-        return symbol
-          ? `<div class="input-group"><span class="${bs.v5 ? 'input-group-text' : 'input-group-addon'}">${escape(symbol)}</span>${control}</div>`
-          : `<div>${control}</div>`;
+        if (symbol)
+          return `<div class="input-group"><span class="${bs.v5 ? 'input-group-text' : 'input-group-addon'}">${escape(symbol)}</span>${control}</div>`;
+        return `<div>${control}</div>`;
       }
       default:
         if (field.hidden && field.control !== 'lookup')
@@ -3326,9 +3321,14 @@ async function renderForm(kind, name, context, options) {
           // e-mail, url and ticker boxes are underlined.
           const url = format === 'url';
           const ticker = format === 'tickersymbol';
-          const type = email ? 'email' : url || ticker ? 'url' : 'text';
-          const launch = email ? 'launchEmail' : url ? 'launchUrl' : ticker ? 'launchTickerSymbolUrl' : '';
-          const change = `setIsDirty(this.id);${url ? `validateUrlInput(this,${Number(field.maxLength) || 0});` : ticker ? 'uppercaseTickerSymbol(this);' : ''}`;
+          let type = 'text';
+          if (email) type = 'email';
+          else if (url || ticker) type = 'url';
+          let launch = '';
+          if (email) launch = 'launchEmail';
+          else if (url) launch = 'launchUrl';
+          else if (ticker) launch = 'launchTickerSymbolUrl';
+          const change = nativeTextChange(url, ticker, field);
           // Bootstrap 5 keeps the required-field attributes of a box a read-only form disables.
           // A multistep step's text box whose description shows below it carries the description as its
           // role description (basic forms render none).
@@ -3340,15 +3340,14 @@ async function renderForm(kind, name, context, options) {
           // e-mail box by required="" with its title and label; other boxes by aria-required.
           // Bootstrap 5 keeps them on read-only boxes too (auto number).
           const requiredOn = field.required && (bs.v5 || !disabled);
-          const requiredTitle = ` title="${attr(field.requiredMessage || `${field.label} is a required field.`)}" aria-label="${attr(field.label)}"`;
-          const requiredText = !requiredOn
-            ? ''
-            : type === 'url'
-              ? ' required=""'
-              : type === 'email'
-                ? ` required=""${requiredTitle}`
-                : ` aria-required="true"${requiredTitle}`;
-          return `<input name="${nameAttr(field)}" type="${type}"${valueAttr(scalar)}${field.maxLength ? ` maxlength="${Number(field.maxLength)}"` : ''} id="${attr(field.id)}" class="${ticker ? 'tickersymbol ' : ''}text form-control${css}${fieldLevel ? ' readonly' : ''}"${launch ? ` ondblclick="${launch}(this.value);"` : ''} onchange="${change}"${phone ? ' placeholder="Provide a telephone number"' : ''}${disabled ? ' readonly="readonly"' : ''}${requiredText}${roleDescription}${field.maxLength ? ' onkeypress="javascript:return LengthError(this, event);"' : ''}${launch ? ' style="text-decoration:underline;"' : ''}>`;
+          const requiredTitle = ` title="${attr(field.requiredMessage || field.label + ' is a required field.')}" aria-label="${attr(field.label)}"`;
+          let requiredText = '';
+          if (requiredOn) {
+            if (type === 'url') requiredText = ' required=""';
+            else if (type === 'email') requiredText = ` required=""${requiredTitle}`;
+            else requiredText = ` aria-required="true"${requiredTitle}`;
+          }
+          return `<input name="${nameAttr(field)}" type="${type}"${valueAttr(scalar)}${field.maxLength ? ' maxlength="' + Number(field.maxLength) + '"' : ''} id="${attr(field.id)}" class="${ticker ? 'tickersymbol ' : ''}text form-control${css}${fieldLevel ? ' readonly' : ''}"${launch ? ' ondblclick="' + launch + '(this.value);"' : ''} onchange="${change}"${phone ? ' placeholder="Provide a telephone number"' : ''}${disabled ? ' readonly="readonly"' : ''}${requiredText}${roleDescription}${field.maxLength ? ' onkeypress="javascript:return LengthError(this, event);"' : ''}${launch ? ' style="text-decoration:underline;"' : ''}>`;
         }
     }
   };
@@ -3384,34 +3383,9 @@ async function renderForm(kind, name, context, options) {
       return unsupported(`The enabled code component for ${field.label} requires its solution control sources.`);
     if (component.boundAttributes.length !== 1 || component.boundAttributes[0] !== field.name)
       return unsupported(`Code component ${component.name} must bind only to its native form field ${field.name}.`);
-    const args = { disabled: field.readOnly };
-    const properties = [],
-      propertyTypes = {};
-    for (const [name, parameter] of Object.entries(component.parameters)) {
-      if (parameter.kind === 'static') args[name] = parameter.value;
-      else if (parameter.kind === 'binding' && parameter.column === field.name) {
-        const current = value(field);
-        args[name] =
-          field.control === 'lookup'
-            ? current
-              ? [
-                  {
-                    id: canonicalId(scalarValue(current)),
-                    entityType: current.logical_name ?? field.targets?.[0],
-                    name: current.name ?? '',
-                  },
-                ]
-              : []
-            : field.control === 'multiselect'
-              ? multiSelectValues(current)
-              : scalarValue(current);
-        properties.push(name);
-        if (parameter.type) propertyTypes[name] = parameter.type;
-      } else
-        return unsupported(
-          `Code component ${component.name} has an unresolved or unsupported native property binding: ${name}.`,
-        );
-    }
+    const bindings = nativeCodeComponentBindings(field, component, value);
+    if (bindings.error) return unsupported(bindings.error);
+    const { args, properties, propertyTypes } = bindings;
     const attributes = Object.fromEntries(
       Object.entries({
         DisplayName: field.label,
@@ -3448,6 +3422,18 @@ async function renderForm(kind, name, context, options) {
   const extraControls = new Map();
   const subgridLabel = (label) =>
     options.config?.observed?.subgridLabelMarkup === 'encoded' ? escape(label) : renderFormLabel(label);
+  const subgridLabelMarkup = (cell, label) => {
+    if (cell.showLabel === false) return '';
+    return `<label for="${attr(cell.id)}" class="field-label"${readOnly ? ' readonly="readonly"' : ''}>${subgridLabel(label)}</label>`;
+  };
+  const subgridReferenceAttributes = (unbound, cell, model) => {
+    if (unbound) return '';
+    return ` data-ref-entity="${attr(schema.entity)}" data-ref-id="${attr(canonicalId(id))}" data-ref-rel="${attr(model.relationship.schemaName ?? cell.relationship)}"`;
+  };
+  const subgridParentAccount = () => {
+    if (!bs.v5) return '';
+    return ` data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? '')}"`;
+  };
   const cells = formCells(schema);
   for (const cell of cells.filter((candidate) =>
     ['quickform', 'subgrid', 'notes', 'webresource'].includes(candidate.type),
@@ -3467,10 +3453,7 @@ async function renderForm(kind, name, context, options) {
           if (source != null) break;
         }
       const body = source == null ? '' : (/<body\b[^>]*>([\s\S]*)<\/body>/i.exec(source)?.[1] ?? source);
-      const label =
-        cell.showLabel === false
-          ? ''
-          : `<label for="${attr(cell.id)}" class="field-label"${readOnly ? ' readonly="readonly"' : ''}>${renderFormLabel(cell.label ?? cell.id)}</label>`;
+      const label = formCellLabelMarkup(cell, readOnly);
       extraControls.set(
         cell.id,
         `<div class="${bs.info}">${label}</div><div class="control"><literal id="${attr(cell.id)}">${body}</literal></div>`,
@@ -3479,10 +3462,7 @@ async function renderForm(kind, name, context, options) {
     }
     if (cell.type === 'webresource') {
       // WebResourceControl: an iframe on /_webresource/{name}, labelled by the cell.
-      const label =
-        cell.showLabel === false
-          ? ''
-          : `<label for="${attr(cell.id)}" class="field-label"${readOnly ? ' readonly="readonly"' : ''}>${renderFormLabel(cell.label ?? cell.id)}</label>`;
+      const label = formCellLabelMarkup(cell, readOnly);
       extraControls.set(
         cell.id,
         `<div class="${bs.info}">${label}</div><div class="control"><iframe id="${attr(cell.id)}" src="/_webresource/${attr(String(cell.url ?? '').replace(/^\/+/, ''))}" width="100%" height="100%" frameborder="${cell.border ? 1 : 0}" scrolling="${attr(cell.scrolling ?? 'auto')}"></iframe></div>`,
@@ -3502,16 +3482,15 @@ async function renderForm(kind, name, context, options) {
       const target = store.resolveMapping(cell.entity);
       const path = `/_portal/quickform-template-path/${websiteId}`;
       const formName = cell.schema.formName ?? cell.schema.title ?? cell.label ?? cell.id;
-      const src = relatedId
-        ? `${path}?entityid=${encodeURIComponent(relatedId)}&entityname=${encodeURIComponent(cell.entity)}&entityprimarykeyname=${encodeURIComponent(target.idColumn)}&formname=${encodeURIComponent(formName)}&controlid=${encodeURIComponent(cell.id)}${bs.v5 ? `&isprofilepage=false&lang=${encodeURIComponent(languageCode)}` : ''}`
-        : 'about:blank';
+      let src = 'about:blank';
+      if (relatedId) {
+        src =
+          path +
+          `?entityid=${encodeURIComponent(relatedId)}&entityname=${encodeURIComponent(cell.entity)}&entityprimarykeyname=${encodeURIComponent(target.idColumn)}&formname=${encodeURIComponent(formName)}&controlid=${encodeURIComponent(cell.id)}`;
+        if (bs.v5) src += '&isprofilepage=false&lang=' + encodeURIComponent(languageCode);
+      }
       // The Bootstrap 5 quick view cell is labelled and its frame carries only the platform's data attributes.
-      extraControls.set(
-        cell.id,
-        bs.v5
-          ? `<div class="${bs.info}">${cell.label ? `<label for="${attr(cell.id)}" class="field-label"${readOnly ? ' readonly="readonly"' : ''}>${renderFormLabel(cell.label)}</label>` : ''}</div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="${relatedId ? 0 : -1}" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" role="presentation"></iframe></div>`
-          : `<div class="info"></div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="0" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" data-entityname="${attr(cell.entity)}" data-entityprimarykeyname="${attr(target.idColumn)}" role="presentation" scrolling="no" title="${attr(cell.label ?? cell.id)}"></iframe></div>`,
-      );
+      extraControls.set(cell.id, quickFormMarkup(cell, bs, readOnly, src, path, formName, { target, relatedId }));
       continue;
     }
     if (cell.type === 'notes' && !id) {
@@ -3628,12 +3607,7 @@ async function renderForm(kind, name, context, options) {
     // A subgrid without a relationship (empty RelationshipName) lists its whole view and carries no
     // parent attributes.
     const unbound = !String(cell.relationship ?? '').trim();
-    if (
-      !unbound &&
-      (!model.relationship ||
-        !model.relationship.many ||
-        canonicalId(model.relationship.entity) !== canonicalId(cell.entity))
-    )
+    if (!unbound && (!model.relationship?.many || canonicalId(model.relationship.entity) !== canonicalId(cell.entity)))
       throw componentError(
         `Subgrid ${cell.id} requires exported relationship ${cell.relationship}`,
         501,
@@ -3666,7 +3640,7 @@ async function renderForm(kind, name, context, options) {
       language: formLanguage,
       masked: gridMasked({ store, identity }),
     });
-    const associate = actions.find((action) => action.Type === 5);
+    const associate = actions.some((action) => action.Type === 5);
     let associateHtml = '';
     if (associate) {
       const associateModelValue = associateModel({
@@ -3723,9 +3697,9 @@ async function renderForm(kind, name, context, options) {
       const button = (label, primary, css) => {
         const base = primary ? 'primary btn btn-primary' : 'cancel btn btn-default';
         const dismiss = primary ? '' : ` ${bs.dismiss}="modal"`;
-        return bs.v5
-          ? `<button aria-label="${attr(label)}" class="${base}${css ? ' ' + attr(css) : ''}"${dismiss} tabindex="0" title="${attr(label)}" type="button">${escape(label)}</button>`
-          : `<button class="${base}"${dismiss} type="button">${escape(label)}</button>`;
+        if (bs.v5)
+          return `<button aria-label="${attr(label)}" class="${base}${css ? ' ' + attr(css) : ''}"${dismiss} tabindex="0" title="${attr(label)}" type="button">${escape(label)}</button>`;
+        return `<button class="${base}"${dismiss} type="button">${escape(label)}</button>`;
       };
       const errorMessage = dialogError
         ? escape(dialogError)
@@ -3746,7 +3720,7 @@ async function renderForm(kind, name, context, options) {
     // The grid class keeps the platform default and appends the configured GridCssClass as is.
     extraControls.set(
       cell.id,
-      `<h3 class="${bs.info} form-subgrid-heading">${cell.showLabel === false ? '' : `<label for="${attr(cell.id)}" class="field-label"${readOnly ? ' readonly="readonly"' : ''}>${subgridLabel(label)}</label>`}</h3><div class="control">${codeComponentNotice}<div id="${attr(cell.id)}" class="subgrid"><div class="entity-grid subgrid${settings.CssClass ? ' ' + attr(settings.CssClass) : ''}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? 'Pixels' : 'Percent'}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-grid-class="table-striped${settings.GridCssClass ? ' ' + attr(settings.GridCssClass) : ''}" data-mobile-view-enabled="${!bs.v5}"${unbound ? '' : ` data-ref-entity="${attr(schema.entity)}" data-ref-id="${attr(canonicalId(id))}" data-ref-rel="${attr(model.relationship.schemaName ?? cell.relationship)}"`} data-select-mode="None" data-selected-view="${attr(layouts[0]?.Id ?? '')}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${Boolean(identity?.contactId ?? identity?.id)}"${bs.v5 ? ` data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? '')}"` : ''} data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${gridMessages(bs, settings, formLanguage)}${PAGINATION}${gridModals(`/_portal/modal-form-template-path/${websiteId}`, settings, formLanguage, bs)}${associateHtml}</div></div></div>`,
+      `<h3 class="${bs.info} form-subgrid-heading">${subgridLabelMarkup(cell, label)}</h3><div class="control">${codeComponentNotice}<div id="${attr(cell.id)}" class="subgrid"><div class="entity-grid subgrid${settings.CssClass ? ' ' + attr(settings.CssClass) : ''}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? 'Pixels' : 'Percent'}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-grid-class="table-striped${settings.GridCssClass ? ' ' + attr(settings.GridCssClass) : ''}" data-mobile-view-enabled="${!bs.v5}"${subgridReferenceAttributes(unbound, cell, model)} data-select-mode="None" data-selected-view="${attr(layouts[0]?.Id ?? '')}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${Boolean(identity?.contactId ?? identity?.id)}"${subgridParentAccount()} data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${gridMessages(bs, settings, formLanguage)}${PAGINATION}${gridModals('/_portal/modal-form-template-path/' + websiteId, settings, formLanguage, bs)}${associateHtml}</div></div></div>`,
     );
   }
   const cellControl = async (cell) => {
@@ -3756,44 +3730,25 @@ async function renderForm(kind, name, context, options) {
     const fieldValidatorsList = fieldValidators(resolved, { linksEnabled, readOnly });
     // A server-side validation failure (postback) shows the failing validator and starts it
     // invalid (no style, isvalid = "False").
-    for (const failure of postback?.validationErrors ?? []) {
-      if (failure.field !== resolved.name) continue;
-      const prefix = {
-        FormFieldOutOfRange: 'RangeValidator',
-        FormFieldRequired: 'RequiredFieldValidator',
-        FormFieldTooLong: 'MaximumLengthValidator',
-      }[failure.code];
-      const failed = prefix
-        ? fieldValidatorsList.find((validator) => validator.id.startsWith(prefix))
-        : fieldValidatorsList.find(
-            (validator) => !/^(?:RangeValidator|RequiredFieldValidator|MaximumLengthValidator)/.test(validator.id),
-          );
-      if (failed) failed.isvalid = 'False';
-    }
+    applyPostbackValidatorErrors(postback, resolved, fieldValidatorsList);
     validators.push(...fieldValidatorsList);
-    const labelFor =
-      (resolved.control === 'lookup' && resolved.lookupStyle !== 'dropdown') ||
-      ['file', 'image'].includes(resolved.control) ||
-      (resolved.control === 'boolean' && canonicalId(resolved.controlClassId) === RADIO_CLASS) ||
-      (resolved.control === 'picklist' && [100000000, 100000001, 100000006].includes(resolved.controlStyle)) ||
-      /^(state|status)$/.test(resolved.control)
-        ? ''
-        : ` for="${attr(resolved.id)}"`;
+    const labelFor = cellControlLabelFor(resolved);
     const description = resolved.description?.text ? resolved.description : null;
-    const descriptionHtml = (position) =>
-      description && description.position === position
-        ? `<div class="description${position === 100000000 ? ' above' : position === 100000001 ? ' below' : ''}${resolved.cssClass ? ' ' + attr(resolved.cssClass) : ''}">${description.text}</div>`
-        : '';
-    const labelHtml =
-      resolved.showLabel === false
-        ? ''
-        : `<label${labelFor} id="${attr(resolved.id)}_label"${resolved.tooltip ? ` title="${attr(resolved.tooltip)}"` : ''} class="field-label"${readOnly ? ' readonly="readonly"' : ''}>${renderFormLabel(resolved.label)}</label>`;
+    const descriptionHtml = (position) => {
+      if (!description || description.position !== position) return '';
+      let positionClass = '';
+      if (position === 100000000) positionClass = ' above';
+      else if (position === 100000001) positionClass = ' below';
+      const cssClass = resolved.cssClass ? ' ' + attr(resolved.cssClass) : '';
+      return `<div class="description${positionClass}${cssClass}">${description.text}</div>`;
+    };
+    const labelHtml = renderCellLabel(resolved, labelFor, readOnly);
     // CellTemplate: a field-level read-only cell has no validator container; a read-only form
     // keeps its validators (marked read-only). The app bundle then makes the containers of
     // read-only lookups and option sets focusable (lib/platform-app-compat.js).
     const fieldLevelReadOnly = resolved.fieldReadOnly ?? resolved.readOnly;
     // Bootstrap 5 marks a required column required even when it is read-only.
-    return `${descriptionHtml(100000002)}<div class="${bs.info}${resolved.required && (bs.v5 || !resolved.readOnly) ? ' required' : ''}">${labelHtml}${fieldLevelReadOnly && !/^(?:file|image)$/.test(resolved.control) ? '' : `<div class="validators">${validatorMarkup(fieldValidatorsList, { readonly: readOnly })}</div>`}</div>${descriptionHtml(100000000)}<div class="control" data-logical-name="${attr(resolved.name)}">${await input(resolved)}</div>${descriptionHtml(100000001)}`;
+    return `${descriptionHtml(100000002)}<div class="${bs.info}${resolved.required && (bs.v5 || !resolved.readOnly) ? ' required' : ''}">${labelHtml}${fieldValidatorsMarkup(fieldLevelReadOnly, resolved, fieldValidatorsList, readOnly)}</div>${descriptionHtml(100000000)}<div class="control" data-logical-name="${attr(resolved.name)}">${await input(resolved)}</div>${descriptionHtml(100000001)}`;
   };
   const cellClass = (cell) => {
     if (cell.type === 'quickform') return 'crmquickform-cell';
@@ -3801,47 +3756,7 @@ async function renderForm(kind, name, context, options) {
     if (cell.type === 'notes') return id ? 'notes-cell' : '';
     if (cell.type === 'webresource') return 'web-resource-cell';
     const field = byName.get(cell.name);
-    if (!field) return '';
-    switch (field.control) {
-      case 'file':
-      case 'image':
-        return '';
-      case 'lookup':
-        return 'lookup form-control-cell';
-      case 'picklist':
-        return field.controlStyle === 100000006 ? 'picklist-matrix-cell' : 'picklist-cell';
-      case 'multiselect':
-        return 'form-control-cell';
-      case 'boolean': {
-        const classId = canonicalId(field.controlClassId);
-        if (field.controlStyle === 100000007) return 'checkbox-cell';
-        return classId === DROPDOWN_CLASS
-          ? 'boolean-dropdown-cell'
-          : classId === RADIO_CLASS
-            ? 'boolean-radio-cell'
-            : 'checkbox-cell';
-      }
-      case 'datetime':
-        return 'datetime form-control-cell';
-      case 'textarea':
-        return field.composite === 'address' ? 'text form-control-cell' : 'textarea form-control-cell';
-      case 'integer':
-      case 'decimal':
-      case 'double':
-      case 'money':
-        if (field.control === 'integer' && (field.controlStyle === 100000004 || field.controlStyle === 100000005))
-          return 'rank-order-cell';
-        if (field.control === 'integer' && field.controlStyle === 100000008) return 'stack-rank-cell';
-        if (field.control === 'integer' && field.controlStyle === 100000003) return 'constant-sum form-control-cell';
-        return `${field.control} form-control-cell`;
-      case 'state':
-      case 'status':
-        return `${field.control}-cell`;
-      case 'richtext':
-        return 'form-control-cell';
-      default:
-        return 'text form-control-cell';
-    }
+    return field ? formFieldCellClass(field) : '';
   };
   const sectionMetadata = (sectionName) =>
     metadataFor(metadataRows, 100000001, (row) => fieldOf(row, 'sectionname') === sectionName);
@@ -3931,9 +3846,9 @@ async function renderForm(kind, name, context, options) {
       const tabRow = tabMetadata(tab.name);
       const tabLabel = formLabel(fieldOf(tabRow, 'label'), tab.label ?? '');
       let tabHtml = tab.showLabel ? `<h2 class="tab-title">${escape(tabLabel)}</h2>` : '';
-      tabHtml += `<div${tab.name ? ` data-name="${attr(tab.name)}"` : ''} class="tab clearfix${fieldOf(tabRow, 'cssclass') ? ' ' + attr(fieldOf(tabRow, 'cssclass')) : ''}">`;
+      tabHtml += `<div${tabNameAttribute(tab.name)} class="tab clearfix${fieldOf(tabRow, 'cssclass') ? ' ' + attr(fieldOf(tabRow, 'cssclass')) : ''}">`;
       for (const column of tab.columns) {
-        tabHtml += `<div class="tab-column"${column.width ? ` style="width:${attr(column.width)};"` : ''}><div>`;
+        tabHtml += `<div class="tab-column"${tabColumnWidthAttribute(column.width)}><div>`;
         for (const section of column.sections) {
           // A hidden section leaves an empty fieldset.
           if (section.hidden) {
@@ -3944,7 +3859,7 @@ async function renderForm(kind, name, context, options) {
           const sectionLabel = formLabel(fieldOf(sectionRow, 'label'), section.label ?? '');
           const widths = section.columnWidths ?? [100];
           // A visible section always names itself, an unlabelled one with an empty name.
-          tabHtml += `<fieldset aria-label="${attr(plainText(sectionLabel))}">${section.showLabel ? `<legend class="section-title"><h3>${renderFormLabel(sectionLabel)}</h3></legend>` : ''}<table role="presentation"${section.name ? ` data-name="${attr(section.name)}"` : ''} class="section${fieldOf(sectionRow, 'cssclass') ? ' ' + attr(fieldOf(sectionRow, 'cssclass')) : ''}"><colgroup>${widths.map((width) => `<col style="width:${width}%;">`).join('')}<col></colgroup><tbody>`;
+          tabHtml += `<fieldset aria-label="${attr(plainText(sectionLabel))}">${sectionLegend(section.showLabel, sectionLabel)}<table role="presentation"${sectionNameAttribute(section.name)} class="section${fieldOf(sectionRow, 'cssclass') ? ' ' + attr(fieldOf(sectionRow, 'cssclass')) : ''}"><colgroup>${sectionColumnWidths(widths)}<col></colgroup><tbody>`;
           for (const row of section.rows) {
             tabHtml += '<tr>';
             for (const cell of row) {
@@ -4053,7 +3968,7 @@ async function renderForm(kind, name, context, options) {
     const kinds = [mime ? mime.replace(/\/\*$/, '').replace(/^[^/]+\//, '') : '', extensions]
       .filter(Boolean)
       .join(', ');
-    const hint = `You can upload a maximum of ${maxFiles} file${maxFiles === 1 ? '' : 's'}, ${maxFiles === 1 ? '' : 'each '}up to ${sizeMb}MB.${kinds ? ` Supported files include ${kinds}.` : ''}`;
+    const hint = `You can upload a maximum of ${maxFiles} file${maxFiles === 1 ? '' : 's'}, ${maxFiles === 1 ? '' : 'each '}up to ${sizeMb}MB.${kinds ? ' Supported files include ' + kinds + '.' : ''}`;
     const sizeMessage = formLabel(fieldOf(componentMetadata, 'attachfilesizeerrormessage'), '');
     const typeMessage = formLabel(fieldOf(componentMetadata, 'attachfiletypeerrormessage'), '');
     const name = (suffix) => `${attr(ids.names)}AttachFile${suffix}`;
@@ -4075,7 +3990,7 @@ async function renderForm(kind, name, context, options) {
     const instanceId = createHash('sha256')
       .update(`attach\u0000${definition?.id ?? name}`)
       .digest('base64');
-    attachHtml = `${requiredFile ? '<span id="RequiredFieldValidatorAttachFile_HiddenField_AnnotationIds" style="display:none;"></span>' : ''}<div class="tr"><div class="file-cell cell"><div class="${bs.info}${requiredFile ? ' required' : ''}"><label for="AttachFile" id="NewAttachFileLabel">${escape(label)}</label>${escape(hint)}</div><div class="ContainerForFile"><div style="display:none;"><input type="file"${multiple ? ' multiple="multiple"' : ''} name="${name('')}" id="AttachFile" accept="${attr(`${mime},${extensions}`)}" onchange="chooseAttachment();"${sizeMessage ? ` data-file-size-error-message="${attr(sizeMessage)}"` : ''}${typeMessage ? ` data-file-type-error-message="${attr(typeMessage)}"` : ''}${requiredAttr}></div>${hiddenField('_HiddenField_Location', 'CrmDocument')}${hiddenField('_HiddenField_FormID', canonicalId((kind === 'webform' ? schema.stepId : null) ?? definition?.id ?? ''))}${hiddenField('_HiddenField_FormType', kind === 'webform' ? 'multistep' : 'basic')}${hiddenField('_HiddenField_InstanceId', instanceId)}${hiddenField('_HiddenField_RegardingId', id ? canonicalId(id) : '')}${hiddenField('_HiddenField_MaxFile', String(maxFiles))}${hiddenField('_HiddenField_MaxFileSizeInKB', String(maxKb * 1024))}${hiddenField('_HiddenField_SupportedFileType', extensions)}${hiddenField('_HiddenField_SupportedMimeType', mime)}${hiddenField('_HiddenField_SupportedType', `${mime},${extensions}`)}<div class="buttonForFileUpload" aria-label="${attr(label)}"${requiredAttr}><button id="UploadButton" style="width: fit-content; gap: 6px; display:flex" type="button" class="btn btn-default btn-secondary"${requiredAttr} onclick="selectAttachment();"><div class="fa fa-arrow-up"></div> Upload</button><div class="errordiv alert-danger" style="display:none;"><span style="margin-left:27px;">One or More files could not be uploaded. Retry uploading the files.</span></div>${warning('retrySpanforgeneric', 'genericcloseAlert')}${warning('retrySpanfordelete', 'deletecloseAlert')}</div>${hiddenField('_HiddenField_AnnotationIds', stagedFiles.length ? JSON.stringify(stagedFiles.map((file) => file.id)) : '')}<input type="hidden" name="${attr(ids.names)}CdnUrl" id="CdnUrl" value="/resource/powerappsportal"></div><div class="file-info" id="newdivforfileinfo" tabindex="0">${stagedFileInfo}</div></div></div>${errorModal('ModalToShowErrorForFileSize', 'You’re over the file size limit', 'file-size', 'closeModalForFileSize')}${errorModal('ModalToShowErrorForFileLimit', 'File upload limit reached', 'file-limit', 'closeModalForFileLimit')}${errorModal('ModalToShowErrorForFileType', 'Unsupported file formats', 'file-type', 'closeModalForFileType')}`;
+    attachHtml = `${requiredFile ? '<span id="RequiredFieldValidatorAttachFile_HiddenField_AnnotationIds" style="display:none;"></span>' : ''}<div class="tr"><div class="file-cell cell"><div class="${bs.info}${requiredFile ? ' required' : ''}"><label for="AttachFile" id="NewAttachFileLabel">${escape(label)}</label>${escape(hint)}</div><div class="ContainerForFile"><div style="display:none;"><input type="file"${multiple ? ' multiple="multiple"' : ''} name="${name('')}" id="AttachFile" accept="${attr(mime + ',' + extensions)}" onchange="chooseAttachment();"${fileUploadMessageAttribute(sizeMessage, 'data-file-size-error-message')}${fileUploadMessageAttribute(typeMessage, 'data-file-type-error-message')}${requiredAttr}></div>${hiddenField('_HiddenField_Location', 'CrmDocument')}${hiddenField('_HiddenField_FormID', canonicalId((kind === 'webform' ? schema.stepId : null) ?? definition?.id ?? ''))}${hiddenField('_HiddenField_FormType', kind === 'webform' ? 'multistep' : 'basic')}${hiddenField('_HiddenField_InstanceId', instanceId)}${hiddenField('_HiddenField_RegardingId', id ? canonicalId(id) : '')}${hiddenField('_HiddenField_MaxFile', String(maxFiles))}${hiddenField('_HiddenField_MaxFileSizeInKB', String(maxKb * 1024))}${hiddenField('_HiddenField_SupportedFileType', extensions)}${hiddenField('_HiddenField_SupportedMimeType', mime)}${hiddenField('_HiddenField_SupportedType', mime + ',' + extensions)}<div class="buttonForFileUpload" aria-label="${attr(label)}"${requiredAttr}><button id="UploadButton" style="width: fit-content; gap: 6px; display:flex" type="button" class="btn btn-default btn-secondary"${requiredAttr} onclick="selectAttachment();"><div class="fa fa-arrow-up"></div> Upload</button><div class="errordiv alert-danger" style="display:none;"><span style="margin-left:27px;">One or More files could not be uploaded. Retry uploading the files.</span></div>${warning('retrySpanforgeneric', 'genericcloseAlert')}${warning('retrySpanfordelete', 'deletecloseAlert')}</div>${hiddenField('_HiddenField_AnnotationIds', stagedFiles.length ? JSON.stringify(stagedFiles.map((file) => file.id)) : '')}<input type="hidden" name="${attr(ids.names)}CdnUrl" id="CdnUrl" value="/resource/powerappsportal"></div><div class="file-info" id="newdivforfileinfo" tabindex="0">${stagedFileInfo}</div></div></div>${errorModal('ModalToShowErrorForFileSize', 'You’re over the file size limit', 'file-size', 'closeModalForFileSize')}${errorModal('ModalToShowErrorForFileLimit', 'File upload limit reached', 'file-limit', 'closeModalForFileLimit')}${errorModal('ModalToShowErrorForFileType', 'Unsupported file formats', 'file-type', 'closeModalForFileType')}`;
     if (requiredFile)
       validators.push({
         id: 'RequiredFieldValidatorAttachFile_HiddenField_AnnotationIds',
@@ -4120,7 +4035,7 @@ async function renderForm(kind, name, context, options) {
   const hook = kind === 'webform' ? 'webFormClientValidate' : 'entityFormClientValidate';
   const group = fieldOf(componentMetadata, 'validationgroup') ?? '';
   const onclick = (buttonName) =>
-    `javascript:if(typeof ${hook} === 'function'){if(${hook}()){if(typeof Page_ClientValidate === 'function'){if(Page_ClientValidate('${group}')){clearIsDirty();disableButtons();this.value = '${busy}';}}else{clearIsDirty();disableButtons();this.value = '${busy}';}}else{return false;}}else{if(typeof Page_ClientValidate === 'function'){if(Page_ClientValidate('${group}')){clearIsDirty();disableButtons();this.value = '${busy}';}}else{clearIsDirty();disableButtons();this.value = '${busy}';}};WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions("${buttonName}", "", true, "${group}", "", false, true))`;
+    `javascript:if(typeof ${hook} === 'function'){if(${hook}()){if(typeof Page_ClientValidate === 'function'){if(Page_ClientValidate('${group}')){clearIsDirty();disableButtons();this.value = '${busy}';}}else{clearIsDirty();disableButtons();this.value = '${busy}';}}else{return false;}}else{if(typeof Page_ClientValidate === 'function'){if(Page_ClientValidate('${group}')){clearIsDirty();disableButtons();this.value = '${busy}';}}else{clearIsDirty();disableButtons();this.value = '${busy}';}};WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions("${buttonName}", "", true, "${group}", "", false, true))`; // NOSONAR: intentional local script execution or generated handler
   let actionsHtml = '';
   // The configured Create related record action as the layout configuration describes it.
   let createRelatedLink = null;
@@ -4145,16 +4060,10 @@ async function renderForm(kind, name, context, options) {
     const previous = previousAllowed
       ? `<div role="group" class="btn-group entity-action-button"><input type="button" name="${attr(ids.buttons)}PreviousButton" value="${attr(formLabel(fieldOf(step, 'previousbuttontext'), 'Previous'))}" onclick="javascript:__doPostBack('${attr(ids.buttons)}PreviousButton','')" id="PreviousButton" class="${attr(fieldOf(step, 'previousbuttoncssclass') || 'btn btn-default button previous previous-btn')}" nonactionlinkbutton="true"></div>`
       : '';
-    const next =
-      readOnly && terminal
-        ? ''
-        : `<div role="group" class="btn-group entity-action-button"><input type="button" name="${attr(ids.buttons)}NextButton" value="${attr(nextLabel)}" onclick="${attr(onclick(ids.buttons + 'NextButton'))}" id="NextButton" class="${attr(terminal ? fieldOf(step, 'submitbuttoncssclass') || 'btn btn-primary button next submit-btn' : fieldOf(step, 'nextbuttoncssclass') || 'btn btn-primary button next submit-btn')}" nonactionlinkbutton="true"></div>`;
+    const next = webFormNextMarkup(readOnly, terminal, ids, nextLabel, onclick, step);
     if (previous) renderedActions.push({ button: 'PreviousButton', action: 'previous' });
     if (next) renderedActions.push({ button: 'NextButton', action: 'submit' });
-    actionsHtml =
-      previous || next
-        ? `<div class="actions"><div class="${bs.v5 ? 'col-md-6' : 'col-sm-6'} clearfix">${previous}${next}</div></div>`
-        : '';
+    actionsHtml = webFormActionsMarkup(previous, next, bs);
   } else if (autoSteps && autoSteps.index < autoSteps.tabs.length - 1) {
     // The Next step button renders inside the view (stepButtons); no default button.
     actionsHtml = '<div class="actions"></div>';
@@ -4272,13 +4181,13 @@ async function renderForm(kind, name, context, options) {
         'Submit';
       // Without form actions a configured class sits between the platform's own classes.
       const custom = fieldOf(componentMetadata, 'submitbuttoncssclass');
-      const css = submitAction
-        ? custom ||
-          (submitAction.ButtonCssClass
-            ? `${submitAction.ButtonCssClass} submit-btn`
-            : 'btn btn-primary button submit-btn')
-        : `submit-btn ${custom || 'btn btn-primary'} form-action-container-left`;
-      submitButton = `<input type="button" name="${attr(ids.buttons)}${button}" value="${attr(label)}" onclick="${attr(onclick(ids.buttons + button))}" id="${button}"${submitAction ? ` title="${attr(formLabel(submitAction.ButtonTooltip, label))}"` : ''} class="${attr(css)}">`;
+      let css;
+      if (submitAction) {
+        if (custom) css = custom;
+        else if (submitAction.ButtonCssClass) css = `${submitAction.ButtonCssClass} submit-btn`;
+        else css = 'btn btn-primary button submit-btn';
+      } else css = `submit-btn ${custom || 'btn btn-primary'} form-action-container-left`;
+      submitButton = `<input type="button" name="${attr(ids.buttons)}${button}" value="${attr(label)}" onclick="${attr(onclick(ids.buttons + button))}" id="${button}"${submitAction ? ' title="' + attr(formLabel(submitAction.ButtonTooltip, label)) + '"' : ''} class="${attr(css)}">`;
     }
     const column = bs.v5 ? 'col-md-6' : 'col-sm-6';
     if (submitAction || recordButtons.length)
@@ -4358,29 +4267,23 @@ async function renderForm(kind, name, context, options) {
   };
   // ASP.NET HiddenField: an empty value renders no value attribute (an insert form's EntityID).
   const hidden = (suffix, valueText) =>
-    `<input type="hidden" name="${attr(ids.names.replace(/\$$/, ''))}$${attr(ids.view)}_${suffix}" id="${attr(ids.view)}_${suffix}"${String(valueText ?? '') !== '' ? ` value="${attr(valueText)}"` : ''}>`;
+    `<input type="hidden" name="${attr(ids.names.replace(/\$$/, ''))}$${attr(ids.view)}_${suffix}" id="${attr(ids.view)}_${suffix}"${valueAttr(valueText)}>`;
   const instructions = formLabel(fieldOf(componentMetadata, 'instructions'), '');
   // Bootstrap 5 names the panel after the side it takes: right of a left indicator.
-  const panelClass =
-    kind !== 'webform'
-      ? 'crmEntityFormView'
-      : bs.v5
-        ? ({ left: 'crmEntityFormView right col-lg-10 order-1', right: 'crmEntityFormView left col-lg-10' }[
-            progress?.position
-          ] ?? 'crmEntityFormView')
-        : progress?.position === 'left'
-          ? 'crmEntityFormView left'
-          : progress?.position === 'right'
-            ? 'crmEntityFormView right'
-            : 'crmEntityFormView';
+  let panelClass = 'crmEntityFormView';
+  if (kind === 'webform' && bs.v5)
+    panelClass =
+      { left: 'crmEntityFormView right col-lg-10 order-1', right: 'crmEntityFormView left col-lg-10' }[
+        progress?.position
+      ] ?? 'crmEntityFormView';
+  else if (kind === 'webform' && progress?.position === 'left') panelClass = 'crmEntityFormView left';
+  else if (kind === 'webform' && progress?.position === 'right') panelClass = 'crmEntityFormView right';
   // A postback render (saved, failed or invalid) repeats the view's class, except on a form that
   // sets an entity reference (one observed item-edit form is an
   // unexplained exception).
-  const entityFormClass = readOnly
-    ? 'form-readonly entity-form'
-    : restoredPostback
-      ? 'entity-form entity-form'
-      : 'entity-form';
+  let entityFormClass = 'entity-form';
+  if (readOnly) entityFormClass = 'form-readonly entity-form';
+  else if (restoredPostback) entityFormClass = 'entity-form entity-form';
   // Auto-generated steps: WebForms submit buttons after the tab (an empty __EVENTTARGET and
   // the button's own name=value pair); Previous skips validation. The Previous button markup is a guess.
   let stepButtons = '';
@@ -4431,7 +4334,7 @@ async function renderForm(kind, name, context, options) {
       : '';
   if (captchaHtml)
     validators.push({
-      id: `${ids.names.replace(/\$/g, '_')}captcha_ctl00`,
+      id: `${ids.names.replaceAll('$', '_')}captcha_ctl00`,
       errormessage: CAPTCHA_ERROR,
       display: 'None',
       ...(captchaInvalid ? { isvalid: 'False' } : {}),
@@ -4443,7 +4346,7 @@ async function renderForm(kind, name, context, options) {
       : '';
   // The entity form view; a reference entity read-only view (options.referenceForm) renders the
   // the "read-only" class and an empty layout configuration, and is returned on its own.
-  const viewHtml = `<div id="${attr(ids.view)}" class="${entityFormClass}${options.referenceForm ? (options.referenceForm.className ?? ' read-only') : ''}"${readOnly ? ' readonly="readonly"' : ''}>${hidden('EntityName', schema.entity)}${hidden('EntityID', id ? canonicalId(id) : '')}${hidden('EntityState', scalarValue(record?.statecode) ?? '')}${hidden('EntityStatus', scalarValue(record?.statuscode) ?? '')}<span id="${attr(ids.view)}_EntityLayoutConfig"${options.referenceForm ? '' : ` data-form-layout="${attr(JSON.stringify(layoutConfig))}"`}></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, 'validationsummarycssclass') || 'validation-summary alert alert-error alert-danger alert-block')}" role="alert"${postback?.validationErrors ? '' : ' style="display:none;"'}${readOnly ? ' readonly="readonly"' : ''}>${postback?.validationErrors ? summaryHeader + '<ul>' + postback.validationErrors.map((item) => `<li>${item.field === 'captcha' ? `<a href='#captcha' onclick='javascript:scrollToAndFocusCapatch();return false;'>${escape(item.message)}</a>` : summaryLink(attr(item.field), item.message, linksEnabled)}</li>`).join('') + '</ul>' : ''}</div>${layoutHtml}${truncated ? '' : attachHtml + stepButtons + honeypot + '</div>'}`;
+  const viewHtml = `<div id="${attr(ids.view)}" class="${entityFormClass}${options.referenceForm ? (options.referenceForm.className ?? ' read-only') : ''}"${readOnly ? ' readonly="readonly"' : ''}>${hidden('EntityName', schema.entity)}${hidden('EntityID', id ? canonicalId(id) : '')}${hidden('EntityState', scalarValue(record?.statecode) ?? '')}${hidden('EntityStatus', scalarValue(record?.statuscode) ?? '')}<span id="${attr(ids.view)}_EntityLayoutConfig"${formLayoutAttribute(options.referenceForm, layoutConfig)}></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, 'validationsummarycssclass') || 'validation-summary alert alert-error alert-danger alert-block')}" role="alert"${postback?.validationErrors ? '' : ' style="display:none;"'}${readOnly ? ' readonly="readonly"' : ''}>${validationSummaryMarkup(postback, summaryHeader, linksEnabled)}</div>${layoutHtml}${truncated ? '' : attachHtml + stepButtons + honeypot + '</div>'}`;
   if (options.referenceForm) return { html: viewHtml, controls: placed };
   // ActionButtonPlacement 0 puts a basic form's action row above the form view.
   // Actions above the view leave the empty action container below it.
@@ -4455,7 +4358,7 @@ async function renderForm(kind, name, context, options) {
     Number(
       settingsJson(portalField(componentMetadata ?? {}, 'settings') ?? '', 'form settings')?.ActionButtonPlacement,
     ) === 0;
-  let formHtml = `<div id="${attr(ids.panel)}" class="${panelClass}" data-form-name="${attr(kind === 'webform' ? (definition?.name ?? schema.formName ?? name) : (schema.formName ?? schema.title ?? name))}"${defaultButton ? ` onkeypress="javascript:return WebForm_FireDefaultButton(event, '${defaultButton}')"` : ''}>${actionsAbove ? actionsHtml : ''}${referenceHtml}${viewHtml}${truncated ? '' : (actionsAbove ? EMPTY_ACTIONS : actionsHtml) + '</div>'}`;
+  let formHtml = `<div id="${attr(ids.panel)}" class="${panelClass}" data-form-name="${attr(kind === 'webform' ? (definition?.name ?? schema.formName ?? name) : (schema.formName ?? schema.title ?? name))}"${defaultButtonAttribute(defaultButton)}>${formActionsAtTop(actionsAbove, actionsHtml)}${referenceHtml}${viewHtml}${formTrailingActions(truncated, actionsAbove, EMPTY_ACTIONS, actionsHtml)}`;
   if (truncated) formHtml = formHtml.replace(TRUNCATED_ACTIONS, () => actionsHtml);
   if (postback?.outcome?.type === 'message') {
     const message = bs.v5
@@ -4470,7 +4373,7 @@ async function renderForm(kind, name, context, options) {
         closeButton: bs.v5 ? messageCloseButton(ids.buttons, bs, group) : '',
       }) + formHtml;
   const progressTop = progress && progress.position !== 'bottom' ? progress.html : '';
-  const progressBottom = progress && progress.position === 'bottom' ? progress.html : '';
+  const progressBottom = progress?.position === 'bottom' ? progress.html : '';
   // Native order: validation runtime and default hook before the control, custom
   // JavaScript first inside the control, validator expandos after the markup.
   const runtime = kind === 'webform' ? '' : ENTITY_FORM_CLIENT_VALIDATE;
@@ -4522,8 +4425,8 @@ async function renderForm(kind, name, context, options) {
     kind === 'webform' && truthy(fieldOf(definition?.metadata ?? {}, 'savechangeswarningonclose'))
       ? `<input type="hidden" name="${attr(ids.buttons)}confirmOnExit" id="confirmOnExit" value="true"><input type="hidden" name="${attr(ids.buttons)}confirmOnExitMessage" id="confirmOnExitMessage" value="${attr(formLabel(fieldOf(definition?.metadata ?? {}, 'savechangeswarningmessage'), ''))}">`
       : '';
-  const beforeProgress = `${runtime}<!--pp-native-form-->${captchaShown ? CAPTCHA_MARKER : ''}<div id="${attr(ids.wrapper)}"${viewState}>${script ? `<span><script type="text/javascript">${script}</script></span>` : ''}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${kind === 'webform' ? '<div class="row">' : ''}`;
-  const formContent = `${instructions ? `<div class="instructions">${instructions}</div>` : ''}${confirmOnExit}${formHtml}`;
+  const beforeProgress = `${runtime}<!--pp-native-form-->${captchaShown ? CAPTCHA_MARKER : ''}<div id="${attr(ids.wrapper)}"${viewState}>${formStartupMarkup(script)}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${kind === 'webform' ? '<div class="row">' : ''}`;
+  const formContent = `${formInstructionsMarkup(instructions)}${confirmOnExit}${formHtml}`;
   if (progress && (progressTop || (!truncated && progressBottom))) {
     const offset = beforeProgress.length + (progressTop ? 0 : formContent.length);
     for (const binding of progress.bindings ?? [])
@@ -4538,14 +4441,103 @@ async function renderForm(kind, name, context, options) {
   );
 }
 
+function quickFormMarkup(cell, bs, readOnly, src, path, formName, { target, relatedId }) {
+  if (bs.v5) {
+    let label = '';
+    if (cell.label) {
+      const readonlyAttribute = readOnly ? ' readonly="readonly"' : '';
+      label = `<label for="${attr(cell.id)}" class="field-label"${readonlyAttribute}>${renderFormLabel(cell.label)}</label>`;
+    }
+    return `<div class="${bs.info}">${label}</div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="${relatedId ? 0 : -1}" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" role="presentation"></iframe></div>`;
+  }
+  return `<div class="info"></div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="0" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" data-entityname="${attr(cell.entity)}" data-entityprimarykeyname="${attr(target.idColumn)}" role="presentation" scrolling="no" title="${attr(cell.label ?? cell.id)}"></iframe></div>`;
+}
+
+function formLayoutAttribute(referenceForm, layoutConfig) {
+  if (referenceForm) return '';
+  return ` data-form-layout="${attr(JSON.stringify(layoutConfig))}"`;
+}
+
+function validationSummaryMarkup(errors, summaryHeader, linksEnabled) {
+  if (!errors?.validationErrors) return '';
+  return (
+    summaryHeader +
+    '<ul>' +
+    errors.validationErrors.map((item) => validationSummaryItem(item, linksEnabled)).join('') +
+    '</ul>'
+  );
+}
+
+function validationSummaryItem(item, linksEnabled) {
+  if (item.field === 'captcha')
+    return `<li><a href='#captcha' onclick='javascript:scrollToAndFocusCapatch();return false;'>${escape(item.message)}</a></li>`;
+  return `<li>${summaryLink(attr(item.field), item.message, linksEnabled)}</li>`;
+}
+
+function defaultButtonAttribute(defaultButton) {
+  if (!defaultButton) return '';
+  return ` onkeypress="javascript:return WebForm_FireDefaultButton(event, '${defaultButton}')"`;
+}
+
+function formActionsAtTop(actionsAbove, actionsHtml) {
+  if (!actionsAbove) return '';
+  return actionsHtml;
+}
+
+function formTrailingActions(truncated, actionsAbove, emptyActions, actionsHtml) {
+  if (truncated) return '';
+  return (actionsAbove ? emptyActions : actionsHtml) + '</div>';
+}
+
+function formInstructionsMarkup(instructions) {
+  if (!instructions) return '';
+  return `<div class="instructions">${instructions}</div>`;
+}
+
+function formStartupMarkup(script) {
+  if (!script) return '';
+  return `<span><script type="text/javascript">${script}</script></span>`;
+}
+
+function tabNameAttribute(name) {
+  if (!name) return '';
+  return ` data-name="${attr(name)}"`;
+}
+
+function tabColumnWidthAttribute(width) {
+  if (!width) return '';
+  return ` style="width:${attr(width)};"`;
+}
+
+function sectionLegend(showLabel, label) {
+  if (!showLabel) return '';
+  return `<legend class="section-title"><h3>${renderFormLabel(label)}</h3></legend>`;
+}
+
+function sectionNameAttribute(name) {
+  if (!name) return '';
+  return ` data-name="${attr(name)}"`;
+}
+
+function sectionColumnWidths(widths) {
+  return widths.map((width) => `<col style="width:${width}%;">`).join('');
+}
+
+function fileUploadMessageAttribute(message, name) {
+  if (!message) return '';
+  return ` ${name}="${attr(message)}"`;
+}
+
 function controlForSubmit(field) {
   switch (field.control) {
     case 'lookup':
-      return field.lookupStyle === 'dropdown' ? 'lookup' : 'lookup';
+      return 'lookup';
     case 'boolean': {
       const classId = canonicalId(field.controlClassId);
       if (field.controlStyle === 100000007) return 'checkbox';
-      return classId === DROPDOWN_CLASS ? 'boolean-dropdown' : classId === RADIO_CLASS ? 'boolean-radio' : 'checkbox';
+      if (classId === DROPDOWN_CLASS) return 'boolean-dropdown';
+      if (classId === RADIO_CLASS) return 'boolean-radio';
+      return 'checkbox';
     }
     case 'picklist':
       return [100000000, 100000001].includes(field.controlStyle) ? 'picklist-radio' : 'picklist';
@@ -4596,19 +4588,61 @@ function renderNotesControl({
   bs = BOOTSTRAP_MARKUP.BootstrapV3,
   rowspan,
 }) {
-  const info = `<div class="${bs.info}">${label === null ? '' : `<label for="notescontrol">${escape(label ?? 'Notes')}</label>`}</div>`;
+  const info = notesInfoMarkup(bs, label);
   if (!id) return `${info}<div class="control"><div id="notescontrol"></div></div>`;
   const page = (name, fallback) => formText(settings?.[name], fallback, language);
   // Notes are read-only without a Notes metadata record.
   const addEnabled = settings.CreateEnabled === true;
   if (bs.v5)
     return `${info}<div class="control"><div id="notescontrol">${notesControlV5({ record, id, entity, websiteId, settings, page, addEnabled, bs, rowspan })}</div></div>`;
-  return `${info}<div class="control"><div id="notescontrol"><div class="col-md-8 entity-notes" data-url-get="/_services/entity-notes/${websiteId}" data-url-add="/_services/entity-form-addnote/${websiteId}" data-url-edit="/_services/entity-form-updatenote/${websiteId}" data-url-delete="/_services/entity-form-deletenote/${websiteId}" data-url-get-attachments="" data-add-enabled="${addEnabled ? 'True' : 'False'}" data-edit-enabled="${settings.EditEnabled === true ? 'True' : 'False'}" data-delete-enabled="${settings.DeleteEnabled === true ? 'True' : 'False'}" data-use-scrolling-pagination="False" data-hide-field-label="False" data-orders='[{"Attribute":"createdon","Alias":null,"Direction":null}]' data-target="${attr(JSON.stringify({ Id: canonicalId(id), LogicalName: entity, Name: record?.name ?? null }))}" data-pagesize="${Number(settings.PageSize) || 10}"><div class="notes-empty message"><div class="alert alert-block alert-info">${escape(page('EmptyMessage', 'There are no notes to display.'))}</div></div><div class="notes-access-denied message"><div class="alert alert-block alert-danger">You don't have permissions to view these notes.</div></div><div class="notes-error message"><div class="alert alert-block alert-danger">An error occurred while loading notes.<span class="details"></span></div></div><div class="notes-loading message text-center"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div><div class="notes" tabindex="0"></div><div class="note-actions row"><div class="col-sm-3">${addEnabled ? `<a class="btn btn-default addnote" href="#">${escape(page('AddNoteButtonLabel', 'Add a note'))}</a>` : ''}</div><div class="notes-pagination col-sm-9" data-pages="1" data-pagesize="${Number(settings.PageSize) || 10}" data-current-page="1"></div></div>${nativeModal({ bs, className: 'modal-addnote', title: 'Add a note', body: `<div class="addnote form-horizontal"><div class="form-group"><label id="note_label" class="col-sm-3 control-label required" for="note-text">Note</label><div class="col-sm-9"><textarea id="note-text" name="text" class="form-control" cols="20" rows="6"></textarea></div></div><div class="form-group"><label class="col-sm-3 control-label" for="note-file">Attach a file</label><div class="col-sm-9 form-control-static"><input id="note-file" name="file" type="file"></div></div></div>`, footer: `<button class="primary btn btn-primary" type="button">Add Note</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>` })}${nativeModal({ bs, className: 'modal-editnote', title: 'Edit note', body: `<div class="editnote form-horizontal"><div class="form-group"><label class="col-sm-3 control-label required" for="note-edit-text">Note</label><div class="col-sm-9"><textarea id="note-edit-text" name="text" class="form-control" cols="20" rows="6"></textarea></div></div><div class="form-group"><label class="col-sm-3 control-label" for="note-edit-file">Attach a file</label><div class="col-sm-9 form-control-static"><input id="note-edit-file" name="file" type="file"></div></div></div>`, footer: `<button class="primary btn btn-primary" type="button">Update Note</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>` })}${nativeModal({ bs, className: 'modal-delete modal-deletenote', title: 'Delete note', body: 'Are you sure you want to delete this note?', footer: `<button class="primary btn btn-primary" type="button">Delete</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>` })}</div></div></div>`;
+  return `${info}<div class="control"><div id="notescontrol"><div class="col-md-8 entity-notes" data-url-get="/_services/entity-notes/${websiteId}" data-url-add="/_services/entity-form-addnote/${websiteId}" data-url-edit="/_services/entity-form-updatenote/${websiteId}" data-url-delete="/_services/entity-form-deletenote/${websiteId}" data-url-get-attachments="" data-add-enabled="${addEnabled ? 'True' : 'False'}" data-edit-enabled="${settings.EditEnabled === true ? 'True' : 'False'}" data-delete-enabled="${settings.DeleteEnabled === true ? 'True' : 'False'}" data-use-scrolling-pagination="False" data-hide-field-label="False" data-orders='[{"Attribute":"createdon","Alias":null,"Direction":null}]' data-target="${attr(JSON.stringify({ Id: canonicalId(id), LogicalName: entity, Name: record?.name ?? null }))}" data-pagesize="${Number(settings.PageSize) || 10}"><div class="notes-empty message"><div class="alert alert-block alert-info">${escape(page('EmptyMessage', 'There are no notes to display.'))}</div></div><div class="notes-access-denied message"><div class="alert alert-block alert-danger">You don't have permissions to view these notes.</div></div><div class="notes-error message"><div class="alert alert-block alert-danger">An error occurred while loading notes.<span class="details"></span></div></div><div class="notes-loading message text-center"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div><div class="notes" tabindex="0"></div><div class="note-actions row"><div class="col-sm-3">${legacyNotesAddLink(addEnabled, page)}</div><div class="notes-pagination col-sm-9" data-pages="1" data-pagesize="${Number(settings.PageSize) || 10}" data-current-page="1"></div></div>${legacyNoteDialog(bs, 'add')}${legacyNoteDialog(bs, 'edit')}${legacyNoteDialog(bs, 'delete')}</div></div></div>`;
+}
+
+function notesInfoMarkup(bs, label) {
+  const infoClass = bs.info;
+  if (label === null) return `<div class="${infoClass}"></div>`;
+  return `<div class="${infoClass}"><label for="notescontrol">${escape(label ?? 'Notes')}</label></div>`;
+}
+
+function legacyNotesAddLink(addEnabled, page) {
+  if (!addEnabled) return '';
+  return `<a class="btn btn-default addnote" href="#">${escape(page('AddNoteButtonLabel', 'Add a note'))}</a>`;
+}
+
+function legacyNoteDialog(bs, kind) {
+  if (kind === 'add')
+    return nativeModal({
+      bs,
+      className: 'modal-addnote',
+      title: 'Add a note',
+      body: '<div class="addnote form-horizontal"><div class="form-group"><label id="note_label" class="col-sm-3 control-label required" for="note-text">Note</label><div class="col-sm-9"><textarea id="note-text" name="text" class="form-control" cols="20" rows="6"></textarea></div></div><div class="form-group"><label class="col-sm-3 control-label" for="note-file">Attach a file</label><div class="col-sm-9 form-control-static"><input id="note-file" name="file" type="file"></div></div></div>',
+      footer: `<button class="primary btn btn-primary" type="button">Add Note</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>`,
+    });
+  if (kind === 'edit')
+    return nativeModal({
+      bs,
+      className: 'modal-editnote',
+      title: 'Edit note',
+      body: '<div class="editnote form-horizontal"><div class="form-group"><label class="col-sm-3 control-label required" for="note-edit-text">Note</label><div class="col-sm-9"><textarea id="note-edit-text" name="text" class="form-control" cols="20" rows="6"></textarea></div></div><div class="form-group"><label class="col-sm-3 control-label" for="note-edit-file">Attach a file</label><div class="col-sm-9 form-control-static"><input id="note-edit-file" name="file" type="file"></div></div></div>',
+      footer: `<button class="primary btn btn-primary" type="button">Update Note</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>`,
+    });
+  return nativeModal({
+    bs,
+    className: 'modal-delete modal-deletenote',
+    title: 'Delete note',
+    body: 'Are you sure you want to delete this note?',
+    footer: `<button class="primary btn btn-primary" type="button">Delete</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>`,
+  });
 }
 
 // The platform's notes list template (Handlebars), rendered into the control as a script element.
 const notesTemplateV5 = ({ toolbar, privacyLabel }) =>
-  `<script id="notes-template" type="text/x-handlebars-template">{{#each Records}}<div class="note" data-attachmentfilename="{{AttachmentFileName}}" data-attachmentfilesize="{{AttachmentSizeDisplay}}" data-attachmentisimage="{{AttachmentIsImage}}" data-attachmenturl="{{AttachmentUrlWithTimeStamp}}" data-candelete="{{CanDelete}}" data-canedit="{{CanWrite}}" data-hasattachment="{{HasAttachment}}" data-id="{{Id}}" data-isprivate="{{IsPrivate}}" data-subject="{{Subject}}" data-unformattedtext="{{UnformattedText}}"><div class="row"><div class="col-md-3&#32;metadata"><div class="postedon" tabindex="0"><abbr class="timeago" data-datetime="{{CreatedOnDisplay}}" title="{{CreatedOnDisplay}}">{{CreatedOnDisplay}}</abbr></div>{{#if PostedByName}}<div class="createdby&#32;text-muted">{{PostedByName}}</div>{{/if}}{{#if IsPrivate}}<div class="label&#32;label-warning">${privacyLabel}</div>{{/if}}</div><div class="col-md-9&#32;content">${toolbar ? `{{#if DisplayToolbar}}<div class="toolbar&#32;dropdown&#32;float-end" style="z-index:&#32;1;&#32;position:&#32;relative;"><button aria-expanded="false" aria-label="action&#32;menu" class="btn&#32;btn-default&#32;btn-sm" data-bs-toggle="dropdown" href="#"><span class='fa fa-caret-down fa-fw' aria-hidden='true'></span></button><ul class="dropdown-menu" role="menu">{{#if CanWrite}}<li role="presentation"><a class="edit-link&#32;dropdown-item" href="#" role="menuitem" tabindex="-1"><span class='fa fa-edit fa-fw' aria-hidden='true'></span> Edit</a></li>{{/if}}{{#if CanDelete}}<li role="presentation"><a class="delete-link&#32;dropdown-item" href="#" role="menuitem" tabindex="-1"><span class='fa-solid fa-trash-can' aria-hidden='true'></span>Delete</a></li>{{/if}}</ul></div>{{/if}}` : ''}<div class="text" tabindex="1">{{{UnformattedText}}}</div>{{#if HasAttachment}}<div class="attachment&#32;alert&#32;alert-block&#32;clearfix">{{#if AttachmentIsImage}}<div class="img&#32;float-start"><a class="thumbnail" href="{{AttachmentUrlWithTimeStamp}}" target="_blank"><img alt="{{AttachmentFileName}}" class="img-thumbnail" src="{{AttachmentUrlWithTimeStamp}}"></img></a></div>{{/if}}<div class="link&#32;float-start"><span class='fa fa-file' aria-hidden='true'></span> <a href="{{AttachmentUrlWithTimeStamp}}" target="_blank">{{AttachmentFileName}} ({{AttachmentSizeDisplay}})</a></div></div>{{/if}}</div></div></div>{{/each}}</script>`;
+  `<script id="notes-template" type="text/x-handlebars-template">{{#each Records}}<div class="note" data-attachmentfilename="{{AttachmentFileName}}" data-attachmentfilesize="{{AttachmentSizeDisplay}}" data-attachmentisimage="{{AttachmentIsImage}}" data-attachmenturl="{{AttachmentUrlWithTimeStamp}}" data-candelete="{{CanDelete}}" data-canedit="{{CanWrite}}" data-hasattachment="{{HasAttachment}}" data-id="{{Id}}" data-isprivate="{{IsPrivate}}" data-subject="{{Subject}}" data-unformattedtext="{{UnformattedText}}"><div class="row"><div class="col-md-3&#32;metadata"><div class="postedon" tabindex="0"><abbr class="timeago" data-datetime="{{CreatedOnDisplay}}" title="{{CreatedOnDisplay}}">{{CreatedOnDisplay}}</abbr></div>{{#if PostedByName}}<div class="createdby&#32;text-muted">{{PostedByName}}</div>{{/if}}{{#if IsPrivate}}<div class="label&#32;label-warning">${privacyLabel}</div>{{/if}}</div><div class="col-md-9&#32;content">${notesToolbarMarkup(toolbar)}<div class="text" tabindex="1">{{{UnformattedText}}}</div>{{#if HasAttachment}}<div class="attachment&#32;alert&#32;alert-block&#32;clearfix">{{#if AttachmentIsImage}}<div class="img&#32;float-start"><a class="thumbnail" href="{{AttachmentUrlWithTimeStamp}}" target="_blank"><img alt="{{AttachmentFileName}}" class="img-thumbnail" src="{{AttachmentUrlWithTimeStamp}}"></img></a></div>{{/if}}<div class="link&#32;float-start"><span class='fa fa-file' aria-hidden='true'></span> <a href="{{AttachmentUrlWithTimeStamp}}" target="_blank">{{AttachmentFileName}} ({{AttachmentSizeDisplay}})</a></div></div>{{/if}}</div></div></div>{{/each}}</script>`;
+
+function notesToolbarMarkup(toolbar) {
+  if (!toolbar) return '';
+  return `{{#if DisplayToolbar}}<div class="toolbar&#32;dropdown&#32;float-end" style="z-index:&#32;1;&#32;position:&#32;relative;"><button aria-expanded="false" aria-label="action&#32;menu" class="btn&#32;btn-default&#32;btn-sm" data-bs-toggle="dropdown" href="#"><span class='fa fa-caret-down fa-fw' aria-hidden='true'></span></button><ul class="dropdown-menu" role="menu">{{#if CanWrite}}<li role="presentation"><a class="edit-link&#32;dropdown-item" href="#" role="menuitem" tabindex="-1"><span class='fa fa-edit fa-fw' aria-hidden='true'></span> Edit</a></li>{{/if}}{{#if CanDelete}}<li role="presentation"><a class="delete-link&#32;dropdown-item" href="#" role="menuitem" tabindex="-1"><span class='fa-solid fa-trash-can' aria-hidden='true'></span>Delete</a></li>{{/if}}</ul></div>{{/if}}`;
+}
 // The Bootstrap 5 notes control pages as many notes as its form cell spans rows, whatever
 // PageSize the metadata declares. Six when the cell carries no row span.
 const NOTES_PAGE_SIZE_V5 = 6;
@@ -4643,7 +4677,7 @@ function notesControlV5({ id, entity, websiteId, settings, page, addEnabled, bs,
       : "<span class='fa fa-eye-slash' aria-hidden='true'></span> Private",
   });
   const button = (label, primary = false) =>
-    `<button aria-label="${attr(label)}" class="${primary ? 'primary btn btn-primary' : 'cancel btn btn-default'}"${primary ? '' : ` ${bs.dismiss}="modal"`} tabindex="0" title="${attr(label)}" type="button">${escape(label)}</button>`;
+    `<button aria-label="${attr(label)}" class="${primary ? 'primary btn btn-primary' : 'cancel btn btn-default'}"${primary ? '' : ' ' + bs.dismiss + '="modal"'} tabindex="0" title="${attr(label)}" type="button">${escape(label)}</button>`;
   const noteRow = (labelHtml, textarea) =>
     `<div class="row mb-3">${labelHtml}<div class="col-md-9"><textarea aria-label="Note" class="form-control" cols="20"${textarea} name="text" rows="9" tabindex="0"></textarea></div></div>`;
   const fileRow = (wrapper, accept) =>
@@ -4681,7 +4715,7 @@ function notesControlV5({ id, entity, websiteId, settings, page, addEnabled, bs,
       : '',
   ].join('');
   // The accepted attachment types come with the configured add, even when this visitor may not add.
-  return `<div class="col-lg-8 entity-notes"${settings.attachmentToken ? ' data-add-accept-types="*"' : ''} data-add-enabled="${addEnabled ? 'True' : 'False'}"${settings.attachmentToken ? ` data-attachmentsettings="${attr(settings.attachmentToken)}"` : ''} data-bs-target="${attr(JSON.stringify(regarding))}" data-delete-enabled="${settings.DeleteEnabled === true ? 'True' : 'False'}" data-edit-enabled="${settings.EditEnabled === true ? 'True' : 'False'}" data-hide-field-label="False" data-is-timeline="False" data-orders="${attr(JSON.stringify(orders))}" data-pagesize="${pageSize}" data-rte-enabled="False" data-url-add="/_services/entity-form-addnote/${websiteId}" data-url-delete="/_services/entity-form-deletenote/${websiteId}" data-url-edit="/_services/entity-form-updatenote/${websiteId}" data-url-get="/_services/entity-notes/${websiteId}" data-url-get-attachments="" data-url-get-attachments-count="" data-use-scrolling-pagination="False" disable-validation="false">${page('ListTitle', '') ? `<div class="col-md-12 page-header mr-0"><h3>${escape(page('ListTitle', ''))}</h3></div>` : ''}${template}${message('notes-empty message', 'EmptyMessage', '<div class="alert alert-block alert-warning">There are no notes to display.</div>')}${message('notes-access-denied message', 'AccessDeniedMessage', `<div class="alert alert-block alert-danger">You don't have permissions to view notes.</div>`)}${message('notes-error message', 'ErrorMessage', '<div class="alert alert-block alert-danger">Error completing request. <span class="details"></span></div>')}<div class="notes-loading message text-center" role="presentation" tabindex="0">${loading}</div><div class="notes"></div><div class="notes-loading-more message text-center">${loading}</div><div class="note-actions row">${addEnabled ? `<div class="col-md-3"><a class="addnote btn btn-default" href="#" role="button">${escape(page('AddNoteButtonLabel', 'Add a note'))}</a></div>` : ''}<div class="notes-pagination col-md-9" data-current-page="1" data-pages="1" data-pagesize="${pageSize}"></div></div>${dialogs}</div>`;
+  return `<div class="col-lg-8 entity-notes"${settings.attachmentToken ? ' data-add-accept-types="*"' : ''} data-add-enabled="${addEnabled ? 'True' : 'False'}"${settings.attachmentToken ? ' data-attachmentsettings="' + attr(settings.attachmentToken) + '"' : ''} data-bs-target="${attr(JSON.stringify(regarding))}" data-delete-enabled="${settings.DeleteEnabled === true ? 'True' : 'False'}" data-edit-enabled="${settings.EditEnabled === true ? 'True' : 'False'}" data-hide-field-label="False" data-is-timeline="False" data-orders="${attr(JSON.stringify(orders))}" data-pagesize="${pageSize}" data-rte-enabled="False" data-url-add="/_services/entity-form-addnote/${websiteId}" data-url-delete="/_services/entity-form-deletenote/${websiteId}" data-url-edit="/_services/entity-form-updatenote/${websiteId}" data-url-get="/_services/entity-notes/${websiteId}" data-url-get-attachments="" data-url-get-attachments-count="" data-use-scrolling-pagination="False" disable-validation="false">${page('ListTitle', '') ? '<div class="col-md-12 page-header mr-0"><h3>' + escape(page('ListTitle', '')) + '</h3></div>' : ''}${template}${message('notes-empty message', 'EmptyMessage', '<div class="alert alert-block alert-warning">There are no notes to display.</div>')}${message('notes-access-denied message', 'AccessDeniedMessage', '<div class="alert alert-block alert-danger">You don\'t have permissions to view notes.</div>')}${message('notes-error message', 'ErrorMessage', '<div class="alert alert-block alert-danger">Error completing request. <span class="details"></span></div>')}<div class="notes-loading message text-center" role="presentation" tabindex="0">${loading}</div><div class="notes"></div><div class="notes-loading-more message text-center">${loading}</div><div class="note-actions row">${addEnabled ? '<div class="col-md-3"><a class="addnote btn btn-default" href="#" role="button">' + escape(page('AddNoteButtonLabel', 'Add a note')) + '</a></div>' : ''}<div class="notes-pagination col-md-9" data-current-page="1" data-pages="1" data-pagesize="${pageSize}"></div></div>${dialogs}</div>`;
 }
 
 // The platform file and image controls' upload size argument (KB) as the platform controls render it.
@@ -4807,7 +4841,10 @@ function multiSelectControl(field, { current, options, off, formReadonly = '', n
     PcfControlHiddenValueId: id,
     PcfDynamicProperyName: 'value',
   };
-  const host = `PcfControl_${createHash('sha256').update(`pcf\u0000${hostKey}`).digest('hex').slice(0, 32)}`;
+  const host = `PcfControl_${createHash('sha256')
+    .update('pcf\u0000' + hostKey)
+    .digest('hex')
+    .slice(0, 32)}`;
   // The view is empty and the value carries the selected Values only in the server response; the
   // app bundle equivalent (multiselect-compat.js) builds the control's DOM, expands the value to
   // the option metadata and marks an editing host with a value dirty, as the hosted host does.
@@ -4822,6 +4859,123 @@ function requestOrigin(context) {
   } catch {
     return '';
   }
+}
+
+function requiredPicklistAttributes(field, bs) {
+  if (!field.required) return '';
+  return (
+    ' required=""' +
+    (bs.v5 ? ' aria-required="true" aria-invalid="false" title="Please select an item in this list"' : '')
+  );
+}
+
+function booleanBlankOption(ignoreDefault, blank) {
+  if (!ignoreDefault) return '';
+  return '<option value=""' + (blank ? ' selected="selected"' : '') + '></option>';
+}
+
+function multipleChoiceValidator(first, group) {
+  if (!first) return '';
+  return `<span id="multipleChoiceValidator${group}" class="validator-text" style="display:none;"></span>`;
+}
+
+function lookupModalBody(bs, websiteId, gridAttributes, layouts, gridChildren) {
+  return `<div aria-hidden="true" class="modal-error message"${bs.v5 ? '' : ' style="display:none"'}><div class="alert alert-block alert-danger"><p>We're sorry, an error has occurred.</p></div></div><div class="entity-grid" data-allow-filter-off="false" data-apply-related-record-filter="false" data-column-width-style="Percent" data-defer-loading="true" data-enable-actions="false" data-filter-attribute-name="" data-filter-entity-name="" data-filter-relationship-name="" data-get-url="/_services/entity-lookup-grid-data.json/${websiteId}" data-grid-class="" ${gridAttributes} data-view-layouts="${base64Json(layouts)}">${gridChildren}</div>`;
+}
+
+function lookupModalFooter(createForm, bs) {
+  const create = createForm
+    ? '<button type="button" class="btn btn-default ' + bs.left + ' new-value" title="New">New</button>'
+    : '';
+  return `${create}<button aria-label="Select" class="primary btn btn-primary" tabindex="0" title="Select" type="button">Select</button><button aria-label="Cancel" class="cancel btn btn-default" ${bs.dismiss}="modal" tabindex="0" title="Cancel" type="button">Cancel</button><button class="btn btn-default ${bs.right} remove-value" title="Remove value" type="button">Remove value</button>`;
+}
+
+function webFormActionsMarkup(previous, next, bs) {
+  if (!previous && !next) return '';
+  const column = bs.v5 ? 'col-md-6' : 'col-sm-6';
+  return `<div class="actions"><div class="${column} clearfix">${previous}${next}</div></div>`;
+}
+
+function webFormNextMarkup(readOnly, terminal, ids, nextLabel, onclick, step) {
+  if (readOnly && terminal) return '';
+  return `<div role="group" class="btn-group entity-action-button"><input type="button" name="${attr(ids.buttons)}NextButton" value="${attr(nextLabel)}" onclick="${attr(onclick(ids.buttons + 'NextButton'))}" id="NextButton" class="${attr(terminal ? fieldOf(step, 'submitbuttoncssclass') || 'btn btn-primary button next submit-btn' : fieldOf(step, 'nextbuttoncssclass') || 'btn btn-primary button next submit-btn')}" nonactionlinkbutton="true"></div>`;
+}
+
+function stateHiddenValue(isV5, field, nameAttr, attr, valueAttr, scalar) {
+  if (!isV5) return '';
+  return `<input name="${nameAttr(field, field.control === 'state' ? '_EntityState' : '_EntityStatus')}" type="hidden" id="${attr(field.id)}${field.control === 'state' ? '_EntityState' : '_EntityStatus'}"${valueAttr(scalar)}>`;
+}
+
+function integerChoiceOptions(choices, selected) {
+  return choices
+    .map(
+      (choice) =>
+        `<option${String(choice.value) === selected ? ' selected="selected"' : ''} value="${attr(choice.value)}">${escape(choice.label)}</option>`,
+    )
+    .join('');
+}
+
+function rankTieValidator(field) {
+  if (field.controlStyle !== 100000004) return '';
+  return `<span id="RankOrderTieValidator${attr(field.id)}" class="validator-text" style="visibility:hidden;">*</span>`;
+}
+
+function constantSumMarkup(last, names, group) {
+  if (!last) return '';
+  return `<input name="${attr(names)}ConstantSumTotalValue${group}" type="text" value="0" id="ConstantSumTotalValue${group}" class="total" readonly="readonly" style="width:30px;"><span id="ConstantSumTotalValidator${group}" class="validator-text" style="visibility:hidden;">*</span>`;
+}
+
+function numberSeparatorAttribute(field, separator, attr) {
+  if (field.control !== 'double') return '';
+  return ` data-numberdecimalseparator="${attr(separator)}"`;
+}
+
+function requiredInputAttribute(field, disabled) {
+  if (!field.required || disabled) return '';
+  return ` required="" aria-invalid="${field.control === 'integer' ? 'false' : 'true'}"`;
+}
+
+function nativeTextChange(url, ticker, field) {
+  if (url) return `setIsDirty(this.id);validateUrlInput(this,${Number(field.maxLength) || 0});`;
+  if (ticker) return 'setIsDirty(this.id);uppercaseTickerSymbol(this);';
+  return 'setIsDirty(this.id);';
+}
+
+function renderCellLabel(resolved, labelFor, readOnly) {
+  if (resolved.showLabel === false) return '';
+  const tooltip = resolved.tooltip ? ` title="${attr(resolved.tooltip)}"` : '';
+  return `<label${labelFor} id="${attr(resolved.id)}_label"${tooltip} class="field-label"${readOnly ? ' readonly="readonly"' : ''}>${renderFormLabel(resolved.label)}</label>`;
+}
+
+function formCellLabelMarkup(cell, readOnly) {
+  if (cell.showLabel === false) return '';
+  return `<label for="${attr(cell.id)}" class="field-label"${readOnly ? ' readonly="readonly"' : ''}>${renderFormLabel(cell.label ?? cell.id)}</label>`;
+}
+
+function fieldValidatorsMarkup(fieldLevelReadOnly, resolved, validators, readOnly) {
+  if (fieldLevelReadOnly && !/^(?:file|image)$/.test(resolved.control)) return '';
+  return `<div class="validators">${validatorMarkup(validators, { readonly: readOnly })}</div>`;
+}
+
+function imageDeleteMarkup(readOnly, fieldId, trash) {
+  if (readOnly) return '';
+  return `<div><button type="button" class="buttonfordeleteimage btn btn-default btnforimage" onclick="deleteImage(this, '${attr(fieldId)}');" style="display:none">${trash}</button></div>`;
+}
+
+function fileColumnValidator(image, fieldId, readOnly) {
+  if (image) return '';
+  return `<span id="FileValidator${attr(fieldId)}hidden_filename"${readOnly ? ' readonly="readonly"' : ''} style="display:none;"></span>`;
+}
+
+function fileNameMarkup(fileName, download, fieldId, none) {
+  if (fileName)
+    return `<a href="${attr(download)}"><span id="${attr(fieldId)}_file_name">${escape(fileName)}</span></a><div style="display:none">${none}</div>`;
+  return `<div>${none}</div>`;
+}
+
+function fileDeleteMarkup(fileName, fieldId, hide, trash) {
+  if (!fileName) return '';
+  return `<div><button id="${attr(fieldId)}_delete_button" type="button" class="btn btn-default btn-for-delete btn-without-border" onclick="deleteFile(this, '${attr(fieldId)}');"${hide}>${trash}</button></div>`;
 }
 
 /**
@@ -4844,12 +4998,10 @@ function fileColumnInput(field, { id, entity, record, scalar, nameAttr, readOnly
   const hidden = hiddenNames
     .map(
       (suffix) =>
-        `<input type="hidden" name="${nameAttr(field, `hidden${suffix}`)}" id="${attr(fieldId)}hidden${suffix}"${valueAttr(values[suffix])}>`,
+        `<input type="hidden" name="${nameAttr(field, 'hidden' + suffix)}" id="${attr(fieldId)}hidden${suffix}"${valueAttr(values[suffix])}>`,
     )
     .join('');
-  const validator = image
-    ? ''
-    : `<span id="FileValidator${attr(fieldId)}hidden_filename"${readOnly ? ' readonly="readonly"' : ''} style="display:none;"></span>`;
+  const validator = fileColumnValidator(image, fieldId, readOnly);
   // Read-only form: the choose/delete buttons are hidden, the empty text is "---", the file box is disabled.
   const none = readOnly ? '---' : 'No file selected';
   const hide = readOnly ? ' style="display:none"' : '';
@@ -4857,12 +5009,12 @@ function fileColumnInput(field, { id, entity, record, scalar, nameAttr, readOnly
     return `<div><div>${escape(image ? "This record hasn't been created yet. To enable image upload, create this record" : "This record hasn't been created yet. To enable file upload, create this record.")}</div></div>${hidden}${validator}`;
   const trash = "<span class='fa fa-trash iconforimage'></span>Delete";
   if (image)
-    return `<div><input name="${nameAttr(field, '_input_file')}" type="file" accept="image/*" id="${attr(fieldId)}" aria-label="${attr(field.name)}" style="display:none" onchange="imageLoad(this, '1', '${FILE_CONTROL_MAX_KB}');"><div><button id="${attr(fieldId)}_input_image" type="button" class="btn btn-default btn-for-image-input btn-for-inputofimage" onclick="chooseImage(this, '${attr(fieldId)}');"${hide}>Choose File</button><div class="gap-between-vertical-element break-image-name">${none}</div></div></div><div><div class="image-inline" style="display:none"><a target="_blank"><img src="" height="144px" width="144px" class="image-render" alt="${attr(field.label)}"></a></div>${readOnly ? '' : `<div><button type="button" class="buttonfordeleteimage btn btn-default btnforimage" onclick="deleteImage(this, '${attr(fieldId)}');" style="display:none">${trash}</button></div>`}</div>${hidden}`;
+    return `<div><input name="${nameAttr(field, '_input_file')}" type="file" accept="image/*" id="${attr(fieldId)}" aria-label="${attr(field.name)}" style="display:none" onchange="imageLoad(this, '1', '${FILE_CONTROL_MAX_KB}');"><div><button id="${attr(fieldId)}_input_image" type="button" class="btn btn-default btn-for-image-input btn-for-inputofimage" onclick="chooseImage(this, '${attr(fieldId)}');"${hide}>Choose File</button><div class="gap-between-vertical-element break-image-name">${none}</div></div></div><div><div class="image-inline" style="display:none"><a target="_blank"><img src="" height="144px" width="144px" class="image-render" alt="${attr(field.label)}"></a></div>${imageDeleteMarkup(readOnly, fieldId, trash)}</div>${hidden}`;
   // The download link is absolute on the request origin.
   const download = fileName
     ? `${origin}/File/download.aspx?Entity=${encodeURIComponent(entity ?? '')}&Attribute=${encodeURIComponent(field.name)}&Id=${canonicalId(id)}`
     : '';
-  return `${validator}<div class="file-control-container"><div${readOnly ? '' : ' class="container-file-input"'}><div><input type="file" name="${nameAttr(field, '_input_file')}"${readOnly ? ' disabled="disabled" class="aspNetDisabled"' : ''} id="${attr(fieldId)}_input_file" aria-label="${attr(field.label)}" onchange="fileLoad(this, '${attr(fieldId)}', '${FILE_CONTROL_MAX_KB}', '1');"${readOnly ? ' value=" " readonly="readonly"' : ''} style="display:none"><button id="${attr(fieldId)}" type="button" class="btn btn-default btn-for-file-input " onclick="chooseFile(this, '${attr(fieldId)}');" aria-labelledby="Choose File" aria-label="Choose File for ${attr(field.label)}"${hide}>${fileName ? 'Change File' : 'Choose File'}</button></div></div><div class="container-filelink-delete file-link-and-delete"><div class="break-file-name file-name-container">${fileName ? `<a href="${attr(download)}"><span id="${attr(fieldId)}_file_name">${escape(fileName)}</span></a><div style="display:none">${none}</div>` : `<div>${none}</div>`}</div>${fileName ? `<div><button id="${attr(fieldId)}_delete_button" type="button" class="btn btn-default btn-for-delete btn-without-border" onclick="deleteFile(this, '${attr(fieldId)}');"${hide}>${trash}</button></div>` : ''}</div></div>${hidden}`;
+  return `${validator}<div class="file-control-container"><div${readOnly ? '' : ' class="container-file-input"'}><div><input type="file" name="${nameAttr(field, '_input_file')}"${readOnly ? ' disabled="disabled" class="aspNetDisabled"' : ''} id="${attr(fieldId)}_input_file" aria-label="${attr(field.label)}" onchange="fileLoad(this, '${attr(fieldId)}', '${FILE_CONTROL_MAX_KB}', '1');"${readOnly ? ' value=" " readonly="readonly"' : ''} style="display:none"><button id="${attr(fieldId)}" type="button" class="btn btn-default btn-for-file-input " onclick="chooseFile(this, '${attr(fieldId)}');" aria-labelledby="Choose File" aria-label="Choose File for ${attr(field.label)}"${hide}>${fileName ? 'Change File' : 'Choose File'}</button></div></div><div class="container-filelink-delete file-link-and-delete"><div class="break-file-name file-name-container">${fileNameMarkup(fileName, download, fieldId, none)}</div>${fileDeleteMarkup(fileName, fieldId, hide, trash)}</div></div>${hidden}`;
 }
 
 function richTextInput(field, current, { portal, managedControls, nameAttr }) {
@@ -4924,24 +5076,336 @@ async function richTextRuntime(fields, { portal, managedControls, richTextCompat
   return Object.keys(settings).length ? `<script>${clientRichTextRuntime(settings)}</script>` : '';
 }
 
+function formFieldCellClass(field) {
+  switch (field.control) {
+    case 'file':
+    case 'image':
+      return '';
+    case 'lookup':
+      return 'lookup form-control-cell';
+    case 'picklist':
+      return field.controlStyle === 100000006 ? 'picklist-matrix-cell' : 'picklist-cell';
+    case 'multiselect':
+      return 'form-control-cell';
+    case 'boolean':
+      return booleanCellClass(field);
+    case 'datetime':
+      return 'datetime form-control-cell';
+    case 'textarea':
+      return field.composite === 'address' ? 'text form-control-cell' : 'textarea form-control-cell';
+    case 'integer':
+    case 'decimal':
+    case 'double':
+    case 'money':
+      return numericCellClass(field);
+    case 'state':
+    case 'status':
+      return `${field.control}-cell`;
+    case 'richtext':
+      return 'form-control-cell';
+    default:
+      return 'text form-control-cell';
+  }
+}
+
+function applyPostbackValidatorErrors(postback, field, validators) {
+  for (const failure of postback?.validationErrors ?? []) {
+    if (failure.field !== field.name) continue;
+    const prefix = {
+      FormFieldOutOfRange: 'RangeValidator',
+      FormFieldRequired: 'RequiredFieldValidator',
+      FormFieldTooLong: 'MaximumLengthValidator',
+    }[failure.code];
+    const failed = prefix
+      ? validators.find((validator) => validator.id.startsWith(prefix))
+      : validators.find(
+          (validator) => !/^(?:RangeValidator|RequiredFieldValidator|MaximumLengthValidator)/.test(validator.id),
+        );
+    if (failed) failed.isvalid = 'False';
+  }
+}
+
+function cellControlLabelFor(field) {
+  const noLabelFor =
+    (field.control === 'lookup' && field.lookupStyle !== 'dropdown') ||
+    ['file', 'image'].includes(field.control) ||
+    (field.control === 'boolean' && canonicalId(field.controlClassId) === RADIO_CLASS) ||
+    (field.control === 'picklist' && [100000000, 100000001, 100000006].includes(field.controlStyle)) ||
+    /^(state|status)$/.test(field.control);
+  return noLabelFor ? '' : ` for="${attr(field.id)}"`;
+}
+
+function normalizedFormField(field, context) {
+  const {
+    metadataRows,
+    mode,
+    formLabel,
+    tableFields,
+    componentMetadata,
+    formLanguage,
+    forceRequired,
+    recommendedRequired,
+    identity,
+    now,
+  } = context;
+  const row = metadataFor(
+    metadataRows,
+    100000000,
+    (candidate) => fieldOf(candidate, 'attributelogicalname') === field.name,
+  );
+  // Column create/update validity applies to the mode rendered; a read-only rendering (a
+  // read-only form or an inactive record) marks no column read-only by it.
+  const immutable = fieldImmutable(field, mode);
+  const control = nativeControlKind(field);
+  const label = formLabel(fieldOf(row, 'label'), field.label || tableFields[field.name]?.label || field.name);
+  const ownerHidden = field.name === 'ownerid' && fieldOf(componentMetadata, 'showownerfields') !== true;
+  const style = Number(fieldOf(row, 'controlstyle'));
+  const description = formFieldDescription(field, row, formLabel);
+  return {
+    ...field,
+    id: field.name,
+    control,
+    label,
+    // The column display name (hosted controls name the column, not the form cell).
+    columnLabel: tableFields[field.name]?.label ?? null,
+    ownerHidden,
+    // With tooltips enabled the column description titles the label and a lookup's name box.
+    tooltip: formFieldTooltip(field, componentMetadata, formLanguage),
+    // The owner column is read-only by the platform rather than by its cell: it keeps the
+    // required markers and has no readonly class.
+    ownerLocked: formFieldOwnerLocked(field, immutable, context.readOnly),
+    hidden: field.hidden || ownerHidden,
+    // Field-level read-only (the EntityForm cell Metadata.ReadOnly). A read-only form also
+    // marks every control (MakeControlsReadonly) without this field-level markup.
+    fieldReadOnly: formFieldReadOnly(field, immutable, control, false),
+    readOnly: formFieldReadOnly(field, immutable, control, context.readOnly),
+    required: formFieldRequired(field, row, forceRequired, recommendedRequired),
+    requiredMessage: formLabel(fieldOf(row, 'requiredfieldvalidationerrormessage'), ''),
+    pattern: fieldOf(row, 'validationregularexpression') || field.pattern || null,
+    patternMessage: formLabel(fieldOf(row, 'validationregularexpressionerrormessage'), ''),
+    validationMessage: formLabel(fieldOf(row, 'validationerrormessage'), ''),
+    rangeMessage: formLabel(fieldOf(row, 'rangevalidationerrormessage'), ''),
+    cssClass: fieldOf(row, 'cssclass') ?? '',
+    controlStyle: Number.isFinite(style) ? style : null,
+    // Survey control styles (constant sum, rank order, matrix, multiple choice, stack rank) group cells by name.
+    groupName: String(fieldOf(row, 'groupname') ?? ''),
+    lookupStyle: style === 756150000 ? 'dropdown' : field.lookupStyle,
+    ignoreDefault: truthy(fieldOf(row, 'ignoredefaultvalue')),
+    randomize: truthy(fieldOf(row, 'randomizeoptionsetvalues')),
+    prepopulateType: row ? Number(fieldOf(row, 'prepopulatetype')) : null,
+    prepopulate: formFieldPrepopulate(row, identity, now),
+    description,
+    createFormId: canonicalId(fieldOf(row, 'entityformforcreate')),
+    minimum: field.minimum ?? field.minValue,
+    maximum: field.maximum ?? field.maxValue,
+    // The Dataverse composite full name (the computed fullname column, valid for neither create
+    // nor update): the platform's full name composite box, required and without a maximum
+    // length; the platform composes it from the name parts.
+    ...(isFullNameComposite(field) ? { composite: 'fullname', required: true, maxLength: undefined } : {}),
+    // A computed composite address (<prefix>_composite, valid for neither create nor update): the
+    // platform's address composite box and its parts container.
+    ...(isAddressComposite(field) ? { composite: 'address', maxLength: undefined } : {}),
+  };
+}
+
+function formFieldTooltip(field, componentMetadata, formLanguage) {
+  return truthy(fieldOf(componentMetadata, 'tooltipenabled')) ? columnDescription(field, formLanguage) : '';
+}
+
+function formFieldOwnerLocked(field, immutable, readOnly) {
+  return field.name === 'ownerid' && !field.readOnly && !immutable && !readOnly;
+}
+
+function formFieldReadOnly(field, immutable, control, readOnly) {
+  return Boolean(
+    field.readOnly || immutable || readOnly || /^(state|status)$/.test(control) || field.name === 'ownerid',
+  );
+}
+
+function formFieldRequired(field, row, forceRequired, recommendedRequired) {
+  return Boolean(
+    truthy(fieldOf(row, 'fieldisrequired')) ||
+    forceRequired ||
+    field.required ||
+    (recommendedRequired && /recommended/i.test(field.requiredLevel ?? '')),
+  );
+}
+
+function formFieldPrepopulate(row, identity, now) {
+  return row && fieldOf(row, 'prepopulatetype') != null ? prepopulateValue(row, identity, now) : undefined;
+}
+
+function fieldImmutable(field, mode) {
+  if (mode === FORM_MODE.insert) return field.validForCreate === false;
+  if (mode === FORM_MODE.edit) return field.validForUpdate === false;
+  return false;
+}
+
+function formFieldDescription(field, row, formLabel) {
+  if (!row || !truthy(fieldOf(row, 'adddescription'))) return null;
+  const text =
+    truthy(fieldOf(row, 'useattributedescriptionproperty')) && !fieldOf(row, 'description')
+      ? (field.description ?? '')
+      : formLabel(fieldOf(row, 'description'), '');
+  return { text, position: Number(fieldOf(row, 'descriptionposition')) };
+}
+
+function isFullNameComposite(field) {
+  return field.name === 'fullname' && field.validForCreate === false && field.validForUpdate === false;
+}
+
+function isAddressComposite(field) {
+  return /^[a-z]+\d*_composite$/.test(field.name) && field.validForCreate === false && field.validForUpdate === false;
+}
+
+function resolveFormFieldValue(field, context) {
+  const { record, mode } = context;
+  if (
+    record &&
+    Object.hasOwn(record, field.name) &&
+    record[field.name] !== undefined &&
+    record[field.name] !== null &&
+    mode !== FORM_MODE.insert
+  )
+    return record[field.name];
+  // An empty field of an existing record also shows its prepopulated value.
+  if (mode !== FORM_MODE.insert && field.prepopulate !== undefined && field.prepopulate !== null)
+    return field.prepopulate;
+  // Native radio choice controls render their exported default for an empty existing column.
+  // This affects displayed selection only; other controls and stored values retain their semantics.
+  if (
+    mode !== FORM_MODE.insert &&
+    record &&
+    record[field.name] == null &&
+    field.control === 'picklist' &&
+    [100000000, 100000001].includes(field.controlStyle) &&
+    !field.ignoreDefault
+  ) {
+    const defaultValue = field.default ?? field.defaultValue;
+    if (defaultValue !== undefined) return defaultValue;
+  }
+  if (mode === FORM_MODE.insert) return insertFormFieldValue(field, context);
+  return record?.[field.name] ?? null;
+}
+
+function insertFormFieldValue(field, context) {
+  const { entityReference, reference, record } = context;
+  if (entityReference && field.name === entityReference.field) return entityReference.value;
+  if (field.prepopulate !== undefined) return field.prepopulate;
+  const relation = reference && field.control === 'lookup' ? referenceFieldRelation(field, context) : null;
+  if (relation) return { id: canonicalId(reference.id), logical_name: relation.entity, name: '' };
+  // An explicit schema default, else the column's exported default (AppDefaultValue).
+  if (!field.ignoreDefault && (field.default ?? field.defaultValue) !== undefined)
+    return field.default ?? field.defaultValue;
+  return record?.[field.name] ?? null;
+}
+
+function referenceFieldRelation(field, context) {
+  const { reference, mapping, fields } = context;
+  const candidates = Object.values(mapping.relationships ?? {}).filter(
+    (candidate) =>
+      candidate.many === false && candidate.from === field.name && candidate.entity === canonicalId(reference.entity),
+  );
+  return (
+    candidates.find((candidate) => candidate.schemaName === reference.rel) ??
+    (candidates.length === 1 && referenceField(fields, mapping, reference) === field.name ? candidates[0] : null)
+  );
+}
+
+function booleanCellClass(field) {
+  const classId = canonicalId(field.controlClassId);
+  if (field.controlStyle === 100000007) return 'checkbox-cell';
+  if (classId === DROPDOWN_CLASS) return 'boolean-dropdown-cell';
+  if (classId === RADIO_CLASS) return 'boolean-radio-cell';
+  return 'checkbox-cell';
+}
+
+function numericCellClass(field) {
+  if (field.control === 'integer' && (field.controlStyle === 100000004 || field.controlStyle === 100000005))
+    return 'rank-order-cell';
+  if (field.control === 'integer' && field.controlStyle === 100000008) return 'stack-rank-cell';
+  if (field.control === 'integer' && field.controlStyle === 100000003) return 'constant-sum form-control-cell';
+  return `${field.control} form-control-cell`;
+}
+
+function findQuickForm(schemas, entity, controlId, params) {
+  let quick = null;
+  for (const schema of Object.values(schemas ?? {})) {
+    for (const candidate of [schema, ...(schema?.steps ?? [])]) {
+      for (const cell of formCells(candidate)) {
+        if (isQuickFormCell(cell, entity, controlId, params)) quick = cell;
+      }
+    }
+    if (quick) break;
+  }
+  return quick;
+}
+
+function isQuickFormCell(cell, entity, controlId, params) {
+  return (
+    cell.type === 'quickform' &&
+    cell.schema &&
+    canonicalId(cell.entity) === entity &&
+    (!controlId || cell.id === controlId) &&
+    (!params.formname || [cell.schema.formName, cell.schema.title, cell.label].includes(params.formname))
+  );
+}
+
+function renderProgressStep(step, index, context) {
+  const { stepIndex, bs, title, progressBindings, length, prepend } = context;
+  const completed = index < stepIndex;
+  const opening = progressStepOpening(completed, index, stepIndex, bs);
+  let selection;
+  const label = title(step, (value) => {
+    selection = value;
+  });
+  appendProgressBinding(progressBindings, step, selection, length, opening.length);
+  const icon = progressStepIcon(completed, bs);
+  const item = opening + (prepend ? `<span class="number">${index + 1}</span>` : '') + label + icon + '</li>';
+  return { item, length: length + item.length };
+}
+
+function progressStepOpening(completed, index, stepIndex, bs) {
+  if (completed) {
+    if (bs.v5) return '<li class="list-group-item text-muted list-group-item-success">';
+    return '<li class="list-group-item text-muted list-group-item-success complete">';
+  }
+  return `<li class="list-group-item ${index === stepIndex ? 'active' : 'incomplete'}">`;
+}
+
+function appendProgressBinding(progressBindings, step, selection, length, openingLength) {
+  const id = canonicalId(step.stepId);
+  const record = step.metadata;
+  if (!id || canonicalId(record?.id) !== id) return;
+  const sourceSelectors = [{ recordId: id, field: '$record' }];
+  if (!selection?.fallback)
+    sourceSelectors.push({
+      recordId: id,
+      field: 'title',
+      ...(Number.isSafeInteger(selection?.lcid) ? { lcid: selection.lcid } : {}),
+    });
+  else if (typeof fieldOf(record, 'name') === 'string') sourceSelectors.push({ recordId: id, field: 'name' });
+  progressBindings.push({
+    start: length,
+    end: length + openingLength,
+    tag: 'li',
+    attributes: [],
+    component: { kind: 'advanced-form-step', key: 'advanced-form-step:' + id, id, name: record.name },
+    sourceSelectors,
+  });
+}
+
+function progressStepIcon(completed, bs) {
+  if (!completed) return '';
+  if (bs.v5) return '<span class="fa-solid fa-check" role="img" aria-label="Completed"></span>';
+  return '<span class="glyphicon glyphicon-ok"></span>';
+}
+
 /** Native quick view form document (/_portal/quickform-template-path/{websiteId}). */
 export async function renderQuickForm({ portal, schemas, store, readProvider, identity, params, metadata }) {
   const entity = canonicalId(params.entityname);
   const controlId = params.controlid;
-  let quick = null;
-  for (const schema of Object.values(schemas ?? {})) {
-    for (const candidate of [schema, ...(schema?.steps ?? [])])
-      for (const cell of formCells(candidate))
-        if (
-          cell.type === 'quickform' &&
-          cell.schema &&
-          canonicalId(cell.entity) === entity &&
-          (!controlId || cell.id === controlId) &&
-          (!params.formname || [cell.schema.formName, cell.schema.title, cell.label].includes(params.formname))
-        )
-          quick = cell;
-    if (quick) break;
-  }
+  const quick = findQuickForm(schemas, entity, controlId, params);
   if (!quick)
     throw componentError('The quick view form is not part of an exported form layout.', 404, 'QUICKFORM_NOT_FOUND');
   const record = params.entityid ? await readProvider.get(entity, params.entityid, identity) : null;

@@ -97,8 +97,8 @@ export function safeReturnUrl(value, fallback = '/') {
   // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
   if (decoded.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(decoded)) return fallback;
   try {
-    const resolved = new URL(value, 'http://local.invalid');
-    if (resolved.origin !== 'http://local.invalid') return fallback;
+    const resolved = new URL(value, 'http://local.invalid'); // NOSONAR: reserved or loopback placeholder host, not a real transport
+    if (resolved.origin !== 'http://local.invalid') return fallback; // NOSONAR: reserved or loopback placeholder host, not a real transport
     return resolved.pathname + resolved.search + resolved.hash;
   } catch {
     return fallback;
@@ -128,7 +128,7 @@ export function authRoute(pathname, method, { loginPath = '/signin' } = {}) {
   const trimmed = (value) => {
     const text = String(value);
     let end = text.length;
-    while (end > 0 && text.charCodeAt(end - 1) === 47) end--;
+    while (end > 0 && text.codePointAt(end - 1) === 47) end--;
     return text.slice(0, end).toLowerCase() || '/';
   };
   const login = trimmed(pathname) === trimmed(loginPath);
@@ -144,6 +144,79 @@ const escapeHtml = (value) =>
     /[&<>"']/g,
     (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
   );
+
+function signInProviderSection(providers, action, csrf, invitationInput, summary) {
+  if (!providers.length) return '';
+  return [
+    `<form action="${escapeHtml(action)}" method="post"><input name="__RequestVerificationToken" type="hidden" value="${escapeHtml(csrf)}">${invitationInput}<div class="">`,
+    `<h2 class="login-heading-section" id="external-login-heading"><span class="xrm-editable-text xrm-attribute"><span class="xrm-attribute-value-encoded xrm-attribute-value">Sign in with an external account</span></span></h2>`,
+    summary,
+    `<div id="6_ctl00_AzureADRebrandDisclaimer"></div>`,
+    ...providers.map((provider) => {
+      const caption = provider.caption ?? provider.name;
+      return `<button name="provider" type="submit" class="btn btn-primary btn-line" id="${escapeHtml(provider.id)}" title="Sign in with your ${escapeHtml(caption)} account." value="${escapeHtml(provider.id)}">${escapeHtml(caption)}</button>`;
+    }),
+    `</div></form>`,
+  ].join('');
+}
+
+function signInPersonaRows(ordered, defaultContactId) {
+  return ordered
+    .map((persona) => {
+      const roles = (persona.roles ?? []).length ? persona.roles.join(', ') : 'no web roles';
+      const organisation = persona.accountName ? ` · ${escapeHtml(persona.accountName)}` : '';
+      const marker =
+        persona.contactId === defaultContactId ? ' <span class="label label-info">default persona</span>' : '';
+      return `<li class="list-group-item paqvilo-mirage-persona" data-contact-id="${escapeHtml(persona.contactId)}"><button type="submit" class="btn btn-primary btn-sm pull-right" name="contactId" value="${escapeHtml(persona.contactId)}">Sign in</button><strong>${escapeHtml(persona.name ?? persona.contactId)}</strong>${organisation}${marker}<br><small>${escapeHtml(roles)}</small></li>`;
+    })
+    .join('');
+}
+
+function signInPersonaList(personaCatalog, ordered, rows) {
+  if (personaCatalog?.enabled) return renderPersonaPicker(personaCatalog, { mode: 'signin' });
+  if (ordered.length) return `<ul class="list-group">${rows}</ul>`;
+  return '<p>No local contacts are available. Create personas under <a href="/_sim/">Identity &amp; permissions</a>.</p>';
+}
+
+function signInLocalSection({
+  showPersonas,
+  providers,
+  personaCatalog,
+  personaReturnUrl,
+  returnUrl,
+  csrf,
+  rows,
+  anonymousUrl,
+}) {
+  if (!showPersonas) return '';
+  const providerNote = providers.length
+    ? `<p>Local accounts: choose a local persona (a contact in the simulator's data) instead of a username and password.</p>`
+    : `<p>This site configures no external identity provider. Choose a local persona (a contact in the simulator's data) to continue as that user, or continue anonymously.</p>`;
+  return [
+    `<div class="paqvilo-mirage-local-accounts">`,
+    `<p class="paqvilo-mirage-sign-in-label" style="display:inline-block;padding:2px 8px;border:1px dashed #8a6d3b;border-radius:4px;color:#8a6d3b;font-size:12px">Local sign-in simulation · no credentials are sent anywhere</p>`,
+    providerNote,
+    `<form method="post" action="/SignIn"><input type="hidden" name="ReturnUrl" value="${escapeHtml(personaCatalog?.enabled ? (personaReturnUrl ?? '') : returnUrl)}"><input name="__RequestVerificationToken" type="hidden" value="${escapeHtml(csrf)}">`,
+    signInPersonaList(personaCatalog, rows.ordered, rows.html),
+    `</form>`,
+    `<p><a class="paqvilo-mirage-continue-anonymously" href="${escapeHtml(anonymousUrl)}">Continue anonymously</a></p>`,
+    `</div>`,
+  ].join('');
+}
+
+function signInTabs(returnUrl, registerTab, redeemTab) {
+  const query = encodeURIComponent(returnUrl);
+  const tab = (label, href, active = false, icon = '', suffix = ' ') =>
+    `<li role="none" class="nav-item"><a class="nav-link${active ? ' active' : suffix}" role="tab" aria-selected="${active ? 'True' : 'False'}" href="${escapeHtml(href)}" aria-label="${label}" title="${label}">${icon}${label}</a></li>`;
+  return {
+    query,
+    html: `<ul class="nav nav-tabs nav-account" role="tablist" onkeydown="navigation(event)">${[
+      tab('Sign in', 'javascript:void(0)', true, '<span class="fa fa-sign-in" aria-hidden="true"></span> '),
+      registerTab ? tab('Register', `/Account/Login/Register?returnUrl=${query}`) : '',
+      redeemTab ? tab('Redeem invitation', `/Register?returnUrl=${query}`, false, '', '  ') : '',
+    ].join('')}</ul>${ACCOUNT_TABS_SCRIPT}`,
+  };
+}
 
 /**
  * The account tabs' keyboard behaviour (platform account layout): the active tab is the focusable
@@ -206,55 +279,24 @@ export function signInContent({
   const summary = error
     ? `<div aria-describedby="loginValidationSummary" aria-label="Sign in failed." class="validation-summary-errors listStyleTypeNone alert alert-block alert-danger" data-valmsg-summary="true" id="loginValidationSummary" tabindex="0" role="alert"><ul><li>${escapeHtml(error)}</li></ul></div>`
     : `<div aria-describedby="loginValidationSummary" aria-label="Sign in failed." class="validation-summary-valid listStyleTypeNone alert alert-block alert-danger" data-valmsg-summary="true" id="loginValidationSummary" tabindex="0"><ul><li style="display:none"></li></ul></div>`;
-  const external = providers.length
-    ? [
-        `<form action="${escapeHtml(action)}" method="post"><input name="__RequestVerificationToken" type="hidden" value="${escapeHtml(csrf)}">${invitationCode ? `<input name="InvitationCode" type="hidden" value="${escapeHtml(invitationCode)}">` : ''}<div class="">`,
-        `<h2 class="login-heading-section" id="external-login-heading"><span class="xrm-editable-text xrm-attribute"><span class="xrm-attribute-value-encoded xrm-attribute-value">Sign in with an external account</span></span></h2>`,
-        summary,
-        `<div id="6_ctl00_AzureADRebrandDisclaimer"></div>`,
-        ...providers.map((provider) => {
-          const caption = provider.caption ?? provider.name;
-          return `<button name="provider" type="submit" class="btn btn-primary btn-line" id="${escapeHtml(provider.id)}" title="Sign in with your ${escapeHtml(caption)} account." value="${escapeHtml(provider.id)}">${escapeHtml(caption)}</button>`;
-        }),
-        `</div></form>`,
-      ].join('')
+  const invitationInput = invitationCode
+    ? `<input name="InvitationCode" type="hidden" value="${escapeHtml(invitationCode)}">`
     : '';
-  const rows = ordered
-    .map((persona) => {
-      const roles = (persona.roles ?? []).length ? persona.roles.join(', ') : 'no web roles';
-      const organisation = persona.accountName ? ` · ${escapeHtml(persona.accountName)}` : '';
-      const marker =
-        persona.contactId === defaultContactId ? ' <span class="label label-info">default persona</span>' : '';
-      return `<li class="list-group-item paqvilo-mirage-persona" data-contact-id="${escapeHtml(persona.contactId)}"><button type="submit" class="btn btn-primary btn-sm pull-right" name="contactId" value="${escapeHtml(persona.contactId)}">Sign in</button><strong>${escapeHtml(persona.name ?? persona.contactId)}</strong>${organisation}${marker}<br><small>${escapeHtml(roles)}</small></li>`;
-    })
-    .join('');
-  const local = showPersonas
-    ? [
-        `<div class="paqvilo-mirage-local-accounts">`,
-        `<p class="paqvilo-mirage-sign-in-label" style="display:inline-block;padding:2px 8px;border:1px dashed #8a6d3b;border-radius:4px;color:#8a6d3b;font-size:12px">Local sign-in simulation · no credentials are sent anywhere</p>`,
-        providers.length
-          ? `<p>Local accounts: choose a local persona (a contact in the simulator's data) instead of a username and password.</p>`
-          : `<p>This site configures no external identity provider. Choose a local persona (a contact in the simulator's data) to continue as that user, or continue anonymously.</p>`,
-        `<form method="post" action="/SignIn"><input type="hidden" name="ReturnUrl" value="${escapeHtml(personaCatalog?.enabled ? (personaReturnUrl ?? '') : returnUrl)}"><input name="__RequestVerificationToken" type="hidden" value="${escapeHtml(csrf)}">`,
-        personaCatalog?.enabled
-          ? renderPersonaPicker(personaCatalog, { mode: 'signin' })
-          : ordered.length
-            ? `<ul class="list-group">${rows}</ul>`
-            : `<p>No local contacts are available. Create personas under <a href="/_sim/">Identity &amp; permissions</a>.</p>`,
-        `</form>`,
-        `<p><a class="paqvilo-mirage-continue-anonymously" href="${escapeHtml(anonymousUrl)}">Continue anonymously</a></p>`,
-        `</div>`,
-      ].join('')
-    : '';
-  const query = encodeURIComponent(returnUrl);
-  // The platform's tab classes: "nav-link active", "nav-link " (Register), "nav-link  " (Redeem invitation).
-  const tab = (label, href, active = false, icon = '', suffix = ' ') =>
-    `<li role="none" class="nav-item"><a class="nav-link${active ? ' active' : suffix}" role="tab" aria-selected="${active ? 'True' : 'False'}" href="${escapeHtml(href)}" aria-label="${label}" title="${label}">${icon}${label}</a></li>`;
-  const tabs = `<ul class="nav nav-tabs nav-account" role="tablist" onkeydown="navigation(event)">${[
-    tab('Sign in', 'javascript:void(0)', true, '<span class="fa fa-sign-in" aria-hidden="true"></span> '),
-    registerTab ? tab('Register', `/Account/Login/Register?returnUrl=${query}`) : '',
-    redeemTab ? tab('Redeem invitation', `/Register?returnUrl=${query}`, false, '', '  ') : '',
-  ].join('')}</ul>${ACCOUNT_TABS_SCRIPT}`;
+  const external = signInProviderSection(providers, action, csrf, invitationInput, summary);
+  const rows = signInPersonaRows(ordered, defaultContactId);
+  const errorAlert =
+    error && !external ? `<div class="alert alert-danger" role="alert">${escapeHtml(error)}</div>` : '';
+  const local = signInLocalSection({
+    showPersonas,
+    providers,
+    personaCatalog,
+    personaReturnUrl,
+    returnUrl,
+    csrf,
+    rows: { ordered, html: rows },
+    anonymousUrl,
+  });
+  const { query, html: tabs } = signInTabs(returnUrl, registerTab, redeemTab);
   return [
     personaCatalog?.enabled
       ? '<link rel="stylesheet" href="/__sim/persona-picker.css"><script type="module" src="/__sim/persona-picker.mjs"></script>'
@@ -266,7 +308,7 @@ export function signInContent({
     `<script type="text/javascript">(function () { var run = function () { var active = document.querySelector(".nav-tabs > li > a.active"); document.querySelector("title").textContent = active ? active.textContent : ""; if (window.shell && typeof window.shell.refreshToken === "function") window.shell.refreshToken(); }; if (window.jQuery) window.jQuery(run); else if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", run); else run(); })();</script>`,
     // The local persona sign-in is the simulator's stand-in for local accounts (visibly marked).
     local
-      ? `<section class="paqvilo-mirage-sign-in" aria-label="${escapeHtml(title)}">${error && !external ? `<div class="alert alert-danger" role="alert">${escapeHtml(error)}</div>` : ''}${local}</section>`
+      ? `<section class="paqvilo-mirage-sign-in" aria-label="${escapeHtml(title)}">${errorAlert}${local}</section>`
       : '',
     redeemInvitation && !redeemTab
       ? `<p><a class="paqvilo-mirage-redeem-invitation" href="/Account/Login/RedeemInvitation?ReturnUrl=${escapeHtml(query)}">Redeem invitation</a></p>`

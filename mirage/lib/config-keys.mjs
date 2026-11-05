@@ -520,12 +520,10 @@ export function resolveCatalogueSettings(value, where) {
   const result = {};
   for (const [key, row] of Object.entries(MIRAGE_SETTINGS)) {
     if (!row.scopes.includes('catalogue') || row.resolve === null) continue;
-    const resolved =
-      value[key] === undefined || (row.resolve && value[key] === null)
-        ? row.fallback
-        : row.resolve
-          ? row.resolve(value[key], where)
-          : row.parse(value[key], `mirage.${key}`, where.configDir);
+    let resolved;
+    if (value[key] === undefined || (row.resolve && value[key] === null)) resolved = row.fallback;
+    else if (row.resolve) resolved = row.resolve(value[key], where);
+    else resolved = row.parse(value[key], `mirage.${key}`, where.configDir);
     if (resolved !== undefined) result[key] = resolved;
   }
   return result;
@@ -577,7 +575,7 @@ export function configuredSettingKeys({ project = null, portal = null, catalogue
         ![JSON.stringify(row.fallback ?? null), '{}', '[]'].includes(JSON.stringify(source[key]));
   return Object.keys(MIRAGE_SETTINGS)
     .filter((key) => MIRAGE_SETTINGS[key].scopes.some((scope) => present(sources[scope], MIRAGE_SETTINGS[key], key)))
-    .sort();
+    .sort(/* NOSONAR: preserve default string coercion */);
 }
 
 /** The registered options found in an options object (for runtimes that forward their settings). */
@@ -594,16 +592,16 @@ export function settingOptions(options = {}, { exclude = [] } = {}) {
   );
 }
 
-const stable = (value) =>
-  Array.isArray(value)
-    ? value.map(stable)
-    : isPlainObject(value)
-      ? Object.fromEntries(
-          Object.keys(value)
-            .sort()
-            .map((key) => [key, stable(value[key])]),
-        )
-      : value;
+const stable = (value) => {
+  if (Array.isArray(value)) return value.map(stable);
+  if (isPlainObject(value))
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort(/* NOSONAR: preserve default string coercion */)
+        .map((key) => [key, stable(value[key])]),
+    );
+  return value;
+};
 
 /** The options that decide whether a running runtime can be reused; secret-bearing ones are hashed. */
 export function runtimeIdentity(options = {}) {

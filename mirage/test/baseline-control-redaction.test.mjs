@@ -1,3 +1,4 @@
+// @test-kind security: baseline capture redaction guarantees: protected values and raw digests are never stored, and unrelated bytes stay intact.
 import { Worker } from 'node:worker_threads';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -664,6 +665,7 @@ test('nonce persistence removes protected values and raw text digests from every
   }
 });
 
+// @test-kind security: verifies redaction completes and removes a declared nonce on bounded hostile input.
 test('large escaped strings and malformed HTML nonce tags remain bounded', async () => {
   const module = new URL('../lib/capture-control-redaction.mjs', import.meta.url).href;
   const worker = new Worker(
@@ -673,9 +675,14 @@ test('large escaped strings and malformed HTML nonce tags remain bounded', async
   try {
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(Error('Nonce redaction exceeded bounded worker deadline')), 8000);
-      worker.once('message', () => {
+      worker.once('message', (result) => {
         clearTimeout(timer);
-        resolve();
+        try {
+          assert.equal(result, true);
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
       });
       worker.once('error', (error) => {
         clearTimeout(timer);

@@ -4,39 +4,57 @@ import { decimalParts } from './exact-numeric.mjs';
 import { readRecordValues } from './record-tables.mjs';
 
 const scalar = (value) => (value && typeof value === 'object' ? (value.id ?? value.value ?? value) : value);
-const field = (row, name) =>
-  Object.hasOwn(row, name)
-    ? row[name]
-    : name.startsWith('_') && name.endsWith('_value')
-      ? scalar(row[name.slice(1, -6)])
-      : name.split('/').reduce((value, key) => value?.[key], row);
+const field = (row, name) => {
+  if (Object.hasOwn(row, name)) return row[name];
+  if (name.startsWith('_') && name.endsWith('_value')) return scalar(row[name.slice(1, -6)]);
+  return name.split('/').reduce((value, key) => value?.[key], row);
+};
 
 // Normalize known source types like key lookup; unknown columns keep the store's
 // legacy scalar coercions. Exact integer/decimal digits never pass Number.
-const alternateKeyScalar = (value, collation = 'CI_AI', kind) => {
+const dateScalar = (raw) => {
+  const parsed = parseDateValue(raw);
+  return parsed ? ['date', String(parsed.ms)] : undefined;
+};
+const numericScalar = (raw) => {
+  const parts = decimalParts(typeof raw === 'boolean' ? Number(raw) : raw);
+  return parts ? ['number', String(parts.coefficient), parts.scale] : undefined;
+};
+const doubleScalar = (raw) => {
+  const number = Number(raw);
+  return Number.isFinite(number) ? ['double', String(number)] : undefined;
+};
+const guidScalar = (raw) => {
+  const guid = guidKey(raw);
+  return guid ? ['guid', guid] : undefined;
+};
+const booleanScalar = (raw) => {
+  if (typeof raw === 'boolean' || typeof raw === 'number') return ['boolean', Number(Boolean(raw))];
+  const text = String(raw).trim().toLowerCase();
+  if (['true', '1', 'yes'].includes(text)) return ['boolean', 1];
+  if (['false', '0', 'no'].includes(text)) return ['boolean', 0];
+  return undefined;
+};
+const knownScalar = (raw, kind) => {
+  if (kind === 'datetime') return dateScalar(raw);
+  if (['integer', 'decimal', 'money', 'number', 'choice'].includes(kind)) return numericScalar(raw);
+  if (kind === 'double') return doubleScalar(raw);
+  if (kind === 'guid' || kind === 'lookup') return guidScalar(raw);
+  if (kind === 'boolean') return booleanScalar(raw);
+  return undefined;
+};
+
+/* NOSONAR */ const alternateKeyScalar = (value, collation = 'CI_AI', kind) => {
   const raw = scalar(value);
-  if (kind === 'datetime') {
-    const parsed = parseDateValue(raw);
-    if (parsed) return ['date', String(parsed.ms)];
-  } else if (['integer', 'decimal', 'money', 'number', 'choice'].includes(kind)) {
-    const parts = decimalParts(typeof raw === 'boolean' ? Number(raw) : raw);
-    if (parts) return ['number', String(parts.coefficient), parts.scale];
-  } else if (kind === 'double') {
-    const number = Number(raw);
-    if (Number.isFinite(number)) return ['double', String(number)];
-  } else if (kind === 'guid' || kind === 'lookup') {
-    const guid = guidKey(raw);
-    if (guid) return ['guid', guid];
-  } else if (kind === 'boolean') {
-    if (typeof raw === 'boolean' || typeof raw === 'number') return ['boolean', Number(Boolean(raw))];
-    const text = String(raw).trim().toLowerCase();
-    if (['true', '1', 'yes'].includes(text)) return ['boolean', 1];
-    if (['false', '0', 'no'].includes(text)) return ['boolean', 0];
-  }
+  const known = knownScalar(raw, kind);
+  if (known !== undefined) return known;
   return foldText(
     String(typeof scalar(value) === 'boolean' ? Number(scalar(value)) : scalar(value)).replace(
-      /^(?:\{([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})\}|\(([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})\))$/i,
-      (_match, braced, parenthesized) => braced ?? parenthesized,
+      /^([({])([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})([)}])$/i,
+      (match, opening, valueText, closing) => {
+        if ((opening === '{' && closing === '}') || (opening === '(' && closing === ')')) return valueText;
+        return match;
+      },
     ),
     collation,
   );
@@ -78,18 +96,20 @@ export function assertDatasetAlternateKeys(mappings, tables, selected, collation
   for (const table of selected) {
     const mapping = Object.hasOwn(mappings, table) ? mappings[table] : {};
     const rows = Object.hasOwn(tables, table) ? tables[table] : [];
-    for (const key of activeAlternateKeys(mapping)) {
-      const attributes = alternateKeyAttributes(key),
-        keyOf = alternateKeyOf(attributes, collation, alternateKeyKinds(mapping, attributes)),
-        seen = new Map();
-      for (const row of readRecordValues(rows)) {
-        const tuple = keyOf(row);
-        if (tuple === null) continue;
-        const identity = alternateKeyScalar(row[mapping.idColumn ?? `${table}id`], 'CI_AS');
-        if (seen.has(tuple) && seen.get(tuple) !== identity)
-          throw duplicateAlternateKey(key, attributes, alternateKeyValues(row, attributes));
-        seen.set(tuple, identity);
-      }
-    }
+    for (const key of activeAlternateKeys(mapping)) assertTableKey(mapping, table, rows, key, collation);
+  }
+}
+
+function assertTableKey(mapping, table, rows, key, collation) {
+  const attributes = alternateKeyAttributes(key),
+    keyOf = alternateKeyOf(attributes, collation, alternateKeyKinds(mapping, attributes)),
+    seen = new Map();
+  for (const row of readRecordValues(rows)) {
+    const tuple = keyOf(row);
+    if (tuple === null) continue;
+    const identity = alternateKeyScalar(row[mapping.idColumn ?? `${table}id`], 'CI_AS');
+    if (seen.has(tuple) && seen.get(tuple) !== identity)
+      throw duplicateAlternateKey(key, attributes, alternateKeyValues(row, attributes));
+    seen.set(tuple, identity);
   }
 }

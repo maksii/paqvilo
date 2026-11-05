@@ -13,7 +13,7 @@ import { mirageToolHelp } from './tool-registry.mjs';
 import { connectRuntime, runtimeOrigin } from './testing/runtime.mjs';
 import { checkTraceFilters, idMatches, searchText } from './lib/trace-store.mjs';
 
-const ACTIONS = ['list', 'show', 'spans', 'stats', 'settings', 'clear', 'flush', 'export', 'watch'];
+const ACTIONS = new Set(['list', 'show', 'spans', 'stats', 'settings', 'clear', 'flush', 'export', 'watch']);
 // The span filters, which watch also applies to the frames it receives.
 const SPAN_FILTERS = [
   'from',
@@ -39,7 +39,7 @@ const SPAN_FILTERS = [
   'min-duration-ms',
   'has-errors',
 ];
-const PAGING = ['page', 'page-size', 'order', 'sort', 'bucket-ms'];
+const PAGING = new Set(['page', 'page-size', 'order', 'sort', 'bucket-ms']);
 const FILTERS = [...SPAN_FILTERS, ...PAGING];
 const SETTINGS = ['level', 'persist', 'traces', 'spans-per-trace', 'payload-bytes'];
 const camel = (name) => name.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
@@ -54,7 +54,11 @@ function settingsChange(values) {
     named.map((name) => {
       const value = values[name];
       if (name === 'level') return [name, value];
-      if (name === 'persist') return [name, value === 'true' ? true : value === 'false' ? false : value];
+      if (name === 'persist') {
+        if (value === 'true') return [name, true];
+        if (value === 'false') return [name, false];
+        return [name, value];
+      }
       return [camel(name), /^\d+$/.test(value) ? Number(value) : value];
     }),
   );
@@ -90,18 +94,43 @@ function table(rows, columns) {
 const pageLine = (page) =>
   `Page ${page.page} of ${page.pageCount}; ${page.total} matching, ${page.retained} retained, ${page.dropped} dropped.`;
 const spanLine = (span) =>
-  `${span.startedAt}  ${span.kind}  ${span.status}  ${ms(span.durationMs)}  ${span.name}${span.entity ? ` (${span.entity})` : ''}  trace ${span.traceId}`;
+  `${span.startedAt}  ${span.kind}  ${span.status}  ${ms(span.durationMs)}  ${span.name}${span.entity ? ' (' + span.entity + ')' : ''}  trace ${span.traceId}`;
 const traceLine = (trace) =>
   `${trace.startedAt}  ${trace.status}  ${ms(trace.durationMs)}  ${plural(trace.spanCount, 'span')}  ${trace.errorCount} errors  ${trace.root?.name ?? ''}  trace ${trace.traceId}`;
-const statusLines = (status) => [
-  `Retained ${status.retained} traces, ${status.spans} spans (${status.running} running), about ${status.memoryBytes} bytes; ${status.dropped} traces and ${status.droppedSpans} spans dropped.`,
-  `Persistence: ${status.persist.enabled ? `on, ${status.persist.directory ?? 'no state folder'}` : 'off'}${status.persist.lastError ? ` (${status.persist.lastError})` : ''}; ${status.persist.written} lines written, ${status.persist.failures} failed.`,
-];
+const statusLines = (status) => {
+  const persistence = () => (status.persist.enabled ? 'on, ' + (status.persist.directory ?? 'no state folder') : 'off');
+  return [
+    `Retained ${status.retained} traces, ${status.spans} spans (${status.running} running), about ${status.memoryBytes} bytes; ${status.dropped} traces and ${status.droppedSpans} spans dropped.`,
+    `Persistence: ${persistence()}${status.persist.lastError ? ' (' + status.persist.lastError + ')' : ''}; ${status.persist.written} lines written, ${status.persist.failures} failed.`,
+  ];
+};
 // An actor as `kind`, `kind:name` or `kind:id`.
-const actorText = (actor) =>
-  actor ? `${actor.kind}${actor.name || actor.id ? `:${actor.name || actor.id}` : ''}` : '';
+const actorText = (actor) => {
+  if (!actor) return '';
+  const kind = actor.kind;
+  if (actor.name || actor.id) return kind + ':' + (actor.name || actor.id);
+  return kind + '';
+};
 const figuresLine = (label, value, unit) =>
   `${label}: ${plural(value.count, unit)}, ${value.errors} errors, p50 ${figure(value.p50)}, p95 ${figure(value.p95)}, max ${figure(value.max)}.`;
+
+function humanTrace(result) {
+  const { trace } = result,
+    lines = [
+      `Trace ${trace.traceId}: ${trace.status}, ${ms(trace.durationMs)} (${ms(trace.totalDurationMs)} in all), ${trace.spanCount} spans, ${trace.errorCount} errors, ${trace.deniedCount} denied.`,
+    ];
+  const walk = (node, depth) => {
+    const entity = () => (node.entity ? ' ' + node.entity : '');
+    const events = () => (node.events.length ? ' (' + plural(node.events.length, 'event') + ')' : '');
+    lines.push(
+      `${'  '.repeat(depth)}${node.name} [${node.kind}] ${node.status} ${ms(node.durationMs)}${entity()}${events()}${node.async ? ' async' : ''}`,
+    );
+    if (node.error) lines.push(`${'  '.repeat(depth + 1)}${node.error.code}: ${node.error.message}`);
+    for (const child of node.children) walk(child, depth + 1);
+  };
+  for (const node of result.children) walk(node, 0);
+  return lines;
+}
 
 function human(action, result, { utc = false } = {}) {
   // DURATION is the root's; TOTAL (what --sort duration sorts by) runs from the first span start to the last span end.
@@ -140,21 +169,7 @@ function human(action, result, { utc = false } = {}) {
       ]),
       pageLine(result),
     ];
-  if (action === 'show') {
-    const { trace } = result,
-      lines = [
-        `Trace ${trace.traceId}: ${trace.status}, ${ms(trace.durationMs)} (${ms(trace.totalDurationMs)} in all), ${trace.spanCount} spans, ${trace.errorCount} errors, ${trace.deniedCount} denied.`,
-      ];
-    const walk = (node, depth) => {
-      lines.push(
-        `${'  '.repeat(depth)}${node.name} [${node.kind}] ${node.status} ${ms(node.durationMs)}${node.entity ? ` ${node.entity}` : ''}${node.events.length ? ` (${plural(node.events.length, 'event')})` : ''}${node.async ? ' async' : ''}`,
-      );
-      if (node.error) lines.push(`${'  '.repeat(depth + 1)}${node.error.code}: ${node.error.message}`);
-      for (const child of node.children) walk(child, depth + 1);
-    };
-    for (const node of result.children) walk(node, 0);
-    return lines;
-  }
+  if (action === 'show') return humanTrace(result);
   if (action === 'stats')
     return [
       `${result.count} spans from ${result.from ?? '—'} to ${result.to ?? '—'}.`,
@@ -177,6 +192,58 @@ function human(action, result, { utc = false } = {}) {
   return [`Cleared every trace; ${result.retained} retained.`];
 }
 
+function traceValueMatches(key, actual, values, trace, span, lower, equal) {
+  return (
+    values[key] === undefined ||
+    (trace ? actual.some((value) => lower(value) === values[key].toLowerCase()) : equal(key, span[key]))
+  );
+}
+
+function frameStatusMatches(filters, span, trace, lower) {
+  if (filters.status === undefined) return true;
+  if (trace && ['error', 'denied'].includes(filters.status.toLowerCase()))
+    return trace[`${filters.status.toLowerCase()}Count`] > 0;
+  return lower(trace ? trace.status : span.status) === filters.status.toLowerCase();
+}
+
+function frameIdentityMatches(filters, span, equal, actorKey) {
+  return (
+    (filters.recordId === undefined ||
+      (span.recordId != null && idMatches(actorKey(span.recordId), actorKey(filters.recordId).trim()))) &&
+    equal('host', span.origin?.host) &&
+    equal('actorKind', span.actor?.kind) &&
+    (filters.actorId === undefined ||
+      (span.actor?.id != null && idMatches(actorKey(span.actor.id), actorKey(filters.actorId)))) &&
+    (filters.sessionKey === undefined || idMatches(span.session?.sessionKey ?? null, filters.sessionKey)) &&
+    (filters.visitorId === undefined || idMatches(span.session?.visitorId ?? null, filters.visitorId)) &&
+    (filters.portal === undefined || span.origin?.portal === filters.portal) &&
+    (filters.auditId === undefined || span.attributes?.auditId === filters.auditId)
+  );
+}
+
+function frameResultMatches(filters, span, trace, lower) {
+  return (
+    (filters.result === undefined ||
+      filters.result
+        .toLowerCase()
+        .split(',')
+        .map((value) => value.trim())
+        .includes(lower(trace ? trace.status : span.status))) &&
+    (filters.traceId === undefined || span.traceId === filters.traceId) &&
+    (filters.parentSpanId === undefined || span.parentSpanId === filters.parentSpanId) &&
+    (filters.depth === undefined || span.depth === Number(filters.depth))
+  );
+}
+
+function frameRangeMatches(filters, start, duration, errors, time) {
+  return (
+    (filters.from === undefined || start >= time(filters.from)) &&
+    (filters.to === undefined || start <= time(filters.to)) &&
+    (filters.minDurationMs === undefined || (duration !== null && duration >= Number(filters.minDurationMs))) &&
+    (filters.hasErrors === undefined || errors === ['true', '1'].includes(filters.hasErrors))
+  );
+}
+
 // watch applies the span filters itself, like the list routes: on span-end frames to the span, on trace-end frames to
 // the trace (kind, module and entity: any span of it; status error/denied: any span; the rest: the root span).
 function frameFilter(filters) {
@@ -188,45 +255,18 @@ function frameFilter(filters) {
   return ({ span, trace }) => {
     const start = Date.parse(span.startedAt);
     const search = f.search?.toLowerCase();
-    const inTrace = (key, list) =>
-      f[key] === undefined ||
-      (trace ? list.some((value) => lower(value) === f[key].toLowerCase()) : equal(key, span[key]));
-    const status =
-      f.status === undefined ||
-      (trace && ['error', 'denied'].includes(f.status.toLowerCase())
-        ? trace[`${f.status.toLowerCase()}Count`] > 0
-        : lower(trace ? trace.status : span.status) === f.status.toLowerCase());
+    const status = frameStatusMatches(f, span, trace, lower);
     const errors = trace ? trace.errorCount > 0 : span.status === 'error';
     const duration = trace ? trace.totalDurationMs : span.durationMs;
     return (
       status &&
-      inTrace('kind', trace ? Object.keys(trace.kinds ?? {}) : []) &&
-      inTrace('module', trace?.modules ?? []) &&
-      inTrace('entity', trace?.entities ?? []) &&
+      traceValueMatches('kind', trace ? Object.keys(trace.kinds ?? {}) : [], f, trace, span, lower, equal) &&
+      traceValueMatches('module', trace?.modules ?? [], f, trace, span, lower, equal) &&
+      traceValueMatches('entity', trace?.entities ?? [], f, trace, span, lower, equal) &&
       equal('operation', span.operation) &&
-      (f.recordId === undefined ||
-        (span.recordId != null && idMatches(actorKey(span.recordId), actorKey(f.recordId).trim()))) &&
-      equal('host', span.origin?.host) &&
-      equal('actorKind', span.actor?.kind) &&
-      (f.actorId === undefined ||
-        (span.actor?.id != null && idMatches(actorKey(span.actor.id), actorKey(f.actorId)))) &&
-      (f.sessionKey === undefined || idMatches(span.session?.sessionKey ?? null, f.sessionKey)) &&
-      (f.visitorId === undefined || idMatches(span.session?.visitorId ?? null, f.visitorId)) &&
-      (f.portal === undefined || span.origin?.portal === f.portal) &&
-      (f.auditId === undefined || span.attributes?.auditId === f.auditId) &&
-      (f.result === undefined ||
-        f.result
-          .toLowerCase()
-          .split(',')
-          .map((value) => value.trim())
-          .includes(lower(trace ? trace.status : span.status))) &&
-      (f.traceId === undefined || span.traceId === f.traceId) &&
-      (f.parentSpanId === undefined || span.parentSpanId === f.parentSpanId) &&
-      (f.depth === undefined || span.depth === Number(f.depth)) &&
-      (f.from === undefined || start >= time(f.from)) &&
-      (f.to === undefined || start <= time(f.to)) &&
-      (f.minDurationMs === undefined || (duration !== null && duration >= Number(f.minDurationMs))) &&
-      (f.hasErrors === undefined || errors === ['true', '1'].includes(f.hasErrors)) &&
+      frameIdentityMatches(f, span, equal, actorKey) &&
+      frameResultMatches(f, span, trace, lower) &&
+      frameRangeMatches(f, start, duration, errors, time) &&
       (!search || searchText(span).includes(search))
     );
   };
@@ -242,13 +282,11 @@ async function watch(client, { count, json, traceEnd, filters }) {
   let printed = 0;
   const unsubscribe = client.trace.subscribe((event) => {
     if (event.type !== type || (count && printed >= count) || !matches(event)) return;
-    console.log(
-      json
-        ? JSON.stringify({ schemaVersion: 1, ok: true, command: 'watch', result: event })
-        : traceEnd
-          ? traceLine(event.trace)
-          : spanLine(event.span),
-    );
+    let line;
+    if (json) line = JSON.stringify({ schemaVersion: 1, ok: true, command: 'watch', result: event });
+    else if (traceEnd) line = traceLine(event.trace);
+    else line = spanLine(event.span);
+    console.log(line);
     if (count && ++printed >= count) unsubscribe();
   });
   process.once('SIGINT', unsubscribe);
@@ -279,23 +317,23 @@ async function streamExport(client, filters) {
 // The action and whether the arguments were accepted, for the failure envelope.
 let command = null,
   accepted = false;
-async function main(argv) {
-  const { values, positionals } = parseToolCommand('trace', argv, { allowPositionals: true });
-  if (values.help) return console.log(mirageToolHelp('trace').trim());
-  const [action, ...rest] = positionals;
-  if (!ACTIONS.includes(action)) throw usage();
-  command = action;
+
+function validateTracePositionals(action, rest) {
   if (rest.length !== (action === 'show' ? 1 : 0))
     throw invalid(
       action === 'show' ? 'trace show needs exactly one TRACE_ID.' : `Unexpected argument: ${rest.join(' ')}`,
     );
-  const filtered = FILTERS.filter((name) => values[name] !== undefined),
-    change = settingsChange(values);
-  const paging = action === 'watch' && filtered.find((name) => PAGING.includes(name));
+}
+
+function validateTraceFilters(action, filtered, change) {
+  const paging = action === 'watch' && filtered.find((name) => PAGING.has(name));
   if (paging) throw invalid(`--${paging} applies to list, spans, stats and export, not watch.`);
   if (filtered.length && !['list', 'spans', 'stats', 'export', 'watch'].includes(action))
     throw invalid(`--${filtered[0]} filters list, spans, stats, export and watch only.`);
   if (change && action !== 'settings') throw invalid('Settings flags belong to trace settings.');
+}
+
+function validateTraceOptions(action, values) {
   if (values.count !== undefined && (action !== 'watch' || !/^[1-9]\d{0,8}$/.test(values.count)))
     throw invalid('--count must be a positive integer and applies to trace watch only.');
   if (values['trace-end'] && action !== 'watch') throw invalid('--trace-end applies to trace watch only.');
@@ -309,9 +347,43 @@ async function main(argv) {
     } catch (error) {
       throw invalid(error.message);
     }
+}
+
+function createTraceFilters(filtered, values) {
   const filters = Object.fromEntries(filtered.map((name) => [camel(name), values[name]]));
   // The store's own check (InvalidTraceFilter naming the parameter), before connecting; the runtime checks again.
   checkTraceFilters(filters);
+  return filters;
+}
+
+async function traceRequest(client, action, rest, filters, change) {
+  if (action === 'list') return client.trace.query(filters);
+  if (action === 'spans') return client.trace.spans(filters);
+  if (action === 'stats') return client.trace.stats(filters);
+  if (action === 'export') return client.trace.export(filters);
+  if (action === 'clear') return client.trace.clear();
+  if (action === 'flush') return client.trace.flush();
+  if (action === 'settings') {
+    const settings = change ? await client.trace.configure(change) : await client.trace.settings();
+    return { settings, status: await client.trace.status() };
+  }
+  const tree = await client.trace.tree(rest[0]);
+  if (!tree) throw Object.assign(new Error(`No retained trace has the id ${rest[0]}.`), { code: 'TraceNotFound' });
+  return tree;
+}
+
+/* NOSONAR: single-pass routine, splitting it would change shared state */ async function main(argv) {
+  const { values, positionals } = parseToolCommand('trace', argv, { allowPositionals: true });
+  if (values.help) return console.log(mirageToolHelp('trace').trim());
+  const [action, ...rest] = positionals;
+  if (!ACTIONS.has(action)) throw usage();
+  command = action;
+  validateTracePositionals(action, rest);
+  const filtered = FILTERS.filter((name) => values[name] !== undefined),
+    change = settingsChange(values);
+  validateTraceFilters(action, filtered, change);
+  validateTraceOptions(action, values);
+  const filters = createTraceFilters(filtered, values);
   accepted = true;
   const client = await connectRuntime({ origin: values.origin, config: values.config, site: values.site });
   if (action === 'watch')
@@ -324,7 +396,7 @@ async function main(argv) {
   for (const name of ['format', 'limit']) if (values[name] !== undefined) filters[name] = values[name];
   // --format bundle: the activity export bundle (connectRuntime().exportBundle), one NDJSON document per line.
   if (action === 'export' && filters.format === 'bundle') {
-    const { format: _format, ...bundleFilters } = filters;
+    const { format: _format, ...bundleFilters } = filters; // NOSONAR: binding is excluded from the rest object or is a placeholder
     const documents = await client.exportBundle(bundleFilters);
     if (values.json)
       return console.log(JSON.stringify({ schemaVersion: 1, ok: true, command: action, result: documents }));
@@ -332,22 +404,7 @@ async function main(argv) {
     return;
   }
   if (action === 'export' && !values.json) return streamExport(client, filters);
-  const request = async () => {
-    if (action === 'list') return client.trace.query(filters);
-    if (action === 'spans') return client.trace.spans(filters);
-    if (action === 'stats') return client.trace.stats(filters);
-    if (action === 'export') return client.trace.export(filters);
-    if (action === 'clear') return client.trace.clear();
-    if (action === 'flush') return client.trace.flush();
-    if (action === 'settings') {
-      const settings = change ? await client.trace.configure(change) : await client.trace.settings();
-      return { settings, status: await client.trace.status() };
-    }
-    const tree = await client.trace.tree(rest[0]);
-    if (!tree) throw Object.assign(new Error(`No retained trace has the id ${rest[0]}.`), { code: 'TraceNotFound' });
-    return tree;
-  };
-  const result = await request();
+  const result = await traceRequest(client, action, rest, filters, change);
   if (values.json) return console.log(JSON.stringify({ schemaVersion: 1, ok: true, command: action, result }));
   for (const line of human(action, result, { utc: values.utc })) console.log(line);
 }
@@ -361,12 +418,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const envelope = error.response?.error && typeof error.response.error === 'object' ? error.response.error : null;
     // Codes the runtime or this command set (TraceNotFound, InvalidTraceFilter, RuntimeUnreachable, ...); node:util
     // parseArgs codes and other refusals before connecting are InvalidArguments.
-    const code =
-      typeof error.code === 'string' && !error.code.startsWith('ERR_')
-        ? error.code
-        : accepted
-          ? 'MIRAGE_FAILED'
-          : 'InvalidArguments';
+    let code;
+    if (typeof error.code === 'string' && !error.code.startsWith('ERR_')) code = error.code;
+    else if (accepted) code = 'MIRAGE_FAILED';
+    else code = 'InvalidArguments';
     const message = envelope?.message ?? error.message ?? String(error);
     const parameter = envelope?.parameter ?? error.parameter;
     // A refused filter or setting (the runtime's 400, or the same check before connecting) is a usage error.

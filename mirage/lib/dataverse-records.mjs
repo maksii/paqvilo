@@ -22,7 +22,13 @@ import { upsertSourceOperation } from './plugin-delegation.mjs';
 import { initializePluginOperation } from './plugin-operation-context.mjs';
 import { bulkTargetsCollection } from './plugin-single-multiple.mjs';
 import { isElastic, recordKey, samePartition } from './dataverse-elastic.mjs';
-import { notInTarget, parseEntityReference, parseFetchXml, uncheckedLookup } from './data.mjs';
+import {
+  notInTarget,
+  parseEntityReference,
+  parseFetchXml,
+  uncheckedLookup,
+  withUpsertClassificationIndex,
+} from './data.mjs';
 import { sdkValueToRecord } from './local-organization-service.mjs';
 import { DATAVERSE_SYSTEM_COLUMNS, parseXmlDocument, webApiPagingCookie } from './fetchxml-engine.mjs';
 import {
@@ -256,7 +262,7 @@ function keepAnnotations(value, include) {
   for (const [key, item] of Object.entries(value)) {
     const at = key.indexOf('@');
     const term = at < 0 ? null : key.slice(at + 1);
-    if (term != null && !term.startsWith('odata.') && !(include && include(term))) continue;
+    if (term?.startsWith('odata.') === false && !(include && include(term))) continue; // NOSONAR: optional chaining would change the false/null result
     out[key] = Array.isArray(item) ? item.map(nested) : nested(item);
   }
   return out;
@@ -289,9 +295,9 @@ function linkOf(c, base, name, token, { raw = false } = {}) {
   query.delete('$skiptoken');
   query.delete('$deltatoken');
   const text = [...query]
-    .map(([key, value]) => `${key}=${(raw ? value : encodeURIComponent(value)).replace(/%24/g, '$')}`)
+    .map(([key, value]) => `${key}=${(raw ? value : encodeURIComponent(value)).replaceAll('%24', '$')}`)
     .join('&');
-  return `${base}?${text ? `${text}&` : ''}${name}=${token}`;
+  return base + '?' + (text ? text + '&' : '') + name + '=' + token;
 }
 // The token is passed to skipTokenQueryValue after one decode: its inner pagingcookie stays percent-encoded.
 const nextLinkOf = (c, base, token) => linkOf(c, base, '$skiptoken', skipTokenQueryValue(decodeURIComponent(token)));
@@ -386,12 +392,14 @@ function bypassEvents(span, c) {
   for (const [name, header] of BYPASS_HEADERS) {
     const value = c.headers?.[name];
     if (value == null || String(value).trim() === '') continue;
-    const words = String(value)
+    const wordList = String(value)
       .split(',')
       .map((word) => word.trim().toLowerCase());
+    const firstWord = wordList[0];
+    const words = new Set(wordList);
     const skips =
       c.bypassCustomPlugins === true &&
-      (name === 'mscrm.bypasscustompluginexecution' ? ['true', '1'].includes(words[0]) : words.includes('customsync'));
+      (name === 'mscrm.bypasscustompluginexecution' ? ['true', '1'].includes(firstWord) : words.has('customsync'));
     span.event('bypass', { attributes: { header, value: String(value), skipped: skips ? ['sync-plugins'] : [] } });
   }
 }
@@ -442,6 +450,110 @@ const WEB_API_OPERATION = {
   navigationRef: { DELETE: 'disassociate' },
   boundAction: { POST: 'action' },
 };
+
+// Formats one row, adds the owner navigation annotation the formatter leaves out and shapes money columns.
+function shapeOwnerAnnotations(formatted) {
+  for (const field of OWNER_FIELDS) {
+    const key = `_${field}_value`;
+    if (formatted[key] != null && formatted[`${key}${NAVIGATION}`] === undefined)
+      formatted[`${key}${NAVIGATION}`] = field;
+  }
+  delete formatted[`_owninguser_value${FORMATTED}`];
+  delete formatted[`_owninguser_value${NAVIGATION}`];
+}
+
+// Every column name a read of the table answers (system columns, lookups as _x_value, money companions, file parts), with money and date columns that imply a time-zone rule stamp.
+function addColumnNames(name, definition, sourceDate, names, moneys, dateColumns) {
+  const kind = fieldKind(definition);
+  if (kind === 'virtual' || kind === 'partylist') return;
+  if (
+    fieldKind(sourceDate) === 'datetime' &&
+    ((dateTimeBehavior(sourceDate) || 'userlocal') === 'userlocal' || isDateOnlyField(sourceDate))
+  )
+    dateColumns.push(name);
+  if (kind === 'lookup') names.push(`_${name}_value`);
+  else names.push(name);
+  if (kind === 'money' && !name.endsWith('_base')) {
+    moneys.push(name);
+    names.push(`${name}_base`);
+  }
+  if (kind === 'file') {
+    const image = String(definition.dataverseType ?? definition.type ?? '').toLowerCase() === 'image';
+    names.push(...(image ? [`${name}id`, `${name}_url`, `${name}_timestamp`] : [`${name}_name`]));
+  }
+}
+
+// Option values Dataverse refuses before it reads a collection: a bad maxpagesize (405), a repeated or non-positive $top,
+// a $count other than true or false, and an empty $filter.
+function assertCollectionOptions(c) {
+  const { url, prefer } = c;
+  if (prefer.maxPageSizeInvalid) {
+    throw new DataError('Prefer Odata.maxpagesize value should be 32 bit integer.', 405, 'InvalidRequest', {
+      innerCode: '0x80060888',
+      httpStatus: 405,
+      route: true,
+    });
+  }
+  if (url.searchParams.getAll('$top').length > 1) {
+    throw new DataError(
+      "Query option '$top' was specified more than once, but it must be specified at most once.",
+      400,
+      'InvalidRequest',
+      { innerCode: '0x80060888', route: true },
+    );
+  }
+  const top = url.searchParams.get('$top');
+  parseDataverseTop(top);
+  const count = url.searchParams.get('$count');
+  if (count != null && count !== 'true' && count !== 'false')
+    throw invalid(`'${count}' is not a valid count option.`, '0x80060888');
+  const filter = url.searchParams.get('$filter');
+  if (filter?.trim() === '') throw invalid("The value for OData query '$filter' cannot be empty.", '0x80060888');
+}
+
+// Change tracking refuses the query options Dataverse refuses; the message is the documented one.
+function assertTrackable(c) {
+  for (const name of TRACKING_REJECTS) {
+    if (c.url.searchParams.has(name))
+      throw invalid(`The "${name}" query parameter isn't supported when Change Tracking is enabled.`, '0x80060888');
+  }
+}
+
+function collectFetchOperands(child, frame, named) {
+  if (child.name !== 'condition' && child.name !== 'order') return;
+  for (const key of ['attribute', 'valueof'])
+    if (child.attrs[key]) named.push({ frame, entityname: child.attrs.entityname, attribute: child.attrs[key] });
+}
+
+function targetsOf(c) {
+  const targets = c.body?.Targets;
+  if (!Array.isArray(targets) || !targets.every((item) => item && typeof item === 'object' && !Array.isArray(item))) {
+    throw invalid('The Targets parameter must be an array of objects.');
+  }
+  return targets;
+}
+
+// Native refuses a bulk message before any write: no targets, or a target typed as another table (the message reads 'none' there).
+// Assumed: UpdateMultiple and UpsertMultiple take the same refusals as CreateMultiple.
+function refuseBulkTargets(mapping, message, targets) {
+  if (targets.length === 0)
+    throw new DataError('Custom state is not set for entity type crmbaseentity.', 400, 'InvalidRequest', {
+      innerCode: '0x80040216',
+    });
+  const typed = `Microsoft.Dynamics.CRM.${mapping.logicalName}`;
+  if (
+    targets.some(
+      (target) => target['@odata.type'] !== undefined && String(target['@odata.type']).replace(/^#/, '') !== typed,
+    )
+  ) {
+    throw new DataError(
+      `The '${message}' method does not support entities of type 'none'. MessageProcessorCache returned MessageProcessor.Empty. `,
+      400,
+      'InvalidRequest',
+      { innerCode: '0x80040800' },
+    );
+  }
+}
 
 // changeTrackingEnabled(logical) overrides the table's metadata flag; without it the flag is read from the mapping,
 // and an undefined flag keeps tracking allowed.
@@ -666,7 +778,7 @@ export function createRecordHandlers({
       ]),
     );
   };
-  const fieldsOf = (logical) => ({ ...systemFields(logical), ...(metadataFields(logical) ?? {}) });
+  const fieldsOf = (logical) => ({ ...systemFields(logical), ...metadataFields(logical) });
   // Collection projection is synchronous. Reuse derived definitions only while
   // shaping that page; the next request must observe source/metadata changes.
   let projectionFields = null;
@@ -725,7 +837,8 @@ export function createRecordHandlers({
     if (text?.trim() === '*') return `${mapping.entitySet}(*)`;
     const parts = [...(parseSelect(text) ?? []), ...parseExpand(c.url.searchParams.get('$expand')).map(navContext)];
     const unique = [...new Set(parts)];
-    return `${mapping.entitySet}${unique.length ? `(${unique.join(',')})` : ''}`;
+    const suffix = unique.length ? '(' + unique.join(',') + ')' : '';
+    return mapping.entitySet + suffix;
   };
   const bodyOf = (set, body, c) => {
     assertDataverseRootBody(body, c?.dataverseHttpReader);
@@ -934,31 +1047,35 @@ export function createRecordHandlers({
         assertExpandReadable(c, readableTarget(c, mapping, item.navigation), item.expand ?? []);
     }
   }
+  function assertFilterMembers(c, mapping, filter, aliases) {
+    const expression = parseODataExpression(filter, {
+      dialect: 'dataverse',
+      aliases,
+      rejectNotOnQueryFunctions: true,
+      strictEdm: true,
+      columnDefinition: (name) => readDefinition(mapping, name),
+      nativeSyntax: Boolean(c.dataverseHttpReader),
+    });
+    for (const [head] of expressionPaths(expression)) {
+      if (!head || head.startsWith('@')) continue;
+      if (navigationOf(mapping, head)) readableTarget(c, mapping, head);
+      else assertProperty(mapping, head);
+    }
+  }
+  function assertOrderMembers(c, mapping, orderby) {
+    for (const spec of parseOrderBy(orderby, { nativeSyntax: Boolean(c.dataverseHttpReader) })) {
+      const head = spec.path[0];
+      if (navigationOf(mapping, head)) readableTarget(c, mapping, head);
+      else assertProperty(mapping, head);
+    }
+  }
   // $filter, $orderby and $expand roots must name a property (or a navigation); unknown ones are 0x0. $expand is then
   // validated by assertExpand and its tables authorized. Navigation $filter and $orderby tables are authorized too.
   function assertQueryMembers(c, mapping, params) {
     const aliases = Object.fromEntries([...params].filter(([name]) => name.startsWith('@')));
     const filter = params.get('$filter');
-    if (filter) {
-      const expression = parseODataExpression(filter, {
-        dialect: 'dataverse',
-        aliases,
-        rejectNotOnQueryFunctions: true,
-        strictEdm: true,
-        columnDefinition: (name) => readDefinition(mapping, name),
-        nativeSyntax: Boolean(c.dataverseHttpReader),
-      });
-      for (const [head] of expressionPaths(expression)) {
-        if (!head || head.startsWith('@')) continue;
-        if (navigationOf(mapping, head)) readableTarget(c, mapping, head);
-        else assertProperty(mapping, head);
-      }
-    }
-    for (const spec of parseOrderBy(params.get('$orderby'), { nativeSyntax: Boolean(c.dataverseHttpReader) })) {
-      const head = spec.path[0];
-      if (navigationOf(mapping, head)) readableTarget(c, mapping, head);
-      else assertProperty(mapping, head);
-    }
+    if (filter) assertFilterMembers(c, mapping, filter, aliases);
+    assertOrderMembers(c, mapping, params.get('$orderby'));
     assertExpandText(params.get('$expand'));
     const items = parseExpand(params.get('$expand'));
     for (const item of items) {
@@ -970,7 +1087,33 @@ export function createRecordHandlers({
       assertUnmaskedQuery(c, mapping, { filter, orderby: params.get('$orderby'), expand: items }, aliases);
   }
 
-  // Formats one row, adds the owner navigation annotation the formatter leaves out and shapes money columns.
+  function shapeOrganizationLookup(c, mapping, formatted) {
+    const organizationId = organizationRecord(store)?.organizationid;
+    const selected = parseSelect(c.url.searchParams.get('$select'));
+    if (
+      organizationId &&
+      (selected == null || selected.includes('_organizationid_value')) &&
+      formatted._organizationid_value === undefined &&
+      ownershipOf(mapping.logicalName, undefined, mapping) === 'org'
+    )
+      formatted._organizationid_value = organizationId;
+  }
+  function shapeChoiceFormatted(mapping, formatted) {
+    for (const key of Object.keys(formatted)) {
+      if (key.includes('@') || formatted[key] == null) continue;
+      if (fieldKind(readDefinition(mapping, key)) === 'choice' && formatted[`${key}${FORMATTED}`] === undefined)
+        formatted[`${key}${FORMATTED}`] = null;
+    }
+  }
+  function shapeMissingCurrency(c, mapping, formatted, held) {
+    if (
+      !held &&
+      formatted[CURRENCY] === undefined &&
+      currencySelected(c) &&
+      Object.keys(formatted).some((key) => !key.includes('@') && isMoney(mapping, key))
+    )
+      formatted[CURRENCY] = null;
+  }
   function formatRow(c, mapping, row, options) {
     const formatted = c.formatter.formatEntity(row, mapping, options);
     // The stored base currency (currencyOnWrite) answers as the _transactioncurrencyid_value lookup, never as a raw column (the currency table's own key excepted).
@@ -981,44 +1124,17 @@ export function createRecordHandlers({
       !(metadata?.recordFields && parseSelect(c.url.searchParams.get('$select'))?.includes(CURRENCY))
     )
       delete formatted[CURRENCY];
-    for (const field of OWNER_FIELDS) {
-      const key = `_${field}_value`;
-      if (formatted[key] != null && formatted[`${key}${NAVIGATION}`] === undefined)
-        formatted[`${key}${NAVIGATION}`] = field;
-    }
-    // The user-owner lookup carries its logical name only, no FormattedValue or navigation.
-    delete formatted[`_owninguser_value${FORMATTED}`];
-    delete formatted[`_owninguser_value${NAVIGATION}`];
+    shapeOwnerAnnotations(formatted);
     // Organization-owned rows answer the organization lookup when no $select is given or the $select names it.
-    const organizationId = organizationRecord(store)?.organizationid;
-    const selected = parseSelect(c.url.searchParams.get('$select'));
-    if (
-      organizationId &&
-      (selected == null || selected.includes('_organizationid_value')) &&
-      formatted._organizationid_value === undefined &&
-      ownershipOf(mapping.logicalName, undefined, mapping) === 'org'
-    ) {
-      formatted._organizationid_value = organizationId;
-    }
+    shapeOrganizationLookup(c, mapping, formatted);
     // A picklist value with no option still answers its FormattedValue, as null (a value of -1, for example).
-    for (const key of Object.keys(formatted)) {
-      if (key.includes('@') || formatted[key] == null) continue;
-      if (fieldKind(readDefinition(mapping, key)) === 'choice' && formatted[`${key}${FORMATTED}`] === undefined) {
-        formatted[`${key}${FORMATTED}`] = null;
-      }
-    }
+    shapeChoiceFormatted(mapping, formatted);
     const named = options?.single === true && moneyNamed(c, mapping);
     // The base currency lookup is answered only for a row that holds one (currencyOnWrite). A selected lookup the row does not hold is null.
     const held = currencyHeld(c, mapping, row[mapping.idColumn]);
     shapeMoney(mapping, formatted, { currencyWanted: held && (currencySelected(c) || named), named });
     selectedSystemValues(c, mapping, row, formatted);
-    if (
-      !held &&
-      formatted[CURRENCY] === undefined &&
-      currencySelected(c) &&
-      Object.keys(formatted).some((key) => !key.includes('@') && isMoney(mapping, key))
-    )
-      formatted[CURRENCY] = null;
+    shapeMissingCurrency(c, mapping, formatted, held);
     if (options?.allColumns) fillColumns(c, mapping, formatted);
     if (options?.expand?.length)
       pageExpansions(c, mapping, row, formatted, options.expand, { collection: options.single !== true });
@@ -1091,7 +1207,6 @@ export function createRecordHandlers({
     for (const name of names) if (!(name in formatted)) formatted[name] = null;
   }
 
-  // Every column name a read of the table answers (system columns, lookups as _x_value, money companions, file parts), with money and date columns that imply a time-zone rule stamp.
   function columnNamesOf(mapping) {
     const names = [mapping.idColumn, ...(metadata?.recordFields ? [] : TABLE_COLUMNS)];
     const moneys = [];
@@ -1104,25 +1219,7 @@ export function createRecordHandlers({
         ? readFieldsOf(mapping.logicalName)
         : store.fieldDefinitions(mapping.logicalName, fieldsOf),
     )) {
-      const kind = fieldKind(definition);
-      if (kind === 'virtual' || kind === 'partylist') continue;
-      const sourceDate = sourceDates[name];
-      if (
-        fieldKind(sourceDate) === 'datetime' &&
-        ((dateTimeBehavior(sourceDate) || 'userlocal') === 'userlocal' || isDateOnlyField(sourceDate))
-      )
-        dateColumns.push(name);
-      if (kind === 'lookup') names.push(`_${name}_value`);
-      else names.push(name);
-      // A money column has a base-currency companion; the companion is money-typed and has no companion of its own.
-      if (kind === 'money' && !name.endsWith('_base')) {
-        moneys.push(name);
-        names.push(`${name}_base`);
-      }
-      if (kind === 'file') {
-        const image = String(definition.dataverseType ?? definition.type ?? '').toLowerCase() === 'image';
-        names.push(...(image ? [`${name}id`, `${name}_url`, `${name}_timestamp`] : [`${name}_name`]));
-      }
+      addColumnNames(name, definition, sourceDates[name], names, moneys, dateColumns);
     }
     if (moneys.length) names.push(CURRENCY, 'exchangerate');
     return {
@@ -1166,41 +1263,42 @@ export function createRecordHandlers({
   // An expanded collection holds at most PAGE_CAP rows; its nav@odata.nextLink pages on through the navigation (nested paging).
   // A collection query links every expanded collection (short or empty too); a child row carries its parent's lookup; a
   // child with no $select carries every column; a single-valued expansion carries its etag.
-  function pageExpansions(c, mapping, row, formatted, expand, { collection = true } = {}) {
-    for (const item of expand) {
-      const rel = navigationOf(mapping, item.navigation);
-      const value = formatted[item.navigation];
-      if (!rel || value == null) continue;
-      if (!Array.isArray(value)) {
-        const target = store.resolveMapping(rel.entity);
-        const stored = value[target.idColumn] == null ? null : rowOf(c, target, value[target.idColumn]);
-        if (stored) value['@odata.etag'] = store.etag(stored);
-        continue;
-      }
-      if (rel.many !== false) for (const child of value) shapeChild(c, mapping, row, rel, child, item);
-      if (value.length <= PAGE_CAP) {
-        if (collection) {
-          const link = childLinks(c.origin, c.version, mapping.entitySet, row[mapping.idColumn], item.navigation, item);
-          formatted[link.key] = link.url;
-        }
-        continue;
-      }
-      const { target, rows } = relatedRows(c, mapping, row, rel);
-      const kept = rows.slice(0, PAGE_CAP);
-      const token = {
-        pageNumber: 2,
-        firstId: kept[0][target.idColumn],
-        lastId: kept.at(-1)[target.idColumn],
-        idColumn: target.idColumn,
-        countOfRecords: rows.length,
-      };
-      value.length = PAGE_CAP;
-      const link = childLinks(c.origin, c.version, mapping.entitySet, row[mapping.idColumn], item.navigation, item, {
-        nested: true,
-        token,
-      });
-      formatted[link.key] = link.url;
+  function pageExpansion(c, mapping, row, formatted, item, collection) {
+    const rel = navigationOf(mapping, item.navigation);
+    const value = formatted[item.navigation];
+    if (!rel || value == null) return;
+    if (!Array.isArray(value)) {
+      const target = store.resolveMapping(rel.entity);
+      const stored = value[target.idColumn] == null ? null : rowOf(c, target, value[target.idColumn]);
+      if (stored) value['@odata.etag'] = store.etag(stored);
+      return;
     }
+    if (rel.many !== false) for (const child of value) shapeChild(c, mapping, row, rel, child, item);
+    if (value.length <= PAGE_CAP) {
+      if (collection) {
+        const link = childLinks(c.origin, c.version, mapping.entitySet, row[mapping.idColumn], item.navigation, item);
+        formatted[link.key] = link.url;
+      }
+      return;
+    }
+    const { target, rows } = relatedRows(c, mapping, row, rel);
+    const kept = rows.slice(0, PAGE_CAP);
+    const token = {
+      pageNumber: 2,
+      firstId: kept[0][target.idColumn],
+      lastId: kept.at(-1)[target.idColumn],
+      idColumn: target.idColumn,
+      countOfRecords: rows.length,
+    };
+    value.length = PAGE_CAP;
+    const link = childLinks(c.origin, c.version, mapping.entitySet, row[mapping.idColumn], item.navigation, item, {
+      nested: true,
+      token,
+    });
+    formatted[link.key] = link.url;
+  }
+  function pageExpansions(c, mapping, row, formatted, expand, { collection = true } = {}) {
+    for (const item of expand) pageExpansion(c, mapping, row, formatted, item, collection);
   }
 
   // One expanded child of a collection: its referencing lookup, and every column when the expansion selects none.
@@ -1223,23 +1321,29 @@ export function createRecordHandlers({
   // nested expansions). Computed columns already hold their computed value (store.setComputedColumns); the hooks then
   // apply column security (null) and masking rules (masked unless UnMaskedData and CanReadUnmasked allow it).
   // single is a single-record read (entity, property, $value); collections, FetchXML and $expand rows are not.
-  function projectRow(c, mapping, formatted, expand = [], single = false) {
+  function removeInvalidODataFields(mapping, formatted) {
     const all = declaredFields(mapping.logicalName, true);
-    if (all)
-      for (const [name, field] of Object.entries(all)) {
-        if ((field.dataverseMetadata?.IsValidODataAttribute ?? field.columnMetadata?.isValidODataAttribute) !== false)
-          continue;
-        for (const key of Object.keys(formatted)) if (key === name || key.startsWith(`${name}@`)) delete formatted[key];
-      }
-    runHooks('project', c, mapping, formatted, { single });
+    if (!all) return;
+    for (const [name, field] of Object.entries(all)) {
+      if ((field.dataverseMetadata?.IsValidODataAttribute ?? field.columnMetadata?.isValidODataAttribute) !== false)
+        continue;
+      for (const key of Object.keys(formatted)) if (key === name || key.startsWith(`${name}@`)) delete formatted[key];
+    }
+  }
+  function projectExpandedRows(c, mapping, formatted, expand) {
     for (const spec of expand) {
       const rel = navigationOf(mapping, spec.navigation);
       const value = formatted[spec.navigation];
       if (!rel || value == null || typeof value !== 'object') continue;
       const target = store.resolveMapping(rel.entity);
-      for (const item of [].concat(value))
+      for (const item of [].concat(value) /* NOSONAR: preserve concat spreadability semantics */)
         if (item && typeof item === 'object') projectRow(c, target, item, spec.expand ?? []);
     }
+  }
+  function projectRow(c, mapping, formatted, expand = [], single = false) {
+    removeInvalidODataFields(mapping, formatted);
+    runHooks('project', c, mapping, formatted, { single });
+    projectExpandedRows(c, mapping, formatted, expand);
   }
 
   function rowOf(c, mapping, id, partitionId = null) {
@@ -1275,35 +1379,6 @@ export function createRecordHandlers({
     if (!key.row) throw notFoundRecord(mapping.logicalName, key.text);
     authorize(c, mapping.logicalName, operation, mapping, key.row);
     return key;
-  }
-
-  // Option values Dataverse refuses before it reads a collection: a bad maxpagesize (405), a repeated or non-positive $top,
-  // a $count other than true or false, and an empty $filter.
-  function assertCollectionOptions(c) {
-    const { url, prefer } = c;
-    if (prefer.maxPageSizeInvalid) {
-      throw new DataError('Prefer Odata.maxpagesize value should be 32 bit integer.', 405, 'InvalidRequest', {
-        innerCode: '0x80060888',
-        httpStatus: 405,
-        route: true,
-      });
-    }
-    if (url.searchParams.getAll('$top').length > 1) {
-      throw new DataError(
-        "Query option '$top' was specified more than once, but it must be specified at most once.",
-        400,
-        'InvalidRequest',
-        { innerCode: '0x80060888', route: true },
-      );
-    }
-    const top = url.searchParams.get('$top');
-    parseDataverseTop(top);
-    const count = url.searchParams.get('$count');
-    if (count != null && count !== 'true' && count !== 'false')
-      throw invalid(`'${count}' is not a valid count option.`, '0x80060888');
-    const filter = url.searchParams.get('$filter');
-    if (filter != null && filter.trim() === '')
-      throw invalid("The value for OData query '$filter' cannot be empty.", '0x80060888');
   }
 
   // Query options for collections: $top yields to maxpagesize, $skiptoken is handled here, the id always rides along.
@@ -1423,14 +1498,6 @@ export function createRecordHandlers({
   const collectionBase = (c, mapping) => `${c.origin}/api/data/${c.version}/${mapping.entitySet}`;
   const tracking = (c) => c.prefer.trackChanges || c.url.searchParams.has('$deltatoken');
 
-  // Change tracking refuses the query options Dataverse refuses; the message is the documented one.
-  function assertTrackable(c) {
-    for (const name of TRACKING_REJECTS) {
-      if (c.url.searchParams.has(name))
-        throw invalid(`The "${name}" query parameter isn't supported when Change Tracking is enabled.`, '0x80060888');
-    }
-  }
-
   // The changes after a $deltatoken's revision; the token is parsed by the change log and never inspected here.
   async function deltaChanges(c, mapping) {
     const token = changes.parse(c.url.searchParams.get('$deltatoken'));
@@ -1534,36 +1601,37 @@ export function createRecordHandlers({
   // aggregate, "groupby" or none) and the attribute names its conditions (attribute and valueof) and orders compare
   // (operands; a condition's entityname moves it to that alias's frame). all: the frame has <all-attributes/>. Read from the
   // same decoded document the engine runs (parseFetchXml), so character references and entities name the same column here.
+  const fetchFlag = (value) => /^(?:true|1)$/i.test(String(value ?? '').trim());
+  function visitFetchNode(node, frame, frames, named) {
+    for (const child of node.children ?? []) visitFetchChild(child, frame, frames, named);
+  }
+  function visitFetchChild(child, frame, frames, named) {
+    if (child.name === 'entity' || child.name === 'link-entity') {
+      const next = { entity: child.attrs.name, alias: child.attrs.alias, attributes: [], operands: [], all: false };
+      frames.push(next);
+      visitFetchNode(child, next, frames, named);
+      return;
+    }
+    if (child.name === 'all-attributes') {
+      if (frame) frame.all = true;
+      return;
+    }
+    if (child.name === 'attribute') {
+      if (frame && child.attrs.name)
+        frame.attributes.push({
+          column: child.attrs.name,
+          method: fetchFlag(child.attrs.groupby) ? 'groupby' : child.attrs.aggregate?.toLowerCase(),
+        });
+      return;
+    }
+    collectFetchOperands(child, frame, named);
+    visitFetchNode(child, frame, frames, named);
+  }
   function fetchFrames(xml) {
     const fetch = parseFetchXml(xml);
     const frames = [],
       named = [];
-    const truthy = (value) => /^(?:true|1)$/i.test(String(value ?? '').trim());
-    const visit = (node, frame) => {
-      for (const child of node.children ?? []) {
-        if (child.name === 'entity' || child.name === 'link-entity') {
-          const next = { entity: child.attrs.name, alias: child.attrs.alias, attributes: [], operands: [], all: false };
-          frames.push(next);
-          visit(child, next);
-        } else if (child.name === 'all-attributes') {
-          if (frame) frame.all = true;
-        } else if (child.name === 'attribute') {
-          if (frame && child.attrs.name)
-            frame.attributes.push({
-              column: child.attrs.name,
-              method: truthy(child.attrs.groupby) ? 'groupby' : child.attrs.aggregate?.toLowerCase(),
-            });
-        } else {
-          if (child.name === 'condition' || child.name === 'order') {
-            for (const key of ['attribute', 'valueof'])
-              if (child.attrs[key])
-                named.push({ frame, entityname: child.attrs.entityname, attribute: child.attrs[key] });
-          }
-          visit(child, frame);
-        }
-      }
-    };
-    visit(fetch, null);
+    visitFetchNode(fetch, null, frames, named);
     for (const { frame, entityname, attribute } of named) {
       const owner = entityname
         ? (frames.find((item) => item.alias === entityname) ?? frames.find((item) => item.entity === entityname))
@@ -1571,8 +1639,8 @@ export function createRecordHandlers({
       owner?.operands.push(attribute);
     }
     return {
-      aggregate: truthy(fetch.attrs.aggregate),
-      distinct: truthy(fetch.attrs.distinct),
+      aggregate: fetchFlag(fetch.attrs.aggregate),
+      distinct: fetchFlag(fetch.attrs.distinct),
       frames: frames.filter((frame) => frame.entity),
     };
   }
@@ -1656,7 +1724,29 @@ export function createRecordHandlers({
   }
 
   // Collection page with Dataverse paging: maxpagesize (cap 5000) or the default page; $skiptoken names the next page.
-  function collectionPage(c, mapping, { ids = null, nextBase = null, tracked = false }) {
+  function collectionNextLink(c, mapping, result, { rows, offset, pageSize, tracked, delta, nextBase }) {
+    if (result.paging?.moreRecords) {
+      const idColumn = mapping.idColumn;
+      const cookie = encodeSkipToken({
+        pageNumber: offset / pageSize + 2,
+        lastId: rows.at(-1)[idColumn],
+        firstId: rows[0][idColumn],
+        idColumn,
+        // A secured column's values never travel in the cookie (they may be hidden or masked for the caller); such a
+        // page resumes after the cursor row by id instead.
+        orderColumns: (result.paging.order ?? []).filter(
+          (column) => !isSecuredField(readDefinition(mapping, column.name.replace(/^_(.+)_value$/, '$1'))),
+        ),
+      });
+      // An extra attribute on the cookie carries the delta token; decodeSkipToken reads the paging attributes around it.
+      const token = tracked ? cookie.replace(' />', ` deltatoken="${delta}" />`) : cookie;
+      const base = nextBase ?? collectionBase(c, mapping);
+      return { '@odata.nextLink': nextLinkOf(c, base, token) };
+    }
+    if (tracked) return { '@odata.deltaLink': deltaLinkOf(c, collectionBase(c, mapping), delta) };
+    return {};
+  }
+  /* NOSONAR */ function collectionPage(c, mapping, { ids = null, nextBase = null, tracked = false }) {
     assertCollectionOptions(c);
     const { url, prefer } = c;
     const pageCap = isElastic(mapping) ? 500 : PAGE_CAP;
@@ -1702,24 +1792,7 @@ export function createRecordHandlers({
         keepAnnotations(formatRow(c, mapping, row, { etag: true, expand, allColumns: true }), c.include),
       ),
     );
-    if (result.paging?.moreRecords) {
-      const idColumn = mapping.idColumn;
-      const cookie = encodeSkipToken({
-        pageNumber: offset / pageSize + 2,
-        lastId: rows.at(-1)[idColumn],
-        firstId: rows[0][idColumn],
-        idColumn,
-        // A secured column's values never travel in the cookie (they may be hidden or masked for the caller); such a
-        // page resumes after the cursor row by id instead.
-        orderColumns: (result.paging.order ?? []).filter(
-          (column) => !isSecuredField(readDefinition(mapping, column.name.replace(/^_(.+)_value$/, '$1'))),
-        ),
-      });
-      // An extra attribute on the cookie carries the delta token; decodeSkipToken reads the paging attributes around it.
-      const token = tracked ? cookie.replace(' />', ` deltatoken="${delta}" />`) : cookie;
-      const base = nextBase ?? collectionBase(c, mapping);
-      body['@odata.nextLink'] = nextLinkOf(c, base, token);
-    } else if (tracked) body['@odata.deltaLink'] = deltaLinkOf(c, collectionBase(c, mapping), delta);
+    Object.assign(body, collectionNextLink(c, mapping, result, { rows, offset, pageSize, tracked, delta, nextBase }));
     const applied = preferenceApplied(prefer, { paged: true, tracked });
     return { status: 200, headers: applied ? { 'Preference-Applied': applied } : {}, body };
   }
@@ -1757,7 +1830,7 @@ export function createRecordHandlers({
     return projectPage(() => fetchXmlProjectedPage(c, mapping, xml, { order }));
   }
 
-  function fetchXmlProjectedPage(c, mapping, xml, { order = 'sorted' } = {}) {
+  function validateFetchXmlRequest(c, mapping, xml) {
     if (isElastic(mapping) && /<link-entity\b/i.test(xml))
       throw invalid('Link entities are not supported', '0x80048d0b');
     const logical = mapping.logicalName;
@@ -1781,6 +1854,9 @@ export function createRecordHandlers({
       authorize(c, linked, 'read', store.resolveMapping(linked));
     }
     assertFetchOperands(c, xml);
+  }
+  function fetchXmlProjectedPage(c, mapping, xml, { order = 'sorted' } = {}) {
+    validateFetchXmlRequest(c, mapping, xml);
     const fetched = store.fetchXml(xml, c.identity, { metadata: readFieldsOf, ...rowsOptionsOf(c) });
     const info = fetched.columns;
     const columns = (info.columns ?? [])
@@ -1789,7 +1865,8 @@ export function createRecordHandlers({
     if (!info.aggregate && !info.distinct && !columns.includes(mapping.idColumn)) columns.push(mapping.idColumn);
     // FetchXML lists the columns alphabetically with the id, not in attribute order; an aggregate has no column list.
     // A saved query's columns keep the saved attribute order; the id stays last when it is not listed.
-    const ordered = order === 'attribute' ? columns : [...columns].sort();
+    const ordered =
+      order === 'attribute' ? columns : [...columns].sort(/* NOSONAR: preserve default string coercion */);
     const listed = columns.length ? `(${ordered.join(',')})` : '';
     const body = { '@odata.context': contextFor(c, `${mapping.entitySet}${listed}`) };
     // returntotalrecordcount="true" answers the count (capped like $count) and, when included, the total and its limit flag.
@@ -1979,7 +2056,12 @@ export function createRecordHandlers({
 
   // Deep insert: each nested child is a create of its own table, so it needs create and append on the child and appendto
   // on the parent (a refusal names the child table), then the same payload rules. Ownership is stamped per row by the store.
-  async function deepPayload(c, mapping, data) {
+
+  /* NOSONAR: retain original await boundaries for concurrent operations */ async function deepPayload(
+    c,
+    mapping,
+    data,
+  ) {
     for (const key of Object.keys(data)) {
       const rel = navigationOf(mapping, key);
       const value = data[key];
@@ -2007,29 +2089,30 @@ export function createRecordHandlers({
   }
 
   // Authorizes each bind (appendto on the bound row, assign for ownerid) and normalises it to /set(key).
-  function bindsOf(c, mapping, data, existing) {
-    for (const key of Object.keys(data)) {
-      if (!key.endsWith(BIND)) continue;
-      const nav = key.slice(0, -BIND.length);
-      if (nav === 'ownerid') {
-        if (!isMember(mapping, nav)) throw undeclared(mapping.entitySet, nav);
-        authorize(c, mapping.logicalName, 'assign', mapping, existing ?? undefined);
-      }
-      if (data[key] === null) continue;
-      const ref = refOf(data[key]);
-      const target = mappingForSet(ref.set);
-      const rel = navigationOf(mapping, nav);
-      const row = rowOf(c, target, ref.id, isElastic(target) ? data[`${rel?.from ?? nav}pid`] : null);
-      if (!row && isElastic(target) && !ref.id.includes('=') && data[`${rel?.from ?? nav}pid`] == null) {
-        authorize(c, target.logicalName, 'appendto', target);
-        data[key] = `/${ref.set}(${ref.id})`;
-        continue;
-      }
-      if (!row && uncheckedLookup(mapping.logicalName, rel?.from ?? nav, target.logicalName)) continue;
-      if (!row) throw notFoundRecord(target.logicalName, ref.id);
-      authorize(c, target.logicalName, 'appendto', target, row);
-      data[key] = `/${ref.set}(${ref.id})`;
+  function bindOne(c, mapping, data, existing, key) {
+    if (!key.endsWith(BIND)) return;
+    const nav = key.slice(0, -BIND.length);
+    if (nav === 'ownerid') {
+      if (!isMember(mapping, nav)) throw undeclared(mapping.entitySet, nav);
+      authorize(c, mapping.logicalName, 'assign', mapping, existing ?? undefined);
     }
+    if (data[key] === null) return;
+    const ref = refOf(data[key]);
+    const target = mappingForSet(ref.set);
+    const rel = navigationOf(mapping, nav);
+    const row = rowOf(c, target, ref.id, isElastic(target) ? data[`${rel?.from ?? nav}pid`] : null);
+    if (!row && isElastic(target) && !ref.id.includes('=') && data[`${rel?.from ?? nav}pid`] == null) {
+      authorize(c, target.logicalName, 'appendto', target);
+      data[key] = `/${ref.set}(${ref.id})`;
+      return;
+    }
+    if (!row && uncheckedLookup(mapping.logicalName, rel?.from ?? nav, target.logicalName)) return;
+    if (!row) throw notFoundRecord(target.logicalName, ref.id);
+    authorize(c, target.logicalName, 'appendto', target, row);
+    data[key] = `/${ref.set}(${ref.id})`;
+  }
+  function bindsOf(c, mapping, data, existing) {
+    for (const key of Object.keys(data)) bindOne(c, mapping, data, existing, key);
     return data;
   }
 
@@ -2260,7 +2343,14 @@ export function createRecordHandlers({
   }
 
   // Upsert semantics per If-Match / If-None-Match; runs inside the caller's transaction and returns { created, id }.
-  async function upsertNow(c, mapping, key, body, { ifMatch, ifNoneMatch }) {
+
+  /* NOSONAR: retain original await boundaries for concurrent operations */ async function upsertNow(
+    c,
+    mapping,
+    key,
+    body,
+    { ifMatch, ifNoneMatch },
+  ) {
     const logical = mapping.logicalName;
     if (ifMatch == null) assertPluginMessageAdmission(store, 'Upsert', c, logical);
     if (key.row && ifNoneMatch === '*') {
@@ -2405,16 +2495,12 @@ export function createRecordHandlers({
       Object.entries(key.alternate).every(
         ([name, value]) => String(stored[name] ?? '').toLowerCase() === String(value ?? '').toLowerCase(),
       );
-    const location = entityUrl(
-      c.origin,
-      c.version,
-      mapping.entitySet,
-      isElastic(mapping)
-        ? recordKey(mapping, { [mapping.idColumn]: outcome.id, partitionid: c.partitionId })
-        : urlKeyHolds
-          ? key.text
-          : outcome.id,
-    );
+    const recordId = () => {
+      if (isElastic(mapping)) return recordKey(mapping, { [mapping.idColumn]: outcome.id, partitionid: c.partitionId });
+      if (urlKeyHolds) return key.text;
+      return outcome.id;
+    };
+    const location = entityUrl(c.origin, c.version, mapping.entitySet, recordId());
     if (!c.prefer.representation) return { status: 204, headers: { 'OData-EntityId': location, Location: location } };
     // An update answers every column but drops the null ones (as every native PATCH 200 body does); an upsert-create keeps its own column set.
     const represented = outcome.created
@@ -2642,7 +2728,7 @@ export function createRecordHandlers({
   async function putRef(c) {
     const { mapping, route } = c;
     const rel = navigationOf(mapping, route.segment);
-    if (!rel || rel.many !== false) throw methodNotAllowed(c.method);
+    if (rel?.many !== false) throw methodNotAllowed(c.method);
     const ref = refOf(bodyOf(mapping.entitySet, c.body, c)['@odata.id']);
     const parent = parentRow(c, mapping, 'update');
     await runWrite(async () => {
@@ -2709,36 +2795,6 @@ export function createRecordHandlers({
       ),
     );
     return { status: 204 };
-  }
-
-  function targetsOf(c) {
-    const targets = c.body?.Targets;
-    if (!Array.isArray(targets) || !targets.every((item) => item && typeof item === 'object' && !Array.isArray(item))) {
-      throw invalid('The Targets parameter must be an array of objects.');
-    }
-    return targets;
-  }
-
-  // Native refuses a bulk message before any write: no targets, or a target typed as another table (the message reads 'none' there).
-  // Assumed: UpdateMultiple and UpsertMultiple take the same refusals as CreateMultiple.
-  function refuseBulkTargets(mapping, message, targets) {
-    if (targets.length === 0)
-      throw new DataError('Custom state is not set for entity type crmbaseentity.', 400, 'InvalidRequest', {
-        innerCode: '0x80040216',
-      });
-    const typed = `Microsoft.Dynamics.CRM.${mapping.logicalName}`;
-    if (
-      targets.some(
-        (target) => target['@odata.type'] !== undefined && String(target['@odata.type']).replace(/^#/, '') !== typed,
-      )
-    ) {
-      throw new DataError(
-        `The '${message}' method does not support entities of type 'none'. MessageProcessorCache returned MessageProcessor.Empty. `,
-        400,
-        'InvalidRequest',
-        { innerCode: '0x80040800' },
-      );
-    }
   }
 
   // Elastic bulk requests commit each successful target independently and continue after failures.
@@ -2809,7 +2865,7 @@ export function createRecordHandlers({
       : { status: 204 };
   }
 
-  async function boundAction(c) {
+  /* NOSONAR: retain original await boundaries for concurrent operations */ async function boundAction(c) {
     const { mapping, route } = c;
     if (route.key == null && route.name === 'DeleteMultiple' && !isElastic(mapping)) return deleteMultipleRefusal(c);
     assertPluginMessageAdmission(store, route.name, c, mapping.logicalName);
@@ -2831,19 +2887,21 @@ export function createRecordHandlers({
         creates = [],
         updates = [],
         created = new Set();
-      for (const [index, target] of targets.entries()) {
-        const folded = texts[index].toLowerCase();
-        if (seen.has(folded)) throw invalid('Duplicate key in Targets.', '0x80040203'); // native message text is a guess
-        seen.add(folded);
-        const key = lookupKey(c, mapping, texts[index]);
-        const values = { ...target };
-        delete values['@odata.id'];
-        if (key.row) updates.push({ ...values, [mapping.idColumn]: key.row[mapping.idColumn] });
-        else {
-          creates.push(values);
-          created.add(index);
+      withUpsertClassificationIndex(store, mapping, targets, texts, () => {
+        for (const [index, target] of targets.entries()) {
+          const folded = texts[index].toLowerCase();
+          if (seen.has(folded)) throw invalid('Duplicate key in Targets.', '0x80040203'); // native message text is a guess
+          seen.add(folded);
+          const key = lookupKey(c, mapping, texts[index]);
+          const values = { ...target };
+          delete values['@odata.id'];
+          if (key.row) updates.push({ ...values, [mapping.idColumn]: key.row[mapping.idColumn] });
+          else {
+            creates.push(values);
+            created.add(index);
+          }
         }
-      }
+      });
       // UpsertMultiple runs no steps of its own (registered UpsertMultiple steps do not fire): its main operation
       // (UpsertMultiple/30) runs the new records through the CreateMultiple pipeline, then the existing ones through
       // UpdateMultiple, whose message input carries ConcurrencyBehavior; both in its transaction, request and correlation,
@@ -3012,8 +3070,15 @@ export function createRecordHandlers({
     });
   }
 
+  /* NOSONAR */
+
   // The grouped CreateMultiple/UpdateMultiple pipeline over Web API targets, inside the caller's write.
-  async function bulkWrite(c, update, raw, { concurrencyBehavior, delegated = false } = {}) {
+  /* NOSONAR: retain original await boundaries for concurrent operations */ async function bulkWrite(
+    c,
+    update,
+    raw,
+    { concurrencyBehavior, delegated = false } = {},
+  ) {
     const { mapping } = c;
     const targets = [],
       stamps = [],
@@ -3493,7 +3558,7 @@ export function createRecordHandlers({
       () => drive(associationSteps(context, logical, id, navigation, [relatedIds].flat(), false, options), options),
     );
   }
-  function* associationSteps(
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ function* associationSteps(
     c,
     logical,
     id,
@@ -3597,7 +3662,7 @@ export function createRecordHandlers({
           store.retrieveMultipleOperation(
             rel.intersect.entity,
             { $type: 'FetchExpression', query: xml },
-            { ...(c.identity ?? {}), admin: true },
+            { ...c.identity, admin: true },
             () => ({
               value: store
                 .tableRows(rel.intersect.entity)

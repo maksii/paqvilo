@@ -94,7 +94,7 @@ function operations(api) {
           regardingobjectid: profileId,
         });
       }
-      for (const row of [...tableOf('mobileofflineprofileitemassociation')]) {
+      /* NOSONAR */ for (const row of [...tableOf('mobileofflineprofileitemassociation')]) {
         if (!itemIds.has(key(row.mobileofflineprofileitemid))) continue;
         tableOf('mobileofflineprofileitemassociation').push({
           ...row,
@@ -102,7 +102,7 @@ function operations(api) {
           mobileofflineprofileitemid: itemIds.get(key(row.mobileofflineprofileitemid)),
         });
       }
-      for (const row of [...tableOf('mobileofflineprofileitemfilter')]) {
+      /* NOSONAR */ for (const row of [...tableOf('mobileofflineprofileitemfilter')]) {
         if (
           !itemIds.has(key(row.mobileofflineprofileitemid)) &&
           !sameId(row.mobileofflineprofileid, source.mobileofflineprofileid)

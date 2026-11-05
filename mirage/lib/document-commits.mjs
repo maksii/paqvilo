@@ -193,7 +193,7 @@ export async function observeDocumentCommits(page, cdp, { document, commit, read
           if (typeof window[browserBinding] === 'function') window[browserBinding](token);
           void window[frameBinding](token).catch(() => {});
         };
-        Object.defineProperty(window, reportBinding, { value: report });
+        Object.defineProperty(globalThis, reportBinding, { value: report });
         report();
         window.addEventListener('pageshow', (event) => {
           if (event.persisted) report();

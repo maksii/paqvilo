@@ -35,7 +35,7 @@ const section = (doc, title) => {
   const end = doc.indexOf('\n## ', start + 3);
   return doc.slice(start, end < 0 ? undefined : end);
 };
-const refs = (text) => [...text.matchAll(/`([a-zA-Z][a-zA-Z0-9_]*)`/g)].map((m) => m[1]);
+const refs = (text) => [...text.matchAll(/`([a-zA-Z]\w*)`/g)].map((m) => m[1]);
 const rows = (text) =>
   text
     .split('\n')
@@ -99,10 +99,70 @@ const defaults = {
   pqvd_checkresult: 'Not run',
   pqvd_capturestate: 'Pending',
 };
+function applyTextColumn(column, table, name, definition) {
+  Object.assign(column, {
+    type: definition.startsWith('Text') ? 'string' : 'memo',
+    maxLength:
+      !source5 && table === 'pqvd_testoperation' && name === 'pqvd_variant' ? 40 : Number(definition.match(/\d+/)[0]),
+  });
+}
+
+function applyChoiceColumn(column, name, definition) {
+  const choice = definition.match(/\((pqvd_\w+)\)/)?.[1] ?? choiceAliases[name] ?? name;
+  Object.assign(column, { type: definition.startsWith('MultiSelect') ? 'multichoice' : 'choice', choice });
+  if (defaults[name]) {
+    const option = choices.find((c) => c.name === choice)?.options.find((o) => o.label === defaults[name]);
+    if (!option) throw new Error('Missing declared default ' + name);
+    column.default = option.value;
+  }
+}
+
+function applyIntegerColumn(column, name, definition) {
+  const range = definition.match(/\((-?\d+)\.\.(-?\d+)\)/);
+  let min;
+  if (range) min = Number(range[1]);
+  else if (name === 'pqvd_floor') min = -2147483648;
+  else min = 0;
+  Object.assign(column, { type: 'integer', min, max: range ? Number(range[2]) : 2147483647 });
+}
+
+function applyMoneyColumn(column, name) {
+  Object.assign(column, {
+    type: 'money',
+    min: 0,
+    max: 100000000000,
+    precision: 2,
+    precisionSource: name === 'pqvd_samplemoney' ? 0 : 2,
+  });
+}
+
+function applyDecimalColumn(column, name) {
+  Object.assign(column, {
+    type: 'decimal',
+    min: ['pqvd_measuredvalue', 'pqvd_sampledecimal'].includes(name) ? -1000000 : 0,
+    max: decimalMax(name),
+    precision: ['pqvd_measuredvalue', 'pqvd_sampledecimal'].includes(name) ? 4 : 2,
+  });
+}
+
+function applyColumnDefinition(column, table, name, definition) {
+  if (definition.startsWith('Text(') || definition.startsWith('Multiline('))
+    return applyTextColumn(column, table, name, definition);
+  if (definition.startsWith('Choice') || definition.startsWith('MultiSelect'))
+    return applyChoiceColumn(column, name, definition);
+  if (definition === 'Boolean') return Object.assign(column, { type: 'boolean', default: false });
+  if (['Date', 'DateOnly', 'Time'].includes(definition))
+    return Object.assign(column, { type: 'datetime', behavior: definition === 'Time' ? 'UserLocal' : 'DateOnly' });
+  if (definition.startsWith('Integer')) return applyIntegerColumn(column, name, definition);
+  if (definition.startsWith('Money')) return applyMoneyColumn(column, name);
+  if (definition.startsWith('Decimal')) return applyDecimalColumn(column, name);
+  throw new Error('Unsupported specification field ' + table + '.' + name);
+}
+
 function parseColumns(table, text, solution) {
   const columns = [];
   const pattern =
-    /`(pqvd_\w+)`\s+(Text\(\d+\)|Multiline\(\d+\)|L\([^)]+\)|Integer(?:\([^)]*\))?|Boolean|Choice(?:\([^)]*\))?|MultiSelect\([^)]+\)|Decimal(?:\([^)]*\))?|Money(?:\([^)]*\))?|DateOnly|Date|Time)(!)?/g;
+    /`(pqvd_\w+)`\s+(Text\(\d+\)|Multiline\(\d+\)|L\([^)]+\)|Integer(?:\([^)]*\))?|Boolean|Choice(?:\([^)]*\))?|MultiSelect\([^)]+\)|Decimal(?:\([^)]*\))?|Money(?:\([^)]*\))?|DateOnly|Date|Time)(!)?/g; // NOSONAR: regex kept: a rewrite would change matches or captures
   for (const match of text.matchAll(pattern)) {
     const [name, definition, mandatory] = match.slice(1);
     if (name === 'pqvd_name') continue;
@@ -113,53 +173,17 @@ function parseColumns(table, text, solution) {
       lookupFields.set(table + '.' + name, { ...column, target: definition.slice(2, -1), solution });
       continue;
     }
-    if (definition.startsWith('Text(') || definition.startsWith('Multiline('))
-      Object.assign(column, {
-        type: definition.startsWith('Text') ? 'string' : 'memo',
-        maxLength:
-          !source5 && table === 'pqvd_testoperation' && name === 'pqvd_variant'
-            ? 40
-            : Number(definition.match(/\d+/)[0]),
-      });
-    else if (definition.startsWith('Choice') || definition.startsWith('MultiSelect')) {
-      const choice = definition.match(/\((pqvd_\w+)\)/)?.[1] ?? choiceAliases[name] ?? name;
-      Object.assign(column, { type: definition.startsWith('MultiSelect') ? 'multichoice' : 'choice', choice });
-      if (defaults[name]) {
-        const option = choices.find((c) => c.name === choice)?.options.find((o) => o.label === defaults[name]);
-        if (!option) throw new Error('Missing declared default ' + name);
-        column.default = option.value;
-      }
-    } else if (definition === 'Boolean') Object.assign(column, { type: 'boolean', default: false });
-    else if (['Date', 'DateOnly', 'Time'].includes(definition))
-      Object.assign(column, { type: 'datetime', behavior: definition === 'Time' ? 'UserLocal' : 'DateOnly' });
-    else if (definition.startsWith('Integer')) {
-      const range = definition.match(/\((-?\d+)\.\.(-?\d+)\)/);
-      Object.assign(column, {
-        type: 'integer',
-        min: range ? Number(range[1]) : name === 'pqvd_floor' ? -2147483648 : 0,
-        max: range ? Number(range[2]) : 2147483647,
-      });
-    } else if (definition.startsWith('Money'))
-      Object.assign(column, {
-        type: 'money',
-        min: 0,
-        max: 100000000000,
-        precision: 2,
-        precisionSource: name === 'pqvd_samplemoney' ? 0 : 2,
-      });
-    else if (definition.startsWith('Decimal'))
-      Object.assign(column, {
-        type: 'decimal',
-        min: ['pqvd_measuredvalue', 'pqvd_sampledecimal'].includes(name) ? -1000000 : 0,
-        max: name === 'pqvd_ftefraction' ? 1 : name === 'pqvd_weeklyhours' ? 168 : 1000000,
-        precision: ['pqvd_measuredvalue', 'pqvd_sampledecimal'].includes(name) ? 4 : 2,
-      });
-    else throw new Error('Unsupported specification field ' + table + '.' + name);
+    applyColumnDefinition(column, table, name, definition);
     if (solution !== tables.find((t) => t.name === table)?.solution && tables.some((t) => t.name === table))
       column.solution = solution;
     columns.push(column);
   }
   return columns;
+}
+function decimalMax(name) {
+  if (name === 'pqvd_ftefraction') return 1;
+  if (name === 'pqvd_weeklyhours') return 168;
+  return 1000000;
 }
 for (const [source, solution] of [
   [section(core, 'Tables columns and keys'), coreSolution],
@@ -238,7 +262,7 @@ for (const row of rows(section(core, 'Choices and twelve roles')))
     );
   }
 for (const row of rows(section(core, 'Access permission projections')))
-  if (/^`pqvd_access_/.test(row[0])) {
+  if (row[0].startsWith('`pqvd_access_')) {
     const [name] = refs(row[0]),
       [parent, child] = refs(row[1]),
       intersectColumns = refs(row[2]);
@@ -371,29 +395,29 @@ const manifest = validateManifest({
     optionValuePrefix: 18327,
   },
   solutions: [
-    { uniqueName: coreSolution, friendlyName: 'Company Operations Core', version: '1.0.0.0' },
+    { uniqueName: coreSolution, friendlyName: 'Company Operations Core', version: '1.0.0.0' }, // NOSONAR: version string or loopback address, not a network target
     {
       uniqueName: 'PaqviloCompanyOperationsForms',
       friendlyName: 'Company Operations Forms',
-      version: '1.0.0.0',
+      version: '1.0.0.0', // NOSONAR: version string or loopback address, not a network target
       dependsOn: [coreSolution],
     },
     {
       uniqueName: supportSolution,
       friendlyName: 'Permission Test Support',
-      version: '1.0.0.0',
+      version: '1.0.0.0', // NOSONAR: version string or loopback address, not a network target
       dependsOn: [coreSolution],
     },
     {
       uniqueName: evidenceSolution,
       friendlyName: 'Plugin Evidence',
-      version: '1.0.0.0',
+      version: '1.0.0.0', // NOSONAR: version string or loopback address, not a network target
       dependsOn: [coreSolution, supportSolution],
     },
     {
       uniqueName: pluginSolution,
       friendlyName: 'Behaviour Plugins',
-      version: '1.0.0.0',
+      version: '1.0.0.0', // NOSONAR: version string or loopback address, not a network target
       dependsOn: [evidenceSolution, supportSolution],
     },
   ],

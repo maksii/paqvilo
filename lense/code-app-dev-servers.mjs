@@ -72,6 +72,72 @@ function logOutput(app, stream, output) {
     if (buffer) emit(buffer);
   });
 }
+
+function watchStartupChild(app, child, wrapped, isClosing, onFailure) {
+  let failure;
+  if (wrapped)
+    child.on('message', (message) => {
+      if (message?.type === 'error') failure = new Error(`Code app ${app.name} could not start: ${message.message}`);
+      else if (message?.type === 'exit')
+        failure = new Error(`Code app ${app.name} dev server exited (${message.signal ?? message.code}).`);
+      if (failure && !isClosing()) onFailure(failure);
+    });
+  child.once('error', (error) => {
+    failure = new Error(`Code app ${app.name} could not start: ${error.message}`);
+    if (!isClosing()) onFailure(failure);
+  });
+  child.once('exit', (code, bySignal) => {
+    failure ??= new Error(`Code app ${app.name} dev server exited (${bySignal ?? code}).`);
+    if (!isClosing()) onFailure(failure);
+  });
+  return () => failure;
+}
+
+function startConfiguredChild(app, command, cwd, { mirageUrl, output, onFailure, isClosing, owned }) {
+  const wrapped = process.platform === 'win32';
+  const child = spawn(
+    wrapped ? process.execPath : command[0],
+    wrapped ? [fileURLToPath(new URL('./code-app-dev-wrapper.mjs', import.meta.url))] : command.slice(1),
+    {
+      cwd,
+      env: {
+        ...process.env,
+        ...app.devServer.env,
+        ...(mirageUrl ? { PAQVILO_MIRAGE_URL: mirageUrl } : {}),
+        PAQVILO_CODE_APP: app.name,
+      },
+      shell: false,
+      detached: process.platform !== 'win32',
+      windowsHide: true,
+      stdio: wrapped ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'],
+    },
+  );
+  const closed = new Promise((resolve) => child.once('close', resolve));
+  owned.push({ child, closed });
+  if (wrapped) child.send({ command, cwd });
+  logOutput(app, child.stdout, output);
+  logOutput(app, child.stderr, output);
+  const getFailure = watchStartupChild(app, child, wrapped, isClosing, onFailure);
+  const deadline = Date.now() + (app.devServer.timeoutMs ?? 30000);
+  return { getFailure, deadline };
+}
+
+function throwIfStartupFailed(getFailure) {
+  const failure = getFailure();
+  if (failure) throw failure;
+}
+
+function throwIfStartupAborted(signal) {
+  if (signal?.aborted) throw signal.reason;
+}
+
+function checkStartupDeadline(app, url, deadline) {
+  if (Date.now() >= deadline)
+    throw new Error(
+      `Code app ${app.name} dev server was not ready at ${url.origin} within ${app.devServer.timeoutMs ?? 30000}ms.`,
+    );
+}
+
 /** Start declared dev servers; reused listeners are never owned or stopped. */
 export async function startCodeAppDevServers(
   apps,
@@ -89,64 +155,27 @@ export async function startCodeAppDevServers(
     for (const app of apps) {
       if (!app.devServer) continue;
       const url = appUrl(app);
-      if (signal?.aborted) throw signal.reason;
+      throwIfStartupAborted(signal);
       if (await ready(url)) {
         output(`[code app ${app.name}] using existing ${url.origin}\n`);
         continue;
       }
       const command = commandOf(app.devServer.command);
       const cwd = cwdOf(app);
-      const wrapped = process.platform === 'win32';
-      const child = spawn(
-        wrapped ? process.execPath : command[0],
-        wrapped ? [fileURLToPath(new URL('./code-app-dev-wrapper.mjs', import.meta.url))] : command.slice(1),
-        {
-          cwd,
-          env: {
-            ...process.env,
-            ...app.devServer.env,
-            ...(mirageUrl ? { PAQVILO_MIRAGE_URL: mirageUrl } : {}),
-            PAQVILO_CODE_APP: app.name,
-          },
-          shell: false,
-          detached: process.platform !== 'win32',
-          windowsHide: true,
-          stdio: wrapped ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'],
-        },
-      );
-      const closed = new Promise((resolve) => child.once('close', resolve));
-      owned.push({ child, closed });
-      if (wrapped) child.send({ command, cwd });
-      logOutput(app, child.stdout, output);
-      logOutput(app, child.stderr, output);
-      let failure;
-      if (wrapped)
-        child.on('message', (message) => {
-          if (message?.type === 'error')
-            failure = new Error(`Code app ${app.name} could not start: ${message.message}`);
-          else if (message?.type === 'exit')
-            failure = new Error(`Code app ${app.name} dev server exited (${message.signal ?? message.code}).`);
-          if (failure && !closing) onFailure(failure);
-        });
-      child.once('error', (error) => {
-        failure = new Error(`Code app ${app.name} could not start: ${error.message}`);
-        if (!closing) onFailure(failure);
+      const { getFailure, deadline } = startConfiguredChild(app, command, cwd, {
+        mirageUrl,
+        output,
+        onFailure,
+        isClosing: () => closing,
+        owned,
       });
-      child.once('exit', (code, bySignal) => {
-        failure ??= new Error(`Code app ${app.name} dev server exited (${bySignal ?? code}).`);
-        if (!closing) onFailure(failure);
-      });
-      const deadline = Date.now() + (app.devServer.timeoutMs ?? 30000);
       while (!(await ready(url))) {
-        if (failure) throw failure;
-        if (signal?.aborted) throw signal.reason;
-        if (Date.now() >= deadline)
-          throw new Error(
-            `Code app ${app.name} dev server was not ready at ${url.origin} within ${app.devServer.timeoutMs ?? 30000}ms.`,
-          );
+        throwIfStartupFailed(getFailure);
+        throwIfStartupAborted(signal);
+        checkStartupDeadline(app, url, deadline);
         await delay(100, undefined, { signal });
       }
-      if (failure) throw failure;
+      throwIfStartupFailed(getFailure);
       output(`[code app ${app.name}] ready at ${url.origin}\n`);
     }
     return { close, owned: owned.length };

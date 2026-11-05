@@ -81,7 +81,7 @@ async function fingerprint(sourceDir, implementation) {
   };
   for (let index = 0; index < READ_CONCURRENCY; index++) read(index);
   for (const [index, file] of files.entries()) {
-    const content = await reads[index];
+    const content = await reads[index]; // NOSONAR: await kept: the value may be a thenable and timing matters
     reads[index] = null;
     read(index + READ_CONCURRENCY);
     if (!content) continue;

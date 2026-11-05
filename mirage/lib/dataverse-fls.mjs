@@ -21,6 +21,7 @@ const FLAGS = ['cancreate', 'canread', 'canupdate', 'canreadunmasked'];
 // CanReadUnmasked: 1 One Record (Retrieve only), 3 All Records.
 const UNMASK_ONE = 1,
   UNMASK_ALL = 3;
+const defaultMaskView = () => ({ unmask: false, single: false });
 // The read inner code 0x8004f508 is a guess.
 const INNER_CODE = { create: '0x8004f502', update: '0x8004f507', read: '0x8004f508' };
 
@@ -125,7 +126,8 @@ export function isSecuredField(field) {
   );
 }
 // A link-entity or aggregate alias prefixes both the key and the id column.
-const idOf = (mapping, row, prefix = '') => row?.[`${prefix}${mapping.idColumn ?? `${mapping.logicalName}id`}`];
+const idColumnOf = (mapping) => mapping.idColumn ?? `${mapping.logicalName}id`;
+const idOf = (mapping, row, prefix = '') => row?.[`${prefix}${idColumnOf(mapping)}`];
 
 // Field sharing keys AttributeId on the column's metadata id.
 const attributeIdOf = (organizationId, entity, name) => metadataComponentId(organizationId, 'attribute', entity, name);
@@ -152,6 +154,10 @@ export function maskedOperand() {
 }
 // Aggregates that read only whether a value is present: masking keeps null as null, so they observe nothing of the clear value.
 const PRESENCE_AGGREGATES = new Set(['count', 'countcolumn', '$count']);
+
+function dropAnnotations(row, form) {
+  for (const key of Object.keys(row)) if (key.startsWith(`${form}@`)) delete row[key];
+}
 
 /** Pure factory over a store and principals. `organizationId()` returns the organization GUID that derives the column MetadataIds. */
 function createFieldSecurity({
@@ -283,7 +289,7 @@ function createFieldSecurity({
   // catch rule rows added inside the open transaction.
   let rules = { revision: null, byColumn: new Map() };
   function maskOf(entity, column) {
-    const revision = `${store.dataRevision?.() ?? Math.random()}:${rows('attributemaskingrule').length}:${rows('maskingrule').length}`;
+    const revision = `${store.dataRevision?.() ?? Math.random()}:${rows('attributemaskingrule').length}:${rows('maskingrule').length}`; // NOSONAR: pseudo-random value for simulation, not a secret
     if (rules.revision !== revision) rules = { revision, byColumn: new Map() };
     const id = `${key(entity)}\u0000${key(column)}`;
     if (!rules.byColumn.has(id)) rules.byColumn.set(id, ruleOf(entity, column));
@@ -377,28 +383,29 @@ function createFieldSecurity({
   // unless the read asked UnMaskedData and CanReadUnmasked allows it (All Records, or One Record on a single-record read).
   // Without view (filter evaluation) a readable column keeps its stored value.
   // The aliased lookup form `prefix_name_value` is assumed.
+  function maskColumn(user, mapping, row, prefix, view, recordId, name) {
+    const forms = [`${prefix}${name}`, `${prefix}_${name}_value`].filter((form) => Object.hasOwn(row, form));
+    if (!forms.length) return;
+    const access = accessOf(user, mapping.logicalName, name, recordId);
+    if (access.read) {
+      const plain = `${prefix}${name}`;
+      if (view && Object.hasOwn(row, plain)) {
+        const masked = maskedValue(mapping.logicalName, name, row[plain], access, view);
+        if (masked !== row[plain]) {
+          row[plain] = masked;
+          dropAnnotations(row, plain);
+        }
+      }
+      return;
+    }
+    for (const form of forms) {
+      row[form] = null;
+      dropAnnotations(row, form);
+    }
+  }
   function maskRow(user, mapping, row, prefix = '', view = null) {
     const recordId = idOf(mapping, row, prefix);
-    for (const name of securedNames(mapping)) {
-      const forms = [`${prefix}${name}`, `${prefix}_${name}_value`].filter((form) => Object.hasOwn(row, form));
-      if (!forms.length) continue;
-      const access = accessOf(user, mapping.logicalName, name, recordId);
-      if (access.read) {
-        const plain = `${prefix}${name}`;
-        if (view && Object.hasOwn(row, plain)) {
-          const masked = maskedValue(mapping.logicalName, name, row[plain], access, view);
-          if (masked !== row[plain]) {
-            row[plain] = masked;
-            for (const k of Object.keys(row)) if (k.startsWith(`${plain}@`)) delete row[k];
-          }
-        }
-        continue;
-      }
-      for (const form of forms) {
-        row[form] = null;
-        for (const k of Object.keys(row)) if (k.startsWith(`${form}@`)) delete row[k];
-      }
-    }
+    for (const name of securedNames(mapping)) maskColumn(user, mapping, row, prefix, view, recordId, name);
     return row;
   }
 
@@ -413,7 +420,8 @@ function createFieldSecurity({
     project(c, mapping, formatted, { prefix = '', single = false } = {}) {
       if (!securedNames(mapping).length) return;
       const view = { unmask: c.unmasked === true, single: single === true };
-      for (const row of [].concat(formatted)) maskRow(c.user, mapping, row, prefix, view);
+      for (const row of [].concat(formatted) /* NOSONAR: preserve concat spreadability semantics */)
+        maskRow(c.user, mapping, row, prefix, view);
     },
 
     /**
@@ -441,7 +449,7 @@ function createFieldSecurity({
      * a masking rule, that UnMaskedData plus CanReadUnmasked does not unmask. Such a column is never a filter or order
      * operand (dataverse-records.mjs answers 0x80041155).
      */
-    maskedFor(user, logical, column, view = { unmask: false, single: false }) {
+    maskedFor(user, logical, column, view = defaultMaskView()) {
       if (!isSecuredField(fieldOf(logical, column))) return false;
       const access = accessOf(user, logical, column);
       return access.read && maskOf(logical, column) !== null && !unmaskable(access, view);

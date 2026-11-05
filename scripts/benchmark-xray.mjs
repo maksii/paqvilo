@@ -64,18 +64,18 @@ async function run(large, index) {
       new URL(route.request().url()).origin === origin ? route.fallback() : route.abort(),
     );
     await context.addInitScript(() => {
-      window.addEventListener(
+      globalThis.addEventListener(
         'keydown',
         (e) => {
-          if (e.altKey && e.shiftKey && e.code === 'KeyX') window.toggleStarted = performance.now();
+          if (e.altKey && e.shiftKey && e.code === 'KeyX') globalThis.toggleStarted = performance.now();
         },
         { capture: true },
       );
       // Register before X-ray so its capture handler cannot precede the start clock.
-      window.addEventListener(
+      globalThis.addEventListener(
         'pointerdown',
         (event) => {
-          const probe = window.selectionProbe;
+          const probe = globalThis.selectionProbe;
           if (!probe?.armed) return;
           probe.started = performance.now();
           probe.trusted = event.isTrusted;
@@ -84,7 +84,7 @@ async function run(large, index) {
         { capture: true },
       );
       document.addEventListener('paqvilo-xray', (event) => {
-        const probe = window.selectionProbe;
+        const probe = globalThis.selectionProbe;
         if (event.detail.action !== 'selected' || probe?.started === undefined) return;
         const ms = performance.now() - probe.started;
         delete probe.started;
@@ -127,26 +127,33 @@ async function run(large, index) {
       });
       return page.evaluate(
         () =>
-          new Promise((resolve) =>
-            requestAnimationFrame(() => requestAnimationFrame(() => resolve(performance.now() - window.toggleStarted))),
-          ),
+          new Promise((resolve) => {
+            let firstFrame = true;
+            const measure = () => {
+              if (firstFrame) {
+                firstFrame = false;
+                requestAnimationFrame(measure);
+              } else resolve(performance.now() - globalThis.toggleStarted);
+            };
+            requestAnimationFrame(measure);
+          }),
       );
     };
     const coldToggleMs = await toggle();
-    await page.evaluate(() => (window.selectionProbe = { samples: [], armed: false }));
+    await page.evaluate(() => (globalThis.selectionProbe = { samples: [], armed: false }));
     for (let selection = 0; selection < 5; selection++) {
       if (selection) await page.keyboard.press('Escape');
       const rect = await page.locator('.dynamic-message').boundingBox();
       if (!rect) throw new Error('Dynamic snippet selection target is missing');
       await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2);
-      await page.evaluate(() => (window.selectionProbe.armed = true));
+      await page.evaluate(() => (globalThis.selectionProbe.armed = true));
       await page.mouse.down();
       await page.mouse.up();
-      await page.waitForFunction((count) => window.selectionProbe.samples.length === count, selection + 1);
+      await page.waitForFunction((count) => globalThis.selectionProbe.samples.length === count, selection + 1);
     }
     const pointerSelection = await page.evaluate(() => ({
-      samples: window.selectionProbe.samples,
-      activations: window.selectionActivations,
+      samples: globalThis.selectionProbe.samples,
+      activations: globalThis.selectionActivations,
     }));
     if (
       pointerSelection.activations !== 0 ||
@@ -173,20 +180,20 @@ async function run(large, index) {
     await page.evaluate(() => {
       const ui = document.getElementById('paqvilo-xray').shadowRoot.querySelector('.ui');
       let busy = false;
-      window.refreshMs = null;
+      globalThis.refreshMs = null;
       const start = performance.now(),
         observer = new MutationObserver(() => {
           if (ui.getAttribute('aria-busy') === 'true') busy = true;
           else if (busy) {
-            window.refreshMs = performance.now() - start;
+            globalThis.refreshMs = performance.now() - start;
             observer.disconnect();
           }
         });
       observer.observe(ui, { attributes: true, attributeFilter: ['aria-busy'] });
       document.getElementById('paqvilo-xray').shadowRoot.querySelector('[data-action=refresh]').click();
     });
-    await page.waitForFunction(() => window.refreshMs !== null);
-    const refreshMs = await page.evaluate(() => window.refreshMs);
+    await page.waitForFunction(() => globalThis.refreshMs !== null);
+    const refreshMs = await page.evaluate(() => globalThis.refreshMs);
     const imported = await importPortal(fx.portal);
     const counts = {
       templates: new Set(Object.values(imported.templates)).size,

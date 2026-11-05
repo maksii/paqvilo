@@ -114,39 +114,44 @@ export function applyExperiment(state, p) {
 }
 
 const packReports = new WeakMap();
+const presetDiagnosticMessage = (pack, index, cause) =>
+  'Data pack ' + pack.id + ' configurationPresets' + (index === null ? '' : '[' + index + ']') + ': ' + cause.message;
+function packConfigurationReport(pack) {
+  let report = packReports.get(pack);
+  if (report) return report;
+  report = { presets: [], diagnostics: [] };
+  const property = Object.getOwnPropertyDescriptor(pack, 'configurationPresets');
+  const bad = (index, cause) =>
+    report.diagnostics.push({
+      code: 'PACK_CONFIGURATION_PRESET_INVALID',
+      severity: 'error',
+      pack: pack.id,
+      index,
+      message: presetDiagnosticMessage(pack, index, cause),
+    });
+  if (property) {
+    if (!('value' in property) || !Array.isArray(property.value) || property.value.length > 100)
+      bad(null, new Error('must be a data array of at most 100 presets'));
+    else
+      Array.from(property.value).forEach((value, index) => {
+        try {
+          validateExperiment(value);
+          report.presets.push({ ...structuredClone(value), builtin: false, readOnly: true, source: pack.id });
+        } catch (cause) {
+          bad(index, cause);
+        }
+      });
+  }
+  packReports.set(pack, report);
+  return report;
+}
 /** Invalid entries remain visible as diagnostics; no partial/unsafe override is applied. */
 export function configurationPresetReport(packs = []) {
   const presets = [],
     diagnostics = [],
     ids = new Set(builtinIds);
   for (const pack of packs) {
-    let report = packReports.get(pack);
-    if (!report) {
-      report = { presets: [], diagnostics: [] };
-      const property = Object.getOwnPropertyDescriptor(pack, 'configurationPresets');
-      const bad = (index, cause) =>
-        report.diagnostics.push({
-          code: 'PACK_CONFIGURATION_PRESET_INVALID',
-          severity: 'error',
-          pack: pack.id,
-          index,
-          message: `Data pack ${pack.id} configurationPresets${index === null ? '' : `[${index}]`}: ${cause.message}`,
-        });
-      if (property) {
-        if (!('value' in property) || !Array.isArray(property.value) || property.value.length > 100)
-          bad(null, new Error('must be a data array of at most 100 presets'));
-        else
-          Array.from(property.value).forEach((value, index) => {
-            try {
-              validateExperiment(value);
-              report.presets.push({ ...structuredClone(value), builtin: false, readOnly: true, source: pack.id });
-            } catch (cause) {
-              bad(index, cause);
-            }
-          });
-      }
-      packReports.set(pack, report);
-    }
+    const report = packConfigurationReport(pack);
     diagnostics.push(...report.diagnostics);
     for (const preset of report.presets) {
       if (ids.has(preset.id)) {

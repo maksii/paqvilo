@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of platform form markup and multiselect behavior; no reproduced native capture cited.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderComponent } from '../lib/platform.mjs';
@@ -280,7 +281,7 @@ async function loadMultiSelectHost() {
   const source = await readFile(new URL('../lib/multiselect-compat.js', import.meta.url), 'utf8');
   const window = { document: { readyState: 'complete', querySelectorAll: () => [] } };
   window.window = window;
-  vm.runInNewContext(source, { window, document: window.document });
+  vm.runInNewContext(source, window);
   return window;
 }
 

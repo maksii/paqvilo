@@ -63,7 +63,7 @@ function operations(api) {
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, logical, right) => {
     const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical);
+    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
   };
   // The handler another module registered (Book, InstantiateTemplate, SendEmail), called with a context of its own.
   const handlerOf = (name, binding = 'unbound', entity) => {
@@ -259,7 +259,7 @@ function operations(api) {
 
   // The appointment is booked by the Book handler from the Target's own fields. The Exchange attachment parameters are ignored.
   async function immediateBook(c) {
-    const booked = await handlerOf('Book')({ ...c, body: { ...(argsOf(c).Target ?? {}) }, params: {} });
+    const booked = await handlerOf('Book')({ ...c, body: { ...argsOf(c).Target }, params: {} });
     return { ValidationResult: booked.body.ValidationResult, Notifications: [] };
   }
 

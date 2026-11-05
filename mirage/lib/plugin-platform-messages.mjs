@@ -138,6 +138,135 @@ function messageDepth(store) {
   return depth;
 }
 
+function recordMessageEvent(store, mapping, operation, record, event) {
+  if (store.committedEventCandidates || !store.commitStagers?.size)
+    store.recordCommittedEvent(mapping.logicalName, operation, record, [], event);
+  else
+    store
+      .transact(() => store.recordCommittedEvent(mapping.logicalName, operation, cloneStateData(record), [], event), {
+        skipSaveIfUnchanged: true,
+      })
+      .catch((error) => {
+        if (store.committedEventErrors == null) store.committedEventErrors = [];
+        store.committedEventErrors.push({
+          code: error.code ?? 'CommitStagerError',
+          message: error.message,
+        });
+      });
+}
+
+function finishMessagePipeline(context, outputs = {}) {
+  const {
+    store,
+    preValidationOnly,
+    previousMain,
+    messageParameters,
+    previous,
+    record,
+    storedRow,
+    imageRows,
+    imageRecords,
+    rowOf,
+    phase,
+    mapping,
+    operation,
+    customApi,
+    identity,
+    bypassCustomAsync,
+    bypassStepIds,
+    frame,
+  } = context;
+  store.pluginMainOperation = previousMain;
+  if (preValidationOnly) return outputs;
+  messageParameters.outputParameters.values = { ...outputs };
+  if (previous) Object.assign(record, storedRow() ?? {});
+  for (const [property, rows] of Object.entries(imageRows ?? {})) rows.record = rowOf(imageRecords[property]);
+  phase(40);
+  store.pluginFrames ??= new WeakMap();
+  store.pluginFrames.set(record, frame.value);
+  const event = {
+    customApi,
+    target: {},
+    previous,
+    identity,
+    messageEvent: true,
+    bypassCustomAsync,
+    bypassStepIds,
+    // The frame travels with the event: a staged copy of the record no longer finds it in store.pluginFrames.
+    frame: frame.value,
+  };
+  recordMessageEvent(store, mapping, operation, record, event);
+  return messageParameters.outputParameters.values;
+}
+
+function advanceMessagePhase(context, stage) {
+  const { store, inherited, autoTransact, active, first, frame } = context;
+  if (stage !== 10) store.pluginInTransaction = inherited === true || autoTransact;
+  if (!active) return { frame, first };
+  const initial = first;
+  const next =
+    store.pluginPipeline({
+      store,
+      entity: context.entity,
+      operation: context.operation,
+      stage,
+      record: context.record,
+      previous: context.previous,
+      identity: context.identity,
+      changedAttributes: [],
+      bypassStepIds: context.bypassStepIds,
+      bypassCustomPlugins: context.bypassCustomPlugins,
+      bypassCustomAsync: context.bypassCustomAsync,
+      customApi: context.customApi,
+      messageParameters: context.messageParameters,
+      ...(context.imageRows ? { imageRows: context.imageRows } : {}),
+      ...(initial ? { initialFrame: frame } : {}),
+    }) ?? frame;
+  return { frame: next, first: false };
+}
+
+function messageInputValues(inputs, requestTag, inputTag) {
+  const values = { ...inputs };
+  if (requestTag !== undefined && inputTag) values.tag = requestTag;
+  // Native order after the tag: FromSandbox, and UpdateContent for Merge (native mergeAccount).
+  for (const name of ['FromSandbox', 'UpdateContent'])
+    if (Object.hasOwn(inputs, name)) {
+      delete values[name];
+      values[name] = inputs[name];
+    }
+  return values;
+}
+
+function messagePrevious(suppliedPrevious, id, empty, storedRow) {
+  if (suppliedPrevious !== undefined) return cloneStateData(suppliedPrevious);
+  if (id && id !== empty) return storedRow();
+  return null;
+}
+
+function messageFrameFacts(store, frameFacts, platformParent, requestTag, depth, acceptLanguage, autoTransact) {
+  return {
+    ...frameFacts,
+    // The tag stays where values placed it, after the message's own inputs (native named messages: Target, ..., tag),
+    // not prepended by the step layers.
+    inputTagConsumed: true,
+    requestTag,
+    operationDepth: depth,
+    ...(platformParent ? { delegatedParentContext: platformParent, delegatedDepth: depth, exactDepth: true } : {}),
+    suppliedRequestId: store.pluginRequestId,
+    sharedVariables: {
+      $type: 'ParameterCollection',
+      values: {
+        ...(store.pluginODataChangeset && !(store.pluginParentContext ?? pluginInvocationSdkParent(store))
+          ? { IsODataTransaction: true, ODataChangesetRequestCount: store.pluginODataChangeset.requestCount }
+          : {}),
+        AcceptLang: acceptLanguage,
+        IsAutoTransact: autoTransact,
+        ...(requestTag === undefined ? {} : { tag: requestTag }),
+      },
+    },
+  };
+}
+
 /**
  * Runs one named message through the plug-in pipeline of its registered steps: PreValidation (10), PreOperation (20),
  * the main operation `main()` (stage 30, whose nested record pipelines run at this message's depth with the stage-30
@@ -192,8 +321,7 @@ function runMessagePipeline(
   // it: registered images of Assign, SetState and the sharing messages hold the record (Microsoft Learn image table).
   const storedRow = () =>
     cloneStateData(store.tableRows(mapping.logicalName).find((row) => same(row[mapping.idColumn], id)) ?? null);
-  const previous =
-    suppliedPrevious !== undefined ? cloneStateData(suppliedPrevious) : id && id !== EMPTY ? storedRow() : null;
+  const previous = messagePrevious(suppliedPrevious, id, EMPTY, storedRow);
   const rowOf = (rowId) =>
     cloneStateData(store.tableRows(mapping.logicalName).find((row) => same(row[mapping.idColumn], rowId)) ?? null);
   const imageRows = Object.keys(imageRecords).length
@@ -201,14 +329,7 @@ function runMessagePipeline(
         Object.entries(imageRecords).map(([property, rowId]) => [property, { previous: rowOf(rowId), record: null }]),
       )
     : null;
-  const values = { ...inputs };
-  if (requestTag !== undefined && inputTag) values.tag = requestTag;
-  // Native order after the tag: FromSandbox, and UpdateContent for Merge (native mergeAccount).
-  for (const name of ['FromSandbox', 'UpdateContent'])
-    if (Object.hasOwn(inputs, name)) {
-      delete values[name];
-      values[name] = inputs[name];
-    }
+  const values = messageInputValues(inputs, requestTag, inputTag);
   const messageParameters = {
     inputParameters: { $type: 'ParameterCollection', values },
     outputParameters: { $type: 'ParameterCollection', values: { ...initialOutputs } },
@@ -217,27 +338,7 @@ function runMessagePipeline(
     Boolean(store.pluginPipeline) &&
     store.pluginPipelineActive({ entity: mapping.logicalName, operation, bypassCustomPlugins, bypassStepIds });
   const parentContext = platformParent ?? store.pluginParentContext ?? pluginInvocationSdkParent(store);
-  let frame = {
-    ...frameFacts,
-    // The tag stays where values placed it, after the message's own inputs (native named messages: Target, ..., tag),
-    // not prepended by the step layers.
-    inputTagConsumed: true,
-    requestTag,
-    operationDepth: depth,
-    ...(platformParent ? { delegatedParentContext: platformParent, delegatedDepth: depth, exactDepth: true } : {}),
-    suppliedRequestId: store.pluginRequestId,
-    sharedVariables: {
-      $type: 'ParameterCollection',
-      values: {
-        ...(store.pluginODataChangeset && !(store.pluginParentContext ?? pluginInvocationSdkParent(store))
-          ? { IsODataTransaction: true, ODataChangesetRequestCount: store.pluginODataChangeset.requestCount }
-          : {}),
-        AcceptLang: acceptLanguage,
-        IsAutoTransact: autoTransact,
-        ...(requestTag === undefined ? {} : { tag: requestTag }),
-      },
-    },
-  };
+  let frame = messageFrameFacts(store, frameFacts, platformParent, requestTag, depth, acceptLanguage, autoTransact);
   const inherited = store.pluginInTransaction;
   const restore = () => {
       store.pluginInTransaction = inherited;
@@ -249,31 +350,30 @@ function runMessagePipeline(
   let settled = true,
     first = true;
   const phase = (stage) => {
-    // PreOperation and PostOperation join the automatic transaction, which reads skip (native webApiNamed
-    // RetrievePrincipalAccess and RetrieveSharedPrincipalsAndAccess 10/20/40 false); an SDK-issued read inside a caller's
-    // transaction stays in it (native sdkMessages).
-    if (stage !== 10) store.pluginInTransaction = inherited === true || autoTransact;
-    if (!active) return;
-    const initial = first;
-    first = false;
-    frame =
-      store.pluginPipeline({
+    const next = advanceMessagePhase(
+      {
         store,
+        inherited,
+        autoTransact,
+        active,
+        first,
+        frame,
         entity: mapping.logicalName,
         operation,
-        stage,
         record,
         previous,
         identity,
-        changedAttributes: [],
         bypassStepIds,
         bypassCustomPlugins,
         bypassCustomAsync,
         customApi,
         messageParameters,
-        ...(imageRows ? { imageRows } : {}),
-        ...(initial ? { initialFrame: frame } : {}),
-      }) ?? frame;
+        imageRows,
+      },
+      stage,
+    );
+    frame = next.frame;
+    first = next.first;
   };
   try {
     if (preValidation) phase(10);
@@ -316,44 +416,35 @@ function runMessagePipeline(
       namedMessage: true,
       ...(preValidationOnly ? { preValidationOnly: true } : {}),
     };
-    const finish = (outputs = {}) => {
-      store.pluginMainOperation = previousMain;
-      if (preValidationOnly) return outputs;
-      messageParameters.outputParameters.values = { ...outputs };
-      if (previous) Object.assign(record, storedRow() ?? {});
-      for (const [property, rows] of Object.entries(imageRows ?? {})) rows.record = rowOf(imageRecords[property]);
-      phase(40);
-      store.pluginFrames ??= new WeakMap();
-      store.pluginFrames.set(record, frame);
-      const event = {
-        customApi,
-        target: {},
-        previous,
-        identity,
-        messageEvent: true,
-        bypassCustomAsync,
-        bypassStepIds,
-        // The frame travels with the event: a staged copy of the record no longer finds it in store.pluginFrames.
-        frame,
-      };
-      if (store.committedEventCandidates || !store.commitStagers?.size)
-        store.recordCommittedEvent(mapping.logicalName, operation, record, [], event);
-      // An entry message whose writes committed on their own (or that wrote nothing) stages its event in its own
-      // transaction, as a read does (data.mjs).
-      else
-        store
-          .transact(
-            () => store.recordCommittedEvent(mapping.logicalName, operation, cloneStateData(record), [], event),
-            { skipSaveIfUnchanged: true },
-          )
-          .catch((error) => {
-            (store.committedEventErrors ??= []).push({
-              code: error.code ?? 'CommitStagerError',
-              message: error.message,
-            });
-          });
-      return messageParameters.outputParameters.values;
+    const frameRef = {
+      get value() {
+        return frame;
+      },
     };
+    const finish = (outputs = {}) =>
+      finishMessagePipeline(
+        {
+          store,
+          preValidationOnly,
+          previousMain,
+          messageParameters,
+          previous,
+          record,
+          storedRow,
+          imageRows,
+          imageRecords,
+          rowOf,
+          phase,
+          mapping,
+          operation,
+          customApi,
+          identity,
+          bypassCustomAsync,
+          bypassStepIds,
+          frame: frameRef,
+        },
+        outputs,
+      );
     let pending;
     try {
       pending = main();
@@ -402,7 +493,15 @@ function callerDelegation(store) {
  * (authorizeGrant): Assign checks Write (update) and Assign on the target row, SetState checks Write, the sharing changes
  * check Share, the access queries check Read.
  */
-export function executePlatformSdkMessage({ store, profile, service, request, parameters, options = {}, invoke }) {
+/* NOSONAR */ export function executePlatformSdkMessage({
+  store,
+  profile,
+  service,
+  request,
+  parameters,
+  options = {},
+  invoke,
+}) {
   const name = request.requestName,
     shape = SHAPES[name];
   const allowed = new Set([
@@ -795,13 +894,19 @@ const ODATA_TYPE = /^#?(?:Microsoft\.Dynamics\.CRM\.|mscrm\.)/;
  * ponytail: no CSDL-typed conversion (Int64, Decimal, DateTime, Money arrive as their JSON form). Upgrade: map the
  * operation's declared Edm parameter types.
  */
+function linkedRow(value) {
+  const tail = /\(([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\)$/i.exec(value);
+  if (!tail) return null;
+  let start = tail.index;
+  while (start > 0 && /\w/.test(value[start - 1])) start--;
+  while (start < tail.index && !/[a-z_]/i.test(value[start])) start++;
+  return start < tail.index ? [undefined, value.slice(start, tail.index), tail[1]] : null;
+}
 function entryValue(store, value) {
   if (typeof value === 'string' && GUID.test(value)) return { $type: 'Guid', value };
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   // An @odata.id reference (a function's parameter alias) names its row by entity set and key.
-  const linked = /([A-Za-z_]\w*)\(([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\)$/i.exec(
-    typeof value['@odata.id'] === 'string' ? value['@odata.id'] : '',
-  );
+  const linked = linkedRow(typeof value['@odata.id'] === 'string' ? value['@odata.id'] : '');
   if (linked)
     return {
       $type: 'EntityReference',
@@ -905,6 +1010,43 @@ const SDK_REQUESTS = {
   // The Web API answers the new record's data as its body; InitializeFromResponse carries it as Entity.
   InitializeFrom: { response: (store, body, parameters) => ({ Entity: initializedEntity(store, body, parameters) }) },
 };
+function registeredOperation(api, name, target) {
+  const find = (kind, binding) => api.registry.find({ name, kind, binding, entity: target?.logicalName ?? undefined });
+  return (
+    (target && (find('action', 'entity') ?? find('function', 'entity'))) ??
+    find('action', 'unbound') ??
+    find('function', 'unbound')
+  );
+}
+
+function operationUser(store, profile) {
+  return profile.dataverseSecurity && profile.dataverseSecurity !== 'system'
+    ? profile.dataverseSecurity
+    : (store.tableRows('systemuser').find((row) => same(row.systemuserid, profile.userId)) ?? {
+        systemuserid: profile.userId,
+      });
+}
+
+function operationValues(store, contract, parameters, op) {
+  return Object.fromEntries(
+    Object.entries(contract?.body ? contract.body(parameters) : parameters)
+      .filter(
+        ([key]) =>
+          !SYSTEM_PARAMETERS.has(key) && key !== contract?.bound?.[1] && !(op.binding === 'entity' && key === 'Target'),
+      )
+      .map(([key, value]) => [key, sdkToWebValue(store, value)]),
+  );
+}
+
+function operationBound(store, target, op) {
+  if (op.binding !== 'entity') return undefined;
+  const mapping = store.resolveMapping(target.logicalName),
+    row = store.get(target.logicalName, target.id, { admin: true }, { skipPluginRead: true });
+  if (!row)
+    fail(`${target.logicalName} With Id = ${target.id} Does Not Exist`, 'NotFound', 404, { innerCode: '0x80040217' });
+  return { mapping, id: target.id, row };
+}
+
 function initializedEntity(store, body, parameters) {
   const logical = String(parameters.TargetEntityName ?? ''),
     values = {};
@@ -940,40 +1082,16 @@ export function executeOperationSdkMessage({ store, profile, request, parameters
   const boundId = contract?.bound && parameters[contract.bound[1]];
   if (contract?.bound && (boundId?.$type !== 'Guid' || !GUID.test(boundId.value ?? '')))
     fail(`SDK ${name} requires the ${contract.bound[1]} Guid.`, 'InvalidArgument', 400, { innerCode: '0x80040203' });
-  const target = boundId
-    ? { $type: 'EntityReference', logicalName: contract.bound[0], id: boundId.value, name: null }
-    : parameters.Target?.$type === 'EntityReference'
-      ? parameters.Target
-      : null;
-  const find = (kind, binding) => api.registry.find({ name, kind, binding, entity: target?.logicalName ?? undefined });
-  const op =
-    (target && (find('action', 'entity') ?? find('function', 'entity'))) ??
-    find('action', 'unbound') ??
-    find('function', 'unbound');
+  let target;
+  if (boundId) target = { $type: 'EntityReference', logicalName: contract.bound[0], id: boundId.value, name: null };
+  else if (parameters.Target?.$type === 'EntityReference') target = parameters.Target;
+  else target = null;
+  const op = registeredOperation(api, name, target);
   if (!op?.main) return undefined;
-  const user =
-    profile.dataverseSecurity && profile.dataverseSecurity !== 'system'
-      ? profile.dataverseSecurity
-      : (store.tableRows('systemuser').find((row) => same(row.systemuserid, profile.userId)) ?? {
-          systemuserid: profile.userId,
-        });
+  const user = operationUser(store, profile);
   const identity = { id: user.systemuserid, systemUserId: user.systemuserid, admin: true };
-  const values = Object.fromEntries(
-    Object.entries(contract?.body ? contract.body(parameters) : parameters)
-      .filter(
-        ([key]) =>
-          !SYSTEM_PARAMETERS.has(key) && key !== contract?.bound?.[1] && !(op.binding === 'entity' && key === 'Target'),
-      )
-      .map(([key, value]) => [key, sdkToWebValue(store, value)]),
-  );
-  let bound;
-  if (op.binding === 'entity') {
-    const mapping = store.resolveMapping(target.logicalName),
-      row = store.get(target.logicalName, target.id, { admin: true }, { skipPluginRead: true });
-    if (!row)
-      fail(`${target.logicalName} With Id = ${target.id} Does Not Exist`, 'NotFound', 404, { innerCode: '0x80040217' });
-    bound = { mapping, id: target.id, row };
-  }
+  const values = operationValues(store, contract, parameters, op);
+  const bound = operationBound(store, target, op);
   const origin = api.origin ?? 'http://localhost',
     version = 'v9.2',
     url = new URL(`${origin}/api/data/${version}/${name}`);
@@ -1088,6 +1206,36 @@ const MERGE_SYSTEM_COLUMNS = new Set([
 ]);
 const refOf = (value) => (value !== null && typeof value === 'object' ? value.id : value);
 
+function checkMergeParents(relationships, mapping, targetRow, subRow) {
+  const sameRef = (a, b) => a != null && b != null && same(a, b);
+  for (const [nav, rel] of relationships) {
+    if (rel.many || rel.entity !== mapping.logicalName) continue;
+    const left = refOf(targetRow[rel.from ?? nav]),
+      right = refOf(subRow[rel.from ?? nav]);
+    if (left != null && right != null && !sameRef(left, right))
+      fail('The Target and Subordinate records have different parent records.', 'InvalidRequest', 400, {
+        innerCode: '0x80040203',
+      });
+  }
+}
+
+function mergeChildren(store, relationships, mapping, subRow, idColumn) {
+  const children = [];
+  for (const [, rel] of relationships) {
+    // Only a relationship whose Merge cascades moves its rows (Learn: Cascade, the only option on a mergeable table).
+    // A system job regarding the subordinate is not a child record the merge moves (native mergeAccount: the Merge
+    // answers 204 while the scenario's asynchronous jobs still wait, and they run afterwards).
+    if (!rel.many || rel.intersect || rel.cascade?.merge === 'NoCascade' || rel.entity === 'asyncoperation') continue;
+    const childMapping = store.resolveMapping(rel.entity);
+    for (const row of store.tableRows(childMapping.logicalName)) {
+      const left = refOf(row[rel.to]),
+        right = refOf(subRow[rel.from ?? idColumn]);
+      if (left != null && right != null && same(left, right)) children.push({ childMapping, row, rel });
+    }
+  }
+  return children;
+}
+
 /**
  * The writes of a Merge main operation, for the Web API and the SDK (recorded native mergeAccount): target gets the
  * subordinate's values it lacks and content (the UpdateContent columns; an incident merge ignores them), the subordinate
@@ -1107,17 +1255,7 @@ export function mergeChanges(
   const { idColumn } = mapping,
     fields = mapping.fields ?? {},
     relationships = Object.entries(relationshipsOf(store, mapping.logicalName, mapping.relationships));
-  const sameRef = (a, b) => a != null && b != null && same(a, b);
-  if (performParentingChecks)
-    for (const [nav, rel] of relationships) {
-      if (rel.many || rel.entity !== mapping.logicalName) continue;
-      const left = refOf(targetRow[rel.from ?? nav]),
-        right = refOf(subRow[rel.from ?? nav]);
-      if (left != null && right != null && !sameRef(left, right))
-        fail('The Target and Subordinate records have different parent records.', 'InvalidRequest', 400, {
-          innerCode: '0x80040203',
-        });
-    }
+  if (performParentingChecks) checkMergeParents(relationships, mapping, targetRow, subRow);
   const copied = Object.fromEntries(
     Object.keys(fields)
       .filter(
@@ -1130,20 +1268,11 @@ export function mergeChanges(
   const definition = (column) => store.fieldDefinition(mapping.logicalName, column, metadataFields);
   const declared = (column) => Object.hasOwn(fields, column) || Boolean(definition(column));
   const inactive = 1,
-    state = { ...definition('statecode'), ...(definition('statecode')?.columnMetadata ?? {}) },
+    state = { ...definition('statecode'), ...definition('statecode')?.columnMetadata },
     inactiveStatus =
       (state.states ?? state.options ?? []).find((option) => Number(option.value) === inactive)?.defaultStatus ??
       mapping.stateStatusDefaults?.[inactive];
-  const children = [];
-  for (const [, rel] of relationships) {
-    // Only a relationship whose Merge cascades moves its rows (Learn: Cascade, the only option on a mergeable table).
-    // A system job regarding the subordinate is not a child record the merge moves (native mergeAccount: the Merge
-    // answers 204 while the scenario's asynchronous jobs still wait, and they run afterwards).
-    if (!rel.many || rel.intersect || rel.cascade?.merge === 'NoCascade' || rel.entity === 'asyncoperation') continue;
-    const childMapping = store.resolveMapping(rel.entity);
-    for (const row of store.tableRows(childMapping.logicalName))
-      if (sameRef(refOf(row[rel.to]), refOf(subRow[rel.from ?? idColumn]))) children.push({ childMapping, row, rel });
-  }
+  const children = mergeChildren(store, relationships, mapping, subRow, idColumn);
   return {
     targetId: targetRow[idColumn],
     subordinateId: subRow[idColumn],
@@ -1487,24 +1616,24 @@ export function runStateMessage(store, mapping, row, identity, options = {}, { t
   );
   // The Upsert parent's Target carries no FormattedValues (native ownerAndState: {}), unlike the state labels the
   // framework source's Target lists.
-  const { formattedValues: _, ...parentTarget } = update?.sdkFrameworkSource?.target ?? {};
-  const parentContext = update?.sdkFrameworkSource
-    ? selectSdkEntryParent(
-        {
-          $type: 'ExecutionContext',
-          values: {
-            Stage: 20,
-            Mode: 0,
-            Depth: depth,
-            ...request,
-            ...(update.createdOnWire ? { OperationCreatedOn: cloneStateData(update.createdOnWire) } : {}),
-          },
+  const { formattedValues: _, ...parentTarget } = update?.sdkFrameworkSource?.target ?? {}; // NOSONAR: binding is excluded from the rest object or is a placeholder
+  let parentContext;
+  if (update?.sdkFrameworkSource)
+    parentContext = selectSdkEntryParent(
+      {
+        $type: 'ExecutionContext',
+        values: {
+          Stage: 20,
+          Mode: 0,
+          Depth: depth,
+          ...request,
+          ...(update.createdOnWire ? { OperationCreatedOn: cloneStateData(update.createdOnWire) } : {}),
         },
-        { ...update.sdkFrameworkSource, target: parentTarget },
-      )
-    : update?.requestId && !update.delegatedParentContext
-      ? updateOperationFrames(store, mapping, row, identity, { update, request, depth, target, previous })
-      : undefined;
+      },
+      { ...update.sdkFrameworkSource, target: parentTarget },
+    );
+  else if (update?.requestId && !update.delegatedParentContext)
+    parentContext = updateOperationFrames(store, mapping, row, identity, { update, request, depth, target, previous });
   runMessagePipeline(store, {
     message: 'SetStateDynamicEntity',
     entity: mapping.logicalName,

@@ -52,7 +52,7 @@ const isFile = (file) => {
 function yamlKeys(file) {
   try {
     const text = fs.readFileSync(file, 'utf8').slice(0, 64 * 1024);
-    return [...text.matchAll(/^(?:- )?([A-Za-z_][\w]*):/gm)].map((match) => match[1].toLowerCase());
+    return [...text.matchAll(/^(?:- )?([A-Za-z_]\w*):/gm)].map((match) => match[1].toLowerCase());
   } catch {
     return [];
   }
@@ -140,13 +140,17 @@ export class PortalSourceError extends Error {
 
 /** The diagnostic message for a source with zero recognised pages. */
 export function unrecognisedSourceMessage(sourceDir, dialect, { pageRecords = 0 } = {}) {
-  const advice = dialect.imported
-    ? pageRecords
-      ? `It has ${pageRecords} web page record${pageRecords === 1 ? '' : 's'}, but none could be identified as a page.`
-      : 'It has no web pages.'
-    : dialect.dialect === 'enhanced-yaml'
-      ? "The Mirage does not import this layout yet; use a PAC YAML export with adx_ keys, a .powerpages-site export or the site's unpacked Solution (powerpagecomponents/)."
-      : 'Point it at the folder that contains website.yml (a PAC YAML or .powerpages-site export), or at an unpacked Solution with powerpagecomponents/.';
+  let advice;
+  if (dialect.imported) {
+    if (pageRecords)
+      advice = `It has ${pageRecords} web page record${pageRecords === 1 ? '' : 's'}, but none could be identified as a page.`;
+    else advice = 'It has no web pages.';
+  } else if (dialect.dialect === 'enhanced-yaml')
+    advice =
+      "The Mirage does not import this layout yet; use a PAC YAML export with adx_ keys, a .powerpages-site export or the site's unpacked Solution (powerpagecomponents/).";
+  else
+    advice =
+      'Point it at the folder that contains website.yml (a PAC YAML or .powerpages-site export), or at an unpacked Solution with powerpagecomponents/.';
   return `No portal pages were recognised in ${sourceDir}. Detected layout: ${dialect.label}. ${advice}`;
 }
 

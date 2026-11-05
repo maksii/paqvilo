@@ -32,7 +32,8 @@ const dependentsOfHoisted = (lockfile, name) =>
   Object.entries(lockfile.packages ?? {})
     .filter(([location, entry]) => {
       if (!entry.dependencies?.[name] && !entry.devDependencies?.[name]) return false;
-      const nested = `${location ? `${location}/` : ''}node_modules/${name}`;
+      const prefix = location ? `${location}/` : '';
+      const nested = `${prefix}node_modules/${name}`;
       return !lockfile.packages[nested];
     })
     .map(([location, entry]) => ({ location, version: entry.version }));
@@ -55,40 +56,47 @@ export function acceptedFinding(project, name, finding, report, lockfile) {
     return name === entry.via.name && JSON.stringify(finding.via) === JSON.stringify([entry.dependency]);
   });
 }
+function auditProject(project, cli) {
+  const cwd = path.resolve(root, project);
+  if (!fs.existsSync(path.join(cwd, project === '.' ? 'npm-shrinkwrap.json' : 'package-lock.json')))
+    throw new Error(`Missing lockfile in ${project}.`);
+  const result = spawnSync(process.execPath, [cli, 'audit', '--json'], {
+    cwd,
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 60_000,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  if (result.error) throw result.error;
+  let report;
+  try {
+    report = JSON.parse(result.stdout);
+  } catch {
+    throw new Error(`Dependency audit did not return JSON for ${project}.`);
+  }
+  if (report.error || !report.metadata?.vulnerabilities)
+    throw new Error(`Dependency audit unavailable for ${project}: ${report.error?.summary ?? result.stderr}`);
+  const counts = report.metadata.vulnerabilities;
+  console.log(`${project}: ${JSON.stringify(counts)}`);
+  if (counts.total > 0) {
+    const lockfile = lockfileOf(cwd, project);
+    let failed = false;
+    for (const [name, finding] of Object.entries(report.vulnerabilities ?? {})) {
+      const isAccepted = acceptedFinding(project, name, finding, report, lockfile);
+      if (!isAccepted) failed = true;
+      console.error(`${project}: ${name} (${finding.severity})${isAccepted ? ' accepted' : ''}`);
+    }
+    return failed;
+  } else if (result.status !== 0) throw new Error(`Dependency audit failed for ${project} (${result.status}).`);
+  return false;
+}
+
 function main() {
   const cli = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
   if (!fs.existsSync(cli)) throw new Error('Run npm run audit:dependencies.');
   let failed = false;
   for (const project of projects) {
-    const cwd = path.resolve(root, project);
-    if (!fs.existsSync(path.join(cwd, project === '.' ? 'npm-shrinkwrap.json' : 'package-lock.json')))
-      throw new Error(`Missing lockfile in ${project}.`);
-    const result = spawnSync(process.execPath, [cli, 'audit', '--json'], {
-      cwd,
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 60_000,
-      maxBuffer: 8 * 1024 * 1024,
-    });
-    if (result.error) throw result.error;
-    let report;
-    try {
-      report = JSON.parse(result.stdout);
-    } catch {
-      throw new Error(`Dependency audit did not return JSON for ${project}.`);
-    }
-    if (report.error || !report.metadata?.vulnerabilities)
-      throw new Error(`Dependency audit unavailable for ${project}: ${report.error?.summary ?? result.stderr}`);
-    const counts = report.metadata.vulnerabilities;
-    console.log(`${project}: ${JSON.stringify(counts)}`);
-    if (counts.total > 0) {
-      const lockfile = lockfileOf(cwd, project);
-      for (const [name, finding] of Object.entries(report.vulnerabilities ?? {})) {
-        const isAccepted = acceptedFinding(project, name, finding, report, lockfile);
-        if (!isAccepted) failed = true;
-        console.error(`${project}: ${name} (${finding.severity})${isAccepted ? ' accepted' : ''}`);
-      }
-    } else if (result.status !== 0) throw new Error(`Dependency audit failed for ${project} (${result.status}).`);
+    if (auditProject(project, cli)) failed = true;
   }
   process.exitCode = failed ? 1 : 0;
 }

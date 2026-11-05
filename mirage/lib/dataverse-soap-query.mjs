@@ -159,16 +159,12 @@ function joinTypeOf(joinOperator = 'Inner') {
 // Native Object {Type, Value} (SDK ConditionExpression.Values), typed codec values ({type, value}, EntityReference by id)
 // and Date objects reduce to their text before escaping. Plain scalars pass through unchanged.
 // Booleans render as "true"; the native FetchXML text form of booleans is a guess.
-const scalar = (v) =>
-  v instanceof Date
-    ? v.toISOString()
-    : v && typeof v === 'object'
-      ? v.type === 'EntityReference'
-        ? v.id
-        : 'Value' in v
-          ? v.Value
-          : v.value
-      : v;
+const scalar = (v) => {
+  if (v instanceof Date) return v.toISOString();
+  if (!v || typeof v !== 'object') return v;
+  if (v.type === 'EntityReference') return v.id;
+  return 'Value' in v ? v.Value : v.value;
+};
 
 function conditionXml(condition) {
   const entry = conditionOf(condition.operator);
@@ -179,7 +175,8 @@ function conditionXml(condition) {
   if (condition.compareColumns) return `<condition${head}${attr('valueof', values[0])}/>`;
   if (values.length === 0) return `<condition${head}/>`;
   if (values.length === 1 && !LIST_OPERATORS.has(entry.op)) return `<condition${head}${attr('value', values[0])}/>`;
-  return `<condition${head}>${values.map((v) => `<value>${esc(v)}</value>`).join('')}</condition>`;
+  const children = values.map((v) => `<value>${esc(v)}</value>`).join('');
+  return `<condition${head}>${children}</condition>`;
 }
 
 function filterXml(filter) {
@@ -317,8 +314,13 @@ export function toSdkQuery(model, type = 'QueryExpression') {
       entityName: o.entityName,
       descending: o.orderType === 1 || /^descending$/i.test(String(o.orderType)),
     }));
+  const filterOperatorName = (operator) => {
+    if (operator === 1) return 'Or';
+    if (operator === 0) return 'And';
+    return operator ?? 'And';
+  };
   const criteria = (f = {}) => ({
-    operatorName: f.filterOperator === 1 ? 'Or' : f.filterOperator === 0 ? 'And' : (f.filterOperator ?? 'And'),
+    operatorName: filterOperatorName(f.filterOperator),
     conditions: (f.conditions ?? []).map((c) => ({
       attributeName: c.attributeName,
       entityName: c.entityName,

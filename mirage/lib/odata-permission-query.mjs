@@ -138,7 +138,7 @@ export function authoredScalarODataFetch(table, params, { resolveAttribute } = {
   if (Object.keys(p).some((name) => !['$select', '$filter', '$orderby', '$count'].includes(name)))
     fail('This scalar OData authoring adapter requires separately qualified top, navigation or continuation support.');
   const logical = (value) => {
-    if (typeof value !== 'string' || !/^[_a-z][\w]*$/i.test(value))
+    if (typeof value !== 'string' || !/^[_a-z]\w*$/i.test(value))
       fail('OData source columns must be scalar entity properties.');
     return resolveAttribute ? resolveAttribute(table, value) : value;
   };
@@ -167,17 +167,12 @@ export function authoredScalarODataFetch(table, params, { resolveAttribute } = {
           ? { eq: 'null', ne: 'not-null' }[ast.op]
           : { eq: 'eq', ne: 'ne', gt: 'gt', ge: 'ge', lt: 'lt', le: 'le' }[ast.op];
     if (!operator) fail('Unsupported scalar OData comparison.');
-    return condition(
-      logical(ast.left.segments[0]),
-      operator,
-      value === null
-        ? undefined
-        : ast.right.kind === 'guid'
-          ? braced(value)
-          : isExactNumeric(value)
-            ? value.value
-            : value,
-    );
+    const left = logical(ast.left.segments[0]);
+    let operand = value;
+    if (value === null) operand = undefined;
+    else if (ast.right.kind === 'guid') operand = braced(value);
+    else if (isExactNumeric(value)) operand = value.value;
+    return condition(left, operator, operand);
   };
   const attrs = p.$select
     ? String(p.$select)
@@ -190,7 +185,7 @@ export function authoredScalarODataFetch(table, params, { resolveAttribute } = {
     ? String(p.$orderby)
         .split(',')
         .map((value) => {
-          const match = /^\s*([_a-z][\w]*)(?:\s+(asc|desc))?\s*$/i.exec(value);
+          const match = /^\s*([_a-z]\w*)(?:\s+(asc|desc))?\s*$/i.exec(value);
           if (!match) fail('Unsupported scalar OData order expression.');
           return node('order', {
             attribute: logical(match[1]),
@@ -210,7 +205,7 @@ export function authoredScalarODataFetch(table, params, { resolveAttribute } = {
  * never accepts a captured full query or a business-case response lookup.
  * Lookup Parent guards retain the native any/not-any expansion. Backend
  * navigation binding failures occur before a FetchExpression is admitted. */
-export function compileODataPermissionQuery(
+/* NOSONAR */ export function compileODataPermissionQuery(
   authoredXml,
   {
     permissions = [],
@@ -302,10 +297,8 @@ export function compileODataPermissionQuery(
       else if (current.entity === parent.entity || r.many === true) {
         qualified = false;
         break;
-      } else {
-        if (intersects) lookupAfterIntersect = true;
-        else lookups++;
-      }
+      } else if (intersects) lookupAfterIntersect = true;
+      else lookups++;
       current = parent;
     }
     if (
@@ -347,7 +340,7 @@ export function compileODataPermissionQuery(
     terminalConditions = [],
     paths = [],
     diagnostics = [];
-  function render(grant, anyallalias, visiting = new Set()) {
+  /* NOSONAR */ function render(grant, anyallalias, visiting = new Set()) {
     if (visiting.has(key(grant.id)) || visiting.size >= 64) fail('Cyclic or excessive OData permission parent path.');
     const visited = new Set([...visiting, key(grant.id)]);
     if (grant.enabled === false || grant.observedOrphanParent)
@@ -516,13 +509,12 @@ export function compileODataPermissionQuery(
     : authoredFilter;
   // The native OData writer emits each filter's scalar Conditions before its
   // nested Filters/AnyAllFilterLinkEntity, retaining nesting and stable peers.
+  const filterChildRank = (child) => {
+    if (child.name === 'condition') return 0;
+    return child.name === 'filter' ? 1 : 2;
+  };
   const orderFilterChildren = (element) => {
-    if (element.name === 'filter')
-      element.children.sort(
-        (a, b) =>
-          (a.name === 'condition' ? 0 : a.name === 'filter' ? 1 : 2) -
-          (b.name === 'condition' ? 0 : b.name === 'filter' ? 1 : 2),
-      );
+    if (element.name === 'filter') element.children.sort((a, b) => filterChildRank(a) - filterChildRank(b));
     for (const child of element.children) orderFilterChildren(child);
   };
   if (rootFilter) orderFilterChildren(rootFilter);

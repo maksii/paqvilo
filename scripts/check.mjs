@@ -23,12 +23,11 @@ const check = (file) =>
       process.execPath,
       ['--check', file],
       { encoding: 'utf8', windowsHide: true, timeout: 10_000 },
-      (error, _, stderr) =>
-        resolve(
-          error
-            ? `${path.relative(root, file)}: ${typeof error.code === 'string' || error.killed ? error.message : stderr}`
-            : null,
-        ),
+      (error, _, stderr) => {
+        if (!error) return resolve(null);
+        const detail = typeof error.code === 'string' || error.killed ? error.message : stderr;
+        resolve(`${path.relative(root, file)}: ${detail}`);
+      },
     );
   });
 const errors = new Array(files.length);

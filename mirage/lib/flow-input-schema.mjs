@@ -57,28 +57,43 @@ function inspectSchema(schema, depth, state) {
   if (!map(schema)) unsupported('A cloud-flow schema must be an object or boolean.');
   const keywords = Object.keys(schema);
   bounded(depth, state, 'schemas', keywords.length);
-  for (const key of keywords)
-    if (unsupportedKeywords.has(key)) unsupported('Unsupported cloud-flow schema keyword: ' + key);
+  inspectKeywords(keywords);
   if (own(schema, 'type')) {
     const declared = Array.isArray(schema.type) ? schema.type : [schema.type];
     bounded(depth, state, 'schemas', declared.length);
     if (!declared.length || declared.some((type) => !types.has(type)))
       unsupported('Cloud-flow schema type must name supported JSON types.');
   }
-  if (own(schema, 'enum') && (!Array.isArray(schema.enum) || !schema.enum.length))
-    unsupported('Cloud-flow schema enum must be a nonempty array.');
-  if (own(schema, 'required')) {
-    if (!Array.isArray(schema.required)) unsupported('Cloud-flow schema required must be an array of property names.');
-    bounded(depth, state, 'schemas', schema.required.length);
-    if (schema.required.some((name) => typeof name !== 'string'))
-      unsupported('Cloud-flow schema required must be an array of property names.');
-  }
+  inspectEnumAndRequired(schema, depth, state);
   if (own(schema, 'properties')) {
     if (!map(schema.properties)) unsupported('Cloud-flow schema properties must be an object.');
     for (const child of Object.values(schema.properties)) inspectSchema(child, depth + 1, state);
   }
+  inspectChildSchemas(schema, depth, state);
+  inspectCombinations(schema, depth, state);
+}
+
+function inspectKeywords(keywords) {
+  for (const key of keywords)
+    if (unsupportedKeywords.has(key)) unsupported('Unsupported cloud-flow schema keyword: ' + key);
+}
+
+function inspectEnumAndRequired(schema, depth, state) {
+  if (own(schema, 'enum') && (!Array.isArray(schema.enum) || !schema.enum.length))
+    unsupported('Cloud-flow schema enum must be a nonempty array.');
+  if (!own(schema, 'required')) return;
+  if (!Array.isArray(schema.required)) unsupported('Cloud-flow schema required must be an array of property names.');
+  bounded(depth, state, 'schemas', schema.required.length);
+  if (schema.required.some((name) => typeof name !== 'string'))
+    unsupported('Cloud-flow schema required must be an array of property names.');
+}
+
+function inspectChildSchemas(schema, depth, state) {
   for (const keyword of ['items', 'additionalProperties'])
     if (own(schema, keyword)) inspectSchema(schema[keyword], depth + 1, state);
+}
+
+function inspectCombinations(schema, depth, state) {
   for (const keyword of combinations) {
     if (!own(schema, keyword)) continue;
     const branches = schema[keyword];
@@ -114,53 +129,63 @@ function validate(value, schema, name, depth, state) {
   };
   if (schema === true) return;
   if (schema === false) invalid('is rejected by a false schema');
-  const matches = (type) =>
-    type === 'null'
-      ? value === null
-      : type === 'array'
-        ? Array.isArray(value)
-        : type === 'object'
-          ? Boolean(map(value))
-          : type === 'integer'
-            ? Number.isInteger(value) || (isExactNumeric(value) && decimalParts(value).scale === 0)
-            : type === 'number'
-              ? (typeof value === 'number' && Number.isFinite(value)) || isExactNumeric(value)
-              : typeof value === type;
+  const matches = (type) => {
+    if (type === 'null') return value === null;
+    if (type === 'array') return Array.isArray(value);
+    if (type === 'object') return Boolean(map(value));
+    if (type === 'integer')
+      return Number.isInteger(value) || (isExactNumeric(value) && decimalParts(value).scale === 0);
+    if (type === 'number') return (typeof value === 'number' && Number.isFinite(value)) || isExactNumeric(value);
+    return typeof value === type;
+  };
   if (schema.type && ![schema.type].flat().some(matches)) invalid('has an invalid type');
   if (schema.enum && !schema.enum.some((entry) => equalValue(entry, value, depth, state)))
     invalid('is not an allowed value');
+  validateCombinations(value, schema, name, depth, state, invalid);
+  if (map(value)) validateObject(value, schema, name, depth, state, invalid);
+  if (Array.isArray(value) && own(schema, 'items')) validateArray(value, schema.items, name, depth, state);
+}
+
+function validateCombinations(value, schema, name, depth, state, invalid) {
   for (const keyword of combinations) {
     if (!own(schema, keyword)) continue;
-    let matching = 0;
-    for (const branch of schema[keyword]) {
-      try {
-        validate(value, branch, name, depth + 1, state);
-        matching++;
-      } catch (error) {
-        if (error.code !== 'InvalidRequest') throw error;
-      }
-    }
-    if (
-      (keyword === 'allOf' && matching !== schema[keyword].length) ||
-      (keyword === 'anyOf' && matching === 0) ||
-      (keyword === 'oneOf' && matching !== 1)
-    )
-      invalid('does not satisfy ' + keyword);
+    validateCombination(value, keyword, schema, name, depth, state, invalid);
   }
-  if (map(value)) {
-    const required = schema.required ?? [],
-      entries = Object.entries(value);
-    bounded(depth, state, 'checks', required.length + entries.length);
-    for (const key of required) if (!own(value, key)) invalid('is missing required property ' + key);
-    for (const [key, child] of entries) {
-      if (own(schema.properties, key)) validate(child, schema.properties[key], name + '.' + key, depth + 1, state);
-      else if (schema.additionalProperties === false) invalid('contains undeclared property ' + key);
-      else if (own(schema, 'additionalProperties'))
-        validate(child, schema.additionalProperties, name + '.' + key, depth + 1, state);
+}
+
+function validateCombination(value, keyword, schema, name, depth, state, invalid) {
+  let matching = 0;
+  for (const branch of schema[keyword]) {
+    try {
+      validate(value, branch, name, depth + 1, state);
+      matching++;
+    } catch (error) {
+      if (error.code !== 'InvalidRequest') throw error;
     }
   }
-  if (Array.isArray(value) && own(schema, 'items'))
-    value.forEach((child, index) => validate(child, schema.items, name + '[' + index + ']', depth + 1, state));
+  if (
+    (keyword === 'allOf' && matching !== schema[keyword].length) ||
+    (keyword === 'anyOf' && matching === 0) ||
+    (keyword === 'oneOf' && matching !== 1)
+  )
+    invalid('does not satisfy ' + keyword);
+}
+
+function validateObject(value, schema, name, depth, state, invalid) {
+  const required = schema.required ?? [],
+    entries = Object.entries(value);
+  bounded(depth, state, 'checks', required.length + entries.length);
+  for (const key of required) if (!own(value, key)) invalid('is missing required property ' + key);
+  for (const [key, child] of entries) {
+    if (own(schema.properties, key)) validate(child, schema.properties[key], name + '.' + key, depth + 1, state);
+    else if (schema.additionalProperties === false) invalid('contains undeclared property ' + key);
+    else if (own(schema, 'additionalProperties'))
+      validate(child, schema.additionalProperties, name + '.' + key, depth + 1, state);
+  }
+}
+
+function validateArray(value, items, name, depth, state) {
+  value.forEach((child, index) => validate(child, items, name + '[' + index + ']', depth + 1, state));
 }
 
 export function validateFlowInput(value, schema = {}, name = 'body', depth = 0) {

@@ -21,7 +21,7 @@ const TAG_BODY = /^\s+([a-z]+(?:\+[a-z]+)*)\s*:\s*(\S.*)$/;
 const DECLARATION = /^\s*(?:(?:test|it|describe|suite)(?:\.(?:only|skip|todo))?\s*\(|for\s*\(|\[.*\]\.forEach\()/;
 const TOP_LEVEL = /^(?:(?:test|it|describe|suite)(?:\.(?:only|skip|todo))?\s*\(|for\s*\(|\[.*\]\.forEach\()/;
 const FILE_TAG_LINES = 40;
-const ANY_TAG = /^\s*\/\/\s*@test-kind\b/m;
+const ANY_TAG = /^[^\S\r\n\u2028\u2029]*\/\/\s*@test-kind\b/m;
 
 function legacyFiles() {
   try {
@@ -33,7 +33,7 @@ function legacyFiles() {
 }
 
 function git(args, { allowFailure = false } = {}) {
-  const result = spawnSync('git', ['--no-optional-locks', ...args], {
+  /* NOSONAR */ const result = spawnSync('git', ['--no-optional-locks', ...args], {
     cwd: root,
     encoding: 'utf8',
     windowsHide: true,
@@ -145,18 +145,7 @@ export function check({ files, newText, oldText, diffOf, legacy = new Set() }) {
 
 function run(args) {
   if (args[0] === '--report') {
-    const files = git(['ls-files', '-z'])
-      .split('\0')
-      .filter((file) => TEST_FILE.test(file));
-    const counts = {};
-    for (const file of files) {
-      const parsed = parseTestKinds(fs.readFileSync(path.join(root, file), 'utf8'));
-      const kinds = new Set([...(parsed.fileKinds ?? []), ...parsed.regions.flatMap((region) => region.kinds)]);
-      if (!kinds.size) kinds.add('untagged');
-      for (const kind of kinds) counts[kind] = (counts[kind] ?? 0) + 1;
-    }
-    console.log(JSON.stringify({ files: files.length, counts }, null, 1));
-    return 0;
+    return reportKinds();
   }
   let options;
   if (args[0] === '--staged') {
@@ -201,6 +190,21 @@ function run(args) {
   console.log(
     `Test kinds valid for ${options.files.filter((file) => TEST_FILE.test(file)).length} changed test file(s).`,
   );
+  return 0;
+}
+
+function reportKinds() {
+  const files = git(['ls-files', '-z'])
+    .split('\0')
+    .filter((file) => TEST_FILE.test(file));
+  const counts = {};
+  for (const file of files) {
+    const parsed = parseTestKinds(fs.readFileSync(path.join(root, file), 'utf8'));
+    const kinds = new Set([...(parsed.fileKinds ?? []), ...parsed.regions.flatMap((region) => region.kinds)]);
+    if (!kinds.size) kinds.add('untagged');
+    for (const kind of kinds) counts[kind] = (counts[kind] ?? 0) + 1;
+  }
+  console.log(JSON.stringify({ files: files.length, counts }, null, 1));
   return 0;
 }
 

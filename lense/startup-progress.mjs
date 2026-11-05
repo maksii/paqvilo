@@ -21,7 +21,8 @@ const runtimePhases = new Set([
 ]);
 
 /** Read only bounded, explicitly typed progress records; never forward arbitrary child log content. */
-export async function readStartupPhases(file, cursor = { offset: 0, remainder: '' }) {
+export async function readStartupPhases(file, cursor) {
+  if (cursor === undefined) cursor = { offset: 0, remainder: '' };
   const handle = await fs.open(file, 'r');
   try {
     const { size } = await handle.stat();
@@ -81,11 +82,14 @@ export function startupProgress({
     // Bound retained diagnostics during a long interactive session.
     if (events.length === 128) events.shift();
     events.push(event);
-    write(
-      structured
-        ? JSON.stringify(event)
-        : `startup     ${phase}${detail ? ` · ${detail}` : ''} (${(event.totalElapsedMs / 1000).toFixed(1)}s total; ${(event.phaseElapsedMs / 1000).toFixed(1)}s phase)${status === 'waiting' ? '…' : ''}`,
-    );
+    if (structured) write(JSON.stringify(event));
+    else {
+      const detailText = detail ? ` · ${detail}` : '';
+      const waitingMark = status === 'waiting' ? '…' : '';
+      write(
+        `startup     ${phase}${detailText} (${(event.totalElapsedMs / 1000).toFixed(1)}s total; ${(event.phaseElapsedMs / 1000).toFixed(1)}s phase)${waitingMark}`,
+      );
+    }
   };
   emit('started');
   const timer = setInterval(() => {
@@ -126,7 +130,7 @@ export function startupProgress({
 }
 
 /** Navigation completion is separate from application readiness; no arbitrary live-page readiness is inferred. */
-export async function waitForStartupPage(
+/* NOSONAR: preserve request lifecycle and cancellation await boundaries */ export async function waitForStartupPage(
   page,
   url,
   {

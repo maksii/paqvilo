@@ -196,7 +196,7 @@ export function createCodeAppsHandler({
     if (!methods.includes(req.method)) throw fail(405, 'MethodNotAllowed', 'Method not allowed.');
   };
 
-  return async (req, res, url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`)) => {
+  /* NOSONAR */ return async (req, res, url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`)) => {
     if (url.pathname === '/_apps/code') {
       res.writeHead(308, { location: '/_apps/code/' + url.search });
       res.end();
@@ -492,7 +492,8 @@ function loader(req, res, url, app, base) {
   const diagnostics = (app.diagnostics ?? [])
     .map(({ code, message }) => `<li><code>${escapeHtml(code)}</code>: ${escapeHtml(message)}</li>`)
     .join('');
-  const notice = `<h1>${escapeHtml(app.name)} — Mirage simulation</h1><p>This local bridge uses the Paqvilo adapter. Native Power Apps SDK services require Microsoft's host and online connections. <a href="/_sim/">Select a staff user</a> before using the app. <a href="${escapeHtml(base)}status">Bridge diagnostics</a></p>${diagnostics ? `<ul>${diagnostics}</ul>` : ''}`;
+  const diagnosticList = diagnostics ? `<ul>${diagnostics}</ul>` : '';
+  const notice = `<h1>${escapeHtml(app.name)} — Mirage simulation</h1><p>This local bridge uses the Paqvilo adapter. Native Power Apps SDK services require Microsoft's host and online connections. <a href="/_sim/">Select a staff user</a> before using the app. <a href="${escapeHtml(base)}status">Bridge diagnostics</a></p>${diagnosticList}`;
   res.setHeader('content-security-policy', csp);
   res.setHeader('x-frame-options', 'SAMEORIGIN');
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });

@@ -8,14 +8,14 @@ export function formWriteError(error, observed, kind = 'entityform') {
   return {
     type: 'error',
     ...(observed?.formSubmissionErrorMarkup ? { markup: observed.formSubmissionErrorMarkup } : {}),
-    message:
-      observed?.formSubmissionErrorMessage ??
-      (error.code === 'PluginValidation' && error.details?.declaredValidationMessage === true
-        ? error.message
-        : error.code === 'PermissionDenied'
-          ? "You don't have the appropriate permissions."
-          : 'An error occurred while processing your request. Please try again.'),
+    message: observed?.formSubmissionErrorMessage ?? fallbackErrorMessage(error),
   };
+}
+
+function fallbackErrorMessage(error) {
+  if (error.code === 'PluginValidation' && error.details?.declaredValidationMessage === true) return error.message;
+  if (error.code === 'PermissionDenied') return "You don't have the appropriate permissions.";
+  return 'An error occurred while processing your request. Please try again.';
 }
 
 const escapeHtml = (value) =>

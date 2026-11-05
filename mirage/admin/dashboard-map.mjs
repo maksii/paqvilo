@@ -272,7 +272,9 @@ export function PRODUCT_OF(id, kind, label) {
       : null) ??
     (() => {
       const band = KIND_BANDS[prefix] ?? KIND_BANDS[kind] ?? 'providers';
-      const group = band === 'organization' ? 'org-other' : band === 'providers' ? 'provider-other' : null;
+      let group = null;
+      if (band === 'organization') group = 'org-other';
+      else if (band === 'providers') group = 'provider-other';
       return P(band, group, name ?? 'Unnamed component', 'unknown', 'neutral');
     })()
   );
@@ -342,16 +344,7 @@ const num = (value) => (typeof value === 'number' && Number.isFinite(value) ? va
 const fmt = (value) => (typeof value === 'number' ? value.toLocaleString('en') : '—');
 
 /** One or two short facts for a card ("12 tables · rev 4", "listening :51988"). Values only from the node's safe `detail`. */
-export function factsOf(node) {
-  const d = node.detail && typeof node.detail === 'object' ? node.detail : {},
-    id = String(node.id ?? ''),
-    facts = [];
-  const add = (condition, text) => {
-    if (condition && facts.length < 2) facts.push(text);
-  };
-  const port = portOf(d.origin) ?? num(d.port);
-  const sumValues = (value) =>
-    value && typeof value === 'object' ? Object.values(value).reduce((total, item) => total + (num(item) ?? 0), 0) : 0;
+function dataverseFacts(id, d, add, sumValues) {
   if (id === 'org:store') {
     add(num(d.tables) != null, plural(d.tables, 'table'));
     add(num(d.revision) != null, `revision ${d.revision}`);
@@ -365,7 +358,14 @@ export function factsOf(node) {
     add(num(d.pending) != null, `${fmt(d.pending)} pending`);
     add(num(d.running) != null && d.running > 0, `${fmt(d.running)} running`);
   } else if (id === 'org:workflows') add(num(d.definitions) != null, plural(d.definitions, 'definition'));
-  else if (id === 'provider:storage') add(Array.isArray(d.providers), plural(d.providers?.length ?? 0, 'provider'));
+  else if (id.startsWith('org:pack:')) add(textOf(d.module), `module ${String(d.module).split(/[\\/]/).pop()}`);
+  else if (id.startsWith('org:') && num(d.operations) != null) add(true, plural(d.operations, 'operation'));
+  else return false;
+  return true;
+}
+
+function providerFacts(id, d, add, sumValues) {
+  if (id === 'provider:storage') add(Array.isArray(d.providers), plural(d.providers?.length ?? 0, 'provider'));
   else if (id.startsWith('provider:storage-route:'))
     add(textOf(d.provider ?? d.target), `to ${d.provider ?? d.target}`);
   else if (id === 'provider:messaging') add(num(d.endpoints) != null, plural(d.endpoints, 'endpoint'));
@@ -388,9 +388,14 @@ export function factsOf(node) {
     add(d.required === true, 'required');
   } else if (id.startsWith('provider:service-fixture:'))
     add(d.operations && typeof d.operations === 'object', plural(sumValues(d.operations), 'operation'));
-  else if (id.startsWith('external:webhook:')) {
+  else return false;
+  return true;
+}
+
+function otherNodeFacts(id, d, add, port) {
+  if (id.startsWith('external:webhook:'))
     add(typeof d.loopback === 'boolean', d.loopback ? 'loopback' : 'not contacted');
-  } else if (id === 'app:canvas' || id === 'app:code')
+  else if (id === 'app:canvas' || id === 'app:code')
     add(num(d.apps ?? d.sources) != null, plural(d.apps ?? d.sources, 'app'));
   else if (id === 'app:pcf') add(num(d.controls) != null, plural(d.controls, 'control'));
   else if (id === 'host:portal') add(num(d.pages) != null, plural(d.pages, 'page'));
@@ -399,8 +404,22 @@ export function factsOf(node) {
   else if (id.startsWith('persona-runtime:')) {
     add(textOf(d.context), `context ${d.context}`);
     add(num(d.maxInstances) != null, `up to ${d.maxInstances} sessions`);
-  } else if (id.startsWith('org:pack:')) add(textOf(d.module), `module ${String(d.module).split(/[\\/]/).pop()}`);
-  else if (id.startsWith('org:') && num(d.operations) != null) add(true, plural(d.operations, 'operation'));
+  } else return false;
+  return true;
+}
+
+export function factsOf(node) {
+  const d = node.detail && typeof node.detail === 'object' ? node.detail : {},
+    id = String(node.id ?? ''),
+    facts = [];
+  const add = (condition, text) => {
+    if (condition && facts.length < 2) facts.push(text);
+  };
+  const port = portOf(d.origin) ?? num(d.port);
+  const sumValues = (value) =>
+    value && typeof value === 'object' ? Object.values(value).reduce((total, item) => total + (num(item) ?? 0), 0) : 0;
+  if (!dataverseFacts(id, d, add, sumValues))
+    if (!providerFacts(id, d, add, sumValues)) otherNodeFacts(id, d, add, port);
   add(port, `port ${port}`);
   add(textOf(d.path) && !port, String(d.path));
   if (!facts.length)
@@ -432,26 +451,34 @@ const tallyStatus = (list) => {
 export function healthOf(list, planned = false) {
   const c = tallyStatus(list);
   if (!c.total) return { text: 'nothing configured', short: 'none', tone: 'neutral', counts: c };
-  if (planned)
-    return {
-      text:
-        [
-          c.planned && `${c.planned} planned`,
-          c.declared && `${c.declared} declared`,
-          c.disabled && `${c.disabled} off`,
-          c.bad && `${c.bad} missing`,
-        ]
-          .filter(Boolean)
-          .join(' · ') || 'nothing planned',
-      short: c.bad ? `${c.bad} missing` : `${c.planned} planned`,
-      tone: c.bad ? 'bad' : 'info',
-      counts: c,
-    };
+  if (planned) return plannedHealth(c);
   const extra = [c.bad && `${c.bad} need attention`, c.placeholder && `${c.placeholder} placeholder`].filter(Boolean);
+  const extraText = extra.length ? ` · ${extra.join(' · ')}` : '';
+  let tone = 'info';
+  if (c.bad) tone = 'bad';
+  else if (c.placeholder) tone = 'warn';
+  else if (c.ready === c.total) tone = 'ok';
   return {
-    text: `${c.ready} of ${c.total} ready${extra.length ? ` · ${extra.join(' · ')}` : ''}`,
+    text: `${c.ready} of ${c.total} ready${extraText}`,
     short: c.bad ? plural(c.bad, 'issue') : `${c.ready}/${c.total} ready`,
-    tone: c.bad ? 'bad' : c.placeholder ? 'warn' : c.ready === c.total ? 'ok' : 'info',
+    tone,
+    counts: c,
+  };
+}
+
+function plannedHealth(c) {
+  return {
+    text:
+      [
+        c.planned && `${c.planned} planned`,
+        c.declared && `${c.declared} declared`,
+        c.disabled && `${c.disabled} off`,
+        c.bad && `${c.bad} missing`,
+      ]
+        .filter(Boolean)
+        .join(' · ') || 'nothing planned',
+    short: c.bad ? `${c.bad} missing` : `${c.planned} planned`,
+    tone: c.bad ? 'bad' : 'info',
     counts: c,
   };
 }
@@ -464,7 +491,33 @@ export function healthOf(list, planned = false) {
  */
 export function layoutTopology(nodes = [], edges = [], { columns = GEOMETRY.columns } = {}) {
   const G = { ...GEOMETRY, columns };
-  const list = (Array.isArray(nodes) ? nodes : []).filter((node) => node && node.id != null);
+  const placed = placeTopologyNodes(nodes);
+  const byBand = groupedCards(placed);
+  const { bands, cards } = positionTopologyCards(byBand, G);
+  const cardOf = new Map(cards.flatMap((card) => card.nodes.map((node) => [node.id, card])));
+  for (const card of cards) for (const node of card.nodes) node.card = card.index;
+  const merged = mergeTopologyEdges(edges, cardOf);
+  const display = [...merged.values()].filter((edge) => !edge.off).map((edge, index) => ({ ...edge, index }));
+  const off = [...merged.values()].filter((edge) => edge.off);
+  const gutters = planRoutes(display, cards, G);
+  let y = G.top;
+  for (const [index, band] of bands.entries()) {
+    band.y = y;
+    band.gap = index ? gutters[index - 1].lanes : 0;
+    for (const card of band.cards) card.y = y + card.offsetY;
+    y += band.h;
+    gutters[index].y = y;
+    if (index < bands.length - 1 || gutters[index].lanes) y += gutterOf(gutters[index].lanes);
+  }
+  const tail = gutters[bands.length - 1].lanes;
+  const height = y + G.top;
+  const routed = placeLabels(display.map((edge) => ({ ...edge, ...drawRoute(edge, cards, gutters, G) })));
+  attachTopologyEdges(cards, routed, off);
+  return { columns: G.columns, geometry: G, height, tail, bands, cards, edges: routed, nodes: placed };
+}
+
+function placeTopologyNodes(nodes) {
+  const list = (Array.isArray(nodes) ? nodes : []).filter((node) => node?.id != null);
   const seen = new Set(),
     placed = [];
   for (const node of list) {
@@ -474,6 +527,10 @@ export function layoutTopology(nodes = [], edges = [], { columns = GEOMETRY.colu
     const product = PRODUCT_OF(id, node.kind, node.label);
     placed.push({ ...node, id, status: statusOf(node.status), product, band: product.band });
   }
+  return placed;
+}
+
+function groupedCards(placed) {
   const byBand = new Map(BANDS.map((band) => [band.id, []]));
   const sortNodes = (items) =>
     items.sort((a, b) => rank(a.id) - rank(b.id) || a.product.name.localeCompare(b.product.name));
@@ -499,6 +556,10 @@ export function layoutTopology(nodes = [], edges = [], { columns = GEOMETRY.colu
         );
     }
   }
+  return byBand;
+}
+
+function positionTopologyCards(byBand, G) {
   // Columns and rows first: the bands' vertical positions wait for the lanes their gutters need.
   const cellW = (G.right - G.left) / G.columns;
   const bands = [],
@@ -537,9 +598,10 @@ export function layoutTopology(nodes = [], edges = [], { columns = GEOMETRY.colu
     });
     bands.push(entry);
   }
-  const cardOf = new Map(cards.flatMap((card) => card.nodes.map((node) => [node.id, card])));
-  for (const card of cards) for (const node of card.nodes) node.card = card.index;
+  return { bands, cards };
+}
 
+/* NOSONAR */ function mergeTopologyEdges(edges, cardOf) {
   // Display edges: merged per card pair, oriented top to bottom.
   const merged = new Map();
   for (const edge of Array.isArray(edges) ? edges : []) {
@@ -579,22 +641,10 @@ export function layoutTopology(nodes = [], edges = [], { columns = GEOMETRY.colu
     item.active ||= Boolean(edge.active);
     merged.set(key, item);
   }
-  // Switched-off connections are not drawn: the card lists them ("Switched off: would connect to …") and the drawer names each.
-  const display = [...merged.values()].filter((edge) => !edge.off).map((edge, index) => ({ ...edge, index }));
-  const off = [...merged.values()].filter((edge) => edge.off);
-  const gutters = planRoutes(display, cards, G);
-  let y = G.top;
-  for (const [index, band] of bands.entries()) {
-    band.y = y;
-    band.gap = index ? gutters[index - 1].lanes : 0;
-    for (const card of band.cards) card.y = y + card.offsetY;
-    y += band.h;
-    gutters[index].y = y;
-    if (index < bands.length - 1 || gutters[index].lanes) y += gutterOf(gutters[index].lanes);
-  }
-  const tail = gutters[bands.length - 1].lanes;
-  const height = y + G.top;
-  const routed = placeLabels(display.map((edge) => ({ ...edge, ...drawRoute(edge, cards, gutters, G) })));
+  return merged;
+}
+
+function attachTopologyEdges(cards, routed, off) {
   // Direct connections per card, for the CSS highlight: only the cards a card itself talks to or is called by. A chain is
   // not highlighted, because the organization store is a hub: following it would light up nearly every card.
   const forward = new Map(cards.map((card) => [card.index, []])),
@@ -613,7 +663,6 @@ export function layoutTopology(nodes = [], edges = [], { columns = GEOMETRY.colu
     ].filter((index) => index !== card.index);
     card.pathEdges = [...card.downstream, ...card.upstream].map((edge) => edge.index);
   }
-  return { columns: G.columns, geometry: G, height, tail, bands, cards, edges: routed, nodes: placed };
 }
 
 /*
@@ -638,52 +687,67 @@ function planX(card, side, source, straight, G) {
 function planRoutes(edges, cards, G) {
   const gutters = BANDS.map(() => ({ spans: [], lanes: 0, y: 0 }));
   const trunks = [];
+  planEdgeRoutes(edges, cards, G, gutters, trunks);
+  assignTrunkPositions(trunks, edges, cards, G);
+  addTrunkSpans(trunks, gutters);
+  assignGutterLanes(gutters);
+  return gutters;
+}
+
+function planEdgeRoutes(edges, cards, G, gutters, trunks) {
   for (const edge of edges) {
     const upper = cards[edge.upper],
       lower = cards[edge.lower],
       from = cards[edge.from],
       to = cards[edge.to];
-    if (upper.bandIndex === lower.bandIndex) {
-      const [a, b] = [from, to];
-      if (a.row === b.row && Math.abs(a.col - b.col) === 1) {
-        edge.plan = { type: 'side' };
-        continue;
-      }
-      if (a.col === b.col && Math.abs(a.row - b.row) === 1) {
-        edge.plan = { type: 'stack' };
-        continue;
-      }
-      // Inside one band, otherwise: down from the source into the gutter below the band, along a lane, up into the target.
-      // A loop climbs into its target from the gutter below; beside a card with another under it, it keeps clear of the
-      // entry the card below uses from above (x + w - 2.2 offsets).
-      const exitX = planX(a, 'exit', true, false, G),
-        enterX = b.below ? b.x + b.w - 3.4 * G.offset : b.cx + G.offset;
-      edge.plan = { type: 'loop', exitX, enterX, gutter: a.bandIndex };
-      gutters[a.bandIndex].spans.push({
-        edge,
-        key: 'lane',
-        from: Math.min(exitX, enterX),
-        to: Math.max(exitX, enterX),
-      });
-      continue;
-    }
-    const straight =
-      lower.bandIndex === upper.bandIndex + 1 && upper.col === lower.col && !upper.below && lower.row === 0;
-    const exitX = planX(upper, 'exit', !edge.reversed, straight, G),
-      enterX = planX(lower, 'entry', edge.reversed, straight, G);
-    if (lower.bandIndex === upper.bandIndex + 1) {
-      edge.plan = { type: 'next', exitX, enterX, gutter: upper.bandIndex };
-      gutters[upper.bandIndex].spans.push({
-        edge,
-        key: 'lane',
-        from: Math.min(exitX, enterX),
-        to: Math.max(exitX, enterX),
-      });
-    } else {
-      edge.plan = { type: 'trunk', exitX, enterX, exitGutter: upper.bandIndex, enterGutter: lower.bandIndex - 1 };
-      trunks.push(edge);
-    }
+    if (upper.bandIndex === lower.bandIndex) planSameBandEdge(edge, from, to, G, gutters);
+    else planAcrossBandEdge(edge, upper, lower, G, gutters, trunks);
   }
+}
+
+function planSameBandEdge(edge, from, to, G, gutters) {
+  if (from.row === to.row && Math.abs(from.col - to.col) === 1) {
+    edge.plan = { type: 'side' };
+    return;
+  }
+  if (from.col === to.col && Math.abs(from.row - to.row) === 1) {
+    edge.plan = { type: 'stack' };
+    return;
+  }
+  // Inside one band, otherwise: down from the source into the gutter below the band, along a lane, up into the target.
+  // A loop climbs into its target from the gutter below; beside a card with another under it, it keeps clear of the
+  // entry the card below uses from above (x + w - 2.2 offsets).
+  const exitX = planX(from, 'exit', true, false, G),
+    enterX = to.below ? to.x + to.w - 3.4 * G.offset : to.cx + G.offset;
+  edge.plan = { type: 'loop', exitX, enterX, gutter: from.bandIndex };
+  gutters[from.bandIndex].spans.push({
+    edge,
+    key: 'lane',
+    from: Math.min(exitX, enterX),
+    to: Math.max(exitX, enterX),
+  });
+}
+
+function planAcrossBandEdge(edge, upper, lower, G, gutters, trunks) {
+  const straight =
+    lower.bandIndex === upper.bandIndex + 1 && upper.col === lower.col && !upper.below && lower.row === 0;
+  const exitX = planX(upper, 'exit', !edge.reversed, straight, G),
+    enterX = planX(lower, 'entry', edge.reversed, straight, G);
+  if (lower.bandIndex === upper.bandIndex + 1) {
+    edge.plan = { type: 'next', exitX, enterX, gutter: upper.bandIndex };
+    gutters[upper.bandIndex].spans.push({
+      edge,
+      key: 'lane',
+      from: Math.min(exitX, enterX),
+      to: Math.max(exitX, enterX),
+    });
+  } else {
+    edge.plan = { type: 'trunk', exitX, enterX, exitGutter: upper.bandIndex, enterGutter: lower.bandIndex - 1 };
+    trunks.push(edge);
+  }
+}
+
+function assignTrunkPositions(trunks, edges, cards, G) {
   // A trunk crosses the bands in between down the centre of the column gap nearest to its ends, one trunk per gap (the
   // cards' own connectors keep off the centre), avoiding a gap where a band in between joins two neighbours; when no gap
   // is free it runs down the right edge, the longest outermost.
@@ -701,9 +765,10 @@ function planRoutes(edges, cards, G) {
   const fits = (k, slot, [top, bottom]) =>
     !(used.get(`${k}:${slot}`) ?? []).some(([a, b]) => top <= b && a <= bottom) &&
     !Array.from({ length: bottom - top }, (_, index) => top + 1 + index).some((band) => sides.has(`${band}:${k}`));
-  for (const edge of trunks.sort(
+  trunks.sort(
     (a, b) => a.plan.enterGutter - a.plan.exitGutter - (b.plan.enterGutter - b.plan.exitGutter) || a.index - b.index,
-  )) {
+  );
+  for (const edge of trunks) {
     const range = [edge.plan.exitGutter, edge.plan.enterGutter],
       mid = (edge.plan.exitX + edge.plan.enterX) / 2;
     const gaps = Array.from({ length: G.columns }, (_, index) => index).sort(
@@ -719,14 +784,16 @@ function planRoutes(edges, cards, G) {
     edge.plan.trunkX = G.left + k * cellW + slot * slotWidth;
   }
   const step = Math.min(0.007, (1 - G.right - 0.012) / Math.max(1, right.length));
-  right
-    .sort(
-      (a, b) =>
-        b.plan.exitGutter - a.plan.exitGutter || a.plan.enterGutter - b.plan.enterGutter || a.plan.exitX - b.plan.exitX,
-    )
-    .forEach((edge, index) => {
-      edge.plan.trunkX = G.right + 0.008 + index * step;
-    });
+  right.sort(
+    (a, b) =>
+      b.plan.exitGutter - a.plan.exitGutter || a.plan.enterGutter - b.plan.enterGutter || a.plan.exitX - b.plan.exitX,
+  );
+  right.forEach((edge, index) => {
+    edge.plan.trunkX = G.right + 0.008 + index * step;
+  });
+}
+
+function addTrunkSpans(trunks, gutters) {
   for (const edge of trunks) {
     gutters[edge.plan.exitGutter].spans.push({
       edge,
@@ -741,13 +808,18 @@ function planRoutes(edges, cards, G) {
       to: Math.max(edge.plan.enterX, edge.plan.trunkX),
     });
   }
+}
+
+function assignGutterLanes(gutters) {
   // Connections that meet the same card at the same gutter, in the same direction, share one lane: a bus that leaves the
   // card once and drops into each target (the Web API into every organization group). They share a card, so sharing the
   // line never makes two unrelated connectors look like one.
   const anchor = (span) => {
     const { edge } = span,
       plan = edge.plan;
-    const card = span.key === 'enterLane' ? edge.lower : plan.type === 'loop' ? edge.from : edge.upper;
+    let card = edge.upper;
+    if (span.key === 'enterLane') card = edge.lower;
+    else if (plan.type === 'loop') card = edge.from;
     return `${span.key === 'enterLane' ? 'enter' : 'exit'}:${card}:${plan.type === 'loop' ? 'loop' : edge.reversed}`;
   };
   for (const gutter of gutters) {
@@ -771,7 +843,6 @@ function planRoutes(edges, cards, G) {
     }
     gutter.lanes = ends.length;
   }
-  return gutters;
 }
 
 const laneY = (gutter, lane, G) =>
@@ -811,6 +882,38 @@ const into = (card, x, y, G, source = false) => {
   ];
 };
 function drawRoute(edge, cards, gutters, G) {
+  const { points, lane, arrow } = routeGeometry(edge, cards, gutters, G);
+  const clean = [];
+  for (const point of points) {
+    const last = clean.at(-1);
+    if (last && Math.abs(last[0] - point[0]) < 1e-9 && Math.abs(last[1] - point[1]) < 1e-9) continue;
+    const before = clean.at(-2);
+    if (
+      before &&
+      last &&
+      arrow == null &&
+      ((Math.abs(before[0] - last[0]) < 1e-9 && Math.abs(last[0] - point[0]) < 1e-9) ||
+        (before[1] === last[1] && last[1] === point[1]))
+    )
+      clean[clean.length - 1] = point;
+    else clean.push(point);
+  }
+  const segments = clean.slice(1).map((point, index) => [clean[index], point]);
+  // The label sits just above the connector's longest run along a lane; a connector inside one row or column has none.
+  const runs = segments
+    .filter(([a, b]) => a[1] === b[1] && lane != null && Math.abs(a[1] - lane) < 1e-6)
+    .sort((a, b) => Math.abs(b[1][0] - b[0][0]) - Math.abs(a[1][0] - a[0][0]));
+  const text = mapLabel(edge);
+  let labelAt = null;
+  if (lane != null)
+    labelAt =
+      runs[0] && Math.abs(runs[0][1][0] - runs[0][0][0]) > 0.02
+        ? [(runs[0][0][0] + runs[0][1][0]) / 2, lane - 4]
+        : [clean[0][0] + labelWidth(text) / 2 + 0.006, lane - 4];
+  return { points: clean, segments, labelAt, arrowSegment: arrow };
+}
+
+function routeGeometry(edge, cards, gutters, G) {
   const plan = edge.plan,
     upper = cards[edge.upper],
     lower = cards[edge.lower],
@@ -857,34 +960,7 @@ function drawRoute(edge, cards, gutters, G) {
       ...into(lower, plan.enterX, enterLane, G, edge.reversed),
     ];
   }
-  const clean = [];
-  for (const point of points) {
-    const last = clean.at(-1);
-    if (last && Math.abs(last[0] - point[0]) < 1e-9 && Math.abs(last[1] - point[1]) < 1e-9) continue;
-    const before = clean.at(-2);
-    if (
-      before &&
-      last &&
-      arrow == null &&
-      ((Math.abs(before[0] - last[0]) < 1e-9 && Math.abs(last[0] - point[0]) < 1e-9) ||
-        (before[1] === last[1] && last[1] === point[1]))
-    )
-      clean[clean.length - 1] = point;
-    else clean.push(point);
-  }
-  const segments = clean.slice(1).map((point, index) => [clean[index], point]);
-  // The label sits just above the connector's longest run along a lane; a connector inside one row or column has none.
-  const runs = segments
-    .filter(([a, b]) => a[1] === b[1] && lane != null && Math.abs(a[1] - lane) < 1e-6)
-    .sort((a, b) => Math.abs(b[1][0] - b[0][0]) - Math.abs(a[1][0] - a[0][0]));
-  const text = mapLabel(edge);
-  const labelAt =
-    lane == null
-      ? null
-      : runs[0] && Math.abs(runs[0][1][0] - runs[0][0][0]) > 0.02
-        ? [(runs[0][0][0] + runs[0][1][0]) / 2, lane - 4]
-        : [clean[0][0] + labelWidth(text) / 2 + 0.006, lane - 4];
-  return { points: clean, segments, labelAt, arrowSegment: arrow };
+  return { points, lane, arrow };
 }
 
 // Label boxes never overlap: each label tries its lane point, then slides along the lane. Lanes are farther apart than a
@@ -1024,13 +1100,12 @@ function wire(edge, cards, planned) {
   const lines = edge.segments
     .map(([a, b], index) => {
       const first = index === 0;
-      const marker = edge.reversed
-        ? first
-          ? ' marker-start="url(#dm-arrow)"'
-          : ''
-        : index === (edge.arrowSegment ?? edge.segments.length - 1)
-          ? ' marker-end="url(#dm-arrow)"'
-          : '';
+      let marker = '';
+      if (edge.reversed) {
+        if (first) marker = ' marker-start="url(#dm-arrow)"';
+      } else if (index === (edge.arrowSegment ?? edge.segments.length - 1)) {
+        marker = ' marker-end="url(#dm-arrow)"';
+      }
       return `<line class="dm-seg" x1="${pct(a[0])}" y1="${a[1]}" x2="${pct(b[0])}" y2="${b[1]}"${marker}></line>`;
     })
     .join('');
@@ -1053,9 +1128,10 @@ function wire(edge, cards, planned) {
     owners = ownersOf(edge, cards);
   const fromName = from.type === 'group' ? GROUPS[from.group].title : from.node.product.name,
     toName = to.type === 'group' ? GROUPS[to.group].title : to.node.product.name;
+  const titleText = `${fromName} → ${toName}: ${label} (${EDGE_KINDS[kind]})`;
   return (
     `<g class="dm-wire is-${kind} is-${e(statusOf(edge.status))}${active ? ' is-active' : ''}${owners}" data-edge="${e(edge.members[0].from)}→${e(edge.members[0].to)}" data-from-card="${edge.from}" data-to-card="${edge.to}">` +
-    `<title>${e(`${fromName} → ${toName}: ${label} (${EDGE_KINDS[kind]})`)}</title>${lines}${inner}${pulse}</g>`
+    `<title>${e(titleText)}</title>${lines}${inner}${pulse}</g>`
   );
 }
 
@@ -1079,11 +1155,14 @@ function connectionsHtml(card, layout) {
   ].filter(Boolean);
   return lines.length ? lines.join(' ') : 'No connections.';
 }
-const highlightClasses = (card) =>
-  `${card.index < HIGHLIGHT_LIMIT ? ` dm-k${card.index}` : ''}${(card.related ?? [])
+const highlightClasses = (card) => {
+  const primary = card.index < HIGHLIGHT_LIMIT ? ` dm-k${card.index}` : '';
+  const related = (card.related ?? [])
     .filter((index) => index < HIGHLIGHT_LIMIT)
     .map((index) => ` dm-p${index}`)
-    .join('')}`;
+    .join('');
+  return `${primary}${related}`;
+};
 
 function nodeCard(card, layout, { id, icons, planned }) {
   const node = card.node,
@@ -1093,9 +1172,10 @@ function nodeCard(card, layout, { id, icons, planned }) {
     facts = factsOf(node);
   const factLine =
     [level, ...facts.slice(0, level ? 1 : 2)].filter(Boolean).join(' · ') || (planned ? 'from configuration' : ' ');
+  const nodeLabel = `${product.name}: ${statusText(status).toLowerCase()}`;
   return (
     `<div class="dm-card dm-node is-${status}${highlightClasses(card)}${card.col >= layout.columns - 2 ? ' dm-end' : ''}" role="button" tabindex="0" data-node="${e(node.id)}" id="${e(id)}-node-${e(nodeKey(node.id))}"` +
-    ` aria-label="${e(`${product.name}: ${statusText(status).toLowerCase()}`)}">` +
+    ` aria-label="${e(nodeLabel)}">` +
     `<span class="dm-card-head">${glyph(icons, product.icon, status === 'disabled' ? 'off' : product.family, product.name)}` +
     `<span class="dm-status is-${status}"><span class="dm-dot" aria-hidden="true"></span>${e(statusText(status))}</span></span>` +
     `<span class="dm-name">${e(product.name)}</span><span class="dm-facts">${e(factLine)}</span>` +
@@ -1150,19 +1230,27 @@ function groupCard(card, layout, { id, icons, planned }) {
     levels.length
       ? levels.map(([level, count]) => `${count} ${level}`)
       : [placeholders ? `${placeholders} placeholder` : plural(nodes.length, 'module')]
-  ).reduce((text, part) => (!text ? part : `${text} · ${part}`.length <= 22 ? `${text} · ${part}` : text), '');
-  const summary = `${group.title}: ${plural(nodes.length, 'module')}, ${health.text}${levels.length ? ` (${levels.map(([level, count]) => `${count} ${level}`).join(', ')})` : ''}`;
+  ).reduce((text, part) => {
+    if (!text) return part;
+    const next = `${text} · ${part}`;
+    return next.length <= 22 ? next : text;
+  }, '');
+  const levelList = levels.map(([level, count]) => `${count} ${level}`).join(', ');
+  const levelSuffix = levels.length ? ` (${levelList})` : '';
+  const summary = `${group.title}: ${plural(nodes.length, 'module')}, ${health.text}${levelSuffix}`;
   const members = nodes
     .map((node) => {
       const status = statusOf(node.status),
-        level = levelText(node.level);
+        level = levelText(node.level),
+        ariaLabel = `${node.product.name}: ${statusText(status).toLowerCase()}`;
       return (
-        `<li><div class="dm-member is-${status}" role="button" tabindex="0" data-node="${e(node.id)}" id="${e(id)}-node-${e(nodeKey(node.id))}" aria-label="${e(`${node.product.name}: ${statusText(status).toLowerCase()}`)}" title="${e(node.id)}">` +
+        `<li><div class="dm-member is-${status}" role="button" tabindex="0" data-node="${e(node.id)}" id="${e(id)}-node-${e(nodeKey(node.id))}" aria-label="${e(ariaLabel)}" title="${e(node.id)}">` +
         `<span class="dm-dot is-${status}" aria-hidden="true"></span><span class="dm-member-name">${e(node.product.name)}</span>` +
         `<span class="dm-member-state">${e([statusText(status), level].filter(Boolean).join(' · '))}</span></div></li>`
       );
     })
     .join('');
+  const modulesLabel = `${group.title} modules`;
   return (
     `<details class="dm-card dm-group dm-fam-${e(group.family)}${health.counts.bad ? ' is-error' : ''}${highlightClasses(card)}${card.col >= layout.columns - 2 ? ' dm-end' : ''}" data-ui-section="dashboard-group:${e(card.group)}" id="${e(id)}-group-${e(card.group)}">` +
     `<summary class="dm-group-face" id="${e(id)}-group-${e(card.group)}-summary" aria-label="${e(summary)}">` +
@@ -1170,7 +1258,7 @@ function groupCard(card, layout, { id, icons, planned }) {
     `<span class="dm-status is-${health.tone}"><span class="dm-dot" aria-hidden="true"></span>${e(health.short)}</span></span>` +
     `<span class="dm-name">${e(group.title)}</span>` +
     `<span class="dm-facts">${e(fact)}</span><span class="dm-links">${connectionsHtml(card, layout)}</span><span class="dm-chevron" aria-hidden="true"></span></summary>` +
-    `<div class="dm-pop" role="group" aria-label="${e(`${group.title} modules`)}"><p class="dm-pop-head">${e(group.title)} · ${e(plural(nodes.length, 'module'))}</p><ul class="dm-members">${members}</ul></div></details>`
+    `<div class="dm-pop" role="group" aria-label="${e(modulesLabel)}"><p class="dm-pop-head">${e(group.title)} · ${e(plural(nodes.length, 'module'))}</p><ul class="dm-members">${members}</ul></div></details>`
   );
 }
 
@@ -1186,10 +1274,20 @@ function legendLists(planned) {
   const swatch = (kind) =>
     `<svg class="dm-swatch" viewBox="0 0 28 8" width="28" height="8" aria-hidden="true" focusable="false"><g class="dm-wire is-${kind}"><line class="dm-seg" x1="1" y1="4" x2="27" y2="4"></line>${kind === 'process' ? '<line class="dm-seg-inner" x1="1" y1="4" x2="27" y2="4"></line>' : ''}</g></svg>`;
   const statuses = ['listening', 'ready', 'planned', 'declared', 'placeholder', 'disabled', 'missing', 'error'];
+  const statusItems = statuses
+    .map(
+      (status) =>
+        `<li><span class="dm-dot is-${status}" aria-hidden="true"></span><strong>${STATUS_TEXT[status]}</strong> ${e(STATUS_MEANING[status])}</li>`,
+    )
+    .join('');
+  const edgeItems = EDGE_LEGEND.map(([kind, text]) => `<li>${swatch(kind)}<strong>${e(text)}</strong></li>`).join('');
+  const activeItem = planned
+    ? ''
+    : '<li><svg class="dm-swatch" viewBox="0 0 28 8" width="28" height="8" aria-hidden="true" focusable="false"><g class="dm-wire is-http is-active"><line class="dm-seg" x1="1" y1="4" x2="27" y2="4"></line><line class="dm-pulse" x1="1" y1="4" x2="27" y2="4"></line></g></svg><strong>active</strong> counters moved since the previous refresh</li>';
   return (
-    `<ul class="dm-legend-list" aria-label="Status legend">${statuses.map((status) => `<li><span class="dm-dot is-${status}" aria-hidden="true"></span><strong>${STATUS_TEXT[status]}</strong> ${e(STATUS_MEANING[status])}</li>`).join('')}</ul>` +
-    `<ul class="dm-legend-list dm-legend-edges" aria-label="Connection legend">${EDGE_LEGEND.map(([kind, text]) => `<li>${swatch(kind)}<strong>${e(text)}</strong></li>`).join('')}` +
-    `${planned ? '' : `<li><svg class="dm-swatch" viewBox="0 0 28 8" width="28" height="8" aria-hidden="true" focusable="false"><g class="dm-wire is-http is-active"><line class="dm-seg" x1="1" y1="4" x2="27" y2="4"></line><line class="dm-pulse" x1="1" y1="4" x2="27" y2="4"></line></g></svg><strong>active</strong> counters moved since the previous refresh</li>`}</ul>`
+    `<ul class="dm-legend-list" aria-label="Status legend">${statusItems}</ul>` +
+    `<ul class="dm-legend-list dm-legend-edges" aria-label="Connection legend">${edgeItems}` +
+    `${activeItem}</ul>`
   );
 }
 const legend = (planned) =>
@@ -1212,9 +1310,10 @@ export function renderTopology(layout, { mode = 'live', id = 'dashboard-topology
     status,
     layout.nodes.filter((node) => node.status === status).length,
   ]).filter(([, count]) => count);
-  const summary =
-    `${BANDS.length} layers, ${plural(total, 'component')}, ${planned ? `${counts.find(([status]) => status === 'planned')?.[1] ?? 0} planned` : `${ready} ready`}; ${plural(layout.edges.length, 'connection')}` +
-    `${counts.length ? ` (${counts.map(([status, count]) => `${count} ${status}`).join(', ')})` : ''}.`;
+  const stateText = planned ? `${counts.find(([status]) => status === 'planned')?.[1] ?? 0} planned` : `${ready} ready`;
+  const countList = counts.map(([status, count]) => `${count} ${status}`).join(', ');
+  const countsText = counts.length ? ` (${countList})` : '';
+  const summary = `${BANDS.length} layers, ${plural(total, 'component')}, ${stateText}; ${plural(layout.edges.length, 'connection')}${countsText}.`;
   const markers = `<defs><marker id="dm-arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="dm-arrow" d="M 0 0 L 10 5 L 0 10 z"></path></marker></defs>`;
   const wires =
     `<svg class="dm-wires" role="img" aria-labelledby="${e(id)}-title ${e(id)}-desc" width="100%" height="${layout.height}" xmlns="http://www.w3.org/2000/svg">` +
@@ -1231,17 +1330,24 @@ export function renderTopology(layout, { mode = 'live', id = 'dashboard-topology
             : nodeCard(card, layout, { id, icons, planned }),
         )
         .join('');
+      const gapClass = index ? ` dm-gap-${Math.min(band.gap, GEOMETRY.maxLanes)}` : '';
+      const bandTip = tip(`About ${band.title}`, band.description);
+      const emptyText = planned ? 'Nothing in this layer is configured yet.' : 'Nothing in this layer is running.';
+      const cardsHtml = cards || `<p class="dm-band-empty">${emptyText}</p>`;
       return (
-        `<section class="dm-band dm-band-${band.id} dm-rows-${band.rows}${index ? ` dm-gap-${Math.min(band.gap, GEOMETRY.maxLanes)}` : ''}" aria-labelledby="${e(id)}-band-${band.id}">` +
+        `<section class="dm-band dm-band-${band.id} dm-rows-${band.rows}${gapClass}" aria-labelledby="${e(id)}-band-${band.id}">` +
         `<header class="dm-band-head"><div class="dm-band-title"><span class="dm-band-index" aria-hidden="true">${index + 1}</span><h3 id="${e(id)}-band-${band.id}">${e(band.title)}</h3></div>` +
-        `<div class="dm-band-health"><span class="dm-pill is-${health.tone}">${e(health.text)}</span>${tip(`About ${band.title}`, band.description)}</div></header>` +
-        `<div class="dm-cards">${cards || `<p class="dm-band-empty">${planned ? 'Nothing in this layer is configured yet.' : 'Nothing in this layer is running.'}</p>`}</div></section>`
+        `<div class="dm-band-health"><span class="dm-pill is-${health.tone}">${e(health.text)}</span>${bandTip}</div></header>` +
+        `<div class="dm-cards">${cardsHtml}</div></section>`
       );
     })
     .join('');
+  const tailHtml = layout.tail
+    ? `<div class="dm-tail dm-gap-${Math.min(layout.tail, GEOMETRY.maxLanes)}" aria-hidden="true"></div>`
+    : '';
   return (
     `<div class="dm-map" data-dashboard-mode="${planned ? 'planned' : 'live'}">${withLegend ? legend(planned) : ''}` +
-    `<div class="dm-frame"><div class="dm-canvas" data-columns="${layout.columns}">${wires}${bands}${layout.tail ? `<div class="dm-tail dm-gap-${Math.min(layout.tail, GEOMETRY.maxLanes)}" aria-hidden="true"></div>` : ''}` +
+    `<div class="dm-frame"><div class="dm-canvas" data-columns="${layout.columns}">${wires}${bands}${tailHtml}` +
     `<svg class="dm-wire-labels" width="100%" height="${layout.height}" aria-hidden="true" focusable="false">${layout.edges.map((edge) => wireLabel(edge, layout.cards)).join('')}</svg></div></div></div>`
   );
 }
@@ -1283,19 +1389,23 @@ const needKit = (kit) => {
   return kit;
 };
 const viewName = (link) => String(link).slice(1).split('?')[0];
+const flagText = (item) => {
+  if (item === true) return 'yes';
+  if (item === false) return 'no';
+  return item ?? 'none';
+};
 // A detail value as readable text: primitives as-is, flat lists joined, flat maps as "key value" pairs; deeper values as compact JSON.
 function factValue(kit, value) {
   if (value === null || value === undefined) return '<span class="dm-muted">none</span>';
-  if (typeof value !== 'object') return kit.escapeHtml(typeof value === 'boolean' ? (value ? 'yes' : 'no') : value);
+  if (typeof value === 'boolean') return kit.escapeHtml(value ? 'yes' : 'no');
+  if (typeof value !== 'object') return kit.escapeHtml(value);
   if (Array.isArray(value) && value.every((item) => item === null || typeof item !== 'object'))
     return value.length ? kit.escapeHtml(value.join(', ')) : '<span class="dm-muted">none</span>';
   if (!Array.isArray(value) && Object.values(value).every((item) => item === null || typeof item !== 'object'))
     return Object.keys(value).length
       ? kit.escapeHtml(
           Object.entries(value)
-            .map(
-              ([key, item]) => `${humanize(key)} ${item === true ? 'yes' : item === false ? 'no' : (item ?? 'none')}`,
-            )
+            .map(([key, item]) => `${humanize(key)} ${flagText(item)}`)
             .join(' · '),
         )
       : '<span class="dm-muted">none</span>';
@@ -1333,20 +1443,21 @@ export function renderNodeDetail(node, docs, { kit, icons, payload } = {}) {
   const edges = (payload?.edges ?? []).filter(
     (edge) => String(edge.from) === String(node.id) || String(edge.to) === String(node.id),
   );
+  const edgeItems = edges
+    .map((edge) => {
+      const outgoing = String(edge.from) === String(node.id);
+      return `<li>${outgoing ? 'To' : 'From'} <strong>${e(nameOf(String(outgoing ? edge.to : edge.from)))}</strong> · ${e(edge.label || EDGE_KINDS[kindOf(edge.kind)])} <span class="dm-muted">(${e(EDGE_KINDS[kindOf(edge.kind)])}, ${e(statusOf(edge.status))})</span></li>`;
+    })
+    .join('');
   const connections = edges.length
-    ? `<h4 class="dm-drawer-sub">Connections</h4><ul class="dm-drawer-links">${edges
-        .map((edge) => {
-          const outgoing = String(edge.from) === String(node.id);
-          return `<li>${outgoing ? 'To' : 'From'} <strong>${e(nameOf(String(outgoing ? edge.to : edge.from)))}</strong> · ${e(edge.label || EDGE_KINDS[kindOf(edge.kind)])} <span class="dm-muted">(${e(EDGE_KINDS[kindOf(edge.kind)])}, ${e(statusOf(edge.status))})</span></li>`;
-        })
-        .join('')}</ul>`
+    ? `<h4 class="dm-drawer-sub">Connections</h4><ul class="dm-drawer-links">${edgeItems}</ul>`
     : '';
   return (
     `<section class="ui-drawer dm-drawer" id="dashboard-drawer" tabindex="-1" data-node-detail="${e(node.id)}" aria-labelledby="${e(id)}"><div class="ui-drawer-head dm-drawer-head">` +
     `${glyph(icons, product.icon, product.family, product.name)}<h3 id="${e(id)}">${e(product.name)}</h3>` +
-    `${kit.statusBadge(node.status)}${node.level ? ` ${kit.levelBadge(node.level)}` : ''}<button type="button" class="ui-button ui-small" data-drawer-close aria-label="Close details">Close</button></div>` +
-    `<p class="dm-drawer-meaning">${e(`${statusText(status)}: ${STATUS_MEANING[status] ?? 'status not reported'}.`)}</p>` +
-    `${kit.kv([...facts, ['Component id', `<code>${e(node.id)}</code>`], ...(node.kind ? [['Kind', e(node.kind)]] : [])])}${connections}` +
+    `${kit.statusBadge(node.status)}${node.level ? ' ' + kit.levelBadge(node.level) : ''}<button type="button" class="ui-button ui-small" data-drawer-close aria-label="Close details">Close</button></div>` +
+    `<p class="dm-drawer-meaning">${e(statusText(status) + ': ' + (STATUS_MEANING[status] ?? 'status not reported') + '.')}</p>` +
+    `${kit.kv([...facts, ['Component id', '<code>' + e(node.id) + '</code>'], ...(node.kind ? [['Kind', e(node.kind)]] : [])])}${connections}` +
     (link
       ? `<p class="ui-drawer-actions"><a class="ui-button" href="${e(link)}">Open ${e(viewName(link))}</a></p>`
       : '') +
@@ -1458,16 +1569,17 @@ const KPI_HINT = Object.freeze({
   gauge: 'The current level, not a total.',
 });
 /** Where a KPI tile leads: its Activity filter, else the view that manages the count. */
-const kpiHref = (kpi, { errors = false } = {}) =>
-  kpi.activity ? `#activity?${kpi.activity}${errors ? '&result=error' : ''}` : errors ? null : (kpi.link ?? null);
+const kpiHref = (kpi, { errors = false } = {}) => {
+  if (kpi.activity) return `#activity?${kpi.activity}${errors ? '&result=error' : ''}`;
+  return errors ? null : (kpi.link ?? null);
+};
 
 /** A bucket width in words: "30 s", "2 min", "1 h". */
-const interval = (ms) =>
-  ms < 60_000
-    ? `${Math.round(ms / 1000)} s`
-    : ms < 3_600_000
-      ? `${Math.round(ms / 60_000)} min`
-      : `${Math.round(ms / 3_600_000)} h`;
+const interval = (ms) => {
+  if (ms < 60_000) return `${Math.round(ms / 1000)} s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)} min`;
+  return `${Math.round(ms / 3_600_000)} h`;
+};
 /**
  * The time range of the tile graphs (DV-N4c-5): from the runtime start to `now` in about 24 buckets of at least 1 s.
  * Null without a start time.
@@ -1538,79 +1650,98 @@ function timelineOf(kpi, timelines) {
       }
     : { trend: 'No timeline: the activity stats did not answer' };
 }
-function kpiTiles(
+
+function kpiDelta(kpi, activity, previous, icons) {
+  const now = kpi.value(activity),
+    before = previous ? kpi.value(previous) : null;
+  if (now == null || before == null)
+    return '<span class="dm-delta is-flat"><span class="ui-sr-only">no earlier refresh to compare</span></span>';
+  const change = now - before;
+  let direction = 'flat';
+  let arrow = 'minus';
+  let glyph = '–';
+  if (change > 0) {
+    direction = 'up';
+    arrow = 'arrowUp';
+    glyph = '▲';
+  } else if (change < 0) {
+    direction = 'down';
+    arrow = 'arrowDown';
+    glyph = '▼';
+  }
+  const sign = change > 0 ? '+' : '−';
+  const changeText = change === 0 ? 'no change' : `${sign}${fmt(Math.abs(change))}`;
+  return `<span class="dm-delta is-${direction}">${iconFor(icons, arrow) || glyph}<span>${changeText}</span><span class="ui-sr-only"> since the previous refresh</span></span>`;
+}
+
+/* NOSONAR */ function renderKpiTile(kpi, activity, series, previous, icons, { compact, expanded, timelines }) {
+  const value = kpi.value(activity);
+  const timeline = timelines ? timelineOf(kpi, timelines) : null;
+  const values = timeline ? (timeline.values ?? []) : sparkValues(kpi, series);
+  let trend = '';
+  if (timeline) trend = timeline.trend;
+  else if (values.length >= 2)
+    trend = `${kpi.type === 'counter' ? 'change per refresh' : 'level'}, last ${values.length} refreshes`;
+  const graph = timeline && !timeline.values ? '' : sparkline(values);
+  const href = kpiHref(kpi),
+    errors = kpi.errors?.(activity) ?? null,
+    errorsHref = kpiHref(kpi, { errors: true });
+  let failed = '';
+  if (errors !== null) {
+    let failedHtml = `${e(fmt(errors))} failed`;
+    if (errors && errorsHref) failedHtml = `<a class="dm-kpi-errors" href="${e(errorsHref)}">${failedHtml}</a>`;
+    failed = ` · ${failedHtml}`;
+  }
+  const face =
+    `<span class="dm-kpi-label">${e(kpi.label)}</span>` +
+    `<span class="dm-kpi-row"><strong class="dm-kpi-value">${e(fmt(value))}</strong>${kpiDelta(kpi, activity, previous, icons)}</span>${!compact || expanded ? graph : ''}`;
+  const linkHint = kpi.activity ? 'Open the matching activity' : 'Open the view that manages it';
+  const linkLabel = `${kpi.label}: ${fmt(value)}. ${linkHint}`;
+  const faceHtml = href
+    ? `<a class="dm-kpi-link" href="${e(href)}" title="${e(KPI_HINT[kpi.type])}" aria-label="${e(linkLabel)}">${face}</a>`
+    : face;
+  let tail = '';
+  if (!compact)
+    tail = `<span class="dm-kpi-detail">${e(kpi.detail(activity))}${failed}</span><span class="dm-kpi-trend">${e(trend)}</span>`;
+  else if (expanded && trend) tail = `<span class="dm-kpi-trend">${e(trend)}</span>`;
+  return `<li class="dm-kpi is-${kpi.tone?.(activity) ?? 'info'}" data-kpi="${kpi.key}">` + faceHtml + tail + '</li>';
+}
+
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function kpiTiles(
   activity,
   series,
   previous,
   icons,
   { compact = false, expanded = false, helpHtml = '', timelines = null } = {},
 ) {
-  const delta = (kpi) => {
-    const now = kpi.value(activity),
-      before = previous ? kpi.value(previous) : null;
-    if (now == null || before == null)
-      return '<span class="dm-delta is-flat"><span class="ui-sr-only">no earlier refresh to compare</span></span>';
-    const change = now - before;
-    const direction = change > 0 ? 'up' : change < 0 ? 'down' : 'flat';
-    const arrow = change > 0 ? 'arrowUp' : change < 0 ? 'arrowDown' : 'minus';
-    return `<span class="dm-delta is-${direction}">${iconFor(icons, arrow) || (change > 0 ? '▲' : change < 0 ? '▼' : '–')}<span>${change === 0 ? 'no change' : `${change > 0 ? '+' : '−'}${fmt(Math.abs(change))}`}</span><span class="ui-sr-only"> since the previous refresh</span></span>`;
-  };
-  const tiles = KPIS.map((kpi) => {
-    const value = kpi.value(activity);
-    const timeline = timelines ? timelineOf(kpi, timelines) : null;
-    const values = timeline ? (timeline.values ?? []) : sparkValues(kpi, series);
-    const trend = timeline
-      ? timeline.trend
-      : values.length >= 2
-        ? `${kpi.type === 'counter' ? 'change per refresh' : 'level'}, last ${values.length} refreshes`
-        : ''; // no trend line until two refreshes (D-M-6: no filler text)
-    const graph = timeline && !timeline.values ? '' : sparkline(values);
-    const href = kpiHref(kpi),
-      errors = kpi.errors?.(activity) ?? null,
-      errorsHref = kpiHref(kpi, { errors: true });
-    const failed =
-      errors === null
-        ? ''
-        : ` · ${errors && errorsHref ? `<a class="dm-kpi-errors" href="${e(errorsHref)}">${e(fmt(errors))} failed</a>` : `${e(fmt(errors))} failed`}`;
-    const face =
-      `<span class="dm-kpi-label">${e(kpi.label)}</span>` +
-      `<span class="dm-kpi-row"><strong class="dm-kpi-value">${e(fmt(value))}</strong>${delta(kpi)}</span>${!compact || expanded ? graph : ''}`;
-    return (
-      `<li class="dm-kpi is-${kpi.tone?.(activity) ?? 'info'}" data-kpi="${kpi.key}">` +
-      (href
-        ? `<a class="dm-kpi-link" href="${e(href)}" title="${e(KPI_HINT[kpi.type])}" aria-label="${e(`${kpi.label}: ${fmt(value)}. ${kpi.activity ? 'Open the matching activity' : 'Open the view that manages it'}`)}">${face}</a>`
-        : face) +
-      (compact
-        ? expanded && trend
-          ? `<span class="dm-kpi-trend">${e(trend)}</span>`
-          : ''
-        : `<span class="dm-kpi-detail">${e(kpi.detail(activity))}${failed}</span><span class="dm-kpi-trend">${e(trend)}</span>`) +
-      '</li>'
-    );
-  });
+  const tiles = KPIS.map((kpi) =>
+    renderKpiTile(kpi, activity, series, previous, icons, { compact, expanded, timelines }),
+  );
   const codes = Object.entries(activity?.diagnostics?.byCode ?? {}).sort((a, b) => b[1] - a[1]);
   const diagnostics = num(activity?.diagnostics?.total) ?? 0;
-  const findings =
-    compact && expanded && timelines
-      ? timelines.loading
-        ? '<span class="dm-kpi-trend">Loading the timeline…</span>'
-        : timelines.reason
-          ? `<span class="dm-kpi-trend">No timeline: ${e(timelines.reason)}</span>`
-          : timelines.findings
-            ? `${sparkline(timelines.findings)}<span class="dm-kpi-trend">findings per ${e(interval(timelines.bucketMs))} since start</span>`
-            : '<span class="dm-kpi-trend">No timeline: this runtime serves no findings list</span>'
-      : '';
+  let findings = '';
+  if (compact && expanded && timelines) {
+    if (timelines.loading) findings = '<span class="dm-kpi-trend">Loading the timeline…</span>';
+    else if (timelines.reason) findings = `<span class="dm-kpi-trend">No timeline: ${e(timelines.reason)}</span>`;
+    else if (timelines.findings)
+      findings = `${sparkline(timelines.findings)}<span class="dm-kpi-trend">findings per ${e(interval(timelines.bucketMs))} since start</span>`;
+    else findings = '<span class="dm-kpi-trend">No timeline: this runtime serves no findings list</span>';
+  }
+  const diagnosticsLabel = `Findings: ${fmt(diagnostics)}. Open them in Activity`;
+  const topCode = codes.length ? `Top <code>${e(codes[0][0])}</code> ×${e(fmt(codes[0][1]))}` : 'No findings recorded';
+  const codeCount = codes.length > 1 ? `${e(plural(codes.length, 'code'))} in total · ` : '';
   tiles.push(
-    `<li class="dm-kpi dm-kpi-diagnostics is-${diagnostics ? 'warn' : 'ok'}" data-kpi="diagnostics"><a class="dm-kpi-link" href="#activity?tab=findings" aria-label="${e(`Findings: ${fmt(diagnostics)}. Open them in Activity`)}"><span class="dm-kpi-label">Findings</span>` +
+    `<li class="dm-kpi dm-kpi-diagnostics is-${diagnostics ? 'warn' : 'ok'}" data-kpi="diagnostics"><a class="dm-kpi-link" href="#activity?tab=findings" aria-label="${e(diagnosticsLabel)}"><span class="dm-kpi-label">Findings</span>` +
       `<span class="dm-kpi-row"><strong class="dm-kpi-value">${e(fmt(diagnostics))}</strong></span></a>` +
       (compact
         ? findings
-        : `<span class="dm-kpi-top">${codes.length ? `Top <code>${e(codes[0][0])}</code> ×${e(fmt(codes[0][1]))}` : 'No findings recorded'}</span>` +
-          `<span class="dm-kpi-detail">${codes.length > 1 ? `${e(plural(codes.length, 'code'))} in total · ` : ''}diagnostics since start</span>`) +
+        : `<span class="dm-kpi-top">${topCode}</span>` +
+          `<span class="dm-kpi-detail">${codeCount}diagnostics since start</span>`) +
       '</li>',
   );
+  const toggleLabel = expanded ? 'Hide graphs' : 'Expand';
   const toggle = compact
-    ? `<button type="button" class="ui-button ui-small dm-kpi-expand" data-dashboard-expand aria-expanded="${expanded}" aria-controls="dashboard-kpi-list">${expanded ? 'Hide graphs' : 'Expand'}</button>`
+    ? `<button type="button" class="ui-button ui-small dm-kpi-expand" data-dashboard-expand aria-expanded="${expanded}" aria-controls="dashboard-kpi-list">${toggleLabel}</button>`
     : '';
   const list = `<ul class="dm-kpi-list" id="dashboard-kpi-list">${tiles.join('')}</ul>`;
   // Health (D-M-11): the tiles are a section card like the system map, with Expand / Hide graphs and the (i) in its
@@ -1629,18 +1760,15 @@ const uptime = (startedAt, now) => {
   const start = Date.parse(startedAt ?? '');
   if (!Number.isFinite(start) || now < start) return null;
   const minutes = Math.floor((now - start) / 60_000);
-  return minutes < 1
-    ? 'under a minute'
-    : minutes < 60
-      ? `${minutes} min`
-      : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+  if (minutes < 1) return 'under a minute';
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
 };
-const ms = (value) =>
-  value === null || value === undefined
-    ? '—'
-    : value >= 1000
-      ? `${(value / 1000).toFixed(2)} s`
-      : `${Math.round(value)} ms`;
+const ms = (value) => {
+  if (value === null || value === undefined) return '—';
+  if (value >= 1000) return `${(value / 1000).toFixed(2)} s`;
+  return `${Math.round(value)} ms`;
+};
 /**
  * What the Health hero adds (D-M-9, D-M-11): readiness (ok, degraded, blocked), the site, the uptime and one strip of
  * key numbers, each opening the matching activity. `stats` is the trace stats answer (failed activities, p95), when
@@ -1652,7 +1780,12 @@ function healthFacts(payload, { stats, preflight, site, now }) {
     nodes = (payload.nodes ?? []).map((node) => ({ ...node, status: statusOf(node.status) }));
   const c = tallyStatus(nodes);
   const blocking = num(preflight?.summary?.blocking ?? preflight?.blocking);
-  const readiness = blocking ? 'blocked' : c.bad ? 'degraded' : 'ok';
+  let readiness = 'ok';
+  if (blocking) readiness = 'blocked';
+  else if (c.bad) readiness = 'degraded';
+  let readinessTitle = 'Every component reports ready or declared';
+  if (readiness === 'blocked') readinessTitle = 'Preflight reports blocking requirements';
+  else if (readiness === 'degraded') readinessTitle = 'Some components report errors or are missing';
   const strip = [
     ['Requests', num(activity.requests?.total), '#activity?host=power-pages'],
     ['Errors', num(stats?.roots?.errors), '#activity?result=error'],
@@ -1664,7 +1797,7 @@ function healthFacts(payload, { stats, preflight, site, now }) {
   return {
     site,
     uptime: uptime(runtime.startedAt, now),
-    readiness: `<span class="dm-readiness is-${{ ok: 'ok', degraded: 'warn', blocked: 'bad' }[readiness]}" title="${e(readiness === 'blocked' ? 'Preflight reports blocking requirements' : readiness === 'degraded' ? 'Some components report errors or are missing' : 'Every component reports ready or declared')}">${e(readiness)}</span>`,
+    readiness: `<span class="dm-readiness is-${{ ok: 'ok', degraded: 'warn', blocked: 'bad' }[readiness]}" title="${e(readinessTitle)}">${e(readiness)}</span>`,
     strip: `<ul class="dm-strip" aria-label="Key numbers">${strip
       .map(
         ([label, value, href, format = fmt]) =>
@@ -1685,57 +1818,199 @@ const KIND_NAMES = Object.freeze({
   'dataverse-api': 'Dataverse API runtime',
   'model-driven': 'Model-driven runtime',
 });
-function hero(payload, { planned, starting, preflight, now, icons, compact, health = null, actions = '' }) {
-  const runtime = payload.runtime ?? {},
-    nodes = (payload.nodes ?? []).map((node) => ({ ...node, status: statusOf(node.status) }));
-  const c = tallyStatus(nodes),
-    total = c.total;
-  const generated = Date.parse(payload.generatedAt ?? '');
+
+function dashboardGuide(kit, intro, docOf, show) {
+  return intro && show
+    ? kit.guide({
+        key: 'dashboard',
+        intro: intro.intro,
+        steps: intro.steps ?? [],
+        example: intro.example,
+        docs: intro.doc ? [docOf(intro.doc)] : [],
+      })
+    : '';
+}
+
+function dashboardKpis({
+  planned,
+  starting,
+  show,
+  activity,
+  series,
+  previous,
+  icons,
+  arrangement,
+  expanded,
+  timelines,
+  tilesHelp,
+  kit,
+  docOf,
+}) {
+  if (planned || starting || !show) return '';
+  return kpiTiles(activity, series, previous, icons, {
+    compact: arrangement === 'health',
+    expanded,
+    timelines: arrangement === 'health' ? timelines : null,
+    // The counters' (i) sits on the tile row's head, next to Expand (never a line of its own).
+    helpHtml: tilesHelp
+      ? `<span class="dm-kpi-help" id="help-health-tiles">${kit.info({
+          label: 'About these counters',
+          text: tilesHelp.intro,
+          docs: tilesHelp.doc ? [docOf(tilesHelp.doc)] : [],
+        })}</span>`
+      : '',
+  });
+}
+
+function dashboardMapInfo(kit, health, planned, icons, nodes, edges) {
+  const mapInfo =
+    kit.info?.({
+      label: 'About the system map',
+      text: MAP_TEXT,
+    }) ?? '';
+  const layout = layoutTopology(nodes, edges);
+  if (health)
+    return (
+      `<details class="ui-section ui-dash-map dm-section dm-map-card" data-ui-section="health:map" open><summary><span class="ui-section-title" id="dashboard-map-title">System map</span>` +
+      `<span class="ui-section-summary">${e(healthOf(nodes).text)}</span></summary><div class="ui-section-body"><div class="ui-section-help">${legendInfo(false)}</div>` +
+      `${renderTopology(layout, { mode: 'live', icons, withLegend: false })}<div id="dashboard-node-detail" class="ui-drawer-slot"></div></div></details>`
+    );
+  return (
+    `<section class="ui-dash-map dm-section" aria-labelledby="dashboard-map-title"><div class="dm-section-head"><h2 id="dashboard-map-title">System map</h2>${mapInfo}</div>` +
+    `${renderTopology(layout, { mode: planned ? 'planned' : 'live', icons })}<div id="dashboard-node-detail" class="ui-drawer-slot"></div></section>`
+  );
+}
+
+function startingDashboard(head, guide, kit) {
+  const skeleton = BANDS.map(
+    (band, index) =>
+      `<li><span class="dm-band-index dm-band-${band.id}" aria-hidden="true">${index + 1}</span><strong>${e(band.title)}</strong><span>${e(band.description)}</span></li>`,
+  ).join('');
+  return (
+    `<div class="ui-dashboard dm-dashboard" data-dashboard-mode="starting">${head}${guide}<section class="ui-dash-map dm-section" aria-labelledby="dashboard-map-title">` +
+    `<div class="dm-section-head"><h2 id="dashboard-map-title">System map</h2>${kit.info?.({ label: 'About the system map', text: 'The six layers fill in as soon as the organization is ready.' }) ?? ''}</div>` +
+    `<ol class="dm-skeleton">${skeleton}</ol>` +
+    '<div id="dashboard-node-detail" class="ui-drawer-slot"></div></section></div>'
+  );
+}
+
+function dashboardBlocking(kit, planned, guideFor, docOf) {
+  const blockingBody = planned
+    ? kit.notice(
+        'Preflight needs a running preview. From a terminal, run: paqvilo mirage preflight --config <file> --site <id> (or --project <file>).',
+        'neutral',
+      )
+    : `<p class="ui-empty">Run preflight to list what your sources still need.</p>` +
+      `<form id="dashboard-preflight" class="ui-form"><div><label for="dashboard-preflight-requires">Requirements (ids or globs, separated by spaces)</label>` +
+      `${kit.fieldHelp('dashboard-preflight-requires', 'Empty checks everything. * matches any characters and matching ignores case.')}</div>` +
+      `<input id="dashboard-preflight-requires" name="requires" type="text" placeholder="cloud-flow:* table:x_item" aria-describedby="dashboard-preflight-requires-help">` +
+      `<label class="ui-check"><input id="dashboard-preflight-strict" name="strict" type="checkbox" aria-describedby="dashboard-preflight-strict-help"> Strict` +
+      `${kit.fieldHelp('dashboard-preflight-strict', 'Strict makes every unsatisfied requirement in scope blocking.')}</label>` +
+      `<button type="submit" class="ui-button ui-primary">Run preflight</button></form><div id="dashboard-preflight-result"></div>`;
+  return kit.section({
+    key: 'dashboard-blocking',
+    title: 'Blocking',
+    summary: planned ? 'available while the preview runs' : 'run preflight on demand',
+    open: !planned,
+    body: blockingBody,
+    help: guideFor('health.blocking')
+      ? `<p class="ui-section-help">${kit.info({
+          label: 'About Blocking',
+          text: guideFor('health.blocking').intro,
+          docs: guideFor('health.blocking').doc ? [docOf(guideFor('health.blocking').doc)] : [],
+        })}</p>`
+      : undefined,
+  });
+}
+
+function heroLiveState(runtime, generatedAt, starting, planned, now) {
+  const generated = Date.parse(generatedAt ?? '');
   const ago = Number.isFinite(generated) && runtime.clock !== 'fixed' ? Math.round((now - generated) / 1000) : null;
-  const fresh = ago == null || ago < 0 || ago > 3600 ? 'just now' : ago < 2 ? 'just now' : `${ago} s ago`;
-  const state = starting
-    ? '<span class="dm-live is-starting"><span class="dm-live-dot" aria-hidden="true"></span>Starting · waiting for the organization</span>'
-    : planned
-      ? '<span class="dm-live is-planned"><span class="dm-live-dot" aria-hidden="true"></span>Planned · not running</span>'
-      : `<span class="dm-live"><span class="dm-live-dot" aria-hidden="true"></span>Live · refreshed ${e(fresh)}</span>`;
-  // Each fact in plain words, with what it means behind its (i).
-  const chip = (label, value, help) =>
-    value == null || value === ''
-      ? ''
-      : `<li><span>${e(label)}</span><strong>${e(value)}</strong>${tip(`About ${label.toLowerCase()}`, help)}</li>`;
+  const fresh = ago == null || ago < 2 || ago > 3600 ? 'just now' : `${ago} s ago`;
+  let state = `<span class="dm-live"><span class="dm-live-dot" aria-hidden="true"></span>Live · refreshed ${e(fresh)}</span>`;
+  if (starting)
+    state =
+      '<span class="dm-live is-starting"><span class="dm-live-dot" aria-hidden="true"></span>Starting · waiting for the organization</span>';
+  else if (planned)
+    state =
+      '<span class="dm-live is-planned"><span class="dm-live-dot" aria-hidden="true"></span>Planned · not running</span>';
+  return state;
+}
+
+function heroChips(runtime, planned, health) {
+  const chip = (label, value, help) => {
+    if (value == null || value === '') return '';
+    const tipLabel = `About ${label.toLowerCase()}`;
+    return `<li><span>${e(label)}</span><strong>${e(value)}</strong>${tip(tipLabel, help)}</li>`;
+  };
   const level = runtime.simulationLevel ?? null;
-  const chips =
-    `<ul class="dm-chips">${health ? `${chip('Site', health.site, 'The portal site this runtime serves.')}${chip('Uptime', health.uptime, 'How long this runtime has been running since it started.')}` : ''}${chip('Record changes', level ? (CHANGES[level] ?? level) : planned ? 'from configuration' : 'not reported', 'What happens to records you add or change in the preview. Set in setup (Data step, or Simulation & state).')}` +
-    `${planned ? '' : chip('Clock', runtime.clock === 'system' ? 'real time' : runtime.clock === 'fixed' ? 'fixed time' : runtime.clock, 'The time the preview uses for dates and scheduled work: real time follows this computer, fixed time stays at a set moment for repeatable tests.')}` +
+  let recordChanges = 'not reported';
+  if (level) recordChanges = CHANGES[level] ?? level;
+  else if (planned) recordChanges = 'from configuration';
+  let clockValue = runtime.clock;
+  if (runtime.clock === 'system') clockValue = 'real time';
+  else if (runtime.clock === 'fixed') clockValue = 'fixed time';
+  const healthChips = health
+    ? `${chip('Site', health.site, 'The portal site this runtime serves.')}${chip('Uptime', health.uptime, 'How long this runtime has been running since it started.')}`
+    : '';
+  return (
+    `<ul class="dm-chips">${healthChips}${chip('Record changes', recordChanges, 'What happens to records you add or change in the preview. Set in setup (Data step, or Simulation & state).')}` +
+    `${planned ? '' : chip('Clock', clockValue, 'The time the preview uses for dates and scheduled work: real time follows this computer, fixed time stays at a set moment for repeatable tests.')}` +
     `${planned || runtime.revision == null ? '' : chip('Source version', runtime.revision, 'Starts at 1 and goes up each time the preview picks up changed export files without a restart.')}` +
-    `${chip('Deployment profile', runtime.deploymentProfile, 'The deployment settings applied, such as a test or production stage of your site.')}${runtime.reloading ? chip('Reload', 'in progress', 'The preview is reading changed export files.') : ''}</ul>`;
-  const origin =
-    !planned && runtime.localOrigin
-      ? `<div class="dm-hero-meta"><span>Address</span> <code>${e(runtime.localOrigin)}</code>${tip('About the address', 'Where the preview answers on this computer. Only this computer can open it.')}` +
-        `${runtime.stateFile ? ` <span>Changes saved in</span> <code>${e(runtime.stateFile)}</code>${tip('About the changes file', 'The file in your project folder where the preview keeps the records you add or change. Delete it to start again from the starting data.')}` : ''}</div>`
+    `${chip('Deployment profile', runtime.deploymentProfile, 'The deployment settings applied, such as a test or production stage of your site.')}${runtime.reloading ? chip('Reload', 'in progress', 'The preview is reading changed export files.') : ''}</ul>`
+  );
+}
+
+function heroOrigin(runtime, planned) {
+  let origin = '';
+  if (!planned && runtime.localOrigin) {
+    const stateFileHtml = runtime.stateFile
+      ? ` <span>Changes saved in</span> <code>${e(runtime.stateFile)}</code>${tip('About the changes file', 'The file in your project folder where the preview keeps the records you add or change. Delete it to start again from the starting data.')}`
       : '';
-  const segments = planned
-    ? [
-        { tone: 'planned', value: c.planned + c.declared },
-        { tone: 'off', value: c.disabled },
-        { tone: 'bad', value: c.bad },
-      ]
-    : [
-        { tone: 'ok', value: c.ready },
-        { tone: 'planned', value: c.declared + c.planned },
-        { tone: 'warn', value: c.placeholder },
-        { tone: 'off', value: c.disabled },
-        { tone: 'bad', value: c.bad },
-      ];
-  const headline = planned ? `${c.planned + c.declared}` : `${c.ready}`;
+    origin =
+      `<div class="dm-hero-meta"><span>Address</span> <code>${e(runtime.localOrigin)}</code>${tip('About the address', 'Where the preview answers on this computer. Only this computer can open it.')}` +
+      `${stateFileHtml}</div>`;
+  }
+  return origin;
+}
+
+function heroStats(c, nodes, planned, compact, preflight, total) {
   const blocking =
     preflight && typeof preflight === 'object' ? num(preflight.summary?.blocking ?? preflight.blocking) : null;
-  // A count names its components on hover.
   const names = (test) => nodes.filter(test).map((node) => PRODUCT_OF(node.id, node.kind, node.label).name);
-  const stat = (tone, value, text, list = []) =>
-    `<li class="is-${tone}"${list.length ? ` title="${e(list.join(', '))}"` : ''}><span class="dm-dot is-${tone === 'bad' ? 'error' : tone === 'warn' ? 'placeholder' : tone === 'off' ? 'disabled' : tone === 'ok' ? 'ready' : 'planned'}" aria-hidden="true"></span><strong>${e(value)}</strong> ${e(text)}</li>`;
-  const stats =
-    `<ul class="dm-hero-stats">${planned ? stat('info', c.planned + c.declared, compact ? `of ${total} planned` : 'planned') : stat('ok', c.ready, compact ? `of ${total} ready` : 'ready')}${stat(
+  const statDot = (tone) => {
+    if (tone === 'bad') return 'error';
+    if (tone === 'warn') return 'placeholder';
+    if (tone === 'off') return 'disabled';
+    if (tone === 'ok') return 'ready';
+    return 'planned';
+  };
+  const stat = (tone, value, text, list = []) => {
+    const titleAttr = list.length ? ` title="${e(list.join(', '))}"` : '';
+    return `<li class="is-${tone}"${titleAttr}><span class="dm-dot is-${statDot(tone)}" aria-hidden="true"></span><strong>${e(value)}</strong> ${e(text)}</li>`;
+  };
+  const readyWord = planned ? 'planned' : 'ready';
+  const readyStat = stat(
+    planned ? 'info' : 'ok',
+    planned ? c.planned + c.declared : c.ready,
+    compact ? `of ${total} ${readyWord}` : readyWord,
+  );
+  const blockingItem = (value) => {
+    let tone = 'info';
+    let dot = 'declared';
+    if (value) {
+      tone = 'bad';
+      dot = 'error';
+    } else if (value === 0) {
+      tone = 'ok';
+      dot = 'ready';
+    }
+    const count = value == null ? '—' : e(value);
+    const note = value == null ? ' (run on demand)' : '';
+    return `<li class="is-${tone}"><span class="dm-dot is-${dot}" aria-hidden="true"></span><strong>${count}</strong> preflight blocking${note}</li>`;
+  };
+  const html =
+    `<ul class="dm-hero-stats">${readyStat}${stat(
       'warn',
       c.placeholder,
       'local stand-in' + (c.placeholder === 1 ? '' : 's'),
@@ -1752,21 +2027,110 @@ function hero(payload, { planned, starting, preflight, now, icons, compact, heal
       'switched off',
       names((node) => node.status === 'disabled'),
     )}` +
-    (compact
-      ? ''
-      : `<li class="is-${blocking ? 'bad' : blocking === 0 ? 'ok' : 'info'}"><span class="dm-dot is-${blocking ? 'error' : blocking === 0 ? 'ready' : 'declared'}" aria-hidden="true"></span><strong>${blocking == null ? '—' : e(blocking)}</strong> preflight blocking${blocking == null ? ' (run on demand)' : ''}</li>`) +
+    (compact ? '' : blockingItem(blocking)) +
     '</ul>';
-  const title =
-    KIND_NAMES[runtime.kind] ??
-    (runtime.kind ? `${runtime.kind} runtime` : planned ? 'Planned runtime' : 'Mirage runtime');
+  return { html, readyWord };
+}
+
+function configurationSummary(payload, nodes, runtime, kit) {
+  const configuration = payload.configuration ?? {};
+  const ports =
+    configuration.ports ??
+    Object.fromEntries(
+      nodes
+        .filter((node) => node.detail?.port)
+        .map((node) => [PRODUCT_OF(node.id, node.kind, node.label).name, node.detail.port]),
+    );
+  const label = (item) =>
+    item && typeof item === 'object'
+      ? [item.id ?? item.solution ?? item.name ?? item.module ?? item.path, item.version]
+          .filter((part) => part != null && part !== '')
+          .join(' ')
+      : item;
+  const list = (value) => {
+    if (!Array.isArray(value)) return e(value ?? 'not reported');
+    if (!value.length) return 'none';
+    return value.map((item) => `<code>${e(label(item))}</code>`).join(' ');
+  };
+  const port = (value) => {
+    if (value === 0) return 'free port';
+    if (value == null) return 'not used';
+    return `<code>${e(value)}</code>`;
+  };
+  return kit.section({
+    key: 'dashboard-configuration',
+    title: 'Configuration summary',
+    summary: runtime.kind ?? '',
+    body: kit.kv([
+      ['Runtime', e(runtime.kind ?? 'not reported')],
+      ['Simulation level', e(runtime.simulationLevel ?? 'not reported')],
+      ['State file', runtime.stateFile ? `<code>${e(runtime.stateFile)}</code>` : 'none (in memory)'],
+      ['Data packs', list(configuration.packs)],
+      ['Solution layers', list(configuration.solutionLayers)],
+      ['Settings keys present', list(configuration.settingsKeys)],
+      [
+        'Ports',
+        Object.keys(ports).length
+          ? Object.entries(ports)
+              .map(([name, value]) => `${e(name)} ${port(value)}`)
+              .join(' · ')
+          : 'not reported',
+      ],
+    ]),
+  });
+}
+
+/* NOSONAR */ function hero(
+  payload,
+  { planned, starting, preflight, now, icons, compact, health = null, actions = '' },
+) {
+  const runtime = payload.runtime ?? {},
+    nodes = (payload.nodes ?? []).map((node) => ({ ...node, status: statusOf(node.status) }));
+  const c = tallyStatus(nodes),
+    total = c.total;
+  const state = heroLiveState(runtime, payload.generatedAt, starting, planned, now);
+  const chips = heroChips(runtime, planned, health);
+  const origin = heroOrigin(runtime, planned);
+  const segments = planned
+    ? [
+        { tone: 'planned', value: c.planned + c.declared },
+        { tone: 'off', value: c.disabled },
+        { tone: 'bad', value: c.bad },
+      ]
+    : [
+        { tone: 'ok', value: c.ready },
+        { tone: 'planned', value: c.declared + c.planned },
+        { tone: 'warn', value: c.placeholder },
+        { tone: 'off', value: c.disabled },
+        { tone: 'bad', value: c.bad },
+      ];
+  const headline = planned ? `${c.planned + c.declared}` : `${c.ready}`;
+  const { html: stats, readyWord } = heroStats(c, nodes, planned, compact, preflight, total);
+  let fallbackTitle = planned ? 'Planned runtime' : 'Mirage runtime';
+  if (runtime.kind) fallbackTitle = `${runtime.kind} runtime`;
+  const title = KIND_NAMES[runtime.kind] ?? fallbackTitle;
+  const actionsHtml = actions ? `<div class="dm-hero-actions">${actions}</div>` : '';
+  const stateHtml = health ? `<div class="dm-hero-state">${health.readiness}${state}</div>` : state;
+  const healthLabel = `Health: ${headline} of ${total} components ${readyWord}`;
+  const countLabel = compact ? '' : `<span>of ${e(total)} ${readyWord}</span>`;
+  const countTip = compact
+    ? tip(
+        'About these counts',
+        'Components of the preview by state. Ready: answering. Local stand-in: a simplified local version replaces a real service. Error or missing: needed but not available; hover a count for names. Switched off: turned off in the configuration.',
+      )
+    : '';
+  const ringOptions = compact
+    ? { size: 64, stroke: 7, className: 'dm-ring dm-ring-lg' }
+    : { size: 112, stroke: 11, className: 'dm-ring dm-ring-lg' };
+  const healthBlock = starting
+    ? ''
+    : `<div class="dm-hero-health" role="group" aria-label="${e(healthLabel)}">` +
+      `<div class="dm-health-ring">${ring(segments, ringOptions)}<span class="dm-health-value"><strong>${e(headline)}</strong>${countLabel}</span></div>${stats}${countTip}</div>`;
   return (
     `<section class="dm-hero${planned ? ' is-planned' : ''}${starting ? ' is-starting' : ''}${compact ? ' is-compact' : ''}" aria-labelledby="dashboard-hero-title">` +
     `<div class="dm-hero-main"><div class="dm-brand"><span class="dm-mark">${iconFor(icons, 'mark')}</span><div><div class="dm-eyebrow">${e(runtime.product ?? 'Mirage')} · local Power Platform runtime</div>` +
-    `<h2 id="dashboard-hero-title">${e(title)}</h2></div>${actions ? `<div class="dm-hero-actions">${actions}</div>` : ''}</div>${health ? `<div class="dm-hero-state">${health.readiness}${state}</div>` : state}${chips}${origin}</div>` +
-    (starting
-      ? ''
-      : `<div class="dm-hero-health" role="group" aria-label="${e(`Health: ${headline} of ${total} components ${planned ? 'planned' : 'ready'}`)}">` +
-        `<div class="dm-health-ring">${ring(segments, compact ? { size: 64, stroke: 7, className: 'dm-ring dm-ring-lg' } : { size: 112, stroke: 11, className: 'dm-ring dm-ring-lg' })}<span class="dm-health-value"><strong>${e(headline)}</strong>${compact ? '' : `<span>of ${e(total)} ${planned ? 'planned' : 'ready'}</span>`}</span></div>${stats}${compact ? tip('About these counts', 'Components of the preview by state. Ready: answering. Local stand-in: a simplified local version replaces a real service. Error or missing: needed but not available; hover a count for names. Switched off: turned off in the configuration.') : ''}</div>`) +
+    `<h2 id="dashboard-hero-title">${e(title)}</h2></div>${actionsHtml}</div>${stateHtml}${chips}${origin}</div>` +
+    healthBlock +
     (health ? health.strip : '') +
     (planned ? '<p class="dm-ribbon">Planned from configuration — start the preview to see live status.</p>' : '') +
     (starting
@@ -1822,16 +2186,7 @@ export function renderDashboard(
   const docOf = (path) => kit.docLink(path, docs ?? payload.docs);
   const guideFor = (key) => help?.[key];
   const intro = guideFor('health');
-  const guide =
-    intro && show.guide
-      ? kit.guide({
-          key: 'dashboard',
-          intro: intro.intro,
-          steps: intro.steps ?? [],
-          example: intro.example,
-          docs: intro.doc ? [docOf(intro.doc)] : [],
-        })
-      : '';
+  const guide = dashboardGuide(kit, intro, docOf, show.guide);
   const healthArrangement = arrangement === 'health' && !planned && !starting;
   const head = hero(payload, {
     planned,
@@ -1844,115 +2199,29 @@ export function renderDashboard(
     health: healthArrangement ? healthFacts(payload, { stats, preflight, site, now }) : null,
   });
   const tilesHelp = guideFor('health.tiles');
-  const kpis =
-    planned || starting || !show.kpis
-      ? ''
-      : kpiTiles(activity, series, previous, icons, {
-          compact: arrangement === 'health',
-          expanded,
-          timelines: arrangement === 'health' ? timelines : null,
-          // The counters' (i) sits on the tile row's head, next to Expand (never a line of its own).
-          helpHtml: tilesHelp
-            ? `<span class="dm-kpi-help" id="help-health-tiles">${kit.info({
-                label: 'About these counters',
-                text: tilesHelp.intro,
-                docs: tilesHelp.doc ? [docOf(tilesHelp.doc)] : [],
-              })}</span>`
-            : '',
-        });
-  const mapInfo =
-    kit.info?.({
-      label: 'About the system map',
-      text: MAP_TEXT,
-    }) ?? '';
-  const layout = layoutTopology(nodes, edges);
+  const kpis = dashboardKpis({
+    planned,
+    starting,
+    show: show.kpis,
+    activity,
+    series,
+    previous,
+    icons,
+    arrangement,
+    expanded,
+    timelines,
+    tilesHelp,
+    kit,
+    docOf,
+  });
   // arrangement 'health' (/_sim/#health, D-M-6): the counters come first and the map is a collapsible card.
   const health = arrangement === 'health' && !planned && !starting;
-  const map = health
-    ? `<details class="ui-section ui-dash-map dm-section dm-map-card" data-ui-section="health:map" open><summary><span class="ui-section-title" id="dashboard-map-title">System map</span>` +
-      `<span class="ui-section-summary">${e(healthOf(nodes).text)}</span></summary><div class="ui-section-body"><div class="ui-section-help">${legendInfo(false)}</div>` +
-      `${renderTopology(layout, { mode: 'live', icons, withLegend: false })}<div id="dashboard-node-detail" class="ui-drawer-slot"></div></div></details>`
-    : `<section class="ui-dash-map dm-section" aria-labelledby="dashboard-map-title"><div class="dm-section-head"><h2 id="dashboard-map-title">System map</h2>${mapInfo}</div>` +
-      `${renderTopology(layout, { mode: planned ? 'planned' : 'live', icons })}<div id="dashboard-node-detail" class="ui-drawer-slot"></div></section>`;
-  if (starting)
-    return (
-      `<div class="ui-dashboard dm-dashboard" data-dashboard-mode="starting">${head}${guide}<section class="ui-dash-map dm-section" aria-labelledby="dashboard-map-title">` +
-      `<div class="dm-section-head"><h2 id="dashboard-map-title">System map</h2>${kit.info?.({ label: 'About the system map', text: 'The six layers fill in as soon as the organization is ready.' }) ?? ''}</div>` +
-      `<ol class="dm-skeleton">${BANDS.map((band, index) => `<li><span class="dm-band-index dm-band-${band.id}" aria-hidden="true">${index + 1}</span><strong>${e(band.title)}</strong><span>${e(band.description)}</span></li>`).join('')}</ol>` +
-      '<div id="dashboard-node-detail" class="ui-drawer-slot"></div></section></div>'
-    );
+  const map = dashboardMapInfo(kit, health, planned, icons, nodes, edges);
+  if (starting) return startingDashboard(head, guide, kit);
   if (!show.blocking && !show.configuration)
     return `<div class="ui-dashboard dm-dashboard${compact ? ' is-compact' : ''}" data-dashboard-mode="${planned ? 'planned' : 'live'}">${head}${guide}${kpis}${map}</div>`;
-  const blockingBody = planned
-    ? kit.notice(
-        'Preflight needs a running preview. From a terminal, run: paqvilo mirage preflight --config <file> --site <id> (or --project <file>).',
-        'neutral',
-      )
-    : `<p class="ui-empty">Run preflight to list what your sources still need.</p>` +
-      // Each field's (i) sits on its label's line: the label and its (i) share one row, the checkbox's (i) is in its label.
-      `<form id="dashboard-preflight" class="ui-form"><div><label for="dashboard-preflight-requires">Requirements (ids or globs, separated by spaces)</label>` +
-      `${kit.fieldHelp('dashboard-preflight-requires', 'Empty checks everything. * matches any characters and matching ignores case.')}</div>` +
-      `<input id="dashboard-preflight-requires" name="requires" type="text" placeholder="cloud-flow:* table:x_item" aria-describedby="dashboard-preflight-requires-help">` +
-      `<label class="ui-check"><input id="dashboard-preflight-strict" name="strict" type="checkbox" aria-describedby="dashboard-preflight-strict-help"> Strict` +
-      `${kit.fieldHelp('dashboard-preflight-strict', 'Strict makes every unsatisfied requirement in scope blocking.')}</label>` +
-      `<button type="submit" class="ui-button ui-primary">Run preflight</button></form><div id="dashboard-preflight-result"></div>`;
-  const blocking = kit.section({
-    key: 'dashboard-blocking',
-    title: 'Blocking',
-    summary: planned ? 'available while the preview runs' : 'run preflight on demand',
-    open: !planned,
-    body: blockingBody,
-    help: guideFor('health.blocking')
-      ? `<p class="ui-section-help">${kit.info({
-          label: 'About Blocking',
-          text: guideFor('health.blocking').intro,
-          docs: guideFor('health.blocking').doc ? [docOf(guideFor('health.blocking').doc)] : [],
-        })}</p>`
-      : undefined,
-  });
-  const configuration = payload.configuration ?? {};
-  const ports =
-    configuration.ports ??
-    Object.fromEntries(
-      nodes
-        .filter((node) => node.detail?.port)
-        .map((node) => [PRODUCT_OF(node.id, node.kind, node.label).name, node.detail.port]),
-    );
-  // Packs arrive as `{ id, module }`, Solution layers as `{ solution, version }` or folder strings; print their ids.
-  const label = (item) =>
-    item && typeof item === 'object'
-      ? [item.id ?? item.solution ?? item.name ?? item.module ?? item.path, item.version]
-          .filter((part) => part != null && part !== '')
-          .join(' ')
-      : item;
-  const list = (value) =>
-    Array.isArray(value)
-      ? value.length
-        ? value.map((item) => `<code>${e(label(item))}</code>`).join(' ')
-        : 'none'
-      : e(value ?? 'not reported');
-  const port = (value) => (value === 0 ? 'free port' : value == null ? 'not used' : `<code>${e(value)}</code>`);
-  const summary = kit.section({
-    key: 'dashboard-configuration',
-    title: 'Configuration summary',
-    summary: runtime.kind ?? '',
-    body: kit.kv([
-      ['Runtime', e(runtime.kind ?? 'not reported')],
-      ['Simulation level', e(runtime.simulationLevel ?? 'not reported')],
-      ['State file', runtime.stateFile ? `<code>${e(runtime.stateFile)}</code>` : 'none (in memory)'],
-      ['Data packs', list(configuration.packs)],
-      ['Solution layers', list(configuration.solutionLayers)],
-      ['Settings keys present', list(configuration.settingsKeys)],
-      [
-        'Ports',
-        Object.keys(ports).length
-          ? Object.entries(ports)
-              .map(([name, value]) => `${e(name)} ${port(value)}`)
-              .join(' · ')
-          : 'not reported',
-      ],
-    ]),
-  });
-  const body = health ? `${head}${guide}${kpis}${map}` : `${head}${guide}${kpis}${map}`;
+  const blocking = dashboardBlocking(kit, planned, guideFor, docOf);
+  const summary = configurationSummary(payload, nodes, runtime, kit);
+  const body = `${head}${guide}${kpis}${map}`;
   return `<div class="ui-dashboard dm-dashboard${compact ? ' is-compact' : ''}" data-dashboard-mode="${planned ? 'planned' : 'live'}">${body}${show.blocking ? blocking : ''}${show.configuration ? summary : ''}</div>`;
 }

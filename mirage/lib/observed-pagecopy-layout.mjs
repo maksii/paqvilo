@@ -40,9 +40,12 @@ function layoutSpec(node, depth = 0) {
         .filter((v) => v.trim())
         .some(
           (v) =>
-            !/^\s*(?:(?:display)\s*:\s*flex|flex-wrap\s*:\s*wrap|flex-direction\s*:\s*column|flex-grow\s*:\s*1|min-height\s*:\s*auto|(?:padding|margin|min-width)\s*:\s*(?:0|\d{1,3}px))\s*$/i.test(
-              v,
-            ),
+            !/^\s*display\s*:\s*flex\s*$/i.test(v) &&
+            !/^\s*flex-wrap\s*:\s*wrap\s*$/i.test(v) &&
+            !/^\s*flex-direction\s*:\s*column\s*$/i.test(v) &&
+            !/^\s*flex-grow\s*:\s*1\s*$/i.test(v) &&
+            !/^\s*min-height\s*:\s*auto\s*$/i.test(v) &&
+            !/^\s*(?:padding|margin|min-width)\s*:\s*(?:0|\d{1,3}px)\s*$/i.test(v),
         )
     )
       throw fail('Observed Studio layout contains unsupported styles.');
@@ -113,7 +116,7 @@ function withoutLiquidComments(source) {
 /** Capture only a source-bound empty Studio layout beyond the exported page copy. */
 export function observedPageCopyLayout(html, { portal, path, origin }) {
   const page = portal?.pages?.find((p) => normalizePortalPath(p.url) === normalizePortalPath(path));
-  if (!page || !page.html) return undefined;
+  if (!page?.html) return undefined;
   const source = withoutLiquidComments(page.html);
   if (/\{%|\{\{/.test(source)) return undefined;
   const copies = [];

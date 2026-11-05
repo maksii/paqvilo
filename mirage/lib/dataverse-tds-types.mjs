@@ -126,34 +126,71 @@ function describe(columns, values) {
 function normalize(column) {
   const t = column.type;
   const d = { name: column.name ?? '', type: t, nullable: column.nullable !== false };
-  if (Object.hasOwn(INT_SIZE, t)) Object.assign(d, { id: TYPE_ID.intn, size: INT_SIZE[t] });
-  else if (t === 'bit') Object.assign(d, { id: TYPE_ID.bitn, size: 1 });
-  else if (t === 'real' || t === 'float') Object.assign(d, { id: TYPE_ID.fltn, size: t === 'real' ? 4 : 8 });
-  else if (t === 'money') Object.assign(d, { id: TYPE_ID.moneyn, size: 8 });
-  else if (t === 'decimal' || t === 'numeric') {
-    const precision = column.precision ?? 18;
-    const scale = column.scale ?? 0;
-    if (!Number.isInteger(precision) || precision < 1 || precision > 38)
-      throw new RangeError(`precision ${precision} out of range`);
-    if (!Number.isInteger(scale) || scale < 0 || scale > precision) throw new RangeError(`scale ${scale} out of range`);
-    const size = precision <= 9 ? 5 : precision <= 19 ? 9 : precision <= 28 ? 13 : 17;
-    Object.assign(d, { id: t === 'decimal' ? TYPE_ID.decimaln : TYPE_ID.numericn, size, precision, scale });
-  } else if (t === 'datetime' || t === 'smalldatetime')
-    Object.assign(d, { id: TYPE_ID.datetimen, size: t === 'datetime' ? 8 : 4 });
-  else if (t === 'date') Object.assign(d, { id: TYPE_ID.date });
-  else if (t === 'datetime2') {
-    const scale = column.scale ?? 7;
-    if (!Number.isInteger(scale) || scale < 0 || scale > 7)
-      throw new RangeError(`datetime2 scale ${scale} out of range`);
-    Object.assign(d, { id: TYPE_ID.datetime2, scale });
-  } else if (t === 'uniqueidentifier') Object.assign(d, { id: TYPE_ID.guid, size: 16 });
-  else if (t === 'nvarchar') {
-    const plp = column.length === undefined || column.length === 'max';
-    if (!plp && !(Number.isInteger(column.length) && column.length >= 1 && column.length <= 4000))
-      throw new RangeError(`nvarchar length ${column.length} out of range`);
-    Object.assign(d, { id: TYPE_ID.nvarchar, plp, maxBytes: plp ? 0xffff : column.length * 2 });
-  } else throw new TypeError(`unsupported TDS column type: ${t}`);
+  if (Object.hasOwn(INT_SIZE, t)) {
+    Object.assign(d, { id: TYPE_ID.intn, size: INT_SIZE[t] });
+    return d;
+  }
+  switch (t) {
+    case 'bit':
+      Object.assign(d, { id: TYPE_ID.bitn, size: 1 });
+      break;
+    case 'real':
+    case 'float':
+      Object.assign(d, { id: TYPE_ID.fltn, size: t === 'real' ? 4 : 8 });
+      break;
+    case 'money':
+      Object.assign(d, { id: TYPE_ID.moneyn, size: 8 });
+      break;
+    case 'decimal':
+    case 'numeric':
+      normalizeDecimal(column, d, t);
+      break;
+    case 'datetime':
+    case 'smalldatetime':
+      Object.assign(d, { id: TYPE_ID.datetimen, size: t === 'datetime' ? 8 : 4 });
+      break;
+    case 'date':
+      Object.assign(d, { id: TYPE_ID.date });
+      break;
+    case 'datetime2':
+      normalizeDatetime2(column, d);
+      break;
+    case 'uniqueidentifier':
+      Object.assign(d, { id: TYPE_ID.guid, size: 16 });
+      break;
+    case 'nvarchar':
+      normalizeNvarchar(column, d);
+      break;
+    default:
+      throw new TypeError(`unsupported TDS column type: ${t}`);
+  }
   return d;
+}
+
+function normalizeDecimal(column, d, type) {
+  const precision = column.precision ?? 18;
+  const scale = column.scale ?? 0;
+  if (!Number.isInteger(precision) || precision < 1 || precision > 38)
+    throw new RangeError(`precision ${precision} out of range`);
+  if (!Number.isInteger(scale) || scale < 0 || scale > precision) throw new RangeError(`scale ${scale} out of range`);
+  let size = 17;
+  if (precision <= 9) size = 5;
+  else if (precision <= 19) size = 9;
+  else if (precision <= 28) size = 13;
+  Object.assign(d, { id: type === 'decimal' ? TYPE_ID.decimaln : TYPE_ID.numericn, size, precision, scale });
+}
+
+function normalizeDatetime2(column, d) {
+  const scale = column.scale ?? 7;
+  if (!Number.isInteger(scale) || scale < 0 || scale > 7) throw new RangeError(`datetime2 scale ${scale} out of range`);
+  Object.assign(d, { id: TYPE_ID.datetime2, scale });
+}
+
+function normalizeNvarchar(column, d) {
+  const plp = column.length === undefined || column.length === 'max';
+  if (!plp && !(Number.isInteger(column.length) && column.length >= 1 && column.length <= 4000))
+    throw new RangeError(`nvarchar length ${column.length} out of range`);
+  Object.assign(d, { id: TYPE_ID.nvarchar, plp, maxBytes: plp ? 0xffff : column.length * 2 });
 }
 
 function typeInfo(d) {
@@ -188,7 +225,9 @@ function parseTypeInfo(b, o) {
       break;
     case TYPE_ID.fltn:
       d.size = b[o + 1];
-      d.type = d.size === 4 ? 'real' : d.size === 8 ? 'float' : undefined;
+      if (d.size === 4) d.type = 'real';
+      else if (d.size === 8) d.type = 'float';
+      else d.type = undefined;
       break;
     case TYPE_ID.moneyn:
       d.size = b[o + 1];
@@ -204,7 +243,9 @@ function parseTypeInfo(b, o) {
       break;
     case TYPE_ID.datetimen:
       d.size = b[o + 1];
-      d.type = d.size === 8 ? 'datetime' : d.size === 4 ? 'smalldatetime' : undefined;
+      if (d.size === 8) d.type = 'datetime';
+      else if (d.size === 4) d.type = 'smalldatetime';
+      else d.type = undefined;
       break;
     case TYPE_ID.date:
       d.type = 'date';
@@ -400,7 +441,9 @@ function decodeSmalldatetime(b, o) {
 function encodeDatetime2(scale, v) {
   const p = parseDateTime(v);
   const days = inRange(p.days - DAYS_0001, 0, DATE_MAX, 'datetime2');
-  const timeBytes = scale <= 2 ? 3 : scale <= 4 ? 4 : 5;
+  let timeBytes = 5;
+  if (scale <= 2) timeBytes = 3;
+  else if (scale <= 4) timeBytes = 4;
   const ticks = p.sod * 10 ** scale + Number(fraction(p.frac, scale));
   return Buffer.concat([Buffer.from([timeBytes + 3]), leBytes(ticks, timeBytes), leBytes(days, 3)]);
 }
@@ -447,7 +490,7 @@ function decodeNvarchar(d, b, o) {
 function parseDecimal(v, scale) {
   const m = /^([+-]?)(\d*)(?:\.(\d*))?$/.exec(String(v));
   if (!m || (m[2] === '' && (m[3] ?? '') === '')) throw new TypeError(`not a decimal: ${v}`);
-  const frac = (m[3] ?? '').replace(/0+$/, '');
+  const frac = stripTrailingZeros(m[3] ?? '');
   if (frac.length > scale) throw new RangeError(`${v} has more than ${scale} fraction digits`);
   const unscaled = BigInt((m[2] || '0') + frac.padEnd(scale, '0'));
   return m[1] === '-' ? -unscaled : unscaled;
@@ -460,11 +503,19 @@ function formatDecimal(u, scale) {
   return (negative ? '-' : '') + digits.slice(0, cut) + (scale ? '.' + digits.slice(cut) : '');
 }
 
-const DATETIME_RE = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?$/;
+const DATETIME_DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const DATETIME_DATE_PREFIX_RE = /^(\d{4})-(\d{2})-(\d{2})/;
+const DATETIME_TIME_RE = /^([ T])(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?$/;
 
 // Returns days since 1970-01-01, seconds of day and the raw fraction digits.
 function parseDateTime(text) {
-  const m = DATETIME_RE.exec(String(text));
+  const value = String(text);
+  let m = DATETIME_DATE_ONLY_RE.exec(value);
+  if (!m) {
+    const date = DATETIME_DATE_PREFIX_RE.exec(value);
+    const time = date && DATETIME_TIME_RE.exec(value.slice(date[0].length));
+    if (date && time) m = [value, date[1], date[2], date[3], time[2], time[3], time[4], time[5]];
+  }
   if (!m) throw new TypeError(`not a date/time: ${text}`);
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
   const days = daysFromCivil(y, mo, d);
@@ -475,9 +526,19 @@ function parseDateTime(text) {
 
 // Pads a fraction to `digits` digits; rejects digits beyond the type's precision.
 function fraction(frac, digits) {
-  const t = frac.replace(/0+$/, '');
+  const t = stripTrailingZeros(frac);
   if (t.length > digits) throw new RangeError(`fraction ${frac} exceeds ${digits} digits`);
   return t.padEnd(digits, '0');
+}
+
+function stripTrailingZeros(value) {
+  const last = value.at(-1);
+  let lineEnding = '';
+  if (value.endsWith('\r\n')) lineEnding = '\r\n';
+  else if (last === '\n' || last === '\r' || last === '\u2028' || last === '\u2029') lineEnding = last;
+  let end = value.length - lineEnding.length;
+  while (end > 0 && value[end - 1] === '0') end--;
+  return value.slice(0, end) + lineEnding;
 }
 
 function inRange(days, min, max, what) {
@@ -488,7 +549,7 @@ function inRange(days, min, max, what) {
 function parseGuid(text) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(text)))
     throw new TypeError(`not a GUID: ${text}`);
-  return Buffer.from(String(text).replace(/-/g, ''), 'hex');
+  return Buffer.from(String(text).replaceAll('-', ''), 'hex');
 }
 
 // Converts between the canonical byte order and the wire order (first three groups little-endian).

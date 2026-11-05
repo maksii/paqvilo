@@ -114,7 +114,7 @@ function* assignChildren(api, state, c, parent, previousOwner, newOwner, visited
         reference.entity,
         childId,
         { ownerid: structuredClone(newOwner) },
-        { ...(c.identity ?? {}), admin: true },
+        { ...c.identity, admin: true },
         ownershipOptions(api, c, newOwner),
       ];
       yield* assignChildren(
@@ -213,7 +213,7 @@ function install(api, { diagnostic } = {}) {
     owners.delete(key);
     const rows = api.store.tableRows(mapping.logicalName);
     const row = rows[api.store.rowIndex(mapping, rows, id)] ?? null;
-    if (!row || !row.ownerid || sameId(previous, refId(row.ownerid))) return;
+    if (!row?.ownerid || sameId(previous, refId(row.ownerid))) return;
     // Tracing: one cascade event on the assigning write's span when children were reassigned (their writes nest under it).
     const span = api.store.traces?.enabled ? api.store.traces.current() : null;
     const done = (count) =>

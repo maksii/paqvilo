@@ -17,21 +17,86 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: sonarqube-${{ github.event.pull_request.number || github.ref }}
+  # Serialize analyses of the same source branch, including multiple PRs.
+  group: sonarqube-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  analysis:
-    # Fork and Dependabot pull requests receive no repository secrets.
+  coverage:
     if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
-    name: SonarQube analysis and quality gate
+    name: Coverage (${{ matrix.suite }}, ${{ matrix.lane }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [lense, mirage, examples]
+        lane: [unit, browser]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            npm-shrinkwrap.json
+            mirage/package-lock.json
+      - name: Install the pinned .NET SDK
+        if: matrix.suite != 'lense'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+      - name: Prepare the existing test lane
+        run: npm run ci:prepare -- --suite ${{ matrix.suite }} --${{ matrix.lane }}
+      - name: Run the existing test lane with Node coverage
+        env:
+          NODE_V8_COVERAGE: ${{ runner.temp }}/paqvilo-v8-coverage
+        run: |-
+          mkdir -p "$NODE_V8_COVERAGE"
+          npm run ci:verify -- --suite ${{ matrix.suite }} --${{ matrix.lane }} --prepared
+      - name: Convert the collected process coverage to LCOV
+        run: node node_modules/c8/bin/c8.js report --temp-directory "$RUNNER_TEMP/paqvilo-v8-coverage" --report-dir coverage --reporter lcov
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: sonar-coverage-${{ matrix.suite }}-${{ matrix.lane }}
+          path: coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 1
+  analysis:
+    # Fork and Dependabot pull requests receive no repository secrets.
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
+    needs: coverage
+    name: SonarQube analysis and quality gate
+    runs-on: ubuntu-24.04
+    # Two sequential analyses use the same checked-out head and coverage.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           # Full history: blame decides which lines are new code.
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: sonar-coverage-*
+          path: coverage
+      - name: Verify every coverage lane produced a report
+        run: |-
+          for suite in lense mirage examples; do
+            for lane in unit browser; do
+              test -s "coverage/sonar-coverage-$suite-$lane/lcov.info"
+            done
+          done
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: npm-shrinkwrap.json
+      - name: Install the locked analyzer type dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
       # The community branch plugin needs explicit branch or pull request parameters.
       - name: Select the analysed branch or pull request
         id: target
@@ -49,6 +114,38 @@ jobs:
             args="-Dsonar.branch.name=$BRANCH"
           fi
           echo "args=$args" >> "$GITHUB_OUTPUT"
+      # Full-source branch analysis runs on the same checked-out PR head and coverage
+      # before the existing pull-request new-code analysis. The branch name is the
+      # actual source branch so reviewed Sonar issue dispositions remain attached.
+      - name: Verify the full-source candidate checkout
+        if: github.event_name == 'pull_request'
+        env:
+          EXPECTED_REVISION: ${{ github.event.pull_request.head.sha }}
+        run: |-
+          test "$(git rev-parse HEAD)" = "$EXPECTED_REVISION"
+          test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Analyze full source branch
+        if: github.event_name == 'pull_request'
+        uses: SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >-
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=600
+            -Dsonar.javascript.lcov.reportPaths=coverage/sonar-coverage-lense-unit/lcov.info,coverage/sonar-coverage-lense-browser/lcov.info,coverage/sonar-coverage-mirage-unit/lcov.info,coverage/sonar-coverage-mirage-browser/lcov.info,coverage/sonar-coverage-examples-unit/lcov.info,coverage/sonar-coverage-examples-browser/lcov.info
+            -Dsonar.typescript.tsconfigPaths=.github/tsconfig.sonar.json
+            -Dsonar.branch.name=${{ github.head_ref }}
+            -Dsonar.scm.revision=${{ github.event.pull_request.head.sha }}
+      - name: Require zero unresolved full-source findings
+        if: github.event_name == 'pull_request'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_FULL_BRANCH: ${{ github.head_ref }}
+          SONAR_EXPECTED_REVISION: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/verify-sonar-branch.mjs
       - uses: SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -57,4 +154,6 @@ jobs:
           args: >-
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=600
+            -Dsonar.javascript.lcov.reportPaths=coverage/sonar-coverage-lense-unit/lcov.info,coverage/sonar-coverage-lense-browser/lcov.info,coverage/sonar-coverage-mirage-unit/lcov.info,coverage/sonar-coverage-mirage-browser/lcov.info,coverage/sonar-coverage-examples-unit/lcov.info,coverage/sonar-coverage-examples-browser/lcov.info
+            -Dsonar.typescript.tsconfigPaths=.github/tsconfig.sonar.json
             ${{ steps.target.outputs.args }}

@@ -2,9 +2,43 @@ import { savePrivateJson } from './private-journal.mjs';
 import { parseExactJson } from 'paqvilo/mirage/lib/exact-numeric.mjs';
 import { encodeArtifact, decodeArtifact, canonicalRows, sha256, stable } from './core.mjs';
 import { recordedPluginPayloads } from '../plugins/mirage-runtime.mjs';
+
+async function encodeBackendArtifact(event) {
+  return {
+    artifact: event.artifact,
+    stage: event.context?.Stage,
+    order: event.context?.executionOrder,
+    querySha256: event.content?.query?.xml ? await sha256(event.content.query.xml) : null,
+  };
+}
+
+async function persistNativeReadWorker(client, capture, plans, workerState, save) {
+  while (workerState.offset < plans.length) {
+    const entry = plans[workerState.offset++],
+      endpoint = `pqvd_testoperations(${entry.id})`,
+      before = await client.get(endpoint);
+    if (before._pqvd_runid_value !== capture.runId || !before['@odata.etag'])
+      throw new Error('Native history ownership/version preflight failed.');
+    entry.status = 'pending';
+    await save();
+    await client.request(endpoint, { method: 'PATCH', body: entry.body, ifMatch: before['@odata.etag'] });
+    const actual = await client.get(endpoint);
+    if (
+      (await decodeArtifact(actual.pqvd_clientsummary)) !== stable(entry.summary) ||
+      actual.pqvd_physicalqueryhash !== entry.body.pqvd_physicalqueryhash
+    )
+      throw new Error('Native history readback checksum mismatch.');
+    entry.status = 'verified';
+    await save();
+  }
+}
+
 /** Persist each measured native physical read in its owned operation. Existing
  * final-query events remain the authoritative backend history; no rows deleted. */
-export async function persistNativeReadHistory(client, { capture, intents, manifest, journalFile, campaign = {} }) {
+/* NOSONAR */ export async function persistNativeReadHistory(
+  client,
+  { capture, intents, manifest, journalFile, campaign = {} },
+) {
   const backend = recordedPluginPayloads(capture.backendEvents),
     plans = [];
   for (const intent of intents) {
@@ -20,9 +54,22 @@ export async function persistNativeReadHistory(client, { capture, intents, manif
       /* Optional payload or browser capability is unavailable. */
     }
     const executionRequested = intent.lane !== 'liquid' || liquid?.outcome !== 'results-not-requested';
-    const rawRows = intent.lane === 'liquid' ? (executionRequested ? liquid?.rows : undefined) : body?.value,
-      rows = Array.isArray(rawRows) ? canonicalRows(rawRows, intent.plan) : null,
+    let rawRows;
+    if (intent.lane === 'liquid') rawRows = executionRequested ? liquid?.rows : undefined;
+    else rawRows = body?.value;
+    const rows = Array.isArray(rawRows) ? canonicalRows(rawRows, intent.plan) : null,
       query = request.authoredFetchXml ?? request.authoredRequest;
+    const outcome = () => {
+      if (intent.lane === 'liquid') return liquid?.outcome;
+      if (response?.status === 200) return Array.isArray(body?.value) ? 'success' : 'malformed-response';
+      return 'HTTP error';
+    };
+    const more = () => {
+      if (intent.lane === 'liquid') return liquid?.more;
+      if (body?.['@odata.nextLink']) return true;
+      if (body?.['@odata.count'] !== undefined) return body['@odata.count'] !== rows?.length;
+      return rows?.length === intent.plan.pageSize;
+    };
     const summary = {
       schemaVersion: 1,
       campaign,
@@ -33,14 +80,7 @@ export async function persistNativeReadHistory(client, { capture, intents, manif
       lane: intent.lane,
       page: request.page ?? 1,
       executionRequested,
-      outcome:
-        intent.lane === 'liquid'
-          ? liquid?.outcome
-          : response?.status === 200
-            ? Array.isArray(body?.value)
-              ? 'success'
-              : 'malformed-response'
-            : 'HTTP error',
+      outcome: outcome(),
       httpStatus: response?.status ?? null,
       platformCode:
         body?.error?.cdscode ??
@@ -56,23 +96,9 @@ export async function persistNativeReadHistory(client, { capture, intents, manif
         : null,
       count: rows?.length ?? null,
       rows,
-      more:
-        intent.lane === 'liquid'
-          ? liquid?.more
-          : body?.['@odata.nextLink']
-            ? true
-            : body?.['@odata.count'] !== undefined
-              ? body['@odata.count'] !== rows?.length
-              : rows?.length === intent.plan.pageSize,
+      more: more(),
       authoredSha256: await sha256(query),
-      backendArtifacts: await Promise.all(
-        events.map(async (event) => ({
-          artifact: event.artifact,
-          stage: event.context?.Stage,
-          order: event.context?.executionOrder,
-          querySha256: event.content?.query?.xml ? await sha256(event.content.query.xml) : null,
-        })),
-      ),
+      backendArtifacts: await Promise.all(events.map(encodeBackendArtifact)),
       frozenSnapshot: capture.qualification.snapshotComparison,
       snapshotHashes: capture.qualification.snapshotHashes ?? null,
       manifestSha256: manifest.manifestHash ?? null,
@@ -112,31 +138,16 @@ export async function persistNativeReadHistory(client, { capture, intents, manif
   let saveTail = Promise.resolve();
   const save = () => {
     const snapshot = structuredClone(journal);
-    return (saveTail = saveTail.then(() => savePrivateJson(journalFile, snapshot)));
+    const nextSave = saveTail.then(() => savePrivateJson(journalFile, snapshot));
+    saveTail = nextSave;
+    return nextSave;
   };
   await savePrivateJson(journalFile, journal, { exclusive: true });
-  let offset = 0;
+  const workerState = { offset: 0 };
   const outcomes = await Promise.allSettled(
-    Array.from({ length: Math.min(4, plans.length) }, async () => {
-      while (offset < plans.length) {
-        const entry = plans[offset++],
-          endpoint = `pqvd_testoperations(${entry.id})`,
-          before = await client.get(endpoint);
-        if (before._pqvd_runid_value !== capture.runId || !before['@odata.etag'])
-          throw new Error('Native history ownership/version preflight failed.');
-        entry.status = 'pending';
-        await save();
-        await client.request(endpoint, { method: 'PATCH', body: entry.body, ifMatch: before['@odata.etag'] });
-        const actual = await client.get(endpoint);
-        if (
-          (await decodeArtifact(actual.pqvd_clientsummary)) !== stable(entry.summary) ||
-          actual.pqvd_physicalqueryhash !== entry.body.pqvd_physicalqueryhash
-        )
-          throw new Error('Native history readback checksum mismatch.');
-        entry.status = 'verified';
-        await save();
-      }
-    }),
+    Array.from({ length: Math.min(4, plans.length) }, () =>
+      persistNativeReadWorker(client, capture, plans, workerState, save),
+    ),
   );
   await saveTail;
   const failure = outcomes.find((result) => result.status === 'rejected');

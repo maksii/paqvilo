@@ -13,10 +13,10 @@ const hashPattern = /^[a-f0-9]{64}$/i,
   guidPattern = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
 const read = async (file) => JSON.parse(await readFile(file, 'utf8'));
 const capturedInventory = (capture) => {
-  const { archive: ignoredArchive, history: ignoredHistory, ...inventory } = capture;
+  const { archive: ignoredArchive, history: ignoredHistory, ...inventory } = capture; // NOSONAR: binding is excluded from the rest object or is a placeholder
   return inventory;
 };
-const roleNames = (values) => [...new Set(values)].sort();
+const roleNames = (values) => [...new Set(values)].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
 const snapshotFields = [
   'permissionSnapshotHash',
   'membershipSnapshotHash',

@@ -1,4 +1,4 @@
-const json = (value) => JSON.stringify(value).replace(/</g, '\\u003c');
+const json = (value) => JSON.stringify(value).replaceAll('<', String.raw`\u003c`);
 
 /** Load captured managed runtime resources and let the native PCF proxy bind controls. */
 export function clientManagedControlsRuntime(definitions) {

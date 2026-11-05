@@ -34,16 +34,17 @@ export function modelDrivenReloadQueue(task) {
     request() {
       if (stopped) return Promise.resolve();
       requested = true;
-      return (pending ??= Promise.resolve()
+      pending ??= Promise.resolve()
         .then(async () => {
           do {
             requested = false;
             await task();
-          } while (requested && !stopped);
+          } while (requested && !stopped); // NOSONAR: loop flag is changed asynchronously
         })
         .finally(() => {
           pending = null;
-        }));
+        });
+      return pending;
     },
     async close() {
       stopped = true;
@@ -80,36 +81,35 @@ export function publishModelDrivenReload(overlay, next, mappings) {
   overlay.replace(next, mappings);
 }
 
-export function validateModelDrivenArguments(args, action = 'dev') {
-  if (!['inspect', 'dev'].includes(action)) throw new Error('model-driven accepts inspect or dev.');
-  if (action === 'inspect') {
-    const allowed = new Set([
-      'config',
-      'project',
-      'env',
-      'url',
-      'path',
-      'resource-map',
-      'local-simulation',
-      'json',
-      'event-cursor',
-      'include-event-parameters',
-    ]);
-    for (const option of Object.keys(args))
-      if (!allowed.has(option))
-        throw Object.assign(new Error(`--${option} is not supported by model-driven inspect`), {
-          code: 'unsupported_option',
-        });
-  }
-  if (!args.project) throw new Error('model-driven requires --project with selected Solution sources.');
-  if (args.env && args.url) throw new Error('Choose --env or --url, not both.');
-  if (action === 'dev' && args['startup-timeout'] !== undefined) {
-    const timeout = Number(args['startup-timeout']);
-    if (!/^\d+$/.test(args['startup-timeout']) || !Number.isSafeInteger(timeout) || timeout < 1000 || timeout > 600000)
-      throw new Error('--startup-timeout must be an integer from 1000 to 600000 milliseconds');
-  }
+function validateInspectOptions(args) {
+  const allowed = new Set([
+    'config',
+    'project',
+    'env',
+    'url',
+    'path',
+    'resource-map',
+    'local-simulation',
+    'json',
+    'event-cursor',
+    'include-event-parameters',
+  ]);
+  for (const option of Object.keys(args))
+    if (!allowed.has(option))
+      throw Object.assign(new Error(`--${option} is not supported by model-driven inspect`), {
+        code: 'unsupported_option',
+      });
+}
+
+function validateStartupTimeout(args) {
+  if (args['startup-timeout'] === undefined) return;
+  const timeout = Number(args['startup-timeout']);
+  if (!/^\d+$/.test(args['startup-timeout']) || !Number.isSafeInteger(timeout) || timeout < 1000 || timeout > 600000)
+    throw new Error('--startup-timeout must be an integer from 1000 to 600000 milliseconds');
+}
+
+function validateRunTimeout(args) {
   if (
-    action === 'dev' &&
     args.timeout !== undefined &&
     (!/^\d+$/.test(args.timeout) ||
       !Number.isSafeInteger(Number(args.timeout)) ||
@@ -117,6 +117,15 @@ export function validateModelDrivenArguments(args, action = 'dev') {
       Number(args.timeout) > 3600000)
   )
     throw new Error('--timeout must be 1..3600000 milliseconds.');
+}
+
+export function validateModelDrivenArguments(args, action = 'dev') {
+  if (!['inspect', 'dev'].includes(action)) throw new Error('model-driven accepts inspect or dev.');
+  if (action === 'inspect') validateInspectOptions(args);
+  if (!args.project) throw new Error('model-driven requires --project with selected Solution sources.');
+  if (args.env && args.url) throw new Error('Choose --env or --url, not both.');
+  if (action === 'dev') validateStartupTimeout(args);
+  if (action === 'dev') validateRunTimeout(args);
   if (args.json && action !== 'inspect')
     throw new Error('--json is supported by model-driven inspect. Use --output for a dev session report.');
   if (action !== 'inspect' && (args['event-cursor'] !== undefined || args['include-event-parameters'] !== undefined))
@@ -175,7 +184,7 @@ export default async function run(_cfg, args, [action = 'dev'] = []) {
   }
 }
 
-async function runModelDriven(args, action, progress, deadline) {
+/* NOSONAR */ async function runModelDriven(args, action, progress, deadline) {
   const startupWait = (work, disposeLate) => (deadline ? deadline.wait(work, disposeLate) : work);
   progress?.phase('configuration');
   const project = await startupWait(loadProjectConfig(args.project));

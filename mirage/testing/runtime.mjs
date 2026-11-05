@@ -3,10 +3,12 @@ import { DEFAULT_PORT, discoveries, miragePaths, samePath } from '../../lense/co
 import { loadProjectConfig } from '../lib/project-config.mjs';
 import { createPortalSession } from './sessions.mjs';
 import { createPersonaSession } from './personas.mjs';
+import { eventLineParts } from './event-line.mjs';
 
 function requestError(status, value, label = 'Local runtime request') {
   const detail = value?.error?.message ?? value?.message ?? (typeof value?.error === 'string' ? value.error : '');
-  return Object.assign(new Error(`${label} failed (${status})${detail ? `: ${detail}` : ''}`), {
+  const detailSuffix = () => (detail ? `: ${detail}` : '');
+  return Object.assign(new Error(`${label} failed (${status})${detailSuffix()}`), {
     status,
     code: value?.error?.code,
     ...(value?.error?.parameter ? { parameter: value.error.parameter } : {}),
@@ -50,7 +52,7 @@ async function* traceFrames(body) {
       let event = 'message';
       const data = [];
       for (const line of frame.split('\n')) {
-        const [, name, value] = /^([^:]*):? ?(.*)$/.exec(line);
+        const [name, value] = eventLineParts(line);
         if (name === 'event') event = value;
         else if (name === 'data') data.push(value);
       }
@@ -122,6 +124,22 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
       if (signal?.aborted || !(cause instanceof TypeError)) throw cause;
       throw fetchFailure(cause, { reading: true });
     });
+  const decodeResponse = (response, text, captureReport) => {
+    let value = null;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      /* not JSON: null */
+    }
+    if (
+      !response.ok &&
+      !(captureReport && response.status === 409 && value?.shellProfile && Array.isArray(value.failures))
+    )
+      throw requestError(response.status, value);
+    const returnedCookie = response.headers.get('set-cookie');
+    if (returnedCookie) cookie = returnedCookie.split(';', 1)[0];
+    return value;
+  };
   const request = async (
     route,
     { method = 'GET', body, headers = {}, captureReport = false, timeoutMs = 30000 } = {},
@@ -145,21 +163,7 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
       if (response.status === 204) return null;
       // A body that is not JSON reads as null; a connection lost mid-body is RuntimeConnectionLost.
       const text = await bodyOf(response, 'text', signal);
-      let value = null;
-      try {
-        value = JSON.parse(text);
-      } catch {
-        /* not JSON: null */
-      }
-      if (
-        !response.ok &&
-        !(captureReport && response.status === 409 && value?.shellProfile && Array.isArray(value.failures))
-      ) {
-        throw requestError(response.status, value);
-      }
-      const returnedCookie = response.headers.get('set-cookie');
-      if (returnedCookie) cookie = returnedCookie.split(';', 1)[0];
-      return value;
+      return decodeResponse(response, text, captureReport);
     } catch (cause) {
       if (captureReport && signal?.aborted)
         throw Object.assign(
@@ -241,7 +245,7 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
       const closed = (async () => {
         try {
           const query = new URLSearchParams({ channels: 'trace' });
-          if (events) query.set('events', [].concat(events).join(','));
+          if (events) query.set('events', [].concat(events).join(',')); // NOSONAR: preserve concat spreadability semantics
           if (traceId) query.set('traceId', traceId);
           const response = await reach(`${origin}/_sim/events?${query}`, {
             headers: { accept: 'text/event-stream', ...(cookie ? { cookie } : {}) },

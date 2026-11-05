@@ -101,33 +101,11 @@ export const nullMessage = (attribute) =>
 
 const isNullValue = (value) => value == null || value === '' || (Array.isArray(value) && value.length === 0);
 
-const multiValues = (value) => {
-  const raw = scalar(value);
-  if (raw == null || raw === '') return [];
-  if (Array.isArray(raw)) return raw.map((item) => Number(scalar(item)));
-  return String(raw)
-    .split(/[,;]/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .map(Number);
-};
-
-/**
- * Compile one operator into a predicate over the stored column value.
- * `values` are the literal operands (value attribute or <value> children).
- */
-export function compileOperator(
-  operator,
-  { attribute = 'attribute', values = [], definition, identity = {}, settings = {}, now = Date.now(), table } = {},
-) {
-  const op = operator === 'neq' ? 'ne' : operator;
+function compileSpecialOperator(op, operator, { attribute, values, table, identity }) {
   if (identity.dataverse && DATAVERSE_IDENTITY_OPERATORS.has(op))
     return compileIdentityOperator(op, { attribute, values, table, identity: identity.dataverse });
   const hierarchy = HIERARCHY_OPERATORS.has(op) ? queryScope.getStore()?.hierarchy : null;
   if (hierarchy) return compileIdentityOperator(op, { attribute, values, table, identity: { hierarchy } });
-  // EqualUserAuthContext is a query function only: it has no FetchXML operator, so it is not in FETCH_OPERATORS.
-  // The caller's authentication contexts come from identity.dataverse.authContexts; the simulator issues no acrs claim,
-  // so the list is empty and nothing matches. The semantics are a guess from the name.
   if (op === 'eq-userauthcontext') {
     if (!identity.dataverse)
       throw new DataError(
@@ -145,12 +123,10 @@ export function compileOperator(
       400,
       'UnsupportedQuery',
     );
-  if (!FETCH_OPERATORS.has(op))
-    throw new DataError(`Unsupported FetchXML operator ${operator}`, 400, 'UnsupportedQuery');
-  const kind = fieldKind(definition) ?? undefined;
-  const collation = settings.collation ?? 'CI_AI';
-  const timeZoneOffsetMinutes = Number(settings.timeZoneOffsetMinutes ?? 0);
-  const options = { kind, collation, timeZoneOffsetMinutes };
+  return null;
+}
+
+function validateOperatorOperands(op, operator, attribute, values, definition) {
   const first = values[0];
   if ((VALUE_OPERATORS.has(op) || MASK_OPERATORS.has(op)) && first === undefined)
     throw new DataError(nullMessage(attribute), 400, 'InvalidQuery');
@@ -172,8 +148,9 @@ export function compileOperator(
       400,
       'InvalidQuery',
     );
-  const equal = (x, y) => valuesEqual(x, y, options);
-  const compare = (x, y) => compareForFilter(x, y, options);
+}
+
+function compileSimplePredicate(op, first, equal, compare) {
   switch (op) {
     case 'eq':
       return (x) => !isNullValue(x) && equal(x, first);
@@ -191,66 +168,24 @@ export function compileOperator(
       return (x) => isNullValue(x);
     case 'not-null':
       return (x) => !isNullValue(x);
+    default:
+      return null;
+  }
+}
+
+function compileListPredicate(op, values, equal, options) {
+  switch (op) {
     case 'in': {
       const guids = new Set(values.map(guidKey).filter(Boolean));
       return (x) =>
-        !isNullValue(x) && ((guids.size && guids.has(guidKey(scalar(x)))) || values.some((v) => equal(x, v)));
+        !isNullValue(x) && ((guids.size && guids.has(guidKey(scalar(x)))) || values.some((value) => equal(x, value)));
     }
     case 'not-in':
-      return (x) => !isNullValue(x) && !values.some((v) => equal(x, v));
+      return (x) => !isNullValue(x) && !values.some((value) => equal(x, value));
     case 'between':
-      return (x) => !isNullValue(x) && compare(x, values[0]) >= 0 && compare(x, values[1]) <= 0;
+      return (x) => !isNullValue(x) && options.compare(x, values[0]) >= 0 && options.compare(x, values[1]) <= 0;
     case 'not-between':
-      return (x) => !isNullValue(x) && (compare(x, values[0]) < 0 || compare(x, values[1]) > 0);
-    case 'like':
-    case 'not-like':
-    case 'begins-with':
-    case 'not-begin-with':
-    case 'ends-with':
-    case 'not-end-with': {
-      const text = String(first);
-      const pattern =
-        op.startsWith('begins') || op === 'not-begin-with'
-          ? `${text}%`
-          : op.startsWith('ends') || op === 'not-end-with'
-            ? `%${text}`
-            : text;
-      const match = likeMatcher(pattern, collation);
-      const negate = op.startsWith('not-');
-      return (x) => !isNullValue(x) && match(x) !== negate;
-    }
-    case 'on':
-    case 'not-on':
-    case 'on-or-before':
-    case 'on-or-after': {
-      const day = localDay(first, { timeZoneOffsetMinutes });
-      if (day == null)
-        throw new DataError(
-          `Condition for attribute '${attribute}': '${first}' is not a valid date.`,
-          400,
-          'InvalidQuery',
-        );
-      return (x) => {
-        const value = localDay(x, { timeZoneOffsetMinutes });
-        if (value == null) return false;
-        if (op === 'on' || op === 'not-on') return (value === day) === (op === 'on');
-        return op === 'on-or-before' ? value <= day : value >= day;
-      };
-    }
-    case 'eq-userid':
-    case 'ne-userid': {
-      // Power Pages executes FetchXML as its Dataverse application user. The
-      // local identity may name that user explicitly; contacts are not users.
-      const self = identity.systemUserId ?? identity.dataverse?.userId;
-      const user = guidKey(self) ?? self ?? null;
-      return op === 'eq-userid'
-        ? (x) => user != null && !isNullValue(x) && equal(x, user)
-        : (x) => !isNullValue(x) && (user == null || !equal(x, user));
-    }
-    case 'eq-userlanguage': {
-      const language = Number(identity.languageCode ?? settings.languageCode ?? 1033);
-      return (x) => !isNullValue(x) && Number(scalar(x)) === language;
-    }
+      return (x) => !isNullValue(x) && (options.compare(x, values[0]) < 0 || options.compare(x, values[1]) > 0);
     case 'contain-values':
     case 'not-contain-values': {
       const wanted = new Set(values.map(Number));
@@ -260,41 +195,144 @@ export function compileOperator(
         return op === 'contain-values' ? hit : !hit;
       };
     }
-    case 'mask':
-    case 'not-mask':
-    case 'masks-select': {
-      const mask = Number(scalar(first));
-      if (!Number.isSafeInteger(mask) || mask < 0)
-        throw new DataError(
-          `Condition for attribute '${attribute}': operator ${operator} requires an integer bit mask.`,
-          400,
-          'InvalidQuery',
-        );
-      // ponytail: bit semantics are a local model (the docs only say "found in the bit-mask"); a native SDK query capture (NATIVE sdk-values-queries) settles them.
-      const bits = BigInt(mask);
-      return (x) => {
-        if (isNullValue(x)) return false;
-        const value = Number(scalar(x));
-        if (!Number.isSafeInteger(value)) return false;
-        const both = BigInt(value) & bits;
-        return op === 'mask' ? both === bits : op === 'not-mask' ? both !== bits : both !== 0n;
-      };
-    }
-    default: {
-      const predicate = dateOperatorPredicate(op, values, {
-        now,
-        timeZoneOffsetMinutes,
-        // The fiscal calendar comes from the query settings (lib/fiscal-calendar.mjs).
-        fiscal: settings,
-      });
-      if (!predicate) throw new DataError(`Unsupported FetchXML operator ${operator}`, 400, 'UnsupportedQuery');
-      return (x) => {
-        if (isNullValue(x)) return false;
-        const parsed = parseDateValue(x, { timeZoneOffsetMinutes });
-        return parsed ? predicate(parsed.ms) : false;
-      };
-    }
+    default:
+      return null;
   }
+}
+
+function compilePatternPredicate(op, first, collation) {
+  const text = String(first);
+  let pattern = text;
+  if (op.startsWith('begins') || op === 'not-begin-with') pattern = `${text}%`;
+  else if (op.startsWith('ends') || op === 'not-end-with') pattern = `%${text}`;
+  const match = likeMatcher(pattern, collation);
+  const negate = op.startsWith('not-');
+  return (x) => !isNullValue(x) && match(x) !== negate;
+}
+
+function compileCalendarPredicate(op, first, attribute, timeZoneOffsetMinutes) {
+  const day = localDay(first, { timeZoneOffsetMinutes });
+  if (day == null)
+    throw new DataError(`Condition for attribute '${attribute}': '${first}' is not a valid date.`, 400, 'InvalidQuery');
+  return (x) => {
+    const value = localDay(x, { timeZoneOffsetMinutes });
+    if (value == null) return false;
+    if (op === 'on' || op === 'not-on') return (value === day) === (op === 'on');
+    return op === 'on-or-before' ? value <= day : value >= day;
+  };
+}
+
+function compileUserPredicate(op, identity, settings, equal) {
+  if (op === 'eq-userid' || op === 'ne-userid') {
+    const self = identity.systemUserId ?? identity.dataverse?.userId;
+    const user = guidKey(self) ?? self ?? null;
+    return op === 'eq-userid'
+      ? (x) => user != null && !isNullValue(x) && equal(x, user)
+      : (x) => !isNullValue(x) && (user == null || !equal(x, user));
+  }
+  const language = Number(identity.languageCode ?? settings.languageCode ?? 1033);
+  return (x) => !isNullValue(x) && Number(scalar(x)) === language;
+}
+
+function compileMaskPredicate(op, first, attribute, operator) {
+  const mask = Number(scalar(first));
+  if (!Number.isSafeInteger(mask) || mask < 0)
+    throw new DataError(
+      `Condition for attribute '${attribute}': operator ${operator} requires an integer bit mask.`,
+      400,
+      'InvalidQuery',
+    );
+  const bits = BigInt(mask);
+  return (x) => {
+    if (isNullValue(x)) return false;
+    const value = Number(scalar(x));
+    if (!Number.isSafeInteger(value)) return false;
+    const both = BigInt(value) & bits;
+    if (op === 'mask') return both === bits;
+    if (op === 'not-mask') return both !== bits;
+    return both !== 0n;
+  };
+}
+
+function compileRelativeDatePredicate(op, values, now, timeZoneOffsetMinutes, settings, operator) {
+  const predicate = dateOperatorPredicate(op, values, {
+    now,
+    timeZoneOffsetMinutes,
+    fiscal: settings,
+  });
+  if (!predicate) throw new DataError(`Unsupported FetchXML operator ${operator}`, 400, 'UnsupportedQuery');
+  return (x) => {
+    if (isNullValue(x)) return false;
+    const parsed = parseDateValue(x, { timeZoneOffsetMinutes });
+    return parsed ? predicate(parsed.ms) : false;
+  };
+}
+
+function compileOperatorPredicate(op, operator, context) {
+  const { first, values, equal, compare, collation, attribute, timeZoneOffsetMinutes, identity, settings, now } =
+    context;
+  const simple = compileSimplePredicate(op, first, equal, compare);
+  if (simple) return simple;
+  const list = compileListPredicate(op, values, equal, { compare });
+  if (list) return list;
+  if (['like', 'not-like', 'begins-with', 'not-begin-with', 'ends-with', 'not-end-with'].includes(op))
+    return compilePatternPredicate(op, first, collation);
+  if (['on', 'not-on', 'on-or-before', 'on-or-after'].includes(op))
+    return compileCalendarPredicate(op, first, attribute, timeZoneOffsetMinutes);
+  if (op === 'eq-userid' || op === 'ne-userid' || op === 'eq-userlanguage')
+    return compileUserPredicate(op, identity, settings, equal);
+  if (op === 'mask' || op === 'not-mask' || op === 'masks-select')
+    return compileMaskPredicate(op, first, attribute, operator);
+  return compileRelativeDatePredicate(op, values, now, timeZoneOffsetMinutes, settings, operator);
+}
+
+const multiValues = (value) => {
+  const raw = scalar(value);
+  if (raw == null || raw === '') return [];
+  if (Array.isArray(raw)) return raw.map((item) => Number(scalar(item)));
+  return String(raw)
+    .split(/[,;]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map(Number);
+};
+
+/**
+ * Compile one operator into a predicate over the stored column value.
+ * `values` are the literal operands (value attribute or <value> children).
+ */
+export function compileOperator(
+  operator,
+  { attribute = 'attribute', values = [], definition, identity = {}, settings = {}, now = Date.now(), table } = {},
+) {
+  const op = operator === 'neq' ? 'ne' : operator;
+  // EqualUserAuthContext is a query function only: it has no FetchXML operator, so it is not in FETCH_OPERATORS.
+  // The caller's authentication contexts come from identity.dataverse.authContexts; the simulator issues no acrs claim,
+  // so the list is empty and nothing matches. The semantics are a guess from the name.
+  const special = compileSpecialOperator(op, operator, { attribute, values, table, identity });
+  if (special) return special;
+  if (!FETCH_OPERATORS.has(op))
+    throw new DataError(`Unsupported FetchXML operator ${operator}`, 400, 'UnsupportedQuery');
+  const kind = fieldKind(definition) ?? undefined;
+  const collation = settings.collation ?? 'CI_AI';
+  const timeZoneOffsetMinutes = Number(settings.timeZoneOffsetMinutes ?? 0);
+  const options = { kind, collation, timeZoneOffsetMinutes };
+  const first = values[0];
+  validateOperatorOperands(op, operator, attribute, values, definition);
+  const equal = (x, y) => valuesEqual(x, y, options);
+  const compare = (x, y) => compareForFilter(x, y, options);
+  return compileOperatorPredicate(op, operator, {
+    first,
+    values,
+    equal,
+    compare,
+    collation,
+    attribute,
+    timeZoneOffsetMinutes,
+    identity,
+    settings,
+    now,
+  });
 }
 
 const identityKey = (value) => guidKey(scalar(value));
@@ -346,17 +384,14 @@ function compileIdentityOperator(op, { attribute, values, table, identity }) {
     }
     case 'eq-userteams':
       return (x) => !isNullValue(x) && teams.has(identityKey(x));
-    case 'eq-useroruserteams': {
+    case 'eq-useroruserteams':
+    case 'eq-useroruserhierarchyandteams': {
+      // Reports' own teams are not in the router's lookup, so only the caller's teams are added.
       const set = userSet([...teams]);
       return (x) => !isNullValue(x) && set.has(identityKey(x));
     }
     case 'eq-useroruserhierarchy': {
       const set = userSet();
-      return (x) => !isNullValue(x) && set.has(identityKey(x));
-    }
-    case 'eq-useroruserhierarchyandteams': {
-      // Reports' own teams are not in the router's lookup, so only the caller's teams are added.
-      const set = userSet([...teams]);
       return (x) => !isNullValue(x) && set.has(identityKey(x));
     }
     default:
@@ -383,7 +418,10 @@ export function compileColumnComparison(operator, { attribute, definition, setti
     if (op === 'eq') return valuesEqual(x, y, options);
     if (op === 'ne') return !valuesEqual(x, y, options);
     const result = compareForFilter(x, y, options);
-    return op === 'gt' ? result > 0 : op === 'ge' ? result >= 0 : op === 'lt' ? result < 0 : result <= 0;
+    if (op === 'gt') return result > 0;
+    if (op === 'ge') return result >= 0;
+    if (op === 'lt') return result < 0;
+    return result <= 0;
   };
 }
 
@@ -483,6 +521,8 @@ export const CRM_FUNCTIONS = {
 /** Case-insensitive helper used by OData string functions (contains/startswith/endswith). */
 export function stringFunctionMatcher(name, pattern, collation = 'CI_AI') {
   const text = String(pattern ?? '');
-  const like = name === 'contains' ? `%${text}%` : name === 'startswith' ? `${text}%` : `%${text}`;
+  let like = `%${text}`;
+  if (name === 'contains') like = `%${text}%`;
+  else if (name === 'startswith') like = `${text}%`;
   return likeMatcher(like, collation);
 }

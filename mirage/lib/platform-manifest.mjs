@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { stripTrailingCharacter } from './text-scanning.mjs';
 
 /*
  * Native Power Pages platform resource manifest.
@@ -209,10 +210,10 @@ export const PLATFORM_RESOURCES = Object.freeze([
 
 const escapeAttribute = (value) =>
   String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
 
 /** Offline notification markup with platform images served from the local origin. */
 export const OFFLINE_NOTIFICATION_BAR = `<div id="offlineNotificationBar" class="displayNone"> <img alt="web" class="col-3" id="web" onerror="javascript: var target = event.target; var img = document.createElement('img'); img.src = '/css/images/web.png'; img.alt = 'web'; img.id = 'web' ; target.insertAdjacentElement('afterend',img); target.remove();" src="/resource/powerappsportal/img/web.png"> <div id="message">You’re offline. This is a read only version of the page.</div> <div id="close" onclick="this.parentElement.style.display='none';"><img alt="close" class="col-3" onerror="javascript: var target = event.target; var img = document.createElement('img'); img.src = '/css/images/close.png'; img.alt = 'close'; img.id = '' ; target.insertAdjacentElement('afterend',img); target.remove();" src="/resource/powerappsportal/img/close.png"></div> </div>`;
@@ -332,9 +333,57 @@ const LOCAL_ASPNET_SCRIPTS = Object.freeze(
   ].map((entry) => Object.freeze({ ...entry, kind: 'script' })),
 );
 
+function formResourceMarkup(aspNetScripts, denied, validators, formControls, content, script) {
+  const resources =
+    aspNetScripts ||
+    LOCAL_ASPNET_SCRIPTS.filter(
+      (entry) =>
+        !entry.captcha && ((!denied && (validators || formControls)) || entry.id !== 'paqvilo-webuivalidation'),
+    )
+      .map((entry) => script(entry.path))
+      .join('\n');
+  const captchaScripts =
+    formControls && CAPTCHA_MARKER.test(String(content ?? ''))
+      ? LOCAL_ASPNET_SCRIPTS.filter((entry) => entry.captcha)
+          .map((entry) => script(entry.path))
+          .join('\n') + '\n'
+      : '';
+  return { resources, captchaScripts };
+}
+
+function mapScriptPaths(content) {
+  const mapList = /<!--pp-map-list:(\w+)-->/.exec(String(content ?? ''));
+  return mapList
+    ? [
+        '/xrm-adx/js/json2.min.js',
+        ...(mapList[1] === 'bing' ? ['https://www.bing.com/api/maps/mapcontrol'] : []),
+        '/xrm-adx/js/entitylist-map.js',
+      ]
+    : [];
+}
+
+function formScriptMarkup(formScriptPaths, content, formControls, dateControls, variant, script) {
+  const mapScripts = mapScriptPaths(content);
+  if (formScriptPaths) return formScriptPaths.map(script).join('\n');
+  return [
+    '/js/jquery.blockUI.js',
+    ...mapScripts,
+    ...(formControls
+      ? ['/xrm-adx/js/webform.js', '/xrm-adx/js/radcaptcha.js', '/xrm-adx/js/crmentityformview.js']
+      : []),
+    ...(formControls && STACK_RANK_MARKER.test(String(content ?? '')) ? ['/xrm-adx/js/jquery.stackranking.js'] : []),
+    ...(formControls && dateControls
+      ? [`/xrm-adx/js/${variant === 'BootstrapV5' ? 'BootstrapV5/' : ''}crmentityformview-datetime.js`]
+      : []),
+    ...(formControls && ATTACH_FILE_MARKER.test(String(content ?? '')) ? ['/xrm-adx/js/fileuploadcontrol.js'] : []),
+  ]
+    .map((src) => script(src))
+    .join('\n');
+}
+
 /** The local WebForms script resource a WebResource.axd/ScriptResource.axd URL names, or null. */
 export function localAspNetScript(url) {
-  const parsed = url instanceof URL ? url : new URL(String(url ?? ''), 'http://local.invalid');
+  const parsed = url instanceof URL ? url : new URL(String(url ?? ''), 'http://local.invalid'); // NOSONAR: reserved or loopback placeholder host, not a real transport
   const d = parsed.searchParams.get('d');
   return (
     LOCAL_ASPNET_SCRIPTS.find(
@@ -378,8 +427,8 @@ export function webFormsForm({
   const componentState = /\sdata-pp-viewstate="([^"]*)"/.exec(String(content ?? ''));
   if (componentState) content = String(content).replace(componentState[0], '');
   const viewState = componentState
-    ? componentState[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&')
-    : `/wE${opaque('viewstate', action).replace(/=+$/, '')}`;
+    ? componentState[1].replaceAll('&quot;', '"').replaceAll('&amp;', '&')
+    : `/wE${stripTrailingCharacter(opaque('viewstate', action), '=')}`;
   const script = (src) => `<script src="${escapeAttribute(src)}" type="text/javascript"></script>`;
   const denied = DENIED_FORM_MARKER.test(String(content ?? ''));
   if (denied) eventValidation = false;
@@ -388,63 +437,37 @@ export function webFormsForm({
   if (!/<(?:select|textarea)\b|<input\b(?![^>]*\btype="hidden")/i.test(String(content ?? ''))) eventValidation = false;
   // WebUIValidation.js is registered by validators and form controls only: server forms holding a
   // list control or no control at all load three AXD scripts.
-  const resources =
-    aspNetScripts ||
-    LOCAL_ASPNET_SCRIPTS.filter(
-      (entry) =>
-        !entry.captcha && ((!denied && (validators || formControls)) || entry.id !== 'paqvilo-webuivalidation'),
-    )
-      .map((entry) => script(entry.path))
-      .join('\n');
-  const captchaScripts =
-    formControls && CAPTCHA_MARKER.test(String(content ?? ''))
-      ? LOCAL_ASPNET_SCRIPTS.filter((entry) => entry.captcha)
-          .map((entry) => script(entry.path))
-          .join('\n') + '\n'
-      : '';
+  const { resources, captchaScripts } = formResourceMarkup(
+    aspNetScripts,
+    denied,
+    validators,
+    formControls,
+    content,
+    script,
+  );
   // The ScriptManager registers jquery.blockUI.js; basic and advanced form controls add
   // their form scripts (legacy WebForms.master, EntityForm, WebForm, CellTemplate).
   // A service document (the quick view) names its own form scripts (formScriptPaths).
-  const mapList = /<!--pp-map-list:(\w+)-->/.exec(String(content ?? ''));
-  const mapScripts = mapList
-    ? [
-        '/xrm-adx/js/json2.min.js',
-        ...(mapList[1] === 'bing' ? ['https://www.bing.com/api/maps/mapcontrol'] : []),
-        '/xrm-adx/js/entitylist-map.js',
-      ]
-    : [];
-  const formScripts = formScriptPaths
-    ? formScriptPaths.map(script).join('\n')
-    : [
-        '/js/jquery.blockUI.js',
-        ...mapScripts,
-        ...(formControls
-          ? ['/xrm-adx/js/webform.js', '/xrm-adx/js/radcaptcha.js', '/xrm-adx/js/crmentityformview.js']
-          : []),
-        ...(formControls && STACK_RANK_MARKER.test(String(content ?? ''))
-          ? ['/xrm-adx/js/jquery.stackranking.js']
-          : []),
-        ...(formControls && dateControls
-          ? [`/xrm-adx/js/${variant === 'BootstrapV5' ? 'BootstrapV5/' : ''}crmentityformview-datetime.js`]
-          : []),
-        ...(formControls && ATTACH_FILE_MARKER.test(String(content ?? '')) ? ['/xrm-adx/js/fileuploadcontrol.js'] : []),
-      ]
-        .map(script)
-        .join('\n');
+  const formScripts = formScriptMarkup(formScriptPaths, content, formControls, dateControls, variant, script);
   const onSubmit = validators
     ? `<script type="text/javascript">\n//<![CDATA[\nfunction WebForm_OnSubmit() {\nif (typeof(ValidatorOnSubmit) == "function" && ValidatorOnSubmit() == false) return false;\nreturn true;\n}\n//]]>\n</script>\n`
     : '';
+  const onsubmitAttribute = validators ? ' onsubmit="javascript:return WebForm_OnSubmit();"' : '';
   const prefix =
-    `<form method="post" action="${escapeAttribute(action)}"${validators ? ` onsubmit="javascript:return WebForm_OnSubmit();"` : ''} id="${escapeAttribute(id)}"${MULTIPART_MARKER.test(String(content ?? '')) ? ' enctype="multipart/form-data"' : ''}>\n` +
+    `<form method="post" action="${escapeAttribute(action)}"${onsubmitAttribute} id="${escapeAttribute(id)}"${MULTIPART_MARKER.test(String(content ?? '')) ? ' enctype="multipart/form-data"' : ''}>\n` +
     `<div class="aspNetHidden">\n${hidden('__EVENTTARGET', '')}\n${hidden('__EVENTARGUMENT', '')}\n${hidden('__VIEWSTATE', viewState)}\n</div>\n\n` +
     `<script type="text/javascript">\n//<![CDATA[\nvar theForm = document.forms['${id}'];\nif (!theForm) {\n    theForm = document.${id};\n}\nfunction __doPostBack(eventTarget, eventArgument) {\n    if (!theForm.onsubmit || (theForm.onsubmit() != false)) {\n        theForm.__EVENTTARGET.value = eventTarget;\n        theForm.__EVENTARGUMENT.value = eventArgument;\n        theForm.submit();\n    }\n}\n//]]>\n</script>\n\n` +
     `${resources}\n${formScripts}\n${captchaScripts}${extraScripts ? extraScripts + '\n' : ''}${onSubmit}`;
   onContent?.({ offset: prefix.length, length: content.length });
+  const generator = createHash('sha256').update(`generator\u0000${id}`).digest('hex').slice(0, 8).toUpperCase();
+  const eventValidationHtml = eventValidation
+    ? hidden('__EVENTVALIDATION', `/wE${stripTrailingCharacter(opaque('validation', action), '=')}`) + '\n'
+    : '';
   return (
     prefix +
     content +
     // ASP.NET renders the generator and event validation fields at the end of the server form.
-    `<div class="aspNetHidden">\n\n${hidden('__VIEWSTATEGENERATOR', createHash('sha256').update(`generator\u0000${id}`).digest('hex').slice(0, 8).toUpperCase())}\n${hidden('__VIEWSTATEENCRYPTED', '')}\n${eventValidation ? hidden('__EVENTVALIDATION', `/wE${opaque('validation', action).replace(/=+$/, '')}`) + '\n' : ''}</div>${trailing}</form>`
+    `<div class="aspNetHidden">\n\n${hidden('__VIEWSTATEGENERATOR', generator)}\n${hidden('__VIEWSTATEENCRYPTED', '')}\n${eventValidationHtml}</div>${trailing}</form>`
   );
 }
 
@@ -504,6 +527,45 @@ const DEFAULT_VALIDATION_HOOKS =
 const snippetDiv = (name) =>
   `{% if snippets[${JSON.stringify(name)}] %}<div>{{ snippets[${JSON.stringify(name)}] }}</div>{% endif %}`;
 
+function rewriteComponents(page) {
+  const guid = (value) => (GUID_TEXT.test(String(value ?? '')) ? String(value).toLowerCase() : null);
+  const advancedForm = guid(page?.advancedFormId);
+  const basicForm = guid(page?.formId);
+  const list = guid(page?.listId);
+  const entityControls =
+    DEFAULT_VALIDATION_HOOKS +
+    (advancedForm ? `{% webform id: '${advancedForm}', pp_page_control: true %}` : '') +
+    (basicForm ? `{% entityform id: '${basicForm}', pp_page_control: true %}` : '') +
+    (list ? `{% entitylist id: '${list}', pp_page_control: true %}{% endentitylist %}` : '');
+  return { advancedForm, basicForm, list, entityControls };
+}
+
+function fullPageLayout(heading, pageMetadata, { advancedForm, basicForm, list }) {
+  const holders =
+    DEFAULT_VALIDATION_HOOKS +
+    (advancedForm ? `{% webform id: '${advancedForm}', pp_page_control: true %}` : '<div id="WebFormControl"></div>') +
+    (basicForm ? `{% entityform id: '${basicForm}', pp_page_control: true %}` : '<div id="EntityFormControl"></div>') +
+    (list ? `{% entitylist id: '${list}', pp_page_control: true %}{% endentitylist %}` : '');
+  const main = `<div id="mainContent">{% editable page 'adx_copy' type: 'html', liquid: true, class: 'page-copy' %}${holders}</div>${pageMetadata}{% include 'Child Link List Group' %}`;
+  return {
+    source: `${heading}<div class="container">${main}</div>`,
+    serverFormId: 'content_form',
+    contentRegion: true,
+  };
+}
+
+function rewritePageMain(layout, entityControls, pageMetadata, placements) {
+  if (layout === 'page' || layout === 'listing') {
+    const contentBottom = layout === 'page' ? pageMetadata : "{% include 'Child Link List Group' %}";
+    const sidebarTop = "{% include 'Child Link List Group' %}";
+    return (
+      `<div class="row"><div class="col-md-8">${snippetDiv('Social Share Widget Code Page Top')}{% include 'Page Copy' %}${entityControls}${contentBottom}</div>` +
+      `<div class="col-md-4"><div class="sidebar">${sidebarTop}{% include 'Weblink List Group' weblink_set_name: 'Secondary Navigation' %}${placements}</div></div></div>`
+    );
+  }
+  return `{% include 'Page Copy' %}${entityControls}`;
+}
+
 /**
  * Legacy ASPX page templates (adx_rewriteurl) render inside the WebForms master pages
  * (legacy MasterPortal WebForms.master / WebFormsContent.master, MIT): content_form, the
@@ -531,48 +593,13 @@ export function rewritePageLayout(page, pageTemplate) {
     'pages/webformnovalidation.aspx': 'webform',
   }[rewrite];
   if (!layout) return null;
-  const guid = (value) => (GUID_TEXT.test(String(value ?? '')) ? String(value).toLowerCase() : null);
-  const advancedForm = guid(page?.advancedFormId);
-  const basicForm = guid(page?.formId);
-  const list = guid(page?.listId);
-  const entityControls =
-    DEFAULT_VALIDATION_HOOKS +
-    (advancedForm ? `{% webform id: '${advancedForm}', pp_page_control: true %}` : '') +
-    (basicForm ? `{% entityform id: '${basicForm}', pp_page_control: true %}` : '') +
-    (list ? `{% entitylist id: '${list}', pp_page_control: true %}{% endentitylist %}` : '');
+  const components = rewriteComponents(page);
   const heading = `<div class="page-heading"><div class="container">{% include 'Breadcrumbs' %}<div class="page-header"><h1>{{ page.title | h }}</h1></div><div class="notifications"></div></div></div>`;
   const pageMetadata = `<div class="page-metadata clearfix">${snippetDiv('Social Share Widget Code Page Bottom')}</div>`;
   const placements =
     "{% assign poll_placement_name = 'Sidebar' %}{% mirage_poll_placement %}{% assign ad_placement_name = 'Sidebar Bottom' %}{% mirage_ad_placement %}";
-  let main;
-  if (layout === 'page' || layout === 'listing') {
-    const contentBottom = layout === 'page' ? pageMetadata : "{% include 'Child Link List Group' %}";
-    const sidebarTop = "{% include 'Child Link List Group' %}";
-    main =
-      `<div class="row"><div class="col-md-8">${snippetDiv('Social Share Widget Code Page Top')}{% include 'Page Copy' %}${entityControls}${contentBottom}</div>` +
-      `<div class="col-md-4"><div class="sidebar">${sidebarTop}{% include 'Weblink List Group' weblink_set_name: 'Secondary Navigation' %}${placements}</div></div></div>`;
-  } else if (layout === 'fullpage') {
-    // FullPage.aspx: div#mainContent holds the page copy (one editable element with the
-    // page-copy class) and the three entity control holders, empty when the page binds none;
-    // the page metadata and child links follow it.
-    const holders =
-      DEFAULT_VALIDATION_HOOKS +
-      (advancedForm
-        ? `{% webform id: '${advancedForm}', pp_page_control: true %}`
-        : '<div id="WebFormControl"></div>') +
-      (basicForm
-        ? `{% entityform id: '${basicForm}', pp_page_control: true %}`
-        : '<div id="EntityFormControl"></div>') +
-      (list ? `{% entitylist id: '${list}', pp_page_control: true %}{% endentitylist %}` : '');
-    main = `<div id="mainContent">{% editable page 'adx_copy' type: 'html', liquid: true, class: 'page-copy' %}${holders}</div>${pageMetadata}{% include 'Child Link List Group' %}`;
-    return {
-      source: `${heading}<div class="container">${main}</div>`,
-      serverFormId: 'content_form',
-      contentRegion: true,
-    };
-  } else {
-    main = `{% include 'Page Copy' %}${entityControls}`;
-  }
+  if (layout === 'fullpage') return fullPageLayout(heading, pageMetadata, components);
+  const main = rewritePageMain(layout, components.entityControls, pageMetadata, placements);
   return { source: `${heading}<div class="container">${main}</div>`, serverFormId: 'content_form' };
 }
 
@@ -599,11 +626,9 @@ export function bootstrapVariant(settings = {}) {
     ([name]) => String(name).toLowerCase() === 'site/bootstrapv5enabled',
   );
   const value = entry?.[1];
-  return String(value && typeof value === 'object' ? (value.value ?? '') : (value ?? ''))
-    .trim()
-    .toLowerCase() === 'true'
-    ? 'BootstrapV5'
-    : 'BootstrapV3';
+  let text = value ?? '';
+  if (value && typeof value === 'object') text = value.value ?? '';
+  return String(text).trim().toLowerCase() === 'true' ? 'BootstrapV5' : 'BootstrapV3';
 }
 
 const PLATFORM_BUNDLE_ROOT = '/resource/powerappsportal/';
@@ -822,17 +847,61 @@ export const PLATFORM_BUNDLES = Object.freeze(
 export function platformBundleFor(pathname) {
   const path = String(pathname ?? '').split(/[?#]/)[0];
   // The platform's onerror fallback loads a CDN bundle from the portal origin at /dist/<name>.
-  const rest = path.toLowerCase().startsWith(PLATFORM_BUNDLE_ROOT)
-    ? path.slice(PLATFORM_BUNDLE_ROOT.length)
-    : /^\/dist\//i.test(path)
-      ? path.slice(1)
-      : null;
+  let rest = null;
+  if (path.toLowerCase().startsWith(PLATFORM_BUNDLE_ROOT)) rest = path.slice(PLATFORM_BUNDLE_ROOT.length);
+  else if (/^\/dist\//i.test(path)) rest = path.slice(1);
   if (rest === null) return null;
   return PLATFORM_BUNDLES.find((bundle) => bundle.family.test(rest)) ?? null;
 }
 
 const entryPath = (entry) => (typeof entry === 'string' ? entry : (entry?.src ?? entry?.href ?? ''));
 const RESOURCE_MANAGER_PATH = /^\/_portal\/[^/]+\/Resources\/ResourceManager(?:[/?#]|$)/i;
+
+function capturedShellResources(profile) {
+  const lists = ['stylesheets', 'headScripts', 'beforeContentScripts', 'bodyScripts', 'afterFooterScripts'];
+  const captured = new Map();
+  const remaining = {};
+  for (const list of lists) {
+    remaining[list] = [];
+    for (const entry of Array.isArray(profile?.[list]) ? profile[list] : []) {
+      const path = entryPath(entry);
+      const bundle = platformBundleFor(path);
+      if (bundle) {
+        if (!captured.has(bundle.id)) captured.set(bundle.id, path.split(/[?#]/)[0]);
+      } else if (!RESOURCE_MANAGER_PATH.test(path)) remaining[list].push(entry);
+    }
+  }
+  return { captured, remaining };
+}
+
+function capturedBootstrapMarkup(profile, remaining, bootstrap, renderStyles) {
+  let markup = bootstrap ?? '';
+  if (Array.isArray(profile?.stylesheets)) {
+    const firstPlatform = profile.stylesheets.findIndex((entry) => platformBundleFor(entryPath(entry)));
+    const lead = firstPlatform < 0 ? [] : profile.stylesheets.slice(0, firstPlatform);
+    if (lead.length) {
+      markup = renderStyles
+        ? renderStyles(lead)
+        : lead.map((entry) => `<link rel="stylesheet" href="${escapeAttribute(entryPath(entry))}">`).join('');
+      remaining.stylesheets = remaining.stylesheets.filter((entry) => !lead.includes(entry));
+    }
+  }
+  return markup;
+}
+
+function platformBundleTag(bundle, path) {
+  if (bundle.kind === 'stylesheet')
+    return `<link href="${escapeAttribute(path)}"${fallback(path, 'link')} rel="stylesheet">`;
+  return bundle.defer
+    ? `<script defer="defer" src="${escapeAttribute(path)}"></script>`
+    : `<script${fallback(path, 'script')} src="${escapeAttribute(path)}" type="text/javascript"></script>`;
+}
+
+function platformSlotMarkup(name, pathOf) {
+  return PLATFORM_BUNDLES.filter((bundle) => bundle.slot === name)
+    .map((bundle) => platformBundleTag(bundle, pathOf(bundle)))
+    .join('');
+}
 
 /**
  * The platform shell of a layout or modal page: tag fragments per slot. Fields:
@@ -853,46 +922,13 @@ export function platformShell({
   renderStyles = null,
   controlsRoot = true,
 } = {}) {
-  const lists = ['stylesheets', 'headScripts', 'beforeContentScripts', 'bodyScripts', 'afterFooterScripts'];
-  const captured = new Map();
-  const remaining = {};
-  for (const list of lists) {
-    remaining[list] = [];
-    for (const entry of Array.isArray(profile?.[list]) ? profile[list] : []) {
-      const path = entryPath(entry);
-      const bundle = platformBundleFor(path);
-      if (bundle) {
-        if (!captured.has(bundle.id)) captured.set(bundle.id, path.split(/[?#]/)[0]);
-      } else if (!RESOURCE_MANAGER_PATH.test(path)) remaining[list].push(entry);
-    }
-  }
+  const { captured, remaining } = capturedShellResources(profile);
   // With a capture, the stylesheets observed before the first platform stylesheet are the
   // Bootstrap slot; the rest are the site's content styles.
-  let bootstrapMarkup = bootstrap ?? '';
-  if (Array.isArray(profile?.stylesheets)) {
-    const firstPlatform = profile.stylesheets.findIndex((entry) => platformBundleFor(entryPath(entry)));
-    const lead = firstPlatform < 0 ? [] : profile.stylesheets.slice(0, firstPlatform);
-    if (lead.length) {
-      bootstrapMarkup = renderStyles
-        ? renderStyles(lead)
-        : lead.map((entry) => `<link rel="stylesheet" href="${escapeAttribute(entryPath(entry))}">`).join('');
-      remaining.stylesheets = remaining.stylesheets.filter((entry) => !lead.includes(entry));
-    }
-  }
+  const bootstrapMarkup = capturedBootstrapMarkup(profile, remaining, bootstrap, renderStyles);
   const pathOf = (bundle) =>
     captured.get(bundle.id) ?? `${PLATFORM_BUNDLE_ROOT}${bundle.names[variant] ?? bundle.names.BootstrapV3}`;
-  const tag = (bundle) => {
-    const path = pathOf(bundle);
-    if (bundle.kind === 'stylesheet')
-      return `<link href="${escapeAttribute(path)}"${fallback(path, 'link')} rel="stylesheet">`;
-    return bundle.defer
-      ? `<script defer="defer" src="${escapeAttribute(path)}"></script>`
-      : `<script${fallback(path, 'script')} src="${escapeAttribute(path)}" type="text/javascript"></script>`;
-  };
-  const slot = (name) =>
-    PLATFORM_BUNDLES.filter((bundle) => bundle.slot === name)
-      .map(tag)
-      .join('');
+  const slot = (name) => platformSlotMarkup(name, pathOf);
   const site = String(websiteId ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
@@ -928,7 +964,8 @@ function fallback(path, element) {
   if (!match) return '';
   const [attribute, extra] =
     element === 'link' ? ['href', "link.rel = 'stylesheet';"] : ['src', "script.type = 'text/javascript';"];
-  return ` onerror="${escapeAttribute(`javascript: var target = event.target; var ${element} = document.createElement('${element}'); ${element}.crossOrigin = target.crossOrigin; ${element}.${attribute} = '/${match[1]}'; ${extra} target.insertAdjacentElement('afterend',${element});`)}"`;
+  const handler = `javascript: var target = event.target; var ${element} = document.createElement('${element}'); ${element}.crossOrigin = target.crossOrigin; ${element}.${attribute} = '/${match[1]}'; ${extra} target.insertAdjacentElement('afterend',${element});`; // NOSONAR: intentional local script execution or generated handler
+  return ` onerror="${escapeAttribute(handler)}"`;
 }
 
 /** True when a document carries the platform bundles (the platform jQuery/moment provider). */

@@ -52,12 +52,12 @@ const withTimeout = (promise, ms) =>
   });
 
 /** JSON objects of a case's data become Liquid hashes, as DotLiquid's Hash.FromDictionary does. */
-const toLiquid = (value) =>
-  Array.isArray(value)
-    ? value.map(toLiquid)
-    : value && typeof value === 'object'
-      ? new LiquidHash(Object.fromEntries(Object.entries(value).map(([key, item]) => [key, toLiquid(item)])))
-      : value;
+const toLiquid = (value) => {
+  if (Array.isArray(value)) return value.map(toLiquid);
+  if (value && typeof value === 'object')
+    return new LiquidHash(Object.fromEntries(Object.entries(value).map(([key, item]) => [key, toLiquid(item)])));
+  return value;
+};
 
 /** Render one golden-liquid case. `raised` is true when the render reported a Liquid error. */
 export async function runCase(test, { timeoutMs = 5000 } = {}) {
@@ -123,20 +123,10 @@ export async function conformance({ suite, rules: rulesFile = DEFAULT_RULES, tim
     if (rule) used.add(rule);
     const category = CATEGORIES.includes(rule?.category) ? rule.category : 'engine-gap';
     counts[category]++;
-    differences.push({
-      name: test.name,
-      tags: test.tags ?? [],
-      category,
-      rule: rule ? (rule.match.name !== undefined ? { name: rule.match.name } : { tag: rule.match.tag }) : null,
-      reasonKey: rule && Object.hasOwn(reasons, rule.reason) ? rule.reason : null,
-      reason: rule ? (reasons[rule.reason] ?? rule.reason) : 'No rule explains this difference.',
-      want: test.invalid ? { error: true } : { output: test.result },
-      mirage: result.raised ? { error: result.error ?? true } : { output: result.output },
-      dotliquid: rule?.dotliquid ?? null,
-    });
+    differences.push(differenceFor(test, result, rule, category, reasons));
   }
   return {
-    suite: { path: suite, ...(rulesDocument.suite ?? {}) },
+    suite: { path: suite, ...rulesDocument.suite },
     reference: rulesDocument.reference ?? null,
     rules: rulesFile,
     counts,
@@ -147,7 +137,26 @@ export async function conformance({ suite, rules: rulesFile = DEFAULT_RULES, tim
   };
 }
 
-const ELLIPSIS = String.fromCharCode(0x2026);
+function differenceFor(test, result, rule, category, reasons) {
+  let ruleMatch = null;
+  if (rule) {
+    if (rule.match.name !== undefined) ruleMatch = { name: rule.match.name };
+    else ruleMatch = { tag: rule.match.tag };
+  }
+  return {
+    name: test.name,
+    tags: test.tags ?? [],
+    category,
+    rule: ruleMatch,
+    reasonKey: rule && Object.hasOwn(reasons, rule.reason) ? rule.reason : null,
+    reason: rule ? (reasons[rule.reason] ?? rule.reason) : 'No rule explains this difference.',
+    want: test.invalid ? { error: true } : { output: test.result },
+    mirage: result.raised ? { error: result.error ?? true } : { output: result.output },
+    dotliquid: rule?.dotliquid ?? null,
+  };
+}
+
+const ELLIPSIS = String.fromCodePoint(0x2026);
 const BACKTICK = /\x60/g;
 /** One value for a table cell: a JSON string for output (backticks escaped), "(error) Type" for a recorded .NET error. */
 const show = (value) => {
@@ -158,7 +167,7 @@ const show = (value) => {
       : '(error)';
   const json = JSON.stringify(typeof value === 'object' ? value.output : value) ?? '';
   const text = json.length > 72 ? `${json.slice(0, 69)}${ELLIPSIS}"` : json;
-  return text.replace(BACKTICK, String.fromCharCode(92) + '\x60');
+  return text.replaceAll(BACKTICK, String.fromCodePoint(92) + '\x60');
 };
 /** The DotLiquid cell: one value when every reference build agrees, otherwise one per build. */
 const showDotLiquid = (evidence) => {
@@ -175,7 +184,7 @@ const showDotLiquid = (evidence) => {
 const PIPE = /\|/g;
 const cell = (value) =>
   String(value ?? '')
-    .replace(PIPE, String.fromCharCode(92) + '|')
+    .replaceAll(PIPE, String.fromCodePoint(92) + '|')
     .replace(/\r?\n/g, ' ');
 
 function text(report) {
@@ -210,38 +219,45 @@ export function markdown(report) {
       lines.push('None.');
       continue;
     }
-    if (category === 'platform-unsupported') {
-      // One row per rule: the missing feature, its evidence and the cases it accounts for.
-      const groups = new Map();
-      for (const item of items) {
-        const key = item.rule?.tag ?? item.rule?.name ?? item.name;
-        if (!groups.has(key)) groups.set(key, { reason: item.reason, names: [] });
-        groups.get(key).names.push(item.name);
-      }
-      lines.push('| Feature | Cases | Evidence | Case names |', '| --- | --- | --- | --- |');
-      for (const [key, group] of groups)
-        lines.push(
-          `| ${cell(key)} | ${group.names.length} | ${cell(group.reason)} | ${cell(group.names.join('; '))} |`,
-        );
-      continue;
-    }
-    // The evidence of each shared reason once, then one row per case naming its reason.
-    const shared = new Map();
-    for (const item of items)
-      if (item.reasonKey)
-        shared.set(item.reasonKey, { reason: item.reason, count: (shared.get(item.reasonKey)?.count ?? 0) + 1 });
-    if (shared.size) {
-      lines.push('| Reason | Cases | Evidence |', '| --- | --- | --- |');
-      for (const [key, { reason, count }] of shared) lines.push(`| \`${key}\` | ${count} | ${cell(reason)} |`);
-      lines.push('');
-    }
-    lines.push('| Case | Expected (Shopify) | Mirage | DotLiquid | Reason |', '| --- | --- | --- | --- | --- |');
-    for (const item of items)
-      lines.push(
-        `| ${cell(item.name)} | ${cell(show(item.want))} | ${cell(show(item.mirage))} | ${cell(showDotLiquid(item.dotliquid))} | ${item.reasonKey ? `\`${item.reasonKey}\`` : cell(item.reason)} |`,
-      );
+    if (category === 'platform-unsupported') appendPlatformRows(lines, items);
+    else appendDifferenceRows(lines, items);
   }
   return lines.join('\n') + '\n';
+}
+
+function appendPlatformRows(lines, items) {
+  // One row per rule: the missing feature, its evidence and the cases it accounts for.
+  const groups = new Map();
+  for (const item of items) {
+    const key = item.rule?.tag ?? item.rule?.name ?? item.name;
+    if (!groups.has(key)) groups.set(key, { reason: item.reason, names: [] });
+    groups.get(key).names.push(item.name);
+  }
+  lines.push('| Feature | Cases | Evidence | Case names |', '| --- | --- | --- | --- |');
+  for (const [key, group] of groups)
+    lines.push(`| ${cell(key)} | ${group.names.length} | ${cell(group.reason)} | ${cell(group.names.join('; '))} |`);
+}
+
+function appendDifferenceRows(lines, items) {
+  // The evidence of each shared reason once, then one row per case naming its reason.
+  const shared = new Map();
+  for (const item of items)
+    if (item.reasonKey)
+      shared.set(item.reasonKey, { reason: item.reason, count: (shared.get(item.reasonKey)?.count ?? 0) + 1 });
+  if (shared.size) {
+    lines.push('| Reason | Cases | Evidence |', '| --- | --- | --- |');
+    for (const [key, { reason, count }] of shared) lines.push(`| \`${key}\` | ${count} | ${cell(reason)} |`);
+    lines.push('');
+  }
+  lines.push('| Case | Expected (Shopify) | Mirage | DotLiquid | Reason |', '| --- | --- | --- | --- | --- |');
+  for (const item of items) appendDifferenceRow(lines, item);
+}
+
+function appendDifferenceRow(lines, item) {
+  const reasonCell = item.reasonKey ? '`' + item.reasonKey + '`' : cell(item.reason);
+  lines.push(
+    `| ${cell(item.name)} | ${cell(show(item.want))} | ${cell(show(item.mirage))} | ${cell(showDotLiquid(item.dotliquid))} | ${reasonCell} |`,
+  );
 }
 
 function parseArgs(argv) {
@@ -265,12 +281,15 @@ function parseArgs(argv) {
     throw new Error(
       'Usage: node mirage/liquid-conformance.mjs --suite <golden_liquid.json> [--rules FILE] [--json | --markdown] [--out FILE] [--timeout MS]',
     );
+  let format = 'text';
+  if (values.json) format = 'json';
+  else if (values.markdown) format = 'markdown';
   return {
     suite: values.suite,
     rules: values.rules,
     out: values.out,
     timeoutMs,
-    format: values.json ? 'json' : values.markdown ? 'markdown' : 'text',
+    format,
   };
 }
 
@@ -288,19 +307,17 @@ async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   await assertDistinctOutput(options.out, [options.suite, options.rules ?? DEFAULT_RULES]);
   const report = await conformance(options);
-  const body =
-    options.format === 'json'
-      ? JSON.stringify(report, null, 2) + '\n'
-      : options.format === 'markdown'
-        ? markdown(report)
-        : text(report);
+  let body;
+  if (options.format === 'json') body = JSON.stringify(report, null, 2) + '\n';
+  else if (options.format === 'markdown') body = markdown(report);
+  else body = text(report);
   if (options.out) await fs.writeFile(options.out, body);
   else process.stdout.write(body);
   return report;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  main().catch((error) => {
+  /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     reportCliError(error);
     process.exitCode = 2;
   });

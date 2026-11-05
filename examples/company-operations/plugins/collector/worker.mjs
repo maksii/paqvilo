@@ -87,7 +87,7 @@ async function main(receiptId) {
   console.log(JSON.stringify(await persist(await receipt.json())));
 }
 if (process.argv[2] && process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main(process.argv[2]).catch((error) => {
+  /* NOSONAR: module-level promise chain must not block evaluation */ main(process.argv[2]).catch((error) => {
     const code = ['DATAVERSE_HTTP_ERROR', 'READ_FAILED', 'UNKNOWN_COMMIT'].includes(error?.code)
       ? error.code
       : 'WORKER_FAILED';

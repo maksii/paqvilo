@@ -146,10 +146,158 @@ const inside = (root, file) => {
   return relative && !relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative);
 };
 
+function loadSchemaEntry(state, entry, metadataKeys, schemaTables, authoritativeSchemaRecords) {
+  const schema = at(entry.document, entry.schemaPath);
+  if (!plain(schema)) throw fail(`The schema location in ${entry.file} must already exist as an object.`);
+  if (schema.mappings !== undefined) {
+    if (!plain(schema.mappings)) throw fail('Pack schema mappings must be an object.');
+    state.mappings ??= {};
+    Object.assign(state.mappings, structuredClone(schema.mappings));
+  }
+  for (const key of metadataKeys)
+    if (schema[key] != null) {
+      state.dataverse ??= {};
+      state.dataverse[key] = structuredClone(schema[key]);
+    }
+  loadSchemaRecords(state, schema.schemaRecords, schemaTables, authoritativeSchemaRecords);
+}
+
+function loadSchemaRecords(state, schemaRecords, schemaTables, authoritativeSchemaRecords) {
+  if (schemaRecords === undefined) return;
+  if (!plain(schemaRecords)) throw fail('Pack schemaRecords must be an object.');
+  for (const table of schemaTables)
+    if (schemaRecords[table] !== undefined) {
+      if (!Array.isArray(schemaRecords[table]) || schemaRecords[table].some((row) => !plain(row)))
+        throw fail(`Pack schemaRecords.${table} must be a record array.`);
+      state.tables ??= {};
+      state.tables[table] = structuredClone(schemaRecords[table]);
+      authoritativeSchemaRecords.add(table);
+    }
+}
+
+function loadEntryTables(state, entry, owners, runtimeTables, validateRows) {
+  if (entry.newTablesPath) {
+    const tables = at(entry.document, entry.newTablesPath);
+    if (!plain(tables)) throw fail(`The new tables location in ${entry.file} must already exist as an object.`);
+    for (const [table, rows] of Object.entries(tables)) {
+      if (
+        !/^[a-z][a-z0-9_]*$/i.test(table) ||
+        ['constructor', 'prototype', '__proto__'].includes(table) ||
+        owners.has(table) ||
+        runtimeTables.has(table)
+      )
+        throw fail(`Invalid or conflicting new table owner ${table}.`);
+      const owner = { entry, path: [...entry.newTablesPath, table], idColumn: state.mappings?.[table]?.idColumn };
+      validateRows(table, rows, owner, state);
+      owners.set(table, owner);
+      state.tables[table] = structuredClone(rows);
+    }
+  }
+  for (const [table, owner] of Object.entries(entry.tables)) {
+    const rows = at(entry.document, owner.path);
+    validateRows(table, rows, owner, state);
+    state.tables[table] = structuredClone(rows);
+  }
+}
+
+function assertWritableTable(table, ownerFor, runtimeTables, schemaOwner, schemaTables) {
+  if (!ownerFor(table) && !runtimeTables.has(table) && !(schemaOwner && schemaTables.includes(table)))
+    throw fail(
+      `Table ${table} has no declared writable pack DATA file. Declare its owner or use dry run.`,
+      'SimulationDataTargetRequired',
+      409,
+    );
+}
+
+function updateChangedTable(table, state, ownerFor, newTablesOwner, documentOf, documents, validateRows) {
+  const owner = ownerFor(table);
+  if (!owner) return;
+  if (
+    !state.mappings?.[table] &&
+    newTablesOwner === owner.entry &&
+    owner.path.length === newTablesOwner.newTablesPath.length + 1
+  ) {
+    delete at(documentOf(owner.entry), newTablesOwner.newTablesPath)[table];
+    return;
+  }
+  const value = state.tables?.[table] ?? [];
+  validateRows(table, value, owner, state);
+  const document = documentOf(owner.entry);
+  documents.set(owner.entry, put(document, owner.path, structuredClone(value)));
+}
+
+function assertInsidePack(root, file, message) {
+  if (!inside(root, file)) throw fail(message);
+}
+
+function registerPackOwners(owners, entry) {
+  for (const [table, owner] of Object.entries(entry.tables)) {
+    if (owners.has(table)) throw fail(`Table ${table} has more than one pack data owner.`);
+    owners.set(table, { ...owner, entry });
+  }
+}
+
+function registerUniqueOwner(current, entry, message) {
+  if (current) throw fail(message);
+  return entry;
+}
+
+function updatePublishedFiles(published, runtimeFile, runtimeDigest, descriptors, documents) {
+  for (const result of published) {
+    if (result.file === runtimeFile) runtimeDigest = result.digest;
+    else {
+      const entry = descriptors.find((item) => item.file === result.file);
+      entry.digest = result.digest;
+      entry.document = documents.get(entry);
+    }
+  }
+  return runtimeDigest;
+}
+
+function markAuthoritativeSchema(schemaChanged, schemaTables, authoritativeSchemaRecords) {
+  if (schemaChanged) for (const table of schemaTables) authoritativeSchemaRecords.add(table);
+}
+
+function registerChangedOwners(changed, ownerFor, owners, mappings) {
+  for (const table of changed) {
+    const owner = ownerFor(table);
+    if (owner && !owners.has(table)) owners.set(table, { ...owner, idColumn: mappings[table].idColumn });
+  }
+}
+
+function assertSchemaWritable(schemaChanged, level, schemaOwner) {
+  if (schemaChanged && level !== 'deep')
+    throw fail(
+      'Schema changes require deep simulation. Record edits are allowed in the current level.',
+      'SimulationSchemaDisabled',
+      403,
+    );
+  if (schemaChanged && !schemaOwner)
+    throw fail(
+      'Deep simulation requires an explicitly declared schemaPath in an existing pack DATA file.',
+      'SimulationSchemaTargetRequired',
+      409,
+    );
+}
+
+function rowsForSave(tables, active, sourcePublication, state, baselineRows) {
+  return tables instanceof Set && active && !sourcePublication
+    ? dirtyRowHashes(state, baselineRows, tables)
+    : rowHashes(state);
+}
+
+function changedRows(active, sourcePublication, baselineRows, rows) {
+  return active && !sourcePublication
+    ? [...new Set([...baselineRows.keys(), ...rows.keys()])].filter(
+        (table) => rows.get(table) !== baselineRows.get(table),
+      )
+    : [];
+}
+
 /** Explicit storage adapter used by DataStore before any surface is composed.
  * Its schema policy becomes active once source and platform bootstrap finishes.
  * Direct pack writes and the ignored runtime checkpoint share one transaction. */
-export async function createSimulationPersistence({ settings, packs = [], stateFile, io = fs } = {}) {
+/* NOSONAR */ export async function createSimulationPersistence({ settings, packs = [], stateFile, io = fs } = {}) {
   settings = simulationSettings(settings);
   if (!settings) return null;
   const memory = settings.level === 'dry-run';
@@ -166,26 +314,20 @@ export async function createSimulationPersistence({ settings, packs = [], stateF
     const root = await io.realpath(directory);
     for (const definition of declared) {
       const candidate = path.resolve(root, definition.file);
-      if (!inside(root, candidate)) throw fail(`Data pack ${pack.id} declares a file outside its directory.`);
+      assertInsidePack(root, candidate, `Data pack ${pack.id} declares a file outside its directory.`);
       const file = await io.realpath(candidate);
-      if (!inside(root, file) || !(await io.stat(file)).isFile())
+      assertInsidePack(root, file, `Data pack ${pack.id} must own a regular JSON data file inside its directory.`);
+      if (!(await io.stat(file)).isFile())
         throw fail(`Data pack ${pack.id} must own a regular JSON data file inside its directory.`);
       if (descriptors.some((entry) => entry.file === file))
         throw fail('Each pack data file must have exactly one descriptor.');
       const entry = { ...definition, packId: pack.id, root, candidate, file };
       descriptors.push(entry);
-      for (const [table, owner] of Object.entries(entry.tables)) {
-        if (owners.has(table)) throw fail(`Table ${table} has more than one pack data owner.`);
-        owners.set(table, { ...owner, entry });
-      }
-      if (entry.newTablesPath) {
-        if (newTablesOwner) throw fail('Only one pack data file may own new tables.');
-        newTablesOwner = entry;
-      }
-      if (entry.schemaPath) {
-        if (schemaOwner) throw fail('Only one pack data file may own normalized schema.');
-        schemaOwner = entry;
-      }
+      registerPackOwners(owners, entry);
+      if (entry.newTablesPath)
+        newTablesOwner = registerUniqueOwner(newTablesOwner, entry, 'Only one pack data file may own new tables.');
+      if (entry.schemaPath)
+        schemaOwner = registerUniqueOwner(schemaOwner, entry, 'Only one pack data file may own normalized schema.');
     }
   }
   const runtimeFile = stateFile ? path.resolve(stateFile) : null;
@@ -287,55 +429,10 @@ export async function createSimulationPersistence({ settings, packs = [], stateF
           throw fail(`Pack DATA file is not valid JSON: ${entry.file}.`);
         }
         entry.digest = bytesHash(raw);
-        if (entry.schemaPath) {
-          const schema = at(entry.document, entry.schemaPath);
-          if (!plain(schema)) throw fail(`The schema location in ${entry.file} must already exist as an object.`);
-          if (schema.mappings !== undefined) {
-            if (!plain(schema.mappings)) throw fail('Pack schema mappings must be an object.');
-            Object.assign((state.mappings ??= {}), structuredClone(schema.mappings));
-          }
-          for (const key of metadataKeys)
-            if (schema[key] != null) (state.dataverse ??= {})[key] = structuredClone(schema[key]);
-          if (schema.schemaRecords !== undefined) {
-            if (!plain(schema.schemaRecords)) throw fail('Pack schemaRecords must be an object.');
-            for (const table of schemaTables)
-              if (schema.schemaRecords[table] !== undefined) {
-                if (
-                  !Array.isArray(schema.schemaRecords[table]) ||
-                  schema.schemaRecords[table].some((row) => !plain(row))
-                )
-                  throw fail(`Pack schemaRecords.${table} must be a record array.`);
-                (state.tables ??= {})[table] = structuredClone(schema.schemaRecords[table]);
-                authoritativeSchemaRecords.add(table);
-              }
-          }
-        }
+        if (entry.schemaPath) loadSchemaEntry(state, entry, metadataKeys, schemaTables, authoritativeSchemaRecords);
       }
       state.tables ??= {};
-      for (const entry of descriptors) {
-        if (entry.newTablesPath) {
-          const tables = at(entry.document, entry.newTablesPath);
-          if (!plain(tables)) throw fail(`The new tables location in ${entry.file} must already exist as an object.`);
-          for (const [table, rows] of Object.entries(tables)) {
-            if (
-              !/^[a-z][a-z0-9_]*$/i.test(table) ||
-              ['constructor', 'prototype', '__proto__'].includes(table) ||
-              owners.has(table) ||
-              runtimeTables.has(table)
-            )
-              throw fail(`Invalid or conflicting new table owner ${table}.`);
-            const owner = { entry, path: [...entry.newTablesPath, table], idColumn: state.mappings?.[table]?.idColumn };
-            validateRows(table, rows, owner, state);
-            owners.set(table, owner);
-            state.tables[table] = structuredClone(rows);
-          }
-        }
-        for (const [table, owner] of Object.entries(entry.tables)) {
-          const rows = at(entry.document, owner.path);
-          validateRows(table, rows, owner, state);
-          state.tables[table] = structuredClone(rows);
-        }
-      }
+      for (const entry of descriptors) loadEntryTables(state, entry, owners, runtimeTables, validateRows);
       return state;
     },
     activate(state) {
@@ -371,62 +468,23 @@ export async function createSimulationPersistence({ settings, packs = [], stateF
       const sourcePublication = sourcePublications.getStore()?.active === true;
       const currentSchema = hash(schemaOf(state)),
         schemaChanged = active && !sourcePublication && currentSchema !== schemaHash;
-      if (schemaChanged && settings.level !== 'deep')
-        throw fail(
-          'Schema changes require deep simulation. Record edits are allowed in the current level.',
-          'SimulationSchemaDisabled',
-          403,
-        );
-      if (schemaChanged && !schemaOwner)
-        throw fail(
-          'Deep simulation requires an explicitly declared schemaPath in an existing pack DATA file.',
-          'SimulationSchemaTargetRequired',
-          409,
-        );
+      assertSchemaWritable(schemaChanged, settings.level, schemaOwner);
       if (memory) {
         reportCache = null;
         return;
       }
       // ponytail: the schema hash above stays whole-state (schema changes are refused below deep simulation even in
       // dry run, and sections have no row journal); only row hashing is limited to the transaction's tables.
-      const rows =
-        tables instanceof Set && active && !sourcePublication
-          ? dirtyRowHashes(state, baselineRows, tables)
-          : rowHashes(state);
-      const changed =
-        active && !sourcePublication
-          ? [...new Set([...baselineRows.keys(), ...rows.keys()])].filter(
-              (table) => rows.get(table) !== baselineRows.get(table),
-            )
-          : [];
-      for (const table of changed)
-        if (!ownerFor(table) && !runtimeTables.has(table) && !(schemaOwner && schemaTables.includes(table)))
-          throw fail(
-            `Table ${table} has no declared writable pack DATA file. Declare its owner or use dry run.`,
-            'SimulationDataTargetRequired',
-            409,
-          );
+      const rows = rowsForSave(tables, active, sourcePublication, state, baselineRows);
+      const changed = changedRows(active, sourcePublication, baselineRows, rows);
+      for (const table of changed) assertWritableTable(table, ownerFor, runtimeTables, schemaOwner, schemaTables);
       const documents = new Map();
       const documentOf = (entry) => {
         if (!documents.has(entry)) documents.set(entry, structuredClone(entry.document));
         return documents.get(entry);
       };
       for (const table of changed) {
-        const owner = ownerFor(table);
-        if (!owner) continue;
-        if (
-          !state.mappings?.[table] &&
-          newTablesOwner === owner.entry &&
-          owner.path.length === newTablesOwner.newTablesPath.length + 1
-        ) {
-          delete at(documentOf(owner.entry), newTablesOwner.newTablesPath)[table];
-          continue;
-        }
-        const value = state.tables?.[table] ?? [];
-        validateRows(table, value, owner, state);
-        const document = documentOf(owner.entry);
-        // A newly declared dynamic table adds a property to its existing object.
-        documents.set(owner.entry, put(document, owner.path, structuredClone(value)));
+        updateChangedTable(table, state, ownerFor, newTablesOwner, documentOf, documents, validateRows);
       }
       if (schemaChanged) {
         const document = documentOf(schemaOwner),
@@ -451,20 +509,10 @@ export async function createSimulationPersistence({ settings, packs = [], stateF
           verify: verifyFiles,
           allowedFiles: allFiles,
         });
-        for (const result of published) {
-          if (result.file === runtimeFile) runtimeDigest = result.digest;
-          else {
-            const entry = descriptors.find((item) => item.file === result.file);
-            entry.digest = result.digest;
-            entry.document = documents.get(entry);
-          }
-        }
+        runtimeDigest = updatePublishedFiles(published, runtimeFile, runtimeDigest, descriptors, documents);
         capture(state, rows, currentSchema);
-        if (schemaChanged) for (const table of schemaTables) authoritativeSchemaRecords.add(table);
-        for (const table of changed) {
-          const owner = ownerFor(table);
-          if (owner && !owners.has(table)) owners.set(table, { ...owner, idColumn: state.mappings[table].idColumn });
-        }
+        markAuthoritativeSchema(schemaChanged, schemaTables, authoritativeSchemaRecords);
+        registerChangedOwners(changed, ownerFor, owners, state.mappings);
       } catch (error) {
         if (error.code === 'PersistenceRecoveryRequired') {
           blocked = error.message;

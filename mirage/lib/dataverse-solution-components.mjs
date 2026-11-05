@@ -11,8 +11,11 @@ const validId = (value) => /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/.test(val
 const nodes = (root, name) => (root.name === name ? [root] : descendants(root, name));
 const value = (node, ...names) =>
   names.map((name) => childText(node, name) ?? node.attrs?.[name]).find((v) => v !== undefined);
-const xmlOf = (node) =>
-  node ? (node.children.length ? node.children.map(serializeXml).join('') : node.text.trim()) : '';
+const xmlOf = (node) => {
+  if (!node) return '';
+  if (node.children.length) return node.children.map(serializeXml).join('');
+  return node.text.trim();
+};
 export const PAYLOAD_COMPONENTS = Object.freeze({
   systemform: 60,
   savedquery: 26,
@@ -54,38 +57,18 @@ export function ensureSolutionComponentMapping(state, component, definitionOf) {
   mapping.ownership ??= definition?.ownershipType;
   mapping.fields ??= {};
   mapping.fields[idColumn] ??= { dataverseType: 'uniqueidentifier' };
-  for (const [name, value] of Object.entries(component.row))
-    mapping.fields[name] ??= {
-      dataverseType: /(?:xml|xaml)$/.test(name)
-        ? 'memo'
-        : typeof value === 'boolean'
-          ? 'bit'
-          : typeof value === 'number'
-            ? 'int'
-            : 'nvarchar',
-    };
+  for (const [name, value] of Object.entries(component.row)) {
+    let dataverseType;
+    if (/(?:xml|xaml)$/.test(name)) dataverseType = 'memo';
+    else if (typeof value === 'boolean') dataverseType = 'bit';
+    else if (typeof value === 'number') dataverseType = 'int';
+    else dataverseType = 'nvarchar';
+    mapping.fields[name] ??= { dataverseType };
+  }
   return mapping;
 }
 
-/** Source-defined records; an app without an exported GUID uses its stable local identity. */
-export function solutionDocumentComponents(xml, { name = '', entityDir, entity: enclosingEntity, lcid = 1033 } = {}) {
-  const root = typeof xml === 'string' ? parseSolutionXml(xml) : xml;
-  const out = [];
-  const add = (kind, id, row, entity, labels) => {
-    id = guid(id);
-    if (!validId(id)) return;
-    out.push({
-      kind,
-      id,
-      type: PAYLOAD_COMPONENTS[kind],
-      logical: kind,
-      name: id,
-      entity,
-      ...(labels ? { labels } : {}),
-      row: { ...row, [kind === 'systemform' ? 'formid' : `${kind}id`]: id },
-    });
-  };
-  const title = (node) => pickLabel(labelsOf(child(node, 'LocalizedNames')), lcid) ?? value(node, 'Name', 'name') ?? '';
+function appendAppModules(root, out, add, title) {
   for (const node of [...nodes(root, 'AppModule'), ...nodes(root, 'appmodule')]) {
     const appName = value(node, 'UniqueName', 'uniquename');
     const appId =
@@ -115,6 +98,9 @@ export function solutionDocumentComponents(xml, { name = '', entityDir, entity: 
         }),
       );
   }
+}
+
+function appendSiteMaps(root, add, title) {
   for (const node of nodes(root, 'AppModuleSiteMap')) {
     const mapName = value(node, 'AppModuleUniqueName', 'SiteMapUniqueName', 'UniqueName');
     add(
@@ -130,8 +116,11 @@ export function solutionDocumentComponents(xml, { name = '', entityDir, entity: 
       labelsOf(child(node, 'LocalizedNames')),
     );
   }
+}
+
+function solutionEntityContainers(root, name, entityDir, enclosingEntity) {
   const entities = nodes(root, 'Entity');
-  const containers = entities.length
+  return entities.length
     ? entities.map((node) => ({
         node,
         entity: lower(
@@ -141,6 +130,9 @@ export function solutionDocumentComponents(xml, { name = '', entityDir, entity: 
         ),
       }))
     : [{ node: root, entity: lower(enclosingEntity ?? entityDir ?? /(?:^|\/)Entities\/([^/]+)\//i.exec(name)?.[1]) }];
+}
+
+function appendEntityComponents(containers, add, title) {
   for (const { node: container, entity } of containers) {
     for (const node of nodes(container, 'systemform'))
       add(
@@ -173,6 +165,9 @@ export function solutionDocumentComponents(xml, { name = '', entityDir, entity: 
         labelsOf(child(node, 'LocalizedNames')),
       );
   }
+}
+
+function appendWorkflowComponents(root, add, title) {
   for (const node of [...nodes(root, 'Workflow'), ...nodes(root, 'workflow')])
     add(
       'workflow',
@@ -191,12 +186,41 @@ export function solutionDocumentComponents(xml, { name = '', entityDir, entity: 
       undefined,
       labelsOf(child(node, 'LocalizedNames')),
     );
+}
+
+function appendWebResources(root, add) {
   for (const node of [...nodes(root, 'WebResource'), ...nodes(root, 'webresource')])
     add('webresource', value(node, 'WebResourceId', 'webresourceid'), {
       name: value(node, 'Name', 'name'),
       displayname: value(node, 'DisplayName', 'displayname'),
       webresourcetype: Number(value(node, 'WebResourceType', 'webresourcetype') ?? 0),
     });
+}
+
+/** Source-defined records; an app without an exported GUID uses its stable local identity. */
+export function solutionDocumentComponents(xml, { name = '', entityDir, entity: enclosingEntity, lcid = 1033 } = {}) {
+  const root = typeof xml === 'string' ? parseSolutionXml(xml) : xml;
+  const out = [];
+  const add = (kind, id, row, entity, labels) => {
+    id = guid(id);
+    if (!validId(id)) return;
+    out.push({
+      kind,
+      id,
+      type: PAYLOAD_COMPONENTS[kind],
+      logical: kind,
+      name: id,
+      entity,
+      ...(labels ? { labels } : {}),
+      row: { ...row, [kind === 'systemform' ? 'formid' : `${kind}id`]: id },
+    });
+  };
+  const title = (node) => pickLabel(labelsOf(child(node, 'LocalizedNames')), lcid) ?? value(node, 'Name', 'name') ?? '';
+  appendAppModules(root, out, add, title);
+  appendSiteMaps(root, add, title);
+  appendEntityComponents(solutionEntityContainers(root, name, entityDir, enclosingEntity), add, title);
+  appendWorkflowComponents(root, add, title);
+  appendWebResources(root, add);
   return out;
 }
 
@@ -209,7 +233,7 @@ export function payloadComponentsOf(state) {
 // App membership row IDs are local RFC 4122 v5 identifiers, not claimed native
 // installation IDs. Object references retain exported IDs as private provenance.
 const memberId = (namespace, name) => {
-  const bytes = createHash('sha1')
+  const bytes = createHash('sha1') // NOSONAR: non-security hash used for identity or checksums
     .update(Buffer.from(namespace.replaceAll('-', ''), 'hex'))
     .update(name)
     .digest()
@@ -218,9 +242,8 @@ const memberId = (namespace, name) => {
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   return bytes.toString('hex').replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
 };
-export function withSolutionAppMembers(components, state, entityId) {
-  const out = [...components],
-    referenceTables = { 26: 'savedquery', 29: 'workflow', 60: 'systemform', 62: 'sitemap', 61: 'webresource' };
+
+function solutionMemberIndexes(components, state) {
   const componentIds = new Set(),
     siteMaps = new Map(),
     tableIds = new Map();
@@ -241,21 +264,32 @@ export function withSolutionAppMembers(components, state, entityId) {
       );
     return tableIds.get(table).has(id);
   };
+  return { componentIds, siteMaps, hasRow };
+}
+
+function solutionMemberObjectId(member, state, indexes, entityId) {
+  let objectId = member.objectId;
+  if (member.type === 1) {
+    if (!member.entity || !Object.hasOwn(state.mappings ?? {}, member.entity)) return null;
+    objectId = entityId?.(member.entity, state) ?? objectId;
+  } else {
+    const table = { 26: 'savedquery', 29: 'workflow', 60: 'systemform', 62: 'sitemap', 61: 'webresource' }[member.type];
+    if (member.type === 62 && !validId(objectId) && member.entity) objectId = indexes.siteMaps.get(member.entity);
+    if (!table || !validId(objectId)) return null;
+    const present = indexes.componentIds.has(`${table}/${objectId}`) || indexes.hasRow(table, objectId);
+    if (!present) return null;
+  }
+  return validId(objectId) ? objectId : null;
+}
+
+export function withSolutionAppMembers(components, state, entityId) {
+  const out = [...components];
+  const indexes = solutionMemberIndexes(components, state);
   for (const app of components.filter((component) => component.kind === 'appmodule')) {
     const appUnique = app.row.appmoduleidunique ?? app.id;
     for (const member of app.members ?? []) {
-      let objectId = member.objectId;
-      if (member.type === 1) {
-        if (!member.entity || !Object.hasOwn(state.mappings ?? {}, member.entity)) continue;
-        objectId = entityId?.(member.entity, state) ?? objectId;
-      } else {
-        const table = referenceTables[member.type];
-        if (member.type === 62 && !validId(objectId) && member.entity) objectId = siteMaps.get(member.entity);
-        if (!table || !validId(objectId)) continue;
-        const present = componentIds.has(`${table}/${objectId}`) || hasRow(table, objectId);
-        if (!present) continue;
-      }
-      if (!validId(objectId)) continue;
+      const objectId = solutionMemberObjectId(member, state, indexes, entityId);
+      if (!objectId) continue;
       const id = validId(member.id) ? member.id : memberId(appUnique, `${member.type}:${objectId}`);
       out.push({
         kind: 'appmodulecomponent',
@@ -278,7 +312,9 @@ export function applySolutionPayloads(
   components,
   { overwrite = false, definitionOf, entityId } = {},
 ) {
-  const bag = ((state.dataverse ??= {}).solutionPayloads ??= {});
+  state.dataverse ??= {};
+  state.dataverse.solutionPayloads ??= {};
+  const bag = state.dataverse.solutionPayloads;
   const membership = (state.tables.solutioncomponent ??= []);
   const origin = (state.dataverse.componentOrigin ??= {});
   for (const component of withSolutionAppMembers(components, state, entityId)) {
@@ -325,25 +361,27 @@ export function applySolutionPayloads(
   }
 }
 
+function removePayloadRecord(state, id, record, removed, bag) {
+  if (!record.layers.some((layer) => removed.has(lower(layer.solutionId)))) return;
+  record.layers = record.layers.filter((layer) => !removed.has(lower(layer.solutionId)));
+  const table = record.component.logical,
+    idColumn = table === 'systemform' ? 'formid' : `${table}id`;
+  const rows = (state.tables[table] ??= []),
+    index = rows.findIndex((row) => guid(row[idColumn]) === id);
+  const restored = record.layers.findLast((layer) => layer.active)?.row ?? record.baseRow;
+  if (index >= 0) rows.splice(index, 1, ...(restored ? [structuredClone(restored)] : []));
+  else if (restored) rows.push(structuredClone(restored));
+  if (!record.layers.length) delete bag[id];
+  if (removed.has(lower(state.dataverse.componentOrigin?.[id]))) {
+    if (record.layers.length) state.dataverse.componentOrigin[id] = record.layers[0].solutionId;
+    else delete state.dataverse.componentOrigin[id];
+  }
+}
+
 export function removeSolutionPayloads(state, solutionIds) {
   const removed = new Set([...solutionIds].map(lower));
   const bag = state.dataverse?.solutionPayloads ?? {};
-  for (const [id, record] of Object.entries(bag)) {
-    if (!record.layers.some((layer) => removed.has(lower(layer.solutionId)))) continue;
-    record.layers = record.layers.filter((layer) => !removed.has(lower(layer.solutionId)));
-    const table = record.component.logical,
-      idColumn = table === 'systemform' ? 'formid' : `${table}id`;
-    const rows = (state.tables[table] ??= []),
-      index = rows.findIndex((row) => guid(row[idColumn]) === id);
-    const restored = record.layers.findLast((layer) => layer.active)?.row ?? record.baseRow;
-    if (index >= 0) rows.splice(index, 1, ...(restored ? [structuredClone(restored)] : []));
-    else if (restored) rows.push(structuredClone(restored));
-    if (!record.layers.length) delete bag[id];
-    if (removed.has(lower(state.dataverse.componentOrigin?.[id]))) {
-      if (record.layers.length) state.dataverse.componentOrigin[id] = record.layers[0].solutionId;
-      else delete state.dataverse.componentOrigin[id];
-    }
-  }
+  for (const [id, record] of Object.entries(bag)) removePayloadRecord(state, id, record, removed, bag);
 }
 
 export function reassignSolutionPayloads(state, sourceIds, targetId) {
@@ -466,76 +504,123 @@ function reflectAppMembers(node, app, state) {
 }
 
 /** Export the current metadata record values while retaining opaque XML siblings. */
+const payloadShape = {
+  systemform: ['systemform', 'formid'],
+  savedquery: ['savedquery', 'savedqueryid'],
+  AppModule: ['appmodule', 'AppModuleId'],
+  appmodule: ['appmodule', 'appmoduleid'],
+  AppModuleSiteMap: ['sitemap', 'SiteMapId'],
+  Workflow: ['workflow', 'WorkflowId'],
+  workflow: ['workflow', 'workflowid'],
+};
+
+function reflectPayloadName(node, row) {
+  if (row.name === undefined) return;
+  const localized = child(node, 'LocalizedNames');
+  if (localized) {
+    for (const label of localized.children)
+      if (label.attrs.description !== undefined) label.attrs.description = row.name;
+  } else putText(node, 'Name', row.name);
+  if (node.attrs.Name !== undefined) node.attrs.Name = row.name;
+}
+
+function reflectPayloadFields(node, table, row) {
+  if (table === 'systemform') {
+    putXml(node, 'form', row.formxml);
+    putText(node, 'type', row.type);
+    putText(node, 'FormActivationState', row.formactivationstate);
+  }
+  if (table === 'savedquery') {
+    putXml(node, 'fetchxml', row.fetchxml, { inner: true });
+    putXml(node, 'layoutxml', row.layoutxml, { inner: true });
+    putText(node, 'querytype', row.querytype);
+    putText(node, 'isdefault', row.isdefault ? 1 : 0);
+  }
+  if (table === 'workflow') putText(node, 'Xaml', row.xaml);
+}
+
+function reflectPayloadRow(node, table, row, state) {
+  if (table === 'appmodule' && row.appmodulexml) node = parseSolutionXml(row.appmodulexml);
+  if (table === 'appmodule') reflectAppMembers(node, row, state);
+  if (table === 'sitemap' && row.sitemapxml) node = parseSolutionXml(row.sitemapxml);
+  reflectPayloadName(node, row);
+  reflectPayloadFields(node, table, row);
+  return node;
+}
+
+function reflectPayloadNode(source, state, bag) {
+  let node = structuredClone(source);
+  const shape = payloadShape[node.name];
+  if (shape) {
+    const [table, idName] = shape,
+      key = guid(value(node, idName));
+    if (bag[key]) {
+      const row = state.tables?.[table]?.find(
+        (row) => guid(row[table === 'systemform' ? 'formid' : `${table}id`]) === key,
+      );
+      if (!row) return null;
+      node = reflectPayloadRow(node, table, row, state);
+    }
+  }
+  node.children = node.children.map((item) => reflectPayloadNode(item, state, bag)).filter(Boolean);
+  return node;
+}
+
 function reflectSolutionPayloadRows(root, state) {
   const bag = state.dataverse?.solutionPayloads ?? {};
-  const visit = (source) => {
-    let node = structuredClone(source);
-    const shape = {
-      systemform: ['systemform', 'formid'],
-      savedquery: ['savedquery', 'savedqueryid'],
-      AppModule: ['appmodule', 'AppModuleId'],
-      appmodule: ['appmodule', 'appmoduleid'],
-      AppModuleSiteMap: ['sitemap', 'SiteMapId'],
-      Workflow: ['workflow', 'WorkflowId'],
-      workflow: ['workflow', 'workflowid'],
-    }[node.name];
-    if (shape) {
-      const [table, idName] = shape,
-        key = guid(value(node, idName));
-      if (bag[key]) {
-        const row = state.tables?.[table]?.find(
-          (row) => guid(row[table === 'systemform' ? 'formid' : `${table}id`]) === key,
-        );
-        if (!row) return null;
-        if (table === 'appmodule' && row.appmodulexml) node = parseSolutionXml(row.appmodulexml);
-        if (table === 'appmodule') reflectAppMembers(node, row, state);
-        if (table === 'sitemap' && row.sitemapxml) node = parseSolutionXml(row.sitemapxml);
-        if (row.name !== undefined) {
-          const localized = child(node, 'LocalizedNames');
-          if (localized) {
-            for (const label of localized.children)
-              if (label.attrs.description !== undefined) label.attrs.description = row.name;
-          } else putText(node, 'Name', row.name);
-          if (node.attrs.Name !== undefined) node.attrs.Name = row.name;
-        }
-        if (table === 'systemform') {
-          putXml(node, 'form', row.formxml);
-          putText(node, 'type', row.type);
-          putText(node, 'FormActivationState', row.formactivationstate);
-        }
-        if (table === 'savedquery') {
-          putXml(node, 'fetchxml', row.fetchxml, { inner: true });
-          putXml(node, 'layoutxml', row.layoutxml, { inner: true });
-          putText(node, 'querytype', row.querytype);
-          putText(node, 'isdefault', row.isdefault ? 1 : 0);
-        }
-        if (table === 'workflow') putText(node, 'Xaml', row.xaml);
-      }
-    }
-    node.children = node.children.map(visit).filter(Boolean);
-    return node;
-  };
+  const visit = (source) => reflectPayloadNode(source, state, bag);
   return visit(root);
 }
 
 /** Fold packed/unpacked schema payloads into current schema, retaining assets. */
+function isCustomizationSchema(name) {
+  return /(?:^|\/)(?:customizations\.xml|Entities\/[^/]+\/Entity\.xml|OptionSets\/[^/]+\.xml|Relationships\/[^/]+\.xml)$/i.test(
+    name,
+  );
+}
+
+function retainNonSchemaEntry(entry, state, retained) {
+  if (
+    /(?:^|\/)(?:Entities\/.*(?:FormXml|SavedQueries)\/.*|AppModules\/.*|AppModuleSiteMaps\/.*|Workflows\/.*)\.xml$/i.test(
+      entry.name,
+    )
+  ) {
+    const source = reflectSolutionPayloadRows(parseSolutionXml(entry.data.toString('utf8')), state);
+    if (source) retained.set(lower(entry.name), { ...entry, data: Buffer.from(serializeXml(source)) });
+  } else retained.set(lower(entry.name), entry);
+}
+
+function filterCustomizationEntities(root, state) {
+  const entities = child(root, 'Entities');
+  if (!entities) return;
+  entities.children = entities.children.filter((node) => {
+    const header = child(child(node, 'EntityInfo'), 'entity');
+    const logical = lower(header?.attrs.Name ?? childText(node, 'Name'));
+    const mapping = state.mappings?.[logical];
+    if (!mapping) return false;
+    const attributes = child(header, 'attributes');
+    if (attributes)
+      attributes.children = attributes.children.filter(
+        (attribute) => mapping.fields?.[lower(value(attribute, 'LogicalName', 'Name'))],
+      );
+    const keys = child(header, 'EntityKeys');
+    if (keys)
+      keys.children = keys.children.filter((key) =>
+        (mapping.alternateKeys ?? []).some(
+          (current) => lower(current.name) === lower(value(key, 'LogicalName', 'Name')),
+        ),
+      );
+    return true;
+  });
+}
+
 export function mergeSolutionCustomizationEntries(entries, generatedXml, state) {
   let root = { name: 'ImportExportXml', attrs: {}, children: [], text: '' };
   const retained = new Map();
   for (const entry of entries) {
-    const schema =
-      /(?:^|\/)(?:customizations\.xml|Entities\/[^/]+\/Entity\.xml|OptionSets\/[^/]+\.xml|Relationships\/[^/]+\.xml)$/i.test(
-        entry.name,
-      );
+    const schema = isCustomizationSchema(entry.name);
     if (!schema) {
-      if (
-        /(?:^|\/)(?:Entities\/.*(?:FormXml|SavedQueries)\/.*|AppModules\/.*|AppModuleSiteMaps\/.*|Workflows\/.*)\.xml$/i.test(
-          entry.name,
-        )
-      ) {
-        const source = reflectSolutionPayloadRows(parseSolutionXml(entry.data.toString('utf8')), state);
-        if (source) retained.set(lower(entry.name), { ...entry, data: Buffer.from(serializeXml(source)) });
-      } else retained.set(lower(entry.name), entry);
+      retainNonSchemaEntry(entry, state, retained);
       continue;
     }
     const source = parseSolutionXml(entry.data.toString('utf8'));
@@ -564,27 +649,7 @@ export function mergeSolutionCustomizationEntries(entries, generatedXml, state) 
     root = mergeSolutionXml(root, doc);
   }
   root = mergeSolutionXml(root, parseSolutionXml(generatedXml));
-  const entities = child(root, 'Entities');
-  if (entities)
-    entities.children = entities.children.filter((node) => {
-      const header = child(child(node, 'EntityInfo'), 'entity');
-      const logical = lower(header?.attrs.Name ?? childText(node, 'Name'));
-      const mapping = state.mappings?.[logical];
-      if (!mapping) return false;
-      const attributes = child(header, 'attributes');
-      if (attributes)
-        attributes.children = attributes.children.filter(
-          (a) => mapping.fields?.[lower(value(a, 'LogicalName', 'Name'))],
-        );
-      const keys = child(header, 'EntityKeys');
-      if (keys)
-        keys.children = keys.children.filter((key) =>
-          (mapping.alternateKeys ?? []).some(
-            (current) => lower(current.name) === lower(value(key, 'LogicalName', 'Name')),
-          ),
-        );
-      return true;
-    });
+  filterCustomizationEntities(root, state);
   return [
     ...retained.values(),
     { name: 'customizations.xml', data: Buffer.from(serializeXml(reflectSolutionPayloadRows(root, state))) },

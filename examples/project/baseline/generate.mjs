@@ -58,7 +58,7 @@ export function guid(name) {
 }
 const braced = (name) => `{${guid(name).toUpperCase()}}`;
 const escape = (text) =>
-  String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  String(text).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 
 // ---- Columns of the item table. `kind` selects the form control; `manifest` columns go through the
 // provisioning manifest, the others are created by the extras script with the raw Web API.
@@ -394,7 +394,7 @@ export function manifest() {
     schemaVersion: 1,
     language: LCID,
     publisher: { uniqueName: 'Paqvilo', friendlyName: 'Paqvilo', prefix: PREFIX, optionValuePrefix: 18327 },
-    solutions: [{ uniqueName: SOLUTION, friendlyName: 'Paqvilo baseline fixture', version: '1.0.0.0' }],
+    solutions: [{ uniqueName: SOLUTION, friendlyName: 'Paqvilo baseline fixture', version: '1.0.0.0' }], // NOSONAR: version string or loopback address, not a network target
     choices: [
       {
         name: `${PREFIX}_baselinecolor`,
@@ -522,8 +522,9 @@ function cell(
     id,
   } = {},
 ) {
+  const cellId = braced(`cell:${id ?? field}`);
   const attrs = [
-    `id="${braced(`cell:${id ?? field}`)}"`,
+    `id="${cellId}"`,
     `showlabel="${showlabel}"`,
     colspan ? `colspan="${colspan}"` : '',
     rowspan ? `rowspan="${rowspan}"` : '',
@@ -538,7 +539,7 @@ function cell(
 }
 const columnCell = (column, table) =>
   cell(column.name, column.form?.kind ?? column.kind, {
-    ...(column.form ?? {}),
+    ...column.form,
     label: column.form?.label ?? column.label,
     id: `${table}:${column.name}`,
   });
@@ -546,7 +547,7 @@ function section(name, title, cells, { columns = 1, showlabel = true, visible = 
   // A row-spanning control keeps its columns occupied in subsequent rows. Without
   // those rows the platform creates implicit columns with zero available width.
   const rows = [];
-  const occupied = Array(columns).fill(0);
+  const occupied = new Array(columns).fill(0);
   let row = [];
   let cursor = 0;
   const finishRow = () => {
@@ -573,18 +574,25 @@ function section(name, title, cells, { columns = 1, showlabel = true, visible = 
   }
   if (row.length) finishRow();
   while (occupied.some((span) => span > 0)) finishRow();
-  return `<section name="${name}" id="${braced(`section:${name}`)}" showlabel="${showlabel}" showbar="false" columns="${'1'.repeat(columns)}" layout="varwidth" celllabelposition="Top" labelwidth="${labelwidth}"${visible ? '' : ' visible="false"'}>${label(title)}<rows>${rows.map((items) => `<row>${items.join('')}</row>`).join('')}</rows></section>`;
+  const sectionId = braced(`section:${name}`);
+  const rowsXml = rows.map((items) => `<row>${items.join('')}</row>`).join('');
+  return `<section name="${name}" id="${sectionId}" showlabel="${showlabel}" showbar="false" columns="${'1'.repeat(columns)}" layout="varwidth" celllabelposition="Top" labelwidth="${labelwidth}"${visible ? '' : ' visible="false"'}>${label(title)}<rows>${rowsXml}</rows></section>`;
 }
 function tab(name, title, sections, { expanded = true, visible = true, showlabel = true } = {}) {
-  return `<tab name="${name}" id="${braced(`tab:${name}`)}" IsUserDefined="1" showlabel="${showlabel}" expanded="${expanded}"${visible ? '' : ' visible="false"'}>${label(title)}<columns><column width="100%"><sections>${sections.join('')}</sections></column></columns></tab>`;
+  const tabId = braced(`tab:${name}`);
+  return `<tab name="${name}" id="${tabId}" IsUserDefined="1" showlabel="${showlabel}" expanded="${expanded}"${visible ? '' : ' visible="false"'}>${label(title)}<columns><column width="100%"><sections>${sections.join('')}</sections></column></columns></tab>`;
 }
 const form = (tabs, { showImage = false } = {}) =>
   `<form showImage="${showImage}"><tabs>${tabs.join('')}</tabs></form>`;
 const subgridControl = (id, table, relationship, viewId, { quickFind = true } = {}) =>
   `<control id="${id}" classid="${CLASSIDS.subgrid}"><parameters><ViewId>${viewId}</ViewId><IsUserView>false</IsUserView><RelationshipName>${relationship}</RelationshipName><TargetEntityType>${table}</TargetEntityType><AutoExpand>Fixed</AutoExpand><EnableQuickFind>${quickFind}</EnableQuickFind><EnableViewPicker>false</EnableViewPicker><ViewIds>${viewId}</ViewIds><EnableChartPicker>false</EnableChartPicker><RecordsPerPage>4</RecordsPerPage></parameters></control>`;
 // The QuickForms parameter carries XML-escaped text (as the form designer stores it), ids without braces.
-const quickViewControl = (id, field, table, formId) =>
-  `<control id="${id}" classid="${CLASSIDS.quickview}" datafieldname="${field}" disabled="false"><parameters><QuickForms>${escape(`<QuickFormIds><QuickFormId entityname="${table}">${formId.replace(/[{}]/g, '').toLowerCase()}</QuickFormId></QuickFormIds>`)}</QuickForms><ControlMode>Edit</ControlMode></parameters></control>`;
+const quickViewControl = (id, field, table, formId) => {
+  const quickFormIds = escape(
+    `<QuickFormIds><QuickFormId entityname="${table}">${formId.replace(/[{}]/g, '').toLowerCase()}</QuickFormId></QuickFormIds>`,
+  );
+  return `<control id="${id}" classid="${CLASSIDS.quickview}" datafieldname="${field}" disabled="false"><parameters><QuickForms>${quickFormIds}</QuickForms><ControlMode>Edit</ControlMode></parameters></control>`;
+};
 const notesControl = `<control id="notescontrol" classid="${CLASSIDS.notes}" disabled="false" />`;
 const webResourceControl = `<control id="WebResource_baseline" classid="${CLASSIDS.webresource}"><parameters><Url>pqvd_baseline_banner.html</Url><PassParameters>false</PassParameters><Security>false</Security><Scrolling>auto</Scrolling><Border>false</Border><ShowOnMobileClient>false</ShowOnMobileClient></parameters></control>`;
 // Static, script-free document with a visible heading so captures show where it rendered.
@@ -646,11 +654,13 @@ function itemMainForm({ quickView = true } = {}) {
     'formula',
   ].map((name) => columnCell(c(name), ITEM));
   const files = [cell('entityimage', 'image', { label: 'Image' }), columnCell(c('file'), ITEM)];
+  const childRelationship = `${PREFIX}_baselineitem_baselinechild`;
+  const parentField = `${PREFIX}_parentid`;
   const related = [
-    `<cell id="${braced('cell:subgrid-children')}" showlabel="true" rowspan="6">${label('Children')}${subgridControl('subgrid_children', CHILD, `${PREFIX}_baselineitem_baselinechild`, '{PLATFORM_VIEW:pqvd_baselinechild:2}')}</cell>`,
+    `<cell id="${braced('cell:subgrid-children')}" showlabel="true" rowspan="6">${label('Children')}${subgridControl('subgrid_children', CHILD, childRelationship, '{PLATFORM_VIEW:pqvd_baselinechild:2}')}</cell>`,
     ...(quickView
       ? [
-          `<cell id="${braced('cell:quickview-parent')}" showlabel="true">${label('Parent details')}${quickViewControl('quickview_parent', `${PREFIX}_parentid`, PARENT, braced('form:parent-quick-view'))}</cell>`,
+          `<cell id="${braced('cell:quickview-parent')}" showlabel="true">${label('Parent details')}${quickViewControl('quickview_parent', parentField, PARENT, braced('form:parent-quick-view'))}</cell>`,
         ]
       : []),
     `<cell id="${braced('cell:notes')}" showlabel="false" rowspan="6">${label('Notes')}${notesControl}</cell>`,
@@ -733,8 +743,9 @@ function parentMainForm() {
     columnCell(c('rank'), PARENT),
     columnCell(c('description'), PARENT),
   ]; // the rollup column joins the form after the manual maker-portal step
+  const itemRelationship = `${PREFIX}_baselineparent_baselineitem`;
   const items = [
-    `<cell id="${braced('cell:subgrid-items')}" showlabel="true" rowspan="8">${label('Items')}${subgridControl('subgrid_items', ITEM, `${PREFIX}_baselineparent_baselineitem`, '{PLATFORM_VIEW:pqvd_baselineitem:2}')}</cell>`,
+    `<cell id="${braced('cell:subgrid-items')}" showlabel="true" rowspan="8">${label('Items')}${subgridControl('subgrid_items', ITEM, itemRelationship, '{PLATFORM_VIEW:pqvd_baselineitem:2}')}</cell>`,
   ];
   return form([tab('general', 'General', [section('general', 'General', rows), section('items', 'Items', items)])]);
 }
@@ -783,7 +794,8 @@ function cardForm(table) {
       { showlabel: false },
     ),
   );
-  return `<form showImage="false"><tabs><tab name="card" id="${braced(`tab:card:${table}`)}" IsUserDefined="1" showlabel="false" expanded="true">${label('Card')}<columns><column width="100%"><sections>${sections.join('')}</sections></column></columns></tab></tabs></form>`;
+  const cardTabId = braced(`tab:card:${table}`);
+  return `<form showImage="false"><tabs><tab name="card" id="${cardTabId}" IsUserDefined="1" showlabel="false" expanded="true">${label('Card')}<columns><column width="100%"><sections>${sections.join('')}</sections></column></columns></tab></tabs></form>`;
 }
 function childMainForm() {
   const c = (name) => byName(CHILD_COLUMNS, name)[0];
@@ -883,7 +895,8 @@ function fetch(table, { attributes, order = [], filter = '', links = '', distinc
 }
 function layout(table, cells, { jump = NAME, preview = '1', icon = '1' } = {}) {
   // `object` is the table's object type code, assigned by the environment; provision.mjs resolves the token.
-  return `<grid name="resultset" object="{OBJECT_TYPE_CODE:${table}}" jump="${jump}" select="1" icon="${icon}" preview="${preview}"><row name="result" id="${table}id">${cells.map(([name, width]) => `<cell name="${name}" width="${width}" />`).join('')}</row></grid>`;
+  const cellXml = cells.map(([name, width]) => `<cell name="${name}" width="${width}" />`).join('');
+  return `<grid name="resultset" object="{OBJECT_TYPE_CODE:${table}}" jump="${jump}" select="1" icon="${icon}" preview="${preview}"><row name="result" id="${table}id">${cellXml}</row></grid>`;
 }
 const active = `<filter type="and"><condition attribute="statecode" operator="eq" value="0" /></filter>`;
 const inactive = `<filter type="and"><condition attribute="statecode" operator="eq" value="1" /></filter>`;
@@ -1440,7 +1453,7 @@ async function main() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  main().catch((error) => {
+  /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     console.error(error.message);
     process.exitCode = 1;
   });

@@ -422,6 +422,26 @@ function conversionFailure(type, value, context, property) {
   return `Cannot convert the literal '${literal(shown)}' to the expected type '${expected}'.`;
 }
 
+function assignMissingParameter(typed, parameter, type, row, context, value) {
+  if (!parameter.isoptional && row.isfunction) throw notFound(row.uniquename);
+  if (
+    !parameter.isoptional &&
+    type === 'String' &&
+    context.method === 'POST' &&
+    context.dataverseHttpReader?.hasJsonBody === true
+  )
+    throw payloadError(
+      value === undefined
+        ? `One or more parameters of the operation '${row.uniquename}' are missing from the request payload. The missing parameters are: ${parameter.uniquename}.`
+        : `A null value was found for property named '${parameter.uniquename}', expected type 'Edm.String[Nullable=False]' does not allow null values.`,
+    );
+  if (!parameter.isoptional)
+    throw new DataError(`Required parameter '${parameter.uniquename}' is missing.`, 400, 'InvalidRequest', {
+      innerCode: '0x80040203',
+    });
+  typed[parameter.uniquename] = INPUT_DEFAULTS[type] ?? null;
+}
+
 // Parameter values come from the URL for functions and the JSON body for actions. Returns the typed values by name.
 function checkParameters(store, row, c) {
   const input = c.method === 'POST' ? (c.body ?? {}) : (c.params ?? {});
@@ -437,22 +457,10 @@ function checkParameters(store, row, c) {
       value = input[p.uniquename];
     if (value === undefined || value === null) {
       // A function's URL must name every required parameter; without one native finds no resource (404 0x80060888).
-      if (!p.isoptional && row.isfunction) throw notFound(row.uniquename);
-      if (!p.isoptional && type === 'String' && c.method === 'POST' && c.dataverseHttpReader?.hasJsonBody === true)
-        throw payloadError(
-          value === undefined
-            ? `One or more parameters of the operation '${row.uniquename}' are missing from the request payload. The missing parameters are: ${p.uniquename}.`
-            : `A null value was found for property named '${p.uniquename}', expected type 'Edm.String[Nullable=False]' does not allow null values.`,
-        );
-      // Native message text of the missing-parameter error not known.
-      if (!p.isoptional)
-        throw new DataError(`Required parameter '${p.uniquename}' is missing.`, 400, 'InvalidRequest', {
-          innerCode: '0x80040203',
-        });
       // Optional arguments are always present. Native value types receive
       // their CLR default; reference-based SDK types receive null. Input
       // DateTime.MinValue has Unspecified Kind, independent of response defaults.
-      typed[p.uniquename] = INPUT_DEFAULTS[type] ?? null;
+      assignMissingParameter(typed, p, type, row, c, value);
       continue;
     }
     const converted = typedValue(type, value);
@@ -613,15 +621,13 @@ function clrRegistration(store, row, options) {
     typeof context.mainOperationStepEvidence === 'string' &&
     context.mainOperationStepEvidence.trim() &&
     context.mainOperationStepEvidence.length <= 2048;
-  const step =
-    steps.length === 1
-      ? steps[0]
-      : witnessed
-        ? {
-            sdkmessageprocessingstepid: context.mainOperationStepId,
-            name: `CustomApi '${row.uniquename}' implementation`,
-          }
-        : null;
+  let step = null;
+  if (steps.length === 1) step = steps[0];
+  else if (witnessed)
+    step = {
+      sdkmessageprocessingstepid: context.mainOperationStepId,
+      name: `CustomApi '${row.uniquename}' implementation`,
+    };
   return {
     id,
     descriptor,
@@ -747,14 +753,10 @@ function invoke(api, name, c, options) {
   });
 }
 
-function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
-  const { handlers, pluginTypes = new Map(), timeoutMs: limit } = options;
+function resolveApiInvocation(api, name, c, options, handlers, pluginTypes) {
   const { store } = api;
-  // The limit may be a function, read per call: the admin Environment settings change it while the simulator runs.
-  const timeoutMs = typeof limit === 'function' ? limit() : limit;
   const row = apiNamed(store, name);
   if (!row) throw notFound(name);
-  // Functions are GET and actions are POST; another verb gets the generic 404 envelope.
   if (c.method !== (row.isfunction ? 'GET' : 'POST'))
     throw new DataError(`No HTTP resource was found that matches the request URI '${c.url}'.`, 404, 'NotFound', {
       innerCode: '',
@@ -763,7 +765,6 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
     throw privilegeDeniedError(c.user, row.executeprivilegename, row.boundentitylogicalname ?? row.uniquename);
   const inputs = checkParameters(store, row, c);
   const properties = propertiesOf(store, row);
-  // Assumed: a function must have a response property, so without one it is absent and its plug-in never runs.
   if (!properties.length && row.isfunction) throw notFound(name);
   const registration = handlers.get(key(name)) ?? typeRegistration(store, row, pluginTypes);
   const original = !registration && !fxIdOf(row) ? clrRegistration(store, row, options) : null;
@@ -775,16 +776,235 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
     );
   if (original?.descriptor && !original.step)
     throw new DataError(original.reason, 501, 'LocalPluginMainContextUnavailable');
+  return { row, inputs, properties, registration, original };
+}
+
+function resolveBoundMessageTarget({ row, messageParameters, entity, c, store, identity, api, ctx }) {
+  if (row.bindingtype !== 1) return;
+  const reference = messageParameters.inputParameters.values.Target;
+  if (reference?.$type !== 'EntityReference' || reference.logicalName !== entity || !GUID_RE.test(reference.id ?? ''))
+    throw new DataError(
+      'A bound custom API must retain a valid Target reference to its declared table.',
+      400,
+      'InvalidRequest',
+      { innerCode: '0x80040203' },
+    );
+  if (sameId(reference.id, c.target?.id)) return;
+  const mapping = store.resolveMapping(entity);
+  const targetRow = store.get(entity, reference.id, identity, { skipPluginRead: true });
+  if (!targetRow)
+    throw new DataError(`${entity} With Id = ${reference.id} Does Not Exist`, 404, 'NotFound', {
+      innerCode: '0x80040217',
+    });
+  if (c.backendPrincipal) authorizeGrant(store, c.backendPrincipal, entity, 'read', targetRow);
+  else api.principals.authorize?.({ user: c.user, entity, operation: 'read', row: targetRow, mapping });
+  c.target = { mapping, id: reference.id, row: targetRow };
+  ctx.target = { logicalName: entity, id: reference.id, row: targetRow };
+}
+
+function* resolveClrMainRuntime(store, api, options, original, synchronous) {
+  let runtime = options.runtimes.get(original.id);
+  if (original.uploaded)
+    runtime = uploadedClrRuntime({
+      store,
+      item: original.uploaded,
+      runtimes: options.runtimes,
+      uploads: store.pluginPipeline?.clrUploads,
+      diagnostic: api.diagnostic,
+    });
+  else if (runtime?.descriptor !== original.descriptor) {
+    // Runtimes are prepared when the registration changes (prepareCustomApiRuntimes); a synchronous call cannot await one.
+    if (synchronous) {
+      const failure = options.preparationFailures?.get(original.id);
+      throw new DataError(
+        failure
+          ? `The explicitly trusted custom API main-operation runtime could not be prepared: ${failure.message}`
+          : 'The explicitly trusted custom API main-operation runtime is still being prepared for its registration change.',
+        failure?.status ?? 501,
+        failure?.code ?? 'LocalPluginClrUnavailable',
+        failure ? { cause: failure.message } : undefined,
+      );
+    }
+    const previous = runtime;
+    runtime = yield (options.prepareRuntime ?? prepareClrRuntime)(original.descriptor);
+    if (previous) yield closeClrHostPool({ runtime: previous, diagnostic: api.diagnostic });
+    options.runtimes.set(original.id, runtime);
+    options.mainRuntimeIds.add(original.id);
+  }
+  return runtime;
+}
+
+function executeClrMainOperation({
+  runtime,
+  store,
+  step,
+  entity,
+  operation,
+  record,
+  frame,
+  plugin,
+  api,
+  timeoutMs,
+  depth,
+  started,
+  startedAt,
+}) {
+  let answer, failure;
+  try {
+    answer = executeClrPlugin(
+      runtime,
+      clrContext({ runtime, store, step, entity, operation, stage: 30, target: {}, record, frame, depth }),
+      {
+        store,
+        diagnostic: (entry) => {
+          if (entry.code === 'PLUGIN_CLR_TRACE') plugin.traces.push(String(entry.message));
+          api.diagnostic?.(entry);
+        },
+      },
+    );
+  } catch (error) {
+    const source = error.details?.sourceException;
+    failure =
+      source?.type?.startsWith('System.ServiceModel.FaultException') && error.details?.innerCode
+        ? error
+        : pluginFailure(
+            {
+              message: error.message,
+              ...(source?.type === 'Microsoft.Xrm.Sdk.InvalidPluginExecutionException'
+                ? { pluginFault: 'InvalidPluginExecutionException', errorCode: source.errorCode }
+                : {}),
+              ...(error.code === 'LocalPluginTimeout' ? { timedOut: true } : {}),
+            },
+            plugin,
+            timeoutMs,
+          );
+    throw failure;
+  } finally {
+    // The main operation is constructed with null configuration (native), so the trace row carries none.
+    recordPluginTrace(store, {
+      typeName: qualifiedTypeName(store, { typeName: plugin.type, assemblyId: plugin.assemblyId }),
+      stepId: step.id,
+      messageName: plugin.name,
+      entity,
+      depth,
+      traces: plugin.traces,
+      started,
+      startedAt,
+      error: failure,
+      ...plugin.traceIds(),
+    });
+  }
+  return answer;
+}
+
+function* runCustomApiMainOperation({
+  registration,
+  synchronous,
+  api,
+  ctx,
+  plugin,
+  contextOf,
+  timeoutMs,
+  row,
+  original,
+  properties,
+  c,
+  originalOutputs,
+}) {
+  let mainOutputs = {};
+  if (registration)
+    mainOutputs =
+      (synchronous
+        ? runHandlerSync(api, registration.handler, ctx, plugin, contextOf)
+        : yield runHandler(api, registration.handler, ctx, plugin, timeoutMs, contextOf)
+      )?.outputs ?? {};
+  else if (fxIdOf(row))
+    mainOutputs = synchronous
+      ? fxOutputsSync(api, row, ctx.inputs, properties, c, contextOf)
+      : yield fxOutputs(api, row, ctx.inputs, properties, c, contextOf, timeoutMs);
+  else if (original?.descriptor || original?.uploaded) mainOutputs = yield* originalOutputs();
+  return mainOutputs;
+}
+
+function customApiHandlerKind(registration, row, original) {
+  if (registration) return 'handler';
+  if (fxIdOf(row)) return 'powerfx';
+  if (original?.descriptor || original?.uploaded) return 'clr';
+  return 'none';
+}
+
+function finalizeCustomApiResponse({
+  store,
+  row,
+  properties,
+  messageParameters,
+  frame,
+  record,
+  entity,
+  operation,
+  identity,
+  c,
+  ctx,
+  customApi,
+  span,
+}) {
+  const outputs = pluginMessageValues(messageParameters.outputParameters, store);
+  const sdkOutputs = {
+    $type: 'ParameterCollection',
+    values: {
+      ...Object.fromEntries(properties.map((spec) => [spec.uniquename, null])),
+      ...messageParameters.outputParameters.values,
+    },
+  };
+  if (frame) {
+    store.pluginFrames ??= new WeakMap();
+    store.pluginFrames.set(record, frame);
+  }
+  store.recordCommittedEvent(entity, operation, record, [], {
+    customApi,
+    target: {},
+    identity,
+    messageEvent: true,
+    bypassCustomAsync: c.bypassCustomAsync === true,
+    bypassStepIds: c.bypassStepIds,
+  });
+  // The flow trigger "When an action is performed" is a business event of
+  // the committed action: a committed event (operation 'action') that the flow-trigger commit stager (flow-triggers.mjs) turns
+  // into a durable job, so an action inside a changeset that rolls back never starts a flow. Outside a transaction the event
+  // commits in its own one, which saves nothing unless a job was staged.
+  if (!row.isfunction)
+    store.recordCommittedEvent('', 'action', {}, [], {
+      message: row.uniquename,
+      table: row.bindingtype ? row.boundentitylogicalname : null,
+      inputs: ctx.inputs,
+      outputs,
+    });
+  span?.output(() => ({ inputs: ctx.inputs, outputs }));
+  // Assumed: an action with no response properties returns 204.
+  const response = properties.length
+    ? { status: 200, body: responseBody(c, row, properties, outputs) }
+    : { status: 204 };
+  Object.defineProperty(response, 'sdkOutputs', { value: sdkOutputs });
+  return response;
+}
+
+function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
+  const { handlers, pluginTypes = new Map(), timeoutMs: limit } = options;
+  const { store } = api;
+  // The limit may be a function, read per call: the admin Environment settings change it while the simulator runs.
+  const timeoutMs = typeof limit === 'function' ? limit() : limit;
+  const { row, inputs, properties, registration, original } = resolveApiInvocation(
+    api,
+    name,
+    c,
+    options,
+    handlers,
+    pluginTypes,
+  );
   span?.set({
     isFunction: row.isfunction === true,
     bindingType: Number(row.bindingtype ?? 0),
-    handler: registration
-      ? 'handler'
-      : fxIdOf(row)
-        ? 'powerfx'
-        : original?.descriptor || original?.uploaded
-          ? 'clr'
-          : 'none',
+    handler: customApiHandlerKind(registration, row, original),
   });
   // The plug-in's type (the custom API name when the pack names none) and the trace lines its handler writes; it runs as
   // the main operation (stage 30) at the main operation's depth (its fault identity, D-R3-19).
@@ -936,61 +1156,9 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
     yield* phase(20);
     const current = pluginMessageValues(messageParameters.inputParameters, store);
     ctx.inputs = Object.fromEntries(customApi.parameters.map((spec) => [spec.uniquename, current[spec.uniquename]]));
-    if (row.bindingtype === 1) {
-      const reference = messageParameters.inputParameters.values.Target;
-      if (
-        reference?.$type !== 'EntityReference' ||
-        reference.logicalName !== entity ||
-        !GUID_RE.test(reference.id ?? '')
-      )
-        throw new DataError(
-          'A bound custom API must retain a valid Target reference to its declared table.',
-          400,
-          'InvalidRequest',
-          { innerCode: '0x80040203' },
-        );
-      if (!sameId(reference.id, c.target?.id)) {
-        const mapping = store.resolveMapping(entity);
-        const targetRow = store.get(entity, reference.id, identity, { skipPluginRead: true });
-        if (!targetRow)
-          throw new DataError(`${entity} With Id = ${reference.id} Does Not Exist`, 404, 'NotFound', {
-            innerCode: '0x80040217',
-          });
-        if (c.backendPrincipal) authorizeGrant(store, c.backendPrincipal, entity, 'read', targetRow);
-        else api.principals.authorize?.({ user: c.user, entity, operation: 'read', row: targetRow, mapping });
-        c.target = { mapping, id: reference.id, row: targetRow };
-        ctx.target = { logicalName: entity, id: reference.id, row: targetRow };
-      }
-    }
+    resolveBoundMessageTarget({ row, messageParameters, entity, c, store, identity, api, ctx });
     const originalOutputs = function* () {
-      let runtime = options.runtimes.get(original.id);
-      if (original.uploaded)
-        runtime = uploadedClrRuntime({
-          store,
-          item: original.uploaded,
-          runtimes: options.runtimes,
-          uploads: store.pluginPipeline?.clrUploads,
-          diagnostic: api.diagnostic,
-        });
-      else if (runtime?.descriptor !== original.descriptor) {
-        // Runtimes are prepared when the registration changes (prepareCustomApiRuntimes); a synchronous call cannot await one.
-        if (synchronous) {
-          const failure = options.preparationFailures?.get(original.id);
-          throw new DataError(
-            failure
-              ? `The explicitly trusted custom API main-operation runtime could not be prepared: ${failure.message}`
-              : 'The explicitly trusted custom API main-operation runtime is still being prepared for its registration change.',
-            failure?.status ?? 501,
-            failure?.code ?? 'LocalPluginClrUnavailable',
-            failure ? { cause: failure.message } : undefined,
-          );
-        }
-        const previous = runtime;
-        runtime = yield (options.prepareRuntime ?? prepareClrRuntime)(original.descriptor);
-        if (previous) yield closeClrHostPool({ runtime: previous, diagnostic: api.diagnostic });
-        options.runtimes.set(original.id, runtime);
-        options.mainRuntimeIds.add(original.id);
-      }
+      const runtime = yield* resolveClrMainRuntime(store, api, options, original, synchronous);
       frame ??= {};
       frame.customApi = customApi;
       // The main operation reports its request's caller facts, such as the user agent (native customApi stage 30).
@@ -1012,69 +1180,41 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
       const depth = mainPluginDepth(store),
         started = performance.now(),
         startedAt = new Date(store.clock.now()).toISOString();
-      let answer, failure;
-      try {
-        answer = executeClrPlugin(
-          runtime,
-          clrContext({ runtime, store, step, entity, operation, stage: 30, target: {}, record, frame, depth }),
-          {
-            store,
-            diagnostic: (entry) => {
-              if (entry.code === 'PLUGIN_CLR_TRACE') plugin.traces.push(String(entry.message));
-              api.diagnostic?.(entry);
-            },
-          },
-        );
-      } catch (error) {
-        const source = error.details?.sourceException;
-        failure =
-          source?.type?.startsWith('System.ServiceModel.FaultException') && error.details?.innerCode
-            ? error
-            : pluginFailure(
-                {
-                  message: error.message,
-                  ...(source?.type === 'Microsoft.Xrm.Sdk.InvalidPluginExecutionException'
-                    ? { pluginFault: 'InvalidPluginExecutionException', errorCode: source.errorCode }
-                    : {}),
-                  ...(error.code === 'LocalPluginTimeout' ? { timedOut: true } : {}),
-                },
-                plugin,
-                timeoutMs,
-              );
-        throw failure;
-      } finally {
-        // The main operation is constructed with null configuration (native), so the trace row carries none.
-        recordPluginTrace(store, {
-          typeName: qualifiedTypeName(store, { typeName: plugin.type, assemblyId: plugin.assemblyId }),
-          stepId: step.id,
-          messageName: plugin.name,
-          entity,
-          depth,
-          traces: plugin.traces,
-          started,
-          startedAt,
-          error: failure,
-          ...plugin.traceIds(),
-        });
-      }
+      const answer = executeClrMainOperation({
+        runtime,
+        store,
+        step,
+        entity,
+        operation,
+        record,
+        frame,
+        plugin,
+        api,
+        timeoutMs,
+        depth,
+        started,
+        startedAt,
+      });
       frame.inputParameters = messageParameters.inputParameters = answer.inputParameters;
       frame.outputParameters = messageParameters.outputParameters = answer.outputParameters;
       frame.sharedVariables = canonicalTagVariables(answer.sharedVariables, frame.requestTag);
       mainFrame = true;
       return pluginMessageValues(answer.outputParameters, store);
     };
-    const mainOutputs = registration
-      ? ((synchronous
-          ? runHandlerSync(api, registration.handler, ctx, plugin, contextOf)
-          : yield runHandler(api, registration.handler, ctx, plugin, timeoutMs, contextOf)
-        )?.outputs ?? {})
-      : fxIdOf(row)
-        ? synchronous
-          ? fxOutputsSync(api, row, ctx.inputs, properties, c, contextOf)
-          : yield fxOutputs(api, row, ctx.inputs, properties, c, contextOf, timeoutMs)
-        : original?.descriptor || original?.uploaded
-          ? yield* originalOutputs()
-          : {};
+    const mainOutputs = yield* runCustomApiMainOperation({
+      registration,
+      synchronous,
+      api,
+      ctx,
+      plugin,
+      contextOf,
+      timeoutMs,
+      row,
+      properties,
+      c,
+      original,
+      originalOutputs,
+    });
     // Native MainOperation and synchronous PostOperation contain only authored
     // outputs. Missing declared properties are materialized by the response
     // boundary after all synchronous handlers, never inside the pipeline.
@@ -1087,44 +1227,21 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
         },
       };
     yield* phase(40);
-    const outputs = pluginMessageValues(messageParameters.outputParameters, store);
-    const sdkOutputs = {
-      $type: 'ParameterCollection',
-      values: {
-        ...Object.fromEntries(properties.map((spec) => [spec.uniquename, null])),
-        ...messageParameters.outputParameters.values,
-      },
-    };
-    if (frame) {
-      store.pluginFrames ??= new WeakMap();
-      store.pluginFrames.set(record, frame);
-    }
-    store.recordCommittedEvent(entity, operation, record, [], {
-      customApi,
-      target: {},
+    return finalizeCustomApiResponse({
+      store,
+      row,
+      properties,
+      messageParameters,
+      frame,
+      record,
+      entity,
+      operation,
       identity,
-      messageEvent: true,
-      bypassCustomAsync: c.bypassCustomAsync === true,
-      bypassStepIds: c.bypassStepIds,
+      c,
+      ctx,
+      customApi,
+      span,
     });
-    // The flow trigger "When an action is performed" is a business event of
-    // the committed action: a committed event (operation 'action') that the flow-trigger commit stager (flow-triggers.mjs) turns
-    // into a durable job, so an action inside a changeset that rolls back never starts a flow. Outside a transaction the event
-    // commits in its own one, which saves nothing unless a job was staged.
-    if (!row.isfunction)
-      store.recordCommittedEvent('', 'action', {}, [], {
-        message: row.uniquename,
-        table: row.bindingtype ? row.boundentitylogicalname : null,
-        inputs: ctx.inputs,
-        outputs,
-      });
-    span?.output(() => ({ inputs: ctx.inputs, outputs }));
-    // Assumed: an action with no response properties returns 204.
-    const response = properties.length
-      ? { status: 200, body: responseBody(c, row, properties, outputs) }
-      : { status: 204 };
-    Object.defineProperty(response, 'sdkOutputs', { value: sdkOutputs });
-    return response;
   } catch (error) {
     store.markPluginTransactionFailure?.(error);
     throw error;
@@ -1142,23 +1259,25 @@ function csdlOf(store, name) {
   if (row.isfunction && !properties.length) return '';
   const single = properties.length === 1 && SINGLE.has(typeOf(properties[0].type)) ? properties[0] : null;
   const complex = properties.length > 0 && !single;
-  const returns = single ? edmOf(single) : complex ? `mscrm.${row.uniquename}Response` : null;
+  let returns = null;
+  if (single) returns = edmOf(single);
+  else if (complex) returns = `mscrm.${row.uniquename}Response`;
   const L = row.boundentitylogicalname;
-  const bound =
-    row.bindingtype === 1
-      ? `<Parameter Name="entity" Type="mscrm.${L}" />`
-      : row.bindingtype === 2
-        ? `<Parameter Name="entityset" Type="Collection(mscrm.${L})" />`
-        : '';
+  let bound = '';
+  if (row.bindingtype === 1) bound = `<Parameter Name="entity" Type="mscrm.${L}" />`;
+  else if (row.bindingtype === 2) bound = `<Parameter Name="entityset" Type="Collection(mscrm.${L})" />`;
   const params = parametersOf(store, row)
     .map((p) => `<Parameter Name="${p.uniquename}" Type="${edmOf(p)}" />`)
     .join('');
-  const complexType = complex
-    ? `<ComplexType Name="${row.uniquename}Response">${properties.map((p) => `<Property Name="${p.uniquename}" Type="${edmOf(p)}" />`).join('')}</ComplexType>`
-    : '';
+  let complexType = '';
+  if (complex) {
+    const propertyElements = properties.map((p) => `<Property Name="${p.uniquename}" Type="${edmOf(p)}" />`).join('');
+    complexType = `<ComplexType Name="${row.uniquename}Response">${propertyElements}</ComplexType>`;
+  }
   const element = row.isfunction ? 'Function' : 'Action';
   const attr = row.bindingtype ? ' IsBound="true"' : '';
-  return `${complexType}<${element} Name="${row.uniquename}"${attr}>${bound}${params}${returns ? `<ReturnType Type="${returns}" />` : ''}</${element}>`;
+  const returnType = returns ? `<ReturnType Type="${returns}" />` : '';
+  return `${complexType}<${element} Name="${row.uniquename}"${attr}>${bound}${params}${returnType}</${element}>`;
 }
 
 // The fxexpression row a custom API names (customapi.fxexpressionid), or null.
@@ -1186,40 +1305,45 @@ const fxFailure = (error, plugin) =>
 // The public caller description is informational. Authorization keeps using
 // dataverseHost's original caller closure, while its principal and bound-row
 // views must not alias a committed graph captured before an isolated operation.
+function copyCallerInformation(value, caller, execution, seen) {
+  if (typeof value === 'function') return execution.exposed(value);
+  if (!value || typeof value !== 'object') return value;
+  if (value === caller.api) return execution.exposed(value);
+  if (seen.has(value)) return seen.get(value);
+  if (value instanceof URL) return new URL(value);
+  const prototype = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) return cloneStateData(value);
+  return copyCallerObject(value, prototype, caller, execution, seen);
+}
+
+function copyCallerObject(value, prototype, caller, execution, seen) {
+  const copy = Array.isArray(value) ? new Array(value.length) : Object.create(prototype);
+  seen.set(value, copy);
+  for (const key of Reflect.ownKeys(value)) {
+    if (Array.isArray(value) && key === 'length') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    copyCallerDescriptor(descriptor, value, caller, execution, seen);
+    Object.defineProperty(copy, key, descriptor);
+  }
+  return copy;
+}
+
+function copyCallerDescriptor(descriptor, value, caller, execution, seen) {
+  if (Object.hasOwn(descriptor, 'value')) {
+    descriptor.value =
+      typeof descriptor.value === 'function'
+        ? execution.exposed(descriptor.value.bind(value))
+        : copyCallerInformation(descriptor.value, caller, execution, seen);
+  } else {
+    if (descriptor.get) descriptor.get = execution.exposed(descriptor.get.bind(value));
+    if (descriptor.set) descriptor.set = execution.exposed(descriptor.set.bind(value));
+  }
+}
+
 function exposeFxCaller(execution, host, { scopedPrincipal = false } = {}) {
   const caller = host.caller;
   if (!caller) return;
-  const seen = new WeakMap();
-  // The request context is data except for its organization API and callable
-  // services (including nonenumerable hierarchy functions). Copy data with
-  // descriptors so none of those services disappear or escape their lifetime.
-  const information = (value) => {
-    if (typeof value === 'function') return execution.exposed(value);
-    if (!value || typeof value !== 'object') return value;
-    if (value === caller.api) return execution.exposed(value);
-    if (seen.has(value)) return seen.get(value);
-    if (value instanceof URL) return new URL(value);
-    const prototype = Object.getPrototypeOf(value);
-    if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) return cloneStateData(value);
-    const copy = Array.isArray(value) ? new Array(value.length) : Object.create(prototype);
-    seen.set(value, copy);
-    for (const key of Reflect.ownKeys(value)) {
-      if (Array.isArray(value) && key === 'length') continue;
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (Object.hasOwn(descriptor, 'value')) {
-        descriptor.value =
-          typeof descriptor.value === 'function'
-            ? execution.exposed(descriptor.value.bind(value))
-            : information(descriptor.value);
-      } else {
-        if (descriptor.get) descriptor.get = execution.exposed(descriptor.get.bind(value));
-        if (descriptor.set) descriptor.set = execution.exposed(descriptor.set.bind(value));
-      }
-      Object.defineProperty(copy, key, descriptor);
-    }
-    return copy;
-  };
-  host.caller = information(caller);
+  host.caller = copyCallerInformation(caller, caller, execution, new WeakMap());
   // Automated record-hook adapters already expose principal rows as scoped
   // handles, unlike a custom API's passive caller information.
   if (scopedPrincipal)
@@ -1300,11 +1424,9 @@ function fxOutputsSync(api, row, inputs, properties, c, contextOf) {
         'SdkAsyncPreOperationUnsupported',
       );
     }
-    return isObject(result.value)
-      ? result.value
-      : properties.length === 1
-        ? { [properties[0].uniquename]: result.value }
-        : {};
+    if (isObject(result.value)) return result.value;
+    if (properties.length === 1) return { [properties[0].uniquename]: result.value };
+    return {};
   } catch (error) {
     throw fxFailure(error, plugin);
   } finally {
@@ -1358,7 +1480,8 @@ function automatedOf(store) {
 // (evaluateSync at behaviour), so a synchronous SDK write runs the plug-ins inline; only an async-only adapter answers a
 // promise, which a synchronous SDK write refuses (dataverse-records.mjs drive: SdkAsyncPreOperationUnsupported).
 function runAutomated(api, reported, c, mapping, { operation, data, existing }) {
-  const message = operation === 'upsert' ? (existing ? 'update' : 'create') : operation;
+  let message = operation;
+  if (operation === 'upsert') message = existing ? 'update' : 'create';
   if (!AUTOMATED.has(message) || !api.store.tableRows('fxexpression').length) return undefined;
   const steps = automatedOf(api.store)
     .filter((row) => key(row.messagename) === message && key(row.entitylogicalname) === key(mapping.logicalName))
@@ -1400,7 +1523,7 @@ function runAutomated(api, reported, c, mapping, { operation, data, existing }) 
     };
     // Every column of the target is in ThisRecord (blank when unset), so Set reaches a column the payload does not name.
     const blank = Object.fromEntries(host.columns(mapping.logicalName).map((column) => [column, null]));
-    const before = cloneStateData({ ...blank, ...(existing ?? {}), ...(data ?? {}) });
+    const before = cloneStateData({ ...blank, ...existing, ...data });
     const scope = host.record(mapping.logicalName, before);
     const options = {
       values: { ThisRecord: before },
@@ -1570,6 +1693,24 @@ export function powerFxRequirements(store, powerFx) {
   ];
 }
 
+function isConfiguredApiRuntime(row, options, store) {
+  return options.handlers.has(key(row.uniquename)) || typeRegistration(store, row, options.pluginTypes) || fxIdOf(row);
+}
+
+function isCurrentMainRuntime(options, original, refresh) {
+  return !refresh && options.runtimes.get(original.id)?.descriptor === original.descriptor;
+}
+
+function activeMainRuntimes(api, options) {
+  const active = new Map();
+  for (const row of api.store.tableRows('customapi')) {
+    if (isConfiguredApiRuntime(row, options, api.store)) continue;
+    const original = clrRegistration(api.store, row, options);
+    if (original?.descriptor && original.step) active.set(original.id, { ...original, name: row.uniquename });
+  }
+  return active;
+}
+
 function operationOf(api, row, options) {
   const name = row.uniquename;
   return {
@@ -1596,11 +1737,7 @@ function operationOf(api, row, options) {
  * answers 403 LocalBackendIdentityRequired), so execute privileges and the
  * writes inside it follow that user. The body drops its @odata.context. Unknown names answer 404 0x80060888.
  */
-function internalMessageContext(api, { principal, name, target = null, parameters = {} } = {}) {
-  validateServiceProfile(principal);
-  if (!principal.grants.some((grant) => grant.message === name && grant.operations.includes('execute')))
-    throw new DataError(`Local backend profile denied execute on ${name}.`, 403, 'LocalBackendPermissionDenied');
-  const { store, registry } = api;
+function resolveInternalMessageTarget(store, principal, target) {
   let binding = 'unbound',
     entity,
     row = null,
@@ -1616,6 +1753,15 @@ function internalMessageContext(api, { principal, name, target = null, parameter
       authorizeGrant(store, principal, entity, 'read', row);
     }
   }
+  return { binding, entity, row, mapping };
+}
+
+function internalMessageContext(api, { principal, name, target = null, parameters = {} } = {}) {
+  validateServiceProfile(principal);
+  if (!principal.grants.some((grant) => grant.message === name && grant.operations.includes('execute')))
+    throw new DataError(`Local backend profile denied execute on ${name}.`, 403, 'LocalBackendPermissionDenied');
+  const { store, registry } = api;
+  const { binding, entity, row, mapping } = resolveInternalMessageTarget(store, principal, target);
   const op =
     registry.find({ name, kind: 'action', binding, entity }) ??
     registry.find({ name, kind: 'function', binding, entity });
@@ -1630,6 +1776,9 @@ function internalMessageContext(api, { principal, name, target = null, parameter
   const action = op.kind === 'action',
     origin = 'http://localhost';
   const url = new URL(`${origin}/api/data/v9.2/${name}`);
+  let bindingTarget;
+  if (binding === 'entity') bindingTarget = { mapping, id: row[mapping.idColumn], row };
+  else if (binding === 'collection') bindingTarget = { mapping };
   const context = {
     method: action ? 'POST' : 'GET',
     url,
@@ -1645,12 +1794,7 @@ function internalMessageContext(api, { principal, name, target = null, parameter
     requestId: null,
     api,
     backendPrincipal: principal,
-    target:
-      binding === 'entity'
-        ? { mapping, id: row[mapping.idColumn], row }
-        : binding === 'collection'
-          ? { mapping }
-          : undefined,
+    target: bindingTarget,
   };
   // The message is one span named by it (D-R3-8, as a Web API message call): the bound record, the systemuser it runs as
   // (the actor stays the caller's, a flow for a flow action), the parameters and the answer at level full. A custom API's own
@@ -1722,38 +1866,29 @@ export function prepareCustomApiRuntimes(api, { refresh = false } = {}) {
   const options = executionConfigurations.get(api.store);
   if (!options) return Promise.resolve();
   // One pass at a time: two overlapping passes would prepare the same runtime twice and leak one host.
-  return (options.preparing = (options.preparing ?? Promise.resolve())
+  options.preparing = (options.preparing ?? Promise.resolve())
     .catch(() => {})
-    .then(() => prepareRuntimesPass(api, options, refresh)));
+    .then(() => prepareRuntimesPass(api, options, refresh));
+  return options.preparing;
 }
 
 async function prepareRuntimesPass(api, options, refresh) {
   options.preparationFailures ??= new Map();
-  const active = new Map();
-  for (const row of api.store.tableRows('customapi')) {
-    if (
-      options.handlers.has(key(row.uniquename)) ||
-      typeRegistration(api.store, row, options.pluginTypes) ||
-      fxIdOf(row)
-    )
-      continue;
-    const original = clrRegistration(api.store, row, options);
-    if (original?.descriptor && original.step) active.set(original.id, { ...original, name: row.uniquename });
-  }
+  const active = activeMainRuntimes(api, options);
   for (const id of options.mainRuntimeIds) {
     if (active.has(id)) continue;
     const runtime = options.runtimes.get(id);
-    if (runtime) await closeClrHostPool({ runtime, diagnostic: api.diagnostic });
+    if (runtime) await closeClrHostPool({ runtime, diagnostic: api.diagnostic }); // NOSONAR: await kept: the value may be a thenable and timing matters
     options.runtimes.delete(id);
     options.mainRuntimeIds.delete(id);
     options.preparationFailures.delete(id);
   }
   for (const original of active.values()) {
     options.mainRuntimeIds.add(original.id);
-    if (!refresh && options.runtimes.get(original.id)?.descriptor === original.descriptor) continue;
+    if (isCurrentMainRuntime(options, original, refresh)) continue;
     try {
       const previous = options.runtimes.get(original.id);
-      if (previous) await closeClrHostPool({ runtime: previous, diagnostic: api.diagnostic });
+      if (previous) await closeClrHostPool({ runtime: previous, diagnostic: api.diagnostic }); // NOSONAR: await kept: the value may be a thenable and timing matters
       options.runtimes.delete(original.id);
       options.runtimes.set(original.id, await (options.prepareRuntime ?? prepareClrRuntime)(original.descriptor));
       options.preparationFailures.delete(original.id);
@@ -1812,9 +1947,9 @@ export function install(api, options = {}) {
     .change(() => store.transact(() => seed(store)))
     .then(async () => {
       if (previous && previous.runtimes !== resolved.runtimes) {
-        for (const id of [...previous.mainRuntimeIds]) {
+        for (const id of previous.mainRuntimeIds) {
           const runtime = previous.runtimes.get(id);
-          if (runtime) await closeClrHostPool({ runtime, diagnostic: api.diagnostic });
+          if (runtime) await closeClrHostPool({ runtime, diagnostic: api.diagnostic }); // NOSONAR: await kept: the value may be a thenable and timing matters
           previous.runtimes.delete(id);
         }
         resolved.mainRuntimeIds.clear();

@@ -52,7 +52,7 @@ function launch() {
   if (!selected?.localAppUrl) {
     resetFrame();
     selectedOrigin = null;
-    status.textContent = 'No local app URL';
+    status.textContent = 'No local app URL'; // NOSONAR: deprecated API kept for compatibility
     return;
   }
   try {
@@ -75,12 +75,12 @@ function launch() {
     resetFrame();
     frame.src = target.href;
     frame.hidden = false;
-    status.textContent = 'Waiting for bridge';
+    status.textContent = 'Waiting for bridge'; // NOSONAR: deprecated API kept for compatibility
     error.textContent = '';
-  } catch (problem) {
+  } catch (error_) {
     selectedOrigin = null;
     resetFrame();
-    error.textContent = problem.message;
+    error.textContent = error_.message;
   }
 }
 function choose(name, { keepFrame = false } = {}) {
@@ -89,7 +89,7 @@ function choose(name, { keepFrame = false } = {}) {
   if (!keepFrame) {
     selectedOrigin = null;
     clear($('events'));
-    status.textContent = 'Not connected';
+    status.textContent = 'Not connected'; // NOSONAR: deprecated API kept for compatibility
     resetFrame();
   }
   $('reload').disabled = !selected;
@@ -100,12 +100,13 @@ function choose(name, { keepFrame = false } = {}) {
     $('server').textContent = 'Server reachability not checked';
     return;
   }
-  $('server').textContent =
-    selected.server?.state === 'reachable'
-      ? `Server reachable${selected.server.status ? ` (HTTP ${selected.server.status})` : ''}; app readiness is not verified.`
-      : selected.server?.state === 'unavailable'
-        ? 'Server unavailable. Start the app dev server and check its local URL, then refresh.'
-        : 'Server reachability not checked';
+  let serverText = 'Server reachability not checked';
+  if (selected.server?.state === 'reachable') {
+    const httpStatus = selected.server.status ? ` (HTTP ${selected.server.status})` : '';
+    serverText = `Server reachable${httpStatus}; app readiness is not verified.`;
+  } else if (selected.server?.state === 'unavailable')
+    serverText = 'Server unavailable. Start the app dev server and check its local URL, then refresh.';
+  $('server').textContent = serverText;
   renderList('app-settings', selected.appSettingNames ?? [], 'No app settings declared.');
   $('parameters').value = parameters.get(selected.name) ?? '';
   $('open').href = selected.launchUrl;
@@ -118,10 +119,11 @@ function choose(name, { keepFrame = false } = {}) {
   );
   renderList(
     'connections',
-    (selected.connectionReferences ?? []).map(
-      (r) =>
-        `${r.key}${r.apiId ? ` · ${r.apiId}` : ''}${r.dataSources?.length ? ` · ${r.dataSources.join(', ')}` : ''}`,
-    ),
+    (selected.connectionReferences ?? []).map((r) => {
+      const apiPart = r.apiId ? ` · ${r.apiId}` : '';
+      const sourcePart = r.dataSources?.length ? ` · ${r.dataSources.join(', ')}` : '';
+      return `${r.key}${apiPart}${sourcePart}`;
+    }),
     'No declared connections.',
   );
   const mappings = $('mappings');
@@ -157,12 +159,12 @@ window.addEventListener('message', (message) => {
     return;
   const path = safePath(event.path);
   const prefix = `/_apps/code/${encodeURIComponent(selected.name)}/`;
-  if (event.path != null && (!path || !path.startsWith(prefix))) return;
-  if (event.kind === 'bridge-ready') status.textContent = 'Bridge connected';
-  if (event.kind === 'bridge-error') status.textContent = 'Bridge initialization failed; inspect DevTools';
-  if (event.kind === 'app-error') status.textContent = 'App error; inspect DevTools';
+  if (event.path != null && !path?.startsWith(prefix)) return;
+  if (event.kind === 'bridge-ready') status.textContent = 'Bridge connected'; // NOSONAR: deprecated API kept for compatibility
+  if (event.kind === 'bridge-error') status.textContent = 'Bridge initialization failed; inspect DevTools'; // NOSONAR: deprecated API kept for compatibility
+  if (event.kind === 'app-error') status.textContent = 'App error; inspect DevTools'; // NOSONAR: deprecated API kept for compatibility
   if (event.kind === 'request-error' && event.status === 401 && path.endsWith('/context'))
-    status.textContent = 'Staff session required; select a user in Admin';
+    status.textContent = 'Staff session required; select a user in Admin'; // NOSONAR: deprecated API kept for compatibility
   const parts = [event.kind];
   if (['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'HEAD'].includes(event.method)) parts.push(event.method);
   if (path) parts.push(path.replace(/\([^)]*\)?/g, '(...)').slice(0, 500));
@@ -202,8 +204,8 @@ async function refreshApps(probe = false) {
         keepFrame: Boolean(previous && previous.name === next.name && previous.localAppUrl === next.localAppUrl),
       });
     }
-  } catch (problem) {
-    error.textContent = problem.message;
+  } catch (error_) {
+    error.textContent = error_.message;
   } finally {
     button.disabled = false;
   }

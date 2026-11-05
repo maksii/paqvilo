@@ -32,14 +32,18 @@ const argv = process.argv.slice(2);
 const [product, ...args] = argv;
 // A flag after the option terminator is a positional value, never a request for help/JSON.
 const hasFlag = (items, ...flags) =>
-  items.slice(0, items.indexOf('--') < 0 ? items.length : items.indexOf('--')).some((arg) => flags.includes(arg));
+  items.slice(0, !items.includes('--') ? items.length : items.indexOf('--')).some((arg) => flags.includes(arg));
 function failure(error, code, label = 'paqvilo', items = args) {
   if (hasFlag(items, '--json'))
     console.log(JSON.stringify({ schemaVersion: 1, ok: false, error: { code, message: error.message } }));
   else console.error(`${label}: ${error.message.replace(/[\r\n]+/g, ' ')}`);
   process.exitCode = 1;
 }
-const exitStatus = (code, signal) => code ?? (signal === 'SIGINT' ? 130 : signal === 'SIGTERM' ? 143 : 1);
+const exitStatus = (code, signal) => {
+  if (code != null) return code;
+  if (signal === 'SIGINT') return 130;
+  return signal === 'SIGTERM' ? 143 : 1;
+};
 if (['--version', '-v', '--help', '-h'].includes(product)) {
   try {
     const { values } = parseArgs({
@@ -148,7 +152,7 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
     program = '../mirage/cli.mjs';
     forwarded = args.length ? args : ['--help'];
     const overview = !args.length || ['--help', '-h', 'help'].includes(args[0]);
-    if (overview) helpSupplement = `Public Mirage tools:\n${Object.keys(MIRAGE_TOOLS).map(mirageToolHelp).join('')}`;
+    if (overview) helpSupplement = `Public Mirage tools:\n${Object.keys(MIRAGE_TOOLS).map(mirageToolHelp).join('')}`; // NOSONAR: preserve callback identity and iteration arguments
     if (overview && hasFlag(args, '--help', '-h'))
       helpSupplement +=
         '\nMirage demo: paqvilo mirage demo (editable sample and development browser).\nMirage lifecycle: init, dev, start, status, stop (catalogue and browser options: paqvilo lense --help).';

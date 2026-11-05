@@ -31,10 +31,11 @@ const flowName = (ctx, run) => {
 const activityHref = (run) =>
   run?.traceId ? `#activity/${[run.traceId, run.traceSpanId].filter(Boolean).map(encodeURIComponent).join('/')}` : '';
 // In a table row the link names its run (aria-label); in the run details the heading already does.
-const activityLink = (run, { row = false } = {}) =>
-  activityHref(run)
-    ? `<a class="ui-button ui-small" href="${e(activityHref(run))}"${row ? ` aria-label="Activity of run ${e(run.id)}"` : ''}>Activity →</a>`
-    : '';
+const activityLink = (run, { row = false } = {}) => {
+  if (!activityHref(run)) return '';
+  const ariaLabel = row ? ` aria-label="Activity of run ${e(run.id)}"` : '';
+  return `<a class="ui-button ui-small" href="${e(activityHref(run))}"${ariaLabel}>Activity →</a>`;
+};
 // The Monitor vocabulary (D-M-2): a run or action result is ok, error, running or cancelled, like an activity; the
 // flow run status of the platform (Succeeded, TimedOut…) follows it in small text.
 const RESULTS = {
@@ -51,7 +52,8 @@ const RESULT_TONES = { ok: 'ok', error: 'bad', running: 'info', cancelled: 'neut
 const DETAIL = { TimedOut: 'timed out', Waiting: 'waiting', Skipped: 'skipped' };
 const result = (status) => {
   const value = RESULTS[status] ?? (status ? String(status).toLowerCase() : 'unknown');
-  return `${kit.badge(value, RESULT_TONES[value] ?? 'neutral')}${DETAIL[status] ? ` <span class="ui-help">${e(DETAIL[status])}</span>` : ''}`;
+  const detail = DETAIL[status] ? ` <span class="ui-help">${e(DETAIL[status])}</span>` : '';
+  return `${kit.badge(value, RESULT_TONES[value] ?? 'neutral')}${detail}`;
 };
 
 function runDetail(ctx, d) {
@@ -114,10 +116,14 @@ const FILTER_LABELS = { processId: 'Process', status: 'Result' };
 /** The runs filter form, shown in the Filters drawer (D-M-7). */
 function runsFilters(ctx, d) {
   const filter = d.filter ?? {};
+  const statusOptions = STATUSES.map(
+    (status) =>
+      `<option value="${status}"${filter.status === status ? ' selected' : ''}>${e(resultLabel(status))}</option>`,
+  ).join('');
   return (
     `<form id="flow-runs-form" class="ui-form" data-flow-runs-form><div><label for="flow-process">Process id</label>` +
     `<input id="flow-process" name="processId" type="text" value="${e(filter.processId ?? '')}" aria-describedby="flow-process-help">${kit.fieldHelp('flow-process', 'The workflow id of the cloud flow; leave empty for every flow.')}</div>` +
-    `<div><label for="flow-status">Result</label><select id="flow-status" name="status" aria-describedby="flow-status-help"><option value="">Any result</option>${STATUSES.map((status) => `<option value="${status}"${filter.status === status ? ' selected' : ''}>${e(resultLabel(status))}</option>`).join('')}</select>` +
+    `<div><label for="flow-status">Result</label><select id="flow-status" name="status" aria-describedby="flow-status-help"><option value="">Any result</option>${statusOptions}</select>` +
     `${fieldHelp(ctx, 'flow-status', 'flows.runs', 'status')}</div>` +
     '<p><button type="submit" class="ui-button ui-primary ui-small">Apply filters</button></p></form>'
   );
@@ -187,11 +193,12 @@ function answerForm(ctx, d) {
   const wait = Array.isArray(d.waits) ? d.waits.find((item) => item.id === d.answer) : null;
   if (!wait) return '';
   const approval = wait.kind === 'approval';
+  const outputsHelp = `The outputs the ${wait.kind} wait returns to the run, as a JSON object.`;
   const body = approval
     ? `<div><label for="flow-responder">Responder</label><input id="flow-responder" name="responder" type="text" aria-describedby="flow-responder-help">${kit.fieldHelp('flow-responder', 'Who answers, for example reviewer@example.test.')}</div>` +
       `<div><label for="flow-comments">Comments</label><textarea id="flow-comments" name="comments" rows="3" aria-describedby="flow-comments-help"></textarea>${fieldHelp(ctx, 'flow-comments', 'flows.waits', 'comments')}</div>` +
       '<p><button type="submit" class="ui-button ui-primary ui-small" name="outcome" value="Approve">Approve</button> <button type="submit" class="ui-button ui-small" name="outcome" value="Reject">Reject</button></p>'
-    : `<div><label for="flow-outputs">Outputs JSON</label><textarea id="flow-outputs" name="outputs" rows="4" aria-describedby="flow-outputs-help">{}</textarea>${kit.fieldHelp('flow-outputs', `The outputs the ${wait.kind} wait returns to the run, as a JSON object.`)}</div>` +
+    : `<div><label for="flow-outputs">Outputs JSON</label><textarea id="flow-outputs" name="outputs" rows="4" aria-describedby="flow-outputs-help">{}</textarea>${kit.fieldHelp('flow-outputs', outputsHelp)}</div>` +
       '<p><button type="submit" class="ui-button ui-primary ui-small">Resume run</button></p>';
   return (
     `<form id="flow-wait-form" class="ui-form" data-flow-wait-form="${e(wait.id)}"><h3>Answer ${e(wait.kind)} <code>${e(wait.id)}</code></h3>` +
@@ -211,8 +218,12 @@ function waitsPanel(ctx, d) {
         `<option value="${option}"${(d.waitState ?? '') === option ? ' selected' : ''}>${label}</option>`,
     )
     .join('')}</select> ${fieldHelp(ctx, 'flow-wait-state', 'flows.waits', 'state')}</p>`;
-  if (!Array.isArray(d.waits))
-    return `${filter}${kit.notice(d.waits?.error ? `Flow waits could not be read: ${failed(d.waits)}` : 'This host did not report flow waits.', 'warn')}`;
+  if (!Array.isArray(d.waits)) {
+    const message = d.waits?.error
+      ? `Flow waits could not be read: ${failed(d.waits)}`
+      : 'This host did not report flow waits.';
+    return `${filter}${kit.notice(message, 'warn')}`;
+  }
   return (
     filter +
     list(
@@ -322,6 +333,81 @@ function webhooksPanel(ctx, d) {
   );
 }
 
+function flowWaitOutcome(result) {
+  return result.outcome ? ` (${result.outcome})` : '';
+}
+
+function submitFlowWait(ctx, event, d, form) {
+  event.preventDefault();
+  const id = form.dataset.flowWaitForm,
+    wait = (Array.isArray(d.waits) ? d.waits : []).find((item) => item.id === id);
+  const fields = new FormData(form),
+    button = event.submitter ?? form.querySelector('[type=submit]');
+  let body;
+  if (wait?.kind === 'approval')
+    body = {
+      outcome: event.submitter?.value ?? 'Approve',
+      responder: String(fields.get('responder') ?? '').trim() || undefined, // NOSONAR: stringification is intentional here
+      comments: String(fields.get('comments') ?? '').trim() || undefined, // NOSONAR: stringification is intentional here
+    };
+  else {
+    try {
+      body = { outputs: JSON.parse(String(fields.get('outputs') || '{}')) }; // NOSONAR: stringification is intentional here
+    } catch {
+      ctx.notify('Outputs must be valid JSON.', true);
+      return true;
+    }
+    if (!body.outputs || typeof body.outputs !== 'object' || Array.isArray(body.outputs)) {
+      ctx.notify('Outputs must be a JSON object.', true);
+      return true;
+    }
+  }
+  return pending(ctx, button, async () => {
+    const result = await ctx.request(`/flow-waits/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    d.answer = null;
+    ctx.notify(`Run ${result.runId} is scheduled to resume${flowWaitOutcome(result)}.`);
+    await ctx.refresh();
+  });
+}
+
+function handleFlowClick(ctx, d, target) {
+  const unfilter = target('[data-flow-unfilter]');
+  if (unfilter) {
+    const name = unfilter.dataset.flowUnfilter;
+    d.filter = name === '*' ? {} : { ...d.filter, [name]: '' };
+    ctx.forgetDraft?.('flow-runs-form');
+    ctx.refresh();
+    return true;
+  }
+  const run = target('[data-flow-run]'),
+    answer = target('[data-flow-answer]');
+  if (run) {
+    d.runId = run.dataset.flowRun;
+    ctx.refresh();
+    return true;
+  }
+  if (target('[data-flow-run-close]')) {
+    d.runId = null;
+    d.run = null;
+    ctx.refresh();
+    return true;
+  }
+  if (answer) {
+    d.answer = answer.dataset.flowAnswer;
+    ctx.refresh();
+    return true;
+  }
+  if (target('[data-flow-answer-cancel]')) {
+    d.answer = null;
+    ctx.refresh();
+    return true;
+  }
+  return false;
+}
+
 export const view = {
   id: ID,
   label: 'Flows & jobs',
@@ -334,9 +420,11 @@ export const view = {
     const linked = deepLink('run');
     if (linked && linked !== d.linkedRun) d.linkedRun = d.runId = linked;
     const runQuery = new URLSearchParams(Object.entries(d.filter ?? {}).filter(([, item]) => item));
+    const runSuffix = runQuery.size ? `?${runQuery}` : '';
+    const waitSuffix = d.waitState ? `?state=${encodeURIComponent(d.waitState)}` : '';
     const [runs, waits, dashboard, run] = await Promise.all([
-      ctx.request(`/flow-runs${runQuery.size ? `?${runQuery}` : ''}`).catch(failure),
-      ctx.request(`/flow-waits${d.waitState ? `?state=${encodeURIComponent(d.waitState)}` : ''}`).catch(failure),
+      ctx.request(`/flow-runs${runSuffix}`).catch(failure),
+      ctx.request(`/flow-waits${waitSuffix}`).catch(failure),
       ctx.request('/dashboard').catch(failure),
       d.runId ? ctx.request(`/flow-runs/${encodeURIComponent(d.runId)}`).catch(failure) : null,
     ]);
@@ -390,79 +478,14 @@ export const view = {
     if (event.type === 'submit' && target('[data-flow-runs-form]')) {
       event.preventDefault();
       d.filter = Object.fromEntries(
-        [...new FormData(target('[data-flow-runs-form]'))].map(([name, item]) => [name, String(item).trim()]),
+        [...new FormData(target('[data-flow-runs-form]'))].map(([name, item]) => [name, String(item).trim()]), // NOSONAR: stringification is intentional here
       );
       ctx.refresh();
       return true;
     }
     const form = event.type === 'submit' ? target('[data-flow-wait-form]') : null;
-    if (form) {
-      event.preventDefault();
-      const id = form.dataset.flowWaitForm,
-        wait = (Array.isArray(d.waits) ? d.waits : []).find((item) => item.id === id);
-      const fields = new FormData(form),
-        button = event.submitter ?? form.querySelector('[type=submit]');
-      let body;
-      if (wait?.kind === 'approval')
-        body = {
-          outcome: event.submitter?.value ?? 'Approve',
-          responder: String(fields.get('responder') ?? '').trim() || undefined,
-          comments: String(fields.get('comments') ?? '').trim() || undefined,
-        };
-      else {
-        try {
-          body = { outputs: JSON.parse(String(fields.get('outputs') || '{}')) };
-        } catch {
-          ctx.notify('Outputs must be valid JSON.', true);
-          return true;
-        }
-        if (!body.outputs || typeof body.outputs !== 'object' || Array.isArray(body.outputs)) {
-          ctx.notify('Outputs must be a JSON object.', true);
-          return true;
-        }
-      }
-      return pending(ctx, button, async () => {
-        const result = await ctx.request(`/flow-waits/${encodeURIComponent(id)}`, {
-          method: 'POST',
-          body: JSON.stringify(body),
-        });
-        d.answer = null;
-        ctx.notify(`Run ${result.runId} is scheduled to resume${result.outcome ? ` (${result.outcome})` : ''}.`);
-        await ctx.refresh();
-      });
-    }
+    if (form) return submitFlowWait(ctx, event, d, form);
     if (event.type !== 'click') return false;
-    const unfilter = target('[data-flow-unfilter]');
-    if (unfilter) {
-      const name = unfilter.dataset.flowUnfilter;
-      d.filter = name === '*' ? {} : { ...d.filter, [name]: '' };
-      ctx.forgetDraft?.('flow-runs-form');
-      ctx.refresh();
-      return true;
-    }
-    const run = target('[data-flow-run]'),
-      answer = target('[data-flow-answer]');
-    if (run) {
-      d.runId = run.dataset.flowRun;
-      ctx.refresh();
-      return true;
-    }
-    if (target('[data-flow-run-close]')) {
-      d.runId = null;
-      d.run = null;
-      ctx.refresh();
-      return true;
-    }
-    if (answer) {
-      d.answer = answer.dataset.flowAnswer;
-      ctx.refresh();
-      return true;
-    }
-    if (target('[data-flow-answer-cancel]')) {
-      d.answer = null;
-      ctx.refresh();
-      return true;
-    }
-    return false;
+    return handleFlowClick(ctx, d, target);
   },
 };

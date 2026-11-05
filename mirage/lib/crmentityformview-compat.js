@@ -10,16 +10,16 @@
  */
 (() => {
   'use strict';
-  if (window.__ppCrmEntityFormView) return;
-  window.__ppCrmEntityFormView = true;
-  const w = window;
+  if (globalThis.__ppCrmEntityFormView) return;
+  globalThis.__ppCrmEntityFormView = true;
+  const w = globalThis;
   const jq = () => (typeof w.jQuery?.fn?.jquery === 'string' ? w.jQuery : null);
   const define = (name, fn) => {
     if (typeof w[name] !== 'function') w[name] = fn;
   };
   const resource = (key, fallback) =>
     typeof w.ResourceManager?.[key] === 'string' ? w.ResourceManager[key] : fallback;
-  const visible = (element) => Boolean(element && element.getClientRects().length);
+  const visible = (element) => Boolean(element?.getClientRects().length);
 
   define('GetMaxLength', (field) => field.exMaxLen);
   define('GetSelectionLength', (field) =>
@@ -48,7 +48,7 @@
     return allowed;
   });
   define('LengthError', (field) => {
-    const max = parseInt(field.getAttribute('maxlength'), 10);
+    const max = Number.parseInt(field.getAttribute('maxlength'), 10);
     document.getElementById('length_error_message')?.remove();
     if (field.value.length === max) {
       field.insertAdjacentHTML(
@@ -61,12 +61,12 @@
   });
   define('setPrecision', (id, precision) => {
     const field = id ? document.getElementById(id) : null;
-    if (!field || field.value === '' || isNaN(field.value)) return;
-    field.value = parseFloat(field.value).toFixed(precision || 0);
+    if (!field || field.value === '' || Number.isNaN(Number(field.value))) return;
+    field.value = Number.parseFloat(field.value).toFixed(precision || 0);
   });
   define('getUrlScheme', (value) => {
     const index = String(value).indexOf('://');
-    return index === -1 ? '' : String(value).substr(0, index);
+    return index === -1 ? '' : String(value).substr(0, index); // NOSONAR: deprecated API kept for compatibility
   });
   const allowedScheme = (url) =>
     ['http', 'https', 'ftp', 'ftps', 'onenote', 'tel'].includes(w.getUrlScheme(url).toLowerCase());
@@ -137,7 +137,8 @@
   define('updateConstantSum', (name) => {
     const elements = [...document.getElementsByClassName(name)];
     const total = elements.reduce(
-      (sum, element) => (!isNaN(element.value) && element.value.length ? sum + parseInt(element.value, 10) : sum),
+      (sum, element) =>
+        !Number.isNaN(Number(element.value)) && element.value.length ? sum + Number.parseInt(element.value, 10) : sum,
       0,
     );
     const field = document.getElementById(`ConstantSumTotalValue${name}`);
@@ -149,7 +150,7 @@
   });
   define('isDirty', () => document.getElementsByClassName('dirty').length > 0);
   define('clearIsDirty', () => {
-    for (const element of [...document.getElementsByClassName('dirty')]) element.classList.remove('dirty');
+    for (const element of document.getElementsByClassName('dirty')) element.classList.remove('dirty');
   });
   define('confirmExit', () => {
     if (document.getElementById('confirmOnExit')?.value !== 'true' || !w.isDirty()) return undefined;
@@ -168,11 +169,11 @@
   // matches word boundaries ("control" includes .form-control), while jQuery class selection
   // keeps native matching: the platform jQuery's selector engine does not use the method
   // (support.getElementsByClassName is false).
-  String.prototype.trim = function () {
-    return this.replace(/^\s+|\s+$/g, '');
+  /* NOSONAR: intentional compatibility override */ String.prototype.trim = function () {
+    return this.replace(/^\s+|(?<!\s)\s+$/g, '');
   };
   document.getElementsByClassName = function (name) {
-    const pattern = new RegExp(`\\b${name}\\b`);
+    const pattern = new RegExp(String.raw`\b${name}\b`);
     return [...this.getElementsByTagName('*')].filter((element) => pattern.test(element.className));
   };
   const nativeClassSelection = ($) => {
@@ -203,7 +204,8 @@
   };
   nativeClassSelection(w.jQuery);
   const registry = (w.__ppSimCompat ||= {});
-  (registry.jqueryWatchers ||= new Set()).add(nativeClassSelection);
+  registry.jqueryWatchers ||= new Set();
+  registry.jqueryWatchers.add(nativeClassSelection);
   if (!registry.jqueryWatched) {
     const descriptor = Object.getOwnPropertyDescriptor(w, 'jQuery');
     if (!descriptor || (!descriptor.get && !descriptor.set && descriptor.configurable !== false)) {
@@ -255,29 +257,90 @@
     const original = w.Page_ClientValidate;
     const wrapped = function (...args) {
       original.apply(this, args);
-      if (w.Page_IsValid === false) {
-        for (const summary of document.querySelectorAll('.validation-summary')) {
-          summary.setAttribute('aria-live', 'assertive');
-          summary.setAttribute('aria-atomic', 'true');
-          for (const list of summary.querySelectorAll('ul')) list.setAttribute('role', 'list');
-          for (const item of summary.querySelectorAll('ul li')) item.setAttribute('role', 'listitem');
-          for (const link of summary.querySelectorAll('ul li a')) {
-            const id = link.getAttribute('referenceControlId');
-            const control = id ? document.getElementById(id) : null;
-            if (control && /^(INPUT|TEXTAREA|SELECT)$/.test(control.tagName)) w.validateRequiredField(id);
-          }
-        }
-        for (const header of document.querySelectorAll('.validation-header'))
-          header.setAttribute('role', 'presentation');
-        return false;
-      }
-      return true;
+      if (w.Page_IsValid !== false) return true;
+      decorateValidationSummaries();
+      decorateValidationHeaders();
+      return false;
     };
     wrapped.__ppSummary = true;
     w.Page_ClientValidate = wrapped;
   }
 
-  const ready = () => {
+  function decorateValidationSummaries() {
+    for (const summary of document.querySelectorAll('.validation-summary')) {
+      summary.setAttribute('aria-live', 'assertive');
+      summary.setAttribute('aria-atomic', 'true');
+      for (const list of summary.querySelectorAll('ul')) list.setAttribute('role', 'list');
+      for (const item of summary.querySelectorAll('ul li')) item.setAttribute('role', 'listitem');
+      for (const link of summary.querySelectorAll('ul li a')) {
+        const id = link.getAttribute('referenceControlId');
+        const control = id ? document.getElementById(id) : null;
+        if (control && /^(INPUT|TEXTAREA|SELECT)$/.test(control.tagName)) w.validateRequiredField(id);
+      }
+    }
+  }
+
+  function decorateValidationHeaders() {
+    for (const header of document.querySelectorAll('.validation-header')) header.setAttribute('role', 'presentation');
+  }
+
+  function refreshQuickView(frame, input) {
+    if (frame.dataset.lookupElement !== input.id) return;
+    const id = input.value.replace(/[{}]/g, '').trim();
+    if (!id) {
+      frame.setAttribute('src', 'about:blank');
+      frame.setAttribute('tabindex', '-1');
+      frame.style.height = '0px';
+      return;
+    }
+    if (!frame.dataset.path?.trim()) return;
+    let url;
+    // URL parsing accepts malformed percent escapes; validate them before deriving a frame path.
+    try {
+      url = new URL(frame.dataset.path, location.href);
+      decodeURI(url.href);
+    } catch {
+      return;
+    }
+    if (url.origin !== location.origin || !['http:', 'https:'].includes(url.protocol) || url.pathname.startsWith('//'))
+      return;
+    // Bootstrap 5 frames carry no table data attributes: the lookup's entity name input and
+    // the current frame query supply them.
+    let previous = new URLSearchParams();
+    try {
+      previous = new URL(frame.getAttribute('src') || 'about:blank', location.href).searchParams;
+    } catch {
+      /* Keep the lookup's own entity name when the previous URL is invalid. */
+    }
+    const entityname =
+      frame.dataset.entityname ||
+      document.getElementById(`${input.id}_entityname`)?.value ||
+      previous.get('entityname') ||
+      '';
+    // The primary key name comes from the frame's data attribute only: Bootstrap 5 frames carry
+    // none and the platform client then sends it empty.
+    const primary = frame.dataset.entityprimarykeyname || '';
+    // The platform client rebuilds the frame URL without the response's isprofilepage/lang
+    // parameters and with the primary key name parameter always present.
+    // Keep native literal spaces in the path-relative src; other query characters must
+    // stay in their value rather than becoming another parameter or a fragment.
+    const queryValue = (value) => encodeURIComponent(String(value ?? '')).replaceAll('%20', ' ');
+    let src;
+    try {
+      src = `${url.pathname}?entityid=${queryValue(id)}&entityname=${queryValue(entityname)}&entityprimarykeyname=${queryValue(primary)}&formname=${queryValue(frame.dataset.formname)}&controlid=${queryValue(frame.dataset.controlid)}`;
+    } catch {
+      return;
+    }
+    if (frame.getAttribute('src') !== src) frame.setAttribute('src', src);
+    frame.setAttribute('tabindex', '0');
+  }
+
+  function refreshQuickViews(input) {
+    for (const frame of document.querySelectorAll('iframe.quickform[data-lookup-element]'))
+      refreshQuickView(frame, input);
+  }
+
+  function initialiseQuickFrames() {
     for (const frame of document.querySelectorAll('iframe.quickform')) {
       let observer;
       const loaded = () => {
@@ -302,62 +365,9 @@
       frame.addEventListener('load', loaded);
       loaded();
     }
-    const refreshQuickViews = (input) => {
-      for (const frame of document.querySelectorAll('iframe.quickform[data-lookup-element]')) {
-        if (frame.dataset.lookupElement !== input.id) continue;
-        const id = input.value.replace(/[{}]/g, '').trim();
-        if (!id) {
-          frame.setAttribute('src', 'about:blank');
-          frame.setAttribute('tabindex', '-1');
-          frame.style.height = '0px';
-          continue;
-        }
-        if (!frame.dataset.path?.trim()) continue;
-        let url;
-        // URL parsing accepts malformed percent escapes; validate them before deriving a frame path.
-        try {
-          url = new URL(frame.dataset.path, location.href);
-          decodeURI(url.href);
-        } catch {
-          continue;
-        }
-        if (
-          url.origin !== location.origin ||
-          !['http:', 'https:'].includes(url.protocol) ||
-          url.pathname.startsWith('//')
-        )
-          continue;
-        // Bootstrap 5 frames carry no table data attributes: the lookup's entity name input and
-        // the current frame query supply them.
-        let previous = new URLSearchParams();
-        try {
-          previous = new URL(frame.getAttribute('src') || 'about:blank', location.href).searchParams;
-        } catch {
-          /* Keep the lookup's own entity name when the previous URL is invalid. */
-        }
-        const entityname =
-          frame.dataset.entityname ||
-          document.getElementById(`${input.id}_entityname`)?.value ||
-          previous.get('entityname') ||
-          '';
-        // The primary key name comes from the frame's data attribute only: Bootstrap 5 frames carry
-        // none and the platform client then sends it empty.
-        const primary = frame.dataset.entityprimarykeyname || '';
-        // The platform client rebuilds the frame URL without the response's isprofilepage/lang
-        // parameters and with the primary key name parameter always present.
-        // Keep native literal spaces in the path-relative src; other query characters must
-        // stay in their value rather than becoming another parameter or a fragment.
-        const queryValue = (value) => encodeURIComponent(String(value ?? '')).replace(/%20/g, ' ');
-        let src;
-        try {
-          src = `${url.pathname}?entityid=${queryValue(id)}&entityname=${queryValue(entityname)}&entityprimarykeyname=${queryValue(primary)}&formname=${queryValue(frame.dataset.formname)}&controlid=${queryValue(frame.dataset.controlid)}`;
-        } catch {
-          continue;
-        }
-        if (frame.getAttribute('src') !== src) frame.setAttribute('src', src);
-        frame.setAttribute('tabindex', '0');
-      }
-    };
+  }
+
+  function bindQuickViewRefresh() {
     // jQuery-triggered changes do not dispatch native DOM change events.
     const quickJquery = jq();
     if (quickJquery)
@@ -373,15 +383,19 @@
     const refreshBound = () => {
       for (const frame of document.querySelectorAll('iframe.quickform[data-lookup-element]')) {
         const bound = document.getElementById(frame.dataset.lookupElement);
-        if (bound && bound.value) refreshQuickViews(bound);
+        if (bound?.value) refreshQuickViews(bound);
       }
     };
-    if (quickToken.waiting) quickToken.then = refreshBound;
+    if (quickToken.waiting)
+      quickToken.then = refreshBound; // NOSONAR: `then` is a domain property, not a thenable
     else setTimeout(refreshBound, 0);
+  }
+
+  function initializeFileImageValues() {
     // On ready the file controls' hidden size field and the image controls' hidden value and size
     // fields (an image without a link) carry an explicit empty value, as the platform script sets
     // them; the file name field takes the shown file name.
-    for (const name of [...document.getElementsByClassName('break-file-name')]) {
+    for (const name of document.getElementsByClassName('break-file-name')) {
       const control = name.parentElement?.parentElement?.parentElement;
       const link = name.querySelector(':scope > a');
       const hiddenName = name.parentElement?.parentElement?.nextElementSibling;
@@ -389,18 +403,21 @@
       const size = control?.lastElementChild;
       if (size?.tagName === 'INPUT') size.setAttribute('value', '');
     }
-    for (const inline of [...document.getElementsByClassName('image-inline')]) {
+    for (const inline of document.getElementsByClassName('image-inline')) {
       const value = inline.parentElement?.nextElementSibling;
       if (!inline.firstElementChild?.getAttribute('href') && value?.tagName === 'INPUT')
         value.setAttribute('value', '');
       const size = value?.nextElementSibling;
       if (size?.tagName === 'INPUT') size.setAttribute('value', '');
     }
+  }
+
+  function layoutFileImageControls() {
     // File and image controls are laid out by their rendered width, as the platform script does:
     // a file container narrower than 250px drops its class and
     // stacks its link block (below 120px the name and delete blocks too); an image control whose
     // box is at least 250px wide puts its button and file name side by side.
-    for (const container of [...document.getElementsByClassName('file-control-container')]) {
+    for (const container of document.getElementsByClassName('file-control-container')) {
       const width = container.clientWidth;
       const links = container.firstElementChild?.nextElementSibling;
       if (width >= 250 || !links) continue;
@@ -412,62 +429,68 @@
         links.lastElementChild?.setAttribute('class', 'gap-between-vertical-element');
       }
     }
-    for (const name of [...document.getElementsByClassName('break-image-name')]) {
+    for (const name of document.getElementsByClassName('break-image-name')) {
       const box = name.parentElement;
-      if (!box || !(box.parentElement?.clientWidth >= 250)) continue;
+      if (!box || !(box.parentElement?.clientWidth >= 250)) continue; // NOSONAR: operand can be NaN or undefined, the negated test differs
       box.setAttribute('class', 'div-for-image-input');
       box.firstElementChild?.setAttribute('class', 'btn btn-default btn-for-image-input btn-for-inputofimage');
       name.setAttribute('class', 'break-image-name');
     }
+  }
+
+  function announceActiveStep() {
     const active = document.querySelector('.progress .list-group-item.active');
-    if (active) {
-      const label = active.textContent;
-      const host = active.parentElement?.parentElement;
-      // The platform writes the step title as an unquoted id attribute: the first word is the id
-      // and every further word an empty attribute. Reproduced without interpreting the
-      // title as HTML: only plain attribute-name words become attributes.
-      if (host) {
-        const announcer = document.createElement('div');
-        const [first, ...rest] = label.trim().split(/\s+/);
-        announcer.id = first ?? '';
-        for (const word of rest) {
-          const name = word.toLowerCase();
-          if (
-            /^[a-z_][a-z0-9_.-]*$/.test(name) &&
-            !['id', 'class', 'aria-live'].includes(name) &&
-            !announcer.hasAttribute(name)
-          )
-            announcer.setAttribute(name, '');
-        }
-        announcer.className = 'sr-only';
-        announcer.setAttribute('aria-live', 'assertive');
-        announcer.textContent = label;
-        host.append(announcer);
+    if (!active) return;
+    const label = active.textContent;
+    const host = active.parentElement?.parentElement;
+    // The platform writes the step title as an unquoted id attribute: the first word is the id
+    // and every further word an empty attribute. Reproduced without interpreting the
+    // title as HTML: only plain attribute-name words become attributes.
+    if (host) {
+      const announcer = document.createElement('div');
+      const [first, ...rest] = label.trim().split(/\s+/);
+      announcer.id = first ?? '';
+      for (const word of rest) {
+        const name = word.toLowerCase();
+        if (
+          /^[a-z_][a-z0-9_.-]*$/.test(name) &&
+          !['id', 'class', 'aria-live'].includes(name) &&
+          !announcer.hasAttribute(name)
+        )
+          announcer.setAttribute(name, '');
       }
-      document.querySelector('fieldset')?.setAttribute('aria-labelledby', label);
-      setTimeout(() => document.querySelector('fieldset .control')?.firstChild?.focus?.());
+      announcer.className = 'sr-only';
+      announcer.setAttribute('aria-live', 'assertive');
+      announcer.textContent = label;
+      host.append(announcer);
     }
-    const linkify = (input, href, text, target) => {
-      let address;
-      try {
-        address = new URL(href, location.href);
-      } catch {
-        return;
-      }
-      if (!['http:', 'https:', 'ftp:', 'ftps:', 'onenote:', 'tel:', 'mailto:'].includes(address.protocol)) return;
-      const container = document.createElement('div');
-      container.className = 'control';
-      const link = document.createElement('a');
-      link.className = 'text-primary';
-      link.style.cursor = 'pointer';
-      link.setAttribute('href', address.href);
-      if (target) link.setAttribute('target', target);
-      link.setAttribute('readonly', 'readonly');
-      link.textContent = text;
-      input.style.display = 'none';
-      container.appendChild(link);
-      input.parentElement?.appendChild(container);
-    };
+    document.querySelector('fieldset')?.setAttribute('aria-labelledby', label);
+    setTimeout(() => document.querySelector('fieldset .control')?.firstChild?.focus?.());
+  }
+
+  function linkify(input, href, text, target) {
+    let address;
+    try {
+      address = new URL(href, location.href);
+    } catch {
+      return;
+    }
+    if (!['http:', 'https:', 'ftp:', 'ftps:', 'onenote:', 'tel:', 'mailto:'].includes(address.protocol)) return;
+    const container = document.createElement('div');
+    container.className = 'control';
+    const link = document.createElement('a');
+    link.className = 'text-primary';
+    link.style.cursor = 'pointer';
+    link.setAttribute('href', address.href);
+    if (target) link.setAttribute('target', target);
+    link.setAttribute('readonly', 'readonly');
+    link.textContent = text;
+    input.style.display = 'none';
+    container.appendChild(link);
+    input.parentElement?.appendChild(container);
+  }
+
+  function linkifyReadOnlyFields() {
     for (const input of document.querySelectorAll(
       ".entity-form input[type='url'][readonly], .entity-form input[type='url'][disabled]",
     )) {
@@ -485,10 +508,16 @@
       ".entity-form input[type='email'][readonly], .entity-form input[type='email'][disabled]",
     ))
       if (input.value) linkify(input, `mailto:${input.value}`, input.value, null);
+  }
+
+  function applyRequiredControls() {
     for (const span of document.querySelectorAll('.entity-form span[data-required]')) {
-      const required = span.getAttribute('data-required') === 'true';
+      const required = span.getAttribute('data-required') === 'true'; // NOSONAR: actual attributes exclude inherited dataset values
       for (const control of span.querySelectorAll('input,select,textarea')) control.required = required;
     }
+  }
+
+  function bindFormKeyHandlers() {
     for (const form of document.querySelectorAll('.entity-form'))
       form.addEventListener('keypress', (event) => {
         if ((event.keyCode || event.which) !== 13 || event.target === form) return;
@@ -506,11 +535,22 @@
         event.stopPropagation();
         button.click();
       });
+  }
+
+  const ready = () => {
+    initialiseQuickFrames();
+    bindQuickViewRefresh();
+    initializeFileImageValues();
+    layoutFileImageControls();
+    announceActiveStep();
+    linkifyReadOnlyFields();
+    applyRequiredControls();
+    bindFormKeyHandlers();
   };
   // Bound quick view frames wait for the shell's anti-forgery token, asked for before the page's
   // ready handlers (platform order: the token request, the replaced frame, then the other
   // token-bound requests); without the shell the replacement follows ready.
-  const quickToken = { waiting: false, then: null };
+  const quickToken = { waiting: false, then: null }; // NOSONAR: `then` is a domain property, not a thenable
   const askQuickToken = () => {
     // Only frames bound to a record are replaced (an insert form's frame stays blank: no token request).
     const bound = [...document.querySelectorAll('iframe.quickform[data-lookup-element]')].some(
@@ -523,7 +563,7 @@
     deferred.always(() => {
       quickToken.waiting = false;
       const then = quickToken.then;
-      quickToken.then = null;
+      quickToken.then = null; // NOSONAR: `then` is a domain property, not a thenable
       then?.();
     });
   };

@@ -51,13 +51,17 @@ export function frameState(frameEvents) {
       // A new document replaces the child frames of the one before it; Chromium does not
       // always report their removal.
       if (loaders.has(row.frameId) && loaders.get(row.frameId) !== row.loaderId)
-        for (const child of parents.keys())
-          if (child !== row.frameId && withinFrame(child, row.frameId, parents)) detached.add(child);
+        detachFrameChildren(row.frameId, parents, detached);
       loaders.set(row.frameId, row.loaderId);
       detached.delete(row.frameId);
     } else if (row.event === 'frameDetached' && row.reason !== 'swap') detached.add(row.frameId);
   }
   return { loaders, detached };
+}
+
+function detachFrameChildren(frameId, parents, detached) {
+  for (const child of parents.keys())
+    if (child !== frameId && withinFrame(child, frameId, parents)) detached.add(child);
 }
 
 /**

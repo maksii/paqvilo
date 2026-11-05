@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isLoopbackOrigin } from './client.mjs';
+import { matchNamedLine } from '../../mirage/lib/text-scanning.mjs';
 
 const GUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 export function environmentOrigin(value, { allowLoopback = false } = {}) {
@@ -80,10 +81,11 @@ export async function protectSecret(value, decrypt = false) {
 }
 
 export function parseRegistrationOutput(output) {
-  if (/^\s*Error:/im.test(output)) throw new Error('PAC reported an error, even if its process exit code was zero.');
+  if (/^[^\S\r\n\u2028\u2029]*Error:/im.test(output))
+    throw new Error('PAC reported an error, even if its process exit code was zero.');
   const start = output.search(/Tenant\s*ID\s+Application\s*ID\s+Client\s*Secret/i);
   if (start < 0) throw new Error('PAC credential table was not recognized.');
-  const row = output.slice(start).match(new RegExp(`^\\s*(${GUID})\\s+(${GUID})\\s+(\\S+)\\s+(.+?)\\s*$`, 'im'));
+  const row = output.slice(start).match(new RegExp(String.raw`^\s*(${GUID})\s+(${GUID})\s+(\S+)\s+(.+?)\s*$`, 'im'));
   if (!row) throw new Error('PAC credential row was not recognized.');
   return {
     tenantId: row[1].toLowerCase(),
@@ -120,7 +122,7 @@ export async function activeEnvironment() {
   const result = await runProcess(pacExecutable(), ['env', 'who']);
   if (result.code !== 0 || result.timedOut)
     throw new Error('PAC cannot identify the active environment. Sign in with pac auth create first.');
-  const field = (label) => result.stdout.match(new RegExp(`^\\s*${label}:\\s*(.+)$`, 'm'))?.[1].trim();
+  const field = (label) => result.stdout.match(new RegExp(String.raw`^\s*${label}:\s*(.+)$`, 'm'))?.[1].trim();
   return {
     environmentUrl: environmentOrigin(field('Org URL')),
     environmentId: field('Environment ID'),
@@ -146,6 +148,11 @@ export function publicConnection(connection) {
     createdAt,
     credentialSource,
   } = connection;
+  const protection = () => {
+    if (connection.protectedSecret) return 'Windows DPAPI CurrentUser';
+    if (credentialSource === 'environment') return 'environment';
+    return null;
+  };
   return {
     schemaVersion,
     environmentUrl,
@@ -162,11 +169,7 @@ export function publicConnection(connection) {
     credentialSource,
     state: connection.state,
     secretStored: Boolean(connection.protectedSecret),
-    protection: connection.protectedSecret
-      ? 'Windows DPAPI CurrentUser'
-      : credentialSource === 'environment'
-        ? 'environment'
-        : null,
+    protection: protection(),
   };
 }
 
@@ -209,8 +212,8 @@ export async function registerApplication({
     role,
   ]);
   // Save encrypted recovery evidence before parsing or reporting anything.
-  const reportedError = /^\s*Error:/im.test(result.stdout + '\n' + result.stderr);
-  const partialApplicationId = result.stdout.match(new RegExp(`Application\\s+['"]?(${GUID})`, 'i'))?.[1];
+  const reportedError = /^[^\S\r\n\u2028\u2029]*Error:/im.test(result.stdout + '\n' + result.stderr);
+  const partialApplicationId = result.stdout.match(new RegExp(String.raw`Application\s+['"]?(${GUID})`, 'i'))?.[1];
   await privateJson(pending, {
     schemaVersion: 1,
     ...active,
@@ -334,30 +337,8 @@ export function parseCredentialFile(input) {
   }
   const normalize = (key) => key.toLowerCase().replace(/[ _-]/g, '');
   if (!fields) {
-    const lines = text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const named = lines.map((line) => line.match(/^([a-zA-Z _-]+)\s*[:=]\s*(.*)$/)).filter(Boolean);
-    if (named.length === lines.length)
-      fields = Object.fromEntries(named.map((m) => [m[1], m[2].replace(/^["']|["']$/g, '')]));
-    else if (lines.length === 2 && normalize(lines[0].split(',')[0]) === 'clientid')
-      fields = Object.fromEntries(
-        lines[0].split(',').map((key, i) => [
-          key,
-          lines[1]
-            .split(',')
-            [i]?.trim()
-            .replace(/^["']|["']$/g, ''),
-        ]),
-      );
-    else if (
-      lines.length === 4 &&
-      new RegExp(`^${GUID}$`, 'i').test(lines[0]) &&
-      new RegExp(`^${GUID}$`, 'i').test(lines[1])
-    )
-      fields = { clientId: lines[0], tenantId: lines[1], value: lines[2], secretId: lines[3] };
-    else return { value: text };
+    fields = credentialFieldsFromLines(text, normalize);
+    if (!fields) return { value: text };
   }
   const values = Object.fromEntries(Object.entries(fields).map(([key, value]) => [normalize(key), value]));
   const result = {
@@ -372,6 +353,29 @@ export function parseCredentialFile(input) {
     if (result[key] && !new RegExp(`^${GUID}$`, 'i').test(result[key]))
       throw new Error('Credential file contains an invalid identity field.');
   return result;
+}
+
+function credentialFieldsFromLines(text, normalize) {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const named = lines.map(matchNamedLine).filter(Boolean);
+  if (named.length === lines.length)
+    return Object.fromEntries(named.map((m) => [m[1], m[2].replace(/^["']|["']$/g, '')]));
+  if (lines.length === 2 && normalize(lines[0].split(',')[0]) === 'clientid')
+    return Object.fromEntries(
+      lines[0].split(',').map((key, i) => [
+        key,
+        lines[1]
+          .split(',')
+          [i]?.trim()
+          .replace(/^["']|["']$/g, ''),
+      ]),
+    );
+  if (lines.length === 4 && new RegExp(`^${GUID}$`, 'i').test(lines[0]) && new RegExp(`^${GUID}$`, 'i').test(lines[1]))
+    return { clientId: lines[0], tenantId: lines[1], value: lines[2], secretId: lines[3] };
+  return null;
 }
 
 export async function loadConnection(file, { allowLoopback = false } = {}) {

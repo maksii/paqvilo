@@ -49,10 +49,37 @@ function decodePac(buffer) {
   const index = bytes.indexOf(marker);
   return index < 0
     ? bytes.toString('utf8').replace(/^\uFEFF/, '')
-    : bytes.subarray(0, index).toString('utf8').replace(/\0/g, '') + bytes.subarray(index).toString('utf16le');
+    : bytes.subarray(0, index).toString('utf8').replaceAll('\u{0}', '') + bytes.subarray(index).toString('utf16le');
 }
-export function parsePacResults(buffer, corpus = CORPUS) {
-  const text = decodePac(buffer).replace(/\r/g, '');
+
+function parseResult(row, value) {
+  if (/^<Error:.*>$/.test(value)) return { kind: 'error', message: value.slice(7, -1).trim() };
+  if (/^"(?:[^"\\]|\\.)*"$/.test(value)) {
+    try {
+      return { kind: 'value', value: JSON.parse(value) };
+    } catch {
+      throw fail('PacOutputInvalid', `Invalid string result for ${row.id}.`);
+    }
+  }
+  if (/^-?(?:\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value)) {
+    try {
+      return { kind: 'value', value: exactNumeric(value) };
+    } catch {
+      throw fail('PacOutputInvalid', `Out-of-range numeric result for ${row.id}.`);
+    }
+  }
+  if (/^(true|false)$/i.test(value)) return { kind: 'value', value: value.toLowerCase() === 'true' };
+  if (/^(blank(?:\(\))?|\(blank\))$/i.test(value)) return { kind: 'value', value: null };
+  throw fail('PacOutputInvalid', `Unsupported output for ${row.id}.`);
+}
+
+const oracleOutcome = (row, result, reference, actual) =>
+  row.hostDifference && result === 'difference' && reference.kind === 'value' && actual.kind === 'value'
+    ? 'host-difference'
+    : result;
+
+/* NOSONAR */ export function parsePacResults(buffer, corpus = CORPUS) {
+  const text = decodePac(buffer).replaceAll('\r', '');
   const lines = text.split('\n');
   const found = [];
   for (let i = 0; i < lines.length; i++) {
@@ -67,24 +94,7 @@ export function parsePacResults(buffer, corpus = CORPUS) {
       throw fail('PacOutputInvalid', 'Unexpected or out-of-order echoed expression.');
     const value = lines[++i]?.trim();
     if (!value) throw fail('PacOutputInvalid', `Missing result for ${row.id}.`);
-    let result;
-    if (/^<Error:.*>$/.test(value)) result = { kind: 'error', message: value.slice(7, -1).trim() };
-    else if (/^"(?:[^"\\]|\\.)*"$/.test(value)) {
-      try {
-        result = { kind: 'value', value: JSON.parse(value) };
-      } catch {
-        throw fail('PacOutputInvalid', `Invalid string result for ${row.id}.`);
-      }
-    } else if (/^-?(?:\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value)) {
-      try {
-        result = { kind: 'value', value: exactNumeric(value) };
-      } catch {
-        throw fail('PacOutputInvalid', `Out-of-range numeric result for ${row.id}.`);
-      }
-    } else if (/^(true|false)$/i.test(value)) result = { kind: 'value', value: value.toLowerCase() === 'true' };
-    else if (/^(blank(?:\(\))?|\(blank\))$/i.test(value)) result = { kind: 'value', value: null };
-    else throw fail('PacOutputInvalid', `Unsupported output for ${row.id}.`);
-    found.push(result);
+    found.push(parseResult(row, value));
   }
   if (found.length !== corpus.length) throw fail('PacOutputInvalid', 'PAC did not return every corpus result.');
   return found;
@@ -156,7 +166,7 @@ export async function runOracle({ pac, root = process.cwd(), spawn = spawnSync }
     const auth = decodePac(command(executable, ['auth', 'list'], env, spawn)).trim();
     if (
       !/^No profiles were found on this computer\.(?: Please run 'pac auth create' to create one\.)?$/i.test(auth) ||
-      /(?:^|\n)\s*\*?\s*\d+\s/m.test(auth)
+      /(?:^|\n)\s*(?:\*\s*)?\d+\s/m.test(auth) // NOSONAR: evaluated only after the fixed no-profile sentence matches (<100 characters); || short-circuits all other output.
     )
       throw fail('PacAuthNotEmpty', 'PAC did not confirm an empty isolated authentication profile list.');
     const input = path.join(run, 'corpus.fx');
@@ -193,10 +203,7 @@ export async function runOracle({ pac, root = process.cwd(), spawn = spawnSync }
         ...row,
         pac: reference,
         mirage: actual,
-        outcome:
-          row.hostDifference && result === 'difference' && reference.kind === 'value' && actual.kind === 'value'
-            ? 'host-difference'
-            : result,
+        outcome: oracleOutcome(row, result, reference, actual),
       });
     }
     return {

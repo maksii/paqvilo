@@ -14,7 +14,7 @@ parentPort.on('message', (message) => {
   }
   const { name, input, capabilities, wire } = message;
   try {
-    const { rows: _rows, ...table } = compileTable(input, context, name);
+    const { rows: _rows, ...table } = compileTable(input, context, name); // NOSONAR: binding is excluded from the rest object or is a placeholder
     const projected = { ...table, capabilities };
     const encoded = new TextEncoder().encode(
       stringifyExactJson(wire ? encodeModelDrivenProvenance(projected) : projected),

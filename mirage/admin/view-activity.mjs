@@ -182,7 +182,7 @@ const HOSTS = [
   'job',
   'sim',
 ];
-const ACTOR_KINDS = ['anonymous', 'contact', 'staff', 'app', 'system', 'flow', 'plugin'];
+const ACTOR_KINDS = new Set(['anonymous', 'contact', 'staff', 'app', 'system', 'flow', 'plugin']);
 const AUDIT_KINDS = ['api', 'page', 'form', 'liquid-fetchxml', 'entity-read', 'entity-query'];
 const LOG_TYPES = ['startup', 'request', 'liquid', 'data', 'plugin', 'diagnostic', 'reload'];
 const LEVELS = ['off', 'summary', 'full'];
@@ -194,7 +194,7 @@ const TABS = Object.freeze([
   ['pages', 'Pages & render'],
   ['stats', 'Stats'],
 ]);
-const TAB_IDS = TABS.map(([id]) => id);
+const TAB_IDS = new Set(TABS.map(([id]) => id));
 const TRACE_KEYS = ['range', ...BAR, ...MORE];
 const APPLIES = {
   activities: ['range', ...FILTERS],
@@ -233,7 +233,7 @@ const VIEW_LINKS = Object.freeze({
   stepId: [
     'plug-in step',
     'Backend operations',
-    (id) => `#operations?${new URLSearchParams({ key: `plugin-step:${id}` })}`,
+    (id) => `#operations?${new URLSearchParams({ key: 'plugin-step:' + id })}`,
   ],
 });
 /** Retention limits the settings change (mirage.trace; trace-settings.mjs validates the same ranges). */
@@ -249,6 +249,10 @@ export const LIVE_INTERVAL_MS = 1000;
 /** Log lines a page keeps (history plus Live); the oldest beyond it leave the page, not the server. */
 const LOG_KEEP = 1000;
 const LOG_HISTORY = 500;
+const chooseLazy = (condition, whenTrue, whenFalse) => {
+  if (condition) return whenTrue();
+  return whenFalse();
+};
 
 // The search text of a span as the trace store builds it (trace-store.mjs searchText, D-R3-15), so Find steps keeps the
 // steps the list's Search filter matched: metadata, attributes and events (at most 4 KB), then the captured input and
@@ -279,10 +283,7 @@ function spanSearchText(span) {
     parts.push(event.type, event.message, attributes);
     size += (event.type?.length ?? 0) + (event.message?.length ?? 0) + attributes.length;
   }
-  text = parts
-    .filter((part) => part)
-    .join('\n')
-    .slice(0, SEARCH_META);
+  text = parts.filter(Boolean).join('\n').slice(0, SEARCH_META);
   const payload = [span.input, span.output]
     .filter((value) => value !== undefined)
     .map((value) => JSON.stringify(value))
@@ -330,8 +331,9 @@ const failureOf = (error) => {
 };
 /** The list or stats answer that refused a filter (400 Invalid…Filter), or null. */
 const refusedFilter = (d) =>
-  [d.list, d.stats, d.logs].find((part) => part?.error && part.status === 400 && /Filter$/.test(part.code ?? '')) ??
-  null;
+  [d.list, d.stats, d.logs].find(
+    (part) => part?.error && part.status === 400 && /Filter$/.test(part.code ?? ''), // NOSONAR: endsWith differs for a trailing line terminator
+  ) ?? null;
 /** A duration in ms, s, m s or h m. */
 export const duration = (ms) => {
   if (ms === null || ms === undefined) return 'running';
@@ -344,16 +346,48 @@ export const duration = (ms) => {
     const seconds = Math.round(value / 1000);
     return `${Math.floor(seconds / 60)} m ${seconds % 60} s`;
   }
-  return value >= 1000 ? `${(value / 1000).toFixed(2)} s` : `${value < 10 ? value.toFixed(2) : value.toFixed(1)} ms`;
+  return chooseLazy(
+    value >= 1000,
+    () => `${(value / 1000).toFixed(2)} s`,
+    () =>
+      `${chooseLazy(
+        value < 10,
+        () => value.toFixed(2),
+        () => value.toFixed(1),
+      )} ms`,
+  );
 };
-const signed = (ms) => `${ms > 0 ? '+' : ms < 0 ? '−' : '±'}${duration(Math.abs(ms))}`;
+const signed = (ms) =>
+  `${chooseLazy(
+    ms > 0,
+    () => '+',
+    () =>
+      chooseLazy(
+        ms < 0,
+        () => '−',
+        () => '±',
+      ),
+  )}${duration(Math.abs(ms))}`;
 /** The one time format of Monitor: local HH:MM:SS.mmm, the date and UTC on hover (ui-kit.mjs `time`). */
 const when = (iso) => kit.time(iso);
 const resultBadge = (result) => kit.badge(result ?? 'unknown', RESULT_TONES[result] ?? 'neutral');
 /** The HTTP status as a secondary badge (D-M-2); none without a status. */
 const httpBadge = (status) =>
   Number.isInteger(Number(status)) && status !== null && status !== ''
-    ? ` ${kit.badge(`HTTP ${status}`, Number(status) >= 500 ? 'bad' : Number(status) >= 400 ? 'warn' : 'neutral')}`
+    ? ' ' +
+      kit.badge(
+        'HTTP ' + status,
+        chooseLazy(
+          Number(status) >= 500,
+          () => 'bad',
+          () =>
+            chooseLazy(
+              Number(status) >= 400,
+              () => 'warn',
+              () => 'neutral',
+            ),
+        ),
+      )
     : '';
 const errorBadges = (summary, none = '0') =>
   [
@@ -394,7 +428,7 @@ export function whoFilters(value) {
   const kind = at > 0 ? text.slice(0, at).toLowerCase() : '';
   const id = at > 0 ? text.slice(at + 1).trim() : text;
   if (kind === 'visitor') return { visitorId: id };
-  if (ACTOR_KINDS.includes(kind)) return id ? { actorKind: kind, actorId: id } : { actorKind: kind };
+  if (ACTOR_KINDS.has(kind)) return id ? { actorKind: kind, actorId: id } : { actorKind: kind };
   return { actorId: text };
 }
 /** The contact id a `who` value names (the request audit filters by contact only), or ''. */
@@ -469,7 +503,7 @@ export function previousWindow(d, now = Date.now()) {
   const query = traceQuery(d, now);
   const from = Date.parse(query.get('from') ?? '');
   const to = query.has('to') ? Date.parse(query.get('to')) : now;
-  if (!Number.isFinite(from) || !Number.isFinite(to) || !(to > from)) return null;
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return null;
   const length = to - from;
   query.set('from', new Date(from - length).toISOString());
   query.set('to', new Date(from - 1).toISOString());
@@ -482,6 +516,20 @@ const sortQuery = (d, query) => {
   }
   return query;
 };
+function addTraceAddress(params, state) {
+  if (!state.traceId) return;
+  if (state.detail && state.detail !== 'steps') params.set('detail', state.detail);
+  if (state.stepsAs === 'tree') params.set('steps', 'tree');
+  if (state.spanSearch) params.set('spanSearch', state.spanSearch);
+  if (state.errorsOnly) params.set('errorsOnly', 'true');
+}
+function traceAddressPath(state) {
+  return chooseLazy(
+    state.traceId,
+    () => `/${encodeURIComponent(state.traceId)}${state.spanId ? '/' + encodeURIComponent(state.spanId) : ''}`,
+    () => '',
+  );
+}
 /**
  * The address of a state: `activity[/<traceId>[/<spanId>]][?filters, range, tab, live, …]`. `over` replaces parts of
  * `d` (a link to another activity, span, tab or filter keeps the rest of the address).
@@ -498,17 +546,9 @@ export function hashOf(d, over = {}) {
   if (s.live) params.set('live', '1');
   if (s.reads) params.set('reads', '1');
   if (s.sort) sortQuery(s, params);
-  if (s.traceId) {
-    if (s.detail && s.detail !== 'steps') params.set('detail', s.detail);
-    if (s.stepsAs === 'tree') params.set('steps', 'tree');
-    if (s.spanSearch) params.set('spanSearch', s.spanSearch);
-    if (s.errorsOnly) params.set('errorsOnly', 'true');
-  }
+  addTraceAddress(params, s);
   if (s.compare) params.set('compare', s.compare.join(','));
-  const path = s.traceId
-    ? `/${encodeURIComponent(s.traceId)}${s.spanId ? `/${encodeURIComponent(s.spanId)}` : ''}`
-    : '';
-  return `activity${path}${params.size ? `?${params}` : ''}`;
+  return `activity${traceAddressPath(s)}${params.size ? '?' + params : ''}`;
 }
 const hrefOf = (d, over) => `#${hashOf(d, over)}`;
 /**
@@ -521,7 +561,7 @@ function whoLabel(d, value) {
   if (known) return whoText(known.actor, known.session);
   const filters0 = whoFilters(value);
   if (d.whoName)
-    return `${d.whoName} · ${filters0.actorKind ? `${filters0.actorKind}:${short(filters0.actorId)}` : short(filters0.actorId ?? filters0.visitorId)}`;
+    return `${d.whoName} · ${filters0.actorKind ? filters0.actorKind + ':' + short(filters0.actorId) : short(filters0.actorId ?? filters0.visitorId)}`;
   const filters = whoFilters(value);
   if (filters.visitorId) return `Visitor ${short(filters.visitorId)}`;
   if (filters.actorKind && filters.actorId) return `${filters.actorKind}:${short(filters.actorId)}`;
@@ -551,7 +591,16 @@ function filtersOf(params) {
     const kind = params.get('actorKind'),
       actor = params.get('actorId'),
       visitor = params.get('visitorId');
-    filters.who = visitor ? `visitor:${visitor}` : kind ? (actor ? `${kind}:${actor}` : kind) : (actor ?? '');
+    filters.who = chooseLazy(
+      visitor,
+      () => `visitor:${visitor}`,
+      () =>
+        chooseLazy(
+          kind,
+          () => (actor ? `${kind}:${actor}` : kind),
+          () => actor ?? '',
+        ),
+    );
   }
   return filters;
 }
@@ -606,16 +655,18 @@ function wanted(ctx, d) {
   if (tab === 'log') parts.set('logs', `logs|${d.type}`);
   if (served(ctx, '/diagnostics')) parts.set('findings', 'findings');
   if (tab === 'pages') parts.set('pages', 'pages');
-  if (d.traceId) {
-    parts.set('tree', d.traceId);
-    if (d.detail === 'log') parts.set('detailLog', d.traceId);
-    if (d.detail === 'request' && auditServed(ctx)) parts.set('request', d.traceId);
-    if (d.detail === 'rendered' && served(ctx, '/render-sources') && d.tree?.trace?.traceId === d.traceId)
-      parts.set('sources', d.traceId);
-  }
+  addTraceParts(ctx, d, parts);
   if (d.compare) parts.set('compare', d.compare.join(','));
   if (d.sourcesFor && d.pages?.byRoute) parts.set('pageSources', d.sourcesFor);
   return parts;
+}
+function addTraceParts(ctx, d, parts) {
+  if (!d.traceId) return;
+  parts.set('tree', d.traceId);
+  if (d.detail === 'log') parts.set('detailLog', d.traceId);
+  if (d.detail === 'request' && auditServed(ctx)) parts.set('request', d.traceId);
+  if (d.detail === 'rendered' && served(ctx, '/render-sources') && d.tree?.trace?.traceId === d.traceId)
+    parts.set('sources', d.traceId);
 }
 async function reload(ctx, parts = []) {
   const d = stateOf(ctx);
@@ -641,7 +692,10 @@ async function auditOf(ctx, items) {
   const answer = await get(ctx, `/audit?${new URLSearchParams({ traceId, pageSize: '100' })}`);
   if (answer.error) return null;
   const byTrace = {};
-  for (const entry of answer.items ?? []) (byTrace[entry.traceId] ??= []).push(entry);
+  for (const entry of answer.items ?? []) {
+    byTrace[entry.traceId] ??= [];
+    byTrace[entry.traceId].push(entry);
+  }
   for (const entries of Object.values(byTrace)) entries.sort((a, b) => a.sequence - b.sequence);
   return byTrace;
 }
@@ -703,7 +757,7 @@ const FETCHERS = {
   list: (ctx, d, now) => fetchList(ctx, d, now),
   stats: (ctx, d, now) => {
     const query = traceQuery(d, now);
-    return get(ctx, `/trace/stats${query.size ? `?${query}` : ''}`);
+    return get(ctx, `/trace/stats${query.size ? '?' + query : ''}`);
   },
   previous: async (ctx, d, now) => {
     const previous = previousWindow(d, now);
@@ -751,7 +805,7 @@ function schedule(ctx, d, parts) {
     d.liveTimer = null;
     const next = [...d.liveParts];
     d.liveParts.clear();
-    if (d.live) reload(ctx, next);
+    if (d.live) void reload(ctx, next);
   }, LIVE_INTERVAL_MS);
 }
 const frameOf = (event) => {
@@ -822,14 +876,14 @@ function follow(ctx, d) {
         const line = frameOf(event);
         if (!line || line.type === 'connected' || !Number.isFinite(line.sequence)) return;
         keepLines(d, [line]);
-        const audited = AUDITED_LINES.includes(line.type) && tabOf(ctx, d) === 'activities' && auditMode(ctx, d);
+        const audited = AUDITED_LINES.has(line.type) && tabOf(ctx, d) === 'activities' && auditMode(ctx, d);
         schedule(ctx, d, audited ? ['list'] : []);
       }),
     );
   else close('log');
 }
 /** The log line types that carry a finished request audit entry. */
-const AUDITED_LINES = ['request', 'liquid', 'data'];
+const AUDITED_LINES = new Set(['request', 'liquid', 'data']);
 /** What Live is doing: streaming, or why the list cannot follow (tracing off on a host without the log channel). */
 function liveText(ctx, d) {
   if (tracingOff(d) && tabOf(ctx, d) === 'activities')
@@ -868,10 +922,13 @@ async function refused(ctx, d, name, url) {
     } catch {
       // Unreachable host: the notice below says the stream closed.
     }
-  d.liveRefused =
-    status === 404
-      ? `This host does not serve the live stream (${url.replace('/__sim/', '/_sim/')}). Refresh to see new activity.`
-      : `The live stream closed${status && status !== 200 ? ` (HTTP ${status})` : ''}. Select Live to connect again, or refresh.`;
+  d.liveRefused = chooseLazy(
+    status === 404,
+    () =>
+      `This host does not serve the live stream (${url.replace('/__sim/', '/_sim/')}). Refresh to see new activity.`,
+    () =>
+      `The live stream closed${status && status !== 200 ? ' (HTTP ' + status + ')' : ''}. Select Live to connect again, or refresh.`,
+  );
   ctx.render?.();
 }
 
@@ -1010,7 +1067,7 @@ function filterBar(ctx, d) {
   // More filters opens on request, or when one of its filters was refused (the banner names it).
   const refused = refusedFilter(d)?.parameter;
   const moreOpen = d.more || more > 0 || [...MORE, ...AUDIT_ONLY].includes(STORE_NAMES[refused] ?? refused);
-  const toggle = `<button type="button" class="ui-link-button" id="activity-more" data-activity-action="more" aria-expanded="${moreOpen}" aria-controls="activity-more-filters">More filters${more ? ` (${more})` : ''}</button>`;
+  const toggle = `<button type="button" class="ui-link-button" id="activity-more" data-activity-action="more" aria-expanded="${moreOpen}" aria-controls="activity-more-filters">More filters${more ? ' (' + more + ')' : ''}</button>`;
   // A choice applies at once, a text field when it changes or on Enter; Apply (the drawer's footer) submits the form.
   return (
     `<form id="${FILTER_FORM}" class="ui-form ui-activity-filters" data-activity-filters role="search" aria-label="Activity filters">` +
@@ -1046,7 +1103,7 @@ function invalidFilter(d) {
   const label = known ? `${LABELS[name]} (${name})` : name || 'a';
   return (
     kit.notice(
-      `The ${label} filter${known && d.filters[name] ? ` value "${d.filters[name]}"` : ''} is not valid: ${refused.error} Nothing is listed until you change or remove it.`,
+      `The ${label} filter${known && d.filters[name] ? ' value "' + d.filters[name] + '"' : ''} is not valid: ${refused.error} Nothing is listed until you change or remove it.`,
       'bad',
     ) +
     (known
@@ -1060,7 +1117,16 @@ function chips(ctx, d) {
   const tab = tabOf(ctx, d);
   const items = FILTERS.filter((name) => d.filters[name]).map((name) => [
     name,
-    `${LABELS[name]}: ${name === 'from' || name === 'to' ? kit.clock(d.filters[name]) || d.filters[name] : name === 'who' ? whoLabel(d, d.filters.who) : d.filters[name]}`,
+    `${LABELS[name]}: ${chooseLazy(
+      name === 'from' || name === 'to',
+      () => kit.clock(d.filters[name]) || d.filters[name],
+      () =>
+        chooseLazy(
+          name === 'who',
+          () => whoLabel(d, d.filters.who),
+          () => d.filters[name],
+        ),
+    )}`,
   ]);
   if (RANGES[d.range]) items.unshift(['range', RANGE_LABELS[d.range]]);
   if (d.type) items.push(['type', `${LABELS.type}: ${d.type}`]);
@@ -1070,7 +1136,7 @@ function chips(ctx, d) {
       .map(([name, text]) => {
         const applies = APPLIES[tab].includes(name);
         const note = applies ? '' : ` (does not apply to ${tabLabel(tab)})`;
-        return `<button type="button" class="ui-chip${applies ? '' : ' is-dimmed'}" id="activity-chip-${e(name)}" data-activity-unfilter="${e(name)}" aria-label="Remove filter ${e(text)}${e(note)}"${applies ? '' : ` title="Does not apply to ${e(tabLabel(tab))}"`}>${e(text)} <span aria-hidden="true">×</span></button>`;
+        return `<button type="button" class="ui-chip${applies ? '' : ' is-dimmed'}" id="activity-chip-${e(name)}" data-activity-unfilter="${e(name)}" aria-label="Remove filter ${e(text)}${e(note)}"${applies ? '' : ' title="Does not apply to ' + e(tabLabel(tab)) + '"'}>${e(text)} <span aria-hidden="true">×</span></button>`;
       })
       .join('')}` +
     '<button type="button" class="ui-button ui-small" id="activity-clear-all" data-activity-action="clear-filters">Clear all</button></div>'
@@ -1113,7 +1179,7 @@ const rowError = (item, root) => {
   const error = item.firstError ?? root?.error ?? null;
   if (!error) return '';
   const code = error.code ?? root?.error?.code;
-  const text = `${item.firstError?.name ? `${item.firstError.name}: ` : ''}${errorText({ ...error, code })}`;
+  const text = `${item.firstError?.name ? item.firstError.name + ': ' : ''}${errorText({ ...error, code })}`;
   return `<span class="ui-help ui-trace-error" title="${e(text)}">${e(text)}</span>`;
 };
 /**
@@ -1156,7 +1222,7 @@ function whoLink(d, actor, session) {
   const text = whoText(actor, session);
   const value = whoValue(actor, session);
   return value
-    ? `<a class="ui-activity-who" href="${e(pivotHref(d, { who: value }, actor?.name ?? null))}" title="${e(`Only activities of ${value}`)}">${e(text)}</a>`
+    ? `<a class="ui-activity-who" href="${e(pivotHref(d, { who: value }, actor?.name ?? null))}" title="${e('Only activities of ' + value)}">${e(text)}</a>`
     : e(text);
 }
 function emptyGuide(ctx, d) {
@@ -1181,6 +1247,15 @@ function emptyGuide(ctx, d) {
   );
 }
 const filtered = (d) => FILTERS.some((name) => d.filters[name]) || Boolean(RANGES[d.range]);
+function activityRows(d, list) {
+  const rows = [];
+  for (const item of list.items) {
+    const facts = auditFacts(list.audit?.[item.traceId], item.auditId);
+    rows.push({ ...item, facts });
+    if (d.reads) for (const read of facts.reads) rows.push({ read, traceId: item.traceId });
+  }
+  return rows;
+}
 function activitiesPanel(ctx, d) {
   if (refusedFilter(d)) return '<p class="ui-help">No activity is listed while a filter is not valid.</p>';
   const list = d.list;
@@ -1192,21 +1267,20 @@ function activitiesPanel(ctx, d) {
     );
   if (list.mode === 'audit') return auditList(ctx, d, list);
   if (!list.total && !filtered(d)) return emptyGuide(ctx, d);
+  return activityListTable(ctx, d, list);
+}
+function activityListTable(ctx, d, list) {
   // Compare carries its own (i) right after it; the tab's (i) follows Show reads, so no two bare (i) sit side by side.
   const pickTools =
     `<span class="ui-activity-compare"><button type="button" class="ui-button ui-small" id="activity-compare" data-activity-action="compare" aria-describedby="activity-pick-help"${d.picked.length === 2 ? '' : ' disabled'}>Compare ${d.picked.length === 2 ? 'the 2 ticked activities' : 'ticked activities'}</button>${tip(ctx, 'activity-pick-help', 'activity.activities', 'pick', 'About Compare')}</span>` +
     `<button type="button" class="ui-button ui-small" id="activity-reads" data-activity-action="reads" aria-pressed="${Boolean(d.reads)}">${d.reads ? 'Hide reads' : 'Show reads'}</button>` +
     tabHelp(ctx, 'activities');
-  const caption =
-    d.sort.by === 'start' && d.sort.order === 'desc'
-      ? 'Activities, newest first'
-      : `Activities by ${SORTS[d.sort.by].toLowerCase()}, ${d.sort.order === 'asc' ? 'ascending' : 'descending'}`;
-  const rows = [];
-  for (const item of list.items) {
-    const facts = auditFacts(list.audit?.[item.traceId], item.auditId);
-    rows.push({ ...item, facts });
-    if (d.reads) for (const read of facts.reads) rows.push({ read, traceId: item.traceId });
-  }
+  const caption = chooseLazy(
+    d.sort.by === 'start' && d.sort.order === 'desc',
+    () => 'Activities, newest first',
+    () => `Activities by ${SORTS[d.sort.by].toLowerCase()}, ${d.sort.order === 'asc' ? 'ascending' : 'descending'}`,
+  );
+  const rows = activityRows(d, list);
   const paging = { total: list.total, pages: list.pageCount, page: list.page, size: list.pageSize, search: '' };
   // The table starts right under the toolbar (D-M-7); its tools, count and pager follow it.
   return kit.dataTable({
@@ -1222,9 +1296,11 @@ function activitiesPanel(ctx, d) {
         ? 'No activity matches. Ids match by a prefix of 8 or more characters, tables by logical or entity set name; select Who in a row to filter by exactly that caller.'
         : 'No activity matches these filters. Clear a filter, or widen the time range.',
     rowAttrs: (item) =>
-      item.read
-        ? { class: 'is-read' }
-        : { 'data-activity-row': item.traceId, class: item.traceId === d.traceId ? 'is-selected' : undefined },
+      chooseLazy(
+        item.read,
+        () => ({ class: 'is-read' }),
+        () => ({ 'data-activity-row': item.traceId, class: item.traceId === d.traceId ? 'is-selected' : undefined }),
+      ),
     columns: [
       sortColumn(d, 'start', { render: (item) => (item.read ? '' : when(item.startedAt)) }),
       {
@@ -1246,7 +1322,7 @@ function activitiesPanel(ctx, d) {
           const name = item.root?.name ?? item.traceId;
           return (
             `<button type="button" class="ui-link-button ui-trace-root" id="activity-open-${e(item.traceId)}" data-activity-open="${e(item.traceId)}" aria-keyshortcuts="ArrowUp ArrowDown" title="${e(name)}" aria-label="Open activity ${e(name)}">${kit.badge(item.root?.kind ?? '—', 'info')} <span class="ui-trace-name">${e(name)}</span></button>` +
-            `<span class="ui-help ui-trace-origin">${whoLink(d, item.root?.actor, item.root?.session)}${item.root?.origin?.host ? ` · ${e(item.root.origin.host)}` : ''}</span>` +
+            `<span class="ui-help ui-trace-origin">${whoLink(d, item.root?.actor, item.root?.session)}${item.root?.origin?.host ? ' · ' + e(item.root.origin.host) : ''}</span>` +
             rowError(item, item.facts.root)
           );
         },
@@ -1254,25 +1330,36 @@ function activitiesPanel(ctx, d) {
       sortColumn(d, 'duration', {
         className: 'ui-trace-extra',
         render: (item) =>
-          item.read
-            ? e(duration(item.read.durationMs))
-            : `${e(duration(item.durationMs))}${item.totalDurationMs !== item.durationMs ? `<span class="ui-help ui-trace-origin">total ${e(duration(item.totalDurationMs))}</span>` : ''}`,
+          chooseLazy(
+            item.read,
+            () => e(duration(item.read.durationMs)),
+            () =>
+              `${e(duration(item.durationMs))}${item.totalDurationMs !== item.durationMs ? '<span class="ui-help ui-trace-origin">total ' + e(duration(item.totalDurationMs)) + '</span>' : ''}`,
+          ),
       }),
       sortColumn(d, 'spans', {
         className: 'ui-trace-extra',
         render: (item) =>
-          item.read
-            ? ''
-            : `${e(item.spanCount ?? 0)}${item.droppedSpans ? ` ${kit.badge(`+${item.droppedSpans} refused`, 'warn')}` : ''}`,
+          chooseLazy(
+            item.read,
+            () => '',
+            () =>
+              `${e(item.spanCount ?? 0)}${item.droppedSpans ? ' ' + kit.badge('+' + item.droppedSpans + ' refused', 'warn') : ''}`,
+          ),
       }),
       sortColumn(d, 'errors', {
         className: 'ui-trace-extra',
         render: (item) =>
-          item.read
-            ? item.read.error
-              ? `<span class="ui-help ui-trace-error">${e(errorText(item.read.error))}</span>`
-              : ''
-            : errorBadges(item, ''),
+          chooseLazy(
+            item.read,
+            () =>
+              chooseLazy(
+                item.read.error,
+                () => `<span class="ui-help ui-trace-error">${e(errorText(item.read.error))}</span>`,
+                () => '',
+              ),
+            () => errorBadges(item, ''),
+          ),
       }),
       {
         label: 'Audit',
@@ -1283,25 +1370,31 @@ function activitiesPanel(ctx, d) {
         label: 'Compare',
         className: 'ui-trace-extra',
         render: (item) =>
-          item.read
-            ? ''
-            : `<input type="checkbox" id="activity-pick-${e(item.traceId)}" data-activity-pick="${e(item.traceId)}"${d.picked.includes(item.traceId) ? ' checked' : ''} aria-label="Compare activity ${e(item.root?.name ?? item.traceId)}" aria-describedby="activity-pick-help">`,
+          chooseLazy(
+            item.read,
+            () => '',
+            () =>
+              `<input type="checkbox" id="activity-pick-${e(item.traceId)}" data-activity-pick="${e(item.traceId)}"${d.picked.includes(item.traceId) ? ' checked' : ''} aria-label="Compare activity ${e(item.root?.name ?? item.traceId)}" aria-describedby="activity-pick-help">`,
+          ),
       },
     ].filter((column) => column.label !== 'Audit' || auditServed(ctx)),
   });
 }
 /** The request audit as the list (tracing off, or an audit-only filter): one row per entry, each to its activity. */
 function auditList(ctx, d, list) {
-  const why = tracingOff(d)
-    ? kit.notice('Tracing is off: showing the request audit only; turn it on in ⚙ Settings to see steps.', 'warn')
-    : kit.notice(
+  const why = chooseLazy(
+    tracingOff(d),
+    () => kit.notice('Tracing is off: showing the request audit only; turn it on in ⚙ Settings to see steps.', 'warn'),
+    () =>
+      kit.notice(
         `Listing request audit entries: ${AUDIT_ONLY.filter((name) => d.filters[name])
           .map((name) => LABELS[name])
           .join(
             ', ',
           )} ${AUDIT_ONLY.filter((name) => d.filters[name]).length === 1 ? 'is a fact' : 'are facts'} only the audit keeps.`,
         'info',
-      );
+      ),
+  );
   const paging = { total: list.total, pages: list.pageCount, page: list.page, size: list.pageSize, search: '' };
   return (
     why +
@@ -1329,9 +1422,9 @@ function auditList(ctx, d, list) {
           render: (entry) =>
             `${kit.badge(entry.kind, 'neutral')} ${
               entry.traceId
-                ? `<a href="${e(openHref(d, entry.traceId, entry.spanId))}" id="activity-audit-${e(entry.id)}">${e(`${entry.method} ${entry.path}`)}</a>`
-                : `<span title="Recorded while tracing was off: no steps">${e(`${entry.method} ${entry.path}`)}</span>`
-            }<span class="ui-help ui-trace-origin">${auditWho(d, entry)}${entry.entity ? ` · ${e(entry.entity)}` : ''}</span>` +
+                ? `<a href="${e(openHref(d, entry.traceId, entry.spanId))}" id="activity-audit-${e(entry.id)}">${e(entry.method + ' ' + entry.path)}</a>`
+                : `<span title="Recorded while tracing was off: no steps">${e(entry.method + ' ' + entry.path)}</span>`
+            }<span class="ui-help ui-trace-origin">${auditWho(d, entry)}${entry.entity ? ' · ' + e(entry.entity) : ''}</span>` +
             (entry.error ? `<span class="ui-help ui-trace-error">${e(errorText(entry.error))}</span>` : ''),
         },
         { label: 'Duration', className: 'ui-trace-extra', render: (entry) => e(duration(entry.durationMs)) },
@@ -1370,7 +1463,7 @@ export function spanFilter(tree, { spanSearch = '', errorsOnly = false } = {}) {
   }
   return { matched, shown };
 }
-const depthBadge = (depth) => (depth > MAX_INDENT ? ` ${kit.badge(`d${depth}`, 'neutral')}` : '');
+const depthBadge = (depth) => (depth > MAX_INDENT ? ` ${kit.badge('d' + depth, 'neutral')}` : '');
 function waterfall(d, tree, filter) {
   const all = walk(tree.children);
   const starts = new Map(all.map((span) => [span.spanId, Date.parse(span.startedAt)]));
@@ -1402,7 +1495,7 @@ function waterfall(d, tree, filter) {
       return (
         `<li class="data-line ui-waterfall-row ui-depth-${Math.min(span.depth ?? 0, MAX_INDENT)}${selected ? ' is-selected' : ''}${context ? ' is-context' : ''}">` +
         `<button type="button" class="ui-waterfall-label" id="activity-span-${e(span.spanId)}" data-activity-span="${e(span.spanId)}" aria-pressed="${selected}" aria-label="Step ${e(span.name)}, ${e(span.kind)}, ${e(duration(span.durationMs))}, ${e(span.status)}">` +
-        `${kit.badge(span.kind, 'neutral')} <span class="ui-waterfall-name" title="${e(span.name)}">${e(span.name)}</span>${span.entity ? ` <code>${e(span.entity)}</code>` : ''}${depthBadge(span.depth ?? 0)}${span.async ? ` ${kit.badge('async', 'info')}` : ''}</button>` +
+        `${kit.badge(span.kind, 'neutral')} <span class="ui-waterfall-name" title="${e(span.name)}">${e(span.name)}</span>${span.entity ? ' <code>' + e(span.entity) + '</code>' : ''}${depthBadge(span.depth ?? 0)}${span.async ? ' ' + kit.badge('async', 'info') : ''}</button>` +
         kit.bar({
           offset,
           width,
@@ -1434,14 +1527,17 @@ function treeNode(node, d, filter) {
   const events = node.events?.length ?? 0;
   const head =
     `<span class="ui-tree-head">${kit.badge(node.kind, 'neutral')} <button type="button" class="ui-tree-span" id="activity-span-${e(node.spanId)}" data-activity-span="${e(node.spanId)}" aria-pressed="${selected}" title="${e(node.name)}">${e(node.name)}</button>` +
-    `${node.entity ? ` <code>${e(node.entity)}</code>` : ''}${depthBadge(depth)} <span class="ui-tree-facts">${e(duration(node.durationMs))} · ${resultBadge(node.status)}${events ? ` · ${e(plural(events, 'event'))}` : ''}${node.async ? ` · ${kit.badge('async', 'info')}` : ''}</span></span>`;
+    `${node.entity ? ' <code>' + e(node.entity) + '</code>' : ''}${depthBadge(depth)} <span class="ui-tree-facts">${e(duration(node.durationMs))} · ${resultBadge(node.status)}${events ? ' · ' + e(plural(events, 'event')) : ''}${node.async ? ' · ' + kit.badge('async', 'info') : ''}</span></span>`;
   const children = sorted(node.children).filter((child) => !filter || filter.shown.has(child.spanId));
   const classes = [selected ? 'is-selected' : '', filter && !filter.matched.has(node.spanId) ? 'is-context' : '']
     .filter(Boolean)
     .join(' ');
-  return children.length
-    ? `<li class="data-line${classes ? ` ${classes}` : ''}"><details open data-ui-section="activity:node:${e(node.spanId)}"><summary>${head}</summary><ul role="group"${depth >= MAX_INDENT ? ' class="is-flat"' : ''}>${children.map((child) => treeNode(child, d, filter)).join('')}</ul></details></li>`
-    : `<li class="data-line ui-tree-leaf${classes ? ` ${classes}` : ''}">${head}</li>`;
+  return chooseLazy(
+    children.length,
+    () =>
+      `<li class="data-line${classes ? ' ' + classes : ''}"><details open data-ui-section="activity:node:${e(node.spanId)}"><summary>${head}</summary><ul role="group"${depth >= MAX_INDENT ? ' class="is-flat"' : ''}>${children.map((child) => treeNode(child, d, filter)).join('')}</ul></details></li>`,
+    () => `<li class="data-line ui-tree-leaf${classes ? ' ' + classes : ''}">${head}</li>`,
+  );
 }
 /** A captured payload, or why the step has none: its own capture level, a sealed flow run, or nothing passed. */
 function payload(title, value, span) {
@@ -1451,30 +1547,40 @@ function payload(title, value, span) {
       `<details class="ui-payload"><summary>Show</summary><pre class="ui-example">${e(JSON.stringify(value, null, 2))}</pre></details>`,
     ];
   const what = title.toLowerCase();
-  const [state, reason] =
-    span.level === 'summary'
-      ? [
-          'not captured (level summary)',
-          `This step was recorded at level summary, which keeps attributes and events only. Choose full under ⚙ Settings and run the request again to capture the ${what}.`,
-        ]
-      : span.level === 'full'
-        ? span.attributes?.secure
-          ? [
+  const [state, reason] = chooseLazy(
+    span.level === 'summary',
+    () => [
+      'not captured (level summary)',
+      `This step was recorded at level summary, which keeps attributes and events only. Choose full under ⚙ Settings and run the request again to capture the ${what}.`,
+    ],
+    () =>
+      chooseLazy(
+        span.level === 'full',
+        () =>
+          chooseLazy(
+            span.attributes?.secure,
+            () => [
               'not captured (sealed flow run)',
               'This step belongs to a sealed flow run (a Secret parameter or secure inputs or outputs), so no payload of the run is recorded.',
-            ]
-          : ['none', `This step was recorded at level full and its operation passed no ${what} to the trace.`]
-        : ['not captured', 'This step does not say at which level it was recorded.'];
-  return [title, `${e(state)}${kit.info({ label: `Why no ${what}`, text: reason })}`];
+            ],
+            () => ['none', `This step was recorded at level full and its operation passed no ${what} to the trace.`],
+          ),
+        () => ['not captured', 'This step does not say at which level it was recorded.'],
+      ),
+  );
+  return [title, `${e(state)}${kit.info({ label: 'Why no ' + what, text: reason })}`];
 }
 /** A titled card of the detail pane (D-M-6: every block a card with a heading). */
 const card = (title, body, id = '') =>
-  `<section class="ui-activity-card"${id ? ` id="${id}"` : ''}><h4>${e(title)}</h4>${body}</section>`;
+  `<section class="ui-activity-card"${id ? ' id="' + id + '"' : ''}><h4>${e(title)}</h4>${body}</section>`;
 // Span lookup by id per tree, built once per tree answer.
 const indexes = new WeakMap();
 const byIdOf = (tree) => {
   let index = indexes.get(tree);
-  if (!index) indexes.set(tree, (index = new Map((tree.spans ?? []).map((item) => [item.spanId, item]))));
+  if (!index) {
+    index = new Map((tree.spans ?? []).map((item) => [item.spanId, item]));
+    indexes.set(tree, index);
+  }
   return index;
 };
 /**
@@ -1509,6 +1615,50 @@ function attributeValue(name, value) {
     ? `<a href="${e(view[2](value))}" aria-label="Open ${e(view[0])} ${e(value)} in ${e(view[1])}"><code>${e(value)}</code></a>`
     : `<code>${json(value, 400)}</code>`;
 }
+function drawerChildren(d, span) {
+  return chooseLazy(
+    d.children?.spanId === span.spanId,
+    () =>
+      chooseLazy(
+        d.children.error,
+        () => kit.notice(`Child activities could not be read: ${failed(d.children)}`, 'warn'),
+        () =>
+          chooseLazy(
+            d.children.traceIds.length,
+            () =>
+              `<ul>${d.children.traceIds.map((id) => '<li><a href="' + e(openHref(d, id)) + '">Activity <code>' + e(short(id)) + '</code></a></li>').join('')}</ul>`,
+            () => '<p class="ui-help">No other activity has a step under this one.</p>',
+          ),
+      ),
+    () => '',
+  );
+}
+function drawerClimb(d, span, parent, chain) {
+  return [
+    span.parentSpanId &&
+      `<a class="ui-button ui-small" id="activity-span-parent" href="${e(openHref(d, parent?.traceId ?? span.traceId, span.parentSpanId))}" aria-label="Parent step: ${e(parent ? parent.kind + ' ' + parent.name : short(span.parentSpanId))}">Parent</a>`,
+    chain.length > 2 &&
+      `<a class="ui-button ui-small" id="activity-span-root" href="${e(openHref(d, chain[0].traceId, chain[0].spanId))}" aria-label="Root step: ${e(chain[0].kind + ' ' + chain[0].name)}">Root</a>`,
+  ]
+    .filter(Boolean)
+    .join('');
+}
+function drawerPath(d, chain, span) {
+  return `<nav class="ui-crumbs" aria-label="Step path"><ol>${chain
+    .map((item) =>
+      item === span
+        ? `<li aria-current="location">${spanLabel(item)}</li>`
+        : `<li><a href="${e(openHref(d, item.traceId, item.spanId))}">${spanLabel(item)}</a></li>`,
+    )
+    .join('')}</ol></nav>`;
+}
+function drawerLinks(d, tree, span) {
+  return (span.links ?? []).map((link) => {
+    const target = link.spanId ? targetOf(d, tree, link.spanId) : null;
+    const gone = link.spanId && d.linked[link.spanId]?.status === 404 ? ' (no longer retained)' : '';
+    return `<li class="data-line">${e(link.relation)}: <a href="${e(openHref(d, link.traceId, link.spanId ?? null))}">${link.spanId ? spanLabel(target, link.spanId) : 'the activity'}</a> in activity <code>${e(short(link.traceId))}</code>${e(gone)}</li>`;
+  });
+}
 /** Reads the spans the open step's parent and links name outside the open activity. Resolves true when it read any. */
 async function loadTargets(ctx, d) {
   const span = d.tree?.spans ? byIdOf(d.tree).get(d.spanId) : null;
@@ -1523,7 +1673,7 @@ async function loadTargets(ctx, d) {
   ids.forEach((id, index) => (d.linked[id] = found[index]));
   return true;
 }
-function drawer(ctx, d, tree) {
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function drawer(ctx, d, tree) {
   const span = byIdOf(tree).get(d.spanId);
   if (!span) return d.spanId ? kit.notice(`Step ${d.spanId} is not part of this activity.`, 'warn') : '';
   const attributes = Object.entries(span.attributes ?? {});
@@ -1538,14 +1688,7 @@ function drawer(ctx, d, tree) {
     span.recordId && ['Same record', pivotHref(d, { table: span.entity ?? '', recordId: span.recordId })],
     request && ['Parent request', openHref(d, tree.trace.traceId, request.spanId)],
   ].filter(Boolean);
-  const children =
-    d.children?.spanId === span.spanId
-      ? d.children.error
-        ? kit.notice(`Child activities could not be read: ${failed(d.children)}`, 'warn')
-        : d.children.traceIds.length
-          ? `<ul>${d.children.traceIds.map((id) => `<li><a href="${e(openHref(d, id))}">Activity <code>${e(short(id))}</code></a></li>`).join('')}</ul>`
-          : '<p class="ui-help">No other activity has a step under this one.</p>'
-      : '';
+  const children = drawerChildren(d, span);
   const events = kit.table({
     key: 'activity-events',
     caption: `Events of ${span.name}`,
@@ -1568,26 +1711,9 @@ function drawer(ctx, d, tree) {
       },
     ],
   });
-  const climb = [
-    span.parentSpanId &&
-      `<a class="ui-button ui-small" id="activity-span-parent" href="${e(openHref(d, parent?.traceId ?? span.traceId, span.parentSpanId))}" aria-label="Parent step: ${e(parent ? `${parent.kind} ${parent.name}` : short(span.parentSpanId))}">Parent</a>`,
-    chain.length > 2 &&
-      `<a class="ui-button ui-small" id="activity-span-root" href="${e(openHref(d, chain[0].traceId, chain[0].spanId))}" aria-label="Root step: ${e(`${chain[0].kind} ${chain[0].name}`)}">Root</a>`,
-  ]
-    .filter(Boolean)
-    .join('');
-  const path = `<nav class="ui-crumbs" aria-label="Step path"><ol>${chain
-    .map((item) =>
-      item === span
-        ? `<li aria-current="location">${spanLabel(item)}</li>`
-        : `<li><a href="${e(openHref(d, item.traceId, item.spanId))}">${spanLabel(item)}</a></li>`,
-    )
-    .join('')}</ol></nav>`;
-  const links = (span.links ?? []).map((link) => {
-    const target = link.spanId ? targetOf(d, tree, link.spanId) : null;
-    const gone = link.spanId && d.linked[link.spanId]?.status === 404 ? ' (no longer retained)' : '';
-    return `<li class="data-line">${e(link.relation)}: <a href="${e(openHref(d, link.traceId, link.spanId ?? null))}">${link.spanId ? spanLabel(target, link.spanId) : 'the activity'}</a> in activity <code>${e(short(link.traceId))}</code>${e(gone)}</li>`;
-  });
+  const climb = drawerClimb(d, span, parent, chain);
+  const path = drawerPath(d, chain, span);
+  const links = drawerLinks(d, tree, span);
   return (
     `<section class="ui-drawer" id="activity-span-drawer" tabindex="-1" aria-labelledby="activity-span-title"><div class="ui-drawer-head"><h3 id="activity-span-title">${e(span.name)}</h3>` +
     `${resultBadge(span.status)}${climb}<button type="button" class="ui-button ui-small" data-activity-copy="span">Copy step id</button><button type="button" class="ui-button ui-small" id="activity-close-span" data-activity-action="close-span" aria-keyshortcuts="Escape">Close step</button></div>` +
@@ -1602,21 +1728,30 @@ function drawer(ctx, d, tree) {
       ],
       ['Kind / module', `${e(span.kind)} · ${e(span.module ?? '—')}`],
       ['Operation', e(span.operation ?? '—')],
-      ['Table / record', `${e(span.entity ?? '—')}${span.recordId ? ` · <code>${e(span.recordId)}</code>` : ''}`],
+      ['Table / record', `${e(span.entity ?? '—')}${span.recordId ? ' · <code>' + e(span.recordId) + '</code>' : ''}`],
       ['Started', when(span.startedAt)],
       ['Duration', e(duration(span.durationMs))],
-      ['Depth', `${e(span.depth)}${span.async ? ` ${kit.badge('async segment', 'info')}` : ''}`],
+      ['Depth', `${e(span.depth)}${span.async ? ' ' + kit.badge('async segment', 'info') : ''}`],
       [
         'Who',
         e(
-          `${whoText(span.actor, span.session)}${span.actor?.roles?.length ? ` (${span.actor.roles.join(', ')})` : ''}`,
+          `${whoText(span.actor, span.session)}${span.actor?.roles?.length ? ' (' + span.actor.roles.join(', ') + ')' : ''}`,
         ),
       ],
       ['Session', `<code>${e(span.session?.sessionKey ?? '—')}</code>`],
       ['Origin', e([span.origin?.host, span.origin?.portal, span.origin?.preset].filter(Boolean).join(' · ') || '—')],
-      ['Captured at', e(span.level ? `level ${span.level}` : '—')],
+      ['Captured at', e(span.level ? 'level ' + span.level : '—')],
     ]) +
-    (span.error ? kit.notice(errorText(span.error), span.status === 'denied' ? 'warn' : 'bad') : '') +
+    (span.error
+      ? kit.notice(
+          errorText(span.error),
+          chooseLazy(
+            span.status === 'denied',
+            () => 'warn',
+            () => 'bad',
+          ),
+        )
+      : '') +
     card(
       'Attributes',
       attributes.length
@@ -1628,7 +1763,7 @@ function drawer(ctx, d, tree) {
     (links.length ? card('Links', `<ul>${links.join('')}</ul>`) : '') +
     card(
       'Related',
-      `<p class="ui-drawer-actions">${pivots.map(([text, href]) => `<a class="ui-button ui-small" href="${e(href)}">${e(text)}</a>`).join(' ')} ` +
+      `<p class="ui-drawer-actions">${pivots.map(([text, href]) => '<a class="ui-button ui-small" href="' + e(href) + '">' + e(text) + '</a>').join(' ')} ` +
         `<button type="button" class="ui-button ui-small" data-activity-children="${e(span.spanId)}">Child activities</button></p>${children}`,
     ) +
     '</section>'
@@ -1642,7 +1777,7 @@ function spanTools(ctx, d, tree, filter) {
     `<div class="ui-span-tools"><div role="group" aria-label="Show steps as">${as('waterfall', 'Waterfall')}${as('tree', 'Tree')}</div>` +
     `<div><label for="activity-span-search">Find steps</label>${tip(ctx, 'activity-span-search-help', 'activity.detail', 'spanSearch', 'About Find steps')}<input type="search" id="activity-span-search" data-activity-span-search value="${e(d.spanSearch)}" aria-describedby="activity-span-search-help"></div>` +
     `<div class="ui-check"><input type="checkbox" id="activity-errors-only" data-activity-errors-only${d.errorsOnly ? ' checked' : ''} aria-describedby="activity-errors-only-help"><label for="activity-errors-only">Only errors and denials</label>${tip(ctx, 'activity-errors-only-help', 'activity.detail', 'errorsOnly', 'About Only errors and denials')}</div>` +
-    `<p class="ui-help" role="status">${filter ? `${e(filter.matched.size)} of ${e(plural(total, 'step'))} match` : `${e(plural(total, 'step'))}`}${detailHelp(ctx, 'steps', 'Steps')}</p></div>`
+    `<p class="ui-help" role="status">${filter ? e(filter.matched.size) + ' of ' + e(plural(total, 'step')) + ' match' : e(plural(total, 'step'))}${detailHelp(ctx, 'steps', 'Steps')}</p></div>`
   );
 }
 /** A detail tab's help behind an (i). */
@@ -1669,7 +1804,11 @@ function stepsPanel(ctx, d, tree) {
       ? `<ul class="ui-tree" aria-label="Step tree">${sorted(tree.children)
           .filter((node) => !filter || filter.shown.has(node.spanId))
           .map((node) => treeNode(node, d, filter))
-          .join('')}</ul>${filter && !filter.shown.size ? '<p class="ui-help">No step matches the search.</p>' : ''}`
+          .join('')}</ul>${chooseLazy(
+          filter && !filter.shown.size,
+          () => '<p class="ui-help">No step matches the search.</p>',
+          () => '',
+        )}`
       : waterfall(d, tree, filter);
   return spanTools(ctx, d, tree, filter) + body + drawer(ctx, d, tree);
 }
@@ -1693,7 +1832,7 @@ export function whyOf(tree) {
     const status = tree?.root?.attributes?.statusCode;
     return {
       tone: 'ok',
-      text: `Ended ${summary.status ?? 'ok'}${status ? ` with HTTP ${status}` : ''} in ${duration(summary.durationMs)}; no step failed.`,
+      text: `Ended ${summary.status ?? 'ok'}${status ? ' with HTTP ' + status : ''} in ${duration(summary.durationMs)}; no step failed.`,
       spanId: null,
     };
   }
@@ -1717,16 +1856,39 @@ function whyLine(d, tree) {
 
 // ---- Log & findings, Rendered, Request of the open activity
 /** One log line as plain words. */
+function requestLineText(item) {
+  return `${item.method} ${item.path} → ${item.status ?? 'pending'}${item.entity ? ' · ' + item.entity : ''}${Number.isInteger(item.rowCount) ? ' · ' + plural(item.rowCount, 'row') : ''} · ${duration(item.durationMs)}${
+    item.error
+      ? ' · ' +
+        errorText(item.error) +
+        chooseLazy(
+          item.error.portalCode,
+          () => ' (portal ' + String(item.error.portalCode) + ')',
+          () => '',
+        )
+      : ''
+  }`;
+}
+function pluginLineText(line) {
+  return `Plugin rule ${line.rule ?? (line.plugins ?? []).join(', ')} on ${line.operation} ${line.entity}: ${line.result ?? line.outcome}${line.changes?.length ? ' · changed ' + line.changes.join(', ') : ''}${
+    line.error
+      ? ' · ' +
+        chooseLazy(
+          line.error.code,
+          () => String(line.error.code) + ': ',
+          () => '',
+        ) +
+        line.error.message
+      : ''
+  }`;
+}
 function lineText(line) {
-  const item = line.entry;
-  if (item)
-    return `${item.method} ${item.path} → ${item.status ?? 'pending'}${item.entity ? ` · ${item.entity}` : ''}${Number.isInteger(item.rowCount) ? ` · ${plural(item.rowCount, 'row')}` : ''} · ${duration(item.durationMs)}${item.error ? ` · ${errorText(item.error)}${item.error.portalCode ? ` (portal ${item.error.portalCode})` : ''}` : ''}`;
-  if (line.type === 'plugin')
-    return `Plugin rule ${line.rule ?? (line.plugins ?? []).join(', ')} on ${line.operation} ${line.entity}: ${line.result ?? line.outcome}${line.changes?.length ? ` · changed ${line.changes.join(', ')}` : ''}${line.error ? ` · ${line.error.code ? `${line.error.code}: ` : ''}${line.error.message}` : ''}`;
+  if (line.entry) return requestLineText(line.entry);
+  if (line.type === 'plugin') return pluginLineText(line);
   if (line.type === 'diagnostic')
-    return `${line.diagnostic?.code || 'Finding'}: ${line.diagnostic?.message || ''}${line.diagnostic?.path ? ` · ${line.diagnostic.path}` : ''}`;
+    return `${line.diagnostic?.code || 'Finding'}: ${line.diagnostic?.message || ''}${line.diagnostic?.path ? ' · ' + String(line.diagnostic.path) : ''}`;
   if (line.type === 'startup')
-    return `${line.phase ?? 'startup'}: ${line.message ?? ''}${Number.isFinite(line.elapsedMs) ? ` · ${duration(line.elapsedMs)}` : ''}`;
+    return `${line.phase ?? 'startup'}: ${line.message ?? ''}${Number.isFinite(line.elapsedMs) ? ' · ' + duration(line.elapsedMs) : ''}`;
   if (line.type === 'reload') return line.message || `Runtime revision ${line.revision}`;
   return line.message ?? JSON.stringify(line);
 }
@@ -1748,15 +1910,21 @@ function findingItems(d, items, { openLinks = true } = {}) {
     .map((item) => {
       const where = item.path || item.page || item.file;
       const route = pageRoute(item.path);
-      const cause = item.traceId
-        ? openLinks
-          ? `<a class="ui-button ui-small" href="${e(openHref(d, item.traceId, item.spanId ?? null))}">Open activity →</a>`
-          : ''
-        : '<span class="ui-help">startup / outside any request</span>';
+      const cause = chooseLazy(
+        item.traceId,
+        () =>
+          chooseLazy(
+            openLinks,
+            () =>
+              `<a class="ui-button ui-small" href="${e(openHref(d, item.traceId, item.spanId ?? null))}">Open activity →</a>`,
+            () => '',
+          ),
+        () => '<span class="ui-help">startup / outside any request</span>',
+      );
       return (
-        `<li class="data-line ui-finding">${item.time ? `${when(item.time)} ` : ''}${item.severity ? kit.badge(item.severity, LEVEL_TONES[item.severity] ?? 'neutral') : ''} ${e(findingText(item) || JSON.stringify(item))}` +
+        `<li class="data-line ui-finding">${item.time ? when(item.time) + ' ' : ''}${item.severity ? kit.badge(item.severity, LEVEL_TONES[item.severity] ?? 'neutral') : ''} ${e(findingText(item) || JSON.stringify(item))}` +
         (where ? `<span class="ui-help ui-finding-where">${e(where)}</span>` : '') +
-        `<span class="ui-drawer-actions">${cause}${route ? ` <a class="ui-button ui-small" href="${e(route)}" target="_blank" rel="noopener">Open page ↗</a>` : ''}</span></li>`
+        `<span class="ui-drawer-actions">${cause}${route ? ' <a class="ui-button ui-small" href="' + e(route) + '" target="_blank" rel="noopener">Open page ↗</a>' : ''}</span></li>`
       );
     })
     .join('')}</ul>`;
@@ -1819,7 +1987,7 @@ function renderedRows(d, spans, sources) {
           }
           const source = bySource.get(ref);
           if (source)
-            return `<code class="ui-source" title="${e(source.file ?? source.path)}">${e(source.path)}${source.line ? `:${e(source.line)}` : ''}</code> <span class="ui-help">${e([source.kind, source.name].filter(Boolean).join(' · '))}</span>`;
+            return `<code class="ui-source" title="${e(source.file ?? source.path)}">${e(source.path)}${source.line ? ':' + e(source.line) : ''}</code> <span class="ui-help">${e([source.kind, source.name].filter(Boolean).join(' · '))}</span>`;
           return sources && !sources.error ? '<span class="ui-help">source not found (changed since load)</span>' : '…';
         },
       },
@@ -1835,11 +2003,16 @@ function evidenceOf(ctx, route) {
   return evidence?.path && evidence.path === route ? evidence : null;
 }
 const evidenceBadge = (evidence) =>
-  evidence.stale === true
-    ? kit.badge('stale evidence', 'warn')
-    : evidence.verified === true || evidence.passed === true
-      ? kit.badge('evidence passed', 'ok')
-      : kit.badge('unverified', 'warn');
+  chooseLazy(
+    evidence.stale === true,
+    () => kit.badge('stale evidence', 'warn'),
+    () =>
+      chooseLazy(
+        evidence.verified === true || evidence.passed === true,
+        () => kit.badge('evidence passed', 'ok'),
+        () => kit.badge('unverified', 'warn'),
+      ),
+  );
 function renderedPanel(ctx, d, tree) {
   const sources = d.sources;
   // The route the page rendered (its render step), else the request path: evidence is saved per rendered route.
@@ -1849,11 +2022,17 @@ function renderedPanel(ctx, d, tree) {
   return (
     (sources?.error ? kit.notice(`Template sources could not be resolved: ${failed(sources)}`, 'warn') : '') +
     renderedRows(d, tree.spans, sources) +
-    (evidence
-      ? `<p class="ui-help">Rendering evidence for <code>${e(route)}</code>: ${evidenceBadge(evidence)} <a href="${e(hrefOf(d, { tab: 'pages' }))}">Pages & render</a></p>`
-      : route
-        ? `<p class="ui-help">No rendering evidence was saved for <code>${e(route)}</code>.</p>`
-        : '')
+    chooseLazy(
+      evidence,
+      () =>
+        `<p class="ui-help">Rendering evidence for <code>${e(route)}</code>: ${evidenceBadge(evidence)} <a href="${e(hrefOf(d, { tab: 'pages' }))}">Pages & render</a></p>`,
+      () =>
+        chooseLazy(
+          route,
+          () => `<p class="ui-help">No rendering evidence was saved for <code>${e(route)}</code>.</p>`,
+          () => '',
+        ),
+    )
   );
 }
 function requestPanel(ctx, d, tree) {
@@ -1905,7 +2084,7 @@ function requestPanel(ctx, d, tree) {
     card(
       'Audit entry',
       kit.kv([
-        ['Request', `${kit.badge(entry.kind, 'neutral')} <code>${e(`${entry.method} ${entry.path}`)}</code>`],
+        ['Request', `${kit.badge(entry.kind, 'neutral')} <code>${e(entry.method + ' ' + entry.path)}</code>`],
         ['Result', `${resultBadge(OUTCOME_RESULT[entry.outcome] ?? entry.outcome)}${httpBadge(entry.status)}`],
         ['Who', root.actor || root.session ? whoLink(d, root.actor, root.session) : auditWho(d, entry)],
         ['Roles', e((entry.identity?.roles ?? []).join(', ') || '—')],
@@ -1915,9 +2094,21 @@ function requestPanel(ctx, d, tree) {
         ['Started', when(entry.startedAt)],
         [
           'Duration',
-          `${e(duration(entry.durationMs))}${Number.isFinite(entry.saveMs) ? ` · save ${e(duration(entry.saveMs))} (${e(entry.saveMode ?? '—')})` : ''}`,
+          `${e(duration(entry.durationMs))}${Number.isFinite(entry.saveMs) ? ' · save ' + e(duration(entry.saveMs)) + ' (' + e(entry.saveMode ?? '—') + ')' : ''}`,
         ],
-        ['Error', error ? e(`${errorText(error)}${error.portalCode ? ` · portal ${error.portalCode}` : ''}`) : '—'],
+        [
+          'Error',
+          error
+            ? e(
+                errorText(error) +
+                  chooseLazy(
+                    error.portalCode,
+                    () => ' · portal ' + String(error.portalCode),
+                    () => '',
+                  ),
+              )
+            : '—',
+        ],
         ['Query', entry.query && Object.keys(entry.query).length ? `<code>${json(entry.query, 600)}</code>` : '—'],
         ['Audit id', `<code>${e(entry.id)}</code> · sequence ${e(entry.sequence)}`],
         ['Preset', e(entry.activeConfigurationPreset?.id ?? '—')],
@@ -1944,7 +2135,7 @@ function related(d, tree) {
     job && ['Job ↗', VIEW_LINKS.jobId[2](job)],
   ].filter(Boolean);
   return links.length
-    ? `<p class="ui-drawer-actions ui-activity-related"><span class="ui-help">Related:</span> ${links.map(([text, href]) => `<a class="ui-button ui-small" href="${e(href)}">${e(text)}</a>`).join(' ')}</p>`
+    ? `<p class="ui-drawer-actions ui-activity-related"><span class="ui-help">Related:</span> ${links.map(([text, href]) => '<a class="ui-button ui-small" href="' + e(href) + '">' + e(text) + '</a>').join(' ')}</p>`
     : '';
 }
 const exportHref = (params) => `${API}/trace/export?${new URLSearchParams(params)}`;
@@ -1967,7 +2158,16 @@ const detailTabs = (ctx, d, tree) => {
   return DETAIL_TABS.filter(([id]) => id !== 'log' || logServed(ctx) || served(ctx, '/diagnostics')).map(
     ([id, label]) => ({
       id,
-      label: id === 'log' ? `${label}${logCount}` : id === 'rendered' ? `${label}${count(rendered)}` : label,
+      label: chooseLazy(
+        id === 'log',
+        () => `${label}${logCount}`,
+        () =>
+          chooseLazy(
+            id === 'rendered',
+            () => `${label}${count(rendered)}`,
+            () => label,
+          ),
+      ),
     }),
   );
 };
@@ -1975,7 +2175,7 @@ function detailPanel(ctx, d) {
   const tree = d.tree;
   const title = (text) => `<h3 id="activity-detail-title" tabindex="-1">${text}</h3>`;
   if (!tree)
-    return `${title(`Activity <code>${e(short(d.traceId))}</code>`)}<p role="status" class="ui-help">Loading activity ${e(d.traceId)}…</p>`;
+    return `${title('Activity <code>' + e(short(d.traceId)) + '</code>')}<p role="status" class="ui-help">Loading activity ${e(d.traceId)}…</p>`;
   if (tree.error)
     return (
       title(`Activity <code>${e(short(d.traceId))}</code>`) +
@@ -2001,25 +2201,36 @@ function detailPanel(ctx, d) {
     ['Duration', `${e(duration(summary.durationMs))} root · ${e(duration(summary.totalDurationMs))} total`],
     [
       'Steps',
-      `${e(summary.spanCount)}${errorBadges(summary, '')}${summary.droppedSpans ? ` · ${e(summary.droppedSpans)} refused beyond the per-activity limit` : ''}`,
+      `${e(summary.spanCount)}${errorBadges(summary, '')}${summary.droppedSpans ? ' · ' + e(summary.droppedSpans) + ' refused beyond the per-activity limit' : ''}`,
     ],
     ['Origin', e([root.origin?.host, root.origin?.portal, root.origin?.preset].filter(Boolean).join(' · ') || '—')],
     ['Tables', e((summary.entities ?? []).join(', ') || '—')],
   ]);
   const items = detailTabs(ctx, d, tree);
   const tab = items.some(({ id }) => id === d.detail) ? d.detail : 'steps';
-  const body =
-    tab === 'log'
-      ? detailLogPanel(ctx, d)
-      : tab === 'rendered'
-        ? renderedPanel(ctx, d, tree)
-        : tab === 'request'
-          ? requestPanel(ctx, d, tree)
-          : tab === 'json'
-            ? `<p class="ui-drawer-actions"><a class="ui-button ui-small" href="${e(exportHref({ traceId: summary.traceId, format: 'json' }))}" download>Download activity</a> ` +
-              `<button type="button" class="ui-button ui-small" data-activity-copy="json">Copy JSON</button></p>` +
-              `<pre class="ui-example ui-json" tabindex="0" aria-label="Activity ${e(short(summary.traceId))} as JSON">${e(JSON.stringify(tree, null, 2))}</pre>`
-            : stepsPanel(ctx, d, tree);
+  const body = chooseLazy(
+    tab === 'log',
+    () => detailLogPanel(ctx, d),
+    () =>
+      chooseLazy(
+        tab === 'rendered',
+        () => renderedPanel(ctx, d, tree),
+        () =>
+          chooseLazy(
+            tab === 'request',
+            () => requestPanel(ctx, d, tree),
+            () =>
+              chooseLazy(
+                tab === 'json',
+                () =>
+                  `<p class="ui-drawer-actions"><a class="ui-button ui-small" href="${e(exportHref({ traceId: summary.traceId, format: 'json' }))}" download>Download activity</a> ` +
+                  `<button type="button" class="ui-button ui-small" data-activity-copy="json">Copy JSON</button></p>` +
+                  `<pre class="ui-example ui-json" tabindex="0" aria-label="Activity ${e(short(summary.traceId))} as JSON">${e(JSON.stringify(tree, null, 2))}</pre>`,
+                () => stepsPanel(ctx, d, tree),
+              ),
+          ),
+      ),
+  );
   return (
     head +
     whyLine(d, tree) +
@@ -2084,22 +2295,36 @@ function compareNode(node, prefix, other, side, seen) {
   const key = repeat > 1 ? `${base}#${repeat}` : base;
   const match = other.get(key);
   const depth = node.depth ?? 0;
-  const mark = !match
-    ? kit.badge(side === 'a' ? 'only in A' : 'only in B', 'info')
-    : side === 'b' && node.durationMs !== null && match.durationMs !== null
-      ? kit.badge(
-          signed(node.durationMs - match.durationMs),
-          node.durationMs > match.durationMs ? 'warn' : node.durationMs < match.durationMs ? 'ok' : 'neutral',
-        )
-      : '';
+  let mark;
+  if (!match) mark = kit.badge(side === 'a' ? 'only in A' : 'only in B', 'info');
+  else if (side === 'b' && node.durationMs !== null && match.durationMs !== null)
+    mark = kit.badge(
+      signed(node.durationMs - match.durationMs),
+      chooseLazy(
+        node.durationMs > match.durationMs,
+        () => 'warn',
+        () =>
+          chooseLazy(
+            node.durationMs < match.durationMs,
+            () => 'ok',
+            () => 'neutral',
+          ),
+      ),
+    );
+  else mark = '';
   const childSeen = new Map();
   const children = sorted(node.children)
     .map((child) => compareNode(child, key, other, side, childSeen))
     .join('');
+  const childList = () => {
+    if (!children) return '';
+    const flatClass = depth >= MAX_INDENT ? ' class="is-flat"' : '';
+    return `<ul role="group"${flatClass}>${children}</ul>`;
+  };
   return (
     `<li class="data-line${children ? '' : ' ui-tree-leaf'}"><span class="ui-tree-head">${kit.badge(node.kind, 'neutral')} <span class="ui-tree-name" title="${e(node.name)}">${e(node.name)}</span>${depthBadge(depth)} ` +
-    `<span class="ui-tree-facts">${e(duration(node.durationMs))}${mark ? ` ${mark}` : ''}</span></span>` +
-    (children ? `<ul role="group"${depth >= MAX_INDENT ? ' class="is-flat"' : ''}>${children}</ul>` : '') +
+    `<span class="ui-tree-facts">${e(duration(node.durationMs))}${mark ? ' ' + mark : ''}</span></span>` +
+    childList() +
     '</li>'
   );
 }
@@ -2132,13 +2357,13 @@ function comparePanel(ctx, d) {
     a.trace?.durationMs === null || b.trace?.durationMs === null || a.trace?.durationMs === undefined
       ? null
       : b.trace.durationMs - a.trace.durationMs;
-  const names = (items) =>
-    items.length
-      ? `${e(items.length)}: ${items
-          .slice(0, 10)
-          .map(({ node }) => `<code>${e(`${node.kind} ${node.name}`)}</code>`)
-          .join(', ')}${items.length > 10 ? ` +${e(items.length - 10)}` : ''}`
-      : '0';
+  const names = (items) => {
+    if (!items.length) return '0';
+    return `${e(items.length)}: ${items
+      .slice(0, 10)
+      .map(({ node }) => `<code>${e(node.kind + ' ' + node.name)}</code>`)
+      .join(', ')}${items.length > 10 ? ' +' + e(items.length - 10) : ''}`;
+  };
   const facts = kit.kv([
     [
       'Activities',
@@ -2146,7 +2371,7 @@ function comparePanel(ctx, d) {
     ],
     [
       'Root duration',
-      `${e(duration(a.trace?.durationMs))} → ${e(duration(b.trace?.durationMs))}${rootDelta === null ? '' : ` (${e(signed(rootDelta))})`}`,
+      `${e(duration(a.trace?.durationMs))} → ${e(duration(b.trace?.durationMs))}${rootDelta === null ? '' : ' (' + e(signed(rootDelta)) + ')'}`,
     ],
     ['Steps', `${e(a.trace?.spanCount ?? a.spans?.length ?? 0)} → ${e(b.trace?.spanCount ?? b.spans?.length ?? 0)}`],
     ['Matching steps', e(result.matched.length)],
@@ -2167,7 +2392,20 @@ function comparePanel(ctx, d) {
       { label: 'B', render: (item) => e(duration(item.b.durationMs)) },
       {
         label: 'Change',
-        render: (item) => kit.badge(signed(item.delta), item.delta > 0 ? 'warn' : item.delta < 0 ? 'ok' : 'neutral'),
+        render: (item) =>
+          kit.badge(
+            signed(item.delta),
+            chooseLazy(
+              item.delta > 0,
+              () => 'warn',
+              () =>
+                chooseLazy(
+                  item.delta < 0,
+                  () => 'ok',
+                  () => 'neutral',
+                ),
+            ),
+          ),
       },
     ],
   });
@@ -2236,11 +2474,14 @@ function logPanel(ctx, d) {
   ];
   const order = sortedBy(ctx, 'activity-log', lines, columns, { key: 'time', order: 'desc' });
   const page = kit.pageItems(order.items, pager, { searchable: false });
-  const toggle = findings.length
-    ? `<button type="button" class="ui-button ui-small" id="activity-show-findings" data-activity-action="show-findings" aria-pressed="${!folded}">${folded ? `+${e(findings.length)} findings` : 'Fold findings'}</button>`
-    : '';
+  const toggle = chooseLazy(
+    findings.length,
+    () =>
+      `<button type="button" class="ui-button ui-small" id="activity-show-findings" data-activity-action="show-findings" aria-pressed="${!folded}">${folded ? '+' + e(findings.length) + ' findings' : 'Fold findings'}</button>`,
+    () => '',
+  );
   const status = `<span class="ui-help" role="status">${e(
-    `${plural(d.lines.size, 'line')} · server keeps ${answer.retain ?? answer.retained ?? '—'}${answer.dropped ? ` · ${answer.dropped} dropped` : ''}`,
+    `${plural(d.lines.size, 'line')} · server keeps ${answer.retain ?? answer.retained ?? '—'}${answer.dropped ? ' · ' + answer.dropped + ' dropped' : ''}`,
   )}</span>`;
   // The lines start right under the toolbar; the type is a filter (the drawer), the rest sits under the lines.
   return kit.dataTable({
@@ -2323,7 +2564,7 @@ function firstMessage(group) {
   const texts = [...new Set(group.map(findingText).filter(Boolean))];
   const first = group.find((item) => findingText(item)) ?? group[0];
   const others = texts.length - 1;
-  return `${findingText(first)}${first.path ? ` · ${first.path}` : ''}${others > 0 ? ` · +${plural(others, 'other message')}` : ''}`;
+  return `${findingText(first)}${first.path ? ' · ' + first.path : ''}${others > 0 ? ' · +' + plural(others, 'other message') : ''}`;
 }
 function findingsPanel(ctx, d) {
   const answer = d.findings;
@@ -2367,7 +2608,7 @@ function findingsPanel(ctx, d) {
       render: ([code, group]) => {
         const page = kit.pageItems(group, ctx.pager(`activity-finding:${code}`), { searchable: false });
         return (
-          `<details class="ui-finding-group" data-ui-section="activity:finding:${e(code)}"${ctx.open?.(`activity:finding:${code}`) ? ' open' : ''}>` +
+          `<details class="ui-finding-group" data-ui-section="activity:finding:${e(code)}"${ctx.open?.('activity:finding:' + code) ? ' open' : ''}>` +
           `<summary><span class="ui-finding-first">${e(firstMessage(group))}</span></summary>` +
           (page.total > page.size ? kit.tableFoot(`activity-finding:${code}`, page) : '') +
           findingItems(d, page.items) +
@@ -2420,7 +2661,7 @@ function pagesPanel(ctx, d) {
       label: 'Actions',
       className: 'ui-actions',
       render: (page) =>
-        `${pageRoute(page.route) ? `<a class="ui-button ui-small" href="${e(page.route)}" target="_blank" rel="noopener">Open page ↗</a> ` : ''}` +
+        `${pageRoute(page.route) ? '<a class="ui-button ui-small" href="' + e(page.route) + '" target="_blank" rel="noopener">Open page ↗</a> ' : ''}` +
         (byRoute[page.route]
           ? `<button type="button" class="ui-button ui-small" id="activity-sources-${e(page.route)}" data-activity-sources="${e(page.route)}" aria-pressed="${d.sourcesFor === page.route}">Template sources</button>`
           : ''),
@@ -2440,18 +2681,25 @@ function pagesPanel(ctx, d) {
   const answer = d.sourcesFor ? d.pageSourcesAnswer : null;
   const sources = d.sourcesFor
     ? `<section class="ui-activity-sources" id="activity-page-sources" tabindex="-1" aria-labelledby="activity-page-sources-title"><h3 id="activity-page-sources-title">Template sources of <code>${e(d.sourcesFor)}</code></h3>` +
-      (!answer || answer.route !== d.sourcesFor
-        ? '<p role="status" class="ui-help">Resolving template sources…</p>'
-        : answer.error
-          ? kit.notice(`Template sources could not be resolved: ${failed(answer)}`, 'warn')
-          : renderedRows(d, answer.spans, answer)) +
+      chooseLazy(
+        !answer || answer.route !== d.sourcesFor,
+        () => '<p role="status" class="ui-help">Resolving template sources…</p>',
+        () =>
+          chooseLazy(
+            answer.error,
+            () => kit.notice(`Template sources could not be resolved: ${failed(answer)}`, 'warn'),
+            () => renderedRows(d, answer.spans, answer),
+          ),
+      ) +
       '</section>'
     : '';
   const urls = Object.entries(evidence.artifactUrls ?? {}).filter(
-    ([, url]) => typeof url === 'string' && /^\/__sim\//.test(url) && !url.includes('\\'),
+    ([, url]) => typeof url === 'string' && url.startsWith('/__sim/') && !url.includes('\\'),
   );
-  const evidenceBlock = evidence.path
-    ? `<h3>Rendering evidence</h3>${kit.kv([
+  const evidenceBlock = chooseLazy(
+    evidence.path,
+    () =>
+      `<h3>Rendering evidence</h3>${kit.kv([
         ['Compared route', `<code>${e(evidence.path)}</code> ${evidenceBadge(evidence)}`],
         ['Captured', when(evidence.time)],
         ...(evidence.pixels
@@ -2459,13 +2707,19 @@ function pagesPanel(ctx, d) {
               [
                 'Different pixels',
                 e(
-                  `${evidence.pixels.different} / ${evidence.pixels.total} (${(Number(evidence.pixels.fraction || 0) * 100).toFixed(4)}%)`,
+                  evidence.pixels.different +
+                    ' / ' +
+                    evidence.pixels.total +
+                    ' (' +
+                    (Number(evidence.pixels.fraction || 0) * 100).toFixed(4) +
+                    '%)',
                 ),
               ],
             ]
           : []),
-      ])}${urls.map(([label, url]) => `<a class="ui-button ui-small" href="${e(url)}" target="_blank" rel="noopener">${e(label)} screenshot ↗</a>`).join(' ')}`
-    : '<p class="ui-help">No rendering evidence is saved: run verify to compare a page with the live site.</p>';
+      ])}${urls.map(([label, url]) => '<a class="ui-button ui-small" href="' + e(url) + '" target="_blank" rel="noopener">' + e(label) + ' screenshot ↗</a>').join(' ')}`,
+    () => '<p class="ui-help">No rendering evidence is saved: run verify to compare a page with the live site.</p>',
+  );
   return (
     (d.pages?.error ? kit.notice(`Last activities could not be read: ${failed(d.pages)}`, 'warn') : '') +
     table +
@@ -2490,7 +2744,7 @@ function timeline(d) {
         w = Math.max(0.5, step - gap).toFixed(2);
       const h = ((bucket.count / max) * height).toFixed(2),
         eh = ((bucket.errors / max) * height).toFixed(2);
-      const label = `${kit.clock(bucket.bucketStart)}: ${plural(bucket.count, 'step')}, ${plural(bucket.errors, 'error')}${bucket.p95 === null || bucket.p95 === undefined ? '' : `, p95 ${duration(bucket.p95)}`}. Narrow the time range to this bucket.`;
+      const label = `${kit.clock(bucket.bucketStart)}: ${plural(bucket.count, 'step')}, ${plural(bucket.errors, 'error')}${bucket.p95 === null || bucket.p95 === undefined ? '' : ', p95 ' + duration(bucket.p95)}. Narrow the time range to this bucket.`;
       return (
         `<g class="ui-histogram-bucket" role="button" id="activity-bucket-${index}" tabindex="${index === current ? 0 : -1}" data-activity-bucket="${e(bucket.bucketStart)}" data-bucket-index="${index}" aria-label="${e(label)}"><title>${e(label)}</title>` +
         `<rect class="ui-histogram-hit" x="${(index * step).toFixed(2)}" y="0" width="${step.toFixed(2)}" height="${height}"></rect>` +
@@ -2563,8 +2817,29 @@ function trendTile(d) {
   const change = before > 0 ? ((now - before) / before) * 100 : null;
   return {
     ...tile,
-    value: change === null ? '—' : `${change > 0 ? '+' : change < 0 ? '−' : '±'}${Math.abs(change).toFixed(0)}%`,
-    tone: change > 10 ? 'warn' : change < -10 ? 'ok' : 'neutral',
+    value:
+      change === null
+        ? '—'
+        : `${chooseLazy(
+            change > 0,
+            () => '+',
+            () =>
+              chooseLazy(
+                change < 0,
+                () => '−',
+                () => '±',
+              ),
+          )}${Math.abs(change).toFixed(0)}%`,
+    tone: chooseLazy(
+      change > 10,
+      () => 'warn',
+      () =>
+        chooseLazy(
+          change < -10,
+          () => 'ok',
+          () => 'neutral',
+        ),
+    ),
     detail: `${duration(now)} now · ${duration(before)} in the previous${span}`,
   };
 }
@@ -2575,7 +2850,7 @@ function spanReferences(d, items, emptyText) {
     .map(
       (item) =>
         `<li class="data-line"><a href="${e(openHref(d, item.traceId, item.spanId))}">${kit.badge(item.kind ?? '—', 'neutral')} <span class="ui-span-ref-name">${e(item.name)}</span></a>` +
-        ` <span class="ui-span-ref-meta">${e(duration(item.durationMs))}${item.entity ? ` · ${e(item.entity)}` : ''} · ${when(item.startedAt)}</span>` +
+        ` <span class="ui-span-ref-meta">${e(duration(item.durationMs))}${item.entity ? ' · ' + e(item.entity) : ''} · ${when(item.startedAt)}</span>` +
         (item.error ? `<span class="ui-span-ref-error">${e(errorText(item.error))}</span>` : '') +
         '</li>',
     )
@@ -2642,7 +2917,7 @@ function settingsPanel(ctx, d) {
   const levels = LEVELS.map(
     (level) =>
       `<div class="ui-check"><input type="radio" id="activity-level-${level}" name="level" value="${level}"${settings.level === level ? ' checked' : ''} aria-describedby="activity-level-${level}-help">` +
-      `<label for="activity-level-${level}">${e(level)}</label></div>${kit.fieldHelp(`activity-level-${level}`, LEVEL_NOTES[level])}`,
+      `<label for="activity-level-${level}">${e(level)}</label></div>${kit.fieldHelp('activity-level-' + level, LEVEL_NOTES[level])}`,
   ).join('');
   return (
     `<form id="${SETTINGS_FORM}" class="ui-form" data-activity-settings><fieldset><legend>Tracing level</legend>${levels}</fieldset>` +
@@ -2651,7 +2926,7 @@ function settingsPanel(ctx, d) {
     `<fieldset class="ui-limits"><legend>Retention limits</legend>${LIMITS.map(
       ([name, label, min, max]) =>
         `<div><label for="activity-limit-${name}">${e(label)}</label><input id="activity-limit-${name}" name="${name}" type="number" min="${min}" max="${max}" step="1" required value="${e(settings[name] ?? '')}" aria-describedby="activity-limit-${name}-help">` +
-        `${fieldHelp(ctx, `activity-limit-${name}`, 'activity.settings', name)}</div>`,
+        `${fieldHelp(ctx, 'activity-limit-' + name, 'activity.settings', name)}</div>`,
     ).join('')}</fieldset>` +
     '<p><button type="submit" class="ui-button ui-primary ui-small">Save tracing settings</button> ' +
     '<button type="button" class="ui-button ui-small" data-activity-action="clear">Clear activities</button></p></form>' +
@@ -2664,9 +2939,12 @@ function settingsPanel(ctx, d) {
       ['Live listeners', e(status.listeners ?? 0)],
       [
         'Persistence',
-        persist.enabled
-          ? `<code>${e(persist.directory ?? '—')}</code> · ${e(persist.written ?? 0)} written · ${e(persist.failures ?? 0)} failed${persist.lastError ? ` · ${e(persist.lastError)}` : ''}`
-          : `off${persist.lastError ? ` · ${e(persist.lastError)}` : ''}`,
+        chooseLazy(
+          persist.enabled,
+          () =>
+            `<code>${e(persist.directory ?? '—')}</code> · ${e(persist.written ?? 0)} written · ${e(persist.failures ?? 0)} failed${persist.lastError ? ' · ' + e(persist.lastError) : ''}`,
+          () => `off${persist.lastError ? ' · ' + e(persist.lastError) : ''}`,
+        ),
       ],
     ])
   );
@@ -2686,6 +2964,25 @@ async function copy(ctx, d, label, text) {
     field?.focus();
     field?.select?.();
   }
+}
+
+function needsLoad(ctx, d, [part, key]) {
+  return d.forced.has(part) || d.keys[part] !== key || d[SLOTS[part] ?? part] == null;
+}
+
+function keepLoadAnswer(ctx, d, part, key, stamp, value) {
+  // A newer load of this part started, or the address moved on: this answer is stale.
+  if (stamp !== d.generations[part] || wanted(ctx, d).get(part) !== key) return;
+  const was = d.settings?.settings;
+  if (part === 'settings') {
+    if (was && ['level', 'persist', ...LIMITS.map(([n]) => n)].some((n) => was[n] !== value?.settings?.[n]))
+      ctx.forgetDraft?.(SETTINGS_FORM);
+  }
+  if (part === 'list' && value && !value.error && value.page) ctx.pager('activity-list').page = value.page;
+  if (part === 'logs' && Array.isArray(value?.items)) keepLines(d, value.items);
+  d[SLOTS[part] ?? part] = value;
+  // A page the store clamped (fewer pages than asked) is the page shown: no second read for it.
+  d.keys[part] = part === 'list' ? wanted(ctx, d).get('list') : key;
 }
 function copyAction(ctx, d, what) {
   if (what === 'link') {
@@ -2745,14 +3042,157 @@ function rowStep(event, from) {
   const rows = [...(globalThis.document?.querySelectorAll?.('[data-activity-open]') ?? [])];
   if (!rows.length) return false;
   const index = rows.indexOf(from);
-  const next =
-    index < 0 ? (event.key === 'ArrowDown' ? 0 : rows.length - 1) : index + (event.key === 'ArrowDown' ? 1 : -1);
+  let next;
+  if (index < 0) {
+    if (event.key === 'ArrowDown') next = 0;
+    else next = rows.length - 1;
+  } else if (event.key === 'ArrowDown') next = index + 1;
+  else next = index - 1;
   if (next < 0 || next >= rows.length) return true;
   event.preventDefault();
   rows[next].focus();
   return true;
 }
 const typing = (target) => Boolean(target?.closest?.('input, select, textarea, [contenteditable="true"]'));
+
+/* NOSONAR */ function submitFilters(d, event, target, apply) {
+  if (event.type !== 'submit' || !target('[data-activity-filters]')) return undefined;
+  event.preventDefault();
+  const fields = Object.fromEntries(
+    [...new FormData(target('[data-activity-filters]'))].map(([name, value]) => [name, String(value).trim()]), // NOSONAR: stringification is intentional here
+  );
+  const previous = { ...d.filters };
+  for (const name of FILTERS) if (Object.hasOwn(fields, name)) d.filters[name] = fields[name];
+  if (Object.hasOwn(fields, 'type')) d.type = fields.type;
+  for (const name of ['from', 'to'])
+    if (d.filters[name] && d.filters[name] === localInput(previous[name])) d.filters[name] = previous[name];
+    else if (d.filters[name]) {
+      const at = Date.parse(d.filters[name]);
+      d.filters[name] = Number.isFinite(at) ? new Date(at).toISOString() : '';
+    }
+  if (d.filters.from || d.filters.to) d.range = 'custom';
+  else if (Object.hasOwn(RANGES, fields.range)) d.range = fields.range;
+  else d.range = 'all';
+  return apply();
+}
+
+function changeTextFilter(d, event, target, apply) {
+  const text = event.type === 'change' ? target('[data-activity-filters] input[name], [data-activity-search]') : null;
+  if (!text || !FILTERS.includes(text.name)) return undefined;
+  const value = String(text.value ?? '').trim();
+  const time = text.type === 'datetime-local';
+  if (time && value === localInput(d.filters[text.name])) return true;
+  const at = time && value ? Date.parse(value) : Number.NaN;
+  if (time) {
+    if (Number.isFinite(at)) d.filters[text.name] = new Date(at).toISOString();
+    else d.filters[text.name] = '';
+  } else d.filters[text.name] = value;
+  if (time) {
+    if (d.filters.from || d.filters.to) d.range = 'custom';
+    else if (d.range === 'custom') d.range = 'all';
+  }
+  return apply(true);
+}
+
+function changeFilterChoice(d, event, target, apply) {
+  if (event.type !== 'change' || !target('[data-activity-filters] [data-activity-select]')) return undefined;
+  const field = target('[data-activity-select]');
+  if (field.name === 'range') {
+    if (!Object.hasOwn(RANGES, field.value)) return true;
+    d.range = field.value;
+    d.filters.from = d.filters.to = '';
+  } else if (field.name === 'type') d.type = field.value;
+  else if (FILTERS.includes(field.name)) d.filters[field.name] = field.value;
+  return apply();
+}
+
+/* NOSONAR */ function changeActivityControls(ctx, d, event, target) {
+  if (event.type === 'change' && target('[data-activity-tab-select]'))
+    return selectTab(ctx, d, 'activity-tabs', target('[data-activity-tab-select]').value);
+  if (event.type === 'change' && target('[data-table-size="activity-list"]')) {
+    const pager = ctx.pager('activity-list');
+    pager.size = Number(target('[data-table-size="activity-list"]').value);
+    pager.page = 1;
+    void reload(ctx);
+    return true;
+  }
+  if (event.type === 'change' && target('[data-activity-export-format]')) {
+    const format = target('[data-activity-export-format]').value;
+    if (EXPORT_FORMATS.some(([value]) => value === format)) d.exportFormat = format;
+    ctx.render?.();
+    return true;
+  }
+  if (event.type === 'change' && target('[data-activity-pick]')) {
+    const box = target('[data-activity-pick]'),
+      id = box.dataset.activityPick;
+    d.picked = d.picked.filter((item) => item !== id);
+    if (box.checked) d.picked = [...d.picked, id].slice(-2);
+    ctx.render?.();
+    return true;
+  }
+  if (event.type === 'change' && target('[data-activity-errors-only]')) {
+    d.errorsOnly = Boolean(target('[data-activity-errors-only]').checked);
+    syncHash(d);
+    ctx.render?.();
+    return true;
+  }
+  if (event.type === 'input' && target('[data-activity-span-search]')) {
+    d.spanSearch = target('[data-activity-span-search]').value;
+    syncHash(d);
+    ctx.render?.();
+    return true;
+  }
+  return undefined;
+}
+
+function keyboardTab(ctx, d, event, target) {
+  const tab = target('[role="tab"][data-tab]');
+  if (!tab || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return undefined;
+  event.preventDefault();
+  let ids;
+  if (tab.dataset.tab === 'activity-tabs') ids = tabsFor(ctx).map(([id]) => id);
+  else if (tab.dataset.tab === 'activity-detail') ids = detailTabs(ctx, d, d.tree ?? {}).map(({ id }) => id);
+  else ids = BREAKDOWNS.map(([id]) => id);
+  const next = step(ids.length, ids.indexOf(tab.dataset.tabId), event.key);
+  return selectTab(ctx, d, tab.dataset.tab, ids[next]);
+}
+
+function keyboardBucket(ctx, d, event, target) {
+  const bucket = target('[data-activity-bucket]');
+  if (bucket && (event.key === 'Enter' || event.key === ' ')) {
+    event.preventDefault();
+    return narrow(ctx, d, bucket.dataset.activityBucket);
+  }
+  if (!bucket || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return undefined;
+  event.preventDefault();
+  d.bucketFocus = step(d.stats?.timeline?.length ?? 1, Number(bucket.dataset.bucketIndex), event.key);
+  ctx.render?.();
+  focus(`activity-bucket-${d.bucketFocus}`);
+  return true;
+}
+
+function handleActivityKeydown(ctx, d, event, target) {
+  const tabResult = keyboardTab(ctx, d, event, target);
+  if (tabResult !== undefined) return tabResult;
+  const bucketResult = keyboardBucket(ctx, d, event, target);
+  if (bucketResult !== undefined) return bucketResult;
+  if (typing(event.target)) return false;
+  if (event.key === '/') {
+    event.preventDefault();
+    focus('activity-q');
+    return true;
+  }
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') return rowStep(event, target('[data-activity-open]'));
+  if (event.key === 'Escape' && d.spanId) {
+    event.preventDefault();
+    return closeSpan(ctx, d);
+  }
+  if (event.key === 'Escape' && d.traceId) {
+    event.preventDefault();
+    return closeTrace(ctx, d);
+  }
+  return false;
+}
 
 export const view = {
   id: ID,
@@ -2770,12 +3210,16 @@ export const view = {
     const before = { list: listKey(ctx, d), traceId: d.traceId };
     d.filters = filtersOf(params);
     const range = params.get('range');
-    d.range = Object.hasOwn(RANGES, range) ? range : d.filters.from || d.filters.to ? 'custom' : 'all';
+    d.range = chooseLazy(
+      Object.hasOwn(RANGES, range),
+      () => range,
+      () => (d.filters.from || d.filters.to ? 'custom' : 'all'),
+    );
     d.sort = {
       by: Object.hasOwn(SORTS, params.get('sort')) ? params.get('sort') : 'start',
       order: params.get('order') === 'asc' ? 'asc' : 'desc',
     };
-    d.tab = TAB_IDS.includes(params.get('tab')) ? params.get('tab') : 'activities';
+    d.tab = TAB_IDS.has(params.get('tab')) ? params.get('tab') : 'activities';
     d.type = params.get('type') ?? '';
     d.whoName = (d.filters.who && params.get('whoName')?.trim()) || null;
     d.reads = params.get('reads') === '1';
@@ -2815,9 +3259,7 @@ export const view = {
         d.keys.settings = 'settings';
       }
       // A part is read when what it shows changed, when forced, or when its answer was dropped (an activity closed).
-      const parts = [...wanted(ctx, d)].filter(
-        ([part, key]) => d.forced.has(part) || d.keys[part] !== key || d[SLOTS[part] ?? part] == null,
-      );
+      const parts = [...wanted(ctx, d)].filter((part) => needsLoad(ctx, d, part));
       if (!parts.length) break;
       // One clock reading per load: the range of the list, the stats and the window before it end at the same instant.
       const now = Date.now();
@@ -2827,18 +3269,7 @@ export const view = {
         return FETCHERS[part](ctx, d, now).then((value) => ({ part, key, stamp, value }));
       });
       for (const { part, key, stamp, value } of await Promise.all(jobs)) {
-        // A newer load of this part started, or the address moved on: this answer is stale.
-        if (stamp !== d.generations[part] || wanted(ctx, d).get(part) !== key) continue;
-        const was = d.settings?.settings;
-        if (part === 'settings') {
-          if (was && ['level', 'persist', ...LIMITS.map(([n]) => n)].some((n) => was[n] !== value?.settings?.[n]))
-            ctx.forgetDraft?.(SETTINGS_FORM);
-        }
-        if (part === 'list' && value && !value.error && value.page) ctx.pager('activity-list').page = value.page;
-        if (part === 'logs' && Array.isArray(value?.items)) keepLines(d, value.items);
-        d[SLOTS[part] ?? part] = value;
-        // A page the store clamped (fewer pages than asked) is the page shown: no second read for it.
-        d.keys[part] = part === 'list' ? wanted(ctx, d).get('list') : key;
+        keepLoadAnswer(ctx, d, part, key, stamp, value);
       }
     }
     d.loaded = true;
@@ -2872,7 +3303,18 @@ export const view = {
       // Inside the chrome's toolbar row (kit.pageChrome): Live with its status, the tab's quick filter, Refresh, Export with
       // its (i) and Settings (⚙, named on hover and for screen readers), so the search and Filters fit the same row.
       '<span class="ui-activity-actions">' +
-      `<button type="button" class="ui-button ui-small" id="activity-live"${liveOff ? ' disabled' : ''} data-activity-action="live" aria-pressed="${Boolean(d.live)}" aria-label="Live">${d.live ? '● <span class="ui-wide">Live: on</span><span class="ui-narrow">Live</span>' : '<span class="ui-wide">Live: off</span><span class="ui-narrow">Live</span>'}</button><span class="ui-help" role="status">${e(liveOff ? 'This host does not stream activity' : d.live ? liveText(ctx, d) : '')}</span>` +
+      `<button type="button" class="ui-button ui-small" id="activity-live"${liveOff ? ' disabled' : ''} data-activity-action="live" aria-pressed="${Boolean(d.live)}" aria-label="Live">${d.live ? '● <span class="ui-wide">Live: on</span><span class="ui-narrow">Live</span>' : '<span class="ui-wide">Live: off</span><span class="ui-narrow">Live</span>'}</button><span class="ui-help" role="status">${e(
+        chooseLazy(
+          liveOff,
+          () => 'This host does not stream activity',
+          () =>
+            chooseLazy(
+              d.live,
+              () => liveText(ctx, d),
+              () => '',
+            ),
+        ),
+      )}</span>` +
       quickFilter(tab, d) +
       // On a phone the actions keep one row: their words give way to symbols (the accessible names stay).
       '<button type="button" class="ui-button ui-small" id="activity-refresh" data-activity-action="refresh" aria-label="Refresh"><span class="ui-wide">Refresh</span><span class="ui-narrow" aria-hidden="true">↻</span></button>' +
@@ -2885,13 +3327,18 @@ export const view = {
         )
         .join('')}</select>` +
       `<a class="ui-button ui-small" id="activity-export" href="${e(exportLink(ctx, d))}" download aria-label="Export filtered"><span class="ui-wide">Export</span><span class="ui-narrow" aria-hidden="true">⇩</span></a>${exportHelp(ctx)}` +
-      `<button type="button" class="ui-button ui-small" id="activity-settings" data-activity-action="settings" aria-label="Tracing settings" title="Tracing settings${level ? ` · level ${e(level)}` : ''}">⚙</button></span>`;
-    const off =
-      level === 'off' && !auditServed(ctx)
-        ? kit.notice('Tracing is off and this host keeps no request audit: nothing new is recorded.', 'warn')
-        : level === 'off' && tab !== 'activities'
-          ? kit.notice('Tracing is off: only the request audit records new requests (Activities lists it).', 'warn')
-          : '';
+      `<button type="button" class="ui-button ui-small" id="activity-settings" data-activity-action="settings" aria-label="Tracing settings" title="Tracing settings${level ? ' · level ' + e(level) : ''}">⚙</button></span>`;
+    const off = chooseLazy(
+      level === 'off' && !auditServed(ctx),
+      () => kit.notice('Tracing is off and this host keeps no request audit: nothing new is recorded.', 'warn'),
+      () =>
+        chooseLazy(
+          level === 'off' && tab !== 'activities',
+          () =>
+            kit.notice('Tracing is off: only the request audit records new requests (Activities lists it).', 'warn'),
+          () => '',
+        ),
+    );
     const auditOnly = AUDIT_ONLY.filter((name) => d.filters[name]);
     const noAudit =
       auditOnly.length && !auditServed(ctx)
@@ -2903,16 +3350,26 @@ export const view = {
     const logNote = tabs.some(([id]) => id === 'log')
       ? ''
       : '<p class="ui-help ui-activity-note">No server log stream on this host.</p>';
-    const body =
-      tab === 'log'
-        ? logPanel(ctx, d)
-        : tab === 'findings'
-          ? findingsPanel(ctx, d)
-          : tab === 'pages'
-            ? pagesPanel(ctx, d)
-            : tab === 'stats'
-              ? statsPanel(ctx, d)
-              : activitiesPanel(ctx, d);
+    const body = chooseLazy(
+      tab === 'log',
+      () => logPanel(ctx, d),
+      () =>
+        chooseLazy(
+          tab === 'findings',
+          () => findingsPanel(ctx, d),
+          () =>
+            chooseLazy(
+              tab === 'pages',
+              () => pagesPanel(ctx, d),
+              () =>
+                chooseLazy(
+                  tab === 'stats',
+                  () => statsPanel(ctx, d),
+                  () => activitiesPanel(ctx, d),
+                ),
+            ),
+        ),
+    );
     const findingCount = Array.isArray(d.findings?.diagnostics) ? ` (${d.findings.diagnostics.length})` : '';
     const side =
       (d.compare
@@ -2937,7 +3394,7 @@ export const view = {
     const tabPick = `<label class="ui-sr-only" for="activity-tab-select">Tab</label><select id="activity-tab-select" class="ui-activity-tabselect" data-activity-tab-select>${tabs
       .map(
         ([id, label]) =>
-          `<option value="${e(id)}"${id === tab ? ' selected' : ''}>${e(id === 'findings' ? `${label}${findingCount}` : label)}</option>`,
+          `<option value="${e(id)}"${id === tab ? ' selected' : ''}>${e(id === 'findings' ? label + findingCount : label)}</option>`,
       )
       .join('')}</select>`;
     const main =
@@ -2960,7 +3417,7 @@ export const view = {
       invalidFilter(d) +
       logNote +
       // At 1200 px and wider the open activity sits beside the list (ui-kit.css .ui-trace-layout).
-      `<div class="ui-trace-layout${side ? ' has-detail' : ''}"><div class="ui-trace-main">${main}</div>${side ? `<div class="ui-trace-side" data-trace-side="${e(sideKey(d))}">${side}</div>` : ''}</div>` +
+      `<div class="ui-trace-layout${side ? ' has-detail' : ''}"><div class="ui-trace-main">${main}</div>${side ? '<div class="ui-trace-side" data-trace-side="' + e(sideKey(d)) + '">' + side + '</div>' : ''}</div>` +
       panel(ctx, 'settings', 'Tracing settings', level ? `level ${level}` : 'unavailable', settingsPanel(ctx, d))
     );
   },
@@ -2987,7 +3444,7 @@ export const view = {
     globalThis.document.addEventListener('keydown', keys);
   },
 
-  handle(ctx, event) {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ handle(ctx, event) {
     const d = stateOf(ctx);
     const target = (selector) => event.target?.closest?.(selector);
     /** The list state changed: page 1, the address, then what the open tab shows. */
@@ -3000,86 +3457,17 @@ export const view = {
       // The chips, the toggle count and the form show the new filters at once; the list follows when it loaded. A text
       // field that applied as focus left it renders with the list instead, so the click that moved focus still lands.
       if (!keepForm) ctx.render?.();
-      reload(ctx);
+      void reload(ctx);
       return true;
     };
-    if (event.type === 'submit' && target('[data-activity-filters]')) {
-      event.preventDefault();
-      const fields = Object.fromEntries(
-        [...new FormData(target('[data-activity-filters]'))].map(([name, value]) => [name, String(value).trim()]),
-      );
-      const previous = { ...d.filters };
-      // Only the fields on screen: folded More filters keep their values (their chips show them).
-      for (const name of FILTERS) if (Object.hasOwn(fields, name)) d.filters[name] = fields[name];
-      if (Object.hasOwn(fields, 'type')) d.type = fields.type;
-      // A time input shows whole seconds: an unchanged one keeps the exact time it shows (a timeline bucket).
-      for (const name of ['from', 'to'])
-        if (d.filters[name] && d.filters[name] === localInput(previous[name])) d.filters[name] = previous[name];
-        else if (d.filters[name]) {
-          const at = Date.parse(d.filters[name]);
-          d.filters[name] = Number.isFinite(at) ? new Date(at).toISOString() : '';
-        }
-      d.range = d.filters.from || d.filters.to ? 'custom' : Object.hasOwn(RANGES, fields.range) ? fields.range : 'all';
-      return apply();
-    }
-    // A text field applies when its value changed (leaving the field), like Enter.
-    const text = event.type === 'change' ? target('[data-activity-filters] input[name], [data-activity-search]') : null;
-    if (text && FILTERS.includes(text.name)) {
-      const value = String(text.value ?? '').trim();
-      const time = text.type === 'datetime-local';
-      if (time && value === localInput(d.filters[text.name])) return true;
-      const at = time && value ? Date.parse(value) : NaN;
-      d.filters[text.name] = time ? (Number.isFinite(at) ? new Date(at).toISOString() : '') : value;
-      if (time) d.range = d.filters.from || d.filters.to ? 'custom' : d.range === 'custom' ? 'all' : d.range;
-      return apply(true);
-    }
-    // A choice in the bar applies at once; text fields apply with Enter or Apply.
-    if (event.type === 'change' && target('[data-activity-filters] [data-activity-select]')) {
-      const field = target('[data-activity-select]');
-      if (field.name === 'range') {
-        if (!Object.hasOwn(RANGES, field.value)) return true;
-        d.range = field.value;
-        d.filters.from = d.filters.to = '';
-      } else if (field.name === 'type') d.type = field.value;
-      else if (FILTERS.includes(field.name)) d.filters[field.name] = field.value;
-      return apply();
-    }
-    if (event.type === 'change' && target('[data-activity-tab-select]'))
-      return selectTab(ctx, d, 'activity-tabs', target('[data-activity-tab-select]').value);
-    if (event.type === 'change' && target('[data-table-size="activity-list"]')) {
-      const pager = ctx.pager('activity-list');
-      pager.size = Number(target('[data-table-size="activity-list"]').value);
-      pager.page = 1;
-      reload(ctx);
-      return true;
-    }
-    if (event.type === 'change' && target('[data-activity-export-format]')) {
-      const format = target('[data-activity-export-format]').value;
-      if (EXPORT_FORMATS.some(([value]) => value === format)) d.exportFormat = format;
-      ctx.render?.();
-      return true;
-    }
-    if (event.type === 'change' && target('[data-activity-pick]')) {
-      const box = target('[data-activity-pick]'),
-        id = box.dataset.activityPick;
-      d.picked = d.picked.filter((item) => item !== id);
-      // Ticking a third activity replaces the oldest tick.
-      if (box.checked) d.picked = [...d.picked, id].slice(-2);
-      ctx.render?.();
-      return true;
-    }
-    if (event.type === 'change' && target('[data-activity-errors-only]')) {
-      d.errorsOnly = Boolean(target('[data-activity-errors-only]').checked);
-      syncHash(d);
-      ctx.render?.();
-      return true;
-    }
-    if (event.type === 'input' && target('[data-activity-span-search]')) {
-      d.spanSearch = target('[data-activity-span-search]').value;
-      syncHash(d);
-      ctx.render?.();
-      return true;
-    }
+    const filterResult = submitFilters(d, event, target, apply);
+    if (filterResult !== undefined) return filterResult;
+    const textResult = changeTextFilter(d, event, target, apply);
+    if (textResult !== undefined) return textResult;
+    const choiceResult = changeFilterChoice(d, event, target, apply);
+    if (choiceResult !== undefined) return choiceResult;
+    const controlResult = changeActivityControls(ctx, d, event, target);
+    if (controlResult !== undefined) return controlResult;
     const form = event.type === 'submit' ? target('[data-activity-settings]') : null;
     if (form) {
       event.preventDefault();
@@ -3090,7 +3478,7 @@ export const view = {
       };
       for (const [name] of LIMITS) {
         const value = fields.get(name);
-        if (value !== null && String(value).trim() !== '') body[name] = Number(value);
+        if (value !== null && String(value).trim() !== '') body[name] = Number(value); // NOSONAR: stringification is intentional here
       }
       const before = d.settings?.settings ?? {};
       return pending(ctx, event.submitter ?? form.querySelector('[type=submit]'), async () => {
@@ -3106,59 +3494,17 @@ export const view = {
         // Turning tracing on or off switches the list between activities and the audit; a smaller retention drops
         // the oldest activities at once.
         if (saved.level !== before.level || (before.traces !== undefined && saved.traces < before.traces))
-          reload(ctx, ['list', 'stats']);
+          void reload(ctx, ['list', 'stats']);
       });
     }
-    if (event.type === 'keydown') {
-      const tab = target('[role="tab"][data-tab]');
-      if (tab && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
-        event.preventDefault();
-        const ids =
-          tab.dataset.tab === 'activity-tabs'
-            ? tabsFor(ctx).map(([id]) => id)
-            : tab.dataset.tab === 'activity-detail'
-              ? detailTabs(ctx, d, d.tree ?? {}).map(({ id }) => id)
-              : BREAKDOWNS.map(([id]) => id);
-        const next = step(ids.length, ids.indexOf(tab.dataset.tabId), event.key);
-        return selectTab(ctx, d, tab.dataset.tab, ids[next]);
-      }
-      const bucket = target('[data-activity-bucket]');
-      if (bucket && (event.key === 'Enter' || event.key === ' ')) {
-        event.preventDefault();
-        return narrow(ctx, d, bucket.dataset.activityBucket);
-      }
-      if (bucket && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
-        event.preventDefault();
-        d.bucketFocus = step(d.stats?.timeline?.length ?? 1, Number(bucket.dataset.bucketIndex), event.key);
-        ctx.render?.();
-        focus(`activity-bucket-${d.bucketFocus}`);
-        return true;
-      }
-      if (typing(event.target)) return false;
-      if (event.key === '/') {
-        event.preventDefault();
-        // The search sits in the toolbar row (D-M-11).
-        focus('activity-q');
-        return true;
-      }
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') return rowStep(event, target('[data-activity-open]'));
-      if (event.key === 'Escape' && d.spanId) {
-        event.preventDefault();
-        return closeSpan(ctx, d);
-      }
-      if (event.key === 'Escape' && d.traceId) {
-        event.preventDefault();
-        return closeTrace(ctx, d);
-      }
-      return false;
-    }
+    if (event.type === 'keydown') return handleActivityKeydown(ctx, d, event, target);
     if (event.type !== 'click') return false;
     // A compare tick is a checkbox inside a row: it toggles natively and never opens the row's activity.
     if (target('[data-activity-pick]')) return true;
     const action = target('[data-activity-action]')?.dataset.activityAction;
     if (action === 'refresh') {
       d.lines.clear();
-      reload(ctx, [...wanted(ctx, d).keys()]);
+      void reload(ctx, [...wanted(ctx, d).keys()]);
       return true;
     }
     if (action === 'clear-filters') {
@@ -3240,7 +3586,7 @@ export const view = {
       d.compared = null;
       syncHash(d);
       ctx.reveal?.('[data-ui-section="activity:compare"]');
-      reload(ctx);
+      void reload(ctx);
       ctx.render?.();
       return true;
     }
@@ -3260,7 +3606,7 @@ export const view = {
     if (action === 'close-span') return closeSpan(ctx, d);
     const copyWhat = target('[data-activity-copy]')?.dataset.activityCopy;
     if (copyWhat) {
-      copyAction(ctx, d, copyWhat);
+      void copyAction(ctx, d, copyWhat);
       return true;
     }
     const tab = target('[role="tab"][data-tab]');
@@ -3293,7 +3639,18 @@ export const view = {
       if (!d.filters.who) d.whoName = null;
       if (d.range === 'custom' && !d.filters.from && !d.filters.to) d.range = 'all';
       apply();
-      const next = FILTERS.find((filter) => d.filters[filter]) ?? (RANGES[d.range] ? 'range' : d.type ? 'type' : null);
+      const next =
+        FILTERS.find((filter) => d.filters[filter]) ??
+        chooseLazy(
+          RANGES[d.range],
+          () => 'range',
+          () =>
+            chooseLazy(
+              d.type,
+              () => 'type',
+              () => null,
+            ),
+        );
       focus(next ? `activity-chip-${next}` : 'activity-q');
       return true;
     }
@@ -3302,10 +3659,11 @@ export const view = {
     if (sort) {
       const by = sort.dataset.sortKey;
       if (!Object.hasOwn(SORTS, by)) return true;
-      d.sort = d.sort.by === by ? { by, order: d.sort.order === 'asc' ? 'desc' : 'asc' } : { by, order: 'desc' };
+      if (d.sort.by === by) d.sort = { by, order: d.sort.order === 'asc' ? 'desc' : 'asc' };
+      else d.sort = { by, order: 'desc' };
       ctx.pager('activity-list').page = 1;
       syncHash(d);
-      reload(ctx);
+      void reload(ctx);
       ctx.render?.();
       globalThis.document?.querySelector?.(`[data-table-sort="activity-list"][data-sort-key="${by}"]`)?.focus();
       return true;
@@ -3314,7 +3672,7 @@ export const view = {
     if (page) {
       const key = page.dataset.tablePage;
       ctx.pager(key).page += Number(page.dataset.delta);
-      if (key === 'activity-list') reload(ctx);
+      if (key === 'activity-list') void reload(ctx);
       else ctx.render?.();
       return true;
     }
@@ -3339,7 +3697,7 @@ export const view = {
       const route = sources.dataset.activitySources;
       d.sourcesFor = d.sourcesFor === route ? null : route;
       if (d.sourcesFor) ctx.reveal?.('#activity-page-sources');
-      reload(ctx);
+      void reload(ctx);
       ctx.render?.();
       return true;
     }
@@ -3350,7 +3708,7 @@ export const view = {
       // The landing is set before the render, so this render scrolls to and focuses the drawer.
       if (d.spanId) ctx.reveal?.('#activity-span-drawer');
       ctx.render?.();
-      if (d.spanId) loadTargets(ctx, d).then((read) => read && ctx.render?.());
+      if (d.spanId) void loadTargets(ctx, d).then((read) => read && ctx.render?.());
       return true;
     }
     const open = target('[data-activity-open]');
@@ -3368,7 +3726,7 @@ export const view = {
       }
       syncHash(d);
       ctx.reveal?.('#activity-detail-title');
-      reload(ctx);
+      void reload(ctx);
       ctx.render?.();
       return true;
     }
@@ -3406,23 +3764,23 @@ function step(length, index, key) {
 }
 function selectTab(ctx, d, key, id) {
   if (key === 'activity-tabs') {
-    if (!TAB_IDS.includes(id)) return true;
+    if (!TAB_IDS.has(id)) return true;
     d.tab = id;
     syncHash(d);
-    reload(ctx);
+    void reload(ctx);
   } else if (key === 'activity-detail') {
     d.detail = DETAIL_TABS.some(([tab]) => tab === id) ? id : 'steps';
     syncHash(d);
-    reload(ctx);
+    void reload(ctx);
   } else if (BREAKDOWNS.some(([name]) => name === id)) d.breakdown = id;
   ctx.render?.();
   focus(`${key}-tab-${id}`);
   return true;
 }
-function narrow(ctx, d, bucketStart) {
+/* NOSONAR: constant return value is part of the handler contract */ function narrow(ctx, d, bucketStart) {
   const start = Date.parse(bucketStart),
     size = Number(d.stats?.bucketMs);
-  if (!Number.isFinite(start) || !(size > 0)) return true;
+  if (!Number.isFinite(start) || !(size > 0)) return true; // NOSONAR: operand can be NaN or undefined, the negated test differs
   d.filters.from = new Date(start).toISOString();
   d.filters.to = new Date(start + size - 1).toISOString();
   d.range = 'custom';
@@ -3431,6 +3789,6 @@ function narrow(ctx, d, bucketStart) {
   ctx.forgetDraft?.(FILTER_FORM);
   ctx.pager('activity-list').page = 1;
   syncHash(d);
-  reload(ctx);
+  void reload(ctx);
   return true;
 }

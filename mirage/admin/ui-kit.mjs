@@ -5,6 +5,17 @@ const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 export const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ESCAPES[char]);
 const e = escapeHtml;
 
+/** Derive a scenario identifier from the already-trimmed display name. */
+export function scenarioSlug(name) {
+  const value = name
+    .toLowerCase()
+    .replace(/[^\w.-]+/g, '-')
+    .replace(/^-+/, '');
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '-') end--;
+  return value.slice(0, end).slice(0, 80);
+}
+
 const TONES = new Set(['ok', 'warn', 'bad', 'info', 'neutral']);
 const tone = (value) => (TONES.has(value) ? value : 'neutral');
 export const STATUS_TONES = Object.freeze({
@@ -60,8 +71,11 @@ export function tableTools(key, result, { searchable = true, sizes = PAGE_SIZES 
   const options = [...new Set([...sizes, size])]
     .map((value) => `<option value="${e(value)}"${value === size ? ' selected' : ''}>${e(value)}</option>`)
     .join('');
+  const searchBox = searchable
+    ? `<input type="search" data-table-search="${k}" aria-label="Search ${k}" placeholder="Filter ${k}…" value="${e(search)}">`
+    : '';
   return (
-    `<div class="ui-table-tools">${searchable ? `<input type="search" data-table-search="${k}" aria-label="Search ${k}" placeholder="Filter ${k}…" value="${e(search)}">` : ''}` +
+    `<div class="ui-table-tools">${searchBox}` +
     `<span class="ui-table-count">${e(total)} results · Page ${e(page)} of ${e(pages)}</span>` +
     `<label class="ui-table-size">Rows <select data-table-size="${k}" aria-label="Rows per page for ${k}">${options}</select></label>` +
     `<div class="ui-pager"><button type="button" class="ui-button ui-small" data-table-page="${k}" data-delta="-1"${page <= 1 ? ' disabled' : ''}>Previous</button>` +
@@ -92,35 +106,50 @@ export function table({
   const rows = items ?? result?.items ?? [];
   const tools = result ? tableTools(key, result, { searchable }) : '';
   const empty = result ? result.total === 0 : rows.length === 0;
-  if (empty)
-    return `${tools}<p class="ui-empty" data-table-empty="${e(key)}">${e(result?.search ? `No results match “${result.search}”.` : emptyText)}</p>`;
+  if (empty) {
+    const message = result?.search ? `No results match “${result.search}”.` : emptyText;
+    return `${tools}<p class="ui-empty" data-table-empty="${e(key)}">${e(message)}</p>`;
+  }
   const cls = (column) => (column.className ? ` class="${e(column.className)}"` : '');
+  const captionHtml = caption ? `<caption class="ui-sr-only">${e(caption)}</caption>` : '';
+  const headCell = (column) => {
+    const sortAttr = column.sort ? ` aria-sort="${e(column.sort)}"` : '';
+    const infoHtml = column.info ? info({ label: `About ${column.label}`, text: column.info }) : '';
+    return `<th scope="col"${cls(column)}${sortAttr}>${column.head ?? e(column.label)}${infoHtml}</th>`;
+  };
+  const bodyRow = (item) => {
+    const rowAttributes = attributes(rowAttrs?.(item));
+    const cells = columns.map((column) => `<td${cls(column)}>${column.render(item) ?? ''}</td>`).join('');
+    return `<tr${rowAttributes}>${cells}</tr>${afterRow?.(item) ?? ''}`;
+  };
   return (
-    `${tools}<div class="ui-table-wrap"><table class="ui-table" data-table="${e(key)}">${caption ? `<caption class="ui-sr-only">${e(caption)}</caption>` : ''}` +
-    `<thead><tr>${columns.map((column) => `<th scope="col"${cls(column)}${column.sort ? ` aria-sort="${e(column.sort)}"` : ''}>${column.head ?? e(column.label)}${column.info ? info({ label: `About ${column.label}`, text: column.info }) : ''}</th>`).join('')}</tr></thead>` +
-    `<tbody>${rows.map((item) => `<tr${attributes(rowAttrs?.(item))}>${columns.map((column) => `<td${cls(column)}>${column.render(item) ?? ''}</td>`).join('')}</tr>${afterRow?.(item) ?? ''}`).join('')}</tbody></table></div>`
+    `${tools}<div class="ui-table-wrap"><table class="ui-table" data-table="${e(key)}">${captionHtml}` +
+    `<thead><tr>${columns.map(headCell).join('')}</tr></thead>` +
+    `<tbody>${rows.map(bodyRow).join('')}</tbody></table></div>`
   );
 }
 
 export function section({ key, title, summary = '', open = false, body = '', help: helpValue }) {
   const helpHtml = helpValue && typeof helpValue === 'object' ? help(helpValue) : (helpValue ?? '');
   const content = typeof body === 'function' ? body() : body;
+  const summaryHtml = summary ? `<span class="ui-section-summary">${e(summary)}</span>` : '';
   return (
     `<details class="ui-section" data-ui-section="${e(key)}"${open ? ' open' : ''}><summary><span class="ui-section-title">${e(title)}</span>` +
-    `${summary ? `<span class="ui-section-summary">${e(summary)}</span>` : ''}</summary><div class="ui-section-body">${helpHtml}${content ?? ''}</div></details>`
+    `${summaryHtml}</summary><div class="ui-section-body">${helpHtml}${content ?? ''}</div></details>`
   );
 }
 
-const docMarkup = (doc) =>
-  doc?.path
-    ? doc.href
-      ? `<a class="ui-doc" href="${e(doc.href)}" target="_blank" rel="noreferrer">${e(doc.label)}</a> <code>${e(doc.path)}</code>`
-      : `<code>${e(doc.path)}</code>`
-    : '';
+const docMarkup = (doc) => {
+  if (!doc?.path) return '';
+  if (!doc.href) return `<code>${e(doc.path)}</code>`;
+  return `<a class="ui-doc" href="${e(doc.href)}" target="_blank" rel="noreferrer">${e(doc.label)}</a> <code>${e(doc.path)}</code>`;
+};
 
 export function help({ id, text, doc } = {}) {
   const link = docMarkup(doc);
-  return `<p class="ui-help"${id ? ` id="${e(id)}"` : ''}>${e(text)}${link ? ` ${link}` : ''}</p>`;
+  const idAttr = id ? ` id="${e(id)}"` : '';
+  const linkHtml = link ? ' ' + link : '';
+  return `<p class="ui-help"${idAttr}>${e(text)}${linkHtml}</p>`;
 }
 
 /**
@@ -130,11 +159,19 @@ export function help({ id, text, doc } = {}) {
 export function info({ id, label = 'More information', text, steps = [], example, docs = [] } = {}) {
   const links = docs.map(docMarkup).filter(Boolean);
   if (!text && !steps.length && !example && !links.length) return '';
+  const describedBy = id ? ` aria-describedby="${e(id)}"` : '';
+  const popId = id ? ` id="${e(id)}"` : '';
+  const textHtml = text ? `<span class="ui-info-text">${e(text)}</span>` : '';
+  const exampleHtml = example ? `<code class="ui-info-example">${e(example)}</code>` : '';
+  const linksHtml = links.length ? `<span class="ui-info-docs">${links.join(' · ')}</span>` : '';
+  const stepsHtml = steps
+    .map((step, index) => '<span class="ui-info-step">' + (index + 1) + '. ' + e(step) + '</span>')
+    .join('');
   return (
-    `<span class="ui-info"><button type="button" class="ui-info-button" aria-label="${e(label)}"${id ? ` aria-describedby="${e(id)}"` : ''}>i</button>` +
-    `<span class="ui-info-pop" role="tooltip"${id ? ` id="${e(id)}"` : ''}>${text ? `<span class="ui-info-text">${e(text)}</span>` : ''}` +
-    `${steps.map((step, index) => `<span class="ui-info-step">${index + 1}. ${e(step)}</span>`).join('')}` +
-    `${example ? `<code class="ui-info-example">${e(example)}</code>` : ''}${links.length ? `<span class="ui-info-docs">${links.join(' · ')}</span>` : ''}</span></span>`
+    `<span class="ui-info"><button type="button" class="ui-info-button" aria-label="${e(label)}"${describedBy}>i</button>` +
+    `<span class="ui-info-pop" role="tooltip"${popId}>${textHtml}` +
+    `${stepsHtml}` +
+    `${exampleHtml}${linksHtml}</span></span>`
   );
 }
 
@@ -158,7 +195,8 @@ export function leadHelp({ id, label = 'this section', text, steps = [], example
     example,
     docs: doc?.path ? [doc] : [],
   });
-  return lead || more ? `<p class="ui-help"${id ? ` id="${e(id)}"` : ''}>${e(lead)}${more}</p>` : '';
+  const idAttr = id ? ` id="${e(id)}"` : '';
+  return lead || more ? `<p class="ui-help"${idAttr}>${e(lead)}${more}</p>` : '';
 }
 
 /** Visible field help; give the control `aria-describedby="<id>-help"`. */
@@ -174,27 +212,37 @@ export const fieldHelp = (id, text) =>
 /** A view guide: `intro` stays visible; `details` (more text), steps, example and doc links sit under How this works. */
 export function guide({ key, title, intro, details, steps = [], example, docs = [] }) {
   const links = docs.map(docMarkup).filter(Boolean);
-  const more =
-    details || steps.length || example || links.length
-      ? `<details class="ui-guide-more" data-ui-section="guide:${e(key)}"><summary>How this works</summary>` +
-        `${details ? `<p class="ui-guide-details">${e(details)}</p>` : ''}${steps.length ? `<ol>${steps.map((step) => `<li>${e(step)}</li>`).join('')}</ol>` : ''}` +
-        `${example ? `<pre class="ui-example">${e(example)}</pre>` : ''}${links.length ? `<p class="ui-guide-docs">${links.join(' · ')}</p>` : ''}</details>`
-      : '';
-  return `<section class="ui-guide" data-ui-guide="${e(key)}">${title ? `<p class="ui-guide-title">${e(title)}</p>` : ''}<p class="ui-guide-intro">${e(intro)}</p>${more}</section>`;
+  let more = '';
+  if (details || steps.length || example || links.length) {
+    const detailsHtml = details ? `<p class="ui-guide-details">${e(details)}</p>` : '';
+    const stepItems = steps.map((step) => '<li>' + e(step) + '</li>').join('');
+    const stepsHtml = steps.length ? `<ol>${stepItems}</ol>` : '';
+    const exampleHtml = example ? `<pre class="ui-example">${e(example)}</pre>` : '';
+    const linksHtml = links.length ? `<p class="ui-guide-docs">${links.join(' · ')}</p>` : '';
+    more =
+      `<details class="ui-guide-more" data-ui-section="guide:${e(key)}"><summary>How this works</summary>` +
+      `${detailsHtml}${stepsHtml}` +
+      `${exampleHtml}${linksHtml}</details>`;
+  }
+  const titleHtml = title ? `<p class="ui-guide-title">${e(title)}</p>` : '';
+  return `<section class="ui-guide" data-ui-guide="${e(key)}">${titleHtml}<p class="ui-guide-intro">${e(intro)}</p>${more}</section>`;
 }
 
 /** rows: `[[label, valueHtml, { mono }]]`; values are trusted markup (escape plain text with `escapeHtml`). */
-export const kv = (rows) =>
-  `<dl class="ui-kv">${(rows ?? []).map(([label, valueHtml, options]) => `<div class="ui-kv-row"><dt>${e(label)}</dt><dd${options?.mono ? ' class="ui-mono"' : ''}>${valueHtml ?? ''}</dd></div>`).join('')}</dl>`;
+const kvRow = ([label, valueHtml, options]) => {
+  const monoClass = options?.mono ? ' class="ui-mono"' : '';
+  return `<div class="ui-kv-row"><dt>${e(label)}</dt><dd${monoClass}>${valueHtml ?? ''}</dd></div>`;
+};
+export const kv = (rows) => `<dl class="ui-kv">${(rows ?? []).map(kvRow).join('')}</dl>`;
 
-export const tiles = (items) =>
-  `<div class="ui-tiles">${(items ?? [])
-    .map(
-      (item) =>
-        `<div class="ui-tile ui-tone-${tone(item.tone)}"><span class="ui-tile-label">${e(item.label)}</span>` +
-        `<strong class="ui-tile-value">${e(item.value)}</strong>${item.detail ? `<span class="ui-tile-detail">${e(item.detail)}</span>` : ''}</div>`,
-    )
-    .join('')}</div>`;
+const tileHtml = (item) => {
+  const detailHtml = item.detail ? `<span class="ui-tile-detail">${e(item.detail)}</span>` : '';
+  return (
+    `<div class="ui-tile ui-tone-${tone(item.tone)}"><span class="ui-tile-label">${e(item.label)}</span>` +
+    `<strong class="ui-tile-value">${e(item.value)}</strong>${detailHtml}</div>`
+  );
+};
+export const tiles = (items) => `<div class="ui-tiles">${(items ?? []).map(tileHtml).join('')}</div>`;
 
 export const notice = (text, toneName = 'info') => `<p class="ui-notice ui-tone-${tone(toneName)}">${e(text)}</p>`;
 
@@ -212,8 +260,10 @@ export function docLink(path, docs) {
   const text = String(path ?? '');
   const [file, anchor] = text.split('#');
   const entry = Object.values(docs ?? {}).find((item) => item?.path === file);
+  let href = null;
+  if (entry?.href) href = `${entry.href}${anchor ? '#' + anchor : ''}`;
   return {
-    href: entry?.href ? `${entry.href}${anchor ? `#${anchor}` : ''}` : null,
+    href,
     label: entry?.label ?? titleCase(file),
     path: text,
   };
@@ -245,17 +295,24 @@ const unit = (value) => Math.min(1, Math.max(0, Number(value) || 0));
 export function bar({ offset = 0, width = 0, className = '', marks = [], label = '' }) {
   const w = Math.max(3, Math.round(unit(width) * 1000)),
     x = Math.min(Math.round(unit(offset) * 1000), 1000 - w);
+  const fillClass = className ? ` ${e(className)}` : '';
+  const markHtml = marks
+    .map((mark) => {
+      const markX = Math.min(998, Math.round(unit(mark) * 1000));
+      return `<rect class="ui-bar-mark" x="${markX}" y="0" width="2" height="12"></rect>`;
+    })
+    .join('');
   return (
     `<svg class="ui-bar" viewBox="0 0 1000 12" preserveAspectRatio="none" role="img" aria-label="${e(label)}" focusable="false">` +
-    `<rect class="ui-bar-track" width="1000" height="12"></rect><rect class="ui-bar-fill${className ? ` ${e(className)}` : ''}" x="${x}" y="1" width="${w}" height="10"></rect>` +
-    `${marks.map((mark) => `<rect class="ui-bar-mark" x="${Math.min(998, Math.round(unit(mark) * 1000))}" y="0" width="2" height="12"></rect>`).join('')}</svg>`
+    `<rect class="ui-bar-track" width="1000" height="12"></rect><rect class="ui-bar-fill${fillClass}" x="${x}" y="1" width="${w}" height="10"></rect>` +
+    `${markHtml}</svg>`
   );
 }
 
 // One time format for every `/_sim/` table: local `HH:MM:SS.mmm`, the date and UTC on hover, the zone named once.
 const pad = (value, width = 2) => String(value).padStart(width, '0');
 const dateOf = (value) => {
-  const at = new Date(typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : (value ?? NaN));
+  const at = new Date(typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : (value ?? Number.NaN));
   return value === '' || value === null || value === undefined || Number.isNaN(at.getTime()) ? null : at;
 };
 /** Local wall clock `HH:MM:SS.mmm` of an ISO time or epoch milliseconds; '' for anything unreadable. */
@@ -275,7 +332,8 @@ export const time = (value) => {
   const at = dateOf(value);
   if (!at) return '—';
   const local = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${clock(at)}`;
-  return `<time class="ui-mono" datetime="${e(at.toISOString())}" title="${e(`${local} ${utcOffset(at)} · ${at.toISOString()}`)}">${e(clock(at))}</time>`;
+  const title = `${local} ${utcOffset(at)} · ${at.toISOString()}`;
+  return `<time class="ui-mono" datetime="${e(at.toISOString())}" title="${e(title)}">${e(clock(at))}</time>`;
 };
 /** The one line that names the zone of every time on a page. */
 export const timeZoneNote = () => `Times are local (${utcOffset()}); hover a time for its date and UTC.`;
@@ -286,14 +344,16 @@ export function chips(value) {
   if (typeof value === 'string') return value;
   const items = value?.items ?? [];
   if (!items.length) return '';
-  return `<div class="ui-chips" role="group" aria-label="Active filters">${items
+  const chipItems = items
     .map(
       (item) =>
         `<button type="button" class="ui-chip" aria-label="Remove filter ${e(item.label)}"${attributes(item.attrs)}>${e(item.label)} <span aria-hidden="true">×</span></button>`,
     )
-    .join(
-      '',
-    )}${value.clear ? `<button type="button" class="ui-link-button"${attributes(value.clear)}>Clear all</button>` : ''}</div>`;
+    .join('');
+  const clearHtml = value.clear
+    ? `<button type="button" class="ui-link-button"${attributes(value.clear)}>Clear all</button>`
+    : '';
+  return `<div class="ui-chips" role="group" aria-label="Active filters">${chipItems}${clearHtml}</div>`;
 }
 /**
  * The one page chrome of a view: the visually hidden H1 (focus target), the view's (i) (the shell moves it next to the
@@ -311,9 +371,11 @@ export function pageChrome({ breadcrumb = {}, help: about, actions = '', filters
           docs: about.docs ?? [],
         }).replace('<span class="ui-info">', '<span class="ui-info ui-chrome-help" data-chrome-help>')
       : '';
-  const toggle = filters?.drawerId
-    ? `<button type="button" class="ui-button ui-small ui-filter-toggle" data-filter-toggle="${e(filters.drawerId)}" aria-controls="${e(filters.drawerId)}" aria-expanded="false">${e(filters.label ?? 'Filters')}${Number(filters.count) > 0 ? `<span class="ui-filter-count"> · ${e(filters.count)}</span>` : ''}</button>`
-    : '';
+  let toggle = '';
+  if (filters?.drawerId) {
+    const countHtml = Number(filters.count) > 0 ? `<span class="ui-filter-count"> · ${e(filters.count)}</span>` : '';
+    toggle = `<button type="button" class="ui-button ui-small ui-filter-toggle" data-filter-toggle="${e(filters.drawerId)}" aria-controls="${e(filters.drawerId)}" aria-expanded="false">${e(filters.label ?? 'Filters')}${countHtml}</button>`;
+  }
   const bar =
     summary || actions || toggle
       ? `<div class="ui-page-toolbar" role="toolbar" aria-label="${e(page)} actions"><span class="ui-page-summary">${e(summary)}</span><span class="ui-page-actions">${actions}${toggle}</span></div>`
@@ -323,10 +385,11 @@ export function pageChrome({ breadcrumb = {}, help: about, actions = '', filters
 /** The right-hand filter drawer a `pageChrome` Filters toggle opens; `body`/`footer` are trusted markup. */
 export function filterDrawer({ id, title = 'Filters', body = '', footer = '' }) {
   const k = e(id);
+  const footHtml = footer ? `<div class="ui-filter-drawer-foot">${footer}</div>` : '';
   return (
     `<aside class="ui-filter-drawer" id="${k}" aria-labelledby="${k}-title" hidden><div class="ui-filter-drawer-head"><h2 id="${k}-title">${e(title)}</h2>` +
     `<button type="button" class="ui-button ui-small" data-filter-drawer-close="${k}">Close</button></div><div class="ui-filter-drawer-body">${body}</div>` +
-    `${footer ? `<div class="ui-filter-drawer-foot">${footer}</div>` : ''}</aside>`
+    `${footHtml}</aside>`
   );
 }
 
@@ -338,9 +401,12 @@ export function tableFoot(key, result, { actions = '', sizes = PAGE_SIZES } = {}
   const options = [...new Set([...sizes, size])]
     .map((value) => `<option value="${e(value)}"${value === size ? ' selected' : ''}>${e(value)}</option>`)
     .join('');
+  const actionsHtml = actions ? `<div class="ui-table-foot-actions">${actions}</div>` : '';
+  const noun = total === 1 ? 'result' : 'results';
+  const pageHtml = pages > 1 ? ` · Page ${e(page)} of ${e(pages)}` : '';
   return (
-    `<div class="ui-table-foot">${actions ? `<div class="ui-table-foot-actions">${actions}</div>` : ''}` +
-    `<span class="ui-table-count">${e(total)} ${total === 1 ? 'result' : 'results'}${pages > 1 ? ` · Page ${e(page)} of ${e(pages)}` : ''}</span>` +
+    `<div class="ui-table-foot">${actionsHtml}` +
+    `<span class="ui-table-count">${e(total)} ${noun}${pageHtml}</span>` +
     `<label class="ui-table-size">Rows <select data-table-size="${k}" aria-label="Rows per page for ${k}">${options}</select></label>` +
     `<div class="ui-pager"><button type="button" class="ui-button ui-small" data-table-page="${k}" data-delta="-1"${page <= 1 ? ' disabled' : ''}>Previous</button>` +
     `<button type="button" class="ui-button ui-small" data-table-page="${k}" data-delta="1"${page >= pages ? ' disabled' : ''}>Next</button></div>` +
@@ -350,10 +416,19 @@ export function tableFoot(key, result, { actions = '', sizes = PAGE_SIZES } = {}
 /** A column header that sorts the table (aria-sort follows `sort`). */
 const sortHead = (key, column, sort) => {
   const active = sort?.key === column.sortKey ? sort.order : null;
+  let ariaSort = 'none';
+  let mark = '↕';
+  if (active === 'asc') {
+    ariaSort = 'ascending';
+    mark = '▲';
+  } else if (active === 'desc') {
+    ariaSort = 'descending';
+    mark = '▼';
+  }
   return {
     ...column,
-    sort: active === 'asc' ? 'ascending' : active === 'desc' ? 'descending' : 'none',
-    head: `<button type="button" class="ui-sort" data-table-sort="${e(key)}" data-sort-key="${e(column.sortKey)}">${e(column.label)}<span class="ui-sort-mark" aria-hidden="true">${active === 'asc' ? '▲' : active === 'desc' ? '▼' : '↕'}</span></button>`,
+    sort: ariaSort,
+    head: `<button type="button" class="ui-sort" data-table-sort="${e(key)}" data-sort-key="${e(column.sortKey)}">${e(column.label)}<span class="ui-sort-mark" aria-hidden="true">${mark}</span></button>`,
   };
 };
 /**
@@ -383,10 +458,12 @@ export function dataTable({
   const filter = filters ? columnFilters(id, caption, heads, filters) : null;
   // `bar: false`: the page's main list, whose search box and Filters sit in the page toolbar row (tableSearch,
   // filtersToggle); its chips and drawer stay here.
-  const bar =
-    inBar && (search || toolbar || filter)
-      ? `<div class="ui-table-bar">${search ? tableSearch(id, result?.search) : ''}${filter?.toggle ?? ''}${toolbar ? `<span class="ui-table-bar-actions">${toolbar}</span>` : ''}</div>${filter?.chips ?? ''}`
-      : (filter?.chips ?? '');
+  let bar = filter?.chips ?? '';
+  if (inBar && (search || toolbar || filter)) {
+    const searchHtml = search ? tableSearch(id, result?.search) : '';
+    const actionsHtml = toolbar ? `<span class="ui-table-bar-actions">${toolbar}</span>` : '';
+    bar = `<div class="ui-table-bar">${searchHtml}${filter?.toggle ?? ''}${actionsHtml}</div>${filter?.chips ?? ''}`;
+  }
   const body =
     !rows.length && emptyHtml && !result?.search
       ? `<div class="ui-empty-guide" data-table-empty="${k}">${emptyHtml}</div>`
@@ -410,8 +487,10 @@ export const filtersId = (id) => `${String(id).replace(/[^a-z0-9_-]+/gi, '-')}-f
 export const tableSearch = (id, value = '') =>
   `<input type="search" data-table-search="${e(id)}" aria-label="Search ${e(id)}" placeholder="Search…" value="${e(value ?? '')}">`;
 /** The Filters toggle of a table's column filters, with the number in force. */
-export const filtersToggle = (id, count = 0) =>
-  `<button type="button" class="ui-button ui-small ui-table-filters" data-filter-toggle="${e(filtersId(id))}" aria-expanded="false" aria-controls="${e(filtersId(id))}">Filters${count ? ` · ${count}` : ''}</button>`;
+export const filtersToggle = (id, count = 0) => {
+  const badge = count ? ` · ${count}` : '';
+  return `<button type="button" class="ui-button ui-small ui-table-filters" data-filter-toggle="${e(filtersId(id))}" aria-expanded="false" aria-controls="${e(filtersId(id))}">Filters${badge}</button>`;
+};
 /**
  * Column filters of a table with more than one sortable data column (D-M-11): "Filters · n" in the bar, one text box
  * per column in a drawer (the shell moves it beside the page and applies the form), chips for the active ones.
@@ -480,10 +559,22 @@ export function sortItems(items, columns, sort) {
   });
 }
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" };
+function separateTags(text) {
+  let cursor = 0;
+  let result = '';
+  while (cursor < text.length) {
+    const start = text.indexOf('<', cursor);
+    if (start < 0) break;
+    const end = text.indexOf('>', start + 1);
+    if (end < 0) break;
+    result += text.slice(cursor, start) + ' ';
+    cursor = end + 1;
+  }
+  return result + text.slice(cursor);
+}
 /** The visible text of a cell's markup (sorting by what the row shows). */
 const cellText = (html) =>
-  String(html ?? '')
-    .replace(/<[^>]*>/g, ' ')
+  separateTags(String(html ?? ''))
     .replace(/&(amp|lt|gt|quot|#39);/g, (_, name) => ENTITIES[name])
     .replace(/\s+/g, ' ')
     .trim();

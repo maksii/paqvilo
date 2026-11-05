@@ -97,6 +97,34 @@ test('table renders data-table, caption, safe row attributes and an empty state'
   );
 });
 
+test('table evaluates row attributes before cells and trailing markup', () => {
+  const calls = [];
+  const html = table({
+    key: 'invented',
+    items: [{ value: 'initial' }],
+    columns: [
+      {
+        label: 'Value',
+        render: (item) => {
+          calls.push('cell');
+          return item.value;
+        },
+      },
+    ],
+    rowAttrs: (item) => {
+      calls.push('attributes');
+      item.value = 'prepared';
+      return { 'data-value': item.value };
+    },
+    afterRow: (item) => {
+      calls.push('after');
+      return `<p>${item.value}</p>`;
+    },
+  });
+  assert.deepEqual(calls, ['attributes', 'cell', 'after']);
+  assert.match(html, /<tr data-value="prepared"><td>prepared<\/td><\/tr><p>prepared<\/p>/);
+});
+
 test('section is collapsed by default and opens on request', () => {
   const closed = section({
     key: 'storage',

@@ -84,6 +84,12 @@ test('standalone code components require a server form without native basic form
   assert.doesNotMatch(regions.content, /xrm-adx\/js\/webform\.js/);
 });
 
+// @test-kind security: request-derived form actions remain within their quoted HTML attribute.
+test('escapes a request-derived WebForms action as an HTML attribute', () => {
+  const html = webFormsForm({ action: '/form?x="<img src=x>&y=1', content: '' });
+  assert.ok(html.startsWith('<form method="post" action="/form?x=&quot;&lt;img src=x&gt;&amp;y=1"'));
+});
+
 test('the WebForms server form carries the native hidden fields, postback stub and form scripts in order', () => {
   const html = webFormsForm({
     action: '/contact-us/?a=1&b="x"',
@@ -366,7 +372,7 @@ test('native platform paths are served from local equivalents unless the export 
   const expectations = [
     ['/js/jquery.blockUI.js', /application\/javascript/, /\$\.blockUI = function/],
     ['/JS/JQUERY.BLOCKUI.JS', /application\/javascript/, /\$\.unblockUI = function/],
-    ['/xrm-adx/js/webform.js', /application\/javascript/, /window\.__ppXrmWebForm/],
+    ['/xrm-adx/js/webform.js', /application\/javascript/, /(?:window|globalThis)\.__ppXrmWebForm/],
     ['/xrm-adx/js/radcaptcha.js', /application\/javascript/, /onClientLoad/],
     ['/xrm-adx/js/crmentityformview.js', /application\/javascript/, /validateRequiredField/],
     ['/xrm-adx/js/crmentityformview-datetime.js', /application\/javascript/, /initializeDateControls/],

@@ -94,53 +94,55 @@ const requiredError = (table, column) =>
 
 function parseSteps(nodes, client, depth = 0) {
   if (depth >= MAX_DEPTH) unsupported(`The business rule nests deeper than ${MAX_DEPTH} condition branches.`);
-  return nodes
-    .map((node) => {
-      const kind = localName(node.name);
-      if (CLIENT_STEPS.has(kind)) {
-        client.push(kind);
-        return null;
-      }
-      if (!SERVER_STEPS.has(kind)) unsupported(`Business rule step <${node.name}> is not supported.`);
-      const column = attr(node, 'Attribute')?.trim().toLowerCase();
-      if (kind === 'conditionbranchstep') {
-        const children = elements(node);
-        const conditions = children
-          .filter((item) => localName(item.name) === 'condition')
-          .map((item) => {
-            const operator = String(attr(item, 'Operator') ?? 'eq').toLowerCase();
-            if (!OPERATORS.has(operator)) unsupported(`Condition operator '${operator}' is not supported.`);
-            const attribute = attr(item, 'Attribute')?.trim().toLowerCase();
-            if (!attribute) unsupported('A condition names no Attribute.');
-            return { attribute, operator, value: valueOf(attr(item, 'Value')) };
-          });
-        if (!conditions.length) unsupported('A ConditionBranchStep has no Condition.');
-        const branch = (name) => elements(children.find((item) => localName(item.name) === name));
-        const logic = String(attr(node, 'Logic') ?? 'and').toLowerCase();
-        if (logic !== 'and' && logic !== 'or') unsupported(`Condition logic '${logic}' is not supported.`);
-        for (const item of children)
-          if (!['condition', 'then', 'else'].includes(localName(item.name)))
-            unsupported(`<${item.name}> is not part of a ConditionBranchStep.`);
-        return {
-          kind: 'condition',
-          logic,
-          conditions,
-          then: parseSteps(branch('then'), client, depth + 1),
-          else: parseSteps(branch('else'), client, depth + 1),
-        };
-      }
-      if (kind === 'setmessagestep')
-        return { kind: 'error', message: attr(node, 'Message') ?? node.text.trim(), column: column ?? null };
-      if (!column) unsupported(`<${node.name}> names no Attribute.`);
-      if (kind === 'setfieldrequiredlevelstep')
-        return {
-          kind: 'required',
-          column,
-          required: String(attr(node, 'RequiredLevel') ?? '').toLowerCase() === 'required',
-        };
-      return { kind: kind === 'setdefaultvaluestep' ? 'default' : 'set', column, value: valueOf(attr(node, 'Value')) };
-    })
-    .filter(Boolean);
+  return nodes.map((node) => parseStep(node, client, depth)).filter(Boolean);
+}
+
+function parseStep(node, client, depth) {
+  const kind = localName(node.name);
+  if (CLIENT_STEPS.has(kind)) {
+    client.push(kind);
+    return null;
+  }
+  if (!SERVER_STEPS.has(kind)) unsupported(`Business rule step <${node.name}> is not supported.`);
+  const column = attr(node, 'Attribute')?.trim().toLowerCase();
+  if (kind === 'conditionbranchstep') return parseConditionBranch(node, client, depth);
+  if (kind === 'setmessagestep')
+    return { kind: 'error', message: attr(node, 'Message') ?? node.text.trim(), column: column ?? null };
+  if (!column) unsupported(`<${node.name}> names no Attribute.`);
+  if (kind === 'setfieldrequiredlevelstep')
+    return {
+      kind: 'required',
+      column,
+      required: String(attr(node, 'RequiredLevel') ?? '').toLowerCase() === 'required',
+    };
+  return { kind: kind === 'setdefaultvaluestep' ? 'default' : 'set', column, value: valueOf(attr(node, 'Value')) };
+}
+
+function parseConditionBranch(node, client, depth) {
+  const children = elements(node);
+  const conditions = children.filter((item) => localName(item.name) === 'condition').map(parseCondition);
+  if (!conditions.length) unsupported('A ConditionBranchStep has no Condition.');
+  const branch = (name) => elements(children.find((item) => localName(item.name) === name));
+  const logic = String(attr(node, 'Logic') ?? 'and').toLowerCase();
+  if (logic !== 'and' && logic !== 'or') unsupported(`Condition logic '${logic}' is not supported.`);
+  for (const item of children)
+    if (!['condition', 'then', 'else'].includes(localName(item.name)))
+      unsupported(`<${item.name}> is not part of a ConditionBranchStep.`);
+  return {
+    kind: 'condition',
+    logic,
+    conditions,
+    then: parseSteps(branch('then'), client, depth + 1), // NOSONAR: `then` is a domain property, not a thenable
+    else: parseSteps(branch('else'), client, depth + 1),
+  };
+}
+
+function parseCondition(item) {
+  const operator = String(attr(item, 'Operator') ?? 'eq').toLowerCase();
+  if (!OPERATORS.has(operator)) unsupported(`Condition operator '${operator}' is not supported.`);
+  const attribute = attr(item, 'Attribute')?.trim().toLowerCase();
+  if (!attribute) unsupported('A condition names no Attribute.');
+  return { attribute, operator, value: valueOf(attr(item, 'Value')) };
 }
 
 /** Parses a business rule's XAML into { steps, clientOnly[] } or { unsupported: reason, clientOnly: [] }. */
@@ -189,19 +191,22 @@ function test(condition, row) {
 
 // Applies the steps to the payload (data) and the merged row; collects required columns; throws a rule's error.
 function apply(steps, { data, merged, creating, required }) {
-  for (const step of steps) {
-    if (step.kind === 'condition') {
-      const results = step.conditions.map((condition) => test(condition, merged));
-      const passed = step.logic === 'or' ? results.some(Boolean) : results.every(Boolean);
-      apply(passed ? step.then : step.else, { data, merged, creating, required });
-    } else if (step.kind === 'error') throw ruleError(step.message);
-    else if (step.kind === 'required') {
-      if (step.required) required.add(step.column);
-      else required.delete(step.column);
-    } else if (step.kind === 'set' || (creating && empty(merged[step.column]))) {
-      data[step.column] = step.value;
-      merged[step.column] = step.value;
-    }
+  for (const step of steps) applyBusinessRuleStep(step, { data, merged, creating, required });
+}
+
+function applyBusinessRuleStep(step, context) {
+  const { data, merged, creating, required } = context;
+  if (step.kind === 'condition') {
+    const results = step.conditions.map((condition) => test(condition, merged));
+    const passed = step.logic === 'or' ? results.some(Boolean) : results.every(Boolean);
+    apply(passed ? step.then : step.else, context);
+  } else if (step.kind === 'error') throw ruleError(step.message);
+  else if (step.kind === 'required') {
+    if (step.required) required.add(step.column);
+    else required.delete(step.column);
+  } else if (step.kind === 'set' || (creating && empty(merged[step.column]))) {
+    data[step.column] = step.value;
+    merged[step.column] = step.value;
   }
 }
 
@@ -227,7 +232,10 @@ function ruleOf(row, parsed) {
   const workflowId = bare(row.workflowid);
   const xaml = row.xaml ?? '';
   let entry = parsed.get(workflowId);
-  if (entry?.xaml !== xaml) parsed.set(workflowId, (entry = { xaml, parsed: parseBusinessRule(xaml) }));
+  if (entry?.xaml !== xaml) {
+    entry = { xaml, parsed: parseBusinessRule(xaml) };
+    parsed.set(workflowId, entry);
+  }
   return {
     workflowId,
     name: row.name ?? null,
@@ -390,7 +398,7 @@ function install(api, options = {}) {
     const rules = rulesFor(mapping.logicalName).filter((rule) => rule.scope === 'entity');
     if (!rules.length) return;
     const creating = operation === 'create' || (operation === 'upsert' && !existing);
-    const merged = { ...(existing ?? {}), ...data };
+    const merged = { ...existing, ...data };
     const required = new Set();
     const span = api.store.traces?.enabled ? api.store.traces.current() : null;
     for (const rule of rules)

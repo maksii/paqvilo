@@ -153,8 +153,18 @@ export function mountPersonaPicker(root, report, { filters = {}, onSelect, onFil
       if (target.dataset.personaFacet && target.open && !target.dataset.personaLoaded) {
         const name = target.dataset.personaFacet,
           options = facet(name);
-        target.querySelector('[data-persona-options]').innerHTML =
-          `${options.length > 10 ? `<input type="search" data-persona-facet-search="${name}" aria-label="Find ${name}" placeholder="Find ${name}">` : ''}${options.map((option) => `<label><input type="checkbox" data-persona-filter="${name}" value="${personaHtml(option.value)}"${(state[name] ?? []).includes(option.value) ? ' checked' : ''}><span>${personaHtml(option.label)} <small>(${option.count})</small></span></label>`).join('') || '<p>No values available.</p>'}`;
+        const searchInput =
+          options.length > 10
+            ? `<input type="search" data-persona-facet-search="${name}" aria-label="Find ${name}" placeholder="Find ${name}">`
+            : '';
+        const optionItems =
+          options
+            .map(
+              (option) =>
+                `<label><input type="checkbox" data-persona-filter="${name}" value="${personaHtml(option.value)}"${(state[name] ?? []).includes(option.value) ? ' checked' : ''}><span>${personaHtml(option.label)} <small>(${option.count})</small></span></label>`,
+            )
+            .join('') || '<p>No values available.</p>';
+        target.querySelector('[data-persona-options]').innerHTML = `${searchInput}${optionItems}`;
         target.dataset.personaLoaded = 'true';
       } else if (groupNodes.includes(target) && !active()) openGroups.set(target, target.open);
     },
@@ -182,65 +192,63 @@ export function mountPersonaPicker(root, report, { filters = {}, onSelect, onFil
     else return;
     schedule();
   });
+  const clearSelection = () => {
+    state = { q: '', roles: [], accounts: [], groups: [], tags: [], hideNoRoles: false };
+    syncControls();
+    schedule();
+  };
+  const togglePin = (key) => {
+    const pinned = new Set(preferences.pinned ?? []);
+    if (pinned.has(key)) pinned.delete(key);
+    else pinned.add(key);
+    preferences.pinned = [...pinned];
+    write(storageKey(report), preferences);
+    shortcuts();
+    update();
+  };
+  const showDetails = (key) => {
+    const persona = byKey.get(key),
+      dialog = document.createElement('dialog');
+    dialog.className = 'persona-dialog';
+    dialog.setAttribute('aria-label', `Persona details: ${persona.label ?? persona.name}`);
+    dialog.innerHTML = `<button type="button" class="persona-button persona-dialog-close">Close</button>${personaDetailsView(persona, contexts.get(persona.context))}`;
+    dialog.querySelector('button').addEventListener('click', () => dialog.close());
+    dialog.addEventListener('close', () => dialog.remove(), { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+  };
+  const choosePersona = (key) => {
+    selected = key;
+    for (const node of rows) {
+      const chosen = node.dataset.personaRow === selected;
+      node.dataset.selected = String(chosen);
+      const action = node.querySelector('[data-persona-choose]');
+      if (action) {
+        action.setAttribute('aria-pressed', String(chosen));
+        action.textContent = chosen ? 'Selected' : 'Choose';
+        action.classList.toggle('persona-primary', chosen);
+      }
+    }
+    onSelect?.(byKey.get(selected), selected);
+    root.dispatchEvent(
+      new CustomEvent('persona-selected', { bubbles: true, detail: { persona: byKey.get(selected), key: selected } }),
+    );
+  };
   root.addEventListener('click', (event) => {
     const button = event.target.closest('button');
     if (!button || !root.contains(button)) return;
-    if (button.hasAttribute('data-persona-clear')) {
-      state = { q: '', roles: [], accounts: [], groups: [], tags: [], hideNoRoles: false };
-      syncControls();
-      schedule();
-      return;
-    }
-    if (button.dataset.personaPin) {
-      const key = button.dataset.personaPin,
-        pinned = new Set(preferences.pinned ?? []);
-      if (pinned.has(key)) pinned.delete(key);
-      else pinned.add(key);
-      preferences.pinned = [...pinned];
-      write(storageKey(report), preferences);
-      shortcuts();
-      update();
-      return;
-    }
-    if (button.dataset.personaDetails) {
-      const persona = byKey.get(button.dataset.personaDetails),
-        dialog = document.createElement('dialog');
-      dialog.className = 'persona-dialog';
-      dialog.setAttribute('aria-label', `Persona details: ${persona.label ?? persona.name}`);
-      dialog.innerHTML = `<button type="button" class="persona-button persona-dialog-close">Close</button>${personaDetailsView(persona, contexts.get(persona.context))}`;
-      dialog.querySelector('button').addEventListener('click', () => dialog.close());
-      dialog.addEventListener('close', () => dialog.remove(), { once: true });
-      document.body.append(dialog);
-      dialog.showModal();
-      return;
-    }
-    if (button.dataset.personaChoose) {
-      selected = button.dataset.personaChoose;
-      for (const node of rows) {
-        const chosen = node.dataset.personaRow === selected;
-        node.dataset.selected = String(chosen);
-        const action = node.querySelector('[data-persona-choose]');
-        if (action) {
-          action.setAttribute('aria-pressed', String(chosen));
-          action.textContent = chosen ? 'Selected' : 'Choose';
-          action.classList.toggle('persona-primary', chosen);
-        }
-      }
-      onSelect?.(byKey.get(selected), selected);
-      root.dispatchEvent(
-        new CustomEvent('persona-selected', { bubbles: true, detail: { persona: byKey.get(selected), key: selected } }),
-      );
-    }
+    if (/* NOSONAR: hasAttribute ignores inherited dataset properties */ button.hasAttribute('data-persona-clear'))
+      return clearSelection();
+    if (button.dataset.personaPin) return togglePin(button.dataset.personaPin);
+    if (button.dataset.personaDetails) return showDetails(button.dataset.personaDetails);
+    if (button.dataset.personaChoose) choosePersona(button.dataset.personaChoose);
   });
   const form = root.closest('form');
   form?.addEventListener('submit', (event) => {
     if (mode !== 'signin') return;
-    const key =
-      event.submitter?.name === 'personaKey'
-        ? event.submitter.value
-        : event.submitter?.name === 'contactId'
-          ? `@contact:${event.submitter.value}`
-          : null;
+    let key = null;
+    if (event.submitter?.name === 'personaKey') key = event.submitter.value;
+    else if (event.submitter?.name === 'contactId') key = `@contact:${event.submitter.value}`;
     if (key)
       try {
         sessionStorage.setItem(
@@ -320,5 +328,5 @@ async function enhanceSignIn() {
 }
 if (typeof document !== 'undefined') {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', enhanceSignIn, { once: true });
-  else enhanceSignIn();
+  else void enhanceSignIn(); // NOSONAR: module-level promise chain must not block evaluation
 }

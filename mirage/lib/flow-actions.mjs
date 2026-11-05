@@ -14,14 +14,12 @@ const fail = (message, status = 400, code = 'LocalFlowExpression') => {
   throw new DataError(message, status, code);
 };
 const isMap = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-export const flowValueText = (value) =>
-  value == null
-    ? ''
-    : isExactNumeric(value)
-      ? value.value
-      : typeof value === 'string'
-        ? value
-        : stringifyExactJson(value);
+export const flowValueText = (value) => {
+  if (value == null) return '';
+  if (isExactNumeric(value)) return value.value;
+  if (typeof value === 'string') return value;
+  return stringifyExactJson(value);
+};
 const array = (value, ctx, type) => {
   if (!Array.isArray(value)) fail(`${type} requires a 'from' array.`);
   if (value.length > ctx.maxIterations)
@@ -165,7 +163,7 @@ registerPackExport('flowActions', {
   check(value, packId) {
     if (!isMap(value)) throw new Error(`Data pack ${packId}: flowActions must map action types to functions`);
     for (const [type, handler] of Object.entries(value))
-      if (!/^[A-Za-z][\w]{0,99}$/.test(type) || reserved(type) || typeof handler !== 'function')
+      if (!/^[A-Za-z]\w{0,99}$/.test(type) || reserved(type) || typeof handler !== 'function')
         throw new Error(`Data pack ${packId}: flowActions.${type} must be a function under a new action type`);
   },
 });

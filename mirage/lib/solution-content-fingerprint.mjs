@@ -11,7 +11,11 @@ import { readSolutionAssetEntries, SOLUTION_ASSET_LIMITS } from './dataverse-sol
  */
 const SOLUTION_SIDE_FOLDERS =
   /^(?:workflows|webresources|customapis|fxexpressions|duplicaterules|controls|powerpagecomponents|pluginassemblies)$/i;
-const byName = (left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+const byName = (left, right) => {
+  if (left.name < right.name) return -1;
+  if (left.name > right.name) return 1;
+  return 0;
+};
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const stampOf = (file) => {
   const stat = fs.statSync(file, { bigint: true });
@@ -147,7 +151,11 @@ export function solutionContentFingerprint(layers, { lcid = 1033, files = [], ca
     }
     const entries = new Map([...documents].map(([file, hash]) => [solutionContentPath(layer, file), hash]));
     for (const [name, hash] of sideFileHashes(layer, cache)) if (!entries.has(name)) entries.set(name, hash);
-    const sorted = [...entries].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+    const sorted = [...entries].sort(([left], [right]) => {
+      if (left < right) return -1;
+      if (left > right) return 1;
+      return 0;
+    });
     for (const entry of sorted) digest.update(JSON.stringify(entry));
   }
   return digest.digest('hex');

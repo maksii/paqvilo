@@ -31,7 +31,156 @@ const notFound = (store, entity, id) => {
 };
 const uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const own = (o, k) => o != null && Object.hasOwn(o, k);
-const RESERVED_NAMES = ['constructor', 'prototype', '__proto__'];
+const RESERVED_NAMES = new Set(['constructor', 'prototype', '__proto__']);
+
+function validateGraphReference(key, value, values, { store, localIdentity, authorize }) {
+  const target = store.resolveMapping(value.logical_name);
+  const partition = value.partitionid ?? values[`${key}pid`];
+  const reference = sdkRecordKey(store, value.logical_name, value, partition);
+  const found = store.get(value.logical_name, reference, localIdentity, { skipPluginRead: true });
+  if (found) {
+    authorize(value.logical_name, 'read', found);
+    value.id = found[target.idColumn];
+    if (isElastic(target)) {
+      value.partitionid = found.partitionid ?? null;
+      values[`${key}pid`] = value.partitionid;
+    }
+    return;
+  }
+  if (isElastic(target) && partition == null && !value.keyAttributes) {
+    authorize(value.logical_name, 'read');
+    value.partitionid = null;
+    values[`${key}pid`] = null;
+    return;
+  }
+  fail('Record not found.', 'NotFound', 404);
+}
+
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function validateGraphValue(
+  key,
+  value,
+  entity,
+  values,
+  { store, localIdentity, rawGet, isChoiceList, invalidChoice, authorize },
+) {
+  if (key.endsWith('@odata.bind')) {
+    for (const binding of [value].flat()) {
+      if (binding === null) continue;
+      const match = /^\/?([a-z]\w*)\((.+)\)$/i.exec(binding ?? '');
+      if (!match) fail('Unsupported backend lookup binding.');
+      rawGet(match[1], match[2]);
+    }
+    return;
+  }
+  if (value && typeof value === 'object' && value.logical_name && (value.id || value.keyAttributes)) {
+    validateGraphReference(key, value, values, { store, localIdentity, authorize });
+    return;
+  }
+  if (Array.isArray(value) && isChoiceList(entity, key)) {
+    const options = store.fieldDefinition(entity, key)?.options;
+    if (value.some((option) => invalidChoice(options, option)))
+      fail('Backend choices require source-valid Int32 option values.');
+    return;
+  }
+  if (value && typeof value === 'object' && !isExactNumeric(value))
+    fail('Backend deep writes require an explicit security adapter.');
+}
+
+function queryVirtualRecords({
+  entity,
+  logical,
+  params,
+  unmask,
+  allowed,
+  records,
+  context,
+  virtualRead,
+  store,
+  requestOptions,
+  sdkQuery,
+  localIdentity,
+  responseToken,
+}) {
+  const c = context();
+  const execute = (queryParams) => {
+    const virtual = virtualRead(entity, {
+      request: {
+        select: queryParams.$select ?? null,
+        filter: queryParams.$filter ?? null,
+        orderby: queryParams.$orderby ?? null,
+        top: queryParams.$top == null ? null : Number(queryParams.$top),
+      },
+    });
+    return {
+      value: virtual.rows
+        .filter((row) => !allowed || allowed(row))
+        .map((row) => records.projectInternal(c, logical, row, { unmask, single: false })),
+    };
+  };
+  if (
+    !store.pluginPipeline ||
+    !store.pluginPipelineActive({
+      entity: logical,
+      operation: 'retrievemultiple',
+      bypassStepIds: requestOptions.bypassStepIds,
+      bypassCustomPlugins: requestOptions.bypassCustomPlugins === true,
+    })
+  )
+    return execute(params);
+  return store.retrieveMultipleOperation(
+    logical,
+    sdkQuery ?? odataToSdkQuery(logical, params, store),
+    localIdentity,
+    (query) => {
+      if (!['QueryExpression', 'QueryByAttribute'].includes(query.$type) || query.entityName !== logical)
+        fail('Virtual RetrieveMultiple must retain its bound table and query type.');
+      return execute(sdkQueryParameters(query));
+    },
+    'value',
+    responseToken,
+    {
+      bypassCustomPlugins: requestOptions.bypassCustomPlugins === true,
+      bypassStepIds: requestOptions.bypassStepIds,
+    },
+  );
+}
+
+function runAssociationRecords({
+  records,
+  store,
+  entity,
+  id,
+  relationship,
+  related,
+  associate,
+  awaitIo,
+  effectiveAssociation,
+  localIdentity,
+  savepoint,
+  run,
+  context,
+  internal,
+}) {
+  if (!records) return savepoint(run);
+  if (!uuid.test(id)) fail('SDK association requires a valid source ID.', 'LocalSdkRelationshipInput', 400);
+  const { mapping, navigation, rel } = associationBinding(store, entity, relationship, related, localIdentity);
+  const operation = associate ? 'associate' : 'disassociate';
+  const [logical, rowId, via, ids] =
+    rel.many !== false
+      ? [mapping.logicalName, id, navigation, related.values.map((ref) => ref.id)]
+      : [rel.entity, related.values[0].id, rel.partner, [id]];
+  const entry = associate ? 'associateInternal' : 'disassociateInternal';
+  // records' association steps yield the write's promise without sync (dataverse-records.mjs associationSteps).
+  if (awaitIo)
+    return savepoint(() =>
+      records[entry](context(), logical, rowId, via, ids, { authorized: true, write: run, effectiveAssociation }),
+    );
+  return savepoint(() =>
+    internal(operation, entity, (opts) =>
+      records[entry](context(), logical, rowId, via, ids, { ...opts, write: run, effectiveAssociation }),
+    ),
+  );
+}
 
 /** Preserve typed SDK alternate keys; an elastic primary key is scoped by its opaque partition. */
 export function sdkRecordKey(store, entity, target, partitionId) {
@@ -43,9 +192,9 @@ export function sdkRecordKey(store, entity, target, partitionId) {
       values[mapping.idColumn] = target.id;
     return Object.entries(values)
       .map(([name, value]) => {
-        if (!/^[a-z][\w]*$/i.test(name) || RESERVED_NAMES.includes(name)) fail('Invalid SDK key attribute.');
+        if (!/^[a-z]\w*$/i.test(name) || RESERVED_NAMES.has(name)) fail('Invalid SDK key attribute.');
         if (typeof value === 'string')
-          return `${name}=${uuid.test(value) ? value : `'${value.replaceAll("'", "''")}'`}`;
+          return `${name}=${uuid.test(value) ? value : "'" + value.replaceAll("'", "''") + "'"}`;
         if ((typeof value === 'number' && Number.isFinite(value)) || typeof value === 'boolean')
           return `${name}=${value}`;
         fail('SDK key attributes require scalar values.');
@@ -59,10 +208,10 @@ export function sdkRecordKey(store, entity, target, partitionId) {
 }
 
 // assign and share are the SDK Assign and sharing privileges (prvAssign, prvShare); principals.authorize maps them by name.
-const OPERATIONS = ['read', 'create', 'update', 'delete', 'associate', 'disassociate', 'assign', 'share'];
+const OPERATIONS = new Set(['read', 'create', 'update', 'delete', 'associate', 'disassociate', 'assign', 'share']);
 // The privilege an association checks on the row, as the Web API's $ref routes do.
 const ROLE_OPERATION = { associate: 'appendto', disassociate: 'appendto' };
-const BULK_MESSAGES = ['CreateMultiple', 'UpdateMultiple'];
+const BULK_MESSAGES = new Set(['CreateMultiple', 'UpdateMultiple']);
 const tableName = (value) => /^[a-z][a-z0-9_]*$/i.test(value ?? '');
 const evidenced = (value) => typeof value === 'string' && Boolean(value.trim());
 // A message grant ({ message, operations: ['execute'] }) authorizes executeMessageInternal (dataverse-customapi.mjs).
@@ -79,7 +228,7 @@ const invalidGrant = (grant) =>
   (!grant ||
     !tableName(grant.entity) ||
     !Array.isArray(grant.operations) ||
-    grant.operations.some((op) => !OPERATIONS.includes(op)) ||
+    grant.operations.some((op) => !OPERATIONS.has(op)) ||
     (grant.predicate !== undefined && typeof grant.predicate !== 'function'));
 const invalidBulkTable = (table) =>
   !table ||
@@ -88,7 +237,7 @@ const invalidBulkTable = (table) =>
   !evidenced(table.evidence) ||
   !Array.isArray(table.messages) ||
   !table.messages.length ||
-  table.messages.some((message) => !BULK_MESSAGES.includes(message));
+  table.messages.some((message) => !BULK_MESSAGES.has(message));
 
 // The lower-case message names the organization's sdkmessagefilter rows cover for a table; null without a catalogue.
 const lowerId = (value) => String(value && typeof value === 'object' ? value.id : (value ?? '')).toLowerCase();
@@ -312,38 +461,15 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     option > 2147483647 ||
     (options?.length && !options.some((allowed) => Number(allowed.value) === option));
   const writeGraph = (values, entity) => {
-    for (const [key, value] of Object.entries(values ?? {})) {
-      if (key.endsWith('@odata.bind')) {
-        for (const binding of [value].flat()) {
-          if (binding === null) continue;
-          const match = /^\/?([a-z][\w]*)\((.+)\)$/i.exec(binding ?? '');
-          if (!match) fail('Unsupported backend lookup binding.');
-          rawGet(match[1], match[2]);
-        }
-      } else if (value && typeof value === 'object' && value.logical_name && (value.id || value.keyAttributes)) {
-        const target = store.resolveMapping(value.logical_name);
-        const partition = value.partitionid ?? values[`${key}pid`];
-        const reference = sdkRecordKey(store, value.logical_name, value, partition);
-        const found = store.get(value.logical_name, reference, localIdentity, { skipPluginRead: true });
-        if (found) {
-          authorize(value.logical_name, 'read', found);
-          value.id = found[target.idColumn];
-          if (isElastic(target)) {
-            value.partitionid = found.partitionid ?? null;
-            values[`${key}pid`] = value.partitionid;
-          }
-        } else if (isElastic(target) && partition == null && !value.keyAttributes) {
-          authorize(value.logical_name, 'read');
-          value.partitionid = null;
-          values[`${key}pid`] = null;
-        } else fail('Record not found.', 'NotFound', 404);
-      } else if (Array.isArray(value) && isChoiceList(entity, key)) {
-        const options = store.fieldDefinition(entity, key)?.options;
-        if (value.some((option) => invalidChoice(options, option)))
-          fail('Backend choices require source-valid Int32 option values.');
-      } else if (value && typeof value === 'object' && !isExactNumeric(value))
-        fail('Backend deep writes require an explicit security adapter.');
-    }
+    for (const [key, value] of Object.entries(values ?? {}))
+      validateGraphValue(key, value, entity, values, {
+        store,
+        localIdentity,
+        rawGet,
+        isChoiceList,
+        invalidChoice,
+        authorize,
+      });
   };
   // The explicit-grant checks of a write, shared by the synchronous and asynchronous drives; answer the store key.
   const prepareCreate = (entity, values, sdkCreateId) => {
@@ -388,25 +514,22 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     };
     const run = () => (awaitIo ? executeAssociationAsync : executeAssociation)(options);
     const savepoint = awaitIo ? (fn) => store.sdkMutationAsync(fn) : (fn) => store.sdkMutation(fn);
-    if (!records) return savepoint(run);
-    if (!uuid.test(id)) fail('SDK association requires a valid source ID.', 'LocalSdkRelationshipInput', 400);
-    const { mapping, navigation, rel } = associationBinding(store, entity, relationship, related, localIdentity);
-    const operation = associate ? 'associate' : 'disassociate';
-    const [logical, rowId, via, ids] =
-      rel.many !== false
-        ? [mapping.logicalName, id, navigation, related.values.map((ref) => ref.id)]
-        : [rel.entity, related.values[0].id, rel.partner, [id]];
-    const entry = associate ? 'associateInternal' : 'disassociateInternal';
-    // records' association steps yield the write's promise without sync (dataverse-records.mjs associationSteps).
-    if (awaitIo)
-      return savepoint(() =>
-        records[entry](context(), logical, rowId, via, ids, { authorized: true, write: run, effectiveAssociation }),
-      );
-    return savepoint(() =>
-      internal(operation, entity, (opts) =>
-        records[entry](context(), logical, rowId, via, ids, { ...opts, write: run, effectiveAssociation }),
-      ),
-    );
+    return runAssociationRecords({
+      records,
+      store,
+      entity,
+      id,
+      relationship,
+      related,
+      associate,
+      awaitIo,
+      effectiveAssociation,
+      localIdentity,
+      savepoint,
+      run,
+      context,
+      internal,
+    });
   };
   const readGrants = (logical) => {
     // A Dataverse run-as user reads the rows its roles admit (the Web API read filter); SYSTEM reads every row.
@@ -440,50 +563,22 @@ export function localOrganizationService(store, profile, records, { diagnostic =
         ? (row) => grants.some((g) => g.predicate(cloneStateData(row), 'read') === true)
         : undefined;
       const virtualStatus = records?.virtualProviders?.status?.(logical);
-      if (virtualStatus?.virtual && !virtualStatus.fallback) {
-        const c = context();
-        const execute = (params) => {
-          const virtual = virtualRead(entity, {
-            request: {
-              select: params.$select ?? null,
-              filter: params.$filter ?? null,
-              orderby: params.$orderby ?? null,
-              top: params.$top == null ? null : Number(params.$top),
-            },
-          });
-          return {
-            value: virtual.rows
-              .filter((row) => !allowed || allowed(row))
-              .map((row) => records.projectInternal(c, logical, row, { unmask, single: false })),
-          };
-        };
-        if (
-          !store.pluginPipeline ||
-          !store.pluginPipelineActive({
-            entity: logical,
-            operation: 'retrievemultiple',
-            bypassStepIds: requestOptions.bypassStepIds,
-            bypassCustomPlugins: requestOptions.bypassCustomPlugins === true,
-          })
-        )
-          return execute(p);
-        return store.retrieveMultipleOperation(
+      if (virtualStatus?.virtual && !virtualStatus.fallback)
+        return queryVirtualRecords({
+          entity,
           logical,
-          sdkQuery ?? odataToSdkQuery(logical, p, store),
+          params: p,
+          unmask,
+          allowed,
+          records,
+          context,
+          virtualRead,
+          store,
+          requestOptions,
+          sdkQuery,
           localIdentity,
-          (query) => {
-            if (!['QueryExpression', 'QueryByAttribute'].includes(query.$type) || query.entityName !== logical)
-              fail('Virtual RetrieveMultiple must retain its bound table and query type.');
-            return execute(sdkQueryParameters(query));
-          },
-          'value',
           responseToken,
-          {
-            bypassCustomPlugins: requestOptions.bypassCustomPlugins === true,
-            bypassStepIds: requestOptions.bypassStepIds,
-          },
-        );
-      }
+        });
       // Column security as the Web API applies it: masked operands refused, hidden columns evaluated as null.
       const secured = records?.secureInternal?.(context(), logical, { params, unmask }) ?? {};
       const answer = store.query(entity, params, localIdentity, undefined, {
@@ -503,7 +598,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     },
     fetch(xml, { unmask = false, ...options } = {}) {
       if (typeof xml !== 'string') fail('FetchXML must be a string.');
-      const tables = [...xml.matchAll(/<(?:entity|link-entity)\s[^>]*name=["']([\w]+)["']/gi)].map((m) => m[1]);
+      const tables = [...xml.matchAll(/<(?:entity|link-entity)\s[^>]*name=["'](\w+)["']/gi)].map((m) => m[1]);
       if (!tables.length) fail('FetchXML entity is missing.');
       const grants = new Map();
       for (const name of tables) {
@@ -848,12 +943,10 @@ export function localOrganizationService(store, profile, records, { diagnostic =
       try {
         invocation?.assertActive();
         const result = operation(...args);
-        const returned =
-          invocation && result?.then
-            ? result.then((value) => invocation.snapshot(value))
-            : invocation
-              ? invocation.snapshot(result)
-              : result;
+        let returned;
+        if (invocation && result?.then) returned = result.then((value) => invocation.snapshot(value));
+        else if (invocation) returned = invocation.snapshot(result);
+        else returned = result;
         return returned?.then
           ? returned.catch((error) => {
               if (writes) store.markPluginTransactionFailure?.(error);
@@ -870,6 +963,15 @@ export function localOrganizationService(store, profile, records, { diagnostic =
 }
 
 /** SDK wire values carry their .NET type instead of erasing Money/lookups/options. */
+function sdkDoubleToRecord(raw) {
+  let number;
+  if (typeof raw === 'number') number = raw;
+  else if (typeof raw === 'string' && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(raw)) number = Number(raw);
+  else number = Number.NaN;
+  if (!Number.isFinite(number)) fail('SDK Double requires a finite numeric value.');
+  return number;
+}
+
 export function sdkValueToRecord(value) {
   if (isExactNumeric(value)) return cloneStateData(value);
   if (Array.isArray(value)) return value.map(sdkValueToRecord);
@@ -883,17 +985,8 @@ export function sdkValueToRecord(value) {
       return exactNumeric(value.value, value.$type);
     case 'Int64':
       return exactNumeric(value.value, 'Int64');
-    case 'Double': {
-      const raw = value.value;
-      const number =
-        typeof raw === 'number'
-          ? raw
-          : typeof raw === 'string' && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(raw)
-            ? Number(raw)
-            : NaN;
-      if (!Number.isFinite(number)) fail('SDK Double requires a finite numeric value.');
-      return number;
-    }
+    case 'Double':
+      return sdkDoubleToRecord(value.value);
     case 'OptionSetValueCollection':
       return value.values.map((v) => v.value ?? v);
     case 'OptionSetValue':

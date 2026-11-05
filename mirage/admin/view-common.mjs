@@ -1,6 +1,21 @@
 // Scaffolding shared by the `/_sim/` view modules: heading with guide, collapsed panels with help, paged tables,
 // field help from help-content `fields`, pending buttons and request failures. DOM-free and import-free: the module
 // passes its id, label, the UI kit and the HELP map, so every host serves this file by the admin asset pattern.
+/** Runs `work` with the button pending and answers `true` synchronously, so the app stops the event (handle contract). */
+function pending(ctx, button, work) /* NOSONAR: constant return value is part of the handler contract */ {
+  if (ctx.setButtonPending(button, true) === false) return true;
+  Promise.resolve()
+    .then(work)
+    .then(
+      () => ctx.setButtonPending(button, false),
+      (error) => {
+        ctx.setButtonPending(button, false, true);
+        ctx.notify(error.message, true);
+      },
+    );
+  return true;
+}
+
 export function viewCommon({ id, label, kit, help }) {
   const e = kit.escapeHtml;
   const value = (item) => (typeof item === 'function' ? item() : item);
@@ -11,7 +26,7 @@ export function viewCommon({ id, label, kit, help }) {
     const entry = helpEntry(ctx, key),
       doc = docOf(ctx, entry);
     const html = kit.info({
-      id: `help-${key.replace(/\./g, '-')}`,
+      id: `help-${key.replaceAll('.', '-')}`,
       label: `About ${title ?? 'this section'}`,
       text: entry.intro,
       steps: entry.steps ?? [],
@@ -45,7 +60,10 @@ export function viewCommon({ id, label, kit, help }) {
     error: error?.message ?? String(error),
     ...(error?.status ? { status: error.status } : {}),
   });
-  const failed = (item) => `${item.error}${item.status ? ` (HTTP ${item.status})` : ''}`;
+  const failed = (item) => {
+    if (!item.status) return `${item.error}`;
+    return `${item.error} (HTTP ${item.status})`;
+  };
   const json = (item, limit = 160) => {
     const text = JSON.stringify(item ?? null);
     return e(text.length > limit ? `${text.slice(0, limit)}…` : text);
@@ -80,20 +98,6 @@ export function viewCommon({ id, label, kit, help }) {
       help: helpBlock(ctx, helpKey, title),
       body,
     });
-  }
-  /** Runs `work` with the button pending and answers `true` synchronously, so the app stops the event (handle contract). */
-  function pending(ctx, button, work) {
-    if (ctx.setButtonPending(button, true) === false) return true;
-    Promise.resolve()
-      .then(work)
-      .then(
-        () => ctx.setButtonPending(button, false),
-        (error) => {
-          ctx.setButtonPending(button, false, true);
-          ctx.notify(error.message, true);
-        },
-      );
-    return true;
   }
   return {
     e,

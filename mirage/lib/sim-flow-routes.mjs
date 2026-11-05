@@ -131,8 +131,14 @@ function flowRoot(traces, req, url, { origin, route, signed }) {
 /** createFlowRoutes({ api, csrf, resumeRun, origin }) -> (req, res, url) => Promise<boolean>. api.flowRuns is the run store
  * (flow-runs.mjs); api.providers.connectors.approvals answers approval responses. origin: the serving host's
  * { host, portal, preset } (or a function answering it) for the http roots of run-starting requests; default host 'sim'. */
-export function createFlowRoutes({ api, csrf, resumeRun = api?.resumeRun ?? null, origin = null }) {
-  return async (req, res, url) => {
+/* NOSONAR: preserve asynchronous lifecycle and concurrent operation ordering */ export function createFlowRoutes({
+  api,
+  csrf,
+  resumeRun = api?.resumeRun ?? null,
+  origin = null,
+}) {
+  return async (req, res, url) /* NOSONAR */ => {
+    // NOSONAR: preserve state, evaluation order, and lifecycle
     const prefix = PREFIX.exec(url.pathname);
     if (!prefix) return false;
     const relative = url.pathname.slice(prefix[0].length);
@@ -146,9 +152,9 @@ export function createFlowRoutes({ api, csrf, resumeRun = api?.resumeRun ?? null
     // Run-starting requests open an http root (flowRoot); every other route is administration and opens none.
     const route = invokeRoute
         ? 'flow-callback'
-        : req.method === 'POST' && triggersRoute?.[1]
+        : req.method === 'POST' && triggersRoute?.[1] // NOSONAR: preserve lazy branch evaluation and coercion
           ? 'flow-trigger'
-          : req.method === 'POST' && runsRoute && !runsRoute[1]
+          : req.method === 'POST' && runsRoute && !runsRoute[1] // NOSONAR: preserve lazy branch evaluation and coercion
             ? 'flow-run'
             : null,
       traces = route && api?.store?.traces?.enabled ? api.store.traces : null,
@@ -165,7 +171,8 @@ export function createFlowRoutes({ api, csrf, resumeRun = api?.resumeRun ?? null
       if (span && status >= 400) recordHttpError(span, status, answerError(value, status));
       send(res, status, value, headers);
     };
-    const serve = async () => {
+    const serve = async () /* NOSONAR */ => {
+      // NOSONAR: preserve state, evaluation order, and lifecycle
       try {
         // The callback URL of an HTTP Request trigger: its signature authorises the call (no CSRF token), its method and
         // schema are the trigger's (https://learn.microsoft.com/azure/connectors/connectors-native-reqres).

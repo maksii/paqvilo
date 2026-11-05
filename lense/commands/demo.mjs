@@ -10,6 +10,8 @@ import { assertScaffoldPath, prepareScaffoldDirectory } from '../scaffold.mjs';
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const STARTER = path.join(ROOT, 'examples/project');
 const MARKER = '.paqvilo/demo.json';
+const TEXT_FILES = /\.(?:mjs|js|ts|json|ya?ml|xml|html|css|md|txt|csv)$/i;
+const MORE_TEXT_FILES = /\.(?:svg|resx|cs|csproj|config|ps1|cmd|sh|template)$/i;
 
 // A fresh Git checkout must serve the same bytes as the copied scaffold.
 // Normalize text at the boundary instead of inheriting the toolkit checkout's autocrlf.
@@ -20,13 +22,7 @@ async function normalizeText(directory) {
     for (const entry of await fs.readdir(folder, { withFileTypes: true })) {
       const file = path.join(folder, entry.name);
       if (entry.isDirectory()) await walk(file);
-      else if (
-        entry.isFile() &&
-        /\.(?:mjs|js|ts|json|ya?ml|xml|html|css|md|txt|csv|svg|resx|cs|csproj|config|ps1|cmd|sh|template)$/i.test(
-          entry.name,
-        )
-      )
-        files.push(file);
+      else if (entry.isFile() && (TEXT_FILES.test(entry.name) || MORE_TEXT_FILES.test(entry.name))) files.push(file);
     }
   };
   await walk(directory);
@@ -65,25 +61,8 @@ export async function prepareDemo(directory) {
     if (error.code !== 'ENOENT') throw error;
   }
   if (existing) {
-    if (!existing.isDirectory() || existing.isSymbolicLink())
-      throw new Error(`Demo folder must be a regular directory: ${target}`);
-    let marker;
-    try {
-      marker = JSON.parse(await fs.readFile(path.join(target, MARKER), 'utf8'));
-    } catch {
-      /* not an owned demo */
-    }
-    if (marker?.kind === 'paqvilo-example' && marker.version === 2) {
-      for (const name of ['paqvilo.config.yml', 'portal/website.yml', 'pack/pack.mjs'])
-        await fs.access(path.join(target, name));
-      await prepareEditorFiles(target);
-      return { directory: target, created: false };
-    }
-    // Never replace the user's project, including an incomplete earlier copy.
-    if ((await fs.readdir(target)).length)
-      throw new Error(
-        `Folder is not a Paqvilo demo: ${target}. Choose a new folder with --dir <path>. No files were changed.`,
-      );
+    const reused = await reuseExistingDemo(target, existing);
+    if (reused) return reused;
   }
   await prepareScaffoldDirectory(target);
 
@@ -159,6 +138,47 @@ export async function prepareDemo(directory) {
   return { directory: target, created: true };
 }
 
+async function reuseExistingDemo(target, existing) {
+  if (!existing) return null;
+  if (!existing.isDirectory() || existing.isSymbolicLink())
+    throw new Error(`Demo folder must be a regular directory: ${target}`);
+  let marker;
+  try {
+    marker = JSON.parse(await fs.readFile(path.join(target, MARKER), 'utf8'));
+  } catch {
+    /* not an owned demo */
+  }
+  if (marker?.kind === 'paqvilo-example' && marker.version === 2) {
+    for (const name of ['paqvilo.config.yml', 'portal/website.yml', 'pack/pack.mjs'])
+      await fs.access(path.join(target, name));
+    await prepareEditorFiles(target);
+    return { directory: target, created: false };
+  }
+  // Never replace the user's project, including an incomplete earlier copy.
+  if ((await fs.readdir(target)).length)
+    throw new Error(
+      `Folder is not a Paqvilo demo: ${target}. Choose a new folder with --dir <path>. No files were changed.`,
+    );
+  return null;
+}
+
+function validateDemoOptions(values) {
+  for (const [key, value] of Object.entries(values)) {
+    const entries = Array.isArray(value) ? value : [value];
+    if (entries.some((item) => typeof item === 'string' && !item.trim()))
+      throw new Error(`--${key} must not be empty or whitespace`);
+  }
+  if (values.browser && !['msedge', 'chrome', 'chromium'].includes(values.browser))
+    throw new Error('--browser must be msedge, chrome or chromium');
+  if (
+    values['debug-port'] !== undefined &&
+    (!/^\d+$/.test(values['debug-port']) || Number(values['debug-port']) > 65535)
+  )
+    throw new Error('--debug-port must be an integer between 0 and 65535');
+  if (values.scaffold && (values.browser !== undefined || values.headless || values['debug-port'] !== undefined))
+    throw new Error('--scaffold cannot be combined with browser, headless or debug-port options');
+}
+
 async function runDemo() {
   const { values, positionals } = parseArgs({
     options: {
@@ -180,20 +200,7 @@ Close the browser or press Ctrl+C to stop. --headless and --debug-port are also 
 Use --scaffold to prepare the project and VS Code workspace without starting a browser.`);
     return;
   }
-  for (const [key, value] of Object.entries(values)) {
-    const entries = Array.isArray(value) ? value : [value];
-    if (entries.some((item) => typeof item === 'string' && !item.trim()))
-      throw new Error(`--${key} must not be empty or whitespace`);
-  }
-  if (values.browser && !['msedge', 'chrome', 'chromium'].includes(values.browser))
-    throw new Error('--browser must be msedge, chrome or chromium');
-  if (
-    values['debug-port'] !== undefined &&
-    (!/^\d+$/.test(values['debug-port']) || Number(values['debug-port']) > 65535)
-  )
-    throw new Error('--debug-port must be an integer between 0 and 65535');
-  if (values.scaffold && (values.browser !== undefined || values.headless || values['debug-port'] !== undefined))
-    throw new Error('--scaffold cannot be combined with browser, headless or debug-port options');
+  validateDemoOptions(values);
   const demo = await prepareDemo(values.dir);
   if (values.scaffold) {
     console.log(
@@ -252,7 +259,7 @@ Close the browser or press Ctrl+C to stop.\n`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  runDemo().catch((error) => {
+  /* NOSONAR: module-level promise chain must not block evaluation */ runDemo().catch((error) => {
     console.error(`Mirage demo: ${error.message}`);
     process.exitCode = 1;
   });

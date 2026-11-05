@@ -68,11 +68,10 @@ for (const { file, run, snapshotHash, capturedAt } of indexed.values()) {
   const stress = variant === 'stress',
     safeDeep = variant === 'safe-secondary-subtree-disabled',
     orphan = variant === 'parent-only-disabled-negative-fault';
-  const inactivePermissionIds = safeDeep
-    ? deepVariantKeys.map((key) => componentId('permission:' + key))
-    : orphan
-      ? [componentId('permission:' + deepVariantKeys[0])]
-      : [];
+  let inactivePermissionIds;
+  if (safeDeep) inactivePermissionIds = deepVariantKeys.map((key) => componentId('permission:' + key));
+  else if (orphan) inactivePermissionIds = [componentId('permission:' + deepVariantKeys[0])];
+  else inactivePermissionIds = [];
   const environment = replayStore({
     schema,
     catalogue,
@@ -95,12 +94,11 @@ for (const { file, run, snapshotHash, capturedAt } of indexed.values()) {
       const native = pair[name],
         replay = replayLane(native, plan, { ...environment, compile: compilePermissionFetchXml });
       const shape = (rows) => stable((rows ?? []).map(stable).sort());
-      const rowVerdict =
-        native.complete && replay.complete && native.outcome === 'success' && replay.outcome === 'success'
-          ? shape(native.rows) === shape(replay.rows)
-            ? 'equal'
-            : 'different'
-          : 'unqualified';
+      let rowVerdict;
+      if (native.complete && replay.complete && native.outcome === 'success' && replay.outcome === 'success') {
+        if (shape(native.rows) === shape(replay.rows)) rowVerdict = 'equal';
+        else rowVerdict = 'different';
+      } else rowVerdict = 'unqualified';
       lanes[name] = {
         nativeOutcome: native.outcome,
         mirageOutcome: replay.outcome,

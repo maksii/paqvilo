@@ -28,6 +28,68 @@ export function serializeODataPermissionNode(element) {
     : `<${element.name}${attrs} />`;
 }
 
+function renderParentPermission(grant, context, currentPath, anyallalias) {
+  const { byId, selected, diagnostics } = context;
+  if (grant.observedOrphanParent) {
+    diagnostics.push({ code: 'ODATA_ORPHAN_PROFILE_UNQUALIFIED', permissionId: grant.id });
+    return null;
+  }
+  const parent = byId.get(id(grant.parentPermissionId ?? grant.parentId));
+  if (!parent || !selected(parent.entity).some((candidate) => id(candidate.id) === id(parent.id))) {
+    diagnostics.push({ code: 'ODATA_PARENT_READ_OR_ROLE_UNQUALIFIED', permissionId: grant.id });
+    return null;
+  }
+  const relationship = grant.relationship;
+  if (relationship?.intersect) {
+    const edge = relationship.intersect;
+    const nested = renderPermissionGrant(parent, context, edge.entity + '1', currentPath);
+    if (!nested) return null;
+    return filter([
+      node('link-entity', { name: edge.entity, to: relationship.from, from: edge.from, 'link-type': 'any' }, [
+        node('link-entity', { name: relationship.entity, to: edge.to, from: relationship.to, 'link-type': 'inner' }, [
+          nested,
+        ]),
+      ]),
+    ]);
+  }
+  if (relationship?.entity === grant.entity && parent.entity === grant.entity) {
+    const nested = renderPermissionGrant(parent, context, anyallalias, currentPath);
+    return nested ? filter([condition(relationship.from, 'not-null'), nested]) : null;
+  }
+  diagnostics.push({ code: 'ODATA_DIFFERENT_TABLE_PARENT_UNQUALIFIED', permissionId: grant.id });
+  return null;
+}
+
+function renderPermissionGrant(grant, context, anyallalias, visiting = new Set()) {
+  const { diagnostics, identity, primary } = context;
+  if (visiting.has(id(grant.id))) {
+    diagnostics.push({ code: 'ODATA_PERMISSION_CYCLE', permissionId: grant.id });
+    return null;
+  }
+  const currentPath = new Set([...visiting, id(grant.id)]);
+  if (grant.enabled === false) return null;
+  if (grant.scope === 'parent') return renderParentPermission(grant, context, currentPath, anyallalias);
+  if (grant.scope === 'global') {
+    diagnostics.push({ code: 'ODATA_GLOBAL_SCOPE_UNQUALIFIED', permissionId: grant.id });
+    return null;
+  }
+  if (grant.identityRelationship) {
+    diagnostics.push({ code: 'ODATA_IDENTITY_RELATIONSHIP_UNQUALIFIED', permissionId: grant.id });
+    return null;
+  }
+  const value = grant.scope === 'account' ? identity.accountId : (identity.contactId ?? identity.id);
+  if (!value || !['contact', 'account', 'self'].includes(grant.scope)) return null;
+  if (grant.scope !== 'contact' || !anyallalias)
+    diagnostics.push({ code: 'ODATA_DIRECT_OR_NONCONTACT_TERMINAL_UNQUALIFIED', permissionId: grant.id });
+  return filter(
+    [
+      condition(primary(grant.entity), 'not-null'),
+      condition(grant.field ?? primary(grant.entity), 'eq', `{${id(value).toUpperCase()}}`),
+    ],
+    anyallalias ? { anyallalias } : {},
+  );
+}
+
 /** Diagnostic source-derived model for the witnessed Account OData filter
  * contract. This is deliberately separate from Liquid/FetchXML expansion and
  * is not used for authorization. Other parent directions/scopes stay explicit
@@ -58,64 +120,9 @@ export function buildODataPermissionFilter({ table, permissions, identity, mappi
       code: 'ODATA_PERMISSION_ORDER_UNQUALIFIED',
       message: 'Source definition order is a hypothesis until native subset witnesses verify it.',
     });
+  const renderContext = { byId, selected, identity, primary, diagnostics };
   function render(grant, { anyallalias, visiting = new Set() } = {}) {
-    if (visiting.has(id(grant.id))) {
-      diagnostics.push({ code: 'ODATA_PERMISSION_CYCLE', permissionId: grant.id });
-      return null;
-    }
-    const currentPath = new Set([...visiting, id(grant.id)]);
-    if (grant.enabled === false) return null;
-    if (grant.scope === 'parent') {
-      if (grant.observedOrphanParent) {
-        diagnostics.push({ code: 'ODATA_ORPHAN_PROFILE_UNQUALIFIED', permissionId: grant.id });
-        return null;
-      }
-      const parent = byId.get(id(grant.parentPermissionId ?? grant.parentId));
-      if (!parent || !selected(parent.entity).some((candidate) => id(candidate.id) === id(parent.id))) {
-        diagnostics.push({ code: 'ODATA_PARENT_READ_OR_ROLE_UNQUALIFIED', permissionId: grant.id });
-        return null;
-      }
-      const relationship = grant.relationship;
-      if (relationship?.intersect) {
-        const edge = relationship.intersect;
-        const nested = render(parent, { anyallalias: edge.entity + '1', visiting: currentPath });
-        if (!nested) return null;
-        return filter([
-          node('link-entity', { name: edge.entity, to: relationship.from, from: edge.from, 'link-type': 'any' }, [
-            node(
-              'link-entity',
-              { name: relationship.entity, to: edge.to, from: relationship.to, 'link-type': 'inner' },
-              [nested],
-            ),
-          ]),
-        ]);
-      }
-      if (relationship?.entity === grant.entity && parent.entity === grant.entity) {
-        const nested = render(parent, { anyallalias, visiting: currentPath });
-        return nested ? filter([condition(relationship.from, 'not-null'), nested]) : null;
-      }
-      diagnostics.push({ code: 'ODATA_DIFFERENT_TABLE_PARENT_UNQUALIFIED', permissionId: grant.id });
-      return null;
-    }
-    if (grant.scope === 'global') {
-      diagnostics.push({ code: 'ODATA_GLOBAL_SCOPE_UNQUALIFIED', permissionId: grant.id });
-      return null;
-    }
-    if (grant.identityRelationship) {
-      diagnostics.push({ code: 'ODATA_IDENTITY_RELATIONSHIP_UNQUALIFIED', permissionId: grant.id });
-      return null;
-    }
-    const value = grant.scope === 'account' ? identity.accountId : (identity.contactId ?? identity.id);
-    if (!value || !['contact', 'account', 'self'].includes(grant.scope)) return null;
-    if (grant.scope !== 'contact' || !anyallalias)
-      diagnostics.push({ code: 'ODATA_DIRECT_OR_NONCONTACT_TERMINAL_UNQUALIFIED', permissionId: grant.id });
-    return filter(
-      [
-        condition(primary(grant.entity), 'not-null'),
-        condition(grant.field ?? primary(grant.entity), 'eq', `{${id(value).toUpperCase()}}`),
-      ],
-      anyallalias ? { anyallalias } : {},
-    );
+    return renderPermissionGrant(grant, renderContext, anyallalias, visiting);
   }
   for (const grant of grants) {
     const expression = render(grant);
@@ -252,13 +259,7 @@ export function sourceODataAdmissionFeatures({ table, permissions, identity, rul
     paths,
     globalGrant: global,
     multiLevelCrossTable,
-    admissionPrediction: global
-      ? 'global-bypass-calibration-required'
-      : multiLevelCrossTable
-        ? 'native-cds-error-candidate'
-        : simple
-          ? 'backend-query-candidate'
-          : 'requires-native-calibration',
+    admissionPrediction: admissionPrediction(global, multiLevelCrossTable, simple),
     qualification: 'source-derived-hypothesis-only',
     nativeQualified: false,
     evidenceRequired: [
@@ -268,4 +269,11 @@ export function sourceODataAdmissionFeatures({ table, permissions, identity, rul
       'Actual HTTP outcome and final-observer presence/absence',
     ],
   };
+}
+
+function admissionPrediction(global, multiLevelCrossTable, simple) {
+  if (global) return 'global-bypass-calibration-required';
+  if (multiLevelCrossTable) return 'native-cds-error-candidate';
+  if (simple) return 'backend-query-candidate';
+  return 'requires-native-calibration';
 }

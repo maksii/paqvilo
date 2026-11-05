@@ -118,7 +118,11 @@ const instant = (value) => (/^\d+(?:\.\d+)?$/.test(value) ? Number(value) : Date
  * findings without a traceId inside that range (startup, load) are included too. deps: { traces, audit, logs(),
  * diagnostics(), evidence() -> Promise<report|null>, runtime() }.
  */
-export async function writeActivityBundle(res, query, deps) {
+/* NOSONAR: streaming order and await boundaries are intentional */ export async function writeActivityBundle(
+  res,
+  query,
+  deps,
+) {
   if (query.get('format') !== 'bundle') throw refused(400, 'InvalidActivityExport', 'format must be bundle.', 'format');
   const traces = query.get('traces') || 'ndjson';
   if (!['ndjson', 'otlp'].includes(traces))

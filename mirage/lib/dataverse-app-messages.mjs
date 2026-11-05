@@ -29,7 +29,7 @@ function operations(api) {
   const write = (fn) => api.change(() => store.transact(fn, { isolated: true }));
   const need = (c, logical, right) => {
     const privilege = privilegeName(right, api.principals.privilegeNoun(logical));
-    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical);
+    if (!(api.principals.privileges(c.user).get(privilege) > 0)) throw privilegeDeniedError(c.user, privilege, logical); // NOSONAR: operand can be NaN or undefined, the negated test differs
   };
   const respond = (c, name, payload) => ({
     status: 200,
@@ -68,7 +68,7 @@ function operations(api) {
           if (!entry || typeof entry !== 'object') throw invalid('Each component must be an entity reference.');
           const logical = String(entry['@odata.type'] ?? '').replace(/^#?Microsoft\.Dynamics\.CRM\./, '');
           const sourceId = idOf(entry.objectid ?? entry);
-          const type = Number(entry.componenttype ?? sourceTypes[logical] ?? (logical === 'entity' ? 1 : NaN));
+          const type = Number(entry.componenttype ?? sourceTypes[logical] ?? (logical === 'entity' ? 1 : Number.NaN));
           let exists = componentsOf(store.state).some(
             (component) => component.type === type && sameId(component.id, sourceId),
           );

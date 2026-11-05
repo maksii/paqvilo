@@ -132,18 +132,121 @@ const text = (node, name) => child(node, name)?.text.trim();
 const value = (node, name) => text(node, name) || attr(node, name);
 const lookupId = (node, name) => canonical(value(node, name) || text(child(node, name), name));
 const lookupName = (node, name) => text(child(node, name), 'Name');
+const chooseLazily = (condition, yes, no) => {
+  if (condition()) return yes();
+  return no();
+};
+const supportedPluginResultFields = ({ customApi, association, bulk, bridged, read }) => {
+  if (customApi) return ['inputs', 'outputs', 'error'];
+  if (association) return ['error'];
+  if (bulk || bridged) return ['targets', 'error'];
+  if (read) return ['query', 'collection', 'entityResult', 'error'];
+  return ['target', 'error'];
+};
 const numeric = (value) =>
-  value === undefined || value === '' ? null : Number.isInteger(Number(value)) ? Number(value) : null;
+  chooseLazily(
+    () => value === undefined || value === '',
+    () => null,
+    () => (Number.isInteger(Number(value)) ? Number(value) : null),
+  );
 const error = (message, code = 'LocalPluginInvalid', status = 400) => new DataError(message, status, code);
 const stages = { 10: 'PreValidation', 20: 'PreOperation', 40: 'PostOperation' };
 
-/** Facts only. Configuration values are not indexed or exposed; DLLs and .NET code are never read or executed. */
-export function parsePluginDocument(xml) {
-  const root = parseSolutionXml(xml);
-  const assemblies = [],
-    types = [],
-    steps = [],
-    messages = [],
+function pluginStepEventHandlerOnly(step, serviceEndpointId, handlerType, handlerId) {
+  return (
+    !serviceEndpointId &&
+    !lookupId(step, 'PluginTypeId') &&
+    !value(step, 'PluginTypeName') &&
+    !lookupName(step, 'EventHandler') &&
+    !['4602', 'plugintype'].includes(handlerType) &&
+    Boolean(handlerId)
+  );
+}
+
+function pluginStepImages(step) {
+  return nodes(step, 'SdkMessageProcessingStepImage').map((image) => ({
+    name: value(image, 'Name') || '',
+    alias: value(image, 'EntityAlias') || '',
+    type: numeric(value(image, 'ImageType')),
+    ...(value(image, 'MessagePropertyName') ? { messagePropertyName: value(image, 'MessagePropertyName') } : {}),
+    attributes: String(value(image, 'Attributes') ?? '')
+      .split(',')
+      .map(canonical)
+      .filter(Boolean),
+  }));
+}
+
+function pluginStepConfiguration(step) {
+  return child(step, 'Configuration') || attr(step, 'Configuration') !== undefined
+    ? { unsecureConfiguration: child(step, 'Configuration')?.text ?? attr(step, 'Configuration') }
+    : {};
+}
+
+function pluginStepFact(step) {
+  const id = canonical(value(step, 'SdkMessageProcessingStepId'));
+  if (!id) return null;
+  const filter = child(step, 'SdkMessageFilterId');
+  const primary = canonical(
+    value(step, 'PrimaryEntity') ||
+      value(step, 'PrimaryEntityName') ||
+      value(step, 'PrimaryEntityTypeCode') ||
+      value(step, 'PrimaryObjectTypeCode') ||
+      value(filter, 'PrimaryObjectTypeCode'),
+  );
+  const messageFilterId = lookupId(step, 'SdkMessageFilterId') || null;
+  const unfiltered =
+    (primary === 'none' ||
+      Boolean(filter && !messageFilterId && !(filter.text ?? '').trim() && !filter.children?.length)) &&
+    !messageFilterId;
+  // EventHandler is polymorphic (sdkmessageprocessingstep.eventhandler targets plugintype or serviceendpoint). A service
+  // endpoint handler is named by ServiceEndpointId or by EventHandlerTypeCode 4618 (serviceendpoint); an EventHandler with no
+  // plug-in type facts is resolved by importSolutionPlugins. The exported element names of a service endpoint step are a guess.
+  const handlerType = String(value(step, 'EventHandlerTypeCode') ?? '')
+    .trim()
+    .toLowerCase();
+  const handlerId = lookupId(step, 'EventHandler') || null;
+  const serviceEndpointId =
+    lookupId(step, 'ServiceEndpointId') ||
+    (['4618', 'serviceendpoint'].includes(handlerType) ? handlerId : null) ||
+    null;
+  return recordStepConstructorSettings(
+    {
+      id,
+      name: value(step, 'Name') || id,
+      typeId: lookupId(step, 'PluginTypeId') || (serviceEndpointId ? null : handlerId),
+      serviceEndpointId,
+      eventHandlerOnly: pluginStepEventHandlerOnly(step, serviceEndpointId, handlerType, handlerId),
+      typeName:
+        value(step, 'PluginTypeName') || lookupName(step, 'PluginTypeId') || lookupName(step, 'EventHandler') || null,
+      messageId: lookupId(step, 'SdkMessageId') || null,
+      message: value(step, 'SdkMessageName') || lookupName(step, 'SdkMessageId') || value(step, 'MessageName') || null,
+      entity: primary && primary !== 'none' ? primary : null,
+      messageFilterId,
+      unfiltered,
+      stage: numeric(value(step, 'Stage')),
+      rank: numeric(value(step, 'Rank')),
+      mode: numeric(value(step, 'Mode')),
+      supportedDeployment: numeric(value(step, 'SupportedDeployment')),
+      ...(numeric(value(step, 'CustomizationLevel')) != null
+        ? { customizationLevel: numeric(value(step, 'CustomizationLevel')) }
+        : {}),
+      enabled: numeric(value(step, 'StateCode') ?? '0') === 0,
+      // Verbatim tokens (native refuses a padded one, and the row keeps the Solution's case); the runtime matcher canonicalises.
+      filteringAttributes: String(value(step, 'FilteringAttributes') ?? '')
+        .split(',')
+        .filter((item) => item !== ''),
+      impersonatingUserId: lookupId(step, 'ImpersonatingUserId') || null,
+      ...(lookupId(step, 'SdkMessageProcessingStepSecureConfigId')
+        ? { secureConfigurationId: lookupId(step, 'SdkMessageProcessingStepSecureConfigId') }
+        : {}),
+      images: pluginStepImages(step),
+    },
+    pluginStepConfiguration(step),
+  );
+}
+
+function pluginMessageFacts(root) {
+  const messages = [],
     messageFilters = [];
   for (const message of nodes(root, 'SdkMessage')) {
     const id = canonical(value(message, 'SdkMessageId')),
@@ -159,6 +262,12 @@ export function parsePluginDocument(xml) {
     if (id && messageId && entity && [0, 1, 2].includes(availability))
       messageFilters.push({ id, messageId, entity, availability });
   }
+  return { messages, messageFilters };
+}
+
+function pluginAssemblyFacts(root) {
+  const assemblies = [],
+    types = [];
   for (const assembly of nodes(root, 'PluginAssembly')) {
     const id = canonical(value(assembly, 'PluginAssemblyId'));
     if (!id) continue;
@@ -183,6 +292,10 @@ export function parsePluginDocument(xml) {
         });
     }
   }
+  return { assemblies, types };
+}
+
+function appendRootPluginTypes(root, types) {
   for (const type of nodes(root, 'PluginType')) {
     const id = canonical(value(type, 'PluginTypeId'));
     if (id && !types.some((item) => item.id === id))
@@ -193,92 +306,18 @@ export function parsePluginDocument(xml) {
         friendlyName: value(type, 'FriendlyName') ?? null,
       });
   }
+}
+
+/** Facts only. Configuration values are not indexed or exposed; DLLs and .NET code are never read or executed. */
+export function parsePluginDocument(xml) {
+  const root = parseSolutionXml(xml);
+  const { messages, messageFilters } = pluginMessageFacts(root);
+  const { assemblies, types } = pluginAssemblyFacts(root),
+    steps = [];
+  appendRootPluginTypes(root, types);
   for (const step of nodes(root, 'SdkMessageProcessingStep')) {
-    const id = canonical(value(step, 'SdkMessageProcessingStepId'));
-    if (!id) continue;
-    const filter = child(step, 'SdkMessageFilterId');
-    const primary = canonical(
-      value(step, 'PrimaryEntity') ||
-        value(step, 'PrimaryEntityName') ||
-        value(step, 'PrimaryEntityTypeCode') ||
-        value(step, 'PrimaryObjectTypeCode') ||
-        value(filter, 'PrimaryObjectTypeCode'),
-    );
-    const messageFilterId = lookupId(step, 'SdkMessageFilterId') || null;
-    const unfiltered =
-      (primary === 'none' ||
-        Boolean(filter && !messageFilterId && !(filter.text ?? '').trim() && !filter.children?.length)) &&
-      !messageFilterId;
-    // EventHandler is polymorphic (sdkmessageprocessingstep.eventhandler targets plugintype or serviceendpoint). A service
-    // endpoint handler is named by ServiceEndpointId or by EventHandlerTypeCode 4618 (serviceendpoint); an EventHandler with no
-    // plug-in type facts is resolved by importSolutionPlugins. The exported element names of a service endpoint step are a guess.
-    const handlerType = String(value(step, 'EventHandlerTypeCode') ?? '')
-      .trim()
-      .toLowerCase();
-    const handlerId = lookupId(step, 'EventHandler') || null;
-    const serviceEndpointId =
-      lookupId(step, 'ServiceEndpointId') ||
-      (['4618', 'serviceendpoint'].includes(handlerType) ? handlerId : null) ||
-      null;
-    steps.push(
-      recordStepConstructorSettings(
-        {
-          id,
-          name: value(step, 'Name') || id,
-          typeId: lookupId(step, 'PluginTypeId') || (serviceEndpointId ? null : handlerId),
-          serviceEndpointId,
-          eventHandlerOnly:
-            !serviceEndpointId &&
-            !lookupId(step, 'PluginTypeId') &&
-            !value(step, 'PluginTypeName') &&
-            !lookupName(step, 'EventHandler') &&
-            !['4602', 'plugintype'].includes(handlerType) &&
-            Boolean(handlerId),
-          typeName:
-            value(step, 'PluginTypeName') ||
-            lookupName(step, 'PluginTypeId') ||
-            lookupName(step, 'EventHandler') ||
-            null,
-          messageId: lookupId(step, 'SdkMessageId') || null,
-          message:
-            value(step, 'SdkMessageName') || lookupName(step, 'SdkMessageId') || value(step, 'MessageName') || null,
-          entity: primary && primary !== 'none' ? primary : null,
-          messageFilterId,
-          unfiltered,
-          stage: numeric(value(step, 'Stage')),
-          rank: numeric(value(step, 'Rank')),
-          mode: numeric(value(step, 'Mode')),
-          supportedDeployment: numeric(value(step, 'SupportedDeployment')),
-          ...(numeric(value(step, 'CustomizationLevel')) != null
-            ? { customizationLevel: numeric(value(step, 'CustomizationLevel')) }
-            : {}),
-          enabled: numeric(value(step, 'StateCode') ?? '0') === 0,
-          // Verbatim tokens (native refuses a padded one, and the row keeps the Solution's case); the runtime matcher canonicalises.
-          filteringAttributes: String(value(step, 'FilteringAttributes') ?? '')
-            .split(',')
-            .filter((item) => item !== ''),
-          impersonatingUserId: lookupId(step, 'ImpersonatingUserId') || null,
-          ...(lookupId(step, 'SdkMessageProcessingStepSecureConfigId')
-            ? { secureConfigurationId: lookupId(step, 'SdkMessageProcessingStepSecureConfigId') }
-            : {}),
-          images: nodes(step, 'SdkMessageProcessingStepImage').map((image) => ({
-            name: value(image, 'Name') || '',
-            alias: value(image, 'EntityAlias') || '',
-            type: numeric(value(image, 'ImageType')),
-            ...(value(image, 'MessagePropertyName')
-              ? { messagePropertyName: value(image, 'MessagePropertyName') }
-              : {}),
-            attributes: String(value(image, 'Attributes') ?? '')
-              .split(',')
-              .map(canonical)
-              .filter(Boolean),
-          })),
-        },
-        child(step, 'Configuration') || attr(step, 'Configuration') !== undefined
-          ? { unsecureConfiguration: child(step, 'Configuration')?.text ?? attr(step, 'Configuration') }
-          : {},
-      ),
-    );
+    const fact = pluginStepFact(step);
+    if (fact) steps.push(fact);
   }
   return { assemblies, types, steps, messages, ...(messageFilters.length ? { messageFilters } : {}) };
 }
@@ -296,6 +335,42 @@ export const SDK_MESSAGES = Object.freeze({
   '03bebb1b-ea3e-db11-86a7-000a3a5473e8': 'RetrieveMultiple',
 });
 
+function importPluginRecords(records, kind, document, maps, diagnostics) {
+  for (const record of records ?? []) {
+    if (maps[kind].has(record.id))
+      diagnostics.push({
+        code: 'PLUGIN_SOURCE_LAYER_SELECTED',
+        id: record.id,
+        sourceFile: document.file,
+        message: 'The last selected solution layer supplies this registration; deployed state is unknown.',
+      });
+    maps[kind].set(record.id, copyStepConstructorSettings(record, { ...record, sourceFile: document.file }));
+  }
+}
+
+function importPluginDocument(document, maps, diagnostics, fingerprint) {
+  const facts = document.facts.plugins;
+  if (!facts) return;
+  fingerprint.update(document.file).update(document.hash ?? '');
+  for (const kind of Object.keys(maps)) importPluginRecords(facts[kind], kind, document, maps, diagnostics);
+}
+
+function importPluginLayer(layer, maps, diagnostics, fingerprint) {
+  for (const document of layer.documents ?? []) importPluginDocument(document, maps, diagnostics, fingerprint);
+}
+
+function diagnoseUnsupportedPluginSteps(steps, diagnostics) {
+  for (const step of steps) {
+    if (step.unsupported && !step.eventHandlerId)
+      diagnostics.push({
+        code: 'PLUGIN_STEP_UNSUPPORTED',
+        stepId: step.id,
+        sourceFile: step.sourceFile,
+        message: step.unsupported,
+      });
+  }
+}
+
 /** Selected solution layer order wins, with explicit provenance and no inferred deployed state. */
 export function importSolutionPlugins(layers = [], { sdkMessages = {}, businessLogicOwnership = {} } = {}) {
   const maps = {
@@ -307,23 +382,7 @@ export function importSolutionPlugins(layers = [], { sdkMessages = {}, businessL
   };
   const diagnostics = [],
     fingerprint = createHash('sha256');
-  for (const layer of layers)
-    for (const document of layer.documents ?? []) {
-      const facts = document.facts.plugins;
-      if (!facts) continue;
-      fingerprint.update(document.file).update(document.hash ?? '');
-      for (const kind of Object.keys(maps))
-        for (const record of facts[kind] ?? []) {
-          if (maps[kind].has(record.id))
-            diagnostics.push({
-              code: 'PLUGIN_SOURCE_LAYER_SELECTED',
-              id: record.id,
-              sourceFile: document.file,
-              message: 'The last selected solution layer supplies this registration; deployed state is unknown.',
-            });
-          maps[kind].set(record.id, copyStepConstructorSettings(record, { ...record, sourceFile: document.file }));
-        }
-    }
+  for (const layer of layers) importPluginLayer(layer, maps, diagnostics, fingerprint);
   const steps = [...maps.steps.values()].map((exported) => {
     const namedTypes = [...maps.types.values()].filter((item) => exported.typeName && item.name === exported.typeName);
     const type = maps.types.get(exported.typeId) ?? (namedTypes.length === 1 ? namedTypes[0] : null);
@@ -350,15 +409,21 @@ export function importSolutionPlugins(layers = [], { sdkMessages = {}, businessL
       message,
       ...([0, 1, 2].includes(messageAvailability) ? { messageAvailability } : {}),
       ...([0, 1, 2].includes(filterAvailability) ? { filterAvailability } : {}),
-      messageEvidence: step.message
-        ? 'exported-step'
-        : sourceMessage
-          ? 'exported-sdk-message'
-          : observedMessage
-            ? sdkMessages[step.messageId]
-              ? 'project-observation'
-              : 'platform-sdk-message'
-            : 'unresolved',
+      messageEvidence: chooseLazily(
+        () => step.message,
+        () => 'exported-step',
+        () =>
+          chooseLazily(
+            () => sourceMessage,
+            () => 'exported-sdk-message',
+            () =>
+              chooseLazily(
+                () => observedMessage,
+                () => (sdkMessages[step.messageId] ? 'project-observation' : 'platform-sdk-message'),
+                () => 'unresolved',
+              ),
+          ),
+      ),
       messageSourceFile: sourceMessage?.sourceFile ?? null,
       messageObservation: observedMessage?.evidence ?? null,
       typeName: type?.name ?? step.typeName,
@@ -372,14 +437,7 @@ export function importSolutionPlugins(layers = [], { sdkMessages = {}, businessL
     return copyStepConstructorSettings(exported, { ...resolved, unsupported: pluginUnsupported(resolved) });
   });
   // A pending EventHandler is reported where it is resolved against the organization rows (PLUGIN_STEP_UNSUPPORTED at run time).
-  for (const step of steps)
-    if (step.unsupported && !step.eventHandlerId)
-      diagnostics.push({
-        code: 'PLUGIN_STEP_UNSUPPORTED',
-        stepId: step.id,
-        sourceFile: step.sourceFile,
-        message: step.unsupported,
-      });
+  diagnoseUnsupportedPluginSteps(steps, diagnostics);
   fingerprint.update(JSON.stringify(sdkMessages));
   fingerprint.update(JSON.stringify(businessLogicOwnership));
   return {
@@ -403,7 +461,7 @@ export function importSolutionPlugins(layers = [], { sdkMessages = {}, businessL
 
 /** Resolve only an explicitly mapped, confined regular C# source file. */
 export async function resolvePluginSourcePath(mapping, defaultRoot) {
-  const relative = String(mapping.path ?? '').replace(/\\/g, '/');
+  const relative = String(mapping.path ?? '').replaceAll('\\', '/');
   if (
     !relative.endsWith('.cs') ||
     path.isAbsolute(relative) ||
@@ -466,38 +524,43 @@ export async function resolvePluginSourceFiles(plugins, mappings = {}, defaultRo
 }
 
 // An impersonated step runs with the impersonated user as UserId (every handler and the CLR context implement it).
-export function pluginUnsupported(step, { images = false } = {}) {
-  if (![0, 1].includes(step.mode)) return 'Execution mode is missing or unsupported.';
+function pluginExecutionIssue(step) {
+  if (![0, 1].includes(step.mode)) return { issue: 'Execution mode is missing or unsupported.' };
   const external = /^onexternal(created|updated|deleted)$/.test(String(step.message).toLowerCase());
   const customApi = step.customApi;
   if (
     customApi &&
     (!customApi.allowedCustomProcessingStepType || (customApi.allowedCustomProcessingStepType === 1 && step.mode !== 1))
   )
-    return 'The custom API does not allow this processing step execution mode.';
+    return { issue: 'The custom API does not allow this processing step execution mode.', customApi };
   if (external && (step.mode !== 1 || step.stage !== 40))
-    return 'External virtual-table events require asynchronous PostOperation execution.';
-  // Native accepts an asynchronous step on any message at stage 40; the message's pipeline decides below.
+    return { issue: 'External virtual-table events require asynchronous PostOperation execution.', customApi };
   if (step.mode === 1 && step.stage !== 40)
-    return 'Asynchronous execution supports post-commit stage 40 mutation and external virtual-table event registrations.';
-  if (!stages[step.stage]) return 'Only synchronous stages 10, 20 and 40 are simulated.';
+    return {
+      issue:
+        'Asynchronous execution supports post-commit stage 40 mutation and external virtual-table event registrations.',
+      customApi,
+    };
+  if (!stages[step.stage]) return { issue: 'Only synchronous stages 10, 20 and 40 are simulated.', customApi };
+  return { issue: null, customApi };
+}
+
+function pluginPipelineIssue(step, customApi) {
   if (!step.message)
     return 'The SDK message name is not exported. Add evidence-backed observed.sdkMessages or exported SDK message metadata; the step label is not used to guess behavior.';
   const inert = pluginStepInert(step);
   if (!inert && !pluginMessageHasPipeline(step)) return 'This message has no configured local execution pipeline.';
-  // An unfiltered (global) step runs for every table its message fires on, with that table in the context.
   if (step.unfiltered === true && (step.entity || step.messageFilterId))
     return 'Unfiltered execution requires an explicit null filter.';
   if (!customApi && step.unfiltered !== true && (!step.entity || !/^[a-z][a-z0-9_]*$/i.test(step.entity)))
     return 'An explicit logical table binding is required.';
-  if (!Number.isInteger(step.rank)) return 'An explicit execution rank is required.';
-  if (step.supportedDeployment === 1) return 'Offline-only client registration is skipped by online/server execution.';
-  if (![0, 2].includes(step.supportedDeployment)) return 'Server deployment is missing or unsupported.';
+  return null;
+}
+
+function pluginImageIssue(step, images) {
   if (step.images?.length && !images) return 'Registered pre/post images require an explicit image adapter.';
   if (images && (step.images ?? []).some((image) => ![0, 1, 2].includes(image.type) || (!image.alias && !image.name)))
     return 'Registered image type or alias is unresolved.';
-  // A pre and a post image may share an alias (native accepts 'dup' type 0 with 'dup' type 1); the aliases of one
-  // collection (pre: types 0 and 2, post: types 1 and 2) must be unique.
   const duplicateAlias = (types) => {
     const aliases = (step.images ?? [])
       .filter((image) => types.includes(image.type))
@@ -505,11 +568,39 @@ export function pluginUnsupported(step, { images = false } = {}) {
     return new Set(aliases).size !== aliases.length;
   };
   if (images && (duplicateAlias([0, 2]) || duplicateAlias([1, 2]))) return 'Registered image aliases must be unique.';
+  return null;
+}
+
+function pluginRegistrationIssue(step) {
+  if (!Number.isInteger(step.rank)) return 'An explicit execution rank is required.';
+  if (step.supportedDeployment === 1) return 'Offline-only client registration is skipped by online/server execution.';
+  if (![0, 2].includes(step.supportedDeployment)) return 'Server deployment is missing or unsupported.';
+  return null;
+}
+
+function pluginDependencyIssue(step) {
   if (step.eventHandlerId && !step.serviceEndpointId && !step.assemblyId)
     return "The step's EventHandler names neither a plug-in type nor a service endpoint of the organization (handler unresolved).";
-  // A web hook step (serviceEndpointId) has no plug-in type.
   if (!step.serviceEndpointId && (!step.typeName || !step.assemblyId))
     return 'The exported plugin type or assembly dependency is unresolved.';
+  return null;
+}
+
+export function pluginUnsupported(step, { images = false } = {}) {
+  const { issue: executionIssue, customApi } = pluginExecutionIssue(step);
+  if (executionIssue) return executionIssue;
+  // Native accepts an asynchronous step on any message at stage 40; the message's pipeline decides below.
+  const pipelineIssue = pluginPipelineIssue(step, customApi);
+  if (pipelineIssue) return pipelineIssue;
+  // An unfiltered (global) step runs for every table its message fires on, with that table in the context.
+  const registrationIssue = pluginRegistrationIssue(step);
+  if (registrationIssue) return registrationIssue;
+  const imageIssue = pluginImageIssue(step, images);
+  if (imageIssue) return imageIssue;
+  const dependencyIssue = pluginDependencyIssue(step);
+  if (dependencyIssue) return dependencyIssue;
+  // A pre and a post image may share an alias (native accepts 'dup' type 0 with 'dup' type 1); the aliases of one
+  // collection (pre: types 0 and 2, post: types 1 and 2) must be unique.
   return null;
 }
 
@@ -567,7 +658,14 @@ const registeredImages = (item, types, source, imageRows) =>
     (item.images ?? [])
       .map((spec) => {
         const rows = spec.messagePropertyName && imageRows?.[spec.messagePropertyName];
-        return [spec, rows ? (types.includes(1) ? rows.record : rows.previous) : source];
+        return [
+          spec,
+          chooseLazily(
+            () => rows,
+            () => (types.includes(1) ? rows.record : rows.previous),
+            () => source,
+          ),
+        ];
       })
       .filter(([spec, row]) => types.includes(spec.type) && row)
       .map(([spec, row]) => [spec.alias || spec.name, detachedRecord(imageAttributes(row, spec.attributes))]),
@@ -660,6 +758,137 @@ function contextStepInput(context, store) {
     },
   };
 }
+
+function addTypedBulkImageCollections(
+  result,
+  { store, entity, operation, stage, targets, previousRecords, records, frame, idColumn },
+) {
+  if (!['createmultiple', 'updatemultiple'].includes(operation)) return;
+  const set = frame?.stageImages?.[stage] ?? { pre: {}, post: {} },
+    nameColumn = idColumn ? store.resolveMapping(entity).nameColumn : null;
+  const render = (entries, row) =>
+    Object.fromEntries(
+      Object.entries(row ? entries : {})
+        .map(([alias, source]) => [
+          alias,
+          chooseLazily(
+            () => source.platform === PRIMARY_NAME_IMAGE,
+            () => nameColumn && detachedRecord(primaryNameAttributes(row, nameColumn, idColumn)),
+            () =>
+              chooseLazily(
+                () => source.platform,
+                () => null,
+                () => detachedRecord(imageAttributes(row, source.attributes)),
+              ),
+          ),
+        ])
+        .filter(([, value]) => value),
+    );
+  const collection = (entries, rows) => {
+    const sets = (targets ?? []).map((_, index) => render(entries, rows?.[index]));
+    return sets.some((values) => Object.keys(values).length) ? sets : [];
+  };
+  result.PreEntityImagesCollection = collection(set.pre, previousRecords);
+  result.PostEntityImagesCollection = collection(set.post, stage === 40 ? records : []);
+}
+
+function applyTypedContextInputOverrides(result, { frame, store, operation, stage }) {
+  if (frame?.requestTag !== undefined && !frame.inputTagConsumed)
+    result.InputParameters = { tag: frame.requestTag, ...result.InputParameters };
+  if (frame?.inputParameters) {
+    const extras = pluginMessageValues(frame.inputParameters, store);
+    result.InputParameters = { ...extras, ...result.InputParameters };
+    if (stage === 40 && frame.inputParametersStage === 40) {
+      if (['create', 'update'].includes(operation) && frame.inputParameters.values?.Target?.$type === 'Entity')
+        result.InputParameters.Target = sdkValueToRecord(frame.inputParameters.values.Target);
+      if (
+        ['createmultiple', 'updatemultiple'].includes(operation) &&
+        frame.inputParameters.values?.Targets?.$type === 'EntityCollection'
+      )
+        result.InputParameters.Targets = cloneStateData(frame.inputParameters.values.Targets.entities);
+    }
+  }
+}
+
+function applyTypedContextFrameOverrides(
+  result,
+  { frame, store, operation, stage, record, item, preValidationParent, entity, bridged, parent, initiating },
+) {
+  if (frame?.delegatedSourceOperation) {
+    const source = frame.delegatedSourceOperation;
+    const base = {
+      ...result,
+      PrimaryEntityId: { $type: 'Guid', value: result.PrimaryEntityId },
+      UserId: { $type: 'Guid', value: result.UserId },
+      InitiatingUserId: { $type: 'Guid', value: result.InitiatingUserId },
+      ParentContext: parent,
+    };
+    result.ParentContext = pluginContextValues(
+      delegatedPluginParent(
+        source,
+        base,
+        store?.pluginExecutionUserId ??
+          source.identity?.systemUserId ??
+          (source.identity?.admin ? source.identity.id : null) ??
+          initiating,
+      ),
+      store,
+    );
+  }
+  const asyncParent = asyncMultiplePluginParent(frame, bridged ? multipleMessage(operation) : operation, entity);
+  if (asyncParent) result.ParentContext = pluginContextValues(asyncParent, store);
+  if (
+    (frame?.delegatedParentContext ? frame.namedMainOperation : item.impersonatingUserId && preValidationParent) &&
+    !frame?.delegatedSourceOperation &&
+    result.ParentContext
+  )
+    result.ParentContext.UserId = result.UserId;
+  for (let level = result.ParentContext; level; level = level.ParentContext)
+    level.IsInTransaction = result.IsInTransaction;
+  if (bridged && store) {
+    result.MessageName = messageNameOf(multipleMessage(operation));
+    result.InputParameters = bridgedPlainInputs(
+      { store, entity, operation, stage, record, frame },
+      result.InputParameters,
+    );
+  }
+}
+
+function typedPrimaryEntityId({ customApi, item, operation, bridged, idColumn, record }) {
+  if (
+    (customApi && !customApi.platformMessage && (item.contract?.mode ?? 0) === 1) ||
+    ['associate', 'disassociate'].includes(operation) ||
+    (bridged && operation === 'delete' && (item.contract?.mode ?? 0) === 1)
+  )
+    return '00000000-0000-0000-0000-000000000000';
+  if (idColumn) return record[idColumn] ?? (customApi ? '00000000-0000-0000-0000-000000000000' : null);
+  return customApi ? '00000000-0000-0000-0000-000000000000' : null;
+}
+
+function typedInputParametersForContext({
+  customApi,
+  messageParameters,
+  store,
+  associationParameters,
+  operation,
+  query,
+  holder,
+  columns,
+  target,
+  previous,
+  changedAttributes,
+  targets,
+}) {
+  if (customApi) return pluginMessageValues(messageParameters.inputParameters, store);
+  if (associationParameters) return pluginMessageValues({ values: associationParameters }, store);
+  if (operation === 'retrievemultiple') return { Query: cloneStateData(query) };
+  if (operation === 'retrieve')
+    return {
+      Target: pluginMessageValues({ values: { value: holder?.target } }, store).value,
+      ColumnSet: cloneStateData(columns),
+    };
+  return typedInputParameters({ operation, target, targets, previous, changedAttributes });
+}
 // The IPluginExecutionContext-like context a plug-in type handler receives: registered images keyed by alias, and the
 // caller or the impersonated user as UserId. Values are copies; the handler cannot change the write through it.
 function typedContext({
@@ -707,16 +936,7 @@ function typedContext({
     ...(operation === 'update' || (customApi && entity === 'none') ? { SecondaryEntityName: 'none' } : {}),
     // A queued DeleteMultiple job names no row (native crud, async, upsert).
     // A queued custom API job names no row (native customApi); its Target still names the row.
-    PrimaryEntityId:
-      (customApi && !customApi.platformMessage && (item.contract?.mode ?? 0) === 1) ||
-      ['associate', 'disassociate'].includes(operation) ||
-      (bridged && operation === 'delete' && (item.contract?.mode ?? 0) === 1)
-        ? '00000000-0000-0000-0000-000000000000'
-        : idColumn
-          ? (record[idColumn] ?? (customApi ? '00000000-0000-0000-0000-000000000000' : null))
-          : customApi
-            ? '00000000-0000-0000-0000-000000000000'
-            : null,
+    PrimaryEntityId: typedPrimaryEntityId({ customApi, item, operation, bridged, idColumn, record }),
     Stage: stage,
     Mode: item.contract?.mode ?? 0,
     Depth: depth,
@@ -727,37 +947,30 @@ function typedContext({
     ...(frame?.operationId === undefined ? {} : { OperationId: frame.operationId }),
     ...(frame?.correlationId === undefined ? {} : { CorrelationId: frame.correlationId }),
     ...(frame?.createdOnWire === undefined ? {} : { OperationCreatedOn: frame.createdOnWire.value }),
-    InputParameters: customApi
-      ? pluginMessageValues(messageParameters.inputParameters, store)
-      : associationParameters
-        ? pluginMessageValues({ values: associationParameters }, store)
-        : operation === 'retrievemultiple'
-          ? { Query: cloneStateData(query) }
-          : operation === 'retrieve'
-            ? {
-                Target: pluginMessageValues({ values: { value: holder?.target } }, store).value,
-                ColumnSet: cloneStateData(columns),
-              }
-            : ['create', 'update', 'delete', 'onexternalcreated', 'onexternalupdated', 'onexternaldeleted'].includes(
-                  operation,
-                )
-              ? {
-                  Target: detachedRecord(target),
-                  ...(operation === 'onexternalupdated'
-                    ? { PreImage: detachedRecord(previous), ChangedFields: [...changedAttributes] }
-                    : {}),
-                }
-              : ['createmultiple', 'updatemultiple'].includes(operation)
-                ? { Targets: Array.isArray(targets) ? targets.map(detachedRecord) : cloneStateData(targets) }
-                : {},
+    InputParameters: typedInputParametersForContext({
+      customApi,
+      messageParameters,
+      store,
+      associationParameters,
+      operation,
+      query,
+      holder,
+      columns,
+      target,
+      previous,
+      changedAttributes,
+      targets,
+    }),
     // The main operation's Create id is an output of every PostOperation context, also when earlier stages
     // already gave the frame an (empty) output collection.
-    OutputParameters: customApi
-      ? pluginMessageValues(messageParameters.outputParameters, store)
-      : {
-          ...(stage === 40 && operation === 'create' && idColumn ? { id: record[idColumn] } : {}),
-          ...(frame?.outputParameters ? pluginMessageValues(frame.outputParameters, store) : {}),
-        },
+    OutputParameters: chooseLazily(
+      () => customApi,
+      () => pluginMessageValues(messageParameters.outputParameters, store),
+      () => ({
+        ...(stage === 40 && operation === 'create' && idColumn ? { id: record[idColumn] } : {}),
+        ...(frame?.outputParameters ? pluginMessageValues(frame.outputParameters, store) : {}),
+      }),
+    ),
     SharedVariables: pluginMessageValues(frame?.sharedVariables, store),
     IsInTransaction: store?.pluginInTransaction === true,
     IsolationMode: item.isolationMode ?? 2,
@@ -765,86 +978,32 @@ function typedContext({
     PostEntityImages: stage === 40 && operation !== 'delete' ? images([1, 2], record) : {},
     trace,
   };
-  if (['createmultiple', 'updatemultiple'].includes(operation)) {
-    // The stage's Context4 set (runPluginPhase stageImages) per target; none when every target's set is empty.
-    const set = frame?.stageImages?.[stage] ?? { pre: {}, post: {} },
-      nameColumn = idColumn ? store.resolveMapping(entity).nameColumn : null;
-    const render = (entries, row) =>
-      Object.fromEntries(
-        Object.entries(row ? entries : {})
-          .map(([alias, source]) => [
-            alias,
-            source.platform === PRIMARY_NAME_IMAGE
-              ? nameColumn && detachedRecord(primaryNameAttributes(row, nameColumn, idColumn))
-              : source.platform
-                ? null
-                : detachedRecord(imageAttributes(row, source.attributes)),
-          ])
-          .filter(([, value]) => value),
-      );
-    const collection = (entries, rows) => {
-      const sets = (targets ?? []).map((_, index) => render(entries, rows?.[index]));
-      return sets.some((values) => Object.keys(values).length) ? sets : [];
-    };
-    result.PreEntityImagesCollection = collection(set.pre, previousRecords);
-    result.PostEntityImagesCollection = collection(set.post, stage === 40 ? records : []);
-  }
-  if (frame?.requestTag !== undefined && !frame.inputTagConsumed)
-    result.InputParameters = { tag: frame.requestTag, ...result.InputParameters };
-  if (frame?.inputParameters) {
-    const extras = pluginMessageValues(frame.inputParameters, store);
-    result.InputParameters = { ...extras, ...result.InputParameters };
-    if (stage === 40 && frame.inputParametersStage === 40) {
-      if (['create', 'update'].includes(operation) && frame.inputParameters.values?.Target?.$type === 'Entity')
-        result.InputParameters.Target = sdkValueToRecord(frame.inputParameters.values.Target);
-      if (
-        ['createmultiple', 'updatemultiple'].includes(operation) &&
-        frame.inputParameters.values?.Targets?.$type === 'EntityCollection'
-      )
-        result.InputParameters.Targets = cloneStateData(frame.inputParameters.values.Targets.entities);
-    }
-  }
-  if (frame?.delegatedSourceOperation) {
-    const source = frame.delegatedSourceOperation;
-    const base = {
-      ...result,
-      PrimaryEntityId: { $type: 'Guid', value: result.PrimaryEntityId },
-      UserId: { $type: 'Guid', value: result.UserId },
-      InitiatingUserId: { $type: 'Guid', value: result.InitiatingUserId },
-      ParentContext: parent,
-    };
-    result.ParentContext = pluginContextValues(
-      delegatedPluginParent(
-        source,
-        base,
-        store?.pluginExecutionUserId ??
-          source.identity?.systemUserId ??
-          (source.identity?.admin ? source.identity.id : null) ??
-          initiating,
-      ),
-      store,
-    );
-  }
-  const asyncParent = asyncMultiplePluginParent(frame, bridged ? multipleMessage(operation) : operation, entity);
-  if (asyncParent) result.ParentContext = pluginContextValues(asyncParent, store);
-  // A main operation reports the step's executing user: an impersonating step's own main operation and a named
-  // message's main operation (native crud "Probe: Update 40 impersonated", sdkMessages Assign/30 as SYSTEM).
-  if (
-    (frame?.delegatedParentContext ? frame.namedMainOperation : item.impersonatingUserId && preValidationParent) &&
-    !frame?.delegatedSourceOperation &&
-    result.ParentContext
-  )
-    result.ParentContext.UserId = result.UserId;
-  // Every ancestor reports the observing context's IsInTransaction (native: 855 synchronous ancestor samples).
-  for (let level = result.ParentContext; level; level = level.ParentContext)
-    level.IsInTransaction = result.IsInTransaction;
-  if (bridged && store) {
-    result.MessageName = messageNameOf(multipleMessage(operation));
-    result.InputParameters = bridgedPlainInputs(
-      { store, entity, operation, stage, record, frame },
-      result.InputParameters,
-    );
-  }
+  addTypedBulkImageCollections(result, {
+    store,
+    entity,
+    operation,
+    stage,
+    targets,
+    previousRecords,
+    records,
+    frame,
+    idColumn,
+    item,
+  });
+  applyTypedContextInputOverrides(result, { frame, store, operation, stage });
+  applyTypedContextFrameOverrides(result, {
+    frame,
+    store,
+    operation,
+    stage,
+    record,
+    item,
+    preValidationParent,
+    entity,
+    bridged,
+    parent,
+    initiating,
+  });
   return result;
 }
 
@@ -878,6 +1037,132 @@ function unbridgedPlainInputs(inputs) {
   return { ...(next?.$type === 'Entity' ? { Target: sdkValueToRecord(next) } : {}), ...rest };
 }
 
+function handlerImageCollection(current, source, types, item, store, entity) {
+  return {
+    $type: 'EntityImageCollection',
+    values: Object.fromEntries(
+      Object.entries(current ?? {}).map(([alias, attributes]) => {
+        if (attributes == null || attributes.$type === 'Entity') return [alias, cloneStateData(attributes)];
+        const spec = (item.images ?? []).find(
+          (entry) => types.includes(entry.type) && (entry.alias || entry.name) === alias,
+        );
+        const original = recordToSdkEntity(store, entity, imageAttributes(source), {
+          allColumns: !spec?.attributes?.length,
+          columns: spec?.attributes ?? [],
+        });
+        // Image Entity.Id is independent of its selected/mutable Attributes.
+        // A handler's explicit null edit remains authored data, unlike a null
+        // omitted while constructing the initial image snapshot.
+        return [alias, { ...original, attributes: recordToSdkEntity(store, entity, attributes).attributes }];
+      }),
+    ),
+  };
+}
+
+function addHandlerContextIdentity(values, context, frame, item) {
+  for (const name of ['PrimaryEntityId', 'UserId', 'InitiatingUserId', 'RequestId', 'OperationId', 'CorrelationId'])
+    if (context[name]) values[name] = { $type: 'Guid', value: context[name] };
+  if (context.OperationCreatedOn != null)
+    values.OperationCreatedOn =
+      frame.createdOnWire && [frame.createdOnWire.value, frame.createdOn].includes(context.OperationCreatedOn)
+        ? cloneStateData(frame.createdOnWire)
+        : { $type: 'DateTime', value: context.OperationCreatedOn };
+  if (item.id)
+    values.OwningExtension = {
+      $type: 'EntityReference',
+      logicalName: 'sdkmessageprocessingstep',
+      id: item.id,
+      name: item.name ?? null,
+    };
+}
+
+function addHandlerParentContext(values, frame, store, context, operation, entity, bridged) {
+  if (frame.delegatedSourceOperation) {
+    const source = frame.delegatedSourceOperation;
+    values.ParentContext = delegatedPluginParent(
+      source,
+      values,
+      store?.pluginExecutionUserId ??
+        source.identity?.systemUserId ??
+        (source.identity?.admin ? source.identity.id : null) ??
+        context.InitiatingUserId,
+    );
+  }
+  values.ParentContext =
+    asyncMultiplePluginParent(frame, bridged ? multipleMessage(operation) : operation, entity) ?? values.ParentContext;
+}
+
+function handlerRecordInputTarget({ operation, context, entity, record, frame, store, primary }) {
+  if (operation === 'delete') return { $type: 'EntityReference', logicalName: entity, id: record[primary] };
+  return {
+    ...recordToSdkEntity(
+      store,
+      entity,
+      {
+        ...context.InputParameters.Target,
+        ...(operation === 'create' && context.Stage === 10 && Object.hasOwn(context.InputParameters.Target, primary)
+          ? {}
+          : { [primary]: record[primary] }),
+      },
+      operation === 'create' && context.Stage === 10
+        ? { allColumns: false, columns: Object.keys(context.InputParameters.Target) }
+        : { allColumns: true },
+    ),
+    id: frame.inputParameters?.values?.Target?.id ?? record[primary],
+  };
+}
+
+function handlerRawInputs({
+  customApi,
+  store,
+  messageParameters,
+  before,
+  context,
+  associationParameters,
+  operation,
+  query,
+  holder,
+  columns,
+  entity,
+  targets,
+  record,
+  frame,
+  primary,
+}) {
+  if (customApi)
+    return reconcilePluginMessageParameters(
+      store,
+      chooseLazily(
+        () => customApi.bindingType === 1,
+        () => [...(customApi.parameters ?? []), { uniquename: 'Target', type: 5, logicalentityname: entity }],
+        () => customApi.parameters ?? [],
+      ),
+      messageParameters.inputParameters,
+      before.inputs,
+      context.InputParameters,
+    );
+  if (associationParameters != null) return { $type: 'ParameterCollection', values: associationParameters };
+  if (operation === 'retrievemultiple') return { $type: 'ParameterCollection', values: { Query: query } };
+  if (operation === 'retrieve')
+    return {
+      $type: 'ParameterCollection',
+      values: { Target: holder?.target, ColumnSet: { $type: 'ColumnSet', ...columns } },
+    };
+  if (['createmultiple', 'updatemultiple'].includes(operation))
+    return {
+      $type: 'ParameterCollection',
+      values: {
+        Targets: bulkTargetsCollection(entity, targets, {
+          submitted: context.Stage === 10 && context.Mode !== 1,
+        }),
+      },
+    };
+  return {
+    $type: 'ParameterCollection',
+    values: { Target: handlerRecordInputTarget({ operation, context, entity, record, frame, store, primary }) },
+  };
+}
+
 function handlerExecutionContext({
   context,
   before,
@@ -906,54 +1191,23 @@ function handlerExecutionContext({
     before = { ...before, inputs: unbridgedPlainInputs(before.inputs) };
   }
   const primary = entity && entity !== 'none' ? store?.resolveMapping(entity).idColumn : null;
-  const rawInputs = customApi
-    ? reconcilePluginMessageParameters(
-        store,
-        customApi.bindingType === 1
-          ? [...(customApi.parameters ?? []), { uniquename: 'Target', type: 5, logicalentityname: entity }]
-          : (customApi.parameters ?? []),
-        messageParameters.inputParameters,
-        before.inputs,
-        context.InputParameters,
-      )
-    : {
-        $type: 'ParameterCollection',
-        values:
-          associationParameters ??
-          (operation === 'retrievemultiple'
-            ? { Query: query }
-            : operation === 'retrieve'
-              ? { Target: holder?.target, ColumnSet: { $type: 'ColumnSet', ...columns } }
-              : ['createmultiple', 'updatemultiple'].includes(operation)
-                ? {
-                    Targets: bulkTargetsCollection(entity, targets, {
-                      submitted: context.Stage === 10 && context.Mode !== 1,
-                    }),
-                  }
-                : {
-                    Target:
-                      operation === 'delete'
-                        ? { $type: 'EntityReference', logicalName: entity, id: record[primary] }
-                        : {
-                            ...recordToSdkEntity(
-                              store,
-                              entity,
-                              {
-                                ...context.InputParameters.Target,
-                                ...(operation === 'create' &&
-                                context.Stage === 10 &&
-                                Object.hasOwn(context.InputParameters.Target, primary)
-                                  ? {}
-                                  : { [primary]: record[primary] }),
-                              },
-                              operation === 'create' && context.Stage === 10
-                                ? { allColumns: false, columns: Object.keys(context.InputParameters.Target) }
-                                : { allColumns: true },
-                            ),
-                            id: frame.inputParameters?.values?.Target?.id ?? record[primary],
-                          },
-                  }),
-      };
+  const rawInputs = handlerRawInputs({
+    customApi,
+    store,
+    messageParameters,
+    before,
+    context,
+    associationParameters,
+    operation,
+    query,
+    holder,
+    columns,
+    entity,
+    targets,
+    record,
+    frame,
+    primary,
+  });
   if (!customApi)
     rawInputs.values = {
       ...reconcilePluginMessageParameters(store, [], frame.inputParameters, before.inputs, context.InputParameters)
@@ -961,25 +1215,6 @@ function handlerExecutionContext({
       ...rawInputs.values,
     };
   // types: the image types of the collection (pre 0 and 2, post 1 and 2), so a shared alias picks its own registration.
-  const imageCollection = (current, source, types) => ({
-    $type: 'EntityImageCollection',
-    values: Object.fromEntries(
-      Object.entries(current ?? {}).map(([alias, attributes]) => {
-        if (attributes == null || attributes.$type === 'Entity') return [alias, cloneStateData(attributes)];
-        const spec = (item.images ?? []).find(
-          (entry) => types.includes(entry.type) && (entry.alias || entry.name) === alias,
-        );
-        const original = recordToSdkEntity(store, entity, imageAttributes(source), {
-          allColumns: !spec?.attributes?.length,
-          columns: spec?.attributes ?? [],
-        });
-        // Image Entity.Id is independent of its selected/mutable Attributes.
-        // A handler's explicit null edit remains authored data, unlike a null
-        // omitted while constructing the initial image snapshot.
-        return [alias, { ...original, attributes: recordToSdkEntity(store, entity, attributes).attributes }];
-      }),
-    ),
-  });
   const values = {
     MessageName: context.MessageName,
     PrimaryEntityName: context.PrimaryEntityName,
@@ -1005,50 +1240,32 @@ function handlerExecutionContext({
       context.SharedVariables,
     ),
     ParentContext: parent ?? null,
-    PreEntityImages: imageCollection(context.PreEntityImages, previous, [0, 2]),
-    PostEntityImages: imageCollection(context.PostEntityImages, context.Stage === 40 ? record : null, [1, 2]),
+    PreEntityImages: handlerImageCollection(context.PreEntityImages, previous, [0, 2], item, store, entity),
+    PostEntityImages: handlerImageCollection(
+      context.PostEntityImages,
+      context.Stage === 40 ? record : null,
+      [1, 2],
+      item,
+      store,
+      entity,
+    ),
   };
   if (['createmultiple', 'updatemultiple'].includes(operation)) {
     values.PreEntityImagesCollection = {
       $type: 'EntityImageCollectionArray',
       values: (context.PreEntityImagesCollection ?? []).map((images, index) =>
-        imageCollection(images, previousRecords?.[index], [0, 2]),
+        handlerImageCollection(images, previousRecords?.[index], [0, 2], item, store, entity),
       ),
     };
     values.PostEntityImagesCollection = {
       $type: 'EntityImageCollectionArray',
       values: (context.PostEntityImagesCollection ?? []).map((images, index) =>
-        imageCollection(images, records?.[index], [1, 2]),
+        handlerImageCollection(images, records?.[index], [1, 2], item, store, entity),
       ),
     };
   }
-  for (const name of ['PrimaryEntityId', 'UserId', 'InitiatingUserId', 'RequestId', 'OperationId', 'CorrelationId'])
-    if (context[name]) values[name] = { $type: 'Guid', value: context[name] };
-  if (context.OperationCreatedOn != null)
-    values.OperationCreatedOn =
-      frame.createdOnWire && [frame.createdOnWire.value, frame.createdOn].includes(context.OperationCreatedOn)
-        ? cloneStateData(frame.createdOnWire)
-        : { $type: 'DateTime', value: context.OperationCreatedOn };
-  if (item.id)
-    values.OwningExtension = {
-      $type: 'EntityReference',
-      logicalName: 'sdkmessageprocessingstep',
-      id: item.id,
-      name: item.name ?? null,
-    };
-  if (frame.delegatedSourceOperation) {
-    const source = frame.delegatedSourceOperation;
-    values.ParentContext = delegatedPluginParent(
-      source,
-      values,
-      store?.pluginExecutionUserId ??
-        source.identity?.systemUserId ??
-        (source.identity?.admin ? source.identity.id : null) ??
-        context.InitiatingUserId,
-    );
-  }
-  values.ParentContext =
-    asyncMultiplePluginParent(frame, bridged ? multipleMessage(operation) : operation, entity) ?? values.ParentContext;
+  addHandlerContextIdentity(values, context, frame, item);
+  addHandlerParentContext(values, frame, store, context, operation, entity, bridged);
   if (bridged) values.InputParameters = { ...rawInputs, values: bridgeTargetInputs(rawInputs.values, entity) };
   return { $type: 'ExecutionContext', values };
 }
@@ -1111,7 +1328,21 @@ export function pluginCatalogue({
         images: Boolean(runtime || descriptor || registered || uploaded || step.serviceEndpointId),
       });
     const clrAvailable = uploaded || Boolean((runtime?.descriptor ?? descriptor)?.typeName === step.typeName);
-    const defaultMode = step.serviceEndpointId ? 'webhook' : registered ? 'handler' : uploaded ? 'clr' : 'placeholder';
+    const defaultMode = chooseLazily(
+      () => step.serviceEndpointId,
+      () => 'webhook',
+      () =>
+        chooseLazily(
+          () => registered,
+          () => 'handler',
+          () =>
+            chooseLazily(
+              () => uploaded,
+              () => 'clr',
+              () => 'placeholder',
+            ),
+        ),
+    );
     return copyStepConstructorSettings(step, {
       ...step,
       unsupported,
@@ -1220,11 +1451,80 @@ export function pluginPhaseRequiresCheckpoint(items, context) {
   );
 }
 
+function restoreMissingPluginAttributes(target, attributes, mapping, saved, record, stage) {
+  for (const name of Object.keys(target)) {
+    if (Object.hasOwn(attributes, name)) continue;
+    delete target[name];
+    if (stage === 40 || name === mapping?.idColumn) continue;
+    if (saved && Object.hasOwn(saved, name)) record[name] = cloneStateData(saved[name]);
+    else delete record[name];
+  }
+}
+
+function applyPluginAttributeChanges(attributes, target, record, stage, retainsEmptyPrimaryAttribute) {
+  for (const [name, value] of Object.entries(attributes)) {
+    if (!/^[a-z][a-z0-9_]*$/i.test(name) || ['__proto__', 'prototype', 'constructor'].includes(name.toLowerCase()))
+      throw error('Invalid plugin target column.');
+    const retainsIdentity = retainsEmptyPrimaryAttribute(name, value);
+    target[name] = cloneStateData(value);
+    if (stage !== 40 && !retainsIdentity) record[name] = cloneStateData(value);
+  }
+}
+
+function applyPluginTargetEntity(
+  next,
+  { entity, operation, store, record, previous, target, stage, retainsEmptyPrimaryAttribute },
+) {
+  if (next?.$type !== 'Entity' || next.logicalName !== entity)
+    throw error('A record operation must retain its typed Target Entity.', 'LocalPluginSdkUnsupported', 501);
+  const attributes = sdkValueToRecord(next),
+    mapping = store?.resolveMapping(entity),
+    saved =
+      operation === 'update' && mapping
+        ? (store
+            .tableRows(entity)
+            .find((row) => canonical(row[mapping.idColumn]) === canonical(record[mapping.idColumn])) ?? previous)
+        : mapping?.recordDefaults;
+  restoreMissingPluginAttributes(target, attributes, mapping, saved, record, stage);
+  applyPluginAttributeChanges(attributes, target, record, stage, retainsEmptyPrimaryAttribute);
+}
+
+/* NOSONAR */ function initializeDelegatedMainOperation(
+  phaseFrame,
+  mainOperation,
+  asyncExecution,
+  continued,
+  operation,
+  store,
+) {
+  if (mainOperation && !asyncExecution && !continued) {
+    phaseFrame.delegatedParentContext ??= cloneStateData(mainOperation.context);
+    phaseFrame.delegatedDepth ??= mainOperation.depth;
+    if (mainOperation.exactDepth) phaseFrame.exactDepth = true;
+    if (mainOperation.internalRead && operation === 'retrievemultiple') phaseFrame.internalRead = true;
+    if (mainOperation.namedMessage) phaseFrame.namedMainOperation = true;
+    if (operation === 'retrieve' && !(store?.pluginParentContext || pluginInvocationSdkParent(store)))
+      phaseFrame.platformRead = true;
+    if (mainOperation.preValidationOnly) phaseFrame.platformSharedSeeded = true;
+    if (!mainOperation.keepsRequestTag) phaseFrame.inputTagConsumed = true;
+    delete phaseFrame.delegatedSourceOperation;
+  }
+}
+
+function copyBulkParentFrame(phaseFrame, bulkParent, asyncExecution) {
+  if (bulkParent && !asyncExecution) {
+    phaseFrame.delegatedSourceOperation = bulkParent;
+    for (const key of ['requestId', 'operationId', 'correlationId', 'createdOn', 'createdOnWire', 'requestTag'])
+      if (bulkParent.frame?.[key] !== undefined && !Object.hasOwn(phaseFrame, key))
+        phaseFrame[key] = cloneStateData(bulkParent.frame[key]);
+  }
+}
+
 /** A deliberately small synchronous contract. PostOperation can reject, but cannot silently persist target changes.
  * awaitIo (the asynchronous pipeline, data.mjs createRecordAsync): a synchronous service endpoint step whose post leaves the
  * process (webhooks.send) suspends the phase, and the phase answers a promise of its frame that runs the later steps after the
  * post answered; a failed post rejects it. Without awaitIo the post runs on the synchronous I/O bridge (webhooks.sync). */
-export function runPluginPhase({
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export function runPluginPhase({
   items,
   // Every registration of the pipeline (items may be one step of a per-step call): the Context4 image sets are the stage's.
   stageItems = items,
@@ -1300,21 +1600,7 @@ export function runPluginPhase({
   // A record operation a named message's main operation starts (plugin-platform-messages.mjs) runs at that message's
   // depth with its stage-30 context as parent, as a platform main operation's delegated write does.
   const mainOperation = store?.pluginMainOperation;
-  if (mainOperation && !asyncExecution && !continued) {
-    phaseFrame.delegatedParentContext ??= cloneStateData(mainOperation.context);
-    phaseFrame.delegatedDepth ??= mainOperation.depth;
-    if (mainOperation.exactDepth) phaseFrame.exactDepth = true;
-    if (mainOperation.internalRead && operation === 'retrievemultiple') phaseFrame.internalRead = true;
-    if (mainOperation.namedMessage) phaseFrame.namedMainOperation = true;
-    // A Retrieve a platform main operation runs has the platform's read input shape (clrContext sdkShapedRead).
-    if (operation === 'retrieve' && !(store?.pluginParentContext || pluginInvocationSdkParent(store)))
-      phaseFrame.platformRead = true;
-    // A refused message's per-record PreValidation (DeleteMultiple) has no platform SharedVariables (native bulk).
-    if (mainOperation.preValidationOnly) phaseFrame.platformSharedSeeded = true;
-    // The request tag is an input of the message, not of the operations it delegates (SDK Upsert keeps it).
-    if (!mainOperation.keepsRequestTag) phaseFrame.inputTagConsumed = true;
-    delete phaseFrame.delegatedSourceOperation;
-  }
+  initializeDelegatedMainOperation(phaseFrame, mainOperation, asyncExecution, continued, operation, store);
   // Records a bulk message delegates, and a bulk message UpsertMultiple delegates, have no tag input (recorded corpus).
   if (!inheritsRequestTag && !continued) phaseFrame.inputTagConsumed = true;
   // A request of an ExecuteTransaction a plug-in issued runs at the caller's depth and has no tag input (native
@@ -1330,12 +1616,7 @@ export function runPluginPhase({
   }
   // Such a record runs under the bulk message's context of the current stage and shares its request identity
   // (native bulk: Create/10 <- CreateMultiple/10, Create/20 <- CreateMultiple/20 <- CreateMultiple/30).
-  if (bulkParent && !asyncExecution) {
-    phaseFrame.delegatedSourceOperation = bulkParent;
-    for (const key of ['requestId', 'operationId', 'correlationId', 'createdOn', 'createdOnWire', 'requestTag'])
-      if (bulkParent.frame?.[key] !== undefined && !Object.hasOwn(phaseFrame, key))
-        phaseFrame[key] = cloneStateData(bulkParent.frame[key]);
-  }
+  copyBulkParentFrame(phaseFrame, bulkParent, asyncExecution);
   // Durable jobs must retain the originating operation depth even when no
   // synchronous registration executes. Internal message delegation shares it.
   phaseFrame.operationDepth ??=
@@ -1438,7 +1719,7 @@ export function runPluginPhase({
       if (!phaseFrame.inputTagConsumed)
         phaseFrame.inputParameters = {
           $type: 'ParameterCollection',
-          values: { tag: phaseFrame.requestTag, ...(phaseFrame.inputParameters?.values ?? {}) },
+          values: { tag: phaseFrame.requestTag, ...phaseFrame.inputParameters?.values },
         };
     }
   }
@@ -1485,7 +1766,7 @@ export function runPluginPhase({
     phaseFrame?.inputParameters?.values?.Target?.$type === 'Entity'
   )
     phaseFrame.inputParameters.values.Target.id = record[store.resolveMapping(entity).idColumn];
-  if (!asyncExecution && !customApi && !/^onexternal/.test(operation)) {
+  if (!asyncExecution && !customApi && !operation.startsWith('onexternal')) {
     // Native pipelines start every SharedVariables collection with the platform's entries (see
     // platformSharedVariables). A plug-in-issued SDK request carries no Accept-Language.
     const nested = Boolean(store?.pluginParentContext || pluginInvocationSdkParent(store)),
@@ -1496,28 +1777,28 @@ export function runPluginPhase({
           : {},
       // A record a bulk message delegates keeps only its own message's entries; the platform's belong to the bulk
       // message's collections (native bulk).
-      platform =
-        bulkOrigin && !['createmultiple', 'updatemultiple'].includes(operation)
-          ? operation === 'create'
-            ? { ...odata, DefaultsAddedFlag: true }
-            : { ...odata }
-          : {
-              ...odata,
-              ...platformSharedVariables(
-                operation,
-                nested ? '' : acceptLanguage || identity?.dataverse?.acceptLanguage,
-                {
-                  nested,
-                  bulkOrigin,
-                },
-              ),
-            };
+      platform = chooseLazily(
+        () => bulkOrigin && !['createmultiple', 'updatemultiple'].includes(operation),
+        () =>
+          chooseLazily(
+            () => operation === 'create',
+            () => ({ ...odata, DefaultsAddedFlag: true }),
+            () => ({ ...odata }),
+          ),
+        () => ({
+          ...odata,
+          ...platformSharedVariables(operation, nested ? '' : acceptLanguage || identity?.dataverse?.acceptLanguage, {
+            nested,
+            bulkOrigin,
+          }),
+        }),
+      );
     // The PreValidation collection exists before any step ran; remember how many plug-in requests preceded it.
     if (stage === 10) phaseFrame.sdkRequestsBefore ??= store?.pluginSdkRequests ?? 0;
     if (!phaseFrame.platformSharedSeeded) {
       phaseFrame.sharedVariables = {
         $type: 'ParameterCollection',
-        values: { ...platform, ...(phaseFrame.sharedVariables?.values ?? {}) },
+        values: { ...platform, ...phaseFrame.sharedVariables?.values },
       };
       phaseFrame.platformSharedSeeded = true;
     }
@@ -1570,22 +1851,22 @@ export function runPluginPhase({
     if (stage === 40 && !nested && !phaseFrame.delegatedParentContext && !bulkParent) {
       // An HTTP Upsert's framework operation (plugin-sdk-parent selectSdkEntryParent) is the root when present; an
       // upsert-created row's Create main operation is not the root (native upsert: Create/30 has no entry).
-      const root = phaseFrame.sdkFrameworkSource
-        ? (phaseFrame.sdkFrameworkSource.sharedVariables ??= {
-            $type: 'ParameterCollection',
-            values: {
-              AcceptLang: phaseFrame.sdkFrameworkSource.acceptLanguage ?? '',
-              IsAutoTransact: false,
-              ...(phaseFrame.sdkFrameworkSource.tag === undefined ? {} : { tag: phaseFrame.sdkFrameworkSource.tag }),
-            },
-          })
-        : preValidationSourceOperation === 'upsert'
-          ? null
-          : ['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation)
-            ? phaseFrame.mainSharedVariables
-            : phaseFrame.sharedVariables;
-      if (table && root)
-        root.values.ChangedEntityTypes = { ...(root.values.ChangedEntityTypes ?? {}), [table]: 'Update' };
+      let root;
+      if (phaseFrame.sdkFrameworkSource) {
+        phaseFrame.sdkFrameworkSource.sharedVariables ??= {
+          $type: 'ParameterCollection',
+          values: {
+            AcceptLang: phaseFrame.sdkFrameworkSource.acceptLanguage ?? '',
+            IsAutoTransact: false,
+            ...(phaseFrame.sdkFrameworkSource.tag === undefined ? {} : { tag: phaseFrame.sdkFrameworkSource.tag }),
+          },
+        };
+        root = phaseFrame.sdkFrameworkSource.sharedVariables;
+      } else if (preValidationSourceOperation === 'upsert') root = null;
+      else if (['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation))
+        root = phaseFrame.mainSharedVariables;
+      else root = phaseFrame.sharedVariables;
+      if (table && root) root.values.ChangedEntityTypes = { ...root.values.ChangedEntityTypes, [table]: 'Update' };
     }
   }
   if (customApi) {
@@ -1702,11 +1983,11 @@ export function runPluginPhase({
     );
     if (rules.some((rule) => rule.excludeinactiverecords === true || rule.excludeinactiverecords === 1))
       named.push('statecode');
-    const changed = changedAttributes.map(canonical);
+    const changed = new Set(changedAttributes.map(canonical));
     return {
       [BUSINESS_ENTITY_IMAGE]: {
         platform: BUSINESS_ENTITY_IMAGE,
-        attributes: [...new Set(named)].filter((name) => !changed.includes(name)),
+        attributes: [...new Set(named)].filter((name) => !changed.has(name)),
       },
     };
   };
@@ -1764,18 +2045,14 @@ export function runPluginPhase({
   if (stage === 40 && store && !asyncExecution && executionFrames.has(record)) {
     const frame = executionFrames.get(record),
       primary = entity && !(customApi && entity === 'none') ? store.resolveMapping(entity).idColumn : null;
-    const values =
-      operation === 'create'
-        ? { id: { $type: 'Guid', value: record[primary] } }
-        : operation === 'createmultiple'
-          ? { Ids: { $type: 'GuidArray', values: record.bulkIds.map((value) => ({ $type: 'Guid', value })) } }
-          : operation === 'retrieve'
-            ? { BusinessEntity: holder.entity }
-            : multiple
-              ? { BusinessEntityCollection: collection }
-              : customApi
-                ? (messageParameters?.outputParameters?.values ?? {})
-                : {};
+    let values;
+    if (operation === 'create') values = { id: { $type: 'Guid', value: record[primary] } };
+    else if (operation === 'createmultiple')
+      values = { Ids: { $type: 'GuidArray', values: record.bulkIds.map((value) => ({ $type: 'Guid', value })) } };
+    else if (operation === 'retrieve') values = { BusinessEntity: holder.entity };
+    else if (multiple) values = { BusinessEntityCollection: collection };
+    else if (customApi) values = messageParameters?.outputParameters?.values ?? {};
+    else values = {};
     populatePluginSystemOutputs(frame, values);
     executionFrames.set(record, frame);
   }
@@ -1798,30 +2075,16 @@ export function runPluginPhase({
     value === '00000000-0000-0000-0000-000000000000' &&
     target[name] === value;
   const applyTargetEntity = (next) => {
-    if (next?.$type !== 'Entity' || next.logicalName !== entity)
-      throw error('A record operation must retain its typed Target Entity.', 'LocalPluginSdkUnsupported', 501);
-    const attributes = sdkValueToRecord(next),
-      mapping = store?.resolveMapping(entity),
-      saved =
-        operation === 'update' && mapping
-          ? (store
-              .tableRows(entity)
-              .find((row) => canonical(row[mapping.idColumn]) === canonical(record[mapping.idColumn])) ?? previous)
-          : mapping?.recordDefaults;
-    for (const name of Object.keys(target)) {
-      if (Object.hasOwn(attributes, name)) continue;
-      delete target[name];
-      if (stage === 40 || name === mapping?.idColumn) continue;
-      if (saved && Object.hasOwn(saved, name)) record[name] = cloneStateData(saved[name]);
-      else delete record[name];
-    }
-    for (const [name, value] of Object.entries(attributes)) {
-      if (!/^[a-z][a-z0-9_]*$/i.test(name) || ['__proto__', 'prototype', 'constructor'].includes(name.toLowerCase()))
-        throw error('Invalid plugin target column.');
-      const retainsIdentity = retainsEmptyPrimaryAttribute(name, value);
-      target[name] = cloneStateData(value);
-      if (stage !== 40 && !retainsIdentity) record[name] = cloneStateData(value);
-    }
+    applyPluginTargetEntity(next, {
+      entity,
+      operation,
+      store,
+      record,
+      previous,
+      target,
+      stage,
+      retainsEmptyPrimaryAttribute,
+    });
   };
   // Tracing (docs/design/tracing.md): a plugin-stage span only when steps matched, and one plugin-step span per step that
   // runs (handler, CLR, mock, web hook). The step body runs inside its span, so its SDK calls and writes nest under it.
@@ -1891,7 +2154,7 @@ export function runPluginPhase({
     });
   const inSpan = (span, fn) => (span ? tracing.run(span, fn) : fn());
   // The steps from index `from` on; an awaited post returns the promise of the rest (see awaitIo above).
-  const run = (from) => {
+  /* NOSONAR: single-pass routine, splitting it would change shared state */ const run = (from) => {
     for (let index = from; index < matched.length; index++) {
       const item = matched[index],
         bridged = bridgedStep(item) === 1;
@@ -1905,7 +2168,11 @@ export function runPluginPhase({
         tracing?.current()?.event('plugin', { message, attributes: { code, stepId: item.id } });
         diagnostic({
           code,
-          severity: code === 'PLUGIN_STEP_REJECTED' ? 'error' : code === 'PLUGIN_STEP_SIMULATED' ? 'info' : 'warning',
+          severity: chooseLazily(
+            () => code === 'PLUGIN_STEP_REJECTED',
+            () => 'error',
+            () => (code === 'PLUGIN_STEP_SIMULATED' ? 'info' : 'warning'),
+          ),
           stepId: item.id,
           name: item.name,
           entity,
@@ -2342,8 +2609,15 @@ export function runPluginPhase({
           // The step span's input at level full is the context the handler receives (stepInput without one).
           if (invocationContext) span?.setInput(() => contextStepInput(invocationContext, store));
           try {
-            output = inSpan(span, () =>
-              execution.run(() =>
+            const bridgeTargets = () => {
+              bridgedSent = bridgedPlainInputs(
+                { store, entity, operation, stage, record, frame: handlerFrame },
+                { Target: target },
+              ).Targets;
+              return cloneStateData(bridgedSent);
+            };
+            /* NOSONAR: closure intentionally captures the loop state */ output = inSpan(span, () =>
+              /* NOSONAR: closure intentionally captures the loop state */ execution.run(() =>
                 handler({
                   // The operation's shared variables, the same collection as a plug-in type handler's
                   // context.SharedVariables: what a handler leaves there is what later steps of the operation see.
@@ -2356,12 +2630,7 @@ export function runPluginPhase({
                   // A bridged multiple step's grouped view of the one record (plugin-single-multiple.mjs).
                   ...(bridged
                     ? {
-                        targets: cloneStateData(
-                          (bridgedSent = bridgedPlainInputs(
-                            { store, entity, operation, stage, record, frame: handlerFrame },
-                            { Target: target },
-                          ).Targets),
-                        ),
+                        targets: bridgeTargets(),
                         previousRecords: [previous ? cloneStateData(previous) : null],
                         records: stage === 40 ? [cloneStateData(record)] : [],
                       }
@@ -2450,28 +2719,27 @@ export function runPluginPhase({
                 handlerContext.OutputParameters,
               );
             } else if (store) {
-              const specs = ['create', 'update'].includes(operation)
-                ? [{ uniquename: 'Target', type: 3, logicalentityname: entity }]
-                : bulk
-                  ? [{ uniquename: 'Targets', type: 4, logicalentityname: entity }]
-                  : association
-                    ? [{ uniquename: 'Target', type: 5 }]
-                    : read && !multiple
-                      ? [{ uniquename: 'Target', type: 5, logicalentityname: entity }]
-                      : [];
+              let specs;
+              if (['create', 'update'].includes(operation))
+                specs = [{ uniquename: 'Target', type: 3, logicalentityname: entity }];
+              else if (bulk) specs = [{ uniquename: 'Targets', type: 4, logicalentityname: entity }];
+              else if (association) specs = [{ uniquename: 'Target', type: 5 }];
+              else if (read && !multiple) specs = [{ uniquename: 'Target', type: 5, logicalentityname: entity }];
+              else specs = [];
               let priorInputs =
                 handlerFrame.inputParameters ??
-                (read
-                  ? {
-                      $type: 'ParameterCollection',
-                      values: multiple
-                        ? { Query: query }
-                        : {
-                            Target: holder.target,
-                            ColumnSet: cloneStateData(columns),
-                          },
-                    }
-                  : pluginMessageParameters(store, specs, contextBefore.inputs));
+                chooseLazily(
+                  () => read,
+                  () => ({
+                    $type: 'ParameterCollection',
+                    values: chooseLazily(
+                      () => multiple,
+                      () => ({ Query: query }),
+                      () => ({ Target: holder.target, ColumnSet: cloneStateData(columns) }),
+                    ),
+                  }),
+                  () => pluginMessageParameters(store, specs, contextBefore.inputs),
+                );
               if (['create', 'update'].includes(operation)) {
                 const primary = store.resolveMapping(entity).idColumn;
                 const current = recordToSdkEntity(
@@ -2568,18 +2836,7 @@ export function runPluginPhase({
             typeof output !== 'object' ||
             Array.isArray(output) ||
             Object.keys(output).some(
-              (key) =>
-                !(
-                  customApi
-                    ? ['inputs', 'outputs', 'error']
-                    : association
-                      ? ['error']
-                      : bulk || bridged
-                        ? ['targets', 'error']
-                        : read
-                          ? ['query', 'collection', 'entityResult', 'error']
-                          : ['target', 'error']
-                ).includes(key),
+              (key) => !supportedPluginResultFields({ customApi, association, bulk, bridged, read }).includes(key),
             ))
         )
           throw error('Plugin result must contain only supported field/query changes or an error.');
@@ -2709,7 +2966,7 @@ export function runPluginPhase({
   return tracing.wrap(
     {
       kind: 'plugin-stage',
-      name: `${customApi?.name ?? messageNameOf(operation)} ${entity} · ${STAGE_NAMES[stage] ?? `Stage ${stage}`}`,
+      name: `${customApi?.name ?? messageNameOf(operation)} ${entity} · ${STAGE_NAMES[stage] ?? 'Stage ' + stage}`,
       module: 'plugins',
       operation,
       entity,

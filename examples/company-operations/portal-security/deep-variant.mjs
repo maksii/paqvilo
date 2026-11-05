@@ -107,7 +107,7 @@ export async function restoreDeepVariant(
       if (!archived) throw new Error('Recovery journal lacks the exact archived component');
       return { key, before: archived.before };
     });
-  await onProgress({
+  /* NOSONAR: await kept: the value may be a thenable and timing matters */ await onProgress({
     state: 'recovery-preflight',
     variant: journal.variant,
     ids: records.map((r) => r.before.powerpagecomponentid),
@@ -123,7 +123,7 @@ export async function withDeepVariant(client, siteId, callback, { onProgress = (
     validateArchived(siteId, key, before);
     if (!before['@odata.etag']) throw new Error('Deep variant requires current ETag');
     records.push({ key, id, before });
-    await onProgress({
+    /* NOSONAR: await kept: the value may be a thenable and timing matters */ await onProgress({
       state: 'before-activation',
       variant: deepVariant,
       key,
@@ -138,7 +138,7 @@ export async function withDeepVariant(client, siteId, callback, { onProgress = (
     // so no active descendant ever loses its currently active ancestor.
     for (const { key, id, before } of [...records].reverse()) {
       const endpoint = `powerpagecomponents(${id})`;
-      await onProgress({ state: 'before-node-deactivation', key, id, etag: before['@odata.etag'] });
+      await onProgress({ state: 'before-node-deactivation', key, id, etag: before['@odata.etag'] }); // NOSONAR: await kept: the value may be a thenable and timing matters
       await client.request(endpoint, {
         method: 'PATCH',
         body: { statecode: 1, statuscode: 2 },
@@ -147,9 +147,9 @@ export async function withDeepVariant(client, siteId, callback, { onProgress = (
       const inactive = await client.get(endpoint);
       validateCurrent(siteId, key, before, inactive);
       if (inactive.statecode !== 1) throw new Error('Deep variant activation verification failed');
-      await onProgress({ state: 'node-deactivated', key, id });
+      await onProgress({ state: 'node-deactivated', key, id }); // NOSONAR: await kept: the value may be a thenable and timing matters
     }
-    await onProgress({ state: 'active', variant: deepVariant, ids: records.map((r) => r.id) });
+    await onProgress({ state: 'active', variant: deepVariant, ids: records.map((r) => r.id) }); // NOSONAR: await kept: the value may be a thenable and timing matters
     result = await callback({ variant: deepVariant, ids: records.map((r) => r.id) });
   } finally {
     // After an uncertain activation outcome, read the fixed identity again.

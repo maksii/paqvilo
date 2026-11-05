@@ -62,10 +62,12 @@ export async function acquireCiWorkspaceLease(checkout, environment = process.en
     /* Invalid markers cannot bypass acquisition. */
   }
   const prior = read(ownerFile);
-  const busy = () =>
-    new Error(
-      `Validation or dependency preparation already owns this checkout${valid(prior) ? ` (PID ${prior.pid})` : ''}. Finish that run first. If it stopped unexpectedly, verify its workers have stopped before removing ${directory}.`,
+  const busy = () => {
+    const owner = valid(prior) ? ` (PID ${prior.pid})` : '';
+    return new Error(
+      `Validation or dependency preparation already owns this checkout${owner}. Finish that run first. If it stopped unexpectedly, verify its workers have stopped before removing ${directory}.`,
     );
+  };
   const membership = async (operation) => {
     const guard = path.join(directory, 'membership'),
       deadline = Date.now() + 3000;

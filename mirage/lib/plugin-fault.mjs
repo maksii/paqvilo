@@ -18,6 +18,19 @@ const PLUGIN_SUBERROR = -2146233088;
 const INVALID_PLUGIN = 'InvalidPluginExecutionException';
 // Microsoft.Xrm.Sdk.OperationStatus, the Status of an InvalidPluginExecutionException (Failed unless the plug-in names one).
 const OPERATION_STATUS = ['Failed', 'Canceled', 'Retry', 'Suspended', 'Succeeded'];
+const pluginErrorType = (source, inner, error) => {
+  if (source?.type) return source.type === `Microsoft.Xrm.Sdk.${INVALID_PLUGIN}` ? INVALID_PLUGIN : 'Exception';
+  if (inner === '0x80040265' || error.code === 'PluginValidation' || error.pluginFault === INVALID_PLUGIN)
+    return INVALID_PLUGIN;
+  if (inner === '0x80040224' || !Number.isInteger(error.status)) return 'Exception';
+  return null;
+};
+const pluginErrorCode = (inner, type, error) => {
+  if (inner !== null) return inner;
+  if (type === INVALID_PLUGIN) return '0x80040265';
+  if (type) return '0x80040224';
+  return String(error.code ?? 'Error');
+};
 
 /**
  * The trace identity of a plug-in fault (docs/design/tracing.md, D-R3-19): { type: 'InvalidPluginExecutionException' |
@@ -33,18 +46,10 @@ export function notePluginFault(error, { pluginType = null, step = null, stage =
   if (error.traceError) return error.traceError;
   const source = error.details?.sourceException ?? null,
     inner = typeof error.details?.innerCode === 'string' ? error.details.innerCode : null;
-  const type = source?.type
-    ? source.type === `Microsoft.Xrm.Sdk.${INVALID_PLUGIN}`
-      ? INVALID_PLUGIN
-      : 'Exception'
-    : inner === '0x80040265' || error.code === 'PluginValidation' || error.pluginFault === INVALID_PLUGIN
-      ? INVALID_PLUGIN
-      : inner === '0x80040224' || !Number.isInteger(error.status)
-        ? 'Exception'
-        : null;
+  const type = pluginErrorType(source, inner, error);
   const identity = {
     ...(type ? { type } : {}),
-    code: inner ?? (type === INVALID_PLUGIN ? '0x80040265' : type ? '0x80040224' : String(error.code ?? 'Error')),
+    code: pluginErrorCode(inner, type, error),
     // The CLR host names the OperationStatus member; a number is its value.
     status: OPERATION_STATUS.includes(source?.operationStatus)
       ? source.operationStatus
@@ -70,11 +75,7 @@ export function pluginFailure(error, plugin, timeoutMs) {
   const fault = error?.pluginFault === 'InvalidPluginExecutionException';
   const code = fault ? '0x80040265' : '0x80040224';
   const limit = timeoutMs % 60000 === 0 ? `${timeoutMs / 60000}-minute` : `${timeoutMs / 1000}-second`;
-  const message = fault
-    ? String(error.message)
-    : error?.timedOut
-      ? `An unexpected error occurred from ISV code. (ErrorType = ClientError) Unexpected exception from plug-in (Execute):  ${type}: System.TimeoutException: Couldn’t complete execution of the ${type} plug-in within the ${limit} limit. Please refer https://go.microsoft.com/fwlink/?linkid=2255411 for more details`
-      : (error?.message ?? String(error));
+  const message = fault ? String(error.message) : timeoutMessage(error, type, limit);
   const trace = traces.join('\n');
   const assembly = type.includes('.') ? type.slice(0, type.lastIndexOf('.')) : type;
   const cds = {
@@ -82,7 +83,7 @@ export function pluginFailure(error, plugin, timeoutMs) {
       ? {
           'Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus': '0',
           'Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode': String(
-            error.errorCode == null ? PLUGIN_SUBERROR : Number(error.errorCode) | 0,
+            error.errorCode == null ? PLUGIN_SUBERROR : Number(error.errorCode) | 0, // NOSONAR: bitwise coercion wraps to signed 32 bits on purpose
           ),
           'Microsoft.PowerApps.CDS.ErrorDetails.Plugin.ExceptionFromPluginExecute': type,
           'Microsoft.PowerApps.CDS.ErrorDetails.Plugin.ExceptionRetriable': 'False',
@@ -103,4 +104,10 @@ export function pluginFailure(error, plugin, timeoutMs) {
     depth: plugin.depth ?? 1,
   });
   return failure;
+}
+
+function timeoutMessage(error, type, limit) {
+  if (error?.timedOut)
+    return `An unexpected error occurred from ISV code. (ErrorType = ClientError) Unexpected exception from plug-in (Execute):  ${type}: System.TimeoutException: Couldn’t complete execution of the ${type} plug-in within the ${limit} limit. Please refer https://go.microsoft.com/fwlink/?linkid=2255411 for more details`;
+  return error?.message ?? String(error);
 }

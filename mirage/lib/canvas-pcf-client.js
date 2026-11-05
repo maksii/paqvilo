@@ -3,7 +3,7 @@ import { renderCanvasPcfControl } from './model-driven/pcf-runtime.mjs';
 // Instances survive snapshot redraws; absent controls are explicitly destroyed after a complete render.
 const instances = new Map();
 let seen = new Set();
-window.paqviloCanvasPcf = {
+globalThis.paqviloCanvasPcf = {
   begin() {
     seen = new Set();
   },

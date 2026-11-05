@@ -1,3 +1,4 @@
+// @test-kind contract+security: toolkit browser lifecycle, origin isolation and external credential confinement.
 import { makeTemporaryDirectorySync, ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
 
 import { test } from 'node:test';
@@ -64,18 +65,24 @@ test(
     const servers = [];
     let browser;
     ownedFixture(t).add(async () => {
+      t.diagnostic('placement cleanup browser: start');
       await browser?.close();
+      t.diagnostic('placement cleanup browser: complete');
     });
     ownedFixture(t).add(async () => {
+      t.diagnostic('placement cleanup servers: start');
       await drainFixture(
         [...servers].map((server) => async () => {
           server.closeAllConnections();
           await new Promise((resolve) => server.close(resolve));
         }),
       );
+      t.diagnostic('placement cleanup servers: complete');
     });
     ownedFixture(t).remove(async () => {
+      t.diagnostic('placement cleanup profile: start');
       fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
+      t.diagnostic('placement cleanup profile: complete');
     });
     const fixture = await serve('placement', servers);
     const launch = chromium.launchPersistentContext;
@@ -94,6 +101,7 @@ test(
     });
     const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
     for (const external of [false, true]) {
+      const phase = external ? 'external' : 'owned';
       const root = path.join(work, external ? 'external' : 'profiles/test-dev');
       const child = external ? 'Profile 2' : 'Default';
       const prefs = path.join(root, child, 'Preferences');
@@ -104,6 +112,7 @@ test(
           browser: { window_placement: { left: 0, top: 0, right: 1200, bottom: 820, maximized: false } },
         }),
       );
+      t.diagnostic(`placement ${phase} open: start`);
       browser = await openBrowser({
         configDir: work,
         siteName: 'test',
@@ -114,14 +123,19 @@ test(
           ...(external ? { userDataDir: root, profileDirectory: child } : { profileDir: 'profiles' }),
         },
       });
+      t.diagnostic(`placement ${phase} open: complete`);
       const page = browser.context.pages()[0] ?? (await browser.context.newPage());
+      t.diagnostic(`placement ${phase} goto: start`);
       await page.goto(fixture.origin);
+      t.diagnostic(`placement ${phase} goto: complete`);
       assert.deepEqual(
         page.viewportSize(),
         { width: 1440, height: 900 },
         'verification retains its independent test viewport',
       );
+      t.diagnostic(`placement ${phase} close: start`);
       await browser.close();
+      t.diagnostic(`placement ${phase} close: complete`);
       browser = null;
       const saved = JSON.parse(fs.readFileSync(prefs, 'utf8')).browser.window_placement;
       assert.equal(saved.right - saved.left, 1200);

@@ -21,10 +21,333 @@ export const RESOURCE_KINDS = [
   'metadata-markup',
   'route',
 ];
-const compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+const compare = (a, b) => {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+};
+const routeStrategy = (rule) => {
+  if (rule.passthrough) return 'passthrough';
+  return rule.dir ? 'directory-route' : 'file-route';
+};
+const previewReason = (source, readable, pageResolved) => {
+  if (!readable) return 'Source is missing or outside the extract';
+  if (!pageResolved) return 'The page URL cannot be resolved from metadata';
+  if (source.mode === 'markup')
+    return 'Only supported literal changes can be patched; runtime matching and Liquid require separate validation.';
+  return 'Inline content is matched against the rendered page; eligibility does not prove it appears there.';
+};
 const byId = (a, b) => compare(a.id, b.id);
 const invalidArgument = (message) => Object.assign(new Error(message), { code: 'invalid_argument' });
-const normalizePath = (file) => file.replace(/\\/g, '/');
+const normalizePath = (file) => file.replaceAll('\\', '/');
+
+function optionalInlineFields(source) {
+  return {
+    ...(source.fieldPath
+      ? { fieldPath: source.fieldPath, ...(source.jsonPath ? { jsonPath: source.jsonPath } : {}) }
+      : {}),
+    ...(source.componentId != null ? { componentId: source.componentId } : {}),
+    ...(source.recordId ? { recordId: source.recordId, recordIdField: source.recordIdField } : {}),
+    ...(source.lcid != null ? { lcid: source.lcid } : {}),
+  };
+}
+
+function inlineMetadata(source, model, cfg) {
+  const def = inlineKindOf(source.file);
+  let metadata = null;
+  if (source.extract) metadata = source.file;
+  else if (def) metadata = source.file.slice(0, -def.suffix.length) + def.suffix.replace(/\.[^.]+\.[^.]+$/, '.yml');
+  const metadataPaths =
+    metadata && (source.extract || model.currentYaml.has(metadata)) && isSourceFile(cfg.sourceDir, metadata)
+      ? [metadata]
+      : [];
+  return { metadata, metadataPaths };
+}
+
+function inlinePreview(source, readable, renders, configured, pageResolved, cfg, { baseline, changed }) {
+  return {
+    strategy: source.mode === 'block' ? 'inline-block' : 'baseline-patch',
+    supported: readable && renders,
+    enabled: configured,
+    eligible:
+      configured &&
+      readable &&
+      renders &&
+      (source.mode === 'markup' || cfg.site.scope === 'changed'
+        ? baseline.available && changed.has(source.file)
+        : true),
+    reason: previewReason(source, readable, pageResolved),
+  };
+}
+
+function addInlineSource(source, context) {
+  const { filters, model } = context;
+  if (filters.kinds.length && !filters.kinds.includes(source.kind)) return;
+  const knownPages = source.pageUrl ? [source.pageUrl] : (source.usedOn ?? []);
+  if (filters.page && !knownPages.some((url) => pageKey(url, model) === filters.page)) return;
+  if (filters.changed && !context.changedAt(source.file)) return;
+  appendInlineResource(source, knownPages, context);
+}
+
+function appendInlineResource(source, knownPages, context) {
+  const { model, cfg, baseline, changed, relative, textOf, resources } = context;
+  const { metadata, metadataPaths } = inlineMetadata(source, model, cfg);
+  const kinds = source.mode === 'block' ? cfg.site.inline : cfg.site.markup;
+  const configured = Boolean(kinds?.enabled && kinds.kinds.includes(source.kind));
+  const pageResolved = !source.kind.startsWith('page-') || source.pageUrl !== null;
+  const readable = isSourceFile(cfg.sourceDir, source.file);
+  const content = readable ? textOf(source) : null;
+  const exists = source.exists ?? content !== null;
+  const rootShadowed = source.renders === false;
+  const renders = pageResolved && !rootShadowed && exists;
+  const resource = {
+    id: `source:${source.kind}:${source.rel}`,
+    kind: source.kind,
+    name:
+      source.label ??
+      model.currentYaml.get(metadata)?.adx_name ??
+      (model.shortKey ? model.currentYaml.get(metadata)?.name : undefined) ??
+      path.basename(source.file),
+    exists,
+    empty: content === null ? null : !content.trim(),
+    renders,
+    path: source.file,
+    sourceDir: cfg.sourceDir,
+    relativePath: relative(source.file),
+    metadataPaths,
+    field: source.field ?? null,
+    format: source.format ?? (source.extract ? 'xml' : 'text'),
+    ...optionalInlineFields(source),
+    url: null,
+    relatedPageUrls: [...new Set(knownPages)].sort(compare),
+    changed: context.changedAt(source.file),
+    preview: inlinePreview(source, readable, renders, configured, pageResolved, cfg, { baseline, changed }),
+  };
+  resources.push(resource);
+  relateResource(
+    context.relationships,
+    context.pagesByUrl,
+    context.pageResources,
+    resource,
+    knownPages,
+    source.pageUrl ? 'belongs-to-page' : 'configured-on-page',
+    metadataPaths,
+  );
+}
+
+function appendWebFileResource(file, context) {
+  const { model, relative, resolver, baseline, changed, resources } = context;
+  const effective = file.url ? resolver.resolve(file.url) : null;
+  const resource = {
+    id: `web-file:${relative(file.yml)}`,
+    kind: 'web-file',
+    name: file.name ?? relative(file.file) ?? relative(file.yml),
+    recordId: file.id ?? null,
+    path: file.file,
+    relativePath: relative(file.file),
+    metadataPaths: [file.yml],
+    field: null,
+    url: file.url,
+    relatedPageUrls: model.pagePath(file.parentPageId) ? [model.pagePath(file.parentPageId)] : [],
+    changed: baseline.available ? changed(file.file) || changed(file.yml) : null,
+    preview: {
+      strategy: 'local-response',
+      supported: Boolean(file.file && file.url && !file.problem),
+      selected: Boolean(file.file && effective?.file === file.file),
+      effectivePath: effective?.file ?? null,
+      via: effective?.via ?? null,
+      reason: file.problem ?? null,
+    },
+  };
+  resources.push(resource);
+  relateResource(
+    context.relationships,
+    context.pagesByUrl,
+    context.pageResources,
+    resource,
+    resource.relatedPageUrls,
+    'parent-page',
+    resource.metadataPaths,
+  );
+}
+
+function relateResource(relationships, pagesByUrl, pageResources, resource, urls, kind, metadataPaths) {
+  for (const url of urls)
+    for (const targetId of pagesByUrl.get(pageKey(url)) ?? [])
+      relationships.push({
+        sourceId: resource.id,
+        targetId,
+        kind,
+        evidence: {
+          type: 'extract-metadata',
+          paths: [...new Set([...metadataPaths, ...pageResources.get(targetId).metadataPaths])].sort(compare),
+        },
+      });
+}
+
+function relativeResourcePath(cfg, file) {
+  return file ? normalizePath(path.relative(cfg.sourceDir, file)) : null;
+}
+
+function changedResourceAt(cfg, baseline, changed, file) {
+  if (!baseline.available) return null;
+  if (!file) return false;
+  const rel = path.relative(cfg.sourceDir, file);
+  // The Git snapshot is deliberately scoped to the extract, including when an explicit route serves a file from elsewhere.
+  // Absence from that snapshot does not prove it clean.
+  if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) return null;
+  return changed.has(file);
+}
+
+function rootPageId(model, id) {
+  id = String(id ?? '').toLowerCase();
+  const seen = new Set();
+  while (model.pageAlias.has(id) && !seen.has(id)) {
+    seen.add(id);
+    id = model.pageAlias.get(id);
+  }
+  return id;
+}
+
+function appendPageResource(page, context) {
+  const {
+    cfg,
+    model,
+    baseline,
+    changed,
+    pageMetadata,
+    pageComponents,
+    resources,
+    pageResources,
+    pagesByUrl,
+    relationships,
+  } = context;
+  const url = model.pagePath(page.id);
+  const metadataPaths = (
+    model.format === 'enhanced' ? [path.join(page.dir, 'powerpagecomponent.xml')] : (pageMetadata.get(page.id) ?? [])
+  )
+    .filter((file) => isSourceFile(cfg.sourceDir, file))
+    .sort(compare);
+  const resource = {
+    id: `page:${page.id}`,
+    kind: 'page',
+    name: page.name ?? page.id,
+    recordId: page.id,
+    path: null,
+    relativePath: null,
+    directory: page.dir,
+    metadataPaths,
+    field: null,
+    url,
+    relatedPageUrls: url ? [url] : [],
+    configuredComponentIds: [...(pageComponents.get(page.id) ?? [])].sort(compare),
+    changed: baseline.available ? metadataPaths.some((file) => changed(file)) : null,
+    preview: {
+      strategy: 'portal-page',
+      supported: false,
+      reason:
+        'Page records and server configuration require deployment; edit the related source resources for local previews.',
+    },
+  };
+  resources.push(resource);
+  pageResources.set(resource.id, resource);
+  if (url) {
+    const key = pageKey(url);
+    if (!pagesByUrl.has(key)) pagesByUrl.set(key, []);
+    pagesByUrl.get(key).push(resource.id);
+  }
+  if (page.parentId && model.pages.has(rootPageId(model, page.parentId)))
+    relationships.push({
+      sourceId: resource.id,
+      targetId: `page:${rootPageId(model, page.parentId)}`,
+      kind: 'parent-page',
+      evidence: { type: 'extract-metadata', paths: metadataPaths },
+    });
+}
+
+function indexPageMetadata(model, pageMetadata) {
+  if (model.format !== 'classic') return;
+  for (const [file, metadata] of model.currentYaml) {
+    // PAC YAML pages carry adx_webpageid; .powerpages-site pages keep their ID in id:.
+    const pageId =
+      metadata.adx_webpageid ?? (model.shortKey && file.endsWith('.webpage.yml') ? metadata.id : undefined);
+    if (!pageId) continue;
+    const id = rootPageId(model, pageId);
+    if (!pageMetadata.has(id)) pageMetadata.set(id, []);
+    pageMetadata.get(id).push(file);
+  }
+}
+
+function indexPageComponents(model, pageComponents) {
+  for (const [componentId, pageIds] of model.componentPages)
+    for (const pageId of pageIds) {
+      const id = rootPageId(model, pageId);
+      if (!pageComponents.has(id)) pageComponents.set(id, new Set());
+      pageComponents.get(id).add(componentId);
+    }
+}
+
+function appendRouteResource(index, rule, context) {
+  const { cfg, relative, changed, resources } = context;
+  const target = rule.file ?? rule.dir;
+  const file = target ? path.resolve(cfg.sourceDir, target) : null;
+  let exists = null;
+  if (file) {
+    try {
+      const stat = fs.statSync(file);
+      exists = rule.file ? stat.isFile() : stat.isDirectory();
+    } catch {
+      exists = false;
+    }
+  }
+  resources.push({
+    id: `route:${index}`,
+    kind: 'route',
+    name: rule.url,
+    path: rule.file ? file : null,
+    relativePath: rule.file ? relative(file) : null,
+    directory: rule.dir ? file : null,
+    metadataPaths: [cfg.configFile].filter(Boolean),
+    field: null,
+    url: null,
+    pattern: rule.url,
+    relatedPageUrls: [],
+    changed: rule.file ? changed(file) : null,
+    preview: {
+      strategy: routeStrategy(rule),
+      exists,
+      precedence: index,
+      reason: 'Routes are evaluated in configuration order before automatic web-file mappings.',
+    },
+  });
+}
+
+function addPageResources(model, context) {
+  for (const page of model.pages.values()) appendPageResource(page, context);
+}
+
+function addWebFileResources(model, context) {
+  for (const file of model.webFiles) appendWebFileResource(file, context);
+}
+
+function addInlineResources(model, context) {
+  for (const source of model.inlineSources) addInlineSource(source, context);
+}
+
+function addRouteResources(cfg, context) {
+  for (const [index, rule] of (cfg.site.routes ?? []).entries()) appendRouteResource(index, rule, context);
+}
+
+function matchesResource(resource, filters, needle) {
+  return (
+    (!filters.kinds.length || filters.kinds.includes(resource.kind)) &&
+    (!filters.page || resource.relatedPageUrls.some((url) => pageKey(url) === filters.page)) &&
+    (!filters.changed || resource.changed) &&
+    (!needle ||
+      [resource.id, resource.name, resource.relativePath, resource.url, resource.pattern, ...resource.relatedPageUrls]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(needle)))
+  );
+}
 
 function integer(value, fallback, name, max = Number.MAX_SAFE_INTEGER) {
   if (value === undefined) return fallback;
@@ -69,16 +392,8 @@ export function describeResources(cfg, model, baseline, changed, filters = resou
   filters = { ...filters, page: filters.page == null ? null : pageKey(filters.page, model) };
   if (filters.changed && !baseline.available)
     throw new Error('Cannot select changed resources: the requested Git baseline is unavailable');
-  const relative = (file) => (file ? normalizePath(path.relative(cfg.sourceDir, file)) : null);
-  const changedAt = (file) => {
-    if (!baseline.available) return null;
-    if (!file) return false;
-    const rel = path.relative(cfg.sourceDir, file);
-    // The Git snapshot is deliberately scoped to the extract, including when an explicit
-    // route serves a file from elsewhere. Absence from that snapshot does not prove it clean.
-    if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) return null;
-    return changed.has(file);
-  };
+  const relative = (file) => relativeResourcePath(cfg, file);
+  const changedAt = (file) => changedResourceAt(cfg, baseline, changed, file);
   const resolver = new Resolver(model, cfg.site, { changed: cfg.site.scope === 'changed' ? changed : null });
   const textOf = createSourceReader(model);
   const resources = [];
@@ -86,234 +401,50 @@ export function describeResources(cfg, model, baseline, changed, filters = resou
   const pagesByUrl = new Map();
   const pageResources = new Map();
   const pageMetadata = new Map();
-  const rootId = (id) => {
-    id = String(id ?? '').toLowerCase();
-    const seen = new Set();
-    while (model.pageAlias.has(id) && !seen.has(id)) {
-      seen.add(id);
-      id = model.pageAlias.get(id);
-    }
-    return id;
-  };
-  if (model.format === 'classic')
-    for (const [file, metadata] of model.currentYaml) {
-      // PAC YAML pages carry adx_webpageid; .powerpages-site pages keep their ID in id:.
-      const pageId =
-        metadata.adx_webpageid ?? (model.shortKey && file.endsWith('.webpage.yml') ? metadata.id : undefined);
-      if (!pageId) continue;
-      const id = rootId(pageId);
-      if (!pageMetadata.has(id)) pageMetadata.set(id, []);
-      pageMetadata.get(id).push(file);
-    }
+  indexPageMetadata(model, pageMetadata);
   const pageComponents = new Map();
-  for (const [componentId, pageIds] of model.componentPages)
-    for (const pageId of pageIds) {
-      const id = rootId(pageId);
-      if (!pageComponents.has(id)) pageComponents.set(id, new Set());
-      pageComponents.get(id).add(componentId);
-    }
-  for (const page of model.pages.values()) {
-    const url = model.pagePath(page.id);
-    const metadataPaths = (
-      model.format === 'enhanced' ? [path.join(page.dir, 'powerpagecomponent.xml')] : (pageMetadata.get(page.id) ?? [])
-    )
-      .filter((file) => isSourceFile(cfg.sourceDir, file))
-      .sort(compare);
-    const resource = {
-      id: `page:${page.id}`,
-      kind: 'page',
-      name: page.name ?? page.id,
-      recordId: page.id,
-      path: null,
-      relativePath: null,
-      directory: page.dir,
-      metadataPaths,
-      field: null,
-      url,
-      relatedPageUrls: url ? [url] : [],
-      configuredComponentIds: [...(pageComponents.get(page.id) ?? [])].sort(compare),
-      changed: baseline.available ? metadataPaths.some((file) => changed.has(file)) : null,
-      preview: {
-        strategy: 'portal-page',
-        supported: false,
-        reason:
-          'Page records and server configuration require deployment; edit the related source resources for local previews.',
-      },
-    };
-    resources.push(resource);
-    pageResources.set(resource.id, resource);
-    if (url) {
-      const key = pageKey(url);
-      if (!pagesByUrl.has(key)) pagesByUrl.set(key, []);
-      pagesByUrl.get(key).push(resource.id);
-    }
-    if (page.parentId && model.pages.has(rootId(page.parentId)))
-      relationships.push({
-        sourceId: resource.id,
-        targetId: `page:${rootId(page.parentId)}`,
-        kind: 'parent-page',
-        evidence: { type: 'extract-metadata', paths: metadataPaths },
-      });
-  }
-  const relate = (resource, urls, kind, metadataPaths) => {
-    for (const url of urls)
-      for (const targetId of pagesByUrl.get(pageKey(url)) ?? [])
-        relationships.push({
-          sourceId: resource.id,
-          targetId,
-          kind,
-          evidence: {
-            type: 'extract-metadata',
-            paths: [...new Set([...metadataPaths, ...pageResources.get(targetId).metadataPaths])].sort(compare),
-          },
-        });
-  };
-  for (const file of model.webFiles) {
-    const effective = file.url ? resolver.resolve(file.url) : null;
-    const resource = {
-      id: `web-file:${relative(file.yml)}`,
-      kind: 'web-file',
-      name: file.name ?? relative(file.file) ?? relative(file.yml),
-      recordId: file.id ?? null,
-      path: file.file,
-      relativePath: relative(file.file),
-      metadataPaths: [file.yml],
-      field: null,
-      url: file.url,
-      relatedPageUrls: model.pagePath(file.parentPageId) ? [model.pagePath(file.parentPageId)] : [],
-      changed: baseline.available ? changedAt(file.file) || changedAt(file.yml) : null,
-      preview: {
-        strategy: 'local-response',
-        supported: Boolean(file.file && file.url && !file.problem),
-        selected: Boolean(file.file && effective?.file === file.file),
-        effectivePath: effective?.file ?? null,
-        via: effective?.via ?? null,
-        reason: file.problem ?? null,
-      },
-    };
-    resources.push(resource);
-    relate(resource, resource.relatedPageUrls, 'parent-page', resource.metadataPaths);
-  }
-  for (const source of model.inlineSources) {
-    if (filters.kinds.length && !filters.kinds.includes(source.kind)) continue;
-    const knownPages = source.pageUrl ? [source.pageUrl] : (source.usedOn ?? []);
-    if (filters.page && !knownPages.some((url) => pageKey(url, model) === filters.page)) continue;
-    if (filters.changed && !changedAt(source.file)) continue;
-    const def = inlineKindOf(source.file);
-    const metadata = source.extract
-      ? source.file
-      : def
-        ? source.file.slice(0, -def.suffix.length) + def.suffix.replace(/\.[^.]+\.[^.]+$/, '.yml')
-        : null;
-    const metadataPaths =
-      metadata && (source.extract || model.currentYaml.has(metadata)) && isSourceFile(cfg.sourceDir, metadata)
-        ? [metadata]
-        : [];
-    const kinds = source.mode === 'block' ? cfg.site.inline : cfg.site.markup;
-    const configured = Boolean(kinds?.enabled && kinds.kinds.includes(source.kind));
-    const pageResolved = !source.kind.startsWith('page-') || source.pageUrl !== null;
-    const readable = isSourceFile(cfg.sourceDir, source.file);
-    const content = readable ? textOf(source) : null;
-    const exists = source.exists ?? content !== null;
-    const rootShadowed = source.renders === false;
-    const renders = pageResolved && !rootShadowed && exists;
-    const resource = {
-      id: `source:${source.kind}:${source.rel}`,
-      kind: source.kind,
-      name:
-        source.label ??
-        model.currentYaml.get(metadata)?.adx_name ??
-        (model.shortKey ? model.currentYaml.get(metadata)?.name : undefined) ??
-        path.basename(source.file),
-      exists,
-      empty: content === null ? null : !content.trim(),
-      renders,
-      path: source.file,
-      sourceDir: cfg.sourceDir,
-      relativePath: relative(source.file),
-      metadataPaths,
-      field: source.field ?? null,
-      format: source.format ?? (source.extract ? 'xml' : 'text'),
-      ...(source.fieldPath
-        ? { fieldPath: source.fieldPath, ...(source.jsonPath ? { jsonPath: source.jsonPath } : {}) }
-        : {}),
-      ...(source.componentId != null ? { componentId: source.componentId } : {}),
-      ...(source.recordId ? { recordId: source.recordId, recordIdField: source.recordIdField } : {}),
-      ...(source.lcid != null ? { lcid: source.lcid } : {}),
-      url: null,
-      relatedPageUrls: [...new Set(knownPages)].sort(compare),
-      changed: changedAt(source.file),
-      preview: {
-        strategy: source.mode === 'block' ? 'inline-block' : 'baseline-patch',
-        supported: readable && renders,
-        enabled: configured,
-        eligible:
-          configured &&
-          readable &&
-          renders &&
-          (source.mode === 'markup' || cfg.site.scope === 'changed'
-            ? baseline.available && changed.has(source.file)
-            : true),
-        reason: !readable
-          ? 'Source is missing or outside the extract'
-          : !pageResolved
-            ? 'The page URL cannot be resolved from metadata'
-            : source.mode === 'markup'
-              ? 'Only supported literal changes can be patched; runtime matching and Liquid require separate validation.'
-              : 'Inline content is matched against the rendered page; eligibility does not prove it appears there.',
-      },
-    };
-    resources.push(resource);
-    relate(resource, knownPages, source.pageUrl ? 'belongs-to-page' : 'configured-on-page', metadataPaths);
-  }
-  for (const [index, rule] of (cfg.site.routes ?? []).entries()) {
-    const target = rule.file ?? rule.dir;
-    const file = target ? path.resolve(cfg.sourceDir, target) : null;
-    let exists = null;
-    if (file) {
-      try {
-        const stat = fs.statSync(file);
-        exists = rule.file ? stat.isFile() : stat.isDirectory();
-      } catch {
-        exists = false;
-      }
-    }
-    resources.push({
-      id: `route:${index}`,
-      kind: 'route',
-      name: rule.url,
-      path: rule.file ? file : null,
-      relativePath: rule.file ? relative(file) : null,
-      directory: rule.dir ? file : null,
-      metadataPaths: [cfg.configFile].filter(Boolean),
-      field: null,
-      url: null,
-      pattern: rule.url,
-      relatedPageUrls: [],
-      changed: rule.file ? changedAt(file) : null,
-      preview: {
-        strategy: rule.passthrough ? 'passthrough' : rule.dir ? 'directory-route' : 'file-route',
-        exists,
-        precedence: index,
-        reason: 'Routes are evaluated in configuration order before automatic web-file mappings.',
-      },
-    });
-  }
+  indexPageComponents(model, pageComponents);
+  addPageResources(model, {
+    cfg,
+    model,
+    baseline,
+    changed: changedAt,
+    pageMetadata,
+    pageComponents,
+    resources,
+    pageResources,
+    pagesByUrl,
+    relationships,
+  });
+  const relationshipContext = { relationships, pagesByUrl, pageResources };
+  addWebFileResources(model, {
+    ...relationshipContext,
+    model,
+    relative,
+    resolver,
+    baseline,
+    changed: changedAt,
+    resources,
+  });
+  addInlineResources(model, {
+    ...relationshipContext,
+    filters,
+    model,
+    cfg,
+    baseline,
+    changed,
+    changedAt,
+    relative,
+    textOf,
+    resources,
+  });
+  addRouteResources(cfg, { cfg, relative, changed: changedAt, resources });
   resources.sort(byId);
   relationships.sort((a, b) =>
     compare(`${a.sourceId}\0${a.targetId}\0${a.kind}`, `${b.sourceId}\0${b.targetId}\0${b.kind}`),
   );
   const needle = filters.search.toLowerCase();
-  const matching = resources.filter(
-    (resource) =>
-      (!filters.kinds.length || filters.kinds.includes(resource.kind)) &&
-      (!filters.page || resource.relatedPageUrls.some((url) => pageKey(url) === filters.page)) &&
-      (!filters.changed || resource.changed) &&
-      (!needle ||
-        [resource.id, resource.name, resource.relativePath, resource.url, resource.pattern, ...resource.relatedPageUrls]
-          .filter(Boolean)
-          .some((value) => String(value).toLowerCase().includes(needle))),
-  );
+  const matching = resources.filter((resource) => matchesResource(resource, filters, needle));
   const selected = matching.slice(filters.offset, filters.offset + filters.limit);
   const selectedIds = new Set(selected.map((resource) => resource.id));
   return {
@@ -359,10 +490,12 @@ export default async function resources(cfg, args) {
   if (args.json) console.log(JSON.stringify(report, null, 2));
   else {
     console.log(`${report.site} @ ${report.environment}: ${report.pagination.total} matching resources (offline)`);
-    for (const resource of report.resources)
+    for (const resource of report.resources) {
+      const fieldSuffix = resource.field ? ` #${resource.field}` : '';
       console.log(
-        `${resource.kind.padEnd(22)} ${resource.url ?? resource.pattern ?? resource.relatedPageUrls.join(', ')}  ${resource.relativePath ?? resource.directory ?? ''}${resource.field ? ` #${resource.field}` : ''}\n  ${resource.id}`,
+        `${resource.kind.padEnd(22)} ${resource.url ?? resource.pattern ?? resource.relatedPageUrls.join(', ')}  ${resource.relativePath ?? resource.directory ?? ''}${fieldSuffix}\n  ${resource.id}`,
       );
+    }
     if (report.pagination.nextOffset !== null)
       console.log(`More results: --offset ${report.pagination.nextOffset} --limit ${filters.limit}`);
     if (!baseline.available) console.log(`WARNING: ${baseline.error}`);

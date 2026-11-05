@@ -1497,11 +1497,13 @@ describe('plug-in registration: assembly content and plug-in types', () => {
       culture: 'neutral',
       publickeytoken: '0123456789abcdef',
     });
-    await run('plugintype', 'create', {
+    const type = {
       typename: 'Contoso.Anything',
       name: 'Contoso.Anything',
       'pluginassemblyid@odata.bind': `/pluginassemblies(${ASSEMBLY})`,
-    });
+    };
+    await run('plugintype', 'create', type);
+    assert.equal(type.assemblyname, 'Contoso.Plugins');
   });
 
   it('documented type and assembly rules: unique typename per assembly, IPlugin implementation, sandbox and database source', async () => {

@@ -141,11 +141,91 @@ export function createWebApiFormatter({ store, identity: _identity = {}, metadat
     }
     const lookup = lookupOf(mapping, attribute, value);
     const id = scalar(value);
-    const name = lookup ? targetName(lookup.entity, id, isLookupObject(value) ? value.name : undefined) : undefined;
+    let name;
+    if (lookup) {
+      const fallbackName = isLookupObject(value) ? value.name : undefined;
+      name = targetName(lookup.entity, id, fallbackName);
+    }
     if (name != null) out[`${key}${FORMATTED}`] = name;
     if (navigation && lookup?.navigation) out[`${key}${NAVIGATION}`] = lookup.navigation;
     if (lookup?.entity) out[`${key}${LOOKUP_LOGICAL}`] = lookup.entity;
     out[key] = id;
+  };
+
+  const writeExpanded = (out, key, value, target, spec) => {
+    if (Array.isArray(value))
+      out[key] = value.map((item) => formatEntity(item, target, { etag: true, expand: spec.expand }));
+    else if (value == null) out[key] = null;
+    else out[key] = formatEntity(value, target, { etag: false, expand: spec.expand });
+  };
+
+  const formatEntityProperty = (out, key, value, mapping, stored, expanded) => {
+    const spec = expanded.get(key);
+    if (spec && mapping.relationships?.[key]) {
+      const target = store.resolveMapping(mapping.relationships[key].entity);
+      writeExpanded(out, key, value, target, spec);
+      return;
+    }
+    const lookupProperty = /^_(.+)_value$/.exec(key);
+    if (lookupProperty) {
+      const attribute = lookupProperty[1];
+      const source = stored && own(stored, attribute) ? stored[attribute] : value;
+      writeLookup(out, mapping, attribute, source ?? null, key);
+      return;
+    }
+    if (isLookupColumn(mapping, key, value)) {
+      writeLookup(out, mapping, key, value ?? null, `_${key}_value`);
+      return;
+    }
+    const columnDefinition = definition(mapping.logicalName, key);
+    const text = formatted(value, columnDefinition, key);
+    if (text != null) out[`${key}${FORMATTED}`] = text;
+    out[key] = outputValue(value, columnDefinition, key);
+  };
+
+  const fetchColumnInfo = (key, column, info) => {
+    let entity = info.root,
+      attribute = key;
+    if (column) {
+      entity = column.entity;
+      attribute = column.attribute;
+    } else if (key.includes('.')) {
+      const alias = key.slice(0, key.indexOf('.'));
+      entity = info.aliases[alias] ?? entity;
+      attribute = key.slice(key.indexOf('.') + 1);
+    }
+    const rootColumn = !column?.aliased && !key.includes('.');
+    return { entity, attribute, rootColumn };
+  };
+
+  const writeFetchAggregate = (out, key, value) => {
+    if (typeof value === 'number')
+      out[`${key}${FORMATTED}`] = formattedValue(
+        value,
+        { dataverseType: Number.isInteger(value) ? 'int' : 'decimal' },
+        formatting,
+      );
+  };
+
+  const formatFetchValue = (out, key, value, column, info) => {
+    const { entity, attribute, rootColumn } = fetchColumnInfo(key, column, info);
+    if (!rootColumn) out[`${key}${ATTRIBUTE_NAME}`] = attribute;
+    if (column?.aggregate || column?.dategrouping) {
+      writeFetchAggregate(out, key, value);
+      out[key] = value;
+      return;
+    }
+    const mapping = store.resolveMapping(entity);
+    if (isLookupColumn(mapping, attribute, value)) {
+      writeLookup(out, mapping, attribute, value, rootColumn ? `_${attribute}_value` : key, {
+        navigation: rootColumn,
+      });
+      return;
+    }
+    const columnDefinition = definition(entity, attribute);
+    const text = formatted(value, columnDefinition, attribute);
+    if (text != null) out[`${key}${FORMATTED}`] = text;
+    out[key] = outputValue(value, columnDefinition, attribute);
   };
 
   /**
@@ -164,31 +244,7 @@ export function createWebApiFormatter({ store, identity: _identity = {}, metadat
     for (const key of Object.keys(projected)) {
       if (isPrivate(key) || key.includes('@')) continue;
       const value = projected[key];
-      const spec = expanded.get(key);
-      if (spec && mapping.relationships?.[key]) {
-        const target = store.resolveMapping(mapping.relationships[key].entity);
-        out[key] = Array.isArray(value)
-          ? value.map((item) => formatEntity(item, target, { etag: true, expand: spec.expand }))
-          : value == null
-            ? null
-            : formatEntity(value, target, { etag: false, expand: spec.expand });
-        continue;
-      }
-      const lookupProperty = /^_(.+)_value$/.exec(key);
-      if (lookupProperty) {
-        const attribute = lookupProperty[1];
-        const source = stored && own(stored, attribute) ? stored[attribute] : value;
-        writeLookup(out, mapping, attribute, source ?? null, key);
-        continue;
-      }
-      if (isLookupColumn(mapping, key, value)) {
-        writeLookup(out, mapping, key, value ?? null, `_${key}_value`);
-        continue;
-      }
-      const columnDefinition = definition(mapping.logicalName, key);
-      const text = formatted(value, columnDefinition, key);
-      if (text != null) out[`${key}${FORMATTED}`] = text;
-      out[key] = outputValue(value, columnDefinition, key);
+      formatEntityProperty(out, key, value, mapping, stored, expanded);
     }
     return out;
   }
@@ -208,40 +264,7 @@ export function createWebApiFormatter({ store, identity: _identity = {}, metadat
     const byKey = new Map(info.columns.map((column) => [column.key, column]));
     for (const [key, value] of Object.entries(row)) {
       if (isPrivate(key) || key.includes('@') || value == null || value === '') continue;
-      const column = byKey.get(key);
-      let entity = info.root,
-        attribute = key;
-      if (column) {
-        entity = column.entity;
-        attribute = column.attribute;
-      } else if (key.includes('.')) {
-        const alias = key.slice(0, key.indexOf('.'));
-        entity = info.aliases[alias] ?? entity;
-        attribute = key.slice(key.indexOf('.') + 1);
-      }
-      const rootColumn = !column?.aliased && !key.includes('.');
-      if (!rootColumn) out[`${key}${ATTRIBUTE_NAME}`] = attribute;
-      if (column?.aggregate || column?.dategrouping) {
-        if (typeof value === 'number')
-          out[`${key}${FORMATTED}`] = formattedValue(
-            value,
-            { dataverseType: Number.isInteger(value) ? 'int' : 'decimal' },
-            formatting,
-          );
-        out[key] = value;
-        continue;
-      }
-      const mapping = store.resolveMapping(entity);
-      if (isLookupColumn(mapping, attribute, value)) {
-        writeLookup(out, mapping, attribute, value, rootColumn ? `_${attribute}_value` : key, {
-          navigation: rootColumn,
-        });
-        continue;
-      }
-      const columnDefinition = definition(entity, attribute);
-      const text = formatted(value, columnDefinition, attribute);
-      if (text != null) out[`${key}${FORMATTED}`] = text;
-      out[key] = outputValue(value, columnDefinition, attribute);
+      formatFetchValue(out, key, value, byKey.get(key), info);
     }
     return out;
   }

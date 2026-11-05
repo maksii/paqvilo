@@ -132,7 +132,7 @@ export function modelDrivenActionsUi(data) {
   const persistLabels = () => writeStore(preferenceKey, { version: 1, favorites: [...favorites], recent });
   const validateCommands = (value) => {
     if (value?.version !== 1 || !Array.isArray(value.commands) || value.commands.length > 50)
-      throw Error('Use version 1 JSON with at most 50 commands.');
+      throw new Error('Use version 1 JSON with at most 50 commands.');
     const ids = new Set();
     return value.commands.map((item) => {
       if (
@@ -147,7 +147,7 @@ export function modelDrivenActionsUi(data) {
         item.code.length > 65536 ||
         (item.description != null && (typeof item.description !== 'string' || item.description.length > 500))
       )
-        throw Error('Each command needs a unique ID, a label, and code up to 64 KiB.');
+        throw new Error('Each command needs a unique ID, a label, and code up to 64 KiB.');
       ids.add(item.id);
       return { id: item.id, label: item.label.trim(), description: item.description ?? '', code: item.code };
     });
@@ -164,7 +164,7 @@ export function modelDrivenActionsUi(data) {
       reason: 'Reconnect Lense to read this action’s current context.',
     };
   const requestId = () =>
-    globalThis.crypto?.randomUUID?.() ?? `action-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    globalThis.crypto?.randomUUID?.() ?? `action-${Date.now()}-${Math.random().toString(36).slice(2)}`; // NOSONAR: pseudo-random value for simulation, not a secret
   const busy = () => requests.size > 0;
   const remember = (label) => {
     recent = [label, ...recent.filter((value) => value !== label)].slice(0, 12);
@@ -209,97 +209,102 @@ export function modelDrivenActionsUi(data) {
     );
     results.append(heading);
     if (value.message) results.append(make('p', String(value.message)));
-    if (Array.isArray(value.columns) && Array.isArray(value.rows)) {
-      const wrap = make('div', null, 'actions-table-wrap'),
-        table = make('table'),
-        header = make('tr');
-      for (const label of value.columns.slice(0, 30)) {
-        const th = make('th', String(label));
-        th.scope = 'col';
-        header.append(th);
-      }
-      const thead = make('thead');
-      thead.append(header);
-      table.append(thead);
-      const body = make('tbody');
-      for (const row of value.rows.slice(0, 200)) {
-        const tr = make('tr');
-        for (const item of (Array.isArray(row) ? row : [row]).slice(0, 30)) tr.append(make('td', String(item ?? '')));
-        body.append(tr);
-      }
-      table.append(body);
-      wrap.append(table);
-      const filter = make('input', null, 'actions-search');
-      filter.type = 'search';
-      filter.setAttribute('aria-label', 'Filter results');
-      filter.placeholder = 'Filter results';
-      filter.addEventListener(
-        'input',
-        () => {
-          const term = filter.value.toLocaleLowerCase();
-          let count = 0;
-          for (const row of body.children) {
-            row.hidden = !row.textContent.toLocaleLowerCase().includes(term);
-            if (!row.hidden) count++;
-          }
-          status.textContent = `${count} result rows shown.`;
-        },
-        { signal },
-      );
-      results.append(filter, wrap);
-    }
+    if (Array.isArray(value.columns) && Array.isArray(value.rows)) appendResultTable(value);
     if (value.text != null) results.append(make('pre', String(value.text)));
+    appendResultCopy(value);
+    appendResultLinks(value);
+    appendResultUsers(value);
+  }
+  function appendResultTable(value) {
+    const wrap = make('div', null, 'actions-table-wrap'),
+      table = make('table'),
+      header = make('tr');
+    for (const label of value.columns.slice(0, 30)) {
+      const th = make('th', String(label));
+      th.scope = 'col';
+      header.append(th);
+    }
+    const thead = make('thead');
+    thead.append(header);
+    table.append(thead);
+    const body = make('tbody');
+    for (const row of value.rows.slice(0, 200)) {
+      const tr = make('tr');
+      for (const item of (Array.isArray(row) ? row : [row]).slice(0, 30)) tr.append(make('td', String(item ?? '')));
+      body.append(tr);
+    }
+    table.append(body);
+    wrap.append(table);
+    const filter = make('input', null, 'actions-search');
+    filter.type = 'search';
+    filter.setAttribute('aria-label', 'Filter results');
+    filter.placeholder = 'Filter results';
+    filter.addEventListener(
+      'input',
+      () => {
+        const term = filter.value.toLocaleLowerCase();
+        let count = 0;
+        for (const row of body.children) {
+          row.hidden = !row.textContent.toLocaleLowerCase().includes(term);
+          if (!row.hidden) count++;
+        }
+        status.textContent = `${count} result rows shown.`;
+      },
+      { signal },
+    );
+    results.append(filter, wrap);
+  }
+  function appendResultCopy(value) {
     const copyText =
       value.copyText ??
       (Array.isArray(value.columns) && Array.isArray(value.rows)
         ? [value.columns, ...value.rows].map((row) => row.map((item) => String(item ?? '')).join('\t')).join('\n')
         : undefined);
-    if (copyText != null)
-      results.append(
-        button('Copy result', async () => {
-          try {
-            await navigator.clipboard.writeText(String(copyText));
-            status.textContent = 'Result copied.';
-          } catch {
-            status.textContent = 'Copy unavailable. Select the result text to copy it.';
-          }
-        }),
-      );
-    if (Array.isArray(value.links))
-      for (const item of value.links.slice(0, 200)) {
+    if (copyText == null) return;
+    results.append(
+      button('Copy result', async () => {
         try {
-          const url = new URL(item.url, current.origin);
-          if (
-            url.origin !== current.origin ||
-            !['http:', 'https:'].includes(url.protocol) ||
-            url.username ||
-            url.password
-          )
-            continue;
-          const link = make('a', String(item.label || 'Open native record'));
-          link.href = url.href;
-          link.target = '_blank';
-          link.rel = 'noopener noreferrer';
-          const row = make('p');
-          row.append(link);
-          results.append(row);
+          await navigator.clipboard.writeText(String(copyText));
+          status.textContent = 'Result copied.';
         } catch {
-          /* Untrusted result links remain inert. */
+          status.textContent = 'Copy unavailable. Select the result text to copy it.';
         }
-      }
-    if (Array.isArray(value.users)) {
-      const list = make('div', null, 'actions-users');
-      for (const user of value.users.slice(0, 200))
-        if (typeof user.objectId === 'string' && typeof user.label === 'string')
-          list.append(
-            button(user.label, () => {
-              selectedUser = { objectId: user.objectId, label: user.label };
-              view = 'Identity';
-              renderView();
-            }),
-          );
-      results.append(list);
+      }),
+    );
+  }
+  function appendResultLinks(value) {
+    if (!Array.isArray(value.links)) return;
+    for (const item of value.links.slice(0, 200)) appendResultLink(item);
+  }
+  function appendResultLink(item) {
+    try {
+      const url = new URL(item.url, current.origin);
+      if (url.origin !== current.origin || !['http:', 'https:'].includes(url.protocol) || url.username || url.password)
+        return;
+      const link = make('a', String(item.label || 'Open native record'));
+      link.href = url.href;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      const row = make('p');
+      row.append(link);
+      results.append(row);
+    } catch {
+      /* Untrusted result links remain inert. */
     }
+  }
+  function appendResultUsers(value) {
+    if (!Array.isArray(value.users)) return;
+    const list = make('div', null, 'actions-users');
+    for (const user of value.users.slice(0, 200))
+      if (typeof user.objectId === 'string' && typeof user.label === 'string')
+        list.append(
+          button(user.label, () => {
+            selectedUser = { objectId: user.objectId, label: user.label };
+            view = 'Identity';
+            renderView();
+          }),
+        );
+    results.append(list);
   }
   function receive(id, value) {
     const request = requests.get(id);
@@ -311,12 +316,9 @@ export function modelDrivenActionsUi(data) {
     }
     renderResult(value ?? { title: 'Action result', message: 'The action completed without a result.' });
     lastResultRequest = id;
-    status.textContent =
-      value?.status === 'ok'
-        ? 'Completed.'
-        : value?.status === 'cancelled'
-          ? 'Cancelled.'
-          : 'Action unavailable or failed.';
+    if (value?.status === 'ok') status.textContent = 'Completed.';
+    else if (value?.status === 'cancelled') status.textContent = 'Cancelled.';
+    else status.textContent = 'Action unavailable or failed.';
     renderView();
     if (!panel.hidden) results.querySelector('h3')?.focus();
   }
@@ -353,13 +355,13 @@ export function modelDrivenActionsUi(data) {
     const values = params.get(action.id) ?? {};
     remember(action.label);
     return dispatch('action', action.label, (id) =>
-      window.__paqviloModelAction?.({ token: current.token, requestId: id, action: action.id, params: values }),
+      globalThis.__paqviloModelAction?.({ token: current.token, requestId: id, action: action.id, params: values }),
     );
   }
   function startIdentity(objectId) {
     const label = objectId ? selectedUser?.label : 'Stop acting as another user';
     return dispatch('identity', label || 'Act as selected user', (id) =>
-      window.__paqviloModelIdentity?.({ token: current.token, requestId: id, objectId }),
+      globalThis.__paqviloModelIdentity?.({ token: current.token, requestId: id, objectId }),
     );
   }
   function actionForm(action, parent) {
@@ -367,41 +369,7 @@ export function modelDrivenActionsUi(data) {
     section.append(make('h3', action.label), make('p', action.description));
     const values = params.get(action.id) ?? {};
     params.set(action.id, values);
-    for (const spec of action.inputs ?? []) {
-      const label = make('label', spec.label, 'actions-input'),
-        input = make('input');
-      input.name = spec.name;
-      input.required = Boolean(spec.required);
-      input.type = spec.type === 'boolean' ? 'checkbox' : 'text';
-      if (spec.maxLength) input.maxLength = spec.maxLength;
-      if (spec.type === 'table') {
-        input.maxLength = 128;
-        input.pattern = '[A-Za-z][A-Za-z0-9_]{0,127}';
-        input.title = 'Enter a table logical name using letters, digits and underscores.';
-      }
-      if (spec.type === 'guid') {
-        const guid = '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}';
-        input.maxLength = 38;
-        input.pattern = `(?:${guid}|\\{${guid}\\})`;
-        input.title = 'Enter a record GUID, optionally enclosed in matching braces.';
-      }
-      if (spec.type === 'boolean') {
-        input.checked = values[spec.name] ?? spec.default ?? false;
-        values[spec.name] = input.checked;
-      } else {
-        input.value = values[spec.name] ?? spec.default ?? '';
-        if (spec.type === 'guid') input.placeholder = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
-      }
-      input.addEventListener(
-        'input',
-        () => {
-          values[spec.name] = spec.type === 'boolean' ? input.checked : input.value;
-        },
-        { signal },
-      );
-      label.append(input);
-      section.append(label);
-    }
+    for (const spec of action.inputs ?? []) section.append(makeActionInput(spec, values));
     const support = availability(action);
     if (!support.available)
       section.append(make('p', support.reason || 'Unavailable on the current native page.', 'actions-reason'));
@@ -413,11 +381,46 @@ export function modelDrivenActionsUi(data) {
       'submit',
       (event) => {
         event.preventDefault();
-        if (section.reportValidity()) runAction(action);
+        if (section.reportValidity()) void runAction(action);
       },
       { signal },
     );
     parent.append(section);
+  }
+  function makeActionInput(spec, values) {
+    const label = make('label', spec.label, 'actions-input'),
+      input = make('input');
+    input.name = spec.name;
+    input.required = Boolean(spec.required);
+    input.type = spec.type === 'boolean' ? 'checkbox' : 'text';
+    if (spec.maxLength) input.maxLength = spec.maxLength;
+    if (spec.type === 'table') {
+      input.maxLength = 128;
+      input.pattern = '[A-Za-z][A-Za-z0-9_]{0,127}';
+      input.title = 'Enter a table logical name using letters, digits and underscores.';
+    }
+    if (spec.type === 'guid') {
+      const guid = '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}';
+      input.maxLength = 38;
+      input.pattern = String.raw`(?:${guid}|\{${guid}\})`;
+      input.title = 'Enter a record GUID, optionally enclosed in matching braces.';
+    }
+    if (spec.type === 'boolean') {
+      input.checked = values[spec.name] ?? spec.default ?? false;
+      values[spec.name] = input.checked;
+    } else {
+      input.value = values[spec.name] ?? spec.default ?? '';
+      if (spec.type === 'guid') input.placeholder = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
+    }
+    input.addEventListener(
+      'input',
+      () => {
+        values[spec.name] = spec.type === 'boolean' ? input.checked : input.value;
+      },
+      { signal },
+    );
+    label.append(input);
+    return label;
   }
   function renderActions() {
     const search = make('input', null, 'actions-search');
@@ -670,7 +673,7 @@ export function modelDrivenActionsUi(data) {
         const selected = file.files?.[0];
         if (!selected) return;
         try {
-          if (selected.size > 4 * 1024 * 1024) throw Error('The import exceeds 4 MiB.');
+          if (selected.size > 4 * 1024 * 1024) throw new Error('The import exceeds 4 MiB.');
           const imported = validateCommands(JSON.parse(await selected.text()));
           commands = imported;
           drafts.clear();
@@ -780,7 +783,7 @@ export function modelDrivenActionsUi(data) {
     },
     { signal },
   );
-  window.addEventListener(
+  globalThis.addEventListener(
     'keydown',
     (event) => {
       if (event.key === 'Escape' && !panel.hidden) close(true);

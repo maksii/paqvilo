@@ -31,6 +31,38 @@ const LCID = 1033;
 const label = (text) => ({ LocalizedLabels: [{ Label: text, LanguageCode: LCID }] });
 const managed = (Value) => ({ Value, CanBeChanged: true });
 const log = (entry) => console.log(JSON.stringify(entry));
+const existingAction = (existing, changed) => {
+  if (!existing) return 'create';
+  if (changed) return 'update';
+  return 'exists';
+};
+const platformTwinAction = (isDefault, apply) => {
+  if (isDefault) return apply ? 'undefault' : 'pending';
+  return 'exists';
+};
+const businessRuleAction = (existing, scopeChanged, definitionChanged) => {
+  if (!existing) return 'create';
+  if (scopeChanged) return 'scope-updated';
+  if (definitionChanged) return 'definition-updated';
+  if (existing.statecode === 1) return 'active';
+  return 'exists';
+};
+const webResourceAction = (rows, content) => {
+  if (rows.length) return rows[0].content === content ? 'exists' : 'update';
+  return 'create';
+};
+const retiredResourceAction = (rows, apply) => {
+  if (rows.length) return apply ? 'delete' : 'pending';
+  return 'absent';
+};
+const platformColumnAction = (meta, apply) => {
+  if (meta) return apply ? 'include' : 'pending';
+  return 'missing-or-mismatched';
+};
+const tableRootAction = (meta, apply) => {
+  if (meta) return apply ? 'include-all' : 'pending';
+  return 'missing';
+};
 
 async function attribute(client, table, name) {
   const rows = await client
@@ -168,31 +200,34 @@ async function ensureExtraColumn(client, column, { apply, solution, journal }) {
   }
   // Flags on existing or manifest-created columns: secured, default value, rich text format.
   if (column.secured || column.defaultValue !== undefined || column.default !== undefined || column.richText) {
-    const current = await client
-      .get(`EntityDefinitions(LogicalName='${column.table}')/Attributes(LogicalName='${column.name}')`)
-      .catch(() => null);
-    if (current) {
-      const patch = {};
-      if (column.secured && current.IsSecured !== true) patch.IsSecured = true;
-      if (column.defaultValue !== undefined && current.DefaultValue !== column.defaultValue)
-        patch.DefaultValue = column.defaultValue;
-      if (column.richText && current.FormatName?.Value !== 'RichText') patch.FormatName = { Value: 'RichText' };
-      if (column.default !== undefined && current.DefaultFormValue !== column.default)
-        patch.DefaultFormValue = column.default;
-      if (Object.keys(patch).length) {
-        entry.flags = Object.keys(patch);
-        if (apply) {
-          const { '@odata.context': _context, ...body } = current;
-          await client.request(
-            `EntityDefinitions(LogicalName='${column.table}')/Attributes(LogicalName='${column.name}')`,
-            { method: 'PUT', body: { ...body, ...patch }, solution, mergeLabels: true },
-          );
-        }
-      }
-    }
+    await applyExtraColumnFlags(client, column, apply, solution, entry);
   }
   journal.push(entry);
   log(entry);
+}
+
+async function applyExtraColumnFlags(client, column, apply, solution, entry) {
+  const current = await client
+    .get(`EntityDefinitions(LogicalName='${column.table}')/Attributes(LogicalName='${column.name}')`)
+    .catch(() => null);
+  if (!current) return;
+  const patch = {};
+  if (column.secured && current.IsSecured !== true) patch.IsSecured = true;
+  if (column.defaultValue !== undefined && current.DefaultValue !== column.defaultValue)
+    patch.DefaultValue = column.defaultValue;
+  if (column.richText && current.FormatName?.Value !== 'RichText') patch.FormatName = { Value: 'RichText' };
+  if (column.default !== undefined && current.DefaultFormValue !== column.default)
+    patch.DefaultFormValue = column.default;
+  if (!Object.keys(patch).length) return;
+  entry.flags = Object.keys(patch);
+  if (!apply) return;
+  const { '@odata.context': _context, ...body } = current; // NOSONAR: binding is excluded from the rest object or is a placeholder
+  await client.request(`EntityDefinitions(LogicalName='${column.table}')/Attributes(LogicalName='${column.name}')`, {
+    method: 'PUT',
+    body: { ...body, ...patch },
+    solution,
+    mergeLabels: true,
+  });
 }
 
 async function ensureCustomerLookup(client, spec, { apply, solution, journal }) {
@@ -342,6 +377,216 @@ async function includeComponent(client, id, type, solution) {
     });
 }
 
+/* NOSONAR */ async function ensureConfiguredViews(
+  client,
+  extrasSpec,
+  { apply, solution, journal, same, resolveViewTokens },
+) {
+  for (const view of extrasSpec.views) {
+    const fetchxml = await fs.readFile(path.join(root, 'dataverse', view.fetchFile), 'utf8');
+    const layoutxml = await resolveViewTokens(await fs.readFile(path.join(root, 'dataverse', view.layoutFile), 'utf8'));
+    const existing = await client.optional(
+      `savedqueries(${view.id})?$select=savedqueryid,name,fetchxml,layoutxml,querytype,isdefault,isquickfindquery`,
+    );
+    const changed =
+      existing &&
+      (existing.name !== view.name || !same(existing.fetchxml, fetchxml) || !same(existing.layoutxml, layoutxml));
+    const entry = {
+      kind: 'view',
+      id: view.id,
+      name: view.name,
+      action: existingAction(existing, changed),
+    };
+    if (apply) {
+      if (!existing)
+        await client.request('savedqueries', {
+          method: 'POST',
+          body: {
+            savedqueryid: view.id,
+            name: view.name,
+            returnedtypecode: view.table,
+            querytype: view.queryType,
+            fetchxml,
+            layoutxml,
+            ...(view.isQuickFind ? { isquickfindquery: true } : {}),
+          },
+          solution,
+        });
+      else if (changed) {
+        // Commit the selection first, then the matching layout (the platform validates layout columns against stored FetchXML).
+        if (!same(existing.fetchxml, fetchxml))
+          await client.request(`savedqueries(${view.id})`, { method: 'PATCH', body: { fetchxml }, solution });
+        await client.request(`savedqueries(${view.id})`, {
+          method: 'PATCH',
+          body: { name: view.name, layoutxml },
+          solution,
+        });
+      }
+      await includeComponent(client, view.id, 26, solution);
+    }
+    journal.push(entry);
+    log(entry);
+  }
+}
+
+async function ensureConfiguredForms(client, extrasSpec, { apply, solution, journal, same, resolveViewTokens }) {
+  // Quick view forms first: main forms reference them from quick view controls.
+  for (const form of [...extrasSpec.forms].sort((a, b) => (a.type === 6 ? 0 : 1) - (b.type === 6 ? 0 : 1))) {
+    const formxml = await resolveViewTokens(await fs.readFile(path.join(root, 'dataverse', form.file), 'utf8'));
+    const existing = await client.optional(`systemforms(${form.id})?$select=formid,name,formxml,type`);
+    const changed = existing && (existing.name !== form.name || !same(existing.formxml, formxml));
+    const entry = {
+      kind: 'form',
+      id: form.id,
+      name: form.name,
+      action: existingAction(existing, changed),
+    };
+    if (apply) {
+      if (!existing)
+        await client.request('systemforms', {
+          method: 'POST',
+          body: {
+            formid: form.id,
+            name: form.name,
+            objecttypecode: form.table,
+            type: form.type,
+            formxml,
+            formactivationstate: 1,
+          },
+          solution,
+        });
+      else if (changed)
+        await client.request(`systemforms(${form.id})`, {
+          method: 'PATCH',
+          body: { name: form.name, formxml },
+          solution,
+        });
+      await includeComponent(client, form.id, 60, solution);
+    }
+    journal.push(entry);
+    log(entry);
+  }
+}
+
+async function processPlatformTwinView(client, table, row, fixture, { apply, solution, journal }) {
+  const entry = {
+    kind: 'platform-twin-view',
+    table,
+    name: row.name,
+    id: row.savedqueryid,
+    action: platformTwinAction(row.isdefault, apply),
+  };
+  if (apply && row.isdefault) {
+    try {
+      await client.request(`savedqueries(${row.savedqueryid})`, {
+        method: 'PATCH',
+        body: { isdefault: false },
+        solution,
+      });
+      if (fixture.isDefault)
+        await client.request(`savedqueries(${fixture.id})`, {
+          method: 'PATCH',
+          body: { isdefault: true },
+          solution,
+        });
+    } catch (error) {
+      entry.action = 'undefault-refused';
+      entry.error = String(error.message).slice(0, 120);
+    }
+  }
+  journal.push(entry);
+  log(entry);
+}
+
+async function ensurePlatformTwinViews(client, extrasSpec, options) {
+  // Table creation also makes platform "Active …"/"Inactive …" public views. Dataverse refuses to delete them;
+  // a fixture view of the same name takes the default flag and the platform twin stays as a non-default system view.
+  const fixtureIds = new Set(extrasSpec.views.map((v) => v.id.toLowerCase()));
+  for (const table of new Set(extrasSpec.views.map((v) => v.table))) {
+    const names = new Set(extrasSpec.views.filter((v) => v.table === table).map((v) => v.name));
+    const rows = await client.list(
+      `savedqueries?$select=savedqueryid,name,isdefault&$filter=returnedtypecode eq '${table}' and querytype eq 0`,
+    );
+    for (const row of rows) {
+      if (fixtureIds.has(row.savedqueryid.toLowerCase()) || !names.has(row.name)) continue;
+      const fixture = extrasSpec.views.find((v) => v.table === table && v.name === row.name);
+      await processPlatformTwinView(client, table, row, fixture, options);
+    }
+  }
+}
+
+async function deleteRetiredViews(client, retirements, { apply, journal }) {
+  for (const id of retirements) {
+    const entry = { kind: 'retired-view', id, action: apply ? 'delete' : 'pending' };
+    if (apply) {
+      try {
+        await client.request(`savedqueries(${id})`, { method: 'DELETE' });
+      } catch (error) {
+        // Another component (a site list or subgrid setting) still names this view: keep it, report it.
+        entry.action = 'delete-refused-referenced';
+        entry.error = String(error.message).slice(0, 120);
+      }
+    }
+    journal.push(entry);
+    log(entry);
+  }
+}
+
+async function findPlatformViewAdjustment(client, adjustment, journal) {
+  const rows = await client
+    .list(
+      `savedqueries?$select=savedqueryid,name,fetchxml,layoutxml,isquickfindquery&$filter=returnedtypecode eq '${adjustment.table}' and querytype eq ${adjustment.queryType} and savedqueryid ne ${adjustment.retiredFixtureViewId}`,
+    )
+    .catch(() => []);
+  const entry = {
+    kind: 'platform-view',
+    table: adjustment.table,
+    queryType: adjustment.queryType,
+    found: rows.length,
+  };
+  if (rows.length !== 1) {
+    entry.action = 'unresolved';
+    journal.push(entry);
+    log(entry);
+    return null;
+  }
+  return { view: rows[0], entry };
+}
+
+async function applyPlatformViewAdjustment(client, adjustment, found, options) {
+  const { apply, solution, journal, same, resolveViewTokens, platformViewIds, retirements } = options;
+  const { view, entry } = found;
+  platformViewIds[`${adjustment.table}:${adjustment.queryType}`] = view.savedqueryid;
+  entry.id = view.savedqueryid;
+  entry.name = view.name;
+  const fetchxml = adjustment.retainDefault
+    ? null
+    : await fs.readFile(path.join(root, 'dataverse', adjustment.fetchFile), 'utf8');
+  const layoutxml = adjustment.retainDefault
+    ? null
+    : await resolveViewTokens(await fs.readFile(path.join(root, 'dataverse', adjustment.layoutFile), 'utf8'));
+  if (adjustment.retainDefault)
+    entry.action = 'platform-default-retained'; // still a solution member below, so the export carries it
+  else if (same(view.fetchxml, fetchxml) && same(view.layoutxml, layoutxml)) entry.action = 'exists';
+  else {
+    entry.action = 'update';
+    if (apply) {
+      if (!same(view.fetchxml, fetchxml))
+        await client.request(`savedqueries(${view.savedqueryid})`, { method: 'PATCH', body: { fetchxml }, solution });
+      await client.request(`savedqueries(${view.savedqueryid})`, { method: 'PATCH', body: { layoutxml }, solution });
+    }
+  }
+  if (apply) await includeComponent(client, view.savedqueryid, 26, solution);
+  // Retire the fixture's own earlier copy of this view type once no form references it.
+  const retired = await client.optional(`savedqueries(${adjustment.retiredFixtureViewId})?$select=savedqueryid`);
+  if (retired) {
+    entry.retired = adjustment.retiredFixtureViewId;
+    retirements.push(adjustment.retiredFixtureViewId);
+  }
+  journal.push(entry);
+  log(entry);
+}
+
 /** Forms and views: create when missing, update when the stored XML differs (whitespace-insensitive). */
 async function ensureFormsAndViews(client, extrasSpec, { apply, solution, journal }) {
   const same = (a, b) => {
@@ -374,211 +619,46 @@ async function ensureFormsAndViews(client, extrasSpec, { apply, solution, journa
   };
   // Platform-generated views (quick find, lookup, associated) exist once per table: adjust, never duplicate.
   for (const adjustment of extrasSpec.platformViewAdjustments ?? []) {
-    const rows = await client
-      .list(
-        `savedqueries?$select=savedqueryid,name,fetchxml,layoutxml,isquickfindquery&$filter=returnedtypecode eq '${adjustment.table}' and querytype eq ${adjustment.queryType} and savedqueryid ne ${adjustment.retiredFixtureViewId}`,
-      )
-      .catch(() => []);
-    const entry = {
-      kind: 'platform-view',
-      table: adjustment.table,
-      queryType: adjustment.queryType,
-      found: rows.length,
-    };
-    if (rows.length !== 1) {
-      entry.action = 'unresolved';
-      journal.push(entry);
-      log(entry);
-      continue;
-    }
-    const view = rows[0];
-    platformViewIds[`${adjustment.table}:${adjustment.queryType}`] = view.savedqueryid;
-    entry.id = view.savedqueryid;
-    entry.name = view.name;
-    const fetchxml = adjustment.retainDefault
-      ? null
-      : await fs.readFile(path.join(root, 'dataverse', adjustment.fetchFile), 'utf8');
-    const layoutxml = adjustment.retainDefault
-      ? null
-      : await resolveViewTokens(await fs.readFile(path.join(root, 'dataverse', adjustment.layoutFile), 'utf8'));
-    if (adjustment.retainDefault)
-      entry.action = 'platform-default-retained'; // still a solution member below, so the export carries it
-    else if (same(view.fetchxml, fetchxml) && same(view.layoutxml, layoutxml)) entry.action = 'exists';
-    else {
-      entry.action = 'update';
-      if (apply) {
-        if (!same(view.fetchxml, fetchxml))
-          await client.request(`savedqueries(${view.savedqueryid})`, { method: 'PATCH', body: { fetchxml }, solution });
-        await client.request(`savedqueries(${view.savedqueryid})`, { method: 'PATCH', body: { layoutxml }, solution });
-      }
-    }
-    if (apply) await includeComponent(client, view.savedqueryid, 26, solution);
-    // Retire the fixture's own earlier copy of this view type once no form references it.
-    const retired = await client.optional(`savedqueries(${adjustment.retiredFixtureViewId})?$select=savedqueryid`);
-    if (retired) {
-      entry.retired = adjustment.retiredFixtureViewId;
-      retirements.push(adjustment.retiredFixtureViewId);
-    }
-    journal.push(entry);
-    log(entry);
+    const found = await findPlatformViewAdjustment(client, adjustment, journal);
+    if (!found) continue;
+    await applyPlatformViewAdjustment(client, adjustment, found, {
+      apply,
+      solution,
+      journal,
+      same,
+      resolveViewTokens,
+      platformViewIds,
+      retirements,
+    });
   }
-  for (const view of extrasSpec.views) {
-    const fetchxml = await fs.readFile(path.join(root, 'dataverse', view.fetchFile), 'utf8');
-    const layoutxml = await resolveViewTokens(await fs.readFile(path.join(root, 'dataverse', view.layoutFile), 'utf8'));
-    const existing = await client.optional(
-      `savedqueries(${view.id})?$select=savedqueryid,name,fetchxml,layoutxml,querytype,isdefault,isquickfindquery`,
-    );
-    const changed =
-      existing &&
-      (existing.name !== view.name || !same(existing.fetchxml, fetchxml) || !same(existing.layoutxml, layoutxml));
-    const entry = {
-      kind: 'view',
-      id: view.id,
-      name: view.name,
-      action: existing ? (changed ? 'update' : 'exists') : 'create',
-    };
-    if (apply) {
-      if (!existing)
-        await client.request('savedqueries', {
-          method: 'POST',
-          body: {
-            savedqueryid: view.id,
-            name: view.name,
-            returnedtypecode: view.table,
-            querytype: view.queryType,
-            fetchxml,
-            layoutxml,
-            ...(view.isQuickFind ? { isquickfindquery: true } : {}),
-          },
-          solution,
-        });
-      else if (changed) {
-        // Commit the selection first, then the matching layout (the platform validates layout columns against stored FetchXML).
-        if (!same(existing.fetchxml, fetchxml))
-          await client.request(`savedqueries(${view.id})`, { method: 'PATCH', body: { fetchxml }, solution });
-        await client.request(`savedqueries(${view.id})`, {
-          method: 'PATCH',
-          body: { name: view.name, layoutxml },
-          solution,
-        });
-      }
-      await includeComponent(client, view.id, 26, solution);
-    }
-    journal.push(entry);
-    log(entry);
-  }
-  // Quick view forms first: main forms reference them from quick view controls.
-  for (const form of [...extrasSpec.forms].sort((a, b) => (a.type === 6 ? 0 : 1) - (b.type === 6 ? 0 : 1))) {
-    const formxml = await resolveViewTokens(await fs.readFile(path.join(root, 'dataverse', form.file), 'utf8'));
-    const existing = await client.optional(`systemforms(${form.id})?$select=formid,name,formxml,type`);
-    const changed = existing && (existing.name !== form.name || !same(existing.formxml, formxml));
-    const entry = {
-      kind: 'form',
-      id: form.id,
-      name: form.name,
-      action: existing ? (changed ? 'update' : 'exists') : 'create',
-    };
-    if (apply) {
-      if (!existing)
-        await client.request('systemforms', {
-          method: 'POST',
-          body: {
-            formid: form.id,
-            name: form.name,
-            objecttypecode: form.table,
-            type: form.type,
-            formxml,
-            formactivationstate: 1,
-          },
-          solution,
-        });
-      else if (changed)
-        await client.request(`systemforms(${form.id})`, {
-          method: 'PATCH',
-          body: { name: form.name, formxml },
-          solution,
-        });
-      await includeComponent(client, form.id, 60, solution);
-    }
-    journal.push(entry);
-    log(entry);
-  }
+  await ensureConfiguredViews(client, extrasSpec, { apply, solution, journal, same, resolveViewTokens });
+  await ensureConfiguredForms(client, extrasSpec, { apply, solution, journal, same, resolveViewTokens });
   // Table creation also makes platform "Active …"/"Inactive …" public views. Dataverse refuses to delete them
   // ("System-defined views cannot be deleted"), so a fixture view of the same name takes the default flag and the
   // platform twin stays as a non-default system view (the journal records it; the inventory lists it).
-  const fixtureIds = new Set(extrasSpec.views.map((v) => v.id.toLowerCase()));
-  for (const table of new Set(extrasSpec.views.map((v) => v.table))) {
-    const names = new Set(extrasSpec.views.filter((v) => v.table === table).map((v) => v.name));
-    const rows = await client.list(
-      `savedqueries?$select=savedqueryid,name,isdefault&$filter=returnedtypecode eq '${table}' and querytype eq 0`,
-    );
-    for (const row of rows) {
-      if (fixtureIds.has(row.savedqueryid.toLowerCase()) || !names.has(row.name)) continue;
-      const fixture = extrasSpec.views.find((v) => v.table === table && v.name === row.name);
-      const entry = {
-        kind: 'platform-twin-view',
-        table,
-        name: row.name,
-        id: row.savedqueryid,
-        action: row.isdefault ? (apply ? 'undefault' : 'pending') : 'exists',
-      };
-      if (apply && row.isdefault) {
-        try {
-          await client.request(`savedqueries(${row.savedqueryid})`, {
-            method: 'PATCH',
-            body: { isdefault: false },
-            solution,
-          });
-          if (fixture.isDefault)
-            await client.request(`savedqueries(${fixture.id})`, {
-              method: 'PATCH',
-              body: { isdefault: true },
-              solution,
-            });
-        } catch (error) {
-          entry.action = 'undefault-refused';
-          entry.error = String(error.message).slice(0, 120);
-        }
-      }
-      journal.push(entry);
-      log(entry);
-    }
-  }
-  for (const id of retirements) {
-    const entry = { kind: 'retired-view', id, action: apply ? 'delete' : 'pending' };
-    if (apply) {
-      try {
-        await client.request(`savedqueries(${id})`, { method: 'DELETE' });
-      } catch (error) {
-        // Another component (a site list or subgrid setting) still names this view: keep it, report it.
-        entry.action = 'delete-refused-referenced';
-        entry.error = String(error.message).slice(0, 120);
-      }
-    }
-    journal.push(entry);
-    log(entry);
-  }
+  await ensurePlatformTwinViews(client, extrasSpec, { apply, solution, journal });
+  await deleteRetiredViews(client, retirements, { apply, journal });
 }
 
-async function ensureViewFlags(client, extrasSpec, { apply, journal }) {
-  for (const view of extrasSpec.quickFindViews ?? []) {
-    const current = await client.optional(`savedqueries(${view.id})?$select=isquickfindquery,querytype`);
-    if (!current) continue;
-    const entry = { kind: 'quick-find-flag', id: view.id, action: current.isquickfindquery ? 'exists' : 'update' };
-    if (!current.isquickfindquery && apply)
-      await client.request(`savedqueries(${view.id})`, { method: 'PATCH', body: { isquickfindquery: true } });
-    journal.push(entry);
-    log(entry);
-  }
-  for (const view of extrasSpec.defaultViews) {
-    const current = await client.optional(`savedqueries(${view.id})?$select=isdefault`);
-    if (!current) continue;
-    const entry = { kind: 'default-view', id: view.id, action: current.isdefault ? 'exists' : 'update' };
-    if (!current.isdefault && apply)
-      await client.request(`savedqueries(${view.id})`, { method: 'PATCH', body: { isdefault: true } });
-    journal.push(entry);
-    log(entry);
-  }
+async function ensureOneViewFlag(client, view, { apply, journal }, { kind, select, flag }) {
+  const current = await client.optional(`savedqueries(${view.id})?$select=${select}`);
+  if (!current) return;
+  const entry = { kind, id: view.id, action: current[flag] ? 'exists' : 'update' };
+  if (!current[flag] && apply)
+    await client.request(`savedqueries(${view.id})`, { method: 'PATCH', body: { [flag]: true } });
+  journal.push(entry);
+  log(entry);
+}
+
+async function ensureViewFlags(client, extrasSpec, options) {
+  for (const view of extrasSpec.quickFindViews ?? [])
+    await ensureOneViewFlag(client, view, options, {
+      kind: 'quick-find-flag',
+      select: 'isquickfindquery,querytype',
+      flag: 'isquickfindquery',
+    });
+  for (const view of extrasSpec.defaultViews)
+    await ensureOneViewFlag(client, view, options, { kind: 'default-view', select: 'isdefault', flag: 'isdefault' });
 }
 
 // Activation reserializes XAML and regenerates designer labels. Compare the executable
@@ -623,7 +703,7 @@ export function ruleFingerprint(xaml) {
       .map(([name, value]) => {
         const key = name.slice(name.indexOf(':') + 1);
         if (['TypeArguments', 'TargetType'].includes(key) || (local(node) === 'ReferenceLiteral' && key === 'Value'))
-          value = value.replace(/\b[\w]+:[\w]+/g, (type) => resolve(type, scope));
+          value = value.replace(/\b\w+:\w+/g, (type) => resolve(type, scope));
         return [name.includes(':') ? resolve(name, scope) : name, expression(value)];
       })
       .sort(([a], [b]) => a.localeCompare(b));
@@ -699,43 +779,51 @@ async function ensureBusinessRules(client, rules, { apply, solution, journal }) 
       kind: 'business-rule',
       id: rule.id,
       name: rule.name,
-      action: !existing
-        ? 'create'
-        : scopeChanged
-          ? 'scope-updated'
-          : definitionChanged
-            ? 'definition-updated'
-            : existing.statecode === 1
-              ? 'active'
-              : 'exists',
+      action: businessRuleAction(existing, scopeChanged, definitionChanged),
     };
-    if (apply) {
-      if (!existing)
-        await client.request('workflows', { method: 'POST', body: { workflowid: rule.id, ...body }, solution });
-      else if (scopeChanged || definitionChanged) {
-        // Scope and definition live on the activated rule: deactivate, patch, reactivate.
-        if (existing.statecode === 1)
-          await client.request(`workflows(${rule.id})`, { method: 'PATCH', body: { statecode: 0, statuscode: 1 } });
-        await client.request(`workflows(${rule.id})`, {
-          method: 'PATCH',
-          body: {
-            processtriggerscope: scope.processtriggerscope,
-            processtriggerformid: wantForm,
-            xaml,
-            clientdata: body.clientdata,
-            triggeronupdateattributelist: body.triggeronupdateattributelist,
-          },
-          solution,
-        });
-      }
-      const state = await client.get(`workflows(${rule.id})?$select=statecode`);
-      if (state.statecode !== 1) {
-        await client.request(`workflows(${rule.id})`, { method: 'PATCH', body: { statecode: 1, statuscode: 2 } });
-        entry.activated = true;
-      }
-    }
+    if (apply)
+      await applyBusinessRule(client, rule, {
+        existing,
+        scope,
+        body,
+        wantForm,
+        scopeChanged,
+        definitionChanged,
+        solution,
+        entry,
+      });
     journal.push(entry);
     log(entry);
+  }
+}
+
+async function applyBusinessRule(
+  client,
+  rule,
+  { existing, scope, body, wantForm, scopeChanged, definitionChanged, solution, entry },
+) {
+  if (!existing)
+    await client.request('workflows', { method: 'POST', body: { workflowid: rule.id, ...body }, solution });
+  else if (scopeChanged || definitionChanged) {
+    // Scope and definition live on the activated rule: deactivate, patch, reactivate.
+    if (existing.statecode === 1)
+      await client.request(`workflows(${rule.id})`, { method: 'PATCH', body: { statecode: 0, statuscode: 1 } });
+    await client.request(`workflows(${rule.id})`, {
+      method: 'PATCH',
+      body: {
+        processtriggerscope: scope.processtriggerscope,
+        processtriggerformid: wantForm,
+        xaml: body.xaml,
+        clientdata: body.clientdata,
+        triggeronupdateattributelist: body.triggeronupdateattributelist,
+      },
+      solution,
+    });
+  }
+  const state = await client.get(`workflows(${rule.id})?$select=statecode`);
+  if (state.statecode !== 1) {
+    await client.request(`workflows(${rule.id})`, { method: 'PATCH', body: { statecode: 1, statuscode: 2 } });
+    entry.activated = true;
   }
 }
 
@@ -745,7 +833,7 @@ async function ensureWebResource(client, spec, { apply, solution, journal }) {
   const entry = {
     kind: 'web-resource',
     name: spec.name,
-    action: rows.length ? (rows[0].content === content ? 'exists' : 'update') : 'create',
+    action: webResourceAction(rows, content),
   };
   if (apply) {
     if (!rows.length)
@@ -784,7 +872,7 @@ async function retireWebResources(client, names, { apply, journal }) {
     const entry = {
       kind: 'retired-web-resource',
       name,
-      action: rows.length ? (apply ? 'delete' : 'pending') : 'absent',
+      action: retiredResourceAction(rows, apply),
     };
     if (rows.length && apply) await client.request(`webresourceset(${rows[0].webresourceid})`, { method: 'DELETE' });
     journal.push(entry);
@@ -793,46 +881,51 @@ async function retireWebResources(client, names, { apply, journal }) {
 }
 
 /** Existing platform forms/views the site renders: solution membership only, the component itself is never written. */
-async function ensurePlatformComponents(client, components, { apply, solution, journal }) {
+async function ensurePlatformColumn(client, component, { apply, solution, journal }) {
+  // Columns: resolved by logical name (MetadataId is environment-assigned for custom tables).
+  const meta = await attribute(client, component.table, component.name);
+  const entry = {
+    kind: 'platform-component',
+    type: 2,
+    table: component.table,
+    name: component.name,
+    id: meta?.MetadataId ?? null,
+    action: platformColumnAction(meta, apply),
+  };
+  if (meta && apply) await includeComponent(client, meta.MetadataId, 2, solution);
+  journal.push(entry);
+  log(entry);
+}
+
+async function ensurePlatformRecord(client, component, { apply, solution, journal }) {
+  const row =
+    component.type === 60
+      ? await client
+          .optional(`systemforms(${component.id})?$select=name,objecttypecode`)
+          .then((r) => r && { name: r.name, table: r.objecttypecode })
+      : await client
+          .optional(`savedqueries(${component.id})?$select=name,returnedtypecode`)
+          .then((r) => r && { name: r.name, table: r.returnedtypecode });
+  const entry = {
+    kind: 'platform-component',
+    type: component.type,
+    table: component.table,
+    id: component.id,
+    name: component.name,
+  };
+  if (!row || row.name !== component.name || row.table !== component.table) entry.action = 'missing-or-mismatched';
+  else {
+    entry.action = apply ? 'include' : 'pending';
+    if (apply) await includeComponent(client, component.id, component.type, solution);
+  }
+  journal.push(entry);
+  log(entry);
+}
+
+async function ensurePlatformComponents(client, components, options) {
   for (const component of components) {
-    if (component.type === 2) {
-      // Columns: resolved by logical name (MetadataId is environment-assigned for custom tables).
-      const meta = await attribute(client, component.table, component.name);
-      const entry = {
-        kind: 'platform-component',
-        type: 2,
-        table: component.table,
-        name: component.name,
-        id: meta?.MetadataId ?? null,
-        action: meta ? (apply ? 'include' : 'pending') : 'missing-or-mismatched',
-      };
-      if (meta && apply) await includeComponent(client, meta.MetadataId, 2, solution);
-      journal.push(entry);
-      log(entry);
-      continue;
-    }
-    const row =
-      component.type === 60
-        ? await client
-            .optional(`systemforms(${component.id})?$select=name,objecttypecode`)
-            .then((r) => r && { name: r.name, table: r.objecttypecode })
-        : await client
-            .optional(`savedqueries(${component.id})?$select=name,returnedtypecode`)
-            .then((r) => r && { name: r.name, table: r.returnedtypecode });
-    const entry = {
-      kind: 'platform-component',
-      type: component.type,
-      table: component.table,
-      id: component.id,
-      name: component.name,
-    };
-    if (!row || row.name !== component.name || row.table !== component.table) entry.action = 'missing-or-mismatched';
-    else {
-      entry.action = apply ? 'include' : 'pending';
-      if (apply) await includeComponent(client, component.id, component.type, solution);
-    }
-    journal.push(entry);
-    log(entry);
+    if (component.type === 2) await ensurePlatformColumn(client, component, options);
+    else await ensurePlatformRecord(client, component, options);
   }
 }
 
@@ -840,7 +933,7 @@ async function ensurePlatformComponents(client, components, { apply, solution, j
 async function ensureTableRoots(client, tables, { apply, solution, journal }) {
   for (const table of tables) {
     const meta = await client.optional(`EntityDefinitions(LogicalName='${table}')?$select=MetadataId`);
-    const entry = { kind: 'table-root', table, action: meta ? (apply ? 'include-all' : 'pending') : 'missing' };
+    const entry = { kind: 'table-root', table, action: tableRootAction(meta, apply) };
     if (meta && apply)
       await client.request('AddSolutionComponent', {
         method: 'POST',
@@ -857,68 +950,7 @@ async function ensureTableRoots(client, tables, { apply, solution, journal }) {
   }
 }
 
-async function ensureColumnSecurity(client, profile, { apply, solution, journal }) {
-  const profiles = await client.list(
-    `fieldsecurityprofiles?$select=fieldsecurityprofileid,name&$filter=name eq '${profile.name.replace(/'/g, "''")}'`,
-  );
-  let id = profiles[0]?.fieldsecurityprofileid ?? null;
-  const entry = {
-    kind: 'column-security-profile',
-    name: profile.name,
-    action: id ? 'exists' : 'create',
-    permissions: [],
-  };
-  if (!id && apply) {
-    const result = await client.request('fieldsecurityprofiles', {
-      method: 'POST',
-      body: { name: profile.name, description: 'Paqvilo baseline fixture: denies the secured column' },
-      solution,
-    });
-    id = result.entityId?.match(/\(([0-9a-f-]{36})\)/i)?.[1] ?? null;
-  }
-  if (id) {
-    for (const column of profile.columns) {
-      const meta = await attribute(client, column.table, column.name);
-      if (!meta) continue;
-      const existing = await client.list(
-        `fieldpermissions?$select=fieldpermissionid&$filter=_fieldsecurityprofileid_value eq ${id} and attributelogicalname eq '${column.name}' and entityname eq '${column.table}'`,
-      );
-      entry.permissions.push({ column: column.name, action: existing.length ? 'exists' : 'create' });
-      if (!existing.length && apply)
-        await client.request('fieldpermissions', {
-          method: 'POST',
-          body: {
-            entityname: column.table,
-            attributelogicalname: column.name,
-            canread: column.read,
-            canupdate: column.update,
-            cancreate: column.create,
-            'fieldsecurityprofileid@odata.bind': `/fieldsecurityprofiles(${id})`,
-          },
-          solution,
-        });
-    }
-  }
-  journal.push(entry);
-  log(entry);
-}
-
-async function main() {
-  const { values } = parseArgs({
-    options: {
-      connection: { type: 'string' },
-      apply: { type: 'boolean' },
-      export: { type: 'boolean' },
-      'skip-manifest': { type: 'boolean' },
-    },
-  });
-  if (!values.connection) throw new Error('--connection <private connection.json> is required.');
-  const apply = Boolean(values.apply);
-  const info = await loadConnection(values.connection);
-  const client = connectedClient(info);
-  // The toolkit client withholds server bodies; keep the last failure privately for diagnosis.
-  const privateDir = path.join(root, '.paqvilo/baseline');
-  await fs.mkdir(privateDir, { recursive: true });
+function installFetchDiagnostics(client, privateDir) {
   const nativeFetch = client.fetch;
   client.fetch = async (...params) => {
     const response = await nativeFetch(...params);
@@ -958,7 +990,9 @@ async function main() {
     }
     return response;
   };
-  // Metadata writes queue behind the platform's customization job: wait and retry on 429.
+}
+
+function installRequestRetries(client) {
   const nativeRequest = client.request.bind(client);
   client.request = async (relative, options = {}) => {
     for (let attempt = 1; ; attempt++) {
@@ -972,26 +1006,115 @@ async function main() {
       }
     }
   };
+}
+
+async function ensureColumnSecurityPermission(client, column, id, { apply, solution, entry }) {
+  const meta = await attribute(client, column.table, column.name);
+  if (!meta) return;
+  const existing = await client.list(
+    `fieldpermissions?$select=fieldpermissionid&$filter=_fieldsecurityprofileid_value eq ${id} and attributelogicalname eq '${column.name}' and entityname eq '${column.table}'`,
+  );
+  entry.permissions.push({ column: column.name, action: existing.length ? 'exists' : 'create' });
+  if (!existing.length && apply)
+    await client.request('fieldpermissions', {
+      method: 'POST',
+      body: {
+        entityname: column.table,
+        attributelogicalname: column.name,
+        canread: column.read,
+        canupdate: column.update,
+        cancreate: column.create,
+        'fieldsecurityprofileid@odata.bind': `/fieldsecurityprofiles(${id})`,
+      },
+      solution,
+    });
+}
+
+async function ensureColumnSecurity(client, profile, { apply, solution, journal }) {
+  const profiles = await client.list(
+    `fieldsecurityprofiles?$select=fieldsecurityprofileid,name&$filter=name eq '${profile.name.replaceAll("'", "''")}'`,
+  );
+  let id = profiles[0]?.fieldsecurityprofileid ?? null;
+  const entry = {
+    kind: 'column-security-profile',
+    name: profile.name,
+    action: id ? 'exists' : 'create',
+    permissions: [],
+  };
+  if (!id && apply) {
+    const result = await client.request('fieldsecurityprofiles', {
+      method: 'POST',
+      body: { name: profile.name, description: 'Paqvilo baseline fixture: denies the secured column' },
+      solution,
+    });
+    id = result.entityId?.match(/\(([0-9a-f-]{36})\)/i)?.[1] ?? null;
+  }
+  if (id) {
+    for (const column of profile.columns)
+      await ensureColumnSecurityPermission(client, column, id, { apply, solution, entry });
+  }
+  journal.push(entry);
+  log(entry);
+}
+
+async function processManifest(apply, manifest, client, privateDir, info, stamp) {
+  if (apply) {
+    const result = await applyManifest(manifest, {
+      client,
+      journalFile: path.join(privateDir, `manifest-apply-${stamp}.json`),
+      expectedOrganisationId: info.organisationId,
+      onProgress: (entry) => log({ manifest: entry.key ?? entry.kind, status: entry.status ?? entry.state }),
+    });
+    log({ manifest: 'applied', summary: result.summary ?? null });
+  } else {
+    const plan = await planManifest(manifest, { client });
+    log({ manifest: 'plan', summary: plan.summary });
+  }
+}
+
+async function exportAndValidateSolution(client, privateDir, solution, stamp) {
+  const zip = path.join(privateDir, `${solution}-${stamp}.zip`);
+  const unpack = path.join(root, 'solution');
+  await fs.rm(unpack, { recursive: true, force: true });
+  log(await exportSolution({ client, solutionName: solution, zipFile: zip, unpackFolder: unpack }));
+  // System-layer requirements (unmodified platform columns the solution lists itself) are always present on import.
+  const missing = [
+    ...(await fs.readFile(path.join(unpack, 'Other', 'Solution.xml'), 'utf8')).matchAll(
+      /<MissingDependency>[\s\S]*?<\/MissingDependency>/g,
+    ),
+  ].filter(([entry]) => !/<Required\b[^>]*\bsolution="System \(/.test(entry)).length;
+  if (missing)
+    throw new Error(
+      `Exported solution is not self-contained: ${missing} MissingDependency entries in Other/Solution.xml.`,
+    );
+}
+
+async function main() {
+  const { values } = parseArgs({
+    options: {
+      connection: { type: 'string' },
+      apply: { type: 'boolean' },
+      export: { type: 'boolean' },
+      'skip-manifest': { type: 'boolean' },
+    },
+  });
+  if (!values.connection) throw new Error('--connection <private connection.json> is required.');
+  const apply = Boolean(values.apply);
+  const info = await loadConnection(values.connection);
+  const client = connectedClient(info);
+  // The toolkit client withholds server bodies; keep the last failure privately for diagnosis.
+  const privateDir = path.join(root, '.paqvilo/baseline');
+  await fs.mkdir(privateDir, { recursive: true });
+  installFetchDiagnostics(client, privateDir);
+  // Metadata writes queue behind the platform's customization job: wait and retry on 429.
+  installRequestRetries(client);
   await client.verify(info.organisationId);
   const manifest = await readManifest(path.join(root, 'dataverse/manifest.json'));
   const extrasSpec = JSON.parse(await fs.readFile(path.join(root, 'dataverse/extras.json'), 'utf8'));
   const solution = extrasSpec.solution;
   const journal = [];
   const stamp = Date.now();
-  if (!values['skip-manifest']) {
-    if (apply) {
-      const result = await applyManifest(manifest, {
-        client,
-        journalFile: path.join(privateDir, `manifest-apply-${stamp}.json`),
-        expectedOrganisationId: info.organisationId,
-        onProgress: (entry) => log({ manifest: entry.key ?? entry.kind, status: entry.status ?? entry.state }),
-      });
-      log({ manifest: 'applied', summary: result.summary ?? null });
-    } else {
-      const plan = await planManifest(manifest, { client });
-      log({ manifest: 'plan', summary: plan.summary });
-    }
-  }
+  if (!values['skip-manifest']) await processManifest(apply, manifest, client, privateDir, info, stamp);
   const options = { apply, solution, journal };
   for (const column of extrasSpec.columns.filter((c) => c.kind !== 'rollup'))
     await ensureExtraColumn(client, column, options);
@@ -1019,22 +1142,7 @@ async function main() {
     path.join(privateDir, `${apply ? 'apply' : 'plan'}-${stamp}.json`),
     JSON.stringify({ apply, startedAt: new Date(stamp).toISOString(), journal }, null, 2),
   );
-  if (values.export) {
-    const zip = path.join(privateDir, `${solution}-${stamp}.zip`);
-    const unpack = path.join(root, 'solution');
-    await fs.rm(unpack, { recursive: true, force: true });
-    log(await exportSolution({ client, solutionName: solution, zipFile: zip, unpackFolder: unpack }));
-    // System-layer requirements (unmodified platform columns the solution lists itself) are always present on import.
-    const missing = [
-      ...(await fs.readFile(path.join(unpack, 'Other', 'Solution.xml'), 'utf8')).matchAll(
-        /<MissingDependency>[\s\S]*?<\/MissingDependency>/g,
-      ),
-    ].filter(([entry]) => !/<Required\b[^>]*\bsolution="System \(/.test(entry)).length;
-    if (missing)
-      throw new Error(
-        `Exported solution is not self-contained: ${missing} MissingDependency entries in Other/Solution.xml.`,
-      );
-  }
+  if (values.export) await exportAndValidateSolution(client, privateDir, solution, stamp);
   log({
     done: true,
     apply,
@@ -1044,7 +1152,7 @@ async function main() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
-  main().catch((error) => {
+  /* NOSONAR: module-level promise chain must not block evaluation */ main().catch((error) => {
     console.error(error.message);
     process.exitCode = 1;
   });

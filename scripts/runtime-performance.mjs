@@ -38,10 +38,10 @@ export function performanceOptionsFromArgs(args) {
       'data-budget': { type: 'string' },
     },
   });
-  if (values.quick && values.large) throw Error('Choose --quick or --large, not both.');
+  if (values.quick && values.large) throw new Error('Choose --quick or --large, not both.');
   const positive = (value, name) => {
     if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value)))
-      throw Error(`--${name} must be a positive safe integer.`);
+      throw new Error(`--${name} must be a positive safe integer.`);
     return Number(value);
   };
   const options = {
@@ -69,7 +69,7 @@ export function performanceOptionsFromArgs(args) {
 }
 
 /** Sequential loopback probe: never consumes an external portal or business data. */
-export async function runtimePerformance({
+/* NOSONAR: single-pass routine, splitting it would change shared state */ export async function runtimePerformance({
   scales = [16, 32, 64],
   records = 10000,
   formsPerTable = 1,
@@ -89,7 +89,7 @@ export async function runtimePerformance({
   const checkBudget = (durationMs, limitMs, finding) => {
     if (durationMs <= limitMs) return;
     findings.push({ ...finding, durationMs: Math.round(durationMs), budgetMs: limitMs });
-    if (strictBudgets) throw Error(`${finding.stage} exceeded declared ${limitMs} ms budget`);
+    if (strictBudgets) throw new Error(`${finding.stage} exceeded declared ${limitMs} ms budget`);
   };
   for (const tables of scales) {
     const fixtureStarted = performance.now();
@@ -131,7 +131,7 @@ export async function runtimePerformance({
           const firstStatus = await fetch(sim.url + '/_sim/api/status', {
             signal: AbortSignal.timeout(catalogueBudgetMs),
           });
-          if (!firstStatus.ok) throw Error(`Status ${firstStatus.status}`);
+          if (!firstStatus.ok) throw new Error(`Status ${firstStatus.status}`);
           await firstStatus.arrayBuffer();
         } catch (error) {
           if (strictBudgets) throw error;
@@ -152,7 +152,7 @@ export async function runtimePerformance({
           let complete = false;
           const pending = fetch(sim.url + '/_apps/api', { signal: AbortSignal.timeout(catalogueBudgetMs) })
             .then(async (response) => {
-              if (!response.ok) throw Error(`Catalogue ${response.status}`);
+              if (!response.ok) throw new Error(`Catalogue ${response.status}`);
               return response.text();
             })
             .finally(() => {
@@ -168,7 +168,7 @@ export async function runtimePerformance({
               const response = await fetch(sim.url + '/_sim/api/status', {
                 signal: AbortSignal.timeout(heartbeatBudgetMs),
               });
-              if (!response.ok) throw Error(`Status ${response.status}`);
+              if (!response.ok) throw new Error(`Status ${response.status}`);
               await response.arrayBuffer();
             } catch (error) {
               if (strictBudgets) throw error;
@@ -216,10 +216,10 @@ export async function runtimePerformance({
             });
             continue;
           }
-          if (!value.tables.x_scale0?.fields.x_value1?.isSecured) throw Error('Missing secured imported field');
+          if (!value.tables.x_scale0?.fields.x_value1?.isSecured) throw new Error('Missing secured imported field');
           for (let i = 0; i < tables; i++)
             if (value.tables[`x_scale${i}`]?.forms.length !== formsPerTable)
-              throw Error(`Imported forms are incomplete for x_scale${i}`);
+              throw new Error(`Imported forms are incomplete for x_scale${i}`);
           const durationMs = performance.now() - started;
           checkBudget(durationMs, catalogueBudgetMs, { tables, phase, warmth, stage: 'catalogue response' });
           catalogue.push({
@@ -239,7 +239,7 @@ export async function runtimePerformance({
             const response = await fetch(sim.url + '/_apps/api/' + route, {
               signal: AbortSignal.timeout(catalogueBudgetMs),
             });
-            if (!response.ok) throw Error(`Metadata ${route}: ${response.status}`);
+            if (!response.ok) throw new Error(`Metadata ${route}: ${response.status}`);
             const text = await response.text(),
               transferredMs = performance.now() - at,
               parseAt = performance.now();
@@ -249,9 +249,9 @@ export async function runtimePerformance({
               route === 'index' &&
               Object.values(value.tables).some((table) => table.forms || table.fields || table.views)
             )
-              throw Error('Index includes unrelated table bodies');
+              throw new Error('Index includes unrelated table bodies');
             if (route !== 'index' && value.forms.length !== formsPerTable)
-              throw Error('Selected-table forms are incomplete');
+              throw new Error('Selected-table forms are incomplete');
             metadataTransport.push({
               attempt,
               catalogueState: 'already constructed',
@@ -269,12 +269,12 @@ export async function runtimePerformance({
         ]) {
           const at = performance.now();
           const response = await fetch(sim.url + route, { signal: AbortSignal.timeout(catalogueBudgetMs) });
-          if (!response.ok) throw Error(`${kind} response ${response.status}`);
+          if (!response.ok) throw new Error(`${kind} response ${response.status}`);
           const value = await response.json();
           if (kind === 'first-grid' && (!value.rows.length || value.rows.length > 50))
-            throw Error('First grid did not return its populated bounded page');
+            throw new Error('First grid did not return its populated bounded page');
           if (kind === 'first-record' && value.row.x_scale0id !== recordId)
-            throw Error('First record read did not retain its record identity');
+            throw new Error('First record read did not retain its record identity');
           const durationMs = performance.now() - at;
           checkBudget(durationMs, dataBudgetMs, { tables, phase, stage: kind });
           dataReads.push({
@@ -288,7 +288,7 @@ export async function runtimePerformance({
         const actualRecords = Object.entries(sim.store.state.tables)
           .filter(([name]) => /^x_scale\d+$/.test(name))
           .reduce((total, [, rows]) => total + rows.length, 0);
-        if (actualRecords !== records) throw Error('Imported fixture record count changed');
+        if (actualRecords !== records) throw new Error('Imported fixture record count changed');
         const startupBudgetMs = startupBudgets[phase] ?? budgetMs;
         const memoryAfter = process.memoryUsage(),
           peakRssBytes = process.resourceUsage().maxRSS * 1024;
@@ -333,7 +333,7 @@ export async function runtimePerformance({
               { admin: true },
             );
         if (phase === 'journal-grown' && sim.store.tableRows('x_scale0')[0].x_value0 !== 'Local journal edit 24')
-          throw Error('Restart lost a local edit');
+          throw new Error('Restart lost a local edit');
         await sim.close();
         sim = null;
       }

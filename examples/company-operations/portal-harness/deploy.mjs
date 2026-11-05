@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { loadConnection, connectedClient } from 'paqvilo/dataverse';
-import { prepare } from './compile.mjs';
+import { prepare, fetchXmlTagMatches } from './compile.mjs';
 import { savePrivateJson } from './private-journal.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -23,7 +23,7 @@ export async function shellSource(manifest) {
   const coreImport = /^import\s*\{[^}]*\}\s+from\s+(['"])\.\/core\.mjs\1;\s*/;
   if (!coreImport.test(runtime)) throw new Error('The portal runtime must begin with its bundled core import.');
   const code = (core + '\n' + runtime.replace(coreImport, '')).replace(/\bexport /g, '');
-  const encoded = JSON.stringify(manifest).replaceAll('<', '\\u003c');
+  const encoded = JSON.stringify(manifest).replaceAll('<', String.raw`\u003c`);
   return `<section id="co-lab"><h1>Company Operations Permission Lab</h1><p>Paired Liquid and Web API FetchXML. Results distinguish parity, scenario assertions and missing backend evidence.</p><pre id="co-identity"></pre><label>Read case <select id="co-cases"><option value="all">All read cases and variants</option></select></label><label>Previous run <select id="co-baseline"><option value="">No baseline</option></select></label><button id="co-history">Load history</button><button id="co-view-history">View selected run</button><button id="co-read" data-run>Run reads</button><label>CRUD scope <select id="co-crud-scope"><option value="all">All prepared canaries</option><option value="equipment">Equipment only</option><option value="probe">Recorder probe only</option></select></label><button id="co-crud" data-run>Run reads and prepared CRUD</button><label>Plugin profile <select id="co-profile"><option value="">None</option></select></label><button id="co-stop">Stop</button><button id="co-export">Export current JSON</button><p id="co-status" role="status"></p><div id="co-results"></div></section><style>#co-lab{max-width:1100px;margin:24px auto;padding:16px;font-family:system-ui}#co-lab pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f6f7;padding:12px}#co-lab button,#co-lab select{margin:6px;padding:8px}#co-lab details{border-top:1px solid #ddd;padding:10px}</style><script id="co-context" type="application/xml"><context contact-id="{{ user.id | xml_escape }}"><roles>{% for role in user.roles %}<role>{{ role | xml_escape }}</role>{% endfor %}</roles></context></script>{% raw %}<script type="module">${code}\nconst manifest=${encoded};const contextXML=new DOMParser().parseFromString(document.getElementById('co-context').textContent,'application/xml');const context={contactId:contextXML.documentElement.getAttribute('contact-id'),roles:[...contextXML.querySelectorAll('role')].map(r=>r.textContent)};mount(manifest,context);</script>{% endraw %}`;
 }
 export async function deploy({
@@ -51,15 +51,7 @@ export async function deploy({
     const relationships = await client.list(
       `EntityDefinitions(LogicalName='${table.name}')/ManyToOneRelationships?$select=ReferencingAttribute,ReferencedEntity,ReferencingEntityNavigationPropertyName`,
     );
-    navigation[
-      table.entitySetName ||
-        { account: 'accounts', contact: 'contacts', transactioncurrency: 'transactioncurrencies' }[table.name]
-    ] = {};
-    for (const r of relationships)
-      navigation[
-        table.entitySetName ||
-          { account: 'accounts', contact: 'contacts', transactioncurrency: 'transactioncurrencies' }[table.name]
-      ][r.ReferencingAttribute] = r.ReferencingEntityNavigationPropertyName;
+    addTableNavigation(navigation, table, relationships);
   }
   const overlay = overlayFile ? JSON.parse(await fs.readFile(overlayFile, 'utf8')) : {};
   const { manifest, templates } = await prepare({
@@ -109,26 +101,7 @@ export async function deploy({
     hiddenfromsitemap: true,
   });
   // Localized child rows are required by multilingual enhanced-model sites.
-  if (language)
-    for (const [kind, title] of [
-      ['shell', 'CO Permission Lab'],
-      ['liquid', 'CO Permission Lab Liquid Data'],
-    ])
-      push(
-        'contentpage:' + kind,
-        title,
-        2,
-        {
-          isroot: false,
-          rootwebpageid: id('page:' + kind),
-          pagetemplateid: id('pagetemplate:' + kind),
-          partialurl: kind === 'shell' ? 'permission-lab' : 'liquid',
-          publishingstateid: published,
-          title,
-          hiddenfromsitemap: true,
-        },
-        { language },
-      );
+  if (language) addLocalizedPages(push, id, language, published);
   push('access:shell', 'CO Permission Lab Require Runner', 10, {
     adx_webpageaccesscontrolrule_webrole: [role],
     right: 2,
@@ -141,32 +114,168 @@ export async function deploy({
     scope: 1,
     webpageid: id('page:liquid'),
   });
+  const fields = deployFieldAllowlist(manifest, schema);
+  for (const [table, names] of Object.entries(fields)) {
+    // Qualify allowlists against actual metadata; never deploy aliases or guessed columns as schema fields.
+    const actual = await client.list(
+      `EntityDefinitions(LogicalName='${table}')/Attributes?$select=LogicalName,AttributeType`,
+    );
+    addFieldSettings(table, names, actual, push);
+  }
+  const existing = await client.list(
+    `powerpagecomponents?$filter=_powerpagesiteid_value eq ${website}&$select=powerpagecomponentid,name,powerpagecomponenttype,content,_powerpagesiteid_value,_powerpagesitelanguageid_value,statecode`,
+  );
+  const journal = { website, createdAt: new Date().toISOString(), manifestHash: manifest.manifestHash, entries: [] };
+  const dir = path.join(here, '../.paqvilo/portal-harness');
+  await fs.mkdir(dir, { recursive: true });
+  const file = path.join(dir, `deploy-${Date.now()}.json`);
+  const save = () => savePrivateJson(file, structuredClone(journal));
+  await savePrivateJson(file, journal, { exclusive: true });
+  for (const c of components) {
+    const { own, body, unchanged, entry } = prepareComponentWrite(c, existing, website);
+    journal.entries.push(entry);
+    await save();
+    if (!unchanged) {
+      const request = componentWriteRequest(c, own, body, website);
+      await client.request(request.path, request.options);
+    }
+    const actual = await client.get(`powerpagecomponents(${c.id})`);
+    assertComponentReadback(actual, body, website);
+    entry.status = componentWriteStatus(unchanged, own);
+    await save();
+    if (journal.entries.length % 10 === 0)
+      console.log(JSON.stringify({ completed: journal.entries.length, total: components.length }));
+  }
+  const post = await client.list(
+    `powerpagecomponents?$filter=_powerpagesiteid_value eq ${website}&$select=powerpagecomponentid,name,powerpagecomponenttype,content,_powerpagesiteid_value,_powerpagesitelanguageid_value,statecode`,
+  );
+  const mismatches = deploymentMismatches(components, post);
+  journal.verification = { checked: components.length, mismatches };
+  journal.finishedAt = new Date().toISOString();
+  await save();
+  if (mismatches.length) throw new Error(`Post-deployment verification failed for ${mismatches.join(', ')}`);
+  return {
+    journal: file,
+    manifestHash: manifest.manifestHash,
+    components: components.length,
+    page: id('page:shell'),
+    liquidPage: id('page:liquid'),
+    fields: Object.fromEntries(
+      Object.entries(fields).map(([table, columns]) => [table, [...columns].filter(Boolean).sort()]), // NOSONAR: preserve default coercion and UTF-16 sort order
+    ),
+  };
+}
+
+function deployFieldAllowlist(manifest, schema) {
   const fields = {};
-  for (const plan of manifest.cases) {
-    fields[plan.table] ||= new Set([plan.primaryId, plan.primaryName]);
-    const entityStack = [],
-      aliases = {};
-    for (const match of plan.fetchXml.matchAll(
-      /<(entity|link-entity)\s+([^>]+)>|<\/(entity|link-entity)>|<(?:attribute|condition|order)\s+([^>]+)>/g,
-    )) {
-      if (match[1]) {
-        const table = match[2].match(/\bname="([^"]+)"/)?.[1],
-          alias = match[2].match(/\balias="([^"]+)"/)?.[1];
-        entityStack.push(table);
-        if (alias) aliases[alias] = table;
-      } else if (match[3]) entityStack.pop();
-      else {
-        const attrs = match[4],
-          entityAlias = attrs.match(/\bentityname="([^"]+)"/)?.[1],
-          table = entityAlias ? aliases[entityAlias] : entityStack.at(-1),
-          name = attrs.match(/\b(?:name|attribute)="([^"]+)"/)?.[1];
-        if (name && schema.tables.some((t) => t.name === table)) {
-          fields[table] ||= new Set();
-          fields[table].add(name);
-        }
+  for (const plan of manifest.cases) addFetchXmlFields(fields, plan, schema);
+  addPositiveVariantFields(fields, manifest);
+  addSafeReadExtraFields(fields);
+  addSystemTableFields(fields, schema);
+  addSystemRelationshipFields(fields, schema);
+  return fields;
+}
+
+function addTableNavigation(navigation, table, relationships) {
+  navigation[
+    table.entitySetName ||
+      { account: 'accounts', contact: 'contacts', transactioncurrency: 'transactioncurrencies' }[table.name]
+  ] = {};
+  for (const relationship of relationships)
+    navigation[
+      table.entitySetName ||
+        { account: 'accounts', contact: 'contacts', transactioncurrency: 'transactioncurrencies' }[table.name]
+    ][relationship.ReferencingAttribute] = relationship.ReferencingEntityNavigationPropertyName;
+}
+
+function addLocalizedPages(push, id, language, published) {
+  for (const [kind, title] of [
+    ['shell', 'CO Permission Lab'],
+    ['liquid', 'CO Permission Lab Liquid Data'],
+  ])
+    push(
+      'contentpage:' + kind,
+      title,
+      2,
+      {
+        isroot: false,
+        rootwebpageid: id('page:' + kind),
+        pagetemplateid: id('pagetemplate:' + kind),
+        partialurl: kind === 'shell' ? 'permission-lab' : 'liquid',
+        publishingstateid: published,
+        title,
+        hiddenfromsitemap: true,
+      },
+      { language },
+    );
+}
+
+function addFieldSettings(table, names, actual, push) {
+  const legal = new Set(
+    actual.flatMap((column) => [
+      column.LogicalName,
+      ...(['Lookup', 'Customer', 'Owner'].includes(column.AttributeType) ? [`_${column.LogicalName}_value`] : []),
+    ]),
+  );
+  for (const name of names)
+    if (name && !legal.has(name)) throw new Error(`Web API allowlist references missing ${table}.${name}`);
+  push('setting:' + table + ':enabled', `Webapi/${table}/enabled`, 9, { value: 'true' });
+  push('setting:' + table + ':fields', `Webapi/${table}/fields`, 9, {
+    value: [...names].filter(Boolean).sort().join(','), // NOSONAR: preserve default coercion and UTF-16 sort order
+  });
+}
+
+function deploymentMismatches(components, post) {
+  return components
+    .filter(
+      (component) =>
+        !post.some(
+          (entry) =>
+            entry.powerpagecomponentid === component.id &&
+            entry.statecode === 0 &&
+            entry.powerpagecomponenttype === component.type &&
+            entry.content === JSON.stringify(component.content),
+        ),
+    )
+    .map((component) => component.key);
+}
+
+function addFetchXmlFields(fields, plan, schema) {
+  fields[plan.table] ||= new Set([plan.primaryId, plan.primaryName]);
+  const entityStack = [],
+    aliases = {};
+  for (const match of fetchXmlTagMatches(plan.fetchXml)) {
+    if (match[1]) {
+      const table = match[2].match(/\bname="([^"]+)"/)?.[1],
+        alias = match[2].match(/\balias="([^"]+)"/)?.[1];
+      entityStack.push(table);
+      if (alias) aliases[alias] = table;
+    } else if (match[3]) entityStack.pop();
+    else {
+      const attrs = match[4],
+        entityAlias = attrs.match(/\bentityname="([^"]+)"/)?.[1],
+        table = entityAlias ? aliases[entityAlias] : entityStack.at(-1),
+        name = attrs.match(/\b(?:name|attribute)="([^"]+)"/)?.[1];
+      if (name && schema.tables.some((t) => t.name === table)) {
+        fields[table] ||= new Set();
+        fields[table].add(name);
       }
     }
   }
+}
+
+function addPositiveVariantFields(fields, manifest) {
+  for (const plan of manifest.odataPositiveVariants) {
+    for (const field of plan.requiredLogicalWebApiFields ?? []) {
+      fields[plan.table] ||= new Set();
+      fields[plan.table].add(field);
+    }
+    for (const field of plan.fields ?? [])
+      if (field.logicalName && field.source === `_${field.logicalName}_value`) fields[plan.table].add(field.source);
+  }
+}
+
+function addSafeReadExtraFields(fields) {
   const safeReadExtras = {
     account: ['name', 'accountnumber', 'pqvd_orgkind'],
     contact: ['firstname', 'lastname', 'fullname', 'pqvd_personcode'],
@@ -191,143 +300,113 @@ export async function deploy({
       'pqvd_scopekey',
     ],
   };
-  for (const plan of manifest.odataPositiveVariants) {
-    for (const field of plan.requiredLogicalWebApiFields ?? []) (fields[plan.table] ||= new Set()).add(field);
-    for (const field of plan.fields ?? [])
-      if (field.logicalName && field.source === `_${field.logicalName}_value`) fields[plan.table].add(field.source);
-  }
   for (const [table, names] of Object.entries(safeReadExtras))
-    for (const name of names) (fields[table] ||= new Set()).add(name);
-  for (const t of schema.tables.filter((t) =>
-    [
-      'pqvd_testrun',
-      'pqvd_testresult',
-      'pqvd_testoperation',
-      'pqvd_crudprobe',
-      'pqvd_pluginevent',
-      'pqvd_chainnode',
-    ].includes(t.name),
-  )) {
-    fields[t.name] = new Set([`${t.name}id`, 'pqvd_name', ...(t.columns || []).map((c) => c.name)]);
-    for (const r of schema.relationships.filter(
-      (r) => r.child === t.name || r.referencingTable === t.name || r.referencingEntity === t.name,
-    ))
-      if (r.lookup?.name) fields[t.name].add(r.lookup.name);
-  }
-  // Relationships in the generated registry use referencingTable/referencedTable or parent/child: read concrete Lookup schema names.
-  for (const r of schema.relationships) {
-    const child = r.child || r.referencingTable || r.referencingEntity;
-    if (
-      [
-        'pqvd_testrun',
-        'pqvd_testresult',
-        'pqvd_testoperation',
-        'pqvd_crudprobe',
-        'pqvd_pluginevent',
-        'pqvd_chainnode',
-      ].includes(child) &&
-      r.lookup
-    )
-      fields[child].add((r.lookup.name || r.lookup.schemaName)?.toLowerCase());
-  }
-  for (const [table, names] of Object.entries(fields)) {
-    // Qualify allowlists against actual metadata; never deploy aliases or guessed columns as schema fields.
-    const actual = await client.list(
-      `EntityDefinitions(LogicalName='${table}')/Attributes?$select=LogicalName,AttributeType`,
-    );
-    const legal = new Set(
-      actual.flatMap((c) => [
-        c.LogicalName,
-        ...(['Lookup', 'Customer', 'Owner'].includes(c.AttributeType) ? [`_${c.LogicalName}_value`] : []),
-      ]),
-    );
-    for (const name of names)
-      if (name && !legal.has(name)) throw new Error(`Web API allowlist references missing ${table}.${name}`);
-    push('setting:' + table + ':enabled', `Webapi/${table}/enabled`, 9, { value: 'true' });
-    push('setting:' + table + ':fields', `Webapi/${table}/fields`, 9, {
-      value: [...names].filter(Boolean).sort().join(','),
-    });
-  }
-  const existing = await client.list(
-    `powerpagecomponents?$filter=_powerpagesiteid_value eq ${website}&$select=powerpagecomponentid,name,powerpagecomponenttype,content,_powerpagesiteid_value,_powerpagesitelanguageid_value,statecode`,
-  );
-  const journal = { website, createdAt: new Date().toISOString(), manifestHash: manifest.manifestHash, entries: [] };
-  const dir = path.join(here, '../.paqvilo/portal-harness');
-  await fs.mkdir(dir, { recursive: true });
-  const file = path.join(dir, `deploy-${Date.now()}.json`);
-  const save = () => savePrivateJson(file, structuredClone(journal));
-  await savePrivateJson(file, journal, { exclusive: true });
-  for (const c of components) {
-    const matches = existing.filter(
-      (e) => e.name === c.name && e.powerpagecomponenttype === c.type && e.statecode === 0,
-    );
-    if (c.type === 9 && matches.length > 1)
-      throw new Error(`Duplicate active setting ${c.name}; reconcile ambiguous configuration first.`);
-    // Site-level API settings have a unique semantic name: preserve discovered identity and journal prior content.
-    if (c.type === 9 && matches.length === 1) c.id = matches[0].powerpagecomponentid;
-    const own = existing.find((e) => e.powerpagecomponentid === c.id);
-    if (own && (own._powerpagesiteid_value !== website || own.name !== c.name || own.powerpagecomponenttype !== c.type))
-      throw new Error('Portal deployment component identity collision.');
-    const body = { name: c.name, powerpagecomponenttype: c.type, content: JSON.stringify(c.content) };
-    if (c.language) body['powerpagesitelanguageid@odata.bind'] = `/powerpagesitelanguages(${c.language})`;
-    const unchanged = own && own.content === body.content && own.statecode === 0;
-    const entry = {
-      key: c.key,
-      id: c.id,
-      status: unchanged ? 'exists' : 'pending',
-      planned: body,
-      ...(own && !unchanged ? { before: own } : {}),
-    };
-    journal.entries.push(entry);
-    await save();
-    if (!unchanged) {
-      if (own) {
-        if (!own['@odata.etag']) throw new Error('Portal update requires a native ETag.');
-        await client.request(`powerpagecomponents(${c.id})`, { method: 'PATCH', body, ifMatch: own['@odata.etag'] });
-      } else
-        await client.request('powerpagecomponents', {
-          method: 'POST',
-          body: { ...body, powerpagecomponentid: c.id, 'powerpagesiteid@odata.bind': `/powerpagesites(${website})` },
-        });
+    for (const name of names) {
+      fields[table] ||= new Set();
+      fields[table].add(name);
     }
-    const actual = await client.get(`powerpagecomponents(${c.id})`);
-    if (actual.content !== body.content || actual.statecode !== 0 || actual._powerpagesiteid_value !== website)
-      throw new Error('Portal component readback failed.');
-    entry.status = unchanged ? 'exists' : own ? 'updated' : 'created';
-    await save();
-    if (journal.entries.length % 10 === 0)
-      console.log(JSON.stringify({ completed: journal.entries.length, total: components.length }));
+}
+
+function addSystemTableFields(fields, schema) {
+  for (const table of schema.tables.filter((item) => isHarnessTable(item.name))) {
+    fields[table.name] = new Set([
+      `${table.name}id`,
+      'pqvd_name',
+      ...(table.columns || []).map((column) => column.name),
+    ]);
+    for (const relationship of schema.relationships.filter(
+      (item) =>
+        item.child === table.name || item.referencingTable === table.name || item.referencingEntity === table.name,
+    ))
+      if (relationship.lookup?.name) fields[table.name].add(relationship.lookup.name);
   }
-  const post = await client.list(
-    `powerpagecomponents?$filter=_powerpagesiteid_value eq ${website}&$select=powerpagecomponentid,name,powerpagecomponenttype,content,_powerpagesiteid_value,_powerpagesitelanguageid_value,statecode`,
+}
+
+function addSystemRelationshipFields(fields, schema) {
+  // Relationships in the generated registry use referencingTable/referencedTable or parent/child: read concrete Lookup schema names.
+  for (const relationship of schema.relationships) {
+    const child = relationship.child || relationship.referencingTable || relationship.referencingEntity;
+    if (isHarnessTable(child) && relationship.lookup)
+      fields[child].add((relationship.lookup.name || relationship.lookup.schemaName)?.toLowerCase());
+  }
+}
+
+function isHarnessTable(name) {
+  return [
+    'pqvd_testrun',
+    'pqvd_testresult',
+    'pqvd_testoperation',
+    'pqvd_crudprobe',
+    'pqvd_pluginevent',
+    'pqvd_chainnode',
+  ].includes(name);
+}
+
+function prepareComponentWrite(component, existing, website) {
+  const matches = existing.filter(
+    (entry) =>
+      entry.name === component.name && entry.powerpagecomponenttype === component.type && entry.statecode === 0,
   );
-  const mismatches = components
-    .filter(
-      (c) =>
-        !post.some(
-          (e) =>
-            e.powerpagecomponentid === c.id &&
-            e.statecode === 0 &&
-            e.powerpagecomponenttype === c.type &&
-            e.content === JSON.stringify(c.content),
-        ),
-    )
-    .map((c) => c.key);
-  journal.verification = { checked: components.length, mismatches };
-  journal.finishedAt = new Date().toISOString();
-  await save();
-  if (mismatches.length) throw new Error(`Post-deployment verification failed for ${mismatches.join(', ')}`);
+  if (component.type === 9 && matches.length > 1)
+    throw new Error(`Duplicate active setting ${component.name}; reconcile ambiguous configuration first.`);
+  // Site-level API settings have a unique semantic name: preserve discovered identity and journal prior content.
+  if (component.type === 9 && matches.length === 1) component.id = matches[0].powerpagecomponentid;
+  const own = existing.find((entry) => entry.powerpagecomponentid === component.id);
+  if (
+    own &&
+    (own._powerpagesiteid_value !== website ||
+      own.name !== component.name ||
+      own.powerpagecomponenttype !== component.type)
+  )
+    throw new Error('Portal deployment component identity collision.');
+  const body = {
+    name: component.name,
+    powerpagecomponenttype: component.type,
+    content: JSON.stringify(component.content),
+  };
+  if (component.language) body['powerpagesitelanguageid@odata.bind'] = `/powerpagesitelanguages(${component.language})`;
+  const unchanged = own?.content === body.content && own?.statecode === 0;
+  const entry = {
+    key: component.key,
+    id: component.id,
+    status: unchanged ? 'exists' : 'pending',
+    planned: body,
+    ...(own && !unchanged ? { before: own } : {}),
+  };
+  return { own, body, unchanged, entry };
+}
+
+function componentWriteRequest(component, own, body, website) {
+  if (own) {
+    if (!own['@odata.etag']) throw new Error('Portal update requires a native ETag.');
+    return {
+      path: `powerpagecomponents(${component.id})`,
+      options: { method: 'PATCH', body, ifMatch: own['@odata.etag'] },
+    };
+  }
   return {
-    journal: file,
-    manifestHash: manifest.manifestHash,
-    components: components.length,
-    page: id('page:shell'),
-    liquidPage: id('page:liquid'),
-    fields: Object.fromEntries(
-      Object.entries(fields).map(([table, columns]) => [table, [...columns].filter(Boolean).sort()]),
-    ),
+    path: 'powerpagecomponents',
+    options: {
+      method: 'POST',
+      body: {
+        ...body,
+        powerpagecomponentid: component.id,
+        'powerpagesiteid@odata.bind': `/powerpagesites(${website})`,
+      },
+    },
   };
 }
+
+function assertComponentReadback(actual, body, website) {
+  if (actual.content !== body.content || actual.statecode !== 0 || actual._powerpagesiteid_value !== website)
+    throw new Error('Portal component readback failed.');
+}
+
+function componentWriteStatus(unchanged, own) {
+  if (unchanged) return 'exists';
+  return own ? 'updated' : 'created';
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const config = JSON.parse(await fs.readFile(args.config, 'utf8'));
   console.log(JSON.stringify(await deploy(config)));

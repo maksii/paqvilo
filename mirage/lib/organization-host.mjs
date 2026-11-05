@@ -144,11 +144,9 @@ const owner = (created, name) => (resource) => {
 function packFactory(packs, exportName, kind) {
   const match = PACK_KIND.exec(kind);
   const pack = match ? packs.find((item) => item?.id === match[1]) : null;
-  const found = match
-    ? pack
-      ? collectPackExport([pack], exportName).get(match[2])
-      : null
-    : collectPackExport(packs, exportName).get(kind);
+  let found;
+  if (!match) found = collectPackExport(packs, exportName).get(kind);
+  else found = pack ? collectPackExport([pack], exportName).get(match[2]) : null;
   return found ? { factory: found.value, pack: found.pack } : null;
 }
 
@@ -178,12 +176,12 @@ export async function composeProviders(options) {
   try {
     return buildProviders(options, created);
   } catch (error) {
-    await closeCreated(created).catch((cleanup) =>
+    await closeCreated(created).catch((error_) =>
       options.diagnostic?.({
-        code: cleanup.code,
+        code: error_.code,
         severity: 'error',
-        providers: cleanup.providers,
-        message: cleanup.message,
+        providers: error_.providers,
+        message: error_.message,
       }),
     );
     throw error;
@@ -241,45 +239,17 @@ function buildProviders(
   });
   // Local-disk providers live under the state directory (<stateDir>/blobs); a runtime without one (dry-run, in-memory) gets
   // the in-memory provider (storage-memory.mjs) under the same id, so its routes are ready and bytes are lost on restart.
-  const instances = {};
-  for (const [id, entry] of Object.entries(storageConfig.storage)) {
-    if (entry.kind === 'local-disk') {
-      const root =
-        entry.root ?? (stateDirectory ? path.join(stateDirectory, 'blobs', ...(id === 'local' ? [] : [id])) : null);
-      instances[id] = root
-        ? createLocalDiskStorage({ root, id, clock: now, ids: () => ids.uuid() })
-        : createMemoryStorage({ id, clock: now, ids });
-      created.push({ name: `storage/${id}`, item: instances[id] });
-      continue;
-    }
-    // Core Blob REST transport (storage-azurite.mjs); its connection string is read from env here, never stored.
-    if (entry.kind === 'azurite') {
-      // Blob requests are http-out spans of the host trace store (set once the host composes, so read per request).
-      instances[id] = createAzuriteStorage({ id, settings: entry, env, clock: now, traces: () => store?.traces });
-      created.push({ name: `storage/${id}`, item: instances[id] });
-      continue;
-    }
-    const provider = instantiate(
-      'storageProviders',
-      id,
-      entry,
-      { id, kind: entry.kind, settings: structuredClone(entry), stateDirectory, clock: now, ids },
-      (value) => {
-        assertProvider(value);
-        if (value.descriptor.id !== id)
-          throw new TypeError(`the provider declares id '${value.descriptor.id}', expected '${id}'`);
-      },
-    );
-    if (provider) instances[id] = provider;
-    else
-      diagnostic({
-        code: 'PROVIDER_NOT_REGISTERED',
-        severity: 'warning',
-        provider: id,
-        kind: entry.kind,
-        message: `Storage provider '${id}' (${entry.kind}) has no pack storageProviders factory; its routes answer PROVIDER_NOT_READY.`,
-      });
-  }
+  const instances = buildStorageInstances({
+    storageConfig,
+    stateDirectory,
+    ids,
+    env,
+    now,
+    store,
+    instantiate,
+    created,
+    diagnostic,
+  });
   const storage = createStorageRouter({
     config: storageConfig,
     providers: instances,
@@ -297,50 +267,17 @@ function buildProviders(
   // (local-queue ids share the local table; pack and emulator kinds come from pack factories) and the organization URI that
   // service endpoint messages carry (dataverse-webhooks.mjs messagingOf, serviceEndpointTarget).
   const messagingConfig = messagingSettings(config.providers?.messaging);
-  const localBus = (id, entry) =>
-    createLocalMessageBus({
-      store,
-      clock: { now },
-      ids,
-      retry: entry.retry,
-      id,
-      ...(entry.lockDurationMs ? { lockDurationMs: entry.lockDurationMs } : {}),
-    });
-  const bus = localBus('local', messagingConfig.local);
-  const buses = { local: bus };
-  for (const [id, entry] of Object.entries(messagingConfig)) {
-    if (id === 'local' || id === 'endpoints') continue;
-    if (entry.kind === 'local-queue') {
-      buses[id] = localBus(id, entry);
-      continue;
-    }
-    let instance = instantiate(
-      'messageProviders',
-      id,
-      entry,
-      { id, kind: entry.kind, settings: structuredClone(entry), store, clock: { now }, ids, organizationUri },
-      (value) => {
-        if (!value || typeof value.send !== 'function')
-          throw new TypeError('the bus has no send(entity, message) function');
-        if (value.preflight !== undefined && typeof value.preflight !== 'function')
-          throw new TypeError('the bus preflight must be a function when present');
-      },
-    );
-    // servicebus-emulator without a pack factory: the core AMQP transport, linked to the entities the endpoints map to it.
-    if (!instance && entry.kind === 'servicebus-emulator') {
-      instance = createServiceBusEmulatorBus({ id, settings: entry, entities: mappedEntities(messagingConfig, id) });
-      created.push({ name: `messageProviders/${id}`, item: instance });
-    }
-    if (instance) buses[id] = instance;
-    else
-      diagnostic({
-        code: 'PROVIDER_NOT_REGISTERED',
-        severity: 'warning',
-        provider: id,
-        kind: entry.kind,
-        message: `Messaging provider '${id}' (${entry.kind}) has no pack messageProviders factory; endpoints mapped to it are not delivered.`,
-      });
-  }
+  const buses = buildMessageBuses({
+    messagingConfig,
+    store,
+    now,
+    ids,
+    instantiate,
+    organizationUri,
+    created,
+    diagnostic,
+  });
+  const bus = buses.local;
   const messaging = Object.freeze({
     bus,
     buses: Object.freeze(buses),
@@ -375,6 +312,139 @@ function buildProviders(
   });
   lifecycles.set(providers, { created, storage: storageConfig });
   return providers;
+}
+
+/* NOSONAR: single-pass routine, splitting it would change shared state */ function buildStorageInstances({
+  storageConfig,
+  stateDirectory,
+  ids,
+  env,
+  now,
+  store,
+  instantiate,
+  created,
+  diagnostic,
+}) {
+  const instances = {};
+  for (const [id, entry] of Object.entries(storageConfig.storage)) {
+    if (entry.kind === 'local-disk') {
+      let root = entry.root ?? null;
+      if (root == null && stateDirectory) root = path.join(stateDirectory, 'blobs', ...(id === 'local' ? [] : [id]));
+      instances[id] = root
+        ? createLocalDiskStorage({ root, id, clock: now, ids: () => ids.uuid() })
+        : createMemoryStorage({ id, clock: now, ids });
+      created.push({ name: `storage/${id}`, item: instances[id] });
+      continue;
+    }
+    // Core Blob REST transport (storage-azurite.mjs); its connection string is read from env here, never stored.
+    if (entry.kind === 'azurite') {
+      // Blob requests are http-out spans of the host trace store (set once the host composes, so read per request).
+      instances[id] = createAzuriteStorage({ id, settings: entry, env, clock: now, traces: () => store?.traces });
+      created.push({ name: `storage/${id}`, item: instances[id] });
+      continue;
+    }
+    const provider = buildPackStorageProvider({ id, entry, stateDirectory, now, ids, instantiate, diagnostic });
+    if (provider) instances[id] = provider;
+  }
+  return instances;
+}
+
+function buildPackStorageProvider({ id, entry, stateDirectory, now, ids, instantiate, diagnostic }) {
+  const provider = instantiate(
+    'storageProviders',
+    id,
+    entry,
+    { id, kind: entry.kind, settings: structuredClone(entry), stateDirectory, clock: now, ids },
+    (value) => {
+      assertProvider(value);
+      if (value.descriptor.id !== id)
+        throw new TypeError(`the provider declares id '${value.descriptor.id}', expected '${id}'`);
+    },
+  );
+  if (provider) return provider;
+  diagnostic({
+    code: 'PROVIDER_NOT_REGISTERED',
+    severity: 'warning',
+    provider: id,
+    kind: entry.kind,
+    message: `Storage provider '${id}' (${entry.kind}) has no pack storageProviders factory; its routes answer PROVIDER_NOT_READY.`,
+  });
+  return null;
+}
+
+function buildMessageBuses({ messagingConfig, store, now, ids, instantiate, organizationUri, created, diagnostic }) {
+  const localBus = (id, entry) =>
+    createLocalMessageBus({
+      store,
+      clock: { now },
+      ids,
+      retry: entry.retry,
+      id,
+      ...(entry.lockDurationMs ? { lockDurationMs: entry.lockDurationMs } : {}),
+    });
+  const bus = localBus('local', messagingConfig.local);
+  const buses = { local: bus };
+  for (const [id, entry] of Object.entries(messagingConfig)) {
+    if (id === 'local' || id === 'endpoints') continue;
+    if (entry.kind === 'local-queue') {
+      buses[id] = localBus(id, entry);
+      continue;
+    }
+    const instance = buildMessageProvider({
+      id,
+      entry,
+      messagingConfig,
+      store,
+      now,
+      ids,
+      organizationUri,
+      instantiate,
+      created,
+      diagnostic,
+    });
+    if (instance) buses[id] = instance;
+  }
+  return buses;
+}
+
+function buildMessageProvider({
+  id,
+  entry,
+  messagingConfig,
+  store,
+  now,
+  ids,
+  organizationUri,
+  instantiate,
+  created,
+  diagnostic,
+}) {
+  let instance = instantiate(
+    'messageProviders',
+    id,
+    entry,
+    { id, kind: entry.kind, settings: structuredClone(entry), store, clock: { now }, ids, organizationUri },
+    (value) => {
+      if (!value || typeof value.send !== 'function')
+        throw new TypeError('the bus has no send(entity, message) function');
+      if (value.preflight !== undefined && typeof value.preflight !== 'function')
+        throw new TypeError('the bus preflight must be a function when present');
+    },
+  );
+  // servicebus-emulator without a pack factory: the core AMQP transport, linked to the entities the endpoints map to it.
+  if (!instance && entry.kind === 'servicebus-emulator') {
+    instance = createServiceBusEmulatorBus({ id, settings: entry, entities: mappedEntities(messagingConfig, id) });
+    created.push({ name: `messageProviders/${id}`, item: instance });
+  }
+  if (instance) return instance;
+  diagnostic({
+    code: 'PROVIDER_NOT_REGISTERED',
+    severity: 'warning',
+    provider: id,
+    kind: entry.kind,
+    message: `Messaging provider '${id}' (${entry.kind}) has no pack messageProviders factory; endpoints mapped to it are not delivered.`,
+  });
+  return null;
 }
 
 /**
@@ -471,7 +541,7 @@ function composeOutbox({ store, packs, config, now, ids, storage, diagnostic, cr
     return entry;
   };
   outbox.settle = async () => {
-    while (pending.size) await Promise.all([...pending]);
+    while (pending.size) await Promise.all(pending);
   };
   created.push({ name: 'outbox', item: { settle: outbox.settle } });
   return outbox;
@@ -532,11 +602,13 @@ export async function providerRequirements({ providers, env = process.env }) {
   return rows;
 }
 
+const failureDetail = (failures) =>
+  failures.map(({ name, step, error }) => `${name} ${step}: ${error.message}`).join('; ');
 const closeFailure = (failures, verb) =>
   Object.assign(
     new AggregateError(
       failures.map(({ error }) => error),
-      `Provider ${verb} failed: ${failures.map(({ name, step, error }) => `${name} ${step}: ${error.message}`).join('; ')}`,
+      `Provider ${verb} failed: ${failureDetail(failures)}`,
     ),
     {
       code: verb === 'close' ? 'PROVIDER_CLOSE_FAILED' : 'PROVIDER_SETTLE_FAILED',
@@ -648,7 +720,7 @@ function dataverseApiEnabled({ host = 'standalone', runtime, dataverse = null } 
   const input = dataverse && typeof dataverse === 'object' && !Array.isArray(dataverse) ? dataverse : null;
   if (host === 'power-pages')
     return dataverseSettings({ ...(input ?? (dataverse === true ? {} : { enabled: false })) }).enabled;
-  return dataverseSettings({ enabled: runtimeSettings(runtime).kind === 'dataverse-api', ...(input ?? {}) }).enabled;
+  return dataverseSettings({ enabled: runtimeSettings(runtime).kind === 'dataverse-api', ...input }).enabled;
 }
 
 /**
@@ -658,7 +730,7 @@ function dataverseApiEnabled({ host = 'standalone', runtime, dataverse = null } 
  */
 export function graphBindings({ environmentVariables = {}, profile = null } = {}) {
   return {
-    environmentVariables: { ...(profile?.environmentVariables ?? {}), ...(environmentVariables ?? {}) },
+    environmentVariables: { ...profile?.environmentVariables, ...environmentVariables },
     connectionReferences: profile?.connectionReferences ?? [],
   };
 }
@@ -759,7 +831,7 @@ function canvasAppsOf(records = []) {
  */
 export function codeAppDataverse({ organization, change, origin }) {
   return async ({ method, path: pathname, search = '', headers = {}, body, principal }) => {
-    const url = new URL(pathname + search, origin() ?? 'http://organization.local');
+    const url = new URL(pathname + search, origin() ?? 'http://organization.local'); // NOSONAR: reserved or loopback placeholder host, not a real transport
     const route = parseDataverseRoute(url.pathname);
     if (!route) throw new DataError('Resource not found.', 404, 'NotFound');
     const user = organization.principals.byId(principal.principalId);
@@ -782,33 +854,8 @@ export function codeAppDataverse({ organization, change, origin }) {
       };
       // The SDK customapi request does not carry a verb. Use the registry only for an unambiguous,
       // unbound function. Bound operations need source binding metadata and target identification.
-      const candidate = route.candidate?.name ?? (route.kind === 'function' ? route.name : null);
-      const noParameters =
-        body == null || (typeof body === 'object' && !Array.isArray(body) && !Object.keys(body).length);
-      if (
-        method === 'POST' &&
-        headers['x-sim-code-app-operation'] === 'customapi' &&
-        candidate &&
-        (noParameters || (body && typeof body === 'object' && !Array.isArray(body) && !Buffer.isBuffer(body)))
-      ) {
-        if (candidate === 'WhoAmI' && noParameters)
-          return unboundFunction(
-            { organizationId: organization.organizationId, store: organization.store },
-            { method: 'GET', origin: url.origin, url },
-            { kind: 'function', name: candidate, version: route.version ?? 'v9.2' },
-            context,
-          );
-        const fn = organization.registry.find({ name: candidate, kind: 'function', binding: 'unbound' });
-        const action = organization.registry.find({ name: candidate, kind: 'action', binding: 'unbound' });
-        if (fn && !action) {
-          const functionRoute = { kind: 'function', name: candidate, params: '', version: route.version ?? 'v9.2' };
-          return operationCall(
-            { operations: organization.registry, store: organization.store, api: organization.api },
-            functionRoute,
-            { ...context, method: 'GET', route: functionRoute, functionParameters: body ?? {}, req: { headers } },
-          );
-        }
-      }
+      const customApi = codeAppFunctionCall({ organization, route, method, headers, body, url, context });
+      if (customApi.handled) return customApi.value;
       const extension = organization.routes.find((entry) => !entry.anonymous && entry.match(url.pathname, method));
       if (extension) return extension.handler({ ...context, req: { headers } });
       const operated = await operationCall(
@@ -821,6 +868,40 @@ export function codeAppDataverse({ organization, change, origin }) {
     return method === 'GET'
       ? organization.read(call)
       : change(() => organization.runOwned(() => organization.runAtomic(call)));
+  };
+}
+
+function codeAppFunctionCall({ organization, route, method, headers, body, url, context }) {
+  const candidate = route.candidate?.name ?? (route.kind === 'function' ? route.name : null);
+  const noParameters = body == null || (typeof body === 'object' && !Array.isArray(body) && !Object.keys(body).length);
+  if (
+    method !== 'POST' ||
+    headers['x-sim-code-app-operation'] !== 'customapi' ||
+    !candidate ||
+    !(noParameters || (body && typeof body === 'object' && !Array.isArray(body) && !Buffer.isBuffer(body)))
+  )
+    return { handled: false };
+  if (candidate === 'WhoAmI' && noParameters)
+    return {
+      handled: true,
+      value: unboundFunction(
+        { organizationId: organization.organizationId, store: organization.store },
+        { method: 'GET', origin: url.origin, url },
+        { kind: 'function', name: candidate, version: route.version ?? 'v9.2' },
+        context,
+      ),
+    };
+  const fn = organization.registry.find({ name: candidate, kind: 'function', binding: 'unbound' }); // NOSONAR: custom registry lookup, not Array#find
+  const action = organization.registry.find({ name: candidate, kind: 'action', binding: 'unbound' }); // NOSONAR: custom registry lookup, not Array#find
+  if (!fn || action) return { handled: false };
+  const functionRoute = { kind: 'function', name: candidate, params: '', version: route.version ?? 'v9.2' };
+  return {
+    handled: true,
+    value: operationCall(
+      { operations: organization.registry, store: organization.store, api: organization.api },
+      functionRoute,
+      { ...context, method: 'GET', route: functionRoute, functionParameters: body ?? {}, req: { headers } },
+    ),
   };
 }
 
@@ -921,7 +1002,8 @@ export async function composeOrganizationHost(options) {
       const current = c.registry();
       // Once exposed, callers may add records or edit add()'s returned record.
       // That registry must keep fresh reports even without a store revision.
-      (c.exposedRegistries ??= new WeakSet()).add(current);
+      c.exposedRegistries ??= new WeakSet();
+      c.exposedRegistries.add(current);
       return current;
     },
     ...hostLifecycle(c),
@@ -1023,8 +1105,8 @@ async function hostContext({
   try {
     return hostContextRest(c, { store, clock, ids, scheduler, diagnostic, inventory });
   } catch (error) {
-    await closeProviders(c.providers).catch((cleanup) =>
-      diagnostic({ code: cleanup.code, severity: 'error', providers: cleanup.providers, message: cleanup.message }),
+    await closeProviders(c.providers).catch((error_) =>
+      diagnostic({ code: error_.code, severity: 'error', providers: error_.providers, message: error_.message }),
     );
     throw error;
   }
@@ -1145,117 +1227,131 @@ function hostRegistry(c) {
         diagnostic({ code: 'CAPABILITY_RECORD_INVALID', name: record.name, message: error.message });
       }
     };
-    for (const [name, enabled] of Object.entries(c.surfaces()))
-      add({ name, kind: 'host-surface', level: 'behaviour', enabled: enabled !== false, operations: [] }); // host surfaces stay behaviour records; the gaps they do not run are requirement rows (preflight-host-surfaces)
-    for (const [name, level] of Object.entries(APP_SURFACES))
-      add({
-        name,
-        kind: 'host-surface',
-        level,
-        operations: [],
-        ...(name === 'canvas' && !c.canvas.enabled ? { enabled: false, reason: 'CANVAS_DISABLED' } : {}),
-      });
-    if (c.canvas.enabled) add(describeCanvasRuntime({ evaluatorLevel: providers.powerFx?.describe?.().level }));
-    for (const record of MODEL_DRIVEN_CAPABILITY_RECORDS) add(record);
+    registerSurfaceCapabilities(c, add, providers);
     const api = c.organization?.api ?? null;
     const connectors = providers.connectors.describe();
-    // Register the actual shared seams before modules and packs can claim their names.
-    // The offline description installs the same organization over an in-memory store.
-    if (c.store) add({ name: 'store', kind: 'provider', level: 'behaviour', stateOwner: 'DataStore', operations: [] });
-    if (c.store)
-      add(
-        bulkMessageAvailabilityRecord({
-          store: c.store,
-          plugins: c.sources.plugins?.(),
-          profiles: [...c.descriptors.values()].map((descriptor) => descriptor.serviceProfile),
-        }),
-      );
-    const ownership = c.pluginSteps().map((item) => {
-      const classified = pluginBypassOwnership(item);
-      return {
-        id: item.id,
-        kind: classified.kind,
-        qualification: classified.qualification,
-        customizationLevel: item.customizationLevel ?? null,
-        evidencePresent: Boolean(classified.evidence),
-      };
-    });
-    const unknownOwnership = ownership.filter((item) => item.kind === 'unknown').length;
-    add({
-      name: 'source-plugin-bypass-ownership',
-      kind: 'inventory',
-      level: 'contract',
-      operations: [],
-      reason: `${unknownOwnership}/${ownership.length} source plug-in ownership classifications are unqualified. Unknown source extensions retain the explicit local custom-adapter bypass contract; system/Microsoft ownership requires evidence.`,
-      seams: {
-        diagnostic: unknownOwnership ? 'PLUGIN_BYPASS_OWNERSHIP_UNKNOWN' : null,
-        steps: ownership,
-        managedBaseEditGuard: {
-          level: 'contract',
-          condition: 'ismanaged=true and customizationlevel=0',
-          nativeQualified: false,
-          ownershipProof: false,
-        },
-      },
-    });
-    if (api?.scheduler)
-      add({ name: 'scheduler', kind: 'provider', level: 'behaviour', operations: [], stateOwner: 'organization' });
-    if (connectors.some((record) => record.name === 'http'))
-      add({
-        name: 'loopback-network',
-        kind: 'provider',
-        level: 'behaviour',
-        operations: [],
-        reason: 'Loopback-only HTTP transport; remote addresses require an explicit local rewrite.',
-      });
-    if (providers.messaging?.bus)
-      add({
-        name: 'providers.messaging',
-        kind: 'provider',
-        level: 'behaviour',
-        operations: [],
-        requires: [providers.messaging.bus.descriptor.name],
-      });
-    for (const entry of c.installed)
-      add(
-        entry.describe?.(api) ?? {
-          name: entry.name,
-          kind: 'organization-module',
-          level: 'inventory',
-          operations: [],
-          requires: [],
-          principal: 'none',
-          stateOwner: 'unknown',
-          lifecycle: { install: true, reset: Boolean(entry.reset), close: Boolean(entry.close) },
-        },
-      );
-    for (const item of c.operations())
-      if (!seen.has(item.key)) {
-        try {
-          result.fromOperations([item]);
-          seen.add(item.key);
-        } catch (error) {
-          diagnostic({ code: 'CAPABILITY_RECORD_INVALID', name: item.key, message: error.message });
-        }
-      }
-    for (const record of connectors) add({ ...record, name: `connector:${record.name}`, kind: 'provider' });
-    for (const record of providerRecords(providers)) add(record);
-    for (const record of providers.serviceFixtures?.describe?.() ?? []) add({ ...record, kind: 'service' });
-    if (api?.flowRuns?.describe) add(api.flowRuns.describe());
-    add(serverLogicDescribe()); // the portal server-logic bridge levels (exported-operations.mjs)
-    add(flowTriggersDescribe());
-    const records = c.allInventory();
-    for (const [name, item] of new Map(records.map((item) => [`${item.component}:${item.name}`, item])))
-      add({
-        name,
-        kind: 'inventory',
-        component: item.component,
-        level: item.level ?? 'inventory',
-        ...(item.reason ? { reason: item.reason } : {}),
-      });
-    for (const record of packCapabilityRecords(c.packs)) add(record);
+    registerSharedCapabilities(c, add, providers, api, connectors);
+    registerOperationCapabilities(c, result, seen, diagnostic);
+    registerRemainingCapabilities(c, add, providers, api, connectors);
     return result;
   });
+}
+
+function registerSurfaceCapabilities(c, add, providers) {
+  for (const [name, enabled] of Object.entries(c.surfaces()))
+    add({ name, kind: 'host-surface', level: 'behaviour', enabled: enabled !== false, operations: [] });
+  for (const [name, level] of Object.entries(APP_SURFACES))
+    add({
+      name,
+      kind: 'host-surface',
+      level,
+      operations: [],
+      ...(name === 'canvas' && !c.canvas.enabled ? { enabled: false, reason: 'CANVAS_DISABLED' } : {}),
+    });
+  if (c.canvas.enabled) add(describeCanvasRuntime({ evaluatorLevel: providers.powerFx?.describe?.().level }));
+  for (const record of MODEL_DRIVEN_CAPABILITY_RECORDS) add(record);
+}
+
+function registerSharedCapabilities(c, add, providers, api, connectors) {
+  if (c.store) add({ name: 'store', kind: 'provider', level: 'behaviour', stateOwner: 'DataStore', operations: [] });
+  if (c.store)
+    add(
+      bulkMessageAvailabilityRecord({
+        store: c.store,
+        plugins: c.sources.plugins?.(),
+        profiles: [...c.descriptors.values()].map((descriptor) => descriptor.serviceProfile),
+      }),
+    );
+  const ownership = c.pluginSteps().map((item) => {
+    const classified = pluginBypassOwnership(item);
+    return {
+      id: item.id,
+      kind: classified.kind,
+      qualification: classified.qualification,
+      customizationLevel: item.customizationLevel ?? null,
+      evidencePresent: Boolean(classified.evidence),
+    };
+  });
+  const unknownOwnership = ownership.filter((item) => item.kind === 'unknown').length;
+  add({
+    name: 'source-plugin-bypass-ownership',
+    kind: 'inventory',
+    level: 'contract',
+    operations: [],
+    reason: `${unknownOwnership}/${ownership.length} source plug-in ownership classifications are unqualified. Unknown source extensions retain the explicit local custom-adapter bypass contract; system/Microsoft ownership requires evidence.`,
+    seams: {
+      diagnostic: unknownOwnership ? 'PLUGIN_BYPASS_OWNERSHIP_UNKNOWN' : null,
+      steps: ownership,
+      managedBaseEditGuard: {
+        level: 'contract',
+        condition: 'ismanaged=true and customizationlevel=0',
+        nativeQualified: false,
+        ownershipProof: false,
+      },
+    },
+  });
+  if (api?.scheduler)
+    add({ name: 'scheduler', kind: 'provider', level: 'behaviour', operations: [], stateOwner: 'organization' });
+  if (connectors.some((record) => record.name === 'http'))
+    add({
+      name: 'loopback-network',
+      kind: 'provider',
+      level: 'behaviour',
+      operations: [],
+      reason: 'Loopback-only HTTP transport; remote addresses require an explicit local rewrite.',
+    });
+  if (providers.messaging?.bus)
+    add({
+      name: 'providers.messaging',
+      kind: 'provider',
+      level: 'behaviour',
+      operations: [],
+      requires: [providers.messaging.bus.descriptor.name],
+    });
+  for (const entry of c.installed)
+    add(
+      entry.describe?.(api) ?? {
+        name: entry.name,
+        kind: 'organization-module',
+        level: 'inventory',
+        operations: [],
+        requires: [],
+        principal: 'none',
+        stateOwner: 'unknown',
+        lifecycle: { install: true, reset: Boolean(entry.reset), close: Boolean(entry.close) },
+      },
+    );
+}
+
+function registerOperationCapabilities(c, result, seen, diagnostic) {
+  for (const item of c.operations())
+    if (!seen.has(item.key)) {
+      try {
+        result.fromOperations([item]);
+        seen.add(item.key);
+      } catch (error) {
+        diagnostic({ code: 'CAPABILITY_RECORD_INVALID', name: item.key, message: error.message });
+      }
+    }
+}
+
+function registerRemainingCapabilities(c, add, providers, api, connectors) {
+  for (const record of connectors) add({ ...record, name: `connector:${record.name}`, kind: 'provider' });
+  for (const record of providerRecords(providers)) add(record);
+  for (const record of providers.serviceFixtures?.describe?.() ?? []) add({ ...record, kind: 'service' });
+  if (api?.flowRuns?.describe) add(api.flowRuns.describe());
+  add(serverLogicDescribe());
+  add(flowTriggersDescribe());
+  const records = c.allInventory();
+  for (const [name, item] of new Map(records.map((item) => [`${item.component}:${item.name}`, item])))
+    add({
+      name,
+      kind: 'inventory',
+      component: item.component,
+      level: item.level ?? 'inventory',
+      ...(item.reason ? { reason: item.reason } : {}),
+    });
+  for (const record of packCapabilityRecords(c.packs)) add(record);
 }
 
 /** Step 4: the lifecycle methods: backend, extensions, canvas sources, source refresh, organization, API, overrides, close. */
@@ -1454,13 +1550,24 @@ async function applyOperationOverrides(c, next, commit) {
     c.epoch++;
     await commit();
   } catch (error) {
-    for (const [id, runtime] of prepared) {
-      runtimes.delete(id);
-      closeClrHostPool({ runtime, diagnostic });
-    }
+    closePreparedOverrides(prepared, runtimes, diagnostic);
     c.epoch++;
     throw error;
   }
+  closeDeselectedOverrides(steps, runtimes, selected, diagnostic);
+  c.epoch++;
+  // Recurrence and connector trigger hosts follow the new operation modes (flow-triggers.mjs syncTriggers).
+  await c.backend?.triggerRunner?.syncTriggers?.();
+}
+
+function closePreparedOverrides(prepared, runtimes, diagnostic) {
+  for (const [id, runtime] of prepared) {
+    runtimes.delete(id);
+    closeClrHostPool({ runtime, diagnostic });
+  }
+}
+
+/* NOSONAR */ function closeDeselectedOverrides(steps, runtimes, selected, diagnostic) {
   for (const item of steps) {
     const runtime = runtimes.get(item.id);
     if (runtime && selected(item) !== 'clr') {
@@ -1482,9 +1589,6 @@ async function applyOperationOverrides(c, next, commit) {
       }
     }
   }
-  c.epoch++;
-  // Recurrence and connector trigger hosts follow the new operation modes (flow-triggers.mjs syncTriggers).
-  await c.backend?.triggerRunner?.syncTriggers?.();
 }
 
 /** Step 5: the read-side reports: simulation report, dashboard topology, capability status, preflight and note bodies. */
@@ -1795,6 +1899,13 @@ export async function composeHostDescription({
 /** Capability records of the configured storage, messaging, outbox, Power Fx and local-service providers. */
 function providerRecords(providers) {
   const records = [];
+  addStorageRecords(records, providers);
+  addMessagingRecords(records, providers);
+  addOtherProviderRecords(records, providers);
+  return records;
+}
+
+function addStorageRecords(records, providers) {
   for (const entry of providers.storage?.describe?.().providers ?? [])
     records.push({
       name: `provider:storage/${entry.id}`,
@@ -1806,6 +1917,9 @@ function providerRecords(providers) {
       ...(entry.stateOwner ? { stateOwner: entry.stateOwner } : {}),
       ...(entry.ready ? {} : { reason: 'Declared but not available in this runtime.' }),
     });
+}
+
+function addMessagingRecords(records, providers) {
   if (providers.messaging?.bus?.descriptor) records.push({ ...providers.messaging.bus.descriptor, kind: 'provider' });
   // Every other declared messaging provider: its instantiated bus descriptor, else the declared kind at inventory.
   for (const [id, entry] of Object.entries(providers.messaging?.settings ?? {})) {
@@ -1818,7 +1932,7 @@ function providerRecords(providers) {
             level: 'behaviour',
             operations: [],
             requires: [],
-            ...(descriptor ?? {}),
+            ...descriptor,
             name: `provider:messaging/${id}`,
             kind: 'provider',
             providerKind: entry.kind,
@@ -1834,10 +1948,12 @@ function providerRecords(providers) {
           },
     );
   }
+}
+
+function addOtherProviderRecords(records, providers) {
   if (providers.outbox?.descriptor) records.push({ ...providers.outbox.descriptor, kind: 'provider' });
   if (providers.powerFx?.describe) records.push(providers.powerFx.describe());
   if (providers.localServices?.describe) records.push(...providers.localServices.describe());
-  return records;
 }
 
 const ASYNC_STATES = ['ready', 'suspended', 'locked', 'completed'];
@@ -1943,11 +2059,12 @@ function hostNodes({ node, edge, organization, dataverse, managedIdentity }) {
     },
     { link: '#dataverse' },
   );
+  const tdsState = dataverse.tdsPort == null || !tdsLogins ? 'disabled' : 'listening';
   node(
     'host:tds',
     'host',
     'TDS endpoint',
-    dataverse.tdsPort == null ? 'disabled' : tdsLogins ? 'listening' : 'disabled',
+    tdsState,
     { port: dataverse.tdsPort ?? null, loginsAccepted: dataverse.tdsPort != null && tdsLogins },
     { link: '#dataverse' },
   );
@@ -1986,6 +2103,15 @@ function orgNodes({
   operations,
   dataverse: _dataverse,
 }) {
+  addOrganizationStorePluginNodes({ node, count, store, clock, organization, pluginSteps });
+  const activity = addOrganizationOperationNodes({ node, rows, store, organization, operations });
+  const { flows, runs, overdueWaits, jobs, asyncRows } = activity;
+  addOrganizationEdgesAndModules({ edge, node, registry }, flows);
+  addOrganizationSecurityNodes({ node, edge, nodes, rows, store, organization });
+  return { runs, overdueWaits, jobs, asyncRows };
+}
+
+function addOrganizationStorePluginNodes({ node, count, store, clock, organization, pluginSteps }) {
   node(
     'org:store',
     'org',
@@ -2000,11 +2126,14 @@ function orgNodes({
   );
   const steps = pluginSteps.filter((item) => item.kind === 'plugin-step');
   const executable = steps.filter((item) => !['placeholder', 'disabled'].includes(item.mode) && !item.unsupported);
+  let pluginsState = 'placeholder';
+  if (!steps.length) pluginsState = 'disabled';
+  else if (executable.length) pluginsState = 'ready';
   node(
     'org:plugins',
     'org',
     'Plug-in steps',
-    !steps.length ? 'disabled' : executable.length ? 'ready' : 'placeholder',
+    pluginsState,
     {
       steps: steps.length,
       byMode: tally(steps, (item) => item.mode),
@@ -2013,6 +2142,9 @@ function orgNodes({
     },
     { link: '#operations' },
   );
+}
+
+function addOrganizationOperationNodes({ node, rows, store, organization, operations }) {
   const classic = rows('workflow').filter((row) => Number(row.category) === 0 && Number(row.type ?? 1) === 1);
   node(
     'org:workflows',
@@ -2025,11 +2157,14 @@ function orgNodes({
   const flows = operations.filter((item) => item.kind === 'cloud-flow');
   const runs = tally(rows('flowrun'), (row) => row.status ?? 'Unknown');
   const overdueWaits = attempt(() => organization?.api?.flowRuns?.waits({ state: 'overdue' }).length ?? 0, 0);
+  let flowsState = 'placeholder';
+  if (!flows.length) flowsState = 'disabled';
+  else if (flows.some((item) => item.mode !== 'placeholder')) flowsState = 'ready';
   node(
     'org:flows',
     'org',
     'Cloud flows',
-    !flows.length ? 'disabled' : flows.some((item) => item.mode !== 'placeholder') ? 'ready' : 'placeholder',
+    flowsState,
     { flows: flows.length, byMode: tally(flows, (item) => item.mode), runs },
     { link: '#flows' },
   );
@@ -2077,6 +2212,10 @@ function orgNodes({
       },
       { link: '#activity' },
     );
+  return { runs, overdueWaits, jobs, asyncRows, flows };
+}
+
+function addOrganizationEdgesAndModules({ edge, node, registry }, flows) {
   edge('org:store', 'org:plugins', 'process', 'ready', 'pipeline');
   edge('org:plugins', 'org:store', 'process', 'ready', 'SDK calls');
   edge('org:plugins', 'org:jobs', 'process', 'ready', 'async steps');
@@ -2097,6 +2236,9 @@ function orgNodes({
       },
       { level: record.level, link: '#capabilities' },
     );
+}
+
+function addOrganizationSecurityNodes({ node, edge, nodes, rows, store, organization }) {
   // Security: every record read and write checks the caller's roles and row access (dataverse-security.mjs principals) and
   // column security (dataverse-fls.mjs); audited tables write audit rows while the organization has auditing turned on.
   const has = (id) => nodes.some((item) => item.id === id),
@@ -2120,7 +2262,6 @@ function orgNodes({
       auditing ? 'ready' : 'disabled',
       auditing ? 'audit rows' : 'auditing off',
     );
-  return { runs, overdueWaits, jobs, asyncRows };
 }
 
 /** Storage routes, the message bus (one pass over its table) and the outbox. Storage counts are writes since start. */
@@ -2132,142 +2273,8 @@ function providerNodes({ node, edge, rows, count, clock, providers, store, confi
     deletes: count(`storage.${entry.id}.deletes`),
     bytesWritten: count(`storage.${entry.id}.bytesWritten`),
   }));
-  if (storage) {
-    node(
-      'provider:storage',
-      'provider',
-      'Storage',
-      storage.providers.some((entry) => entry.ready) ? 'ready' : 'declared',
-      {
-        providers: storage.providers.map(({ id, kind, level, ready, routes }) => ({
-          id,
-          kind,
-          level: level ?? null,
-          ready,
-          routes,
-          ...storageActivity.find((item) => item.id === id),
-        })),
-      },
-      { link: '#services' },
-    );
-    for (const [route, target] of Object.entries(storage.routes ?? {})) {
-      const entry = storage.providers.find((item) => item.id === target);
-      const ready =
-        target === 'export' ||
-        (entry?.ready && (entry.kind !== 'azurite' || (entry.level === 'behaviour' && entry.health?.ready !== false)));
-      node(
-        `provider:storage-route:${route}`,
-        'provider',
-        route,
-        ready ? 'ready' : entry ? 'declared' : 'missing',
-        { provider: target, kind: target === 'export' ? 'export' : (entry?.kind ?? null) },
-        { link: '#services' },
-      );
-      edge('provider:storage', `provider:storage-route:${route}`, 'storage', ready ? 'ready' : 'declared', target);
-    }
-    // Core Blob REST transport (storage-azurite.mjs): level behaviour with a usable connection string, contract (declared only) without.
-    // Status from each provider's health() (last request or preflight): ready, error (endpoint failed or refused the key),
-    // missing (no usable connection string) or declared (not contacted yet); the reasons go in the detail.
-    const azurite = storage.providers.filter((entry) => entry.kind === 'azurite');
-    if (azurite.length) {
-      const states = azurite.map((entry) => ({
-        id: entry.id,
-        ready: entry.health?.ready ?? null,
-        reason: entry.health?.reason ?? null,
-      }));
-      const status = states.some((state) => state.ready === false)
-        ? azurite.some((entry) => entry.level !== 'behaviour')
-          ? 'missing'
-          : 'error'
-        : states.every((state) => state.ready === true)
-          ? 'ready'
-          : 'declared';
-      node(
-        'external:azurite',
-        'external',
-        'Azurite',
-        status,
-        { providers: states.map((state) => state.id), health: states },
-        { link: '#services' },
-      );
-      // Each route that targets an Azurite provider writes there.
-      const used = Object.entries(storage.routes ?? {}).filter(([, target]) =>
-        azurite.some((item) => item.id === target),
-      );
-      for (const [route, target] of used) {
-        const entry = azurite.find((item) => item.id === target);
-        edge(
-          `provider:storage-route:${route}`,
-          'external:azurite',
-          'storage',
-          entry.level === 'behaviour' ? status : 'missing',
-          entry.level === 'behaviour' ? 'Blob REST' : 'no connection string',
-        );
-      }
-      // Configured but no route writes there: the provider exists and stays unused.
-      if (!used.length)
-        edge('provider:storage', 'external:azurite', 'storage', 'declared', 'configured, no route uses it');
-    }
-  }
-  const at = clock.now(),
-    messageStats = {},
-    messages = { active: 0, locked: 0, scheduled: 0, deadLettered: 0, entities: 0 };
-  for (const row of rows(QUEUE_MESSAGE_TABLE)) {
-    const entity = String(row.entity ?? ''),
-      dead = entity.endsWith(DEAD_LETTER_SUFFIX);
-    const state = dead
-      ? 'deadLettered'
-      : row.locktoken != null && row.lockeduntil > at
-        ? 'locked'
-        : row.visibleat > at
-          ? 'scheduled'
-          : 'active';
-    const stats = (messageStats[dead ? entity.slice(0, -DEAD_LETTER_SUFFIX.length) : entity] ??= {
-      active: 0,
-      locked: 0,
-      scheduled: 0,
-      deadLettered: 0,
-    });
-    stats[state] += 1;
-    messages[state] += 1;
-  }
-  if (providers.messaging) {
-    const descriptor = providers.messaging.bus?.descriptor ?? { id: 'local' };
-    const endpoints = providers.messaging.settings?.endpoints ?? {};
-    node(
-      'provider:messaging',
-      'provider',
-      'Message bus',
-      'ready',
-      { id: descriptor.id ?? null, kind: descriptor.kind ?? null, endpoints: Object.keys(endpoints).length },
-      { level: descriptor.level, link: '#services' },
-    );
-    for (const target of new Set(Object.values(endpoints).map((value) => String(value)))) {
-      const entity = target.slice(target.indexOf('/') + 1);
-      messageStats[entity] ??= { active: 0, locked: 0, scheduled: 0, deadLettered: 0 };
-      node(
-        `provider:messaging-endpoint:${entity}`,
-        'provider',
-        entity,
-        'ready',
-        { provider: target.slice(0, target.indexOf('/')), ...messageStats[entity] },
-        { link: '#services' },
-      );
-      edge('provider:messaging', `provider:messaging-endpoint:${entity}`, 'bus', 'ready', entity);
-    }
-    if (Object.keys(endpoints).length) edge('org:plugins', 'provider:messaging', 'bus', 'ready', 'service endpoints');
-    // A Service Bus emulator bus sends over AMQP to the emulator, which runs outside Paqvilo.
-    if (
-      descriptor.kind === 'servicebus-emulator' ||
-      Object.values(providers.messaging.settings?.providers ?? config.providers?.messaging ?? {}).some(
-        (entry) => entry?.kind === 'servicebus-emulator',
-      )
-    ) {
-      node('external:servicebus-emulator', 'external', 'Service Bus emulator', 'declared', {}, { link: '#services' });
-      edge('provider:messaging', 'external:servicebus-emulator', 'bus', 'declared', 'AMQP');
-    }
-  }
-  messages.entities = Object.keys(messageStats).length;
+  addStorageTopology(storage, storageActivity, node, edge);
+  const messages = messageTopology(rows, clock, providers, config, node, edge);
   const outboxStates = tally(rows(OUTBOX_TABLE), (row) => row.state ?? 'unknown');
   const outbox = {
     queued: outboxStates.queued ?? 0,
@@ -2282,6 +2289,145 @@ function providerNodes({ node, edge, rows, count, clock, providers, store, confi
     });
   }
   return { storageActivity, messages, outbox };
+}
+
+function addStorageTopology(storage, storageActivity, node, edge) {
+  if (!storage) return;
+  node(
+    'provider:storage',
+    'provider',
+    'Storage',
+    storage.providers.some((entry) => entry.ready) ? 'ready' : 'declared',
+    {
+      providers: storage.providers.map(({ id, kind, level, ready, routes }) => ({
+        id,
+        kind,
+        level: level ?? null,
+        ready,
+        routes,
+        ...storageActivity.find((item) => item.id === id),
+      })),
+    },
+    { link: '#services' },
+  );
+  for (const [route, target] of Object.entries(storage.routes ?? {})) {
+    const entry = storage.providers.find((item) => item.id === target);
+    const ready =
+      target === 'export' ||
+      (entry?.ready && (entry.kind !== 'azurite' || (entry.level === 'behaviour' && entry.health?.ready !== false)));
+    let routeState = 'missing';
+    if (ready) routeState = 'ready';
+    else if (entry) routeState = 'declared';
+    node(
+      `provider:storage-route:${route}`,
+      'provider',
+      route,
+      routeState,
+      { provider: target, kind: target === 'export' ? 'export' : (entry?.kind ?? null) },
+      { link: '#services' },
+    );
+    edge('provider:storage', `provider:storage-route:${route}`, 'storage', ready ? 'ready' : 'declared', target);
+  }
+  addAzuriteTopology(storage, node, edge);
+}
+
+function addAzuriteTopology(storage, node, edge) {
+  // Core Blob REST transport (storage-azurite.mjs): level behaviour with a usable connection string, contract (declared only) without.
+  // Status from each provider's health() (last request or preflight): ready, error (endpoint failed or refused the key),
+  // missing (no usable connection string) or declared (not contacted yet); the reasons go in the detail.
+  const azurite = storage.providers.filter((entry) => entry.kind === 'azurite');
+  if (!azurite.length) return;
+  const states = azurite.map((entry) => ({
+    id: entry.id,
+    ready: entry.health?.ready ?? null,
+    reason: entry.health?.reason ?? null,
+  }));
+  let status = 'declared';
+  if (states.some((state) => state.ready === false)) {
+    status = azurite.some((entry) => entry.level !== 'behaviour') ? 'missing' : 'error';
+  } else if (states.every((state) => state.ready === true)) status = 'ready';
+  node(
+    'external:azurite',
+    'external',
+    'Azurite',
+    status,
+    { providers: states.map((state) => state.id), health: states },
+    { link: '#services' },
+  );
+  const used = Object.entries(storage.routes ?? {}).filter(([, target]) => azurite.some((item) => item.id === target));
+  for (const [route, target] of used) {
+    const entry = azurite.find((item) => item.id === target);
+    edge(
+      `provider:storage-route:${route}`,
+      'external:azurite',
+      'storage',
+      entry.level === 'behaviour' ? status : 'missing',
+      entry.level === 'behaviour' ? 'Blob REST' : 'no connection string',
+    );
+  }
+  if (!used.length) edge('provider:storage', 'external:azurite', 'storage', 'declared', 'configured, no route uses it');
+}
+
+function messageTopology(rows, clock, providers, config, node, edge) {
+  const at = clock.now(),
+    messageStats = {},
+    messages = { active: 0, locked: 0, scheduled: 0, deadLettered: 0, entities: 0 };
+  for (const row of rows(QUEUE_MESSAGE_TABLE)) {
+    const entity = String(row.entity ?? ''),
+      dead = entity.endsWith(DEAD_LETTER_SUFFIX);
+    let state = 'active';
+    if (dead) state = 'deadLettered';
+    else if (row.locktoken != null && row.lockeduntil > at) state = 'locked';
+    else if (row.visibleat > at) state = 'scheduled';
+    const stats = (messageStats[dead ? entity.slice(0, -DEAD_LETTER_SUFFIX.length) : entity] ??= {
+      active: 0,
+      locked: 0,
+      scheduled: 0,
+      deadLettered: 0,
+    });
+    stats[state] += 1;
+    messages[state] += 1;
+  }
+  addMessagingTopology(providers, config, messageStats, node, edge);
+  messages.entities = Object.keys(messageStats).length;
+  return messages;
+}
+
+function addMessagingTopology(providers, config, messageStats, node, edge) {
+  if (!providers.messaging) return;
+  const descriptor = providers.messaging.bus?.descriptor ?? { id: 'local' };
+  const endpoints = providers.messaging.settings?.endpoints ?? {};
+  node(
+    'provider:messaging',
+    'provider',
+    'Message bus',
+    'ready',
+    { id: descriptor.id ?? null, kind: descriptor.kind ?? null, endpoints: Object.keys(endpoints).length },
+    { level: descriptor.level, link: '#services' },
+  );
+  for (const target of new Set(Object.values(endpoints).map(String))) {
+    const entity = target.slice(target.indexOf('/') + 1);
+    messageStats[entity] ??= { active: 0, locked: 0, scheduled: 0, deadLettered: 0 };
+    node(
+      `provider:messaging-endpoint:${entity}`,
+      'provider',
+      entity,
+      'ready',
+      { provider: target.slice(0, target.indexOf('/')), ...messageStats[entity] },
+      { link: '#services' },
+    );
+    edge('provider:messaging', `provider:messaging-endpoint:${entity}`, 'bus', 'ready', entity);
+  }
+  if (Object.keys(endpoints).length) edge('org:plugins', 'provider:messaging', 'bus', 'ready', 'service endpoints');
+  if (
+    descriptor.kind === 'servicebus-emulator' ||
+    Object.values(providers.messaging.settings?.providers ?? config.providers?.messaging ?? {}).some(
+      (entry) => entry?.kind === 'servicebus-emulator',
+    )
+  ) {
+    node('external:servicebus-emulator', 'external', 'Service Bus emulator', 'declared', {}, { link: '#services' });
+    edge('provider:messaging', 'external:servicebus-emulator', 'bus', 'declared', 'AMQP');
+  }
 }
 
 /**
@@ -2301,6 +2447,156 @@ function externalNodes({
   dataverse,
   canvasEnabled = true,
 }) {
+  const context = { node, edge, nodes, rows, config, providers, operations };
+  addWebhookNodes(context);
+  addConnectorNodes(context);
+  addConnectionNodes(context);
+  addSecretNodes(providers, node, edge);
+  addLocalServiceNodes(providers, config, nodes, node, edge);
+  addFixtureNodes(providers, node);
+  const powerFx = attempt(() => providers.powerFx?.describe?.() ?? null, null);
+  if (powerFx) addPowerFxNode(powerFx, node);
+  addAppNodes({ inventory, codeApps, canvasEnabled, config, dataverse, powerFx, node, edge });
+}
+
+function addSecretNodes(providers, node, edge) {
+  node(
+    'provider:secrets',
+    'provider',
+    'Secret references',
+    providers.secrets ? 'ready' : 'disabled',
+    { keys: providers.secrets ? attempt(() => providers.secrets.keys().length, 0) : 0 },
+    { link: '#environment' },
+  );
+  edge('org:flows', 'provider:secrets', 'reads', 'ready', 'secret parameters');
+  if (providers.secrets) {
+    node(
+      'external:keyvault',
+      'external',
+      'Key Vault',
+      'placeholder',
+      { note: 'References resolve locally; no vault is contacted.' },
+      { link: '#environment' },
+    );
+    edge('provider:secrets', 'external:keyvault', 'reads', 'placeholder', 'not contacted');
+  }
+}
+
+function addLocalServiceNodes(providers, config, nodes, node, edge) {
+  for (const record of attempt(() => providers.localServices?.describe?.() ?? [], [])) {
+    const id = record.name.slice('local-service:'.length);
+    node(
+      `provider:local-service:${id}`,
+      'provider',
+      id,
+      'declared',
+      { service: record.service ?? null, required: record.required ?? false },
+      { level: record.level, link: '#services' },
+    );
+    edge('host:admin', `provider:local-service:${id}`, 'http', 'declared', 'preflight probe');
+    const external = localServiceTarget(record, id, config, nodes);
+    if (!external) continue;
+    if (external[1]) node(external[0], 'external', external[1], 'declared', {}, { link: '#services' });
+    edge(
+      `provider:local-service:${id}`,
+      external[0],
+      record.service === 'service-bus' ? 'bus' : 'http',
+      'declared',
+      'health probe',
+    );
+  }
+}
+
+function localServiceTarget(record, id, config, nodes) {
+  if (record.service === 'service-bus') return ['external:servicebus-emulator', 'Service Bus emulator'];
+  if (record.service === 'azure-storage') return ['external:azurite', 'Azurite'];
+  if (nodes.some((item) => item.id === `external:webhook:${hostnameOf(config.localServices?.[id]?.baseUrl)}`))
+    return [`external:webhook:${hostnameOf(config.localServices[id].baseUrl)}`];
+  return null;
+}
+
+function addFixtureNodes(providers, node) {
+  for (const record of attempt(() => providers.serviceFixtures?.describe?.() ?? [], [])) {
+    const service = record.name.replace(/^service:/, ''),
+      levels = tally(record.operations ?? [], (item) => item.level);
+    node(
+      `provider:service-fixture:${service}`,
+      'provider',
+      service,
+      levels.behaviour || levels.fixture ? 'ready' : 'disabled',
+      { operations: levels, ...(UNCALLED_FIXTURES[service] ? { note: UNCALLED_FIXTURES[service] } : {}) },
+      { link: '#services' },
+    );
+  }
+}
+
+function addPowerFxNode(powerFx, node) {
+  node(
+    'provider:powerfx',
+    'provider',
+    'Power Fx',
+    'ready',
+    { name: powerFx.name ?? null },
+    { level: powerFx.level, link: '#services' },
+  );
+}
+
+function addAppNodes({ inventory, codeApps, canvasEnabled, config, dataverse, powerFx, node, edge }) {
+  const canvas = inventory.filter((record) => record.component === 'canvasapp');
+  node(
+    'app:canvas',
+    'app',
+    'Canvas apps',
+    canvas.length && canvasEnabled ? 'ready' : 'disabled',
+    { apps: canvas.length, enabled: canvasEnabled },
+    { level: 'inventory', link: '#capabilities' },
+  );
+  node(
+    'app:code',
+    'app',
+    'Code apps',
+    codeApps.length ? 'ready' : 'disabled',
+    { apps: codeApps.length },
+    { level: 'contract', link: '#capabilities' },
+  );
+  addCanvasAppEdges(canvas, canvasEnabled, config, powerFx, edge);
+  addCodeAppEdges(codeApps, config, dataverse, edge);
+}
+
+function addCanvasAppEdges(canvas, canvasEnabled, config, powerFx, edge) {
+  const bound = (names) => [...new Set(names)].filter((name) => Object.hasOwn(config.connections ?? {}, name));
+  const on = canvas.length && canvasEnabled ? 'ready' : 'disabled',
+    needs = (component) =>
+      !canvas.length ||
+      canvas.some((record) => (record.dependencies ?? []).some((item) => item.component === component));
+  edge('client:staff', 'app:canvas', 'http', on, 'staff session');
+  if (needs('table')) edge('app:canvas', 'org:store', 'process', on, 'records as the user');
+  if (powerFx) edge('app:canvas', 'provider:powerfx', 'process', on, 'formulas');
+  if (needs('connector')) edge('app:canvas', 'provider:connectors', 'process', on, 'connector calls');
+  for (const id of bound(canvas.flatMap((record) => (record.canvas?.dataSources ?? []).map((item) => item.name))))
+    edge('app:canvas', `connection:${id}`, 'reads', on, 'data source');
+}
+
+function addCodeAppEdges(codeApps, config, dataverse, edge) {
+  const bound = (names) => [...new Set(names)].filter((name) => Object.hasOwn(config.connections ?? {}, name));
+  const references = codeApps.flatMap((app) => app.connectionReferences ?? []),
+    code = codeApps.length ? 'ready' : 'disabled';
+  edge('client:staff', 'app:code', 'http', code, 'staff session');
+  edge('app:code', 'org:store', 'process', code, 'records as the user');
+  edge(
+    'app:code',
+    'host:dataverse-api',
+    'http',
+    codeApps.length && dataverse ? 'ready' : 'disabled',
+    dataverse ? 'tokens' : 'tokens need the Web API',
+  );
+  if (references.length || !codeApps.length)
+    edge('app:code', 'provider:connectors', 'process', code, 'connector calls');
+  for (const key of bound(references.map((item) => item.key)))
+    edge('app:code', `connection:${key}`, 'reads', code, 'connection reference');
+}
+
+function addWebhookNodes({ rows, nodes, node, edge }) {
   const webhooks = rows('serviceendpoint')
     .filter((row) => Number(row.contract) === 8)
     .map((row) => ({ name: row.name ?? null, host: hostnameOf(row.url), loopback: isLoopbackUrl(row.url) }));
@@ -2324,6 +2620,9 @@ function externalNodes({
       loopback ? 'web hook' : 'not contacted',
     );
   }
+}
+
+function addConnectorNodes({ providers, operations, node, edge }) {
   const connectorProviders = attempt(() => providers.connectors?.providers?.() ?? [], []);
   node(
     'provider:connectors',
@@ -2346,12 +2645,15 @@ function externalNodes({
     operations.some((item) => item.kind === 'cloud-flow') ? 'ready' : 'disabled',
     'actions',
   );
-  // connector-runtime.mjs: the Dataverse connector writes through the record pipeline; shared_servicebus sends to the local bus.
   edge('provider:connectors', 'org:store', 'process', 'ready', 'Dataverse connector');
   if (providers.messaging) edge('provider:connectors', 'provider:messaging', 'bus', 'ready', 'Service Bus connector');
+}
+
+function addConnectionNodes({ config, node, edge }) {
   for (const [id, connection] of Object.entries(config.connections ?? {})) {
-    const principal =
-      connection?.principal == null ? 'none' : typeof connection.principal === 'string' ? 'named' : 'inline';
+    let principal = 'inline';
+    if (connection?.principal == null) principal = 'none';
+    else if (typeof connection.principal === 'string') principal = 'named';
     node(
       `connection:${id}`,
       'connection',
@@ -2361,133 +2663,15 @@ function externalNodes({
       { link: '#services' },
     );
     edge('provider:connectors', `connection:${id}`, 'reads', 'declared', connection?.provider ?? '');
-    // A URL rewrite that points at a declared local service sends this connection's calls there.
-    const targets = Object.values(connection?.settings?.rewrites ?? {})
-      .map(originOf)
-      .filter(Boolean);
+    const targets = new Set(
+      Object.values(connection?.settings?.rewrites ?? {})
+        .map(originOf)
+        .filter(Boolean),
+    );
     for (const [service, settings] of Object.entries(config.localServices ?? {}))
-      if (targets.includes(originOf(settings?.baseUrl ?? settings?.blob)))
+      if (targets.has(originOf(settings?.baseUrl ?? settings?.blob)))
         edge(`connection:${id}`, `provider:local-service:${service}`, 'http', 'declared', 'rewritten URL');
   }
-  node(
-    'provider:secrets',
-    'provider',
-    'Secret references',
-    providers.secrets ? 'ready' : 'disabled',
-    { keys: providers.secrets ? attempt(() => providers.secrets.keys().length, 0) : 0 },
-    { link: '#environment' },
-  );
-  edge('org:flows', 'provider:secrets', 'reads', 'ready', 'secret parameters');
-  if (providers.secrets) {
-    node(
-      'external:keyvault',
-      'external',
-      'Key Vault',
-      'placeholder',
-      { note: 'References resolve locally; no vault is contacted.' },
-      { link: '#environment' },
-    );
-    edge('provider:secrets', 'external:keyvault', 'reads', 'placeholder', 'not contacted');
-  }
-  for (const record of attempt(() => providers.localServices?.describe?.() ?? [], [])) {
-    const id = record.name.slice('local-service:'.length);
-    node(
-      `provider:local-service:${id}`,
-      'provider',
-      id,
-      'declared',
-      { service: record.service ?? null, required: record.required ?? false },
-      { level: record.level, link: '#services' },
-    );
-    edge('host:admin', `provider:local-service:${id}`, 'http', 'declared', 'preflight probe');
-    const external =
-      record.service === 'service-bus'
-        ? ['external:servicebus-emulator', 'Service Bus emulator']
-        : record.service === 'azure-storage'
-          ? ['external:azurite', 'Azurite']
-          : nodes.some((item) => item.id === `external:webhook:${hostnameOf(config.localServices?.[id]?.baseUrl)}`)
-            ? [`external:webhook:${hostnameOf(config.localServices[id].baseUrl)}`]
-            : null;
-    if (!external) continue;
-    if (external[1]) node(external[0], 'external', external[1], 'declared', {}, { link: '#services' });
-    edge(
-      `provider:local-service:${id}`,
-      external[0],
-      record.service === 'service-bus' ? 'bus' : 'http',
-      'declared',
-      'health probe',
-    );
-  }
-  for (const record of attempt(() => providers.serviceFixtures?.describe?.() ?? [], [])) {
-    const service = record.name.replace(/^service:/, ''),
-      levels = tally(record.operations ?? [], (item) => item.level);
-    node(
-      `provider:service-fixture:${service}`,
-      'provider',
-      service,
-      levels.behaviour || levels.fixture ? 'ready' : 'disabled',
-      { operations: levels, ...(UNCALLED_FIXTURES[service] ? { note: UNCALLED_FIXTURES[service] } : {}) },
-      { link: '#services' },
-    );
-  }
-  const powerFx = attempt(() => providers.powerFx?.describe?.() ?? null, null);
-  if (powerFx)
-    node(
-      'provider:powerfx',
-      'provider',
-      'Power Fx',
-      'ready',
-      { name: powerFx.name ?? null },
-      { level: powerFx.level, link: '#services' },
-    );
-  // App surfaces: canvas apps from the Solution inventory, code apps from the host configuration.
-  const canvas = inventory.filter((record) => record.component === 'canvasapp');
-  node(
-    'app:canvas',
-    'app',
-    'Canvas apps',
-    canvas.length && canvasEnabled ? 'ready' : 'disabled',
-    { apps: canvas.length, enabled: canvasEnabled },
-    { level: 'inventory', link: '#capabilities' },
-  );
-  node(
-    'app:code',
-    'app',
-    'Code apps',
-    codeApps.length ? 'ready' : 'disabled',
-    { apps: codeApps.length },
-    { level: 'contract', link: '#capabilities' },
-  );
-  // What the apps use: staff open them; their table sources read and write records as that person (roles, column security,
-  // plug-ins), canvas formulas run on Power Fx and connector sources call the project's connections (canvas-runtime.mjs,
-  // code-apps-http.mjs). A connection binds when its id equals the data source name or connection reference key.
-  const bound = (names) => [...new Set(names)].filter((name) => Object.hasOwn(config.connections ?? {}, name));
-  // Without apps the connections are still drawn, switched off (the dashboard route marks edges of disabled nodes).
-  const on = canvas.length && canvasEnabled ? 'ready' : 'disabled',
-    needs = (component) =>
-      !canvas.length ||
-      canvas.some((record) => (record.dependencies ?? []).some((item) => item.component === component));
-  edge('client:staff', 'app:canvas', 'http', on, 'staff session');
-  if (needs('table')) edge('app:canvas', 'org:store', 'process', on, 'records as the user');
-  if (powerFx) edge('app:canvas', 'provider:powerfx', 'process', on, 'formulas');
-  if (needs('connector')) edge('app:canvas', 'provider:connectors', 'process', on, 'connector calls');
-  for (const id of bound(canvas.flatMap((record) => (record.canvas?.dataSources ?? []).map((item) => item.name))))
-    edge('app:canvas', `connection:${id}`, 'reads', on, 'data source');
-  const references = codeApps.flatMap((app) => app.connectionReferences ?? []),
-    code = codeApps.length ? 'ready' : 'disabled';
-  edge('client:staff', 'app:code', 'http', code, 'staff session');
-  edge('app:code', 'org:store', 'process', code, 'records as the user');
-  edge(
-    'app:code',
-    'host:dataverse-api',
-    'http',
-    codeApps.length && dataverse ? 'ready' : 'disabled',
-    dataverse ? 'tokens' : 'tokens need the Web API',
-  );
-  if (references.length || !codeApps.length)
-    edge('app:code', 'provider:connectors', 'process', code, 'connector calls');
-  for (const key of bound(references.map((item) => item.key)))
-    edge('app:code', `connection:${key}`, 'reads', code, 'connection reference');
 }
 
 // What each organization module is reached from and what it calls, traced to its module: `store` hooks run inside the

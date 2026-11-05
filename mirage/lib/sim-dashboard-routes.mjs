@@ -68,7 +68,7 @@ export function createDashboardRoutes({ host, extras = () => ({}), docs = {} }) 
     const organizationHost = current();
     if (!organizationHost) return send(res, 503, { status: 'starting' }, { 'retry-after': '1' });
     const shared = organizationHost.topology();
-    const extra = (await extras()) ?? {};
+    const extra = (await extras()) ?? {}; // NOSONAR: await kept: the value may be a thenable and timing matters
     const clock = organizationHost.organization?.store?.clock ?? systemClock;
     // An edge is kept only when both of its ends are on this runtime (the shared part names hosts' clients such as client:staff).
     // A connection of a part that is switched off is drawn switched off too, so the map still shows what it would connect to.

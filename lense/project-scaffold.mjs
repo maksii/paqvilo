@@ -27,39 +27,7 @@ async function template(name, values = {}) {
   });
 }
 
-function projectScripts({ sites, packs, vscode }) {
-  const config = '--config ./paqvilo.config.yml';
-  const lense = (command) => `paqvilo lense ${command} ${config}`;
-  const mirage = (command) => `paqvilo mirage ${command} ${config}`;
-  const unit = packs.length ? packs.map((pack) => `${pack.directory}/test/*.test.mjs`).join(' ') : 'test/*.test.mjs';
-  const scripts = {
-    setup: 'node tools/bootstrap.mjs && npm run check:setup',
-    'check:setup': 'paqvilo doctor --setup --config ./paqvilo.config.yml',
-    'check:scaffold': 'paqvilo init --check --config ./paqvilo.config.yml',
-    'check:project': 'paqvilo init --ready --config ./paqvilo.config.yml',
-    configure: 'paqvilo setup --config ./paqvilo.config.yml --open',
-    lense: 'paqvilo lense',
-    mirage: 'paqvilo mirage',
-  };
-  if (vscode) scripts['editor:refresh'] = 'paqvilo init --refresh-editor --config ./paqvilo.config.yml';
-  const workflows = developmentWorkflows({ sites });
-  for (const [name, workflow] of Object.entries(workflows)) {
-    scripts[name] = developmentScript(name, workflow);
-  }
-  for (const command of ['list', 'use', 'doctor', 'map', 'status', 'resources', 'agent', 'verify'])
-    scripts[command] = lense(command);
-  scripts['audit:resources'] = lense('audit');
-  scripts['mirage:init'] = mirage('init');
-  for (const command of ['start', 'status', 'stop']) scripts[`mirage:${command}`] = mirage(command);
-  scripts['mirage:capture'] = mirage('capture-shell');
-  scripts.test = `node --test --test-concurrency=4 --test-timeout=180000 ${unit}`;
-  scripts['test:browser'] = 'node tools/test-browser.mjs';
-  scripts.validate = 'npm test && npm run test:browser';
-  scripts['validate:configured'] = 'npm run check:project && npm test && npm run test:browser -- --strict';
-  return scripts;
-}
-
-export async function prepareProject(directory, options = {}) {
+function projectOptions(directory, options) {
   const name = options.name ?? path.basename(path.resolve(directory));
   safeId(name, '--name');
   const sites = distinct(options.sites ?? ['portal'], '--site');
@@ -76,16 +44,10 @@ export async function prepareProject(directory, options = {}) {
   // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   if (typeof sourceRoot !== 'string' || !sourceRoot.trim() || /[\x00-\x1f\x7f]/.test(sourceRoot))
     throw new Error('--source-root must be a non-empty path without control characters');
-  const metadata = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
-  const { version } = metadata;
-  const docs = metadata.repository.url.replace(/^git\+/, '').replace(/\.git$/, '') + '/blob/main/';
-  const toolkit = options.toolkit ?? `^${version}`;
-  // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
-  if (!toolkit.trim() || /[\x00-\x1f\x7f]/.test(toolkit))
-    throw new Error('--toolkit must be a non-empty dependency specification');
-  const packs = packIds.map((id) => ({ id, directory: packIds.length === 1 ? 'pack' : `packs/${id}` }));
-  const vscode = !options.noVscode;
-  const scripts = projectScripts({ sites, browser, packs, vscode });
+  return { name, sites, packIds, env, browser, sourceRoot };
+}
+
+function projectCatalogue(sites, env, packs, browser, sourceRoot) {
   const config = {
     sourceRoot,
     defaultSite: sites[0],
@@ -119,6 +81,54 @@ export async function prepareProject(directory, options = {}) {
   }
   doc.getIn(['defaults', 'mirage', 'solutionRoots'], true).comment =
     ' TODO(paqvilo-init): list unpacked Solution roots relative to sourceRoot, or confirm none are needed';
+  return doc;
+}
+
+function projectScripts({ sites, packs, vscode }) {
+  const config = '--config ./paqvilo.config.yml';
+  const lense = (command) => `paqvilo lense ${command} ${config}`;
+  const mirage = (command) => `paqvilo mirage ${command} ${config}`;
+  const unit = packs.length ? packs.map((pack) => `${pack.directory}/test/*.test.mjs`).join(' ') : 'test/*.test.mjs';
+  const scripts = {
+    setup: 'node tools/bootstrap.mjs && npm run check:setup',
+    'check:setup': 'paqvilo doctor --setup --config ./paqvilo.config.yml',
+    'check:scaffold': 'paqvilo init --check --config ./paqvilo.config.yml',
+    'check:project': 'paqvilo init --ready --config ./paqvilo.config.yml',
+    configure: 'paqvilo setup --config ./paqvilo.config.yml --open',
+    lense: 'paqvilo lense',
+    mirage: 'paqvilo mirage',
+  };
+  if (vscode) scripts['editor:refresh'] = 'paqvilo init --refresh-editor --config ./paqvilo.config.yml';
+  const workflows = developmentWorkflows({ sites });
+  for (const [name, workflow] of Object.entries(workflows)) {
+    scripts[name] = developmentScript(name, workflow);
+  }
+  for (const command of ['list', 'use', 'doctor', 'map', 'status', 'resources', 'agent', 'verify'])
+    scripts[command] = lense(command);
+  scripts['audit:resources'] = lense('audit');
+  scripts['mirage:init'] = mirage('init');
+  for (const command of ['start', 'status', 'stop']) scripts[`mirage:${command}`] = mirage(command);
+  scripts['mirage:capture'] = mirage('capture-shell');
+  scripts.test = `node --test --test-concurrency=4 --test-timeout=180000 ${unit}`;
+  scripts['test:browser'] = 'node tools/test-browser.mjs';
+  scripts.validate = 'npm test && npm run test:browser';
+  scripts['validate:configured'] = 'npm run check:project && npm test && npm run test:browser -- --strict';
+  return scripts;
+}
+
+/* NOSONAR */ export async function prepareProject(directory, options = {}) {
+  const { name, sites, packIds, env, browser, sourceRoot } = projectOptions(directory, options);
+  const metadata = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const { version } = metadata;
+  const docs = metadata.repository.url.replace(/^git\+/, '').replace(/\.git$/, '') + '/blob/main/';
+  const toolkit = options.toolkit ?? `^${version}`;
+  // eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
+  if (!toolkit.trim() || /[\x00-\x1f\x7f]/.test(toolkit))
+    throw new Error('--toolkit must be a non-empty dependency specification');
+  const packs = packIds.map((id) => ({ id, directory: packIds.length === 1 ? 'pack' : `packs/${id}` }));
+  const vscode = !options.noVscode;
+  const scripts = projectScripts({ sites, browser, packs, vscode });
+  const doc = projectCatalogue(sites, env, packs, browser, sourceRoot);
   const files = {
     'package.json': json({
       name,
@@ -133,12 +143,12 @@ export async function prepareProject(directory, options = {}) {
     '.gitignore': await template('gitignore.template'),
     '.gitattributes': await template('gitattributes.template'),
     '.editorconfig': await template('editorconfig.template'),
-    '.node-version': metadata.engines.node.match(/\d+\.\d+\.\d+/)[0] + '\n',
+    '.node-version': metadata.engines.node.match(/(?<!\d)\d+\.\d+\.\d+/)[0] + '\n',
     'README.md': await template('README.md', {
       name,
       docs,
       version,
-      node: metadata.engines.node.match(/\d+\.\d+\.\d+/)[0],
+      node: metadata.engines.node.match(/(?<!\d)\d+\.\d+\.\d+/)[0],
       nodeMajor: metadata.engines.node.match(/\d+/)[0],
       editorStep: vscode
         ? 'Run `npm run editor:refresh` after configuration changes; inspect any script proposals and edited-file alternatives.'

@@ -21,7 +21,7 @@ export async function writeJsonChunks(res, chunks) {
         break;
       }
       const chunk = next.value;
-      if (res.destroyed) throw Error('JSON response reader disconnected.');
+      if (res.destroyed) throw new Error('JSON response reader disconnected.');
       if (!res.write(chunk)) await once(res, 'drain', { signal: abort.signal });
       if (performance.now() - yieldedAt >= 8) {
         await setImmediate(undefined, { signal: abort.signal });

@@ -1,5 +1,10 @@
 import { DataError } from './data-error.mjs';
 
+function untypedNumberType(value) {
+  if (!Number.isInteger(value)) return 'double';
+  return value >= -2147483648 && value <= 2147483647 ? 'int' : 'long';
+}
+
 /** Final SDK result values retain their wire type; source field metadata must
  * not reinterpret a plug-in's typed Entity attributes or formatted values. */
 function soapSdkValue(value) {
@@ -12,7 +17,7 @@ function soapSdkValue(value) {
         'LocalSoapResultUnsupported',
       );
     return {
-      type: Number.isInteger(value) ? (value >= -2147483648 && value <= 2147483647 ? 'int' : 'long') : 'double',
+      type: untypedNumberType(value),
       value,
     };
   }

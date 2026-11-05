@@ -32,6 +32,13 @@ export function qualifiedTypeName(store, { typeName, assemblyId, assemblyName } 
   return `${typeName}, ${row.name}, Version=${row.version ?? 'null'}, Culture=${row.culture ?? 'neutral'}, PublicKeyToken=${row.publickeytoken ?? 'null'}`;
 }
 
+function exceptionDetails(error) {
+  if (!error) return '';
+  if (error.details?.innerCode === '0x80040265')
+    return `System.ServiceModel.FaultException\`1[Microsoft.Xrm.Sdk.OrganizationServiceFault]: ${error.message}${FAULT_FRAME_SUFFIX}`;
+  return String(error.message ?? error);
+}
+
 /** PluginTraceLog is diagnostic evidence and survives the business transaction. */
 export function recordPluginTrace(
   store,
@@ -63,11 +70,7 @@ export function recordPluginTrace(
     // Native traceFaults (two captures): the step's Trace calls are joined with CRLF and the LAST 10240 characters are kept.
     messageblock: traces.length ? traces.join('\r\n').slice(-MESSAGE_BLOCK_LIMIT) : null,
     // A fault row names the OrganizationServiceFault it surfaced as, then the platform frames; a success row is ''.
-    exceptiondetails: !error
-      ? ''
-      : error.details?.innerCode === '0x80040265'
-        ? `System.ServiceModel.FaultException\`1[Microsoft.Xrm.Sdk.OrganizationServiceFault]: ${error.message}${FAULT_FRAME_SUFFIX}`
-        : String(error.message ?? error),
+    exceptiondetails: exceptionDetails(error),
     depth,
     mode,
     operationtype: 1,

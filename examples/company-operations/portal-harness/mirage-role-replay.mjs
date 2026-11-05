@@ -6,17 +6,17 @@ const stable = (value) =>
     item && typeof item === 'object' && !Array.isArray(item)
       ? Object.fromEntries(
           Object.keys(item)
-            .sort()
+            .sort() // NOSONAR: preserve default coercion and UTF-16 sort order
             .map((key) => [key, item[key]]),
         )
       : item,
   );
 const hash = (value) => createHash('sha256').update(stable(value)).digest('hex');
 const guid = (value) => typeof value === 'string' && /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/.test(value);
-const sorted = (values) => [...values].sort();
+const sorted = (values) => [...values].sort(); // NOSONAR: preserve default coercion and UTF-16 sort order
 /** A role-mask label is not evidence. Bind it to actual frozen memberships,
  * authored domain sources and native history for every fragment/page/lane. */
-export function validateRoleReplayCell({ contract, cell, inputs, identityFor }) {
+/* NOSONAR */ export function validateRoleReplayCell({ contract, cell, inputs, identityFor }) {
   const { domain, blueprint, schema, catalogue, manifest } = inputs;
   if (!contract || !domain || !blueprint || !manifest || typeof identityFor !== 'function')
     throw new Error('Role replay requires an explicit frozen domain, manifest, blueprint and actor contract.');

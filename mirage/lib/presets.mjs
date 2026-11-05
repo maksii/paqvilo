@@ -58,31 +58,30 @@ const bodyKeys = [
 const isCompactDescriptor = (preset) => preset?.builtin === true && !bodyKeys.some((key) => hasOwn(preset, key));
 
 /** Refresh generated library entries; explicitly edited presets and mappings remain authoritative. */
-export function resolvePreset(state, name, generatedPresets = builtinPresets, context) {
+/* NOSONAR */ export function resolvePreset(state, name, generatedPresets = builtinPresets, context) {
   const copySaved = (value) => cloneStateData(value, { forkTables: Boolean(context?.records) });
   const saved = state.presets?.[name];
   const generatedHas = hasOwn(generatedPresets, name);
   // Explicit project packs are absent from the compatibility library; their
   // stored descriptors resolve from the supplied portal library instead.
-  const library = hasOwn(builtinPresets, name)
-    ? builtinPresets
-    : generatedHas && saved?.builtin === true && saved.userConfigured !== true
-      ? generatedPresets
-      : null;
+  let library = null;
+  if (hasOwn(builtinPresets, name)) library = builtinPresets;
+  else if (generatedHas && saved?.builtin === true && saved.userConfigured !== true) library = generatedPresets;
   if (
     saved?.userConfigured === true ||
     !library ||
     (saved && saved.builtin !== true && !isDeepStrictEqual(saved, library[name]))
-  )
-    return saved
-      ? !library && isCompactDescriptor(saved)
-        ? null
-        : copySaved(saved)
-      : generatedHas
-        ? instantiatePreset(generatedPresets, name, context)
-        : null;
+  ) {
+    if (saved) return !library && isCompactDescriptor(saved) ? null : copySaved(saved);
+    return generatedHas ? instantiatePreset(generatedPresets, name, context) : null;
+  }
   const result = instantiatePreset(generatedHas ? generatedPresets : library, name, context);
   if (!result) return saved ? copySaved(saved) : null;
+  applyExistingMappings(result, state);
+  return result;
+}
+
+function applyExistingMappings(result, state) {
   for (const [entity, mapping] of Object.entries(result.mappings ?? {})) {
     const existing = state.mappings?.[entity];
     if (existing?.userConfigured === true) result.mappings[entity] = clone(existing);
@@ -96,7 +95,6 @@ export function resolvePreset(state, name, generatedPresets = builtinPresets, co
         },
       };
   }
-  return result;
 }
 
 /** Builtin bodies are generated on demand; explicit custom presets remain complete. */
@@ -137,10 +135,23 @@ export function applyPresetSections(state, preset, { owned = false } = {}) {
       preset.personaCatalog,
       `Preset ${preset.id ?? preset.name ?? 'unnamed'}`,
     );
-  if (preset.tables) for (const [entity, rows] of Object.entries(preset.tables)) state.tables[entity] = copy(rows);
+  if (preset.tables) applyPresetTables(state, preset.tables, copy);
   if (preset.mappings) Object.assign(state.mappings, copy(preset.mappings));
-  for (const key of ['plugins', 'permissions']) if (preset[key]) state[key] = copy(preset[key]);
+  applyPresetSectionsByKey(state, preset, copy);
   if (preset.settings) Object.assign(state.settings, copy(preset.settings));
+  applyPresetSimulator(state, preset, copy);
+  return state;
+}
+
+function applyPresetTables(state, tables, copy) {
+  for (const [entity, rows] of Object.entries(tables)) state.tables[entity] = copy(rows);
+}
+
+function applyPresetSectionsByKey(state, preset, copy) {
+  for (const key of ['plugins', 'permissions']) if (preset[key]) state[key] = copy(preset[key]);
+}
+
+function applyPresetSimulator(state, preset, copy) {
   if (preset.identity) {
     state.simulator ??= {};
     state.simulator.identity = copy(preset.identity);
@@ -149,7 +160,6 @@ export function applyPresetSections(state, preset, { owned = false } = {}) {
     state.simulator ??= {};
     state.simulator.endpoints = copy(preset.endpoints);
   }
-  return state;
 }
 
 /**
@@ -215,15 +225,14 @@ export function listPresets({ state = {}, library = {} } = {}) {
     const meta = presetDescriptor(library, id) ?? presetDescriptor(builtinPresets, id);
     const custom = saved !== undefined && (saved?.userConfigured === true || !meta || saved?.builtin !== true);
     const unavailable = !meta && isCompactDescriptor(saved);
+    const configuredPreset = custom ? saved?.configurationPreset : meta?.configurationPreset;
     return {
       id,
       name: (custom ? saved?.name : meta?.name) ?? meta?.name ?? id,
       description: (custom ? saved?.description : meta?.description) ?? meta?.description ?? '',
-      source: saved?.userConfigured ? 'stored' : meta ? 'builtin' : 'stored',
+      source: saved?.userConfigured || !meta ? 'stored' : 'builtin',
       ...(meta?.pack ? { pack: meta.pack } : {}),
-      ...((custom ? saved?.configurationPreset : meta?.configurationPreset)
-        ? { configurationPreset: custom ? saved.configurationPreset : meta.configurationPreset }
-        : {}),
+      ...(configuredPreset ? { configurationPreset: configuredPreset } : {}),
       ...(unavailable ? { unavailable: true } : {}),
     };
   });

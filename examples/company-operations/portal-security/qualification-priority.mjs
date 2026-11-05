@@ -201,6 +201,142 @@ export function equipmentLifecycleConfigurations({ schema, catalogue }) {
   };
 }
 
+function adaptShallowRolelessGraph(configuration, schema) {
+  configuration.permissions = configuration.permissions.slice(0, 3);
+  configuration.permissions.at(-1).privileges = Object.fromEntries(
+    Object.keys(configuration.permissions.at(-1).privileges).map((key) => [key, true]),
+  );
+  configuration.components = configuration.components.filter(
+    (component) =>
+      component.type === 11 || configuration.permissions.some((permission) => permission.id === component.id),
+  );
+  Object.assign(configuration.components.at(-1).content, {
+    read: true,
+    create: true,
+    write: true,
+    delete: true,
+    append: true,
+    appendto: true,
+  });
+  const table = schema.tables.find((item) => item.name === configuration.permissions.at(-1).table);
+  const primaryName = table.primaryName?.name ?? { account: 'name', contact: 'fullname' }[table.name];
+  configuration.query = {
+    ...configuration.query,
+    table: table.name,
+    entitySet: table.entitySetName,
+    primaryId: `${table.name}id`,
+    primaryName,
+    fields: [
+      { name: `${table.name}id`, source: `${table.name}id`, type: 'guid', nullable: false },
+      { name: primaryName, source: primaryName, type: 'string', nullable: false },
+    ],
+    fetchXml: configuration.query.fetchXml
+      .replaceAll(configuration.query.table, table.name)
+      .replaceAll(configuration.query.primaryName, primaryName),
+  };
+}
+
+function updateRolelessComponentReferences(configuration, ids) {
+  for (const component of configuration.components) {
+    component.id = ids.get(component.id);
+    if (component.type === 11) component.name = configuration.roles.find((role) => role.id === component.id).name;
+    if (component.content.adx_entitypermission_webrole)
+      component.content.adx_entitypermission_webrole = component.content.adx_entitypermission_webrole.map((role) =>
+        ids.get(role),
+      );
+    if (component.content.parententitypermission)
+      component.content.parententitypermission = ids.get(component.content.parententitypermission);
+  }
+}
+
+function setRolelessBindingContract(configuration) {
+  configuration.bindingContract = {
+    bindRecordIds(ids) {
+      if (
+        !Array.isArray(ids) ||
+        !ids.length ||
+        ids.length > 16 ||
+        ids.some((id) => !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id))
+      )
+        throw new Error('Roleless-parent pilot requires one to sixteen verified native GUIDs.');
+      return {
+        ...configuration.query,
+        fixtureBindings: [],
+        fetchXml: configuration.query.fetchXml.replace(
+          '{{qualificationRecordIdValues}}',
+          ids.map((id) => `<value>${id.toLowerCase()}</value>`).join(''),
+        ),
+      };
+    },
+  };
+}
+
+function makeRolelessConfiguration({ variants, depth, position, schema, catalogue }) {
+  const variant = variants.find(
+    (candidate) =>
+      candidate.family === 'activation' &&
+      equal(candidate.parameters, { state: 'all-active', depth, childRoles: 'same-explicit' }),
+  );
+  // depth=2 is an explicit additional graph, constructed from the supported
+  // depth=8 activation shape by taking its first three actual source nodes.
+  const base =
+    variant ??
+    variants.find(
+      (candidate) =>
+        candidate.family === 'activation' &&
+        equal(candidate.parameters, { state: 'all-active', depth: 8, childRoles: 'same-explicit' }),
+    );
+  const configuration = materializeScopeHierarchyVariant(base, { schema, catalogue });
+  if (depth === 2) adaptShallowRolelessGraph(configuration, schema);
+  const oldVariantId = configuration.variantId;
+  configuration.variantId = `parent-roleless:${depth}:${position}`;
+  configuration.family = 'parent-roleless';
+  configuration.parameters = { depth, position };
+  const ids = new Map(
+    configuration.components.map((component) => [
+      component.id,
+      componentId('qualification-extra:' + configuration.variantId + ':' + component.id),
+    ]),
+  );
+  for (const [index, role] of configuration.roles.entries()) {
+    role.id = ids.get(role.id);
+    role.name = `CO Qualification ${hash(configuration.variantId).slice(0, 20)} ${index}`;
+  }
+  for (const permission of configuration.permissions) {
+    permission.id = ids.get(permission.id);
+    permission.parentId = permission.parentId ? ids.get(permission.parentId) : null;
+    permission.roleIds = permission.roleIds.map((role) => ids.get(role));
+  }
+  updateRolelessComponentReferences(configuration, ids);
+  const roleless = position === 'root' ? configuration.permissions[0] : configuration.permissions.at(-2);
+  roleless.roleIds = [];
+  configuration.components.find((component) => component.id === roleless.id).content.adx_entitypermission_webrole = [];
+  configuration.query.id = `QF-${hash(configuration.variantId).slice(0, 20)}-R`;
+  configuration.query.variant = 'qualification-parent-roleless';
+  configuration.configurationCells = configuration.configurationCells.map((cell) => ({
+    ...cell,
+    id: cell.id.replace(oldVariantId, configuration.variantId),
+    variantId: configuration.variantId,
+  }));
+  configuration.fixtureRequirements.find(
+    (requirement) => requirement.kind === 'isolated-three-region-fixture-graphs',
+  ).existingFixtureKeys = catalogue.records
+    .filter((record) => record.table === configuration.query.table)
+    .map((record) => record.key);
+  configuration.runtimeRequirements.find(
+    (requirement) => requirement.kind === 'business-crud-context-observation',
+  ).tables = [...new Set(configuration.permissions.map((permission) => permission.table))];
+  // Rebinding uses the exact modified query; the inherited closure captured
+  // the original table and must never silently submit that older query.
+  setRolelessBindingContract(configuration);
+  configuration.sourceHashes.components = hash(configuration.components);
+  configuration.sourceHashes.query = hash(configuration.query);
+  configuration.pilotRisk = 'Roleless ancestor with explicitly associated active child';
+  configuration.grammarMember = false;
+  configuration.nativeQualification = 'unrecorded';
+  return configuration;
+}
+
 /** Highest-risk pilot inputs drawn from the declared grammar, plus six explicit
  * roleless-parent configurations that the original grammar did not contain.
  * Pilots remain actual unrecorded cells; they never replace the full campaign. */
@@ -260,7 +396,7 @@ export function highRiskNativeConfigurations({ schema, catalogue }) {
   ];
   const configurations = wanted.map(([family, parameters, risk]) => {
     const variant = variants.find((variant) => variant.family === family && equal(variant.parameters, parameters));
-    if (!variant) throw new Error('Priority requirement absent from finite grammar: ' + family);
+    if (!variant) throw new Error('Priority requirement absent from finite grammar: ' + family); // NOSONAR: stringification is intentional here
     return {
       ...materializeScopeHierarchyVariant(variant, { schema, catalogue }),
       pilotRisk: risk,
@@ -270,132 +406,8 @@ export function highRiskNativeConfigurations({ schema, catalogue }) {
   });
   const extra = [];
   for (const depth of [2, 8, 11])
-    for (const position of ['root', 'closest-parent']) {
-      const variant = variants.find(
-        (variant) =>
-          variant.family === 'activation' &&
-          equal(variant.parameters, { state: 'all-active', depth, childRoles: 'same-explicit' }),
-      );
-      // depth=2 is an explicit additional graph, constructed from the supported
-      // depth=8 activation shape by taking its first three actual source nodes.
-      const base =
-        variant ??
-        variants.find(
-          (variant) =>
-            variant.family === 'activation' &&
-            equal(variant.parameters, { state: 'all-active', depth: 8, childRoles: 'same-explicit' }),
-        );
-      const configuration = materializeScopeHierarchyVariant(base, { schema, catalogue });
-      if (depth === 2) {
-        configuration.permissions = configuration.permissions.slice(0, 3);
-        configuration.permissions.at(-1).privileges = Object.fromEntries(
-          Object.keys(configuration.permissions.at(-1).privileges).map((key) => [key, true]),
-        );
-        configuration.components = configuration.components.filter(
-          (component) =>
-            component.type === 11 || configuration.permissions.some((permission) => permission.id === component.id),
-        );
-        Object.assign(configuration.components.at(-1).content, {
-          read: true,
-          create: true,
-          write: true,
-          delete: true,
-          append: true,
-          appendto: true,
-        });
-        const table = schema.tables.find((table) => table.name === configuration.permissions.at(-1).table);
-        const primaryName = table.primaryName?.name ?? { account: 'name', contact: 'fullname' }[table.name];
-        configuration.query = {
-          ...configuration.query,
-          table: table.name,
-          entitySet: table.entitySetName,
-          primaryId: `${table.name}id`,
-          primaryName,
-          fields: [
-            { name: `${table.name}id`, source: `${table.name}id`, type: 'guid', nullable: false },
-            { name: primaryName, source: primaryName, type: 'string', nullable: false },
-          ],
-          fetchXml: configuration.query.fetchXml
-            .replaceAll(configuration.query.table, table.name)
-            .replaceAll(configuration.query.primaryName, primaryName),
-        };
-      }
-      const oldVariantId = configuration.variantId;
-      configuration.variantId = `parent-roleless:${depth}:${position}`;
-      configuration.family = 'parent-roleless';
-      configuration.parameters = { depth, position };
-      const ids = new Map(
-        configuration.components.map((component) => [
-          component.id,
-          componentId('qualification-extra:' + configuration.variantId + ':' + component.id),
-        ]),
-      );
-      for (const [index, role] of configuration.roles.entries()) {
-        role.id = ids.get(role.id);
-        role.name = `CO Qualification ${hash(configuration.variantId).slice(0, 20)} ${index}`;
-      }
-      for (const permission of configuration.permissions) {
-        permission.id = ids.get(permission.id);
-        permission.parentId = permission.parentId ? ids.get(permission.parentId) : null;
-        permission.roleIds = permission.roleIds.map((role) => ids.get(role));
-      }
-      for (const component of configuration.components) {
-        component.id = ids.get(component.id);
-        if (component.type === 11) component.name = configuration.roles.find((role) => role.id === component.id).name;
-        if (component.content.adx_entitypermission_webrole)
-          component.content.adx_entitypermission_webrole = component.content.adx_entitypermission_webrole.map((role) =>
-            ids.get(role),
-          );
-        if (component.content.parententitypermission)
-          component.content.parententitypermission = ids.get(component.content.parententitypermission);
-      }
-      const roleless = position === 'root' ? configuration.permissions[0] : configuration.permissions.at(-2);
-      roleless.roleIds = [];
-      configuration.components.find((component) => component.id === roleless.id).content.adx_entitypermission_webrole =
-        [];
-      configuration.query.id = `QF-${hash(configuration.variantId).slice(0, 20)}-R`;
-      configuration.query.variant = 'qualification-parent-roleless';
-      configuration.configurationCells = configuration.configurationCells.map((cell) => ({
-        ...cell,
-        id: cell.id.replace(oldVariantId, configuration.variantId),
-        variantId: configuration.variantId,
-      }));
-      configuration.fixtureRequirements.find(
-        (requirement) => requirement.kind === 'isolated-three-region-fixture-graphs',
-      ).existingFixtureKeys = catalogue.records
-        .filter((record) => record.table === configuration.query.table)
-        .map((record) => record.key);
-      configuration.runtimeRequirements.find(
-        (requirement) => requirement.kind === 'business-crud-context-observation',
-      ).tables = [...new Set(configuration.permissions.map((permission) => permission.table))];
-      // Rebinding uses the exact modified query; the inherited closure captured
-      // the original table and must never silently submit that older query.
-      configuration.bindingContract = {
-        bindRecordIds(ids) {
-          if (
-            !Array.isArray(ids) ||
-            !ids.length ||
-            ids.length > 16 ||
-            ids.some((id) => !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id))
-          )
-            throw new Error('Roleless-parent pilot requires one to sixteen verified native GUIDs.');
-          return {
-            ...configuration.query,
-            fixtureBindings: [],
-            fetchXml: configuration.query.fetchXml.replace(
-              '{{qualificationRecordIdValues}}',
-              ids.map((id) => `<value>${id.toLowerCase()}</value>`).join(''),
-            ),
-          };
-        },
-      };
-      configuration.sourceHashes.components = hash(configuration.components);
-      configuration.sourceHashes.query = hash(configuration.query);
-      configuration.pilotRisk = 'Roleless ancestor with explicitly associated active child';
-      configuration.grammarMember = false;
-      configuration.nativeQualification = 'unrecorded';
-      extra.push(configuration);
-    }
+    for (const position of ['root', 'closest-parent'])
+      extra.push(makeRolelessConfiguration({ variants, depth, position, schema, catalogue }));
   return {
     kind: 'priority-native-configuration-inputs',
     qualification: 'unrecorded',
