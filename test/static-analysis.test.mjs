@@ -282,6 +282,28 @@ test('enhanced metadata uses real envelope elements without deleting or interpre
   assert.ok(!report.findings.some((finding) => finding.ruleId.startsWith('PP-API-')));
 });
 
+// @test-kind security: ambiguous or malformed envelope metadata cannot establish configuration facts; future component choices remain explicitly unsupported
+test('ambiguous enhanced envelope fields fail closed while unknown component types remain unsupported', (t) => {
+  for (const metadata of ['<name>One</name><name>Two</name>', '<name>One</statecode>']) {
+    const root = project(t, {
+      'powerpagecomponents/one/powerpagecomponent.xml': component(9, { value: '*' }, metadata),
+    });
+    const report = analyzeProject(root);
+    assert.equal(report.ready, false);
+    assert.equal(report.complete, false);
+    assert.ok(report.findings.some((finding) => finding.ruleId === 'PAQ-SOURCE-001'));
+    assert.ok(!report.findings.some((finding) => finding.ruleId.startsWith('PP-API-')));
+  }
+  const future = analyzeProject(
+    project(t, { 'powerpagecomponents/future/powerpagecomponent.xml': component(999, {}) }),
+  );
+  assert.equal(future.complete, false);
+  assert.deepEqual(future.findings, []);
+  assert.deepEqual(future.coverage.skipped, [
+    { file: 'powerpagecomponents/future/powerpagecomponent.xml', reason: 'unsupported-component-type' },
+  ]);
+});
+
 test('YAML aliases and non-record sequences cannot silently count as complete metadata', (t) => {
   const root = project(t, {
     'alias.sitesetting.yml': 'adx_name: &name Webapi/error/innererror\nadx_value: *name\n',

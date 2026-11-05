@@ -28,44 +28,60 @@ export function analysisFailure(analysis) {
   };
 }
 
+function analysisSiteArgs(catalogue, site, args) {
+  return {
+    ...args,
+    site,
+    ...(args.all
+      ? { env: catalogue.sites[site].defaultEnv ?? Object.keys(catalogue.sites[site].environments)[0] }
+      : {}),
+  };
+}
+
+async function analyzeSiteReport(catalogue, site, args, failOn) {
+  const name = site ?? catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite;
+  try {
+    if (mirageOnlySite(catalogue.sites[name])) throw new Error('unsupported source');
+    const cfg = await loadConfig(analysisSiteArgs(catalogue, site, args));
+    const analysis = analyzeProject(cfg.sourceDir, { failOn });
+    return {
+      site: cfg.siteName,
+      analysis,
+      ready: analysis.ready,
+      errors: analysis.ready ? [] : [analysisFailure(analysis)],
+    };
+  } catch {
+    return {
+      site: name,
+      ready: false,
+      errors: [
+        {
+          code: 'analysis_unavailable',
+          message:
+            'Static portal analysis could not read the selected export or configuration. Check source paths, access and supported formats with doctor.',
+        },
+      ],
+    };
+  }
+}
+
+function printAnalyzeReport(reports) {
+  console.log('Offline static source analysis (no live, rendered or authorization verification)');
+  for (const item of reports) {
+    console.log(`\n${item.site}: ${item.ready ? 'READY' : 'ERROR'}`);
+    if (item.analysis) printAnalysis(item.analysis);
+    for (const error of item.errors) console.log(`  ERROR: ${error.message}`);
+  }
+}
+
 export default async function analyze(_cfg, args) {
   const failOn = validateAnalysisPolicy(args['fail-on'] ?? 'error');
   const catalogue = loadCatalogue(args);
   if (args.site && !Object.hasOwn(catalogue.sites, args.site))
     throw Object.assign(new Error('Unknown site selected for static analysis.'), { code: 'invalid_argument' });
   const reports = [];
-  for (const site of args.all ? Object.keys(catalogue.sites) : [args.site]) {
-    const name = site ?? catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite;
-    try {
-      if (mirageOnlySite(catalogue.sites[name])) throw new Error('unsupported source');
-      const cfg = await loadConfig({
-        ...args,
-        site,
-        ...(args.all
-          ? { env: catalogue.sites[site].defaultEnv ?? Object.keys(catalogue.sites[site].environments)[0] }
-          : {}),
-      });
-      const analysis = analyzeProject(cfg.sourceDir, { failOn });
-      reports.push({
-        site: cfg.siteName,
-        analysis,
-        ready: analysis.ready,
-        errors: analysis.ready ? [] : [analysisFailure(analysis)],
-      });
-    } catch {
-      reports.push({
-        site: name,
-        ready: false,
-        errors: [
-          {
-            code: 'analysis_unavailable',
-            message:
-              'Static portal analysis could not read the selected export or configuration. Check source paths, access and supported formats with doctor.',
-          },
-        ],
-      });
-    }
-  }
+  for (const site of args.all ? Object.keys(catalogue.sites) : [args.site])
+    reports.push(await analyzeSiteReport(catalogue, site, args, failOn));
   const ok = reports.length > 0 && reports.every((report) => report.ready);
   const report = {
     schemaVersion: 1,
@@ -77,13 +93,6 @@ export default async function analyze(_cfg, args) {
     reports,
   };
   if (args.json) console.log(JSON.stringify(report, null, 2));
-  else {
-    console.log('Offline static source analysis (no live, rendered or authorization verification)');
-    for (const item of reports) {
-      console.log(`\n${item.site}: ${item.ready ? 'READY' : 'ERROR'}`);
-      if (item.analysis) printAnalysis(item.analysis);
-      for (const error of item.errors) console.log(`  ERROR: ${error.message}`);
-    }
-  }
+  else printAnalyzeReport(reports);
   return ok ? 0 : 1;
 }

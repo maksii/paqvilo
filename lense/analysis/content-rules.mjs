@@ -80,6 +80,29 @@ export const contentRules = [
 // Removing text rather than replacing it would make source offsets misleading.
 const blank = (text) => text.replace(/[^\r\n]/g, ' ');
 
+function ignoredMarkupRange(node, length) {
+  if (node.nodeName !== '#comment' && !['script', 'style', 'textarea', 'template'].includes(node.tagName)) return null;
+  const range = node.sourceCodeLocation;
+  return range ? [range.startOffset, range.endOffset > range.startOffset ? range.endOffset : length] : null;
+}
+
+function blockingHeadScript(node, attributes, inHead) {
+  if (node.tagName !== 'script' || !inHead) return false;
+  const type = (attributes.get('type') ?? '').trim().toLowerCase();
+  const javascript = !type || /^(?:text|application)\/(?:java|ecma)script$/.test(type);
+  return javascript && attributes.get('src')?.trim() && !attributes.has('async') && !attributes.has('defer');
+}
+
+function emitMarkupDiagnostics(unit, emit, text, node, inHead) {
+  const location = node.sourceCodeLocation?.startTag;
+  if (!location || /{{|{%/.test(text.slice(location.startOffset, location.endOffset))) return;
+  const attributes = new Map((node.attrs ?? []).map(({ name, value }) => [name, value]));
+  if (node.tagName === 'img' && !attributes.has('alt'))
+    emit('content.image-alt', unit, undefined, location.startOffset);
+  if (blockingHeadScript(node, attributes, inHead))
+    emit('content.blocking-head-script', unit, undefined, location.startOffset);
+}
+
 function scanMarkup(unit, emit, text) {
   const document = parse(text, { sourceCodeLocationInfo: true });
   const queue = [{ node: document, explicitHead: false }];
@@ -88,23 +111,9 @@ function scanMarkup(unit, emit, text) {
     const { node, explicitHead } = queue.pop();
     const location = node.sourceCodeLocation?.startTag;
     const inHead = explicitHead || (node.tagName === 'head' && Boolean(location));
-    if (node.nodeName === '#comment' || ['script', 'style', 'textarea', 'template'].includes(node.tagName)) {
-      const range = node.sourceCodeLocation;
-      if (range)
-        ignoredRanges.push([range.startOffset, range.endOffset > range.startOffset ? range.endOffset : text.length]);
-    }
-    const attributes = new Map((node.attrs ?? []).map(({ name, value }) => [name, value]));
-    const dynamicTag = location && /{{|{%/.test(text.slice(location.startOffset, location.endOffset));
-    if (node.tagName === 'img' && location && !dynamicTag && !attributes.has('alt')) {
-      emit('content.image-alt', unit, undefined, location.startOffset);
-    }
-    if (node.tagName === 'script' && location && inHead && !dynamicTag) {
-      const type = (attributes.get('type') ?? '').trim().toLowerCase();
-      const javascript = !type || /^(?:text|application)\/(?:java|ecma)script$/.test(type);
-      if (javascript && attributes.get('src')?.trim() && !attributes.has('async') && !attributes.has('defer')) {
-        emit('content.blocking-head-script', unit, undefined, location.startOffset);
-      }
-    }
+    const range = ignoredMarkupRange(node, text.length);
+    if (range) ignoredRanges.push(range);
+    emitMarkupDiagnostics(unit, emit, text, node, inHead);
     // Template content is inert until instantiated; its accessibility is runtime work.
     for (const child of node.childNodes ?? []) queue.push({ node: child, explicitHead: inHead });
   }
@@ -192,6 +201,12 @@ function scanFetchXml(unit, emit, source) {
   }
 }
 
+function cssQuotedEnd(text, start) {
+  let index = start + 1;
+  while (index < text.length && text[index] !== text[start]) index += text[index] === '\\' ? 2 : 1;
+  return Math.min(index + 1, text.length);
+}
+
 function scanCss(unit, emit, text) {
   const ranges = [];
   for (let index = 0; index < text.length;) {
@@ -200,9 +215,7 @@ function scanCss(unit, emit, text) {
       const end = text.indexOf('*/', index + 2);
       index = end < 0 ? text.length : end + 2;
     } else if (text[index] === '"' || text[index] === "'") {
-      const quote = text[index++];
-      while (index < text.length && text[index] !== quote) index += text[index] === '\\' ? 2 : 1;
-      index = Math.min(index + 1, text.length);
+      index = cssQuotedEnd(text, index);
     } else {
       index++;
       continue;

@@ -185,7 +185,7 @@ function readSource(state, root, absolute, file, type) {
   }
 }
 
-function inspectDirectory(state, root, directory, pending) {
+function readDirectoryEntries(state, root, directory) {
   const entries = [];
   let handle;
   try {
@@ -201,35 +201,66 @@ function inspectDirectory(state, root, directory, pending) {
     }
     entries.sort((a, b) => a.name.localeCompare(b.name, 'en'));
   } catch {
-    return skip(state, path.relative(root, directory).replaceAll('\\', '/') || '.', 'unreadable-directory');
+    skip(state, path.relative(root, directory).replaceAll('\\', '/') || '.', 'unreadable-directory');
+    return null;
   } finally {
     handle?.closeSync();
   }
-  for (const entry of entries) {
-    if (ignored.has(entry.name.toLowerCase()) || (entry.name.startsWith('.') && entry.name !== '.powerpages-site'))
-      continue;
-    const absolute = path.join(directory, entry.name);
-    const file = path.relative(root, absolute).replaceAll('\\', '/');
-    if (entry.isSymbolicLink()) {
-      skip(state, file, 'symbolic-link');
-      continue;
-    }
-    if (entry.isDirectory()) {
-      if (++state.stats.directories > state.limits.directories) {
-        skip(state, file, 'directory-limit');
-        return;
-      }
-      pending.push(absolute);
-    } else if (entry.isFile()) {
-      const type = classify(file);
-      if (!type) continue;
-      if (++state.stats.candidates > state.limits.files) {
-        skip(state, file, 'file-count-limit');
-        return;
-      }
-      readSource(state, root, absolute, file, type);
-    }
+  return entries;
+}
+
+function inspectEntry(state, root, directory, pending, entry) {
+  if (ignored.has(entry.name.toLowerCase()) || (entry.name.startsWith('.') && entry.name !== '.powerpages-site'))
+    return true;
+  const absolute = path.join(directory, entry.name);
+  const file = path.relative(root, absolute).replaceAll('\\', '/');
+  if (entry.isSymbolicLink()) {
+    skip(state, file, 'symbolic-link');
+    return true;
   }
+  if (entry.isDirectory()) {
+    if (++state.stats.directories > state.limits.directories) {
+      skip(state, file, 'directory-limit');
+      return false;
+    }
+    pending.push(absolute);
+    return true;
+  }
+  if (!entry.isFile()) return true;
+  const type = classify(file);
+  if (!type) return true;
+  if (++state.stats.candidates > state.limits.files) {
+    skip(state, file, 'file-count-limit');
+    return false;
+  }
+  readSource(state, root, absolute, file, type);
+  return true;
+}
+
+function inspectDirectory(state, root, directory, pending) {
+  const entries = readDirectoryEntries(state, root, directory);
+  if (!entries) return;
+  for (const entry of entries) {
+    if (!inspectEntry(state, root, directory, pending, entry)) return;
+  }
+}
+
+function embeddedUnit(record, field, kind, files) {
+  // A setting's value is configuration, never executable markup.
+  if (field === 'value' && record.kind !== 'contentsnippet') return null;
+  const text = record.fields[field];
+  if (typeof text !== 'string' || !text) return null;
+  const sidecar = record.file.replace(/\.ya?ml$/i, '.' + suffix[field]);
+  if (files.has(sidecar)) return null;
+  return {
+    file: record.file,
+    text,
+    kind,
+    field,
+    recordId: record.fields.id ?? record.fields[`${record.kind}id`],
+    ...(record.fieldLocations[field] ?? { line: record.line, column: record.column }),
+    exactLocation: false,
+  };
 }
 
 function addEmbeddedUnits(state) {
@@ -237,25 +268,13 @@ function addEmbeddedUnits(state) {
   for (const record of state.records) {
     if (Number(record.fields.statecode ?? 0) === 1) continue;
     for (const [field, kind] of Object.entries(rendered)) {
-      // A setting's value is configuration, never executable markup.
-      if (field === 'value' && record.kind !== 'contentsnippet') continue;
-      const text = record.fields[field];
-      if (typeof text !== 'string' || !text) continue;
-      const sidecar = record.file.replace(/\.ya?ml$/i, '.' + suffix[field]);
-      if (files.has(sidecar)) continue;
+      const unit = embeddedUnit(record, field, kind, files);
+      if (!unit) continue;
       if (state.units.length >= state.limits.files) {
         skip(state, record.file, 'content-unit-limit');
         return;
       }
-      state.units.push({
-        file: record.file,
-        text,
-        kind,
-        field,
-        recordId: record.fields.id ?? record.fields[`${record.kind}id`],
-        ...(record.fieldLocations[field] ?? { line: record.line, column: record.column }),
-        exactLocation: false,
-      });
+      state.units.push(unit);
     }
   }
 }
