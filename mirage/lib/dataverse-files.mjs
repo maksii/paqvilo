@@ -164,7 +164,7 @@ const utf8Header = (value) => {
   // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
   if (!/[\x80-\xff]/.test(text) || /[^\x00-\xff]/.test(text)) return text;
   const decoded = Buffer.from(text, 'latin1').toString('utf8');
-  return decoded.includes('�') ? text : decoded;
+  return decoded.includes('\uFFFD') ? text : decoded;
 };
 const mimeOf = (c) =>
   String(header(c, 'content-type') ?? '')

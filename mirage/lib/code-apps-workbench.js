@@ -135,13 +135,13 @@ function choose(name, { keepFrame = false } = {}) {
   const address = new URL(location.href);
   address.searchParams.set('app', selected.name);
   history.replaceState(null, '', address);
-  if (!keepFrame) launch();
+  if (!keepFrame) void launch();
 }
 select.addEventListener('change', () => choose(select.value));
 $('reload').addEventListener('click', launch);
 $('apply').addEventListener('click', () => {
   if (selected) parameters.set(selected.name, $('parameters').value);
-  launch();
+  void launch();
 });
 window.addEventListener('message', (message) => {
   const payload = message.data,
