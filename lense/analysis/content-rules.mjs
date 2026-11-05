@@ -186,7 +186,7 @@ function scanFetchXml(unit, emit, source) {
     const attributes = attributesOf(match.attributes);
     // Dynamic attributes can supply bounds/aggregate behavior that source cannot resolve.
     const dynamic = /{{|{%/.test(match.attributes);
-    if (/<all-attributes\b[^<>]*\/?\s*>/i.test(match.text) || /\ball-attributes\s*=\s*(["'])true\1/i.test(match.text)) {
+    if (/<all-attributes\b[^<>]*>/i.test(match.text) || /\ball-attributes\s*=\s*(["'])true\1/i.test(match.text)) {
       emit('content.fetchxml-all-attributes', unit, undefined, match.index);
     }
     if (

@@ -192,12 +192,14 @@ function readDirectoryEntries(state, root, directory) {
     if (realLocalPath(directory) !== directory) throw new Error('Directory changed');
     handle = fs.opendirSync(directory);
     if (realLocalPath(directory) !== directory) throw new Error('Directory changed at open');
-    for (let entry; (entry = handle.readSync());) {
+    let entry = handle.readSync();
+    while (entry) {
       if (++state.stats.entries > state.limits.entries) {
         skip(state, path.relative(root, directory).replaceAll('\\', '/') || '.', 'entry-count-limit');
         break;
       }
       entries.push(entry);
+      entry = handle.readSync();
     }
     entries.sort((a, b) => a.name.localeCompare(b.name, 'en'));
   } catch {

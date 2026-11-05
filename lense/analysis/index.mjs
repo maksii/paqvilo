@@ -51,10 +51,11 @@ function findingLocation(source, field, offset) {
   const content = contentPosition(source, offset);
   const approximate = source.exactLocation === false;
   const identity = source.recordId ?? source.fields?.id ?? source.fields?.[`${source.kind}id`];
+  const exactColumn = content.line > 1 ? content.column : base.column + content.column - 1;
   return {
     file: source.file,
     line: approximate ? base.line : base.line + content.line - 1,
-    column: approximate ? base.column : content.line > 1 ? content.column : base.column + content.column - 1,
+    column: approximate ? base.column : exactColumn,
     ...((field ?? source.field) ? { field: field ?? source.field } : {}),
     ...(approximate && typeof offset === 'number' ? { contentLine: content.line, contentColumn: content.column } : {}),
     exactLocation: !approximate,

@@ -6,17 +6,19 @@ const displayPath = (value) =>
     .slice(1, -1)
     .replace(
       /[\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,
-      (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+      (character) => String.raw`\u${character.codePointAt(0).toString(16).padStart(4, '0')}`,
     );
 
 export function printAnalysis(analysis) {
   console.log(
     `  analysis: ${analysis.complete ? 'inventory complete' : 'INCOMPLETE'}, ${analysis.counts.error} errors, ${analysis.counts.warning} warnings, ${analysis.counts.hint} hints (fail on ${analysis.failOn})`,
   );
-  for (const finding of analysis.findings)
+  for (const finding of analysis.findings) {
+    const field = finding.field ? ` (${finding.field})` : '';
     console.log(
-      `  ${finding.severity.toUpperCase()} [${finding.ruleId}] ${displayPath(finding.file)}:${finding.line}:${finding.column}${finding.field ? ` (${finding.field})` : ''}: ${finding.message}\n    ${finding.remediation}`,
+      `  ${finding.severity.toUpperCase()} [${finding.ruleId}] ${displayPath(finding.file)}:${finding.line}:${finding.column}${field}: ${finding.message}\n    ${finding.remediation}`,
     );
+  }
   for (const skip of analysis.coverage.skipped) console.log(`  SKIPPED: ${displayPath(skip.file)}: ${skip.reason}`);
   if (analysis.coverage.findingsTruncated) console.log('  SKIPPED: finding limit reached; results are truncated.');
 }

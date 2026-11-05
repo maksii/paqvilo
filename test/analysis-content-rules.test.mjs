@@ -102,10 +102,12 @@ test('unclosed comments and inert regions remain excluded from query analysis', 
 });
 
 // @test-kind security: Malformed source near the file budget must not repeatedly rescan the remaining input.
-test('repeated unmatched query tags finish within a bounded child process', () => {
+test('malformed query tags and long attribute whitespace finish within a bounded child process', () => {
   const module = new URL('../lense/analysis/content-rules.mjs', import.meta.url).href;
   const script = `const { analyzeContent } = await import(${JSON.stringify(module)});
-    analyzeContent([{ file: 'invented.html', text: '<fetch>'.repeat(200000), kind: 'html' }], () => {});`;
+    analyzeContent([{ file: 'invented.html', text: '<fetch>'.repeat(200000), kind: 'html' }], () => {});
+    const malformed = '<fetch><entity><all-attributes' + ' '.repeat(150000) + '</entity></fetch>';
+    analyzeContent([{ file: 'invented.html', text: malformed, kind: 'html' }], () => {});`;
   const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
     encoding: 'utf8',
     timeout: 10000,
