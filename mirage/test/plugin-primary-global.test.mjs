@@ -12,6 +12,7 @@ import { dispatchSdkCall, prepareClrRuntime, closeClrHostPool } from '../lib/plu
 import { handleSoap } from '../lib/dataverse-soap.mjs';
 import { envelope, encodeValue } from '../lib/dataverse-soap-xml.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { createPreparedClrRuntimePreparer } from './fixtures/prepared-clr-runtimes.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 
 const id = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -155,6 +156,7 @@ test(
       items: () => items,
       runtimes,
       descriptors,
+      prepareRuntime: createPreparedClrRuntimePreparer(runtimes, descriptors),
       diagnostic: (entry) => {
         if (entry.code === 'PLUGIN_CLR_TRACE') seen.push(entry.message);
       },

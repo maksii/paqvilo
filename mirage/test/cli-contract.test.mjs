@@ -92,7 +92,7 @@ test('verify-storage rejects unexpected arguments before starting the large chec
   }
 });
 
-test('every public Mirage tool rejects an unknown flag before execution', () => {
+test('every public Mirage tool rejects unknown flags with an error and empty stdout', () => {
   for (const name of Object.keys(MIRAGE_TOOLS)) {
     const result = run(`mirage/${name}.mjs`, '--bogus');
     assert.ok(result.status > 0, `${name}: ${result.stderr}`);

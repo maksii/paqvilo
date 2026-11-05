@@ -189,20 +189,31 @@ test('rejects mismatched scanner reports and dirty candidate checks', async (t) 
 import { readFile } from 'node:fs/promises';
 import { parse } from 'yaml';
 
-test('workflow runs full branch and PR analyses from one head and all six real coverage lanes', async () => {
+test('workflow runs full branch and PR analyses from one head and all nine physical jobs for six logical lanes', async () => {
   const workflow = parse(await readFile(new URL('../.github/workflows/sonarqube.yml', import.meta.url), 'utf8'));
   const analysis = workflow.jobs.analysis;
   assert.equal(analysis.name, 'SonarQube analysis and quality gate');
   assert.equal(analysis.needs, 'coverage');
+  const jobs = workflow.jobs.coverage.strategy.matrix.include;
+  assert.equal(jobs.length, 9);
+  assert.equal(new Set(jobs.map((job) => job.artifact)).size, 9);
+  assert.deepEqual(
+    new Set(jobs.map((job) => `${job.suite}/${job.lane}`)),
+    new Set(['lense/unit', 'lense/browser', 'mirage/unit', 'mirage/browser', 'examples/unit', 'examples/browser']),
+  );
   const checkout = analysis.steps.find((step) => step.uses?.startsWith('actions/checkout@'));
   assert.match(checkout.with.ref, /github\.event\.pull_request\.head\.sha/);
   const scanners = analysis.steps.filter((step) => step.uses?.startsWith('SonarSource/sonarqube-scan-action@'));
   assert.equal(scanners.length, 2);
+  const reportPaths = jobs.map((job) => `coverage/sonar-coverage-${job.artifact}/lcov.info`).sort();
   for (const scanner of scanners) {
-    for (const suite of ['lense', 'mirage', 'examples']) {
-      for (const lane of ['unit', 'browser'])
-        assert.ok(scanner.with.args.includes(`coverage/sonar-coverage-${suite}-${lane}/lcov.info`));
-    }
+    assert.deepEqual(
+      scanner.with.args
+        .match(/-Dsonar\.javascript\.lcov\.reportPaths=([^\s]+)/)[1]
+        .split(',')
+        .sort(),
+      reportPaths,
+    );
     assert.ok(scanner.with.args.includes('-Dsonar.qualitygate.wait=true'));
   }
   assert.match(scanners[0].with.args, /sonar\.branch\.name=.*github\.head_ref/);

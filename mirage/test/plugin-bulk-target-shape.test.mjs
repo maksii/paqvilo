@@ -11,6 +11,7 @@ import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
+import { createPreparedClrRuntimePreparer } from './fixtures/prepared-clr-runtimes.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const caller = '10000000-0000-0000-0000-000000000001';
@@ -90,6 +91,10 @@ async function fixture(t, steps, { runtimes = new Map(), overrides = {} } = {}) 
     handlers,
     runtimes,
     descriptors: new Map([...runtimes].map(([key, runtime]) => [key, runtime.descriptor])),
+    prepareRuntime: createPreparedClrRuntimePreparer(
+      runtimes,
+      new Map([...runtimes].map(([key, runtime]) => [key, runtime.descriptor])),
+    ),
   });
   t.after(() => backend.close());
   return { ...f, seen, backend };

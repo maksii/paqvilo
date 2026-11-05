@@ -401,8 +401,10 @@ test(
     // Regression: the sign-out waited for the Mirage's reload for at most 4 s, then ran in the
     // document that a slower reload destroyed, and this browser stayed signed in (hosted Edge).
     // Holding the reload's document past that old fallback proves the sign-out waits for the reload itself.
+    let heldReloadObserved = false;
     const reloadHeld = async (route) => {
       if (!route.request().isNavigationRequest()) return route.fallback();
+      heldReloadObserved = true;
       await page.unroute(`${app.url}/secure/`, reloadHeld);
       await new Promise((resolve) => setTimeout(resolve, 5000));
       return route.fallback();
@@ -412,6 +414,7 @@ test(
       page.waitForNavigation({ waitUntil: 'load' }),
       panelLocator('[data-act="confirm-yes"]').click(),
     ]);
+    assert.equal(heldReloadObserved, true, 'the sign-out navigation entered the held reload route');
     assert.equal(app.state().config.permissionMode, 'enforce');
     assert.equal(app.state().config.activeScenario.id, 'anonymous-enforced');
     // The scenario's anonymous persona also signed this browser out: the members page now

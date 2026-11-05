@@ -1,3 +1,4 @@
+// @test-kind contract: stop hints retain exact catalogue and project ownership and stop only selected processes
 // Multi-portal and Power Pages stop hints keep their catalogue, checkout, state and port selectors,
 // and human and JSON output advertise the same exact targets.
 import test from 'node:test';
@@ -157,5 +158,7 @@ test(
         .sort(),
       [sameState.pid, otherState.pid].sort(),
     );
+    await stopped(sameState);
+    await stopped(otherState);
   },
 );

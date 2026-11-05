@@ -1,8 +1,9 @@
+// @test-kind contract: Dataverse CLI argument, stream and access-boundary contracts
 import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,7 +30,57 @@ const commands = {
   'data-query': ['--catalogue', '--connection'],
 };
 
-test('all Dataverse commands validate arguments before connection, manifest or PAC access', () => {
+// @test-kind security: invalid Dataverse command lines must not invoke the PAC executable
+test('Dataverse help and invalid arguments preserve CLI contracts without invoking PAC', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-pac-sentinel-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const preload = path.join(root, 'pac-sentinel-preload.mjs');
+  const harness = path.join(root, 'pac-sentinel-positive.mjs');
+  const marker = path.join(root, 'pac-invoked.marker');
+  const dataverseCli = fileURLToPath(new URL('../lense/dataverse/cli.mjs', import.meta.url));
+  const allowed = [path.resolve(cli), path.resolve(dataverseCli), path.resolve(harness)];
+  await fs.writeFile(
+    preload,
+    `import fs from 'node:fs';\nimport path from 'node:path';\nconst normalize = (value) => { const resolved = path.resolve(value); return process.platform === 'win32' ? resolved.toLowerCase() : resolved; };\nconst marker = process.env.PAQVILO_PAC_SENTINEL_MARKER;\nconst allowed = [process.env.PAQVILO_PAC_ALLOWED_BIN, process.env.PAQVILO_PAC_ALLOWED_CLI, process.env.PAQVILO_PAC_ALLOWED_HARNESS].filter(Boolean).map(normalize);\nconst entry = process.argv[1];\nif (marker && entry && !allowed.includes(normalize(entry))) {\n  fs.writeFileSync(marker, 'PAC invocation intercepted\\n');\n  process.exit(0);\n}\n`,
+  );
+  const connectionUrl = pathToFileURL(
+    fileURLToPath(new URL('../lense/dataverse/connection.mjs', import.meta.url)),
+  ).href;
+  await fs.writeFile(
+    harness,
+    `import { runProcess } from ${JSON.stringify(connectionUrl)};\nawait runProcess(process.execPath, ['env', 'who']);\n`,
+  );
+  const inheritedNodeOptions = Object.entries(process.env).find(([key]) => key.toLowerCase() === 'node_options')?.[1];
+  const testEnvironment = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) =>
+        !/^(node_options|paqvilo_pac_(executable|sentinel_marker|allowed_bin|allowed_cli|allowed_harness))$/i.test(key),
+    ),
+  );
+  Object.assign(testEnvironment, {
+    NODE_OPTIONS: [inheritedNodeOptions, `--import="${pathToFileURL(preload).href}"`].filter(Boolean).join(' '),
+    PAQVILO_PAC_EXECUTABLE: process.execPath,
+    PAQVILO_PAC_SENTINEL_MARKER: marker,
+    PAQVILO_PAC_ALLOWED_BIN: allowed[0],
+    PAQVILO_PAC_ALLOWED_CLI: allowed[1],
+    PAQVILO_PAC_ALLOWED_HARNESS: allowed[2],
+  });
+  const run = (...args) =>
+    spawnSync(process.execPath, [cli, 'dataverse', ...args], {
+      env: testEnvironment,
+      encoding: 'utf8',
+      timeout: 30000,
+      windowsHide: true,
+    });
+  const positive = spawnSync(process.execPath, [harness], {
+    env: testEnvironment,
+    encoding: 'utf8',
+    timeout: 30000,
+    windowsHide: true,
+  });
+  assert.equal(positive.status, 0, positive.stderr);
+  assert.equal(await fs.readFile(marker, 'utf8'), 'PAC invocation intercepted\n');
+  await fs.rm(marker);
   for (const [command, required] of Object.entries(commands)) {
     const help = run(command, '--help');
     assert.equal(help.status, 0, command);
@@ -59,6 +110,7 @@ test('all Dataverse commands validate arguments before connection, manifest or P
     assert.match(unknown.stderr, /Unknown dataverse command/);
   }
   assert.equal(run('verify', '--connection', 'missing.json', '--', '--help').status, 1);
+  await assert.rejects(fs.access(marker), { code: 'ENOENT' });
 });
 
 test('Dataverse diagnostics use the requested stream and retain the JSON error payload', () => {
@@ -84,6 +136,7 @@ test('Dataverse diagnostics use the requested stream and retain the JSON error p
   assert.match(terminator.stderr, /^paqvilo dataverse:/);
 });
 
+// @test-kind security: malformed credential contents never appear in CLI diagnostics
 test('malformed credential input does not expose file contents in diagnostics', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-dataverse-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

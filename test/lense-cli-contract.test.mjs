@@ -1,3 +1,4 @@
+// @test-kind contract: CLI validation errors report observed status, diagnostics and filesystem effects
 import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -27,7 +28,7 @@ const runWithEnv = (cwd, overrides, ...args) =>
   );
 const run = (cwd, ...args) => runWithEnv(cwd, {}, ...args);
 
-test('invalid action arguments are rejected before configuration or discovery reads', async (t) => {
+test('invalid action arguments return structured errors without reported writes', async (t) => {
   const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo cli \u00fc '));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const missing = path.join(cwd, 'missing \u00fc.json');

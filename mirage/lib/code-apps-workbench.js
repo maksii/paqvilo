@@ -1,3 +1,5 @@
+export {};
+
 const $ = (id) => document.getElementById(id);
 const select = $('app'),
   status = $('connection'),
@@ -48,6 +50,7 @@ function renderList(id, values, empty) {
   if (!values.length) text(element, 'li', empty);
   else for (const value of values) text(element, 'li', value);
 }
+/** @returns {void} */
 function launch() {
   if (!selected?.localAppUrl) {
     resetFrame();

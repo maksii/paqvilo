@@ -1,3 +1,4 @@
+// @test-kind contract: scoped stop commands preserve ownership and report stopped project processes
 // Catalogue site/portal scope: shared IDs and runtime dispatch never broaden a stop, and legacy
 // ownership records without a catalogue marker require exact selectors.
 import test from 'node:test';
@@ -116,6 +117,7 @@ test(
       JSON.parse(unambiguous.stdout).stopped.map(({ pid }) => pid),
       [second.pid],
     );
+    await stopped(second);
     const overridden = structuredClone(catalogue);
     delete overridden.sites.second.mirage.project;
     await fs.writeFile(config, JSON.stringify(overridden));

@@ -12,6 +12,7 @@ import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { createPreparedClrRuntimePreparer } from './fixtures/prepared-clr-runtimes.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { fixedClock } from '../lib/runtime-clock.mjs';
 
@@ -446,7 +447,13 @@ test(
       descriptors,
       overrides: Object.fromEntries([...runtimes.keys()].map((stepId) => ['plugin-step:' + stepId, { mode: 'clr' }])),
     });
-    backend = await createOrganizationBackend({ store, items: () => items, runtimes, descriptors });
+    backend = await createOrganizationBackend({
+      store,
+      items: () => items,
+      runtimes,
+      descriptors,
+      prepareRuntime: createPreparedClrRuntimePreparer(runtimes, descriptors),
+    });
     const row = await store.create('x_item', { x_name: 'Created' }, { admin: true, id });
     await store.update('x_item', row.x_itemid, { x_name: 'Updated' }, { admin: true, id });
     await store.remove('x_item', row.x_itemid, { admin: true, id });

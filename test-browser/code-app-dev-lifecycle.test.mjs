@@ -1,3 +1,4 @@
+// @test-kind contract: standalone code app dev preserves configured startup and owned-process lifecycle
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -50,7 +51,7 @@ test(
     );
     await fs.writeFile(
       path.join(dir, 'app', 'main.js'),
-      "import { getContext } from '@microsoft/power-apps/app'; const context = await getContext(); document.querySelector('#context').textContent = context.app.appId + ' � ' + context.user.fullName;",
+      "import { getContext } from '@microsoft/power-apps/app'; const context = await getContext(); document.querySelector('#context').textContent = context.app.appId + ' \uFFFD ' + context.user.fullName;",
     );
     const plugin = new URL('../mirage/lib/code-apps-vite.mjs', import.meta.url).href;
     await fs.writeFile(
@@ -150,7 +151,7 @@ test(
         await page
           .frameLocator('#preview')
           .locator('#context')
-          .filter({ hasText: 'owned-app � Invented Developer' })
+          .filter({ hasText: 'owned-app \uFFFD Invented Developer' })
           .waitFor();
       }
       assert.equal(await (await fetch(`http://127.0.0.1:${external.address().port}/`)).text(), 'external');

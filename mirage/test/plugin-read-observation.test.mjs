@@ -589,6 +589,10 @@ test(
       /Later observer rejected/,
     );
     assert.equal(store.snapshot().tables.audit.length, 6);
+    assert.ok(
+      notes.some((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED'),
+      'a stopped CLR host was observed',
+    );
     assert.ok(notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED').every((note) => note.absenceVerified));
   },
 );

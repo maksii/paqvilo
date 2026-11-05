@@ -126,6 +126,7 @@ if(mode=="body"||mode=="empty-body")new DataContractSerializer(typeof(ColumnSet)
         ].includes(mode)
       ) {
         assert.equal(response.status, 200, response.body);
+        assert.equal(calls, beforeCalls + 1, `${mode} reaches exactly one record handler`);
         assert.equal(calls, observed.length);
         assert.equal(requestIds.at(-1), mode === 'request-id' ? '11111111-1111-4111-8111-111111111111' : undefined);
         assert.equal(store.pluginRequestId, undefined);

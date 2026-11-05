@@ -474,6 +474,10 @@ test('an owner change adds the owner columns to the Update Target and saves the 
     modifiedonbehalfby: null,
   };
   store.updateRecord('gadget', id, { ownerid: owner.ownerid }, identity, { systemColumns: owner });
+  assert.deepEqual(
+    targets.map(([stage]) => stage).sort((left, right) => left - right),
+    [10, 20, 40],
+  );
   const [, preValidation] = targets.find(([stage]) => stage === 10);
   assert.equal(Object.hasOwn(preValidation, 'owningbusinessunit'), false);
   for (const [stage, target] of targets.filter(([value]) => value !== 10)) {
@@ -495,6 +499,10 @@ test('an owner change adds the owner columns to the Update Target and saves the 
       owningbusinessunit: { id: unitA, logical_name: 'businessunit' },
     },
   });
+  assert.deepEqual(
+    targets.map(([stage]) => stage).sort((left, right) => left - right),
+    [20, 40],
+  );
   for (const [, target] of targets) {
     assert.deepEqual(target.owninguser, { id: caller, logical_name: 'systemuser' });
     assert.deepEqual(target.owningbusinessunit, { id: unitA, logical_name: 'businessunit' });
@@ -503,6 +511,10 @@ test('an owner change adds the owner columns to the Update Target and saves the 
   // A write that does not maintain the owner columns gets none in its Target.
   targets.length = 0;
   store.updateRecord('gadget', id, { ownerid: { id: other, logical_name: 'systemuser' } }, identity);
+  assert.deepEqual(
+    targets.map(([stage]) => stage).sort((left, right) => left - right),
+    [10, 20, 40],
+  );
   assert.ok(targets.every(([, target]) => !Object.hasOwn(target, 'owningbusinessunit')));
 });
 

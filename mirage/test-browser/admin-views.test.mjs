@@ -1070,11 +1070,11 @@ test(
   },
 );
 
-// DV-N4c-1: every shared table on every view sorts by each data column: header buttons with aria-sort, ascending
-// then descending order of what the column shows. Fixtures give the module tables (packs, services, flows,
+// DV-N4c-1: audit shared table controls and sortable headers; for each populated table exercise one
+// sortable column in both directions, comparing displayed values for col- keys. Fixtures give the module tables (packs, services, flows,
 // capabilities, environment variables) two rows or more.
 test(
-  'every shared table has its search, its filters and the bottom bar, and with two rows or more sorts by any data column',
+  'shared tables expose controls and sortable headers, and toggle one sort control per populated table',
   { timeout: 240_000 },
   async (t) => {
     const state = structuredClone(MONITOR_STATE);

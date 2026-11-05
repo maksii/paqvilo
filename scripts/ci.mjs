@@ -211,6 +211,13 @@ export function shardFiles(files, shard) {
 function runPackageTests(directory, script, shard) {
   if (!shard) return npm([...(directory ? ['--prefix', directory] : []), 'run', script]);
   const { flags, files } = packageTests(directory, script);
+  if (!files.length)
+    throw new Error(`Cannot shard the ${directory || 'root'} ${script} script: test glob matched no files.`);
+  const total = Number(shard.split('/')[1]);
+  if (total > files.length)
+    throw new Error(
+      `Cannot shard the ${directory || 'root'} ${script} script: ${total} shards exceed the ${files.length} matched test files.`,
+    );
   execute(process.execPath, ['--test', ...flags, ...shardFiles(files, shard)], { cwd: path.join(root, directory) });
 }
 
@@ -556,12 +563,7 @@ function verifyUnitLane(suite, shard) {
     runPackageTests('mirage', 'test', shard);
     // In-process gates without extra installs: size ratios, never absolute times, and the toolkit's own client.
     // A sharded lane runs them once, beside the first shard.
-    if (!shard || shard.startsWith('1/'))
-      execute(process.execPath, [
-        '--test',
-        'mirage/test-volume/write-volume.test.mjs',
-        'mirage/test-sdk/toolkit-client/gate.test.mjs',
-      ]);
+    for (const command of mirageUnitExtraCommands(shard)) execute(process.execPath, command);
   }
   if (suite === 'examples') {
     npmScript('test:example');
@@ -578,6 +580,11 @@ function verifyExampleDotnetProjects() {
     if (project === 'Tests')
       execute(path.join(root, 'examples/company-operations/plugins/Tests/bin/Release/net462/Tests.exe'), []);
   }
+}
+
+export function mirageUnitExtraCommands(shard) {
+  if (shard && !shard.startsWith('1/')) return [];
+  return [['--test', 'mirage/test-volume/write-volume.test.mjs', 'mirage/test-sdk/toolkit-client/gate.test.mjs']];
 }
 
 function verifyBrowserLane(suite, shard) {

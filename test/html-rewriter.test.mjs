@@ -1,3 +1,4 @@
+// @test-kind contract: HTML rewriting preserves non-code and externally loaded script elements
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { PortalModel } from '../lense/portal-model.mjs';
@@ -141,8 +142,10 @@ test('short scripts that only share boilerplate are not mistaken for each other'
 
 test('non-code script elements and external scripts are never touched', () => {
   fx.write(FORM_JS, '{"keep":"me"}\n');
-  const result = rewriter().rewrite(ONLINE_HOME, '/');
+  const external = `<script src="/scripts/app.js">${fx.read(FORM_JS).trim()}</script>`;
+  const result = rewriter().rewrite(ONLINE_HOME.replace('</body>', `${external}</body>`), '/');
   assert.ok(result.html.includes('<script type="application/json">{"keep":"me"}</script>'));
+  assert.ok(result.html.includes(external));
 });
 
 test('new page custom JS that is not online yet is injected into its page only', () => {

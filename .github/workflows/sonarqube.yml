@@ -23,14 +23,22 @@ concurrency:
 jobs:
   coverage:
     if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
-    name: Coverage (${{ matrix.suite }}, ${{ matrix.lane }})
+    name: Coverage (${{ matrix.suite }}, ${{ matrix.lane }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        suite: [lense, mirage, examples]
-        lane: [unit, browser]
+        include:
+          - { suite: lense, lane: unit, shard: '', artifact: lense-unit }
+          - { suite: lense, lane: browser, shard: '', artifact: lense-browser }
+          - { suite: mirage, lane: unit, shard: '1/3', artifact: mirage-unit-1-of-3 }
+          - { suite: mirage, lane: unit, shard: '2/3', artifact: mirage-unit-2-of-3 }
+          - { suite: mirage, lane: unit, shard: '3/3', artifact: mirage-unit-3-of-3 }
+          - { suite: mirage, lane: browser, shard: '1/2', artifact: mirage-browser-1-of-2 }
+          - { suite: mirage, lane: browser, shard: '2/2', artifact: mirage-browser-2-of-2 }
+          - { suite: examples, lane: unit, shard: '', artifact: examples-unit }
+          - { suite: examples, lane: browser, shard: '', artifact: examples-browser }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -49,18 +57,18 @@ jobs:
         with:
           global-json-file: global.json
       - name: Prepare the existing test lane
-        run: npm run ci:prepare -- --suite ${{ matrix.suite }} --${{ matrix.lane }}
+        run: npm run ci:prepare -- --suite ${{ matrix.suite }} --${{ matrix.lane }} ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
       - name: Run the existing test lane with Node coverage
         env:
           NODE_V8_COVERAGE: ${{ runner.temp }}/paqvilo-v8-coverage
         run: |-
           mkdir -p "$NODE_V8_COVERAGE"
-          npm run ci:verify -- --suite ${{ matrix.suite }} --${{ matrix.lane }} --prepared
+          npm run ci:verify -- --suite ${{ matrix.suite }} --${{ matrix.lane }} --prepared ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
       - name: Convert the collected process coverage to LCOV
         run: node node_modules/c8/bin/c8.js report --temp-directory "$RUNNER_TEMP/paqvilo-v8-coverage" --report-dir coverage --reporter lcov
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: sonar-coverage-${{ matrix.suite }}-${{ matrix.lane }}
+          name: sonar-coverage-${{ matrix.artifact }}
           path: coverage/lcov.info
           if-no-files-found: error
           retention-days: 1
@@ -83,12 +91,14 @@ jobs:
         with:
           pattern: sonar-coverage-*
           path: coverage
-      - name: Verify every coverage lane produced a report
+      - name: Verify every coverage shard produced a report
         run: |-
-          for suite in lense mirage examples; do
-            for lane in unit browser; do
-              test -s "coverage/sonar-coverage-$suite-$lane/lcov.info"
-            done
+          for report in \
+            lense-unit lense-browser \
+            mirage-unit-1-of-3 mirage-unit-2-of-3 mirage-unit-3-of-3 \
+            mirage-browser-1-of-2 mirage-browser-2-of-2 \
+            examples-unit examples-browser; do
+            test -s "coverage/sonar-coverage-$report/lcov.info"
           done
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
@@ -134,7 +144,7 @@ jobs:
           args: >-
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=600
-            -Dsonar.javascript.lcov.reportPaths=coverage/sonar-coverage-lense-unit/lcov.info,coverage/sonar-coverage-lense-browser/lcov.info,coverage/sonar-coverage-mirage-unit/lcov.info,coverage/sonar-coverage-mirage-browser/lcov.info,coverage/sonar-coverage-examples-unit/lcov.info,coverage/sonar-coverage-examples-browser/lcov.info
+            -Dsonar.javascript.lcov.reportPaths=coverage/sonar-coverage-lense-unit/lcov.info,coverage/sonar-coverage-lense-browser/lcov.info,coverage/sonar-coverage-mirage-unit-1-of-3/lcov.info,coverage/sonar-coverage-mirage-unit-2-of-3/lcov.info,coverage/sonar-coverage-mirage-unit-3-of-3/lcov.info,coverage/sonar-coverage-mirage-browser-1-of-2/lcov.info,coverage/sonar-coverage-mirage-browser-2-of-2/lcov.info,coverage/sonar-coverage-examples-unit/lcov.info,coverage/sonar-coverage-examples-browser/lcov.info
             -Dsonar.typescript.tsconfigPaths=.github/tsconfig.sonar.json
             -Dsonar.branch.name=${{ github.head_ref }}
             -Dsonar.scm.revision=${{ github.event.pull_request.head.sha }}
@@ -154,6 +164,6 @@ jobs:
           args: >-
             -Dsonar.qualitygate.wait=true
             -Dsonar.qualitygate.timeout=600
-            -Dsonar.javascript.lcov.reportPaths=coverage/sonar-coverage-lense-unit/lcov.info,coverage/sonar-coverage-lense-browser/lcov.info,coverage/sonar-coverage-mirage-unit/lcov.info,coverage/sonar-coverage-mirage-browser/lcov.info,coverage/sonar-coverage-examples-unit/lcov.info,coverage/sonar-coverage-examples-browser/lcov.info
+            -Dsonar.javascript.lcov.reportPaths=coverage/sonar-coverage-lense-unit/lcov.info,coverage/sonar-coverage-lense-browser/lcov.info,coverage/sonar-coverage-mirage-unit-1-of-3/lcov.info,coverage/sonar-coverage-mirage-unit-2-of-3/lcov.info,coverage/sonar-coverage-mirage-unit-3-of-3/lcov.info,coverage/sonar-coverage-mirage-browser-1-of-2/lcov.info,coverage/sonar-coverage-mirage-browser-2-of-2/lcov.info,coverage/sonar-coverage-examples-unit/lcov.info,coverage/sonar-coverage-examples-browser/lcov.info
             -Dsonar.typescript.tsconfigPaths=.github/tsconfig.sonar.json
             ${{ steps.target.outputs.args }}

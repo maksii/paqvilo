@@ -479,7 +479,10 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
         ).length,
         2,
       );
-      for (const flow of result.flows) for (const image of flow.screenshots) assert.ok((await fs.stat(image)).size > 0);
+      for (const flow of result.flows) {
+        assert.ok(flow.screenshots.length > 0, `${flow.name} records final screenshot evidence`);
+        for (const image of flow.screenshots) assert.ok((await fs.stat(image)).size > 0);
+      }
       const failed = await runAcceptance({
         localUrl: app.url,
         prepareContext,

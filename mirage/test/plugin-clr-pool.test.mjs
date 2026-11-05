@@ -181,7 +181,10 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
             input = { mode };
           const worker = new Worker(
             new URL(pooled ? '../lib/plugin-clr-pool-worker.mjs' : '../lib/plugin-clr-worker.mjs', import.meta.url),
-            { workerData: { port: port2, signal, executable, input, timeout: 10000 }, transferList: [port2] },
+            {
+              workerData: { port: port2, signal, executable, input, timeout: mode === 'startup-gate' ? 2_000 : 10_000 },
+              transferList: [port2],
+            },
           );
           let pid,
             waitingBeforeDispatch = false,
@@ -213,7 +216,12 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
               if (message.kind === 'failure' || (mode === 'pending' && message.kind === 'result')) resolve(message);
             });
             if (pooled && mode !== 'invalid-timeout')
-              port1.postMessage({ kind: 'invoke', invocationId: 'invented-invocation', input, timeout: 10000 });
+              port1.postMessage({
+                kind: 'invoke',
+                invocationId: 'invented-invocation',
+                input,
+                timeout: mode === 'startup-gate' ? 2_000 : 10_000,
+              });
           });
           if (mode === 'pending') assert.equal(failure.kind, 'result');
           else

@@ -329,18 +329,88 @@ test(
     setup.owner.add(() => external.close());
     const sibling = external.pages()[0];
     await sibling.setContent('<input value="external draft">');
-    await assert.rejects(
-      run(null, {
+    const nativeSetTimeout = globalThis.setTimeout;
+    const nativeClearTimeout = globalThis.clearTimeout;
+    const matchedTimers = [];
+    let running;
+    let settled;
+    let deadline;
+    let deadlineFired = false;
+    let requestFallback;
+    let settleFallback;
+    const fireDeadline = () => {
+      if (!deadline || deadlineFired) return;
+      nativeClearTimeout(deadline.handle);
+      deadlineFired = true;
+      deadline.callback(...deadline.args);
+    };
+    const timeoutMock = t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
+      const handle = nativeSetTimeout(callback, delay, ...args);
+      if (delay === STALLED_STARTUP_DEADLINE_MS) matchedTimers.push({ callback, handle, args });
+      return handle;
+    });
+    try {
+      running = run(null, {
         project: setup.project,
         url: setup.origin,
         headless: true,
         'cdp-url': `http://127.0.0.1:${port}`,
         'startup-timeout': String(STALLED_STARTUP_DEADLINE_MS),
-      }),
-      (error) => error.code === 'startup_timeout' && error.phase === 'document navigation',
-    );
-    assert.equal(external.pages().length, 1);
-    assert.equal(await sibling.locator('input').inputValue(), 'external draft');
+      });
+      settled = running.then(
+        (value) => ({ status: 'fulfilled', value }),
+        (error) => ({ status: 'rejected', error }),
+      );
+    } finally {
+      timeoutMock.mock.restore();
+    }
+    if (matchedTimers.length === 1) deadline = matchedTimers[0];
+    try {
+      assert.equal(matchedTimers.length, 1, 'run must create exactly one configured startup deadline timer');
+      const first = await Promise.race([
+        setup.requested.then(() => ({ kind: 'document-requested' })),
+        settled.then((result) => ({ kind: 'run-settled', result })),
+        new Promise((resolve) => {
+          requestFallback = nativeSetTimeout(
+            () => resolve({ kind: 'native-fallback' }),
+            STALLED_STARTUP_DEADLINE_MS + 5_000,
+          );
+        }),
+      ]);
+      assert.equal(
+        first.kind,
+        'document-requested',
+        first.kind === 'run-settled'
+          ? `run settled before the document request: ${first.result.status === 'rejected' ? first.result.error : first.result.status}`
+          : 'document request was not observed',
+      );
+      nativeClearTimeout(requestFallback);
+      requestFallback = null;
+      fireDeadline();
+      const result = await settled;
+      assert.equal(result.status, 'rejected', 'the actual deadline callback must reject the pending navigation');
+      assert.equal(result.error.code, 'startup_timeout');
+      assert.equal(result.error.phase, 'document navigation');
+      assert.equal(external.pages().length, 1);
+      assert.equal(await sibling.locator('input').inputValue(), 'external draft');
+    } finally {
+      setup.releaseDocument();
+      if (requestFallback) nativeClearTimeout(requestFallback);
+      if (matchedTimers.length === 1) fireDeadline();
+      try {
+        await external.close();
+      } finally {
+        if (settled) {
+          await Promise.race([
+            settled,
+            new Promise((resolve) => {
+              settleFallback = nativeSetTimeout(resolve, STALLED_STARTUP_DEADLINE_MS + 5_000);
+            }),
+          ]);
+          if (settleFallback) nativeClearTimeout(settleFallback);
+        }
+      }
+    }
   },
 );
 

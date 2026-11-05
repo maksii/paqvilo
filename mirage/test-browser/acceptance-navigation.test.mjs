@@ -389,6 +389,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
           (row) => row.reason === (child ? 'frame-detached' : 'document-replaced'),
         ),
       );
+      assert.ok(flow.navigationWaits.length > 0, 'redirect hold reported at least one navigation wait');
       assert.ok(flow.navigationWaits.reduce((sum, row) => sum + row.waitedMs, 0) <= 3300);
     });
 
@@ -485,6 +486,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
     });
     assert.equal(flow.passed, true, JSON.stringify(flow));
     assert.equal(flow.navigationCancelledRequests?.length, 2);
+    assert.ok(flow.navigationWaits.length > 0, 'delayed submission reported a navigation wait');
     assert.ok(flow.navigationWaits.reduce((sum, row) => sum + row.waitedMs, 0) < 1800);
   });
 
@@ -588,6 +590,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
         });
         assert.equal(flow.passed, true, JSON.stringify(flow));
         assert.equal(flow.navigationCancelledRequests.length, 2);
+        assert.ok(flow.navigationWaits.length > 0, 'fallback reserve reported a navigation wait');
         assert.ok(
           flow.navigationWaits.every(
             (wait) =>
@@ -687,6 +690,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       assert.equal(flow.passed, true, JSON.stringify(flow));
       assert.equal(flow.navigationCancelledRequests.length, 2);
       assert.ok(flow.navigationCancelledRequests.every((row) => row.reason === 'document-replaced'));
+      assert.ok(flow.navigationWaits.length > 0, 'the fallback reserve has recorded navigation wait evidence');
       assert.ok(
         flow.navigationWaits.every(
           (wait) =>
@@ -709,6 +713,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       timeout: 15000,
     });
     assert.equal(flow.passed, true, JSON.stringify(flow));
+    assert.ok(flow.navigationWaits.length > 0, 'navigation waits were recorded for the three-hop chain');
     assert.ok(
       flow.navigationWaits.every(
         (wait) => wait.commitReservePolicy === 'bounded-write-fallback' && wait.commitReserveMs >= 9000,

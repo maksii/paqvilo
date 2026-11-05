@@ -11,6 +11,7 @@ import { envelope, encodeValue } from '../lib/dataverse-soap-xml.mjs';
 import { prepareClrRuntime, closeClrHostPool, dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { drainFixture, ownedFixture } from '../testing/owned-fixture.mjs';
 
 const id = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const pair = (key, value) =>
@@ -57,11 +58,17 @@ test(
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-transport-tag-'));
     let backend;
-    t.after(async () => {
-      await backend?.close();
-      await closeClrHostPool();
-      await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
-    });
+    const ownedRuntimes = [];
+    ownedFixture(t).add(() =>
+      drainFixture(
+        ownedRuntimes.map((runtime) => async () => {
+          const result = await closeClrHostPool({ runtime });
+          assert.equal(result.allAbsenceVerified, true);
+        }),
+      ),
+    );
+    ownedFixture(t).add(() => backend?.close());
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'Tags.cs'),
       assembly = path.join(root, 'Tags.dll');
@@ -101,7 +108,14 @@ public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=
         pluginassembly: [{ pluginassemblyid: id(83), name: 'Tags' }],
       },
       extension: { name: 'dataverse-customapi', install: installCustomApis },
-      options: { pluginRuntimes: descriptors },
+      options: {
+        pluginRuntimes: descriptors,
+        prepareRuntime: async (...args) => {
+          const prepared = await prepareClrRuntime(...args);
+          ownedRuntimes.push(prepared);
+          return prepared;
+        },
+      },
     });
     // Original CLR callbacks block this test's shared Node event loop. Use one
     // socket per request so an idle keep-alive expiry cannot race the next
@@ -117,6 +131,7 @@ public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=
       sdkRoot: path.dirname(sdk),
       sdkAssembly: path.basename(sdk),
       cacheRoot: path.join(root, 'cache'),
+      persistentHost: true,
       timeoutMs: 8000,
       serviceProfile: {
         userId: user,
@@ -130,6 +145,7 @@ public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=
       context: { executionUserId: user, initiatingUserId: user, organizationId: user, businessUnitId: user },
     };
     const runtime = await prepareClrRuntime(descriptor);
+    ownedRuntimes.push(runtime);
     descriptors.set(id(80), {
       ...descriptor,
       typeName: 'Invented.Main',
@@ -282,7 +298,6 @@ public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=
       f.store.tableRows('widget').some((row) => row.name === 'Uncaught duplicate tag'),
       false,
     );
-    for (const item of taggedItems) if (item.typeName.startsWith('Invented.Phase')) item.enabled = true;
     for (const item of taggedItems) if (item.typeName.startsWith('Invented.Phase')) item.enabled = true;
     const phased = await f.json(await f.request('POST', '/widgets?tag=phase', { name: 'Native phase tags' }), 201);
     assert.equal(phased.note, 'phase');

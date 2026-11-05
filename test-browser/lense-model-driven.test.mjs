@@ -1,3 +1,4 @@
+// @test-kind contract: Synthetic loopback browser fixtures verify overlay, source-debugger and owned-lifecycle contracts.
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 import test, { before, after } from 'node:test';
@@ -178,10 +179,26 @@ test('model-driven overlay refresh bypasses an existing worker only in its owned
       ],
     ]),
   });
-  const overlay = createModelDrivenOverlay({ origin, imported: imported('local first') });
+  let resolveInitialApplied;
+  const initialApplied = new Promise((resolve) => {
+    resolveInitialApplied = resolve;
+  });
+  const overlay = createModelDrivenOverlay({
+    origin,
+    imported: imported('local first'),
+    onApplied: resolveInitialApplied,
+  });
   owned.release = await interceptOrigin(context, origin, (route) => overlay.handle(route), {
     ownsPage: (candidate) => candidate === page,
   });
+  // interceptOrigin can initiate initial late-document repair and returns before the local application has been observed.
+  await Promise.all([initialApplied, page.waitForFunction(() => window.cachedAsset === 'local first')]);
+  await page.waitForLoadState('domcontentloaded');
+  assert.equal(
+    overlay.report().currentRevisionApplied,
+    1,
+    'initial repair applied the local resource before explicit refresh',
+  );
   await refreshModelDrivenPage(page, origin);
   assert.equal(await page.evaluate(() => window.cachedAsset), 'local first');
   overlay.replace(imported('local changed'));

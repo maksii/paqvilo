@@ -1,3 +1,4 @@
+// @test-kind contract: public CLI help and dispatch preserve observable output and owned local state
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -58,7 +59,7 @@ test('root flags reject trailing arguments and diagnostics use the requested str
   assert.match(JSON.parse(results[5].stdout).error.message, /--browser must be/);
 });
 
-test('all public command help is successful without configuration or local state', async (t) => {
+test('all public command help succeeds and leaves the owned working directory unchanged', async (t) => {
   const cwd = tempDirSync('paqvilo-help-contract-');
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const commands = [

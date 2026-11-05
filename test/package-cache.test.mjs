@@ -1,3 +1,4 @@
+// @test-kind tooling: exercises the package-cache primer and offline install metadata path with an isolated local registry
 import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,6 +9,7 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { cacheSpecs } from '../scripts/prime-package-cache.mjs';
+import { fileURLToPath } from 'node:url';
 
 const exec = promisify(execFile);
 
@@ -28,7 +30,9 @@ test(
     await fs.writeFile(path.join(pkg, 'package.json'), JSON.stringify(manifest));
     await fs.writeFile(path.join(pkg, 'index.js'), 'export default 1;');
     const run = (args, cwd) => exec(process.execPath, [npm, ...args], { cwd, windowsHide: true, timeout: 60000 });
-    const packed = JSON.parse((await run(['pack', '--json', '--ignore-scripts'], pkg)).stdout)[0];
+    const packed = JSON.parse(
+      (await run(['pack', '--json', '--ignore-scripts', '--offline', '--cache', cache], pkg)).stdout,
+    )[0];
     const archive = await fs.readFile(path.join(pkg, packed.filename));
     let origin;
     const server = http.createServer((req, res) => {
@@ -70,7 +74,47 @@ test(
       { devDependencies: { 'invented-sdk': '1.0.0', paqvilo: 'file:../..' } },
     );
     assert.deepEqual(specs, ['invented-sdk@1.0.0']);
-    await run(['cache', 'add', specs[0], ...options], consumer);
+    const primer = fileURLToPath(new URL('../scripts/prime-package-cache.mjs', import.meta.url));
+    const primerRoot = path.join(root, 'primer');
+    await fs.mkdir(path.join(primerRoot, 'examples', 'project'), { recursive: true });
+    await fs.writeFile(
+      path.join(primerRoot, 'package.json'),
+      JSON.stringify({ name: 'paqvilo', version: '1.0.0', private: true, files: ['index.js'] }),
+    );
+    await fs.writeFile(path.join(primerRoot, 'index.js'), 'export default 1;\n');
+    await fs.writeFile(
+      path.join(primerRoot, 'npm-shrinkwrap.json'),
+      JSON.stringify({
+        name: 'paqvilo',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        requires: true,
+        packages: { '': { name: 'paqvilo', version: '1.0.0' } },
+      }),
+    );
+    await fs.writeFile(
+      path.join(primerRoot, 'examples', 'project', 'package.json'),
+      JSON.stringify({ name: 'primer-example', private: true, devDependencies: { 'invented-sdk': '1.0.0' } }),
+    );
+    const primerEnvironment = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([key]) => !/^npm_config_(cache|registry|offline|update_notifier)$/i.test(key),
+      ),
+    );
+    Object.assign(primerEnvironment, {
+      npm_execpath: npm,
+      npm_config_cache: cache,
+      npm_config_registry: origin,
+      npm_config_update_notifier: 'false',
+      npm_config_offline: 'false',
+    });
+    await exec(process.execPath, [primer], {
+      cwd: primerRoot,
+      env: primerEnvironment,
+      windowsHide: true,
+      timeout: 120_000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
     await run(['install', '--offline', '--package-lock=false', ...options], consumer);
     assert.equal(
       JSON.parse(await fs.readFile(path.join(consumer, 'node_modules/invented-sdk/package.json'), 'utf8')).version,

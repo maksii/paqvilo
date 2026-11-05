@@ -21,6 +21,7 @@ import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { createPreparedClrRuntimePreparer } from './fixtures/prepared-clr-runtimes.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { scanSolutionSources } from '../lib/solution-schema.mjs';
 import { SolutionFileCache, shareSolutionParses } from '../lib/solution-cache.mjs';
@@ -264,7 +265,13 @@ public sealed class Zero:IPlugin {public void Execute(IServiceProvider p){var c=
         descriptors,
         overrides: Object.fromEntries(plugins.steps.map((step) => ['plugin-step:' + step.id, { mode: 'clr' }])),
       });
-    backend = await createOrganizationBackend({ store: f.store, items, runtimes, descriptors });
+    backend = await createOrganizationBackend({
+      store: f.store,
+      items,
+      runtimes,
+      descriptors,
+      prepareRuntime: createPreparedClrRuntimePreparer(runtimes, descriptors),
+    });
     const create = async () => f.json(await f.request('POST', '/widgets', {}), 201);
     let row = await create();
     assert.equal(row.seen_two, 'Source Two|Descriptor S');

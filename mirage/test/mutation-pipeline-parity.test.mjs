@@ -311,7 +311,7 @@ test('a calculated-column value and a duplicate alternate key answer the same er
   });
 });
 
-test('an update and a delete run the pipeline on every write surface', async (t) => {
+test('updates run through SDK, connector and form paths; deletion runs through the connector', async (t) => {
   const { webApi, sdk, connector, formWrites, stored, sim } = await organization(t);
   const created = (await webApi('POST', '/x_items', { x_name: 'row', x_code: 'R', x_amount: 1 })).body.x_itemid;
   const before = stored('row').versionnumber;

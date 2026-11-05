@@ -1,3 +1,4 @@
+// @test-kind contract: Mirage startup tolerates generated SDK files locked by another process
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -211,6 +212,9 @@ test('fresh Mirage startup tolerates an exclusively locked SDK build product', {
   const sdkRoot = fileURLToPath(new URL('../test-sdk/', import.meta.url));
   const owned = await makeTemporaryDirectory(path.join(sdkRoot, 'fingerprint-lock-'));
   const generated = path.join(owned, 'obj', 'apphost.exe');
+  const portal = path.join(owned, 'portal');
+  await fs.mkdir(portal, { recursive: true });
+  await fs.writeFile(path.join(portal, 'website.yml'), 'adx_websiteid: fixture\nadx_name: Locked fixture\n');
   await fs.mkdir(path.dirname(generated));
   await fs.writeFile(generated, 'owned SDK build product');
   let locker;
@@ -242,9 +246,17 @@ test('fresh Mirage startup tolerates an exclusively locked SDK build product', {
     [
       '--input-type=module',
       '-e',
-      `await import(${JSON.stringify(new URL('../server.mjs', import.meta.url).href)}); console.log("MIRAGE_IMPORTED")`,
+      `import { createSimulator } from ${JSON.stringify(new URL('../server.mjs', import.meta.url).href)}; let simulator; try { simulator = await createSimulator({ sourceDir: process.env.PAQ_TEST_PORTAL, stateFile: process.env.PAQ_TEST_STATE, port: 0, watch: false, dataverse: { enabled: false } }); await simulator.close(); simulator = undefined; console.log("MIRAGE_STARTED"); } finally { await simulator?.close(); }`,
     ],
-    { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
+    {
+      env: {
+        ...process.env,
+        PAQ_TEST_PORTAL: portal,
+        PAQ_TEST_STATE: path.join(owned, 'state.json'),
+      },
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
   );
   let stdout = '',
     stderr = '';
@@ -259,7 +271,7 @@ test('fresh Mirage startup tolerates an exclusively locked SDK build product', {
   });
   const [code] = await once(child, 'exit');
   assert.equal(code, 0, stderr);
-  assert.match(stdout, /MIRAGE_IMPORTED/);
+  assert.match(stdout, /MIRAGE_STARTED/);
 });
 
 test('cached implementation fingerprints match full hashes and follow same-size edits, additions and removals', async (t) => {

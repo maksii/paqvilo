@@ -1,3 +1,4 @@
+// @test-kind contract: admin drafts persist through refresh and reset when selecting a different contact
 // Unsaved admin form input must survive asynchronous re-renders (lazy contact loading,
 // workspace refreshes).
 import test, { before, after } from 'node:test';
@@ -35,7 +36,12 @@ async function fixture(t) {
     initial: {
       version: 1,
       mappings: { contact: { entitySet: 'contacts', idColumn: 'contactid' } },
-      tables: { contact: [{ contactid: 'alex', fullname: 'Alex Local' }] },
+      tables: {
+        contact: [
+          { contactid: 'alex', fullname: 'Alex Local' },
+          { contactid: 'blair', fullname: 'Blair Local' },
+        ],
+      },
       permissions: [],
       plugins: [],
       presets: {},
@@ -106,6 +112,17 @@ test(
     assert.deepEqual(app.state().config.contactRoles, [{ contactId: 'alex', roleId: 'editor' }]);
     assert.equal(await memberships.getByLabel('Editor', { exact: true }).isChecked(), true);
     assert.equal(await memberships.getByLabel('Reviewer', { exact: true }).isChecked(), false);
+    await memberships.getByLabel('Reviewer', { exact: true }).check();
+    await page.getByLabel('Local contact', { exact: true }).selectOption('blair');
+    assert.equal(await memberships.getByLabel('Editor', { exact: true }).isChecked(), false);
+    assert.equal(await memberships.getByLabel('Reviewer', { exact: true }).isChecked(), false);
+    await page.getByLabel('Local contact', { exact: true }).selectOption('alex');
+    assert.equal(await memberships.getByLabel('Editor', { exact: true }).isChecked(), true);
+    assert.equal(
+      await memberships.getByLabel('Reviewer', { exact: true }).isChecked(),
+      false,
+      'unsaved choice was discarded',
+    );
     await memberships.getByLabel('Reviewer', { exact: true }).check();
     await page.getByRole('button', { name: 'Save contact roles', exact: true }).click();
     await page.getByText('Configuration saved.', { exact: true }).waitFor();

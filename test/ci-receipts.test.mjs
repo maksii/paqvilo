@@ -131,6 +131,10 @@ test(
         `test/${name}.test.mjs`,
         `import fs from 'node:fs'; fs.appendFileSync(process.env.SHARD_LOG, ${JSON.stringify(name + '\n')});`,
       );
+    write(
+      'test/nested/default-discovery-sentinel.test.mjs',
+      `import fs from 'node:fs'; fs.appendFileSync(process.env.SHARD_LOG, 'DEFAULT-DISCOVERY-RAN\\n');`,
+    );
     env.npm_execpath = write('fake-npm.mjs', 'process.exit(99);');
     const ci = (...args) =>
       spawnSync(process.execPath, [path.join(directory, 'scripts/ci.mjs'), ...args], {
@@ -152,6 +156,26 @@ test(
       ['a', 'c', 'e'],
       ['b', 'd'],
     ]);
+    for (const shard of ['6/6', '1/6']) {
+      env.SHARD_LOG = path.join(directory, `overshard-${shard.replace('/', '-')}.log`);
+      const result = ci('verify', '--suite', 'lense', '--unit', '--prepared', '--shard', shard);
+      const executedFixtures = fs.existsSync(env.SHARD_LOG)
+        ? fs.readFileSync(env.SHARD_LOG, 'utf8').trim().split(/\r?\n/).filter(Boolean)
+        : [];
+      if (result.status !== 1 || executedFixtures.length)
+        t.diagnostic(JSON.stringify({ shard, exit: result.status, executedFixtures }));
+      assert.equal(result.status, 1, `${shard}: ${result.stderr}`);
+      assert.match(result.stderr, /shards exceed the 5 matched test files/);
+      assert.doesNotMatch(result.stdout, /^> .*\btest\b/m, 'an invalid shard must not launch the test script');
+      assert.equal(fs.existsSync(env.SHARD_LOG), false, 'an invalid shard must not fall through to default discovery');
+    }
+    write('package.json', JSON.stringify({ scripts: { test: 'node --test --test-concurrency=1 missing/*.test.mjs' } }));
+    env.SHARD_LOG = path.join(directory, 'empty-glob.log');
+    const empty = ci('verify', '--suite', 'lense', '--unit', '--prepared', '--shard', '1/1');
+    assert.equal(empty.status, 1, empty.stderr);
+    assert.match(empty.stderr, /test glob matched no files/);
+    assert.doesNotMatch(empty.stdout, /^> .*\btest\b/m, 'an empty glob must be rejected before Node starts');
+    assert.equal(fs.existsSync(env.SHARD_LOG), false);
     for (const args of [
       ['--suite', 'lense', '--unit', '--shard', '3/2'],
       ['--suite', 'lense', '--unit', '--shard', '0/2'],
