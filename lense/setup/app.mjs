@@ -1617,6 +1617,10 @@ function setView(next) {
   } catch {
     /* the choice is only a convenience */
   }
+  renderViewSelection();
+  // The shell is interactive before configuration and export discovery finish.
+  // Keep the latest choice for the first complete render instead of dropping it.
+  if (!state || firstRender) return;
   void Promise.all([view === 'quick' && !quick ? loadQuick() : null, pollPreview(true)]).then(async () => {
     await loadRuntimeInfo();
     render();
@@ -2500,15 +2504,18 @@ function renderRuntimeShell(runtime, portalUrl, admin) {
   } else $('#setup-state').textContent = 'Local configuration';
   $('#scope').textContent = state.directory;
 }
+function renderViewSelection() {
+  document.body.dataset.setupView = view;
+  for (const button of document.querySelectorAll('[data-view]'))
+    button.setAttribute('aria-pressed', String(button.dataset.view === view));
+}
 function renderView(created, personal, opened) {
   const afterCreate = (body) =>
     created ? body : kit.notice('Create the configuration above first; this stage edits it.', 'neutral');
   const rail = $('#stage-rail');
   rail.hidden = !(state.stages ?? []).length;
   rail.innerHTML = railHtml();
-  document.body.dataset.setupView = view;
-  for (const button of document.querySelectorAll('[data-view]'))
-    button.setAttribute('aria-pressed', String(button.dataset.view === view));
+  renderViewSelection();
   syncShell();
   if (view === 'quick') {
     $('#breadcrumb').textContent = 'Quick setup';
@@ -2926,7 +2933,7 @@ document.addEventListener('click', (event) => {
     return;
   }
   const switcher = event.target.closest?.('[data-view]');
-  if (switcher && state) return setView(switcher.dataset.view);
+  if (switcher) return setView(switcher.dataset.view);
   const link = event.target.closest?.('a[href^="#"]'),
     href = link?.getAttribute('href'),
     document_ = link?.dataset.yamlLayer;
