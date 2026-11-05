@@ -1,3 +1,5 @@
+export {};
+
 const $ = (id) => document.getElementById(id);
 const select = $('app'),
   status = $('connection'),
@@ -48,6 +50,7 @@ function renderList(id, values, empty) {
   if (!values.length) text(element, 'li', empty);
   else for (const value of values) text(element, 'li', value);
 }
+/** @returns {void} */
 function launch() {
   if (!selected?.localAppUrl) {
     resetFrame();
@@ -135,13 +138,13 @@ function choose(name, { keepFrame = false } = {}) {
   const address = new URL(location.href);
   address.searchParams.set('app', selected.name);
   history.replaceState(null, '', address);
-  if (!keepFrame) void launch();
+  if (!keepFrame) launch();
 }
 select.addEventListener('change', () => choose(select.value));
 $('reload').addEventListener('click', launch);
 $('apply').addEventListener('click', () => {
   if (selected) parameters.set(selected.name, $('parameters').value);
-  void launch();
+  launch();
 });
 window.addEventListener('message', (message) => {
   const payload = message.data,
