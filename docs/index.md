@@ -4,6 +4,8 @@ Paqvilo provides local-first, pro-code tools for Microsoft Power Pages. Start wi
 
 The [CLI guide](cli.md) covers command help, quoting on Windows/Linux, Unicode and OneDrive paths, defaults, JSON output and exit codes.
 
+[Offline static analysis](static-analysis.md) covers Doctor quality advice, the `analyze` gate, rules and research-backed improvement plans.
+
 | Task                                                                       | Guide                                                                                 |
 | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | Install and open your first portal                                         | [Getting started](getting-started.md)                                                 |

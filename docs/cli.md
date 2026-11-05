@@ -13,6 +13,10 @@ running the tool; extra arguments beside the standalone help request are rejecte
 For scripts in a toolkit checkout, use `node bin/paqvilo.mjs` instead of `npx`.
 `npm run` adds a preamble to stdout, so avoid it when parsing JSON.
 
+## Offline quality checks
+
+`paqvilo lense analyze --config FILE --all --json` reviews source quality without a browser or portal requests. It fails on errors or incomplete inventory by default. Doctor includes the findings as advice. Both accept `--fail-on none|error|warning|hint`; Doctor defaults to `none`. See [static analysis](static-analysis.md) for the rule catalogue, source boundaries, output model and research.
+
 ## Paths and quoting
 
 Quote each path or value containing spaces or shell punctuation. Paths retain

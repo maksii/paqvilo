@@ -771,6 +771,45 @@ export function componentContent(xml) {
   }
 }
 
+const ENVELOPE_FIELDS = new Set(['powerpagecomponenttype', 'name', 'statecode', 'powerpagesiteid', 'websiteid']);
+
+function openEnvelopeTag(state, tag) {
+  if (tag.name === 'powerpagecomponent' && state.stack.length === 0) state.roots++;
+  const selfClosing = /\/\s*$/.test(tag.attributes);
+  if (
+    state.stack.length === 1 &&
+    state.stack[0] === 'powerpagecomponent' &&
+    ENVELOPE_FIELDS.has(tag.name) &&
+    !selfClosing
+  )
+    state.pending = { name: tag.name, start: tag.end };
+  if (!selfClosing) state.stack.push(tag.name);
+}
+
+function closeEnvelopeTag(state, tag, xml) {
+  if (state.stack.pop() !== tag.name) return false;
+  if (state.pending?.name !== tag.name || state.stack.length !== 1) return true;
+  if (Object.hasOwn(state.result, tag.name)) return false;
+  const raw = xml.slice(state.pending.start, tag.start);
+  state.result[tag.name] = tag.name.endsWith('siteid')
+    ? (nestedElementText(raw, tag.name) ?? xmlText(raw))
+    : xmlText(raw);
+  state.pending = null;
+  return true;
+}
+
+/** Direct component envelope fields; comments, CDATA and JSON content never supply metadata tags. */
+export function componentEnvelope(xml) {
+  const state = { stack: [], result: {}, pending: null, roots: 0 };
+  for (const tag of xmlElementTags(xml)) {
+    if (tag.invalid || !tag.name) return null;
+    if (tag.closing) {
+      if (!closeEnvelopeTag(state, tag, xml)) return null;
+    } else openEnvelopeTag(state, tag);
+  }
+  return state.roots === 1 && state.stack.length === 0 ? state.result : null;
+}
+
 /** Reader for one field of a component, usable as `extract` of an inline source. */
 const componentField = (field) => (xml) => {
   const content = componentContent(xml);

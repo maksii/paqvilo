@@ -9,6 +9,8 @@ import { duplicateYamlDiagnostics } from '../yaml-diagnostics.mjs';
 import { scaffoldWarning } from '../project-check.mjs';
 import YAML from 'yaml';
 import { jsonErrorLocation } from '../../mirage/lib/json-diagnostics.mjs';
+import { analyzeProject, validateAnalysisPolicy } from '../analysis/index.mjs';
+import { printAnalysis, analysisFailure } from './analyze.mjs';
 
 function addProfileDiagnostic(diagnostics, sourceDir, file, bound, code, line = 1, column = 1) {
   diagnostics.push({
@@ -146,7 +148,10 @@ function assembleDoctorReport(args, reports, catalogue) {
   const report = {
     offline: true,
     ready,
-    checks: args.mirage ? ['lense', 'sources', 'mirage'] : ['lense'],
+    checks: [
+      ...(args.mirage ? ['lense', 'sources', 'mirage'] : ['lense']),
+      ...(args['fail-on'] && args['fail-on'] !== 'none' ? ['analysis'] : []),
+    ],
     reports,
     ...(warning ? { warnings: [warning] } : {}),
   };
@@ -223,6 +228,7 @@ export function inspectCheckout(cfg, { started = performance.now(), session = ne
 }
 
 export async function collectDoctor(args, { processEnv = process.env } = {}) {
+  const failOn = validateAnalysisPolicy(args['fail-on'] ?? 'none');
   const catalogue = loadCatalogue(args, processEnv);
   if (args.site && !Object.hasOwn(catalogue.sites, args.site))
     throw Object.assign(
@@ -241,7 +247,17 @@ export async function collectDoctor(args, { processEnv = process.env } = {}) {
       if (mirageOnlySite(catalogue.sites[name])) {
         const cfg = (await import('../standalone-mirage.mjs')).standaloneCatalogueConfiguration(catalogue, name, {});
         const mirage = await mirageReadiness(cfg, { dependencies });
-        reports.push(standaloneSiteReport(name, cfg, mirage, args));
+        const report = standaloneSiteReport(name, cfg, mirage, args);
+        report.analysisApplicable = false;
+        if (failOn !== 'none') {
+          report.ready = false;
+          report.errors.push({
+            code: 'analysis_unavailable',
+            message:
+              'Static portal analysis requires exported portal sources; this standalone runtime was not analyzed.',
+          });
+        }
+        reports.push(report);
         continue;
       }
       const cfg = await loadConfig(doctorSiteConfigArgs(args, catalogue, site), processEnv);
@@ -249,6 +265,10 @@ export async function collectDoctor(args, { processEnv = process.env } = {}) {
       const report = inspectCheckout(cfg, { started, session: await OverlaySession.create(cfg) });
       report.lenseReady = report.ready;
       addSourceReportDiagnostics(report, cfg, args);
+      report.analysis = analyzeProject(cfg.sourceDir, { failOn });
+      report.analysisReady = report.analysis.ready;
+      if (!report.analysis.ready) report.errors.push(analysisFailure(report.analysis));
+      report.ready = report.ready && report.analysis.ready;
       report.mirage = await mirageReadiness(cfg, { dependencies });
       addProfileDiagnosticsWhenRequested(report, cfg, args);
       applyMirageReadinessGate(report, args);
@@ -333,6 +353,8 @@ function printDoctorItem(item, args, catalogue) {
   for (const error of item.errors) console.log(`  ERROR: ${error.message ?? error}`);
   for (const warning of item.warnings) console.log(`  WARNING: ${warning}`);
   for (const change of item.needsDeploy ?? []) console.log(`  NEEDS DEPLOY: ${change.rel}: ${change.reason}`);
+  if (item.analysis) printAnalysis(item.analysis);
+  if (item.analysisApplicable === false) console.log('  analysis: not applicable to this standalone runtime');
   const mirage = item.mirage;
   if (mirage) printMirageDetails(mirage, catalogue);
 }
