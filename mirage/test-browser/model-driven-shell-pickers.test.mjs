@@ -1,3 +1,4 @@
+// @test-kind contract: model-driven shell pickers preserve filtering, paging and stale-response behavior
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -5,6 +6,7 @@ import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { sharedBrowser } from './shared-browser.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { installJsonConsumptionProbe } from './helpers/json-consumption-probe.mjs';
 
 const chrome = sharedBrowser();
 
@@ -1289,6 +1291,12 @@ test('authored app areas isolate their groups and 137 records paginate through s
 });
 
 test('source infinite grid fetches additional server chunks and rejects stale chunks after keyword reset', async (t) => {
+  const pending = Promise.withResolvers();
+  let probe;
+  t.after(async () => {
+    pending.resolve();
+    await probe?.restore();
+  });
   const fixture = await modelDrivenFixture(t);
   await fixture.sim.close();
   const initial = structuredClone(fixture.sim.store.state);
@@ -1343,16 +1351,17 @@ test('source infinite grid fetches additional server chunks and rejects stale ch
   assert.equal(await page.getByRole('button', { name: 'Item 137', exact: true }).count(), 1);
   await page.getByRole('searchbox', { name: 'Filter by keyword', exact: true }).fill('');
   await page.getByRole('button', { name: 'Item 001', exact: true }).waitFor();
-  let release;
-  const pending = new Promise((resolve) => {
-    release = resolve;
+  probe = await installJsonConsumptionProbe(page, {
+    key: '__paqviloStalePageProbe',
+    pathname: '/_apps/api/tables/x_item',
+    query: { page: 2 },
   });
-  t.after(() => release());
+  await probe.arm();
   await page.route('**/_apps/api/tables/x_item?*', async (route) => {
     const value = JSON.parse(new URL(route.request().url()).searchParams.get('query'));
     if (value.page === 2) {
       const response = await route.fetch();
-      await pending;
+      await pending.promise;
       await route.fulfill({ response });
     } else await route.continue();
   });
@@ -1365,14 +1374,16 @@ test('source infinite grid fetches additional server chunks and rejects stale ch
     node.scrollTop = node.scrollHeight;
   });
   await requested;
+  await probe.disarm();
   await page.getByRole('searchbox', { name: 'Filter by keyword', exact: true }).fill('Item 137');
   await page.waitForFunction(() => document.querySelectorAll('.grid-scroll tbody tr').length === 1);
-  release();
-  await page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === '/_apps/api/tables/x_item' &&
-      JSON.parse(new URL(response.url()).searchParams.get('query')).page === 2,
-  );
+  pending.resolve();
+  await probe.waitForCompletion();
+  const pageProbe = await probe.counts();
+  assert.equal(pageProbe.matchedFetches, 1);
+  assert.equal(pageProbe.successfulJsonConsumptions, 1);
+  assert.equal(pageProbe.consumedAfterContinuations, 1);
+  assert.equal(pageProbe.errors, 0);
   assert.equal(await page.locator('.grid-scroll tbody tr').count(), 1);
   assert.equal(await page.getByRole('button', { name: 'Item 137', exact: true }).count(), 1);
 });

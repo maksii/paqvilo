@@ -12,6 +12,7 @@ import { fixedClock, createScheduler } from '../lib/runtime-clock.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { pooledClrLifecycle } from './fixtures/pooled-clr-lifecycle.mjs';
 
 const id = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 function fixture(operation, multipleFirst) {
@@ -181,18 +182,19 @@ test(
   'original CLR merged lanes preserve the first executed descriptor timestamp and the same known child-parent identities',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-merged-operation-')),
-      sdk = clrSdk(),
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-merged-operation-'));
+    let runtime;
+    const lifecycle = pooledClrLifecycle(t, root, () => runtime);
+    const sdk = clrSdk(),
       source = path.join(root, 'Observer.cs'),
       assembly = path.join(root, 'Observer.dll'),
       log = path.join(root, 'contexts.txt');
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     await fs.writeFile(
       source,
       `using System;using System.IO;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Observer:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var parent=c.ParentContext;var multiple=c.MessageName.EndsWith("Multiple");if(c.InputParameters.Contains("Target")==multiple||c.InputParameters.Contains("Targets")!=multiple)throw new Exception("Merged input lanes were mixed");var prior=c.SharedVariables.Contains("lane")?(string)c.SharedVariables["lane"]:"";c.SharedVariables["lane"]=c.MessageName;File.AppendAllText(@"${log.replaceAll('"', '""')}",String.Join("|",new[]{c.MessageName,c.Stage.ToString(),c.RequestId.ToString(),c.OperationId.ToString(),c.CorrelationId.ToString(),c.OperationCreatedOn.ToString("O"),c.OperationCreatedOn.Kind.ToString(),parent==null?"":parent.RequestId.ToString(),parent==null?"":parent.OperationId.ToString(),parent==null?"":parent.OperationCreatedOn.ToString("O"),prior})+"\\n");}}}`,
     );
     compileClr(source, assembly, { references: [sdk] });
-    const runtime = await prepareClrRuntime({
+    runtime = await prepareClrRuntime({
       trust: 'execute-local-assembly',
       root,
       assembly: 'Observer.dll',
@@ -200,6 +202,7 @@ test(
       sdkRoot: path.dirname(sdk),
       sdkAssembly: path.basename(sdk),
       cacheRoot: path.join(root, 'cache'),
+      persistentHost: true,
       timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       serviceProfile: { userId: id(2), evidence: 'Invented merged metadata observer', grants: [] },
       context: { initiatingUserId: id(2), organizationId: id(2), businessUnitId: id(2) },
@@ -208,9 +211,11 @@ test(
       for (const multipleFirst of [false, true])
         await t.test(operation + (multipleFirst ? ' multiple-first' : ' scalar-first'), async (t) => {
           const f = fixture(operation, multipleFirst);
+          const tracker = lifecycle.child('child');
           const mounted = await attachClrSteps(t, {
             store: f.store,
             steps: f.steps,
+            diagnostic: tracker.diagnostic,
             runtime: (step) =>
               retypeClrRuntime(runtime, {
                 context: {
@@ -222,6 +227,7 @@ test(
                 },
               }),
           });
+          t.after(() => tracker.verifyClose(mounted.backend));
           t.after(() => f.store.close());
           await fs.writeFile(log, '');
           await f.invoke();

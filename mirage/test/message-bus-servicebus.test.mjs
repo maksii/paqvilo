@@ -1,3 +1,4 @@
+// @test-kind contract: service bus emulator adapter preserves its messaging and reconnect contract against a loopback broker
 // The servicebus-emulator bus (message-bus.mjs createServiceBusEmulatorBus over amqp-client.mjs) against the test-only loopback
 // fake broker (mirage/testing/amqp-fake-broker.mjs): the same send/receive/complete/abandon/deadLetter contract as the local bus.
 // A run against the real emulator is a manual check (mirage/docs/messaging-and-outbox.md), not part of CI.
@@ -312,8 +313,34 @@ test("the client puts attach, flow, transfer and disposition fields at their spe
 test('a connection reset while a message is in flight fails that send naming the closed connection; the next send reconnects', async (t) => {
   const { broker, bus } = await fixture(t, { broker: { maxFrameSize: 1024 } });
   await bus.send('fx-orders', { n: 1 });
+  let observedTransfer;
+  const transfer = new Promise((resolve) => {
+    observedTransfer = resolve;
+  });
+  const originalPush = broker.frames.push;
+  broker.frames.push = function (...frames) {
+    const length = originalPush.apply(this, frames);
+    const first = frames.find((frame) => frame.code === 0x14 && frame.fields[5] === true);
+    if (first) {
+      broker.frames.push = originalPush;
+      observedTransfer(first);
+      // Disconnect before the broker handles this unfinished transfer or settles the send.
+      broker.dropConnections();
+    }
+    return length;
+  };
+  t.after(() => {
+    broker.frames.push = originalPush;
+  });
   const sending = bus.send('fx-orders', { text: 'x'.repeat(200_000) });
-  setImmediate(() => broker.dropConnections());
+  const first = await Promise.race([
+    transfer,
+    sending.then(() => {
+      throw new Error('send settled before an unfinished transfer was observed');
+    }),
+  ]);
+  assert.equal(first.fields[4], false, 'transfer is unsettled');
+  assert.equal(first.fields[5], true, 'transfer has more frames');
   const error = await sending.then(
     () => null,
     (failure) => failure,

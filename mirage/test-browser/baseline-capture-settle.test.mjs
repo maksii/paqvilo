@@ -1,3 +1,4 @@
+// @test-kind contract: baseline capture reports nonempty settle outcomes for progress, readiness and timeout cases
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -29,6 +30,7 @@ test('capture distinguishes persistent progress from loading and surfaces readin
     markup = html;
     const result = await run();
     assert.equal(result.summary.status, 'captured', result.summary.problems.join(';'));
+    assert.ok(result.summary.settlements.length > 0, 'captured loop reports settlement records');
     assert.ok(result.summary.settlements.every((row) => row.settled));
   }
   markup =
@@ -36,6 +38,7 @@ test('capture distinguishes persistent progress from loading and surfaces readin
   const delayed = await run();
   assert.equal(delayed.summary.status, 'captured');
   assert.match(delayed.raw.dom, /id="ready"/);
+  assert.ok(delayed.summary.settlements.length > 0, 'delayed fixture reports settlement records');
   assert.ok(delayed.summary.settlements.every((row) => row.settled));
   for (const html of [
     '<div role="progressbar">Loading</div>',
@@ -46,6 +49,7 @@ test('capture distinguishes persistent progress from loading and surfaces readin
     const result = await run(300);
     assert.equal(result.summary.status, 'failed');
     assert.ok(result.summary.problems.some((problem) => problem.includes('did not settle')));
+    assert.ok(result.summary.settlements.length > 0, 'timeout loop reports settlement records');
     assert.ok(result.summary.settlements.every((row) => !row.settled && row.loading));
   }
 });

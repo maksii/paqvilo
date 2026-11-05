@@ -1,3 +1,4 @@
+// @test-kind contract: model-driven controls preserve lookup cancellation and stale-response sequencing
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -5,6 +6,7 @@ import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { sharedBrowser, fileScope } from './shared-browser.mjs';
 import { prepareNativeControls } from './native-controls-fixture.mjs';
+import { installJsonConsumptionProbe } from './helpers/json-consumption-probe.mjs';
 
 const chrome = sharedBrowser();
 // Tests that only render controls or read records share one simulator; tests that write own theirs.
@@ -570,31 +572,39 @@ test('advanced lookup renders the native empty state, then recovers to selectabl
   assert.equal(await page.getByLabel('Parent', { exact: true }).inputValue(), 'Copper');
 });
 
-test('lookup invalidates selection during search, ignores stale responses and settles Escape', async (t) => {
+test('lookup cancels an in-flight search, invalidates selection and settles Escape', async (t) => {
   const { origin } = await readOnlyApp();
-  // Registered before the page's context closer: t.after hooks run first in, first out, and a parked route
-  // handler is released before its context closes.
-  let release, waiting;
-  t.after(() => release?.());
+  const pending = Promise.withResolvers();
+  t.after(() => pending.resolve());
   const { page, dialog } = await openParentLookup(t, origin);
-  const requestStarted = new Promise((resolve) => {
-    waiting = resolve;
-  });
+  const requestStarted = Promise.withResolvers();
   await page.route('**/_apps/api/tables/x_item?*', async (route) => {
-    const query = JSON.parse(new URL(route.request().url()).searchParams.get('query'));
-    if (query.search !== 'Copper') return route.continue();
-    waiting();
-    await new Promise((resolve) => {
-      release = resolve;
-    });
-    await route.continue();
+    const request = route.request(),
+      url = new URL(request.url()),
+      query = JSON.parse(url.searchParams.get('query'));
+    if (request.method() !== 'GET' || url.pathname !== '/_apps/api/tables/x_item' || query.search !== 'Copper')
+      return route.continue();
+    requestStarted.resolve();
+    await pending.promise;
+    try {
+      await route.continue();
+    } catch (error) {
+      if (!/ERR_ABORTED/i.test(String(error?.message ?? error))) throw error;
+    }
+  });
+  const failedCopper = page.waitForEvent('requestfailed', (request) => {
+    const url = new URL(request.url()),
+      query = JSON.parse(url.searchParams.get('query') ?? 'null');
+    return request.method() === 'GET' && url.pathname === '/_apps/api/tables/x_item' && query?.search === 'Copper';
   });
   await dialog.getByRole('searchbox', { name: 'Search lookup records' }).fill('Copper');
   assert.equal(await dialog.getByRole('button', { name: 'Done', exact: true }).isDisabled(), true);
-  await requestStarted;
+  await requestStarted.promise;
   await dialog.getByRole('searchbox', { name: 'Search lookup records' }).fill('Silver');
   await dialog.getByRole('radio', { name: 'Select Silver', exact: true }).waitFor();
-  release();
+  pending.resolve();
+  const abortedCopper = await failedCopper;
+  assert.match(abortedCopper.failure()?.errorText ?? '', /ERR_ABORTED/i);
   await dialog.getByRole('radio', { name: 'Select Silver', exact: true }).check();
   assert.equal(await dialog.getByRole('radio', { name: 'Select Copper', exact: true }).count(), 0);
   await page.keyboard.press('Escape');
@@ -603,6 +613,60 @@ test('lookup invalidates selection during search, ignores stale responses and se
   await page.getByRole('button', { name: 'Look up Parent', exact: true }).click();
   await page.getByRole('button', { name: 'Advanced', exact: true }).click();
   await dialog.getByRole('radio', { name: 'Select Copper', exact: true }).waitFor();
+});
+
+test('lookup ignores a late Copper body after the Silver search has settled', async (t) => {
+  const pending = Promise.withResolvers();
+  let probe;
+  t.after(async () => {
+    pending.resolve();
+    await probe?.restore();
+  });
+  const { origin } = await readOnlyApp();
+  const { page, dialog } = await openParentLookup(t, origin);
+  probe = await installJsonConsumptionProbe(page, {
+    key: '__paqviloLookupJsonProbe',
+    pathname: '/_apps/api/tables/x_item',
+    query: { search: 'Copper' },
+    ignoreSignal: true,
+  });
+  await probe.arm();
+
+  let heldCopperBody = false;
+  await page.route('**/_apps/api/tables/x_item?*', async (route) => {
+    const request = route.request(),
+      url = new URL(request.url()),
+      query = JSON.parse(url.searchParams.get('query') ?? 'null');
+    if (request.method() !== 'GET' || url.pathname !== '/_apps/api/tables/x_item' || query?.search !== 'Copper')
+      return route.continue();
+    const response = await route.fetch(),
+      body = await response.json();
+    heldCopperBody = body.rows.some((row) => row.x_name === 'Copper');
+    await pending.promise;
+    await route.fulfill({ response });
+  });
+  const copperStarted = page.waitForRequest((request) => {
+    const url = new URL(request.url()),
+      query = JSON.parse(url.searchParams.get('query') ?? 'null');
+    return request.method() === 'GET' && url.pathname === '/_apps/api/tables/x_item' && query?.search === 'Copper';
+  });
+  const search = dialog.getByRole('searchbox', { name: 'Search lookup records' });
+  await search.fill('Copper');
+  await copperStarted;
+  await search.fill('Silver');
+  await dialog.getByRole('radio', { name: 'Select Silver', exact: true }).waitFor();
+  pending.resolve();
+  await probe.waitForCompletion();
+
+  const counts = await probe.counts();
+  assert.equal(heldCopperBody, true);
+  assert.equal(counts.matchedFetches, 1);
+  assert.equal(counts.successfulJsonConsumptions, 1);
+  assert.equal(counts.consumedAfterContinuations, 1);
+  assert.equal(counts.errors, 0);
+  assert.equal(await dialog.getByRole('radio', { name: 'Select Silver', exact: true }).count(), 1);
+  assert.equal(await dialog.getByRole('radio', { name: 'Select Copper', exact: true }).count(), 0);
+  assert.equal(await dialog.isVisible(), true);
 });
 
 test('lookup target picker clears selection and preserves polymorphic target identity', async (t) => {

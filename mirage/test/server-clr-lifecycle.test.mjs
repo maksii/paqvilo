@@ -1,3 +1,4 @@
+// @test-kind contract: server-owned CLR hosts emit start/stop diagnostics and verify owned process closure
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -107,6 +108,14 @@ test(
     assert.deepEqual(clrHostPoolStatus(), []);
     for (const app of [first, second]) {
       const notes = app.state().diagnostics;
+      assert.ok(
+        notes.some((note) => note.code === 'PLUGIN_CLR_HOST_STARTED'),
+        'app reports a started host',
+      );
+      assert.ok(
+        notes.some((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED'),
+        'app reports a stopped host',
+      );
       assert.equal(
         notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STARTED').length,
         notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED').length,

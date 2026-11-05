@@ -429,11 +429,11 @@ test('at phone width nothing scrolls sideways and step names wrap; dark and ligh
   await page.locator('#activity-why').waitFor();
   await page.locator('#activity-why').scrollIntoViewIfNeeded();
   assert.equal(await sideways(page), 0);
-  const cut = await page
-    .locator('.ui-waterfall-name')
-    .evaluateAll((names) =>
-      names.filter((name) => name.scrollWidth > name.clientWidth + 1).map((name) => name.textContent),
-    );
+  const waterfallNames = page.locator('.ui-waterfall-name');
+  assert.ok((await waterfallNames.count()) > 0, 'the activity waterfall rendered names');
+  const cut = await waterfallNames.evaluateAll((names) =>
+    names.filter((name) => name.scrollWidth > name.clientWidth + 1).map((name) => name.textContent),
+  );
   assert.deepEqual(cut, []);
   await shot(page, 'activity-390-light-why');
   // Pages & render: two columns with the actions stacked, inside the frame.

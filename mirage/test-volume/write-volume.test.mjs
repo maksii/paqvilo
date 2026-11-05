@@ -206,7 +206,9 @@ test('key-set paging visits every row once despite a concurrent insert, at a lin
     'paging',
     async (n) => {
       const { send } = await fixture();
-      await send('POST', 'x_items/Microsoft.Dynamics.CRM.CreateMultiple', { body: { Targets: targets(n) } });
+      const { Ids: originalIds } = await send('POST', 'x_items/Microsoft.Dynamics.CRM.CreateMultiple', {
+        body: { Targets: targets(n) },
+      });
       const seen = [];
       let next = 'x_items?$select=x_name&$orderby=x_rank',
         pages = 0,
@@ -226,6 +228,7 @@ test('key-set paging visits every row once despite a concurrent insert, at a lin
       });
       assert.equal(seen.length, n);
       assert.equal(new Set(seen).size, n);
+      assert.deepEqual([...seen].sort(), [...originalIds].sort());
       return ms / pages;
     },
     { diagnostic: (message) => t.diagnostic(message) },

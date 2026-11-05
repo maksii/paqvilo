@@ -69,10 +69,15 @@ test(
     // These invented fixtures are deleted on exit. Include the flow failure and
     // request counts in the nested test output so a failed run remains diagnosable.
     const assertion = "'rendered content and browser requests must pass'";
-    const recipe = example.replace(
+    assert.equal(example.split(assertion).length - 1, 1, 'the example has one rendered-content assertion');
+    let recipe = example.replace(
       assertion,
       `${assertion} + ': ' + JSON.stringify({ sourceChanged: result.sourceChanged, implementationChanged: result.implementationChanged, flows: result.flows.map(({ name, passed, error, steps, failedRequests, failedResponses, blockedRequests, pageErrors, consoleErrors }) => ({ name, passed, error, steps: steps.map(({ action, passed }) => ({ action, passed })), failedRequests: failedRequests.length, failedResponses: failedResponses.length, blockedRequests: blockedRequests.length, pageErrors: pageErrors.length, consoleErrors: consoleErrors.length })) })`,
     );
+    const flowMarker = `    console.log('PAQVILO_ACCEPTANCE_FLOW ' + JSON.stringify({ flows: result.flows.map(({ passed, steps }) => ({ passed, steps: steps.map(({ action, passed }) => ({ action, passed })) })) }));`;
+    const flowAnchor = '    assert.equal(result.passed, true,';
+    assert.equal(recipe.split(flowAnchor).length - 1, 1, 'the example has one rendered-content assertion');
+    recipe = recipe.replace(flowAnchor, `${flowMarker}\n${flowAnchor}`);
     assert.notEqual(recipe, example, 'the acceptance assertion receives diagnostic context');
     const file = path.join(root, 'test-browser/local.acceptance.test.mjs');
     await fs.writeFile(file, recipe);
@@ -80,13 +85,19 @@ test(
     const result = await run(root);
     t.diagnostic(`baseline CLI completed after ${Date.now() - started} ms`);
     assert.equal(result.code, 0, result.output);
+    const textStep = "{ action: 'text', selector: '#fixture-title', value: 'Invented acceptance content' }";
+    assert.equal(recipe.split(textStep).length - 1, 1, 'the recipe has one unique content text step');
+    const contentStep =
+      "{ action: 'text', selector: '#fixture-title', value: 'Invented acceptance content', timeout: 1000 }";
     const variants = [
       [
         'content',
-        recipe.replace(
-          '<h1 id="fixture-title">Invented acceptance content</h1>',
-          '<h1 id="fixture-title">Regressed content</h1>',
-        ),
+        recipe
+          .replace(
+            '<h1 id="fixture-title">Invented acceptance content</h1>',
+            '<h1 id="fixture-title">Regressed content</h1>',
+          )
+          .replace(textStep, contentStep),
         'rendered content and browser requests must pass',
       ],
       [
@@ -118,6 +129,17 @@ test(
           t.diagnostic(`${name} CLI completed after ${Date.now() - started} ms`);
           assert.equal(rejected.code, 1, rejected.output);
           assert.ok(rejected.output.includes(expected), `${name} must fail its intended assertion: ${rejected.output}`);
+          if (name === 'content') {
+            const matches = [...rejected.output.matchAll(/PAQVILO_ACCEPTANCE_FLOW (\{[^\r\n]*\})/g)];
+            assert.equal(matches.length, 1, 'content failure emits one structured flow record');
+            const diagnostic = JSON.parse(matches[0][1]);
+            assert.equal(diagnostic.flows.length, 1);
+            assert.equal(diagnostic.flows[0].passed, false);
+            assert.deepEqual(diagnostic.flows[0].steps, [
+              { action: 'navigate', passed: true },
+              { action: 'text', passed: false },
+            ]);
+          }
         }, 2),
       ),
     );

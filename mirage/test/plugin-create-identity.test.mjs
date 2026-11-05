@@ -9,13 +9,32 @@ import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 test(
   'original CLR Create and Update retain native identity mutations, generated attributes and stable saved keys',
   { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-create-identity-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    let backend;
+    const hostCounts = { started: 0, stopped: 0 };
+    let allAbsenceVerified = true;
+    ownedFixture(t).add(() => backend?.close());
+    ownedFixture(t).add(() => {
+      assert.ok(hostCounts.started > 0, 'the fixture started a CLR host');
+      assert.equal(hostCounts.started, hostCounts.stopped, 'every started CLR host stopped');
+      assert.equal(allAbsenceVerified, true, 'every stopped CLR host absence was verified');
+    });
+    ownedFixture(t).remove(() =>
+      t.diagnostic(
+        JSON.stringify({
+          profile: 'rank3-clr-host-lifecycle',
+          ...hostCounts,
+          allAbsenceVerified: hostCounts.stopped > 0 && allAbsenceVerified,
+        }),
+      ),
+    );
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const user = '10000000-0000-0000-0000-000000000001',
       sdk = clrSdk(),
       source = path.join(root, 'Identity.cs'),
@@ -33,6 +52,8 @@ test(
       sdkRoot: path.dirname(sdk),
       sdkAssembly: path.basename(sdk),
       cacheRoot: path.join(root, 'cache'),
+      // @parity-evidence: User explicitly approved on 2026-11-05 the fixture-only pooled CLR host and close-before-removal change; existing C# code and parity assertions are unchanged.
+      persistentHost: true,
       serviceProfile: { userId: user, evidence: 'Invented identity observer', grants: [] },
       context: { executionUserId: user, initiatingUserId: user, organizationId: user, businessUnitId: user },
     });
@@ -82,7 +103,7 @@ test(
       ]),
     );
     const snapshots = [];
-    await attachClrSteps(t, {
+    ({ backend } = await attachClrSteps(t, {
       store,
       steps,
       runtime: (step) =>
@@ -117,7 +138,14 @@ test(
           },
         ],
       ]),
-    });
+      diagnostic: (event) => {
+        if (event.code === 'PLUGIN_CLR_HOST_STARTED') hostCounts.started++;
+        if (event.code === 'PLUGIN_CLR_HOST_STOPPED') {
+          hostCounts.stopped++;
+          if (event.absenceVerified !== true) allAbsenceVerified = false;
+        }
+      },
+    }));
     await store.create('widget', { title: 'Generated' }, { admin: true });
     await store.create('widget', { widgetid: user, supplied: true }, { admin: true });
     assert.equal(store.tableRows('widget').length, 2);

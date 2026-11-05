@@ -1,3 +1,4 @@
+// @test-kind contract: Mirage catalogue ownership records preserve all concurrent process identities
 // mirage init/start/status/stop for every catalogue site (portals=all): one project and one
 // runtime per site.
 import { test } from 'node:test';
@@ -453,6 +454,10 @@ test('Mirage ownership records survive concurrent updates from several toolkit p
     const sessions = JSON.parse(fs.readFileSync(ownershipFile, 'utf8')).sessions;
     assert.equal(sessions.length, 100, "no process lost another process's records");
     assert.equal(new Set(sessions.map((item) => item.pid)).size, 100);
+    assert.deepEqual(
+      sessions.map((item) => item.pid).sort((left, right) => left - right),
+      [1, 2, 3, 4].flatMap((block) => Array.from({ length: 25 }, (_, index) => block * 1000 + index)),
+    );
     assert.equal(fs.existsSync(`${ownershipFile}.lock`), false, 'the lock is released');
   } finally {
     fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

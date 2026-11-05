@@ -28,7 +28,7 @@ test(
       assembly = path.join(root, 'Delegated.dll');
     await fs.writeFile(
       source,
-      `using System;using Microsoft.Xrm.Sdk;namespace Invented {public sealed class Delegated:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var parent=c.ParentContext;if(c.MessageName!="UpdateMultiple"||c.Depth!=1||c.PrimaryEntityId!=new Guid("${recordId}")||c.UserId!=new Guid("${runAs}")||parent==null||parent.MessageName!="Update"||parent.Stage!=30||parent.Depth!=c.Depth||parent.PrimaryEntityId!=new Guid("${recordId}")||parent.UserId!=c.UserId||!parent.IsInTransaction)throw new Exception("Delegated core context lost");var target=(Entity)parent.InputParameters["Target"];if(target.Id!=new Guid("${recordId}")||target.GetAttributeValue<string>("title")!="After")throw new Exception("Original single target lost");}}}`,
+      `using System;using Microsoft.Xrm.Sdk;namespace Invented {public sealed class Delegated:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var parent=c.ParentContext;if(c.MessageName!="UpdateMultiple"||c.Depth!=1||c.PrimaryEntityId!=new Guid("${recordId}")||c.UserId!=new Guid("${runAs}")||parent==null||parent.MessageName!="Update"||parent.Stage!=30||parent.Depth!=c.Depth||parent.PrimaryEntityId!=new Guid("${recordId}")||parent.UserId!=c.UserId||!parent.IsInTransaction)throw new Exception("Delegated core context lost");var target=(Entity)parent.InputParameters["Target"];if(target.Id!=new Guid("${recordId}")||target.GetAttributeValue<string>("title")!="After")throw new Exception("Original single target lost");((ITracingService)p.GetService(typeof(ITracingService))).Trace("delegated parent checked");}}}`,
     );
     compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
@@ -68,12 +68,14 @@ test(
       descriptors,
       overrides: { ['plugin-step:' + step.id]: { mode: 'clr' } },
     });
+    const notes = [];
     const backend = await createOrganizationBackend({
       store,
       items: () => items,
       runtimes,
       descriptors,
       prepareRuntime: createPreparedClrRuntimePreparer(runtimes, descriptors),
+      diagnostic: (note) => notes.push(note),
     });
     t.after(() => backend.close());
     const profile = {
@@ -83,5 +85,9 @@ test(
     };
     await store.transact(() => localOrganizationService(store, profile).update('widget', recordId, { title: 'After' }));
     assert.equal(store.tableRows('widget')[0].title, 'After');
+    assert.ok(
+      notes.some((note) => note.code === 'PLUGIN_CLR_TRACE' && note.message === 'delegated parent checked'),
+      'the delegated CLR step executed its trace after the context checks',
+    );
   },
 );

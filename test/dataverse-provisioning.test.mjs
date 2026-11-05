@@ -1,3 +1,4 @@
+// @test-kind contract: provisioning reruns retain a complete journal for the compiled action plan without repeating writes
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -394,6 +395,11 @@ test('remote plan is read-only; apply creates, retains membership and has a muta
   );
   const posts = state.requests.filter((r) => r.method === 'POST').length;
   const again = await applyManifest(manifest, { client, expectedOrganisationId: state.organisationId });
+  const expectedActionKeys = compileManifest(manifest)
+    .actions.map((action) => action.key)
+    .sort();
+  assert.ok(expectedActionKeys.length > 0);
+  assert.deepEqual(again.entries.map((entry) => entry.key).sort(), expectedActionKeys);
   assert.ok(again.entries.every((e) => e.status === 'exists'));
   assert.equal(state.requests.filter((r) => r.method === 'POST').length, posts);
   assert.equal((await checkKeys(manifest, client)).ready, false);

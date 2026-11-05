@@ -9,6 +9,7 @@ import { prepareClrRuntime, dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
 import { createPreparedClrRuntimePreparer } from './fixtures/prepared-clr-runtimes.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { pooledClrLifecycle } from './fixtures/pooled-clr-lifecycle.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -30,7 +31,7 @@ const step = (message, stage = 20, rank = 1, index = 1) => ({
   typeName: 'Invented.BulkGuard',
   assemblyId: 'invented',
 });
-async function fixture(t, steps, handlers = new Map(), overrides = {}, runtimes = new Map()) {
+async function fixture(t, steps, handlers = new Map(), overrides = {}, runtimes = new Map(), diagnostic) {
   const f = await contractModuleFixture(t, {
     mappings: {
       x_item: {
@@ -52,6 +53,7 @@ async function fixture(t, steps, handlers = new Map(), overrides = {}, runtimes 
     runtimes,
     descriptors,
     prepareRuntime: createPreparedClrRuntimePreparer(runtimes, descriptors),
+    ...(diagnostic ? { diagnostic } : {}),
   });
   t.after(() => backend.close());
   return { ...f, items, backend };
@@ -518,6 +520,7 @@ test('evidenced Microsoft/system source steps survive global and selected bypass
   assert.equal((await f.request('POST', '/x_items', { x_name: 'Selective' }, selective)).status, 201);
   await f.backend.settle();
   assert.deepEqual(counts, { scalar: 4, group: 3, asyncScalar: 4, asyncGroup: 3 });
+  assert.equal(f.store.tableRows('x_item').length, 5);
   assert(
     f.store
       .tableRows('x_item')
@@ -1092,6 +1095,7 @@ test(
       sdkRoot: path.dirname(sdk),
       sdkAssembly: path.basename(sdk),
       cacheRoot: path.join(root, 'cache'),
+      persistentHost: true,
       serviceProfile: { userId: user, evidence: 'Invented mixed identity observer', grants: [] },
       context: { executionUserId: user, initiatingUserId: user, organizationId: user, businessUnitId: user },
     });
@@ -1121,6 +1125,17 @@ test(
       },
     ];
     assert.equal(cases.length, 20, 'the matrix has exactly twenty independent CLR scenarios');
+    const hostCounts = { started: 0, stopped: 0 };
+    let allAbsenceVerified = true;
+    t.after(() =>
+      t.diagnostic(
+        JSON.stringify({
+          profile: 'rank2-clr-host-lifecycle',
+          ...hostCounts,
+          allAbsenceVerified: hostCounts.stopped > 0 && allAbsenceVerified,
+        }),
+      ),
+    );
     for (const [scenarioIndex, scenario] of cases.entries()) {
       const scalarId = scenario.scalar.map(({ stage, rank }) => `${stage}x${rank}`).join('+') || 'none';
       const caseId = [
@@ -1175,7 +1190,13 @@ test(
         const overrides = Object.fromEntries(
           [...runtimes.keys()].map((entry) => ['plugin-step:' + entry, { mode: 'clr' }]),
         );
-        const f = await fixture(child, registrations, handlers, overrides, runtimes);
+        const f = await fixture(child, registrations, handlers, overrides, runtimes, (event) => {
+          if (event.code === 'PLUGIN_CLR_HOST_STARTED') hostCounts.started++;
+          if (event.code === 'PLUGIN_CLR_HOST_STOPPED') {
+            hostCounts.stopped++;
+            if (event.absenceVerified !== true) allAbsenceVerified = false;
+          }
+        });
         const provided = '20000000-0000-0000-0000-000000000099';
         if (message === 'Update')
           assert.equal(
@@ -1236,6 +1257,9 @@ test(
         );
       });
     }
+    assert.equal(hostCounts.started, 20, 'every matrix case starts its CLR host');
+    assert.equal(hostCounts.stopped, 20, 'every matrix case stops its CLR host');
+    assert.equal(allAbsenceVerified, true, 'every stopped CLR host absence is verified');
   },
 );
 
@@ -1244,7 +1268,8 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-wrapper-update-inputs-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    let runtime;
+    const lifecycle = pooledClrLifecycle(t, root, () => runtime);
     const sdk = clrSdk(),
       source = path.join(root, 'Inputs.cs'),
       assembly = path.join(root, 'Inputs.dll');
@@ -1266,7 +1291,7 @@ test(
     // The Driver waits for three separately bounded child CLR observers. Its
     // inclusive budget includes its own work and all three child invocations.
     const callerInvocationBudgetMs = childInvocationBudgetMs * (observerStages.length + 1);
-    const runtime = await prepareClrRuntime({
+    runtime = await prepareClrRuntime({
       trust: 'execute-local-assembly',
       root,
       assembly: path.basename(assembly),
@@ -1274,6 +1299,7 @@ test(
       sdkRoot: path.dirname(sdk),
       sdkAssembly: path.basename(sdk),
       cacheRoot: path.join(root, 'cache'),
+      persistentHost: true,
       serviceProfile: profile,
       timeoutMs: childInvocationBudgetMs,
       context: { executionUserId: user, initiatingUserId: user, organizationId: user, businessUnitId: user },
@@ -1322,13 +1348,16 @@ test(
                 : runtime,
             ]),
         );
+        const tracker = lifecycle.child('case');
         f = await fixture(
           child,
           registrations,
           handlers,
           Object.fromEntries([...runtimes.keys()].map((entry) => ['plugin-step:' + entry, { mode: 'clr' }])),
           runtimes,
+          tracker.diagnostic,
         );
+        child.after(() => tracker.verifyClose(f.backend));
         assert.equal((await f.request('POST', '/x_items', { x_itemid: provided, x_name: 'Seed' })).status, 201);
         let response;
         if (kind.startsWith('SDK'))

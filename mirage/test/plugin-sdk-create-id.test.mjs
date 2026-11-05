@@ -200,6 +200,7 @@ test('deep-insert child messages do not inherit the parent SDK identity, respons
     { admin: true },
     { sdkCreateId: requested, sdkResponseToken: token, derivedCreateColumns: { statecode: 0, statuscode: 1 } },
   );
+  assert.deepEqual(phases.map((phase) => phase.mode).sort(), ['collection', 'intersect', 'root', 'single']);
   assert.equal(store.tableRows('widget').length, 4);
   assert.equal(new Set(store.tableRows('widget').map((row) => row.widgetid)).size, 4);
   assert.equal(store.tableRows('widget').find((row) => row.mode === 'root').widgetid, requested);

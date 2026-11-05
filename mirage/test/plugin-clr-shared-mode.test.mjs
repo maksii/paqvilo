@@ -43,6 +43,17 @@ test(
     assert.equal(count('PLUGIN_CLR_HOST_STOPPED'), 0, 'step 3 still uses the shared host');
     await create('second');
     assert.equal(count('PLUGIN_CLR_HOST_STARTED'), 1, 'step 3 reuses the shared host');
+    assert.deepEqual(
+      app.store
+        .snapshot()
+        .tables.fx_widget.filter((row) => ['first', 'second'].includes(row.fx_title))
+        .map((row) => [row.fx_title, row.fx_note])
+        .sort(([left], [right]) => left.localeCompare(right)),
+      [
+        ['first', 'clr ran'],
+        ['second', 'clr ran'],
+      ],
+    );
     assert.ok(app.store.snapshot().tables.fx_widget.every((row) => row.fx_note === 'clr ran'));
   },
 );

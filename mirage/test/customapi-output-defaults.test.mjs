@@ -7,12 +7,13 @@ import path from 'node:path';
 import { install } from '../lib/dataverse-customapi.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
 import { pluginInvocationParent } from '../lib/plugin-execution-lifetime.mjs';
-import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
+import { closeClrHostPool, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { handleSoap } from '../lib/dataverse-soap.mjs';
 import { decodePairs, envelope, parseEnvelope } from '../lib/dataverse-soap-xml.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { drainFixture, ownedFixture } from '../testing/owned-fixture.mjs';
 
 const id = (n) => `40000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const name = 'invented_OutputDefaults';
@@ -54,9 +55,18 @@ for (const original of [false, true])
       { skip: original && CLR_SKIP },
       async (t) => {
         let mainDescriptor, root;
+        const ownedRuntimes = [];
         if (original) {
           root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-output-defaults-'));
-          t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+          ownedFixture(t).add(() =>
+            drainFixture(
+              ownedRuntimes.map((runtime) => async () => {
+                const result = await closeClrHostPool({ runtime });
+                assert.equal(result.allAbsenceVerified, true);
+              }),
+            ),
+          );
+          ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
           const sdk = clrSdk(),
             source = path.join(root, 'Outputs.cs'),
             assembly = path.join(root, 'Outputs.dll');
@@ -76,6 +86,7 @@ public sealed class Caller:IPlugin{public void Execute(IServiceProvider p){var c
             sdkRoot: path.dirname(sdk),
             sdkAssembly: path.basename(sdk),
             cacheRoot: path.join(root, 'cache'),
+            persistentHost: true,
             serviceProfile: { userId: id(1), evidence: 'Invented output main', grants: [] },
             context: {
               executionUserId: id(1),
@@ -135,6 +146,15 @@ public sealed class Caller:IPlugin{public void Execute(IServiceProvider p){var c
               store = api.store;
               await install(api, {
                 pluginRuntimes: mainDescriptor ? new Map([[id(1), mainDescriptor]]) : new Map(),
+                ...(original
+                  ? {
+                      prepareRuntime: async (...args) => {
+                        const runtime = await prepareClrRuntime(...args);
+                        ownedRuntimes.push(runtime);
+                        return runtime;
+                      },
+                    }
+                  : {}),
                 handlers: original
                   ? new Map()
                   : new Map([
@@ -190,6 +210,7 @@ public sealed class Caller:IPlugin{public void Execute(IServiceProvider p){var c
           customApi: { name, bindingType: 0, allowedCustomProcessingStepType: 2, isFunction },
         };
         const postRuntime = original ? await prepareClrRuntime({ ...mainDescriptor, typeName: 'Invented.Post' }) : null;
+        if (postRuntime) ownedRuntimes.push(postRuntime);
         await attachClrSteps(t, {
           store,
           steps: [step],
@@ -293,6 +314,7 @@ public sealed class Caller:IPlugin{public void Execute(IServiceProvider p){var c
             serviceProfile: profile,
             context: { ...mainDescriptor.context, executionUserId: profile.userId, initiatingUserId: profile.userId },
           });
+          ownedRuntimes.push(callerRuntime);
           await attachClrSteps(t, {
             store,
             runtime: callerRuntime,

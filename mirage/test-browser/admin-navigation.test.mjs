@@ -155,6 +155,7 @@ test(
     await page.getByText('Advanced: configured identity (sign-in default and scripts)', { exact: true }).click();
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    assert.ok(!calls.some((path) => path.includes('/audit')));
     assert.deepEqual(failures, []);
   },
 );

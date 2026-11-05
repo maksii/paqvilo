@@ -1,3 +1,4 @@
+// @test-kind contract: X-ray source identity reports uncertain candidates with their complete authored provenance
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
@@ -698,6 +699,9 @@ test('a runtime notification class cannot promote an inactive template over a sh
   await page.locator('.alert').evaluate((node) => node.classList.add('notification'));
   const found = await identify('.notification');
   assertNoExact(found);
+  const depthZeroNames = found.matches.filter((item) => item.depth === 0).map((item) => item.name);
+  assert.ok(depthZeroNames.includes('Global shell'));
+  assert.ok(depthZeroNames.includes('Unrelated application wizard'));
   assert.ok(found.matches.filter((item) => item.depth === 0).every((item) => !item.strong));
   assertSourceCandidate(await identify('#active-next'), 'Active wizard');
   const rect = await page.locator('.notification').boundingBox();
@@ -856,7 +860,9 @@ test('framework-only evidence remains uncertain despite unique static include re
     elementSources: [...header, ...own],
   });
   assertNoExact(await identify('a'));
-  assert.ok((await identify('a')).matches.every((item) => !item.strong));
+  const pageCandidates = await identify('a');
+  assert.ok(pageCandidates.matches.some((item) => item.name === 'Page'));
+  assert.ok(pageCandidates.matches.every((item) => !item.strong));
   await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
     data,
     report: { elementSources: [...own, ...hints('<a class="btn btn-link">Go</a>', 'Other', { includedBy: ['page'] })] },
@@ -864,7 +870,7 @@ test('framework-only evidence remains uncertain despite unique static include re
   assertNoExact(await identify('a'));
 });
 
-test('framework-only matches count sibling sources, reject class subsets and do not headline enclosing regions', async (t) => {
+test('framework-only matches count sibling sources and do not claim exact attribution', async (t) => {
   const sources = Array.from({ length: 5 }, (_, i) =>
     hints('<button class="close">Close</button>', 'Close' + i, { includedBy: ['page'] }),
   ).flat();
@@ -873,7 +879,15 @@ test('framework-only matches count sibling sources, reject class subsets and do 
     '<button class="close">Close</button><button class="btn btn-default">Generated</button><div class="title"><span>Generated</span></div>',
     { elementSources: sources },
   );
-  assertNoExact(await identify('button.close'));
+  const closeCandidates = await identify('button.close');
+  assertNoExact(closeCandidates);
+  assert.deepEqual(
+    closeCandidates.matches
+      .filter((item) => item.depth === 0)
+      .map((item) => item.name)
+      .sort(),
+    ['Close0', 'Close1', 'Close2', 'Close3', 'Close4'],
+  );
   const elementSources = [
     ...hints('<button class="btn">A</button><button class="btn">B</button>', 'Subset', { includedBy: ['page'] }),
     ...['Full1', 'Full2'].flatMap((name) =>
@@ -887,6 +901,11 @@ test('framework-only matches count sibling sources, reject class subsets and do 
     data,
     report: { elementSources },
   });
+  const buttonCandidates = await identify('.btn.btn-default');
+  const buttonNames = buttonCandidates.matches.filter((item) => item.depth === 0).map((item) => item.name);
+  assert.ok(buttonNames.includes('Full1'));
+  assert.ok(buttonNames.includes('Full2'));
+  assert.ok(buttonCandidates.matches.every((item) => !item.strong));
   assertNoExact(await identify('.btn'));
   assertNoExact(await identify('span'));
 });

@@ -1,3 +1,4 @@
+// @test-kind contract: the collector resumes evidence delivery with the complete ordered multipart receipt
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -173,6 +174,10 @@ test(
       parts: 2,
     });
     const rows = [...events.values()].sort((a, b) => a.pqvd_partnumber - b.pqvd_partnumber);
+    assert.deepEqual(
+      rows.map((row) => row.pqvd_partnumber).sort((left, right) => left - right),
+      [1, 2],
+    );
     assert.equal(rows.map((row) => row.pqvd_payloadtext).join(''), payload);
     assert.ok(rows.every((row) => row.pqvd_payloadhash === sha(payload) && row.pqvd_partcount === 2));
     assert.equal(JSON.parse(summary.pqvd_serversummary).complete, false);

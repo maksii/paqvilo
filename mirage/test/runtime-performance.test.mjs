@@ -1,3 +1,4 @@
+// @test-kind contract: runtime catalogue responses preserve exact table coverage, privacy and cancellation behavior
 import test from 'node:test';
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
@@ -1075,6 +1076,7 @@ test('catalogue yields to status while retaining one security read and releases 
   assert.equal(complete, false, 'Unrelated status completes before catalogue work finishes.');
   const value = await pending;
   assert.equal(checks, 64);
+  assert.deepEqual(Object.keys(value.tables).sort(), Object.keys(tables).sort());
   assert.ok(Object.values(value.tables).every((table) => table.capabilities.read && !Object.hasOwn(table, 'rows')));
   await write;
   const abort = new AbortController(),
