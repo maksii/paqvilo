@@ -7,21 +7,28 @@ import os from 'node:os';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { DataError } from '../lib/data-error.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
-import { prepareClrRuntime, dispatchSdkCall, clrHostPoolStatus } from '../lib/plugin-clr.mjs';
+import { prepareClrRuntime, dispatchSdkCall, clrHostPoolStatus, closeClrHostPool } from '../lib/plugin-clr.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
+import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const empty = '00000000-0000-0000-0000-000000000000';
 const user = '10000000-0000-0000-0000-000000000001';
 const requested = '20000000-0000-0000-0000-000000000001';
 const observerStages = [10, 20, 40];
-const childInvocationBudgetMs = 2_000;
+const childInvocationBudgetMs = ORDINARY_CLR_TIMEOUT_MS;
 // The caller's inclusive deadline contains three independently bounded child
 // CLR invocations, including isolated host startup, plus its own execution.
 // Keep the ordinary child budget; configure this fixture's caller for its
 // actual call graph instead of fitting four cold hosts into one child budget.
-const callerInvocationBudgetMs = childInvocationBudgetMs * (observerStages.length + 1);
+const identityRuntime = (runtime, typeName, persistentHost, nestedCount = observerStages.length) =>
+  retypeClrRuntime(runtime, {
+    typeName,
+    persistentHost,
+    timeoutMs: typeName === 'Invented.Caller' ? childInvocationBudgetMs * (nestedCount + 1) : childInvocationBudgetMs,
+  });
 const fields = {
   mode: { dataverseType: 'nvarchar' },
   result: { dataverseType: 'nvarchar' },
@@ -247,6 +254,91 @@ test('early Target projection retains authored inputs without changing unchanged
   }
 });
 
+// @test-kind tooling: the semantic fixture must allow a real nested CLR child to outlive its former two-second budget
+test(
+  'the SDK identity fixture budget permits a nested CLR observer to complete beyond two seconds',
+  { skip: CLR_SKIP, timeout: 60_000 },
+  async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-sdk-identity-budget-'));
+    let runtime, backend;
+    const hosts = { started: 0, stopped: 0, allAbsenceVerified: true };
+    const owner = ownedFixture(t);
+    owner.add(async () => {
+      let failure;
+      try {
+        await backend?.close();
+      } catch (error) {
+        failure = error;
+      }
+      const result = runtime ? closeClrHostPool({ runtime }) : { allAbsenceVerified: true };
+      assert.equal(result.allAbsenceVerified, true, 'the owned runtime has no remaining hosts');
+      if (failure) throw failure;
+      if (backend) {
+        assert.equal(hosts.started, 2, 'the isolated caller and observer both started');
+        assert.equal(hosts.stopped, hosts.started);
+        assert.equal(hosts.allAbsenceVerified, true);
+      }
+    });
+    owner.remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    const sdk = clrSdk(),
+      source = path.join(root, 'Budget.cs');
+    await fs.writeFile(
+      source,
+      `using System;using System.Threading;using Microsoft.Xrm.Sdk;namespace Invented {
+public sealed class Caller:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);s.Create(new Entity("widget"));}}
+public sealed class Observe:IPlugin {public void Execute(IServiceProvider p){Thread.Sleep(2200);var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));((Entity)c.InputParameters["Target"])["result"]="nested observer completed";}}
+}`,
+    );
+    compileClr(source, path.join(root, 'Budget.dll'), { references: [sdk] });
+    runtime = await prepareClrRuntime({
+      trust: 'execute-local-assembly',
+      root,
+      assembly: 'Budget.dll',
+      typeName: 'Invented.Observe',
+      sdkRoot: path.dirname(sdk),
+      sdkAssembly: path.basename(sdk),
+      cacheRoot: path.join(root, 'cache'),
+      timeoutMs: childInvocationBudgetMs,
+      serviceProfile: profile,
+      context: { executionUserId: user, initiatingUserId: user, organizationId: user, businessUnitId: user },
+    });
+    const state = emptyState();
+    state.mappings = structuredClone(schema);
+    state.tables.widget = [];
+    state.tables.trigger = [];
+    const store = new DataStore({ state });
+    const step = (entity, typeName, index) => ({
+      id: `90000000-0000-0000-0000-${String(index).padStart(12, '0')}`,
+      enabled: true,
+      entity,
+      message: 'Create',
+      stage: 20,
+      rank: 1,
+      mode: 0,
+      supportedDeployment: 0,
+      filteringAttributes: [],
+      images: [],
+      typeName,
+      assemblyId: 'invented',
+    });
+    ({ backend } = await attachClrSteps(t, {
+      store,
+      steps: [step('trigger', 'Invented.Caller', 1), step('widget', 'Invented.Observe', 2)],
+      runtime: (item) => identityRuntime(runtime, item.typeName, false, 1),
+      diagnostic: (event) => {
+        if (event.code === 'PLUGIN_CLR_HOST_STARTED') hosts.started++;
+        if (event.code === 'PLUGIN_CLR_HOST_STOPPED') {
+          hosts.stopped++;
+          if (event.absenceVerified !== true) hosts.allAbsenceVerified = false;
+        }
+      },
+    }));
+    await store.create('trigger', {}, { admin: true });
+    assert.equal(store.tableRows('widget').length, 1);
+    assert.equal(store.tableRows('widget')[0].result, 'nested observer completed');
+  },
+);
+
 // @test-kind unproven: local model of Create identity channels; its PreOperation Target never carrying versionnumber is native
 // (dev-environment recorder corpus 2026-10-30, crud/upsert/reads/pipelineEffects Create stage 20 and 40 Targets).
 test(
@@ -340,14 +432,7 @@ public sealed class Timing:IPlugin{public void Execute(IServiceProvider p){var c
                 store: f.store,
                 steps,
                 runtime: (step) =>
-                  step.typeName === 'Invented.Capture'
-                    ? null
-                    : retypeClrRuntime(runtime, {
-                        typeName: step.typeName,
-                        persistentHost: pooled,
-                        timeoutMs:
-                          step.typeName === 'Invented.Caller' ? callerInvocationBudgetMs : childInvocationBudgetMs,
-                      }),
+                  step.typeName === 'Invented.Capture' ? null : identityRuntime(runtime, step.typeName, pooled),
                 handlers: new Map([
                   [
                     'Invented.Capture',
@@ -436,7 +521,7 @@ public sealed class Timing:IPlugin{public void Execute(IServiceProvider p){var c
         await attachClrSteps(t, {
           store: f.store,
           steps,
-          runtime: retypeClrRuntime(runtime, { typeName: 'Invented.Timing' }),
+          runtime: identityRuntime(runtime, 'Invented.Timing', false),
         });
         const response = await f.request('POST', '/widgets', {
           mode: 'timing',
