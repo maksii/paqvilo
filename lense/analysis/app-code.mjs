@@ -23,7 +23,7 @@ export const codeAppRules = [
     'reliability',
     'Code Apps configuration is not a JSON object or has an invalid declared field shape.',
     'Correct the configuration field types using the installed Power Apps CLI schema; preserve unknown extension fields and source values.',
-    [reference],
+    { references: [reference] },
   ),
   appRule(
     'APP-CODE-002',
@@ -32,7 +32,7 @@ export const codeAppRules = [
     'reliability',
     'A declared connection or database reference has an invalid structural contract.',
     'Use object references, string identity fields and the documented data-source collection shapes; live connection authorization remains a separate check.',
-    [reference],
+    { references: [reference] },
   ),
   appRule(
     'APP-CODE-003',
@@ -41,8 +41,7 @@ export const codeAppRules = [
     'compatibility',
     'Code Apps configuration does not contain a nonempty environment identity.',
     'Confirm whether this is an intentionally uninitialized scaffold and select the intended environment explicitly before any authorized CLI initialization or deployment.',
-    [reference],
-    'medium',
+    { references: [reference], confidence: 'medium' },
   ),
   appRule(
     'APP-CODE-004',
@@ -51,7 +50,7 @@ export const codeAppRules = [
     'compatibility',
     'A recognized Code Apps project has no adjacent package manifest or does not declare the Power Apps runtime SDK.',
     'Review whether the exported folder is complete and verify the app SDK dependency in its own package; do not install dependencies during analysis.',
-    [reference],
+    { references: [reference] },
   ),
   appRule(
     'APP-CODE-005',
@@ -60,7 +59,7 @@ export const codeAppRules = [
     'reliability',
     'A recognized Code Apps package has no nonempty build script.',
     'Define and verify the project build before an authorized deployment. Source inspection does not run or certify that build.',
-    [reference],
+    { references: [reference] },
   ),
   appRule(
     'APP-CODE-006',
@@ -69,8 +68,7 @@ export const codeAppRules = [
     'maintainability',
     'A Code Apps package does not declare the separate Power Apps CLI dependency.',
     'For reproducible CLI workflows, declare @microsoft/power-apps-cli and resolve the actual project-local pa or power-apps executable. Analysis and local simulation do not require a deployment CLI.',
-    [cliReference],
-    'medium',
+    { references: [cliReference], confidence: 'medium' },
   ),
   appRule(
     'APP-CODE-007',
@@ -79,8 +77,7 @@ export const codeAppRules = [
     'compatibility',
     'An npm script appears to invoke the Power Apps runtime SDK package as an executable CLI.',
     'Keep @microsoft/power-apps runtime services separate from @microsoft/power-apps-cli tooling; review command syntax and use the resolved local binary without implicit installation.',
-    [cliReference],
-    'medium',
+    { references: [cliReference], confidence: 'medium' },
   ),
   appRule(
     'APP-CODE-008',
@@ -89,8 +86,7 @@ export const codeAppRules = [
     'maintainability',
     'The Code Apps TypeScript configuration explicitly disables strict checking.',
     'Review type-safety requirements and the effective extended TypeScript configuration before enabling stricter checking; no compiler or project code is executed.',
-    [reference],
-    'medium',
+    { references: [reference], confidence: 'medium' },
   ),
   appRule(
     'APP-DEPS-001',
@@ -99,7 +95,7 @@ export const codeAppRules = [
     'maintainability',
     'A recognized Code Apps or PCF package has no supported dependency lockfile covering it in the supplied source inventory.',
     'Check export completeness and commit the appropriate package-manager lockfile for reproducible restores. No dependency installation or registry request is performed.',
-    [dependencyReference],
+    { references: [dependencyReference] },
   ),
   appRule(
     'APP-DEPS-002',
@@ -108,7 +104,7 @@ export const codeAppRules = [
     'reliability',
     'An npm lockfile root package does not match the supplied package dependency declarations.',
     'Regenerate the lockfile with the project package manager and review the resulting dependency changes; compare only records from this same source root.',
-    [dependencyReference],
+    { references: [dependencyReference] },
   ),
   appRule(
     'APP-DEPS-003',
@@ -117,7 +113,7 @@ export const codeAppRules = [
     'reliability',
     'A recognized app package or npm lockfile is not a JSON object.',
     'Correct the supplied JSON source; parser messages and source values are deliberately withheld.',
-    [dependencyReference],
+    { references: [dependencyReference] },
   ),
   appRule(
     'APP-DEPS-004',
@@ -126,7 +122,7 @@ export const codeAppRules = [
     'reliability',
     'A recognized app package declares dependency or script fields with invalid structural types.',
     'Use string-valued package dependency and script maps. Preserve intentional dependency ranges; this check does not install or resolve packages.',
-    [dependencyReference],
+    { references: [dependencyReference] },
   ),
 ];
 

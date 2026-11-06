@@ -15,7 +15,7 @@ export const pcfRules = [
     'reliability',
     'A PCF manifest or project has invalid XML, or the manifest does not contain one complete control.',
     'Correct manifest XML before checking component contracts; diagnostic source values are withheld.',
-    [manifest],
+    { references: [manifest] },
   ),
   appRule(
     'APP-PCF-002',
@@ -24,7 +24,7 @@ export const pcfRules = [
     'compatibility',
     'A control omits a required identity, version or display-name declaration, or declares an invalid control type.',
     'Supply namespace, constructor, version and display-name-key; control-type must be standard or virtual. Description-key is optional.',
-    [`${manifest}control`],
+    { references: [`${manifest}control`] },
   ),
   appRule(
     'APP-PCF-003',
@@ -33,7 +33,7 @@ export const pcfRules = [
     'compatibility',
     'A control does not declare exactly one code resource with a nonempty path.',
     'Declare the component implementation resource once. Check packaging separately before deployment.',
-    [`${manifest}code`],
+    { references: [`${manifest}code`] },
   ),
   appRule(
     'APP-PCF-004',
@@ -42,7 +42,7 @@ export const pcfRules = [
     'reliability',
     'A property, dataset, type group or feature identity is repeated within its declaration scope.',
     'Keep declaration identities unique within the control or dataset; preserve existing bindings when correcting duplicates.',
-    [manifest],
+    { references: [manifest] },
   ),
   appRule(
     'APP-PCF-005',
@@ -51,7 +51,7 @@ export const pcfRules = [
     'compatibility',
     'A property has conflicting type declarations, an unresolved local type group, an invalid declared usage, or an Object type that is not output-only.',
     'Use one concrete type or declared type group, a supported usage when declared, and output-only Object properties.',
-    [property],
+    { references: [property] },
   ),
   appRule(
     'APP-PCF-006',
@@ -60,8 +60,7 @@ export const pcfRules = [
     'compatibility',
     'A property omits type or usage metadata whose requirements depend on the target host.',
     'Check the manifest schema for the intended model-driven or Canvas host; do not infer a host from the presence of arbitrary JavaScript.',
-    [property],
-    'medium',
+    { references: [property], confidence: 'medium' },
   ),
   appRule(
     'APP-PCF-007',
@@ -70,7 +69,7 @@ export const pcfRules = [
     'compatibility',
     'A virtual control does not declare the React platform library.',
     'Review the virtual-control template and platform-library declarations; a manifest edit alone does not convert a standard implementation.',
-    [libraries],
+    { references: [libraries] },
   ),
   appRule(
     'APP-PCF-008',
@@ -79,8 +78,7 @@ export const pcfRules = [
     'compatibility',
     'Virtual controls or platform libraries require target-host and deployed-library verification.',
     'Verify the intended host and current documented library versions. Canvas/model-driven support does not establish Power Pages support or runtime library identity.',
-    [libraries],
-    'medium',
+    { references: [libraries], confidence: 'medium' },
   ),
   appRule(
     'APP-PCF-009',
@@ -89,7 +87,7 @@ export const pcfRules = [
     'compatibility',
     'The manifest enables external-service usage, which can affect licensing and data boundaries.',
     'Review declared domains, premium-control licensing and actual outbound behavior for the intended host.',
-    [`${manifest}external-service-usage`],
+    { references: [`${manifest}external-service-usage`] },
   ),
   appRule(
     'APP-PCF-010',
@@ -98,7 +96,7 @@ export const pcfRules = [
     'performance',
     'The PCF project declares an unconditional development build mode without another source declaration.',
     'Verify the effective packaging configuration and produce a production bundle before deployment; command-line MSBuild overrides are not evaluated locally.',
-    [bestPractice],
+    { references: [bestPractice] },
   ),
   appRule(
     'APP-PCF-011',
@@ -107,7 +105,7 @@ export const pcfRules = [
     'compatibility',
     'A property declares a type currently listed as unsupported in the Microsoft manifest reference.',
     'Review the current target-host schema and choose a documented supported type. Unknown future types are not automatically rejected by this rule.',
-    [property],
+    { references: [property] },
   ),
   appRule(
     'APP-PCF-012',
@@ -116,8 +114,7 @@ export const pcfRules = [
     'compatibility',
     'A bound property also declares a literal default-value.',
     'For model-driven hosts, literal defaults belong on input properties. Verify the intended host and pfx-default-value semantics before changing Canvas behavior.',
-    [property],
-    'medium',
+    { references: [property], confidence: 'medium' },
   ),
 ];
 

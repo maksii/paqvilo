@@ -357,7 +357,7 @@ function bindingName(fields, source) {
 
 function secretReference(value, parsed) {
   if (typeof value !== 'string') return false;
-  const parts = value.split('/').map(lower);
+  const parts = value.split('/').map((part) => lower(part));
   if (
     parts[1] === 'subscriptions' &&
     parts[5] === 'providers' &&

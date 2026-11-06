@@ -109,6 +109,22 @@ test('runAfter is confined to each nested sibling scope and cycles are errors', 
   assert.equal(result.ids.filter((id) => id === 'FLOW-GRAPH-001').length, 3);
 });
 
+test('runAfter traversal visits newly enqueued multi-hop and fan-in actions while detecting a downstream cycle', () => {
+  const actions = {
+    Start: compose('start'),
+    Left: compose('left', { Start: ['Succeeded'] }),
+    Right: compose('right', { Start: ['Succeeded'] }),
+    Join: compose('joined', { Left: ['Succeeded'], Right: ['Succeeded'] }),
+    Finish: compose('finished', { Join: ['Succeeded'] }),
+  };
+  const valid = review([entry('Workflows/graph.json', definition(actions))]);
+  assert.deepEqual(valid.ids, []);
+  assert.equal(valid.coverage.complete, true);
+  actions.Join.runAfter.Finish = ['Succeeded'];
+  const cycle = review([entry('Workflows/graph.json', definition(actions))]);
+  assert.deepEqual(cycle.ids, ['FLOW-GRAPH-002']);
+});
+
 test('else, default and switch case action scopes are all traversed', () => {
   const bad = () => ({ Broken: { inputs: {} } });
   const result = review([

@@ -457,8 +457,8 @@ function dependencyGraph(actions) {
 function cyclic(actions) {
   const { degree, next } = dependencyGraph(actions);
   const queue = [...degree].filter(([, value]) => value === 0).map(([name]) => name);
-  for (let index = 0; index < queue.length; index++) {
-    for (const name of next.get(queue[index]) ?? []) {
+  for (const parent of queue) {
+    for (const name of next.get(parent) ?? []) {
       degree.set(name, degree.get(name) - 1);
       if (degree.get(name) === 0) queue.push(name);
     }

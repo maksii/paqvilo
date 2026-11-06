@@ -19,7 +19,7 @@ export function appPeer(index, entry, name) {
   const file = path.posix.join(appDirectory(entry), name);
   return index.get(`${appRoot(entry)}\0${file}`);
 }
-export function appRule(id, title, severity, category, message, remediation, references, confidence = 'high') {
+export function appRule(id, title, severity, category, message, remediation, { references, confidence = 'high' }) {
   return { id, title, severity, category, confidence, message, remediation, references };
 }
 export function appCoverage(files, limitations) {

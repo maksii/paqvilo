@@ -7,7 +7,7 @@ const extensionReference =
 const mobileReference =
   'https://github.com/microsoft/power-platform-skills/blob/3ffa5b8fca9016ae9635a4690eece1cd18ab295f/plugins/mobile-apps/template/package.json';
 const rule = (id, title, severity, category, message, remediation, reference) =>
-  appRule(id, title, severity, category, message, remediation, [reference]);
+  appRule(id, title, severity, category, message, remediation, { references: [reference] });
 export const nativeRules = [
   rule(
     'NATIVE-EXT-004',

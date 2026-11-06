@@ -13,7 +13,7 @@ export const canvasRules = [
     'reliability',
     'Canvas YAML contains invalid syntax, duplicate keys or an invalid document root.',
     'Correct the YAML structure, then run the native Canvas compiler/App Checker; local parsing does not establish runtime behavior.',
-    [yamlReference],
+    { references: [yamlReference] },
   ),
   appRule(
     'APP-CANVAS-002',
@@ -22,7 +22,7 @@ export const canvasRules = [
     'compatibility',
     'A PA-YAML Properties value is not a string expression beginning with an equals sign.',
     'Represent each property as an equals-prefixed Power Fx string; quote record literals or use a YAML block scalar where necessary.',
-    [formulaReference],
+    { references: [formulaReference] },
   ),
   appRule(
     'APP-CANVAS-003',
@@ -31,7 +31,7 @@ export const canvasRules = [
     'compatibility',
     'An explicit CanvasComponent or CodeComponent instance has missing or conflicting creation keywords.',
     'Supply ComponentName. Component instances do not support Variant/Layout; CodeComponent also does not support ComponentLibraryUniqueName.',
-    [yamlReference],
+    { references: [yamlReference] },
   ),
   appRule(
     'APP-CANVAS-004',
@@ -40,7 +40,7 @@ export const canvasRules = [
     'compatibility',
     'Legacy FX-YAML source was found; current PA-YAML checks do not apply to this representation.',
     'Preserve the original sources and assess migration with the current supported Canvas tooling. Do not relabel legacy source as validated PA-YAML.',
-    [yamlReference],
+    { references: [yamlReference] },
   ),
   appRule(
     'APP-CANVAS-005',
@@ -49,8 +49,7 @@ export const canvasRules = [
     'performance',
     'App.OnStart contains an unqualified Navigate call.',
     'Review whether App.StartScreen can express initial navigation declaratively; verify dependencies and native behavior before changing it.',
-    [startupReference],
-    'medium',
+    { references: [startupReference], confidence: 'medium' },
   ),
   appRule(
     'APP-CANVAS-006',
@@ -59,8 +58,7 @@ export const canvasRules = [
     'performance',
     'App.OnStart contains collection initialization.',
     'Measure startup work and distinguish external data calls from local collections. Consider lazy formulas or deferred loading; parallelize only proven independent calls.',
-    [startupReference],
-    'medium',
+    { references: [startupReference], confidence: 'medium' },
   ),
   appRule(
     'APP-CANVAS-007',
@@ -69,8 +67,7 @@ export const canvasRules = [
     'performance',
     'A formula contains nested ForAll or Patch inside ForAll.',
     'Review data volume, delegation and target connector semantics. Validate any batched or server-side alternative; this source pattern does not prove one HTTP call per row.',
-    [forallReference],
-    'medium',
+    { references: [forallReference], confidence: 'medium' },
   ),
   appRule(
     'APP-CANVAS-008',
@@ -79,8 +76,7 @@ export const canvasRules = [
     'compatibility',
     'Canvas source uses aliases, unsupported top-level structure, or exceeds the local syntax-inspection budget.',
     'Use the native Canvas compiler and an explicit supported source export. The local analyzer does not expand aliases or guess unknown schema semantics.',
-    [yamlReference],
-    'medium',
+    { references: [yamlReference], confidence: 'medium' },
   ),
   appRule(
     'APP-CANVAS-009',
@@ -89,8 +85,10 @@ export const canvasRules = [
     'accessibility',
     'An explicitly recognized interactive control has no AccessibleLabel property.',
     'Check the actual accessible name, including valid platform defaults, with the Accessibility Checker and keyboard/screen-reader testing.',
-    ['https://learn.microsoft.com/power-apps/maker/canvas-apps/accessibility-checker'],
-    'medium',
+    {
+      references: ['https://learn.microsoft.com/power-apps/maker/canvas-apps/accessibility-checker'],
+      confidence: 'medium',
+    },
   ),
 ];
 
