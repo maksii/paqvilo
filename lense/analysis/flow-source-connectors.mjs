@@ -45,8 +45,11 @@ function security(requirements, schemes, source, emit) {
   }
 }
 
-function inspectOperation(operation, operations, schemes, source, emit) {
-  if (!object(operation) || !object(operation.responses)) {
+function inspectOperation(operation, operations, schemes, source, emit, responsesRequired) {
+  if (
+    !object(operation) ||
+    ((responsesRequired || Object.hasOwn(operation, 'responses')) && !object(operation.responses))
+  ) {
     emit('CONN-SOURCE-001', source, 'responses');
     return;
   }
@@ -58,7 +61,7 @@ function inspectOperation(operation, operations, schemes, source, emit) {
   if (Array.isArray(operation.security) && operation.security.length === 0) emit('CONN-SEC-002', source, 'security');
 }
 
-function inspectOperations(document, source, emit) {
+function inspectOperations(document, source, emit, responsesRequired) {
   const operations = new Set();
   const schemes = document.securityDefinitions ?? document.components?.securitySchemes ?? {};
   security(document.security, object(schemes) ? schemes : {}, source, emit);
@@ -70,7 +73,7 @@ function inspectOperations(document, source, emit) {
     }
     for (const [method, operation] of Object.entries(item)) {
       if (!methods.has(method)) continue;
-      inspectOperation(operation, operations, object(schemes) ? schemes : {}, source, emit);
+      inspectOperation(operation, operations, object(schemes) ? schemes : {}, source, emit, responsesRequired);
     }
   }
 }
@@ -120,12 +123,39 @@ function inspectReferences(document, source, emit, limited) {
   if (external) limited.push({ file: source.file, reason: 'connector-context-reference-not-resolved' });
 }
 
-export function inspectConnectorSource(document, source, emit, limited) {
-  if (!object(document.paths)) {
-    emit('CONN-SOURCE-001', source, 'paths');
-    return;
+function connectorDialect(document) {
+  if (document.swagger === '2.0' && document.openapi === undefined) return 'legacy';
+  if (document.swagger !== undefined || typeof document.openapi !== 'string') return 'unsupported';
+  if (/^3\.0\.\d+$/.test(document.openapi)) return 'legacy';
+  if (/^3\.1\.\d+$/.test(document.openapi)) return 'optional';
+  // 3.2 keeps these fields optional but adds operation forms this adapter does not inspect.
+  if (/^3\.2\.\d+$/.test(document.openapi)) return 'partial';
+  return 'unsupported';
+}
+
+function inspectConnectorStructure(document, source, emit, limited, dialect) {
+  const hasPaths = Object.hasOwn(document, 'paths');
+  if ((hasPaths || dialect === 'legacy') && !object(document.paths)) emit('CONN-SOURCE-001', source, 'paths');
+  if (dialect === 'legacy') return;
+  for (const key of ['components', 'webhooks'])
+    if (Object.hasOwn(document, key) && !object(document[key])) emit('CONN-SOURCE-001', source, key);
+  if (!hasPaths || Object.hasOwn(document, 'webhooks')) {
+    emit('CONN-SOURCE-002', source);
+    limited.push({ file: source.file, reason: 'connector-operation-forms-not-inspected' });
   }
-  inspectOperations(document, source, emit);
+  if (!['paths', 'components', 'webhooks'].some((key) => Object.hasOwn(document, key)))
+    emit('CONN-SOURCE-001', source, 'paths');
+}
+
+export function inspectConnectorSource(document, source, emit, limited) {
+  const dialect = connectorDialect(document);
+  if (dialect === 'unsupported' || dialect === 'partial') {
+    emit('CONN-SOURCE-002', source);
+    limited.push({ file: source.file, reason: 'connector-version-not-fully-supported' });
+    if (dialect === 'unsupported') return;
+  }
+  inspectConnectorStructure(document, source, emit, limited, dialect);
+  if (object(document.paths)) inspectOperations(document, source, emit, dialect === 'legacy');
   inspectReferences(document, source, emit, limited);
   if (
     Array.isArray(document.schemes) &&

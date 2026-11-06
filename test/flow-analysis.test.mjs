@@ -254,6 +254,63 @@ test('OpenAPI examples containing business $ref data are not interpreted as sche
   assert.deepEqual(review([entry('api.swagger.json', doc)]).ids, []);
 });
 
+// OAS 3.1.1/3.2.0 Operation Objects make responses optional; Swagger 2.0/OAS 3.0.4 require it.
+// https://spec.openapis.org/oas/v3.1.1.html#operation-object
+// https://spec.openapis.org/oas/v3.2.0.html#operation-object
+test('connector operation response requiredness follows the declared OpenAPI feature version', () => {
+  const paths = { '/invented': { get: { operationId: 'ReadInvented' } } };
+  for (const version of ['3.1.0', '3.1.1', '3.1.12']) {
+    const result = review([entry('openapi.json', { openapi: version, paths })]);
+    assert.deepEqual(result.ids, []);
+    assert.equal(result.coverage.complete, true);
+  }
+  for (const document of [swagger(paths), { openapi: '3.0.4', paths }])
+    assert.ok(review([entry('openapi.json', document)]).ids.includes('CONN-SOURCE-001'));
+  for (const responses of [null, [], 'PRIVATE-RESPONSE-SHAPE']) {
+    const result = review([
+      entry('openapi.json', {
+        openapi: '3.1.1',
+        paths: { '/invented': { get: { operationId: 'ReadInvented', responses } } },
+      }),
+    ]);
+    assert.ok(result.ids.includes('CONN-SOURCE-001'));
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE-RESPONSE-SHAPE/);
+  }
+});
+
+// https://spec.openapis.org/oas/v3.1.1.html#openapi-object permits components/webhooks without paths.
+test('valid non-path OpenAPI forms retain explicit partial coverage instead of false syntax errors', () => {
+  for (const extra of [
+    { components: { schemas: { Invented: { type: 'string' } } } },
+    { webhooks: { Invented: { post: { operationId: 'ReceiveInvented' } } } },
+    { paths: {}, webhooks: {} },
+  ]) {
+    const result = review([entry('openapi.json', { openapi: '3.1.1', ...extra })]);
+    assert.ok(!result.ids.includes('CONN-SOURCE-001'));
+    assert.ok(result.ids.includes('CONN-SOURCE-002'));
+    assert.equal(result.coverage.complete, false);
+    assert.equal(result.coverage.domains.find((domain) => domain.domain === 'connectors').complete, false);
+  }
+  for (const document of [swagger(), { openapi: '3.0.4' }]) {
+    delete document.paths;
+    assert.ok(review([entry('openapi.json', document)]).ids.includes('CONN-SOURCE-001'));
+  }
+  for (const extra of [{ paths: null }, { paths: [] }, { components: [] }, { webhooks: null }, {}])
+    assert.ok(review([entry('openapi.json', { openapi: '3.1.1', ...extra })]).ids.includes('CONN-SOURCE-001'));
+});
+
+test('unknown or partially supported OpenAPI feature versions cannot certify complete source inspection', () => {
+  for (const openapi of ['3.2.0', '3.2.1', '3.3.0', '4.0.0', 'PRIVATE-UNKNOWN-VERSION']) {
+    const result = review([
+      entry('openapi.json', { openapi, paths: { '/invented': { get: { operationId: 'ReadInvented' } } } }),
+    ]);
+    assert.ok(!result.ids.includes('CONN-SOURCE-001'));
+    assert.ok(result.ids.includes('CONN-SOURCE-002'));
+    assert.equal(result.coverage.complete, false);
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE-UNKNOWN-VERSION/);
+  }
+});
+
 test('schema properties and default responses named like data keywords still receive reference checks', () => {
   const doc = swagger({
     '/one': {
