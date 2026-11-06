@@ -442,7 +442,18 @@ function inspectRoot(state, selected, multiple) {
   rootInfo.complete = skippedBefore === state.gaps;
 }
 
-const excludedRoot = (root) => root.split(/[\\/]/).some((part) => ignored.has(part.toLowerCase()));
+const posixTemporaryRoots = ['/tmp', '/var/tmp', '/private/tmp', '/private/var/tmp'];
+function excludedRoot(root) {
+  // These host prefixes contain a directory named tmp, not project output.
+  // Never derive an exemption from TMPDIR: it can itself contain private or
+  // generated directories. Every component after the fixed prefix is checked,
+  // for both the requested path and its canonical target.
+  const temporaryRoot =
+    process.platform !== 'win32' &&
+    posixTemporaryRoots.find((prefix) => root === prefix || root.startsWith(prefix + '/'));
+  const sourcePath = temporaryRoot ? root.slice(temporaryRoot.length) : root;
+  return sourcePath.split(/[\\/]/).some((part) => ignored.has(part.toLowerCase()));
+}
 function inspectResolvedRoot(state, root, id) {
   if (excludedRoot(root)) return skip(state, id, 'ignored-root');
   const stat = fs.statSync(root);

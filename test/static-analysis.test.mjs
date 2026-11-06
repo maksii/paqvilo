@@ -117,6 +117,63 @@ test('hidden state, deployment profiles and dependencies are excluded while code
   assert.deepEqual(analyzeProject(root), report);
 });
 
+test('temporary source projects are analyzed while nested temporary and output files stay excluded', (t) => {
+  const root = project(t, {
+    'body.html': '<img>',
+    'tmp/ignored.html': '<img>',
+    'build/ignored.html': '<img>',
+    'dist/ignored.html': '<img>',
+    'out/ignored.html': '<img>',
+  });
+  const report = analyzeProject(root);
+  assert.equal(report.complete, true);
+  assert.equal(report.coverage.files, 1);
+  assert.deepEqual(report.coverage.skipped, []);
+  assert.deepEqual(
+    report.findings.map(({ file }) => file),
+    ['body.html'],
+  );
+  fs.writeFileSync(path.join(root, 'tmp/ignored.html'), 'different invented temporary content');
+  assert.deepEqual(analyzeProject(root), report);
+});
+
+// @test-kind security: system temporary storage never exempts nested private, dependency or generated roots, including aliases.
+test('explicit nested temporary and private roots remain excluded through both paths and aliases', (t) => {
+  const canary = 'invented-private-temporary-state';
+  const excluded = [
+    'tmp',
+    '.paqvilo',
+    '.git',
+    '.portalconfig',
+    'node_modules',
+    'deployment-profiles',
+    'dist',
+    'build',
+    'out',
+    'coverage',
+    'artifacts',
+    'logs',
+    'metrics',
+  ];
+  const root = project(t, Object.fromEntries(excluded.map((name) => [`${name}/private.html`, canary])));
+  for (const [index, name] of excluded.entries()) {
+    const directory = path.join(root, name);
+    const alias = path.join(root, `alias-${index}`);
+    fs.symlinkSync(directory, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    for (const selected of [directory, path.join(directory, 'private.html'), alias]) {
+      const inventory = collectAnalysisInputs([{ id: 'source', path: selected }]);
+      assert.equal(inventory.complete, false);
+      assert.equal(inventory.stats.files, 0);
+      assert.deepEqual(inventory.inputs, []);
+      assert.deepEqual(inventory.skipped, [
+        { file: 'source', reason: 'ignored-root' },
+        { file: '.', reason: 'no-supported-sources' },
+      ]);
+      assert.equal(JSON.stringify(inventory).includes(canary), false);
+    }
+  }
+});
+
 // @test-kind security: symbolic links never expose files or names outside the selected source root.
 test('directory junctions are skipped without reading or listing their targets', (t) => {
   const outside = project(t, { 'outside-private-name.html': '<img>' });
