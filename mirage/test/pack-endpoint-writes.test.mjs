@@ -30,10 +30,22 @@ async function fixture(t, { enhanced = false } = {}) {
           const work = transaction(async (records) => {
             escaped = records;
             if (body.remove) {
-              await records.remove('x_item', body.id);
-              return { removed: body.id };
+              const removed = await records.remove('x_item', body.id);
+              return body.inspectRemoved ? removed : { removed: body.id };
             }
             const row = await records.update('x_item', body.id, body.values ?? { x_name: body.name });
+            if (body.inspectResult) {
+              const fields = Object.keys(row);
+              const observed = row.x_secret;
+              row.x_secret = 'Bypassed';
+              row.x_name = 'Bypassed';
+              return { fields, observed, id: row.x_itemid };
+            }
+            if (body.inspectRead) {
+              const read = await records.read('x_item', body.id);
+              read.x_name = 'Bypassed read';
+              return read;
+            }
             if (body.undeclared) {
               try {
                 await records.update('x_item', 'foreign', { x_name: 'Undeclared' });
@@ -41,7 +53,15 @@ async function fixture(t, { enhanced = false } = {}) {
                 /* the unit must still roll back */
               }
             }
-            if (body.child) await records.create('x_item', { x_name: 'Child', x_contact: 'visitor' });
+            if (body.child) {
+              const child = await records.create('x_item', { x_name: 'Child', x_contact: 'visitor' });
+              if (body.inspectCreated) {
+                const fields = Object.keys(child);
+                child.x_secret = 'Bypassed';
+                child.x_contact = 'other';
+                return { fields, id: child.x_itemid };
+              }
+            }
             if (body.fail) throw new Error('Invented unit failure');
             if (body.largeResult) return { value: 'x'.repeat(1024 * 1024 + 1) };
             if (body.wireResult)
@@ -52,7 +72,7 @@ async function fixture(t, { enhanced = false } = {}) {
                 custom: { toJSON: () => 'wire value' },
               };
             if (body.unsupportedResult) return { value: 1n };
-            return { id: row.x_itemid, name: row.x_name };
+            return { id: row.x_itemid, name: (await records.read('x_item', row.x_itemid)).x_name };
           });
           return body.catchFailure ? work.catch(() => ({ caught: true })) : work;
         },
@@ -270,4 +290,40 @@ test('enhanced visitor field security and pipeline trace attribution apply to pa
   assert.ok(tree.spans.some((span) => span.kind === 'http' && span.actor.id === 'visitor'));
   assert.ok(tree.spans.some((span) => span.entity === 'x_item' && span.operation === 'update'));
   assert.equal(sim.store.tableRows('x_item')[0].x_name, 'Enhanced committed');
+});
+
+test('write acknowledgments expose only detached keys, while explicit reads retain table and column security', async (t) => {
+  const { sim, call } = await fixture(t, { enhanced: true });
+  await sim.store.transact(() => {
+    sim.store.tableRows('x_item')[0].x_secret = 'Protected fixture';
+    sim.store.state.permissions[0].operations = ['create', 'update', 'delete'];
+  });
+  const update = await call({ id: 'own', name: 'Allowed scalar', inspectResult: true });
+  assert.equal(update.status, 200, await update.clone().text());
+  assert.deepEqual(await update.json(), { fields: ['x_itemid'], id: 'own' });
+  assert.equal(sim.store.tableRows('x_item')[0].x_secret, 'Protected fixture');
+  assert.equal(sim.store.tableRows('x_item')[0].x_name, 'Allowed scalar');
+  const targets = [
+    { entity: 'x_item', operation: 'update', id: 'own' },
+    { entity: 'x_item', operation: 'create', values: { x_contact: 'visitor' } },
+  ];
+  const create = await call({ id: 'own', name: 'Create parent', child: true, inspectCreated: true, targets });
+  assert.equal(create.status, 200, await create.clone().text());
+  const created = await create.json();
+  assert.deepEqual(created.fields, ['x_itemid']);
+  const stored = sim.store.tableRows('x_item').find((row) => row.x_itemid === created.id);
+  assert.equal(stored.x_contact, 'visitor');
+  assert.equal(stored.x_secret, undefined);
+  const denied = await call({ id: 'own', name: 'Read must roll back', inspectRead: true });
+  assert.equal(denied.status, 403);
+  assert.equal(sim.store.tableRows('x_item')[0].x_name, 'Create parent');
+  await sim.store.transact(() => {
+    sim.store.state.permissions[0].operations.push('read');
+  });
+  const read = await call({ id: 'own', name: 'Readable scalar', inspectRead: true });
+  assert.equal(read.status, 200, await read.clone().text());
+  assert.equal((await read.json()).x_secret, null);
+  assert.equal(sim.store.tableRows('x_item')[0].x_name, 'Readable scalar');
+  const remove = await call({ id: 'own', remove: true, inspectRemoved: true });
+  assert.deepEqual(await remove.json(), { x_itemid: 'own' });
 });

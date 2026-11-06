@@ -83,9 +83,15 @@ function createWriteUnit({ store, context, targets, assertLocal }) {
       if (!active || !entered) throw fail('Pack write capability has expired.', 409);
       assertLocal();
       const mapping = store.resolveMapping(entity);
-      if (!targets.has(keyOf(mapping.logicalName, operation, id))) throw fail('Undeclared pack write target.', 403);
+      const target = targets.get(keyOf(mapping.logicalName, operation, id));
+      if (!target) throw fail('Undeclared pack write target.', 403);
       if (++count > 100) throw fail('Pack write operation limit exceeded.', 413);
-      const result = Promise.resolve().then(() => apply(operation, entity, id, values));
+      const result = Promise.resolve().then(async () => {
+        const row = await apply(operation, entity, id, values);
+        // Internal pipeline rows are privileged mutable state. A write grants
+        // no read capability: acknowledge its key and use scoped read for data.
+        return { [mapping.idColumn]: wireValue((operation === 'delete' ? target.row : row)[mapping.idColumn]) };
+      });
       pending.push(result);
       result.catch(poison);
       return result;

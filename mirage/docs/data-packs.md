@@ -136,6 +136,9 @@ are refused because their independent commits or providers cannot promise this t
 The handler returns JSON; the host sends it only after commit. It receives `body`, `url`, `match`, `identity`, `read`,
 `error` and one `transaction(work)` call, without a raw response writer. Within `work`, `records.create(entity, values)`,
 `update(entity, id, values)`, `remove(entity, id)` and permission-scoped `read(entity, id)` share one transaction.
+Mutators return a detached object containing only the table's primary key, including delete acknowledgments.
+They expose neither internal row references nor other columns. Use `read` explicitly for permitted, masked row data;
+a write acknowledgment does not require or grant read access. Editing an acknowledgment never edits stored state.
 Capabilities expire when work ends. Failed operations or work roll back the whole unit, even if the handler catches
 their errors. All started operations settle before commit or rollback. Current authorization, field security,
 plug-ins, audit stamps, events and concurrency checks remain active. Existing GET/read handlers gain no write capability.

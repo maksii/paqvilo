@@ -7,6 +7,9 @@
 - Expose opt-in authenticated, local-only [pack transactions](../mirage/docs/data-packs.md#authenticated-local-endpoint-writes)
   with declared targets, scoped CRUD, concurrency checks and bounded atomic idempotency receipts.
   Pack routes also retain requester audit/trace attribution, including repeated global-pattern matches.
+- Return detached primary-key acknowledgments from pack mutations, keeping protected row data and mutable pipeline
+  references behind explicit permission-scoped reads. Project server-logic connector Create responses through current
+  column security, including values assigned by plug-ins, without masking the stored record.
 - Recover one `ECONNRESET` for safe [configuration assignments](public-api.md), retaining a fixed diagnostic and
   propagating other failures. Uncertain record writes and preset application are never replayed automatically.
 - Distinguish absent/empty enhanced record payloads from syntax errors with `PAQ-SOURCE-002`; withheld settings
@@ -254,6 +257,13 @@ metadata callback changes. Review retained the necessary checks rather than chan
 
 The existing dispositions are carried to this branch only for those exact matches. No analysis rules, coverage
 lanes, thresholds, native parity assertions or security assertions are removed or weakened.
+
+Final API review reproduced two additional security failures with invented data: a pack handler could read and mutate
+the internal write-result row, and an exported server-logic Create response exposed a protected value assigned by a
+plug-in. Pack mutators now return detached keys, with explicit reads retaining table permissions and column masks.
+The server-logic response applies the current column-read projection. Regressions verify attempted result tampering,
+create/update/delete acknowledgments, denied reads and rollback, masked reads, newly granted read access, and unchanged
+stored protected values. Existing exact-numeric connector responses and authorization assertions remain intact.
 
 ## 0.9.7
 
