@@ -470,7 +470,17 @@ test('expired collision reuse still rejects a canonical payload with a persisten
   });
   assert.throws(() => persistCommandPayload(directory, bytes), { code: 'COMMAND_PAYLOAD_CONFLICT' });
   assert.equal(canonicalOpens, 2);
-  assert.equal(fs.statSync(file).nlink, 2);
-  assert.deepEqual(fs.readFileSync(file), bytes);
-  assert.deepEqual(fs.readFileSync(secondLink), bytes);
+  const identities = [];
+  for (const name of [file, secondLink]) {
+    const descriptor = open(name, fs.constants.O_RDONLY);
+    try {
+      const info = fs.fstatSync(descriptor);
+      assert.equal(info.nlink, 2);
+      assert.deepEqual(fs.readFileSync(descriptor), bytes);
+      identities.push({ dev: info.dev, ino: info.ino });
+    } finally {
+      fs.closeSync(descriptor);
+    }
+  }
+  assert.deepEqual(identities[0], identities[1]);
 });
