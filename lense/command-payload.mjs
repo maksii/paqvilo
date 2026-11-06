@@ -129,6 +129,14 @@ function reuseExistingCommandPayload(file, bytes, storage) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 4);
       continue;
     }
+    // An inspection can itself exhaust the publication window. Its transient
+    // sample is not evidence that publication remains incomplete: acquire one
+    // final descriptor without extending the wait, retaining every ownership
+    // and byte check before accepting a completed canonical file.
+    if (saved?.publishing && readOwned(file)?.bytes.equals(bytes)) {
+      checkDirectory(storage);
+      return file;
+    }
     throw failure('An existing command payload is unsafe or does not match its identity.', 'COMMAND_PAYLOAD_CONFLICT');
   }
 }

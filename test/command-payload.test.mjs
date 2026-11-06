@@ -1,3 +1,4 @@
+// @test-kind security: Invented filesystem fixtures verify ownership, bounded reads and safe publication under races.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -408,7 +409,7 @@ test('collision reuse survives a transient sharing failure when acquiring the ca
   assert.equal(fs.statSync(file).nlink, 1);
 });
 
-test('collision reuse rechecks a canonical link count changing between descriptor and pathname checks', (t) => {
+test('collision reuse rechecks a canonical link count changing between descriptor and pathname checks after its deadline', (t) => {
   const { directory } = fixture(t);
   const bytes = payload('link transition');
   const file = filename(directory, bytes);
@@ -416,7 +417,9 @@ test('collision reuse rechecks a canonical link count changing between descripto
   const link = fs.linkSync,
     stat = fs.lstatSync;
   let collision = false,
-    injected = false;
+    injected = false,
+    now = 1000;
+  t.mock.method(Date, 'now', () => now);
   t.mock.method(fs, 'linkSync', (from, to) => {
     if (String(to) !== file) return link(from, to);
     fs.writeFileSync(file, bytes);
@@ -430,6 +433,9 @@ test('collision reuse rechecks a canonical link count changing between descripto
       const during = stat(file, ...args);
       assert.equal(during.nlink, 2);
       fs.unlinkSync(temporaryLink);
+      // Model an inspection delayed past the publication window, without a
+      // scheduler-dependent sleep. The returned observation is already stale.
+      now += 201;
       return during;
     }
     return stat(name, ...args);
@@ -438,4 +444,33 @@ test('collision reuse rechecks a canonical link count changing between descripto
   assert.equal(injected, true);
   assert.deepEqual(fs.readFileSync(file), bytes);
   assert.equal(fs.statSync(file).nlink, 1);
+});
+
+test('expired collision reuse still rejects a canonical payload with a persistent second link', (t) => {
+  const { directory } = fixture(t);
+  const bytes = payload('persistent publication link');
+  const file = filename(directory, bytes);
+  const secondLink = path.join(directory, 'persistent-link.tmp');
+  const link = fs.linkSync,
+    open = fs.openSync;
+  let collision = false,
+    canonicalOpens = 0,
+    now = 1000;
+  t.mock.method(Date, 'now', () => (now += 201));
+  t.mock.method(fs, 'linkSync', (from, to) => {
+    if (String(to) !== file) return link(from, to);
+    fs.writeFileSync(file, bytes);
+    link(file, secondLink);
+    collision = true;
+    throw Object.assign(new Error('invented concurrent winner'), { code: 'EEXIST' });
+  });
+  t.mock.method(fs, 'openSync', (name, ...args) => {
+    if (String(name) === file && collision) canonicalOpens++;
+    return open(name, ...args);
+  });
+  assert.throws(() => persistCommandPayload(directory, bytes), { code: 'COMMAND_PAYLOAD_CONFLICT' });
+  assert.equal(canonicalOpens, 2);
+  assert.equal(fs.statSync(file).nlink, 2);
+  assert.deepEqual(fs.readFileSync(file), bytes);
+  assert.deepEqual(fs.readFileSync(secondLink), bytes);
 });
