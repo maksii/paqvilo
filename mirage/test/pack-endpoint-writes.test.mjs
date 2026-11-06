@@ -44,6 +44,14 @@ async function fixture(t, { enhanced = false } = {}) {
             if (body.child) await records.create('x_item', { x_name: 'Child', x_contact: 'visitor' });
             if (body.fail) throw new Error('Invented unit failure');
             if (body.largeResult) return { value: 'x'.repeat(1024 * 1024 + 1) };
+            if (body.wireResult)
+              return {
+                date: new Date('2020-01-01T00:00:00Z'),
+                missing: undefined,
+                number: NaN,
+                custom: { toJSON: () => 'wire value' },
+              };
+            if (body.unsupportedResult) return { value: 1n };
             return { id: row.x_itemid, name: row.x_name };
           });
           return body.catchFailure ? work.catch(() => ({ caught: true })) : work;
@@ -170,6 +178,23 @@ test('pack units commit through the pipeline, roll back children and expire esca
   const caught = await call({ id: 'own', name: 'Caught rollback', fail: true, catchFailure: true });
   assert.equal(caught.status, 500);
   assert.equal(sim.store.tableRows('x_item')[0].x_name, 'Committed');
+});
+
+test('pack results use JSON wire values and serialization failure rolls back before storing a receipt', async (t) => {
+  const { sim, call, calls } = await fixture(t);
+  const headers = { 'Idempotency-Key': 'wire-result' };
+  const body = { id: 'own', name: 'Wire', wireResult: true };
+  const expected = { date: '2020-01-01T00:00:00.000Z', number: null, custom: 'wire value' };
+  assert.deepEqual(await (await call(body, headers)).json(), expected);
+  assert.deepEqual(await (await call(body, headers)).json(), expected);
+  assert.equal(calls(), 1);
+  const failed = await call(
+    { id: 'own', name: 'Must roll back', unsupportedResult: true },
+    { 'Idempotency-Key': 'unsupported-result' },
+  );
+  assert.equal(failed.status, 500);
+  assert.equal(sim.store.tableRows('x_item')[0].x_name, 'Wire');
+  assert.equal(Object.keys(sim.store.state.simulator.packEndpointReceipts).length, 1);
 });
 
 test('pack mutation providers, declaration bounds and payload limits fail before handler work', async (t) => {

@@ -6,7 +6,12 @@ import { isElastic } from './dataverse-elastic.mjs';
 const fail = (message, status = 400, code = 'PackWriteRefused') => Object.assign(new Error(message), { status, code });
 const keyOf = (entity, operation, id) => JSON.stringify([entity, operation, id ?? null]);
 const supported = new Set(['create', 'update', 'delete']);
-const detached = (value) => JSON.parse(JSON.stringify(value ?? null));
+// Normalize to the JSON wire contract before committing. A generic deep clone
+// would preserve Dates/non-finite numbers and skip toJSON, unlike the response.
+function wireValue(value) {
+  const serialized = JSON.stringify(value ?? null);
+  return JSON.parse(serialized);
+}
 const digest = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 function requestReceipt(endpoint, context, body, store) {
@@ -36,9 +41,9 @@ function targetRow(store, mapping, declaration, id, receipt) {
 
 async function authorizeTargets(endpoint, context, body, store, receipt) {
   const declarations = await endpoint.writes({
-    body: detached(body),
+    body: wireValue(body),
     match: [...context.match],
-    identity: detached(context.identity),
+    identity: wireValue(context.identity),
   });
   if (!Array.isArray(declarations) || !declarations.length || declarations.length > 100)
     throw fail('Pack writes must declare 1 to 100 permission-scoped targets.');
@@ -53,7 +58,7 @@ async function authorizeTargets(endpoint, context, body, store, receipt) {
     store.assertAllowed(mapping.logicalName, declaration.operation, row, context.identity);
     const key = keyOf(mapping.logicalName, declaration.operation, id);
     if (targets.has(key)) throw fail('Duplicate pack write declaration.');
-    targets.set(key, { ...declaration, mapping, row: declaration.operation === 'delete' ? detached(row) : row });
+    targets.set(key, { ...declaration, mapping, row: declaration.operation === 'delete' ? wireValue(row) : row });
   }
   return targets;
 }
@@ -122,8 +127,8 @@ async function runHandler(endpoint, context, body, unit) {
       url: context.url,
       match: context.match,
       mode: 'local',
-      identity: detached(context.identity),
-      body: detached(body),
+      identity: wireValue(context.identity),
+      body: wireValue(body),
       read: context.read,
       error: context.error,
       transaction: unit.transaction,
@@ -156,10 +161,10 @@ export async function invokePackMutation({ endpoint, context, body, store, atomi
     assertLocal();
     const receipt = requestReceipt(endpoint, context, body, store);
     const targets = await authorizeTargets(endpoint, context, body, store, receipt);
-    if (receipt.saved) return detached(receipt.saved.result);
+    if (receipt.saved) return wireValue(receipt.saved.result);
     for (const target of targets.values()) store.assertPrecondition(target.mapping, target.row, target);
     const unit = createWriteUnit({ store, context, targets, assertLocal });
-    const result = detached(await runHandler(endpoint, context, body, unit));
+    const result = wireValue(await runHandler(endpoint, context, body, unit));
     if (Buffer.byteLength(JSON.stringify(result)) > 1024 * 1024) throw fail('Pack write result exceeds 1 MiB.', 413);
     saveReceipt(store, receipt, result, targets);
     return result;

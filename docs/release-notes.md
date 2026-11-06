@@ -217,6 +217,38 @@ samples are neither a randomized package comparison nor a portable hardware budg
 deployment differences and a consumer's signed-in native requalification require that consumer's own authorized
 environment; synthetic receipts establish the toolkit contracts and do not claim native/live parity.
 
+Hosted Edge qualification also exposed two test synchronization defects. The code-app workbench now holds the
+requested frame response and observes that exact frame's navigation before using its bridge. Owned CLI readiness
+listens to process output, exit and cancellation under the test's existing deadline, rather than imposing a shorter
+independent startup deadline. Both retain their functional assertions and pass locally in Edge; the workbench also
+passes in Chromium. Neither fix increases sleeps or changes runtime/parity behavior.
+
+Full-source Sonar review found two new maintainability findings: split declared-primary-field construction from
+the table projection, and make JSON wire normalization explicit for pack results. The latter is serialization,
+not a generic deep clone: Date/toJSON, omitted properties and non-finite numbers must match the response and saved
+receipt. A regression checks these values, duplicate receipts and rollback on an unserializable result.
+
+The other 69 findings reproduce reviewed false positives on the reported release. All match the same rule,
+component, message, issue hash and unchanged surrounding source; 67 also retain the exact range, with two shifted
+by the metadata-snapshot callback. Of these, 66 have identical complete files; the other three have unrelated
+metadata callback changes. Review retained the necessary checks rather than changing native/security assertions:
+
+| Finding family            | Count | Current-source evidence                                                                                                                                  |
+| ------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S3403 comparisons         | 37    | Optional captures, missing map/array keys, mutable state, defaulted public inputs and native value unions retain both possible outcomes.                 |
+| S2259 nullability         | 8     | Caller admission, successful initialization, short-circuit guards and throwing parsers protect the dereferences.                                         |
+| S3782 arguments           | 5     | Numeric branches are filtered/lazy; `String.slice` explicitly permits an omitted/undefined end.                                                          |
+| S5869 character classes   | 6     | Non-whitespace and the four whitespace line terminators are disjoint; the negated class intentionally admits only horizontal whitespace.                 |
+| S8786 regular expressions | 2     | Bounded XML input ends at a tag close; the anchored multipart expression accepts every remaining byte as body, preventing repeated failing suffix scans. |
+| S4123 promises            | 4     | Injected principals, pending storage flushes and CDP body operations can be asynchronous; completion is observable.                                      |
+| S4036 executable lookup   | 2     | The developer/CI verifier invokes fixed `git` arguments without a shell or request-controlled toolchain.                                                 |
+| S5332 parser base         | 2     | The `.invalid` HTTP origin is an inert URL parser/equality sentinel; only validated relative paths are retained, without network access.                 |
+| S2189 / S1994 loops       | 2     | Closing-tag position and fetched record count advance; exhausted/empty pages terminate pagination.                                                       |
+| S2187 test registration   | 1     | The shared storage contract registers real tests against the loopback authenticated transport.                                                           |
+
+The existing dispositions are carried to this branch only for those exact matches. No analysis rules, coverage
+lanes, thresholds, native parity assertions or security assertions are removed or weakened.
+
 ## 0.9.7
 
 ### Improved
