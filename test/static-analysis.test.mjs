@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { tempDirSync } from './fixture.mjs';
 import { analyzeProject, analysisRules, validateAnalysisPolicy } from '../lense/analysis/index.mjs';
-import { ANALYSIS_LIMITS, collectAnalysisSources } from '../lense/analysis/inventory.mjs';
+import { ANALYSIS_LIMITS, collectAnalysisInputs } from '../lense/analysis/inventory.mjs';
 
 function project(t, files = {}) {
   const root = tempDirSync('paq-analysis-');
@@ -55,9 +55,11 @@ test('empty and unsupported source trees cannot produce a complete clean assessm
     const report = analyzeProject(project(t, files));
     assert.equal(report.complete, false);
     assert.equal(report.ready, false);
-    assert.equal(report.coverage.files, 0);
+    assert.equal(report.coverage.files, Object.keys(files).length);
     assert.deepEqual(report.findings, []);
-    assert.deepEqual(report.coverage.skipped, [{ file: '.', reason: 'no-supported-sources' }]);
+    assert.deepEqual(report.coverage.skipped, [
+      { file: '.', reason: Object.keys(files).length ? 'no-recognized-platform-sources' : 'no-supported-sources' },
+    ]);
   }
 });
 
@@ -193,7 +195,7 @@ test('aggregate YAML records keep distinct canonical field locations and duplica
     'sitesetting.yml':
       '- adx_name: Webapi/error/innererror\n  adx_value: false\n- adx_name: Site/EnableDefaultHtmlEncoding\n  adx_value: false\n- adx_name: Webapi/error/innererror\n  adx_value: true\n',
   });
-  const inventory = collectAnalysisSources(root);
+  const inventory = collectAnalysisInputs([{ id: 'source', path: root }]);
   assert.equal(inventory.complete, true);
   assert.equal(inventory.records.length, 3);
   assert.deepEqual(
@@ -244,7 +246,7 @@ test('enhanced XML retains top-level identity, name and active state with short 
     ),
     'template/powerpagecomponent.xml': component(8, { source: '<img>' }, '<name>Invented template</name>'),
   });
-  const inventory = collectAnalysisSources(root);
+  const inventory = collectAnalysisInputs([{ id: 'source', path: root }]);
   const active = inventory.records.find(({ file }) => file.startsWith('active/'));
   assert.equal(active.fields.name, 'Webapi/error/innererror');
   assert.equal(String(active.fields.statecode), '0');

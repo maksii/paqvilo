@@ -155,7 +155,8 @@ function textValue(value) {
 
 function siteKey(record) {
   const website = record.fields.websiteid;
-  return textValue(typeof website === 'object' && website !== null ? website.id : website).toLowerCase();
+  const identity = textValue(typeof website === 'object' && website !== null ? website.id : website).toLowerCase();
+  return `${record.rootId ?? 'source'}\0${identity}`;
 }
 
 function isActive(record) {

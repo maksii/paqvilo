@@ -4,14 +4,14 @@ export const analysisSources = Object.freeze(
     {
       repository: 'microsoft/power-cat-skills',
       commit: 'efa90b315bb4e2897f24ad12eb7a8391944b09a4',
-      reviewedDate: '2026-11-05',
+      reviewedDate: '2026-11-06',
       license: 'MIT',
       use: 'review guidance; independently implemented rules',
     },
     {
       repository: 'microsoft/power-platform-skills',
-      commit: '2eb182a8b7a2faa65bb2363139763291c920fbf3',
-      reviewedDate: '2026-11-05',
+      commit: '3ffa5b8fca9016ae9635a4690eece1cd18ab295f',
+      reviewedDate: '2026-11-06',
       license: 'MIT',
       use: 'review guidance and performance catalogue; independently implemented rules',
     },

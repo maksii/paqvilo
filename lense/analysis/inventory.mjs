@@ -6,8 +6,10 @@ import { createHash } from 'node:crypto';
 import { readLocalFileSync, realLocalPath } from '../local-file.mjs';
 import { componentContent, componentContentSpan, componentIdentity, componentEnvelope } from '../portal-model.mjs';
 import { COMPONENT_KINDS } from '../../mirage/lib/portal-component-types.mjs';
+import { readSolutionAssetEntries, SOLUTION_ASSET_LIMITS } from '../../mirage/lib/dataverse-solution-assets.mjs';
 
 export const ANALYSIS_LIMITS = Object.freeze({
+  roots: 128,
   files: 10000,
   directories: 10000,
   entries: 100000,
@@ -145,26 +147,123 @@ function parseComponent(state, text, file) {
   });
 }
 
-function classify(file) {
+function classify(file, platform = false) {
   const name = path.basename(file);
   const record = recordName.exec(name)?.[1].toLowerCase();
   if (record) return { record: record === 'entitypermission' ? 'tablepermission' : record };
   if (name.toLowerCase() === 'powerpagecomponent.xml') return { component: true };
   const extension = path.extname(name).toLowerCase();
+  if (platform && ['yarn.lock', 'bun.lock', 'Podfile'].includes(name)) return { platform: true };
   if (['.html', '.htm', '.liquid'].includes(extension)) return { kind: 'html' };
   if (extension === '.css') return { kind: 'css' };
-  if (['.js', '.mjs'].includes(extension)) return { kind: 'js' };
+  if (['.js', '.mjs', '.cjs'].includes(extension)) return { kind: 'js' };
+  if (platform && ['.msapp', '.zip', '.ppmplugin'].includes(extension)) return { archive: true };
+  if (
+    platform &&
+    [
+      '.json',
+      '.xml',
+      '.resx',
+      '.yaml',
+      '.yml',
+      '.ts',
+      '.tsx',
+      '.jsx',
+      '.http',
+      '.rest',
+      '.pcfproj',
+      '.csproj',
+      '.props',
+      '.targets',
+      '.cs',
+      '.kt',
+      '.kts',
+      '.gradle',
+      '.m',
+      '.h',
+      '.swift',
+    ].includes(extension)
+  )
+    return { platform: true };
   return null;
 }
 
 function skip(state, file, reason) {
   state.complete = false;
+  state.gaps++;
   // The file budget also bounds diagnostic output, even for a huge ignored/unreadable tree.
   if (state.skipped.length < state.limits.files) state.skipped.push({ file, reason });
 }
 
-function readSource(state, root, absolute, file, type) {
+function addSourceBytes(state, bytes, file, type, relativeFile = file, archiveDepth = 0, rootId = state.rootId) {
+  state.stats.bytes += bytes.length;
+  state.stats.files++;
+  state.digest.update(file).update('\0').update(bytes).update('\0');
+  if (type.archive) {
+    const container = {
+      file,
+      relativeFile,
+      rootId,
+      text: '',
+      archive: true,
+      archiveInspected: false,
+      nativeManifestPresent: false,
+    };
+    state.inputs.push(container);
+    return readArchive(state, bytes, file, archiveDepth, rootId, container);
+  }
+  const text = bytes.toString('utf8');
+  state.inputs.push({ file, relativeFile, rootId, text, line: 1, column: 1, exactLocation: true });
+  const first = state.records.length;
   try {
+    if (type.record) parseYaml(state, text, file, type.record);
+    else if (type.component) parseComponent(state, text, file);
+    else if (type.kind) state.units.push({ file, text, kind: type.kind, line: 1, column: 1, exactLocation: true });
+  } finally {
+    for (let index = first; index < state.records.length; index++) state.records[index].rootId = rootId;
+  }
+}
+
+function readArchive(state, bytes, file, depth, rootId, container) {
+  if (depth >= 3) return skip(state, file, 'archive-depth-limit');
+  try {
+    const available = state.limits.totalBytes - state.stats.bytes;
+    if (available < 1) return skip(state, file, 'total-size-limit');
+    const remainingEntries = state.limits.entries - state.stats.entries;
+    if (remainingEntries < 1) return skip(state, file, 'entry-count-limit');
+    const entries = readSolutionAssetEntries(bytes, {
+      archiveBytes: state.limits.fileBytes,
+      entryBytes: state.limits.fileBytes,
+      totalBytes: available,
+      entries: Math.min(remainingEntries, SOLUTION_ASSET_LIMITS.entries),
+      onEntry: (name) => {
+        state.stats.entries++;
+        if (name === 'manifest.json') container.nativeManifestPresent = true;
+      },
+      include: (name) =>
+        Boolean(classify(name, true)) &&
+        !name
+          .split('/')
+          .some((part) => ignored.has(part.toLowerCase()) || (part.startsWith('.') && part !== '.powerpages-site')),
+    });
+    container.archiveInspected = true;
+    for (const entry of entries) {
+      const name = `${file}!/${entry.name}`;
+      const type = classify(entry.name, true);
+      if (++state.stats.candidates > state.limits.files) {
+        skip(state, file, 'file-count-limit');
+        break;
+      }
+      addSourceBytes(state, entry.data, name, type, entry.name, depth + 1, `${rootId}!${file}`);
+    }
+  } catch {
+    skip(state, file, 'unreadable-or-unsupported-archive');
+  }
+}
+
+function readSource(state, root, absolute, file, type, relativeFile) {
+  try {
+    if (state.seenFiles.has(absolute)) return;
     const size = fs.lstatSync(absolute).size;
     if (size > state.limits.fileBytes) return skip(state, file, 'file-size-limit');
     if (state.stats.bytes + size > state.limits.totalBytes) return skip(state, file, 'total-size-limit');
@@ -173,13 +272,9 @@ function readSource(state, root, absolute, file, type) {
       maxBytes: state.limits.fileBytes,
       expectedRealPath: absolute,
     });
-    const text = bytes.toString('utf8');
-    state.stats.bytes += bytes.length;
-    state.stats.files++;
-    state.digest.update(file).update('\0').update(bytes).update('\0');
-    if (type.record) parseYaml(state, text, file, type.record);
-    else if (type.component) parseComponent(state, text, file);
-    else state.units.push({ file, text, kind: type.kind, line: 1, column: 1, exactLocation: true });
+    if (state.stats.bytes + bytes.length > state.limits.totalBytes) return skip(state, file, 'total-size-limit');
+    state.seenFiles.add(absolute);
+    addSourceBytes(state, bytes, file, type, relativeFile);
   } catch {
     skip(state, file, 'unreadable-or-unsupported-source');
   }
@@ -215,7 +310,8 @@ function inspectEntry(state, root, directory, pending, entry) {
   if (ignored.has(entry.name.toLowerCase()) || (entry.name.startsWith('.') && entry.name !== '.powerpages-site'))
     return true;
   const absolute = path.join(directory, entry.name);
-  const file = path.relative(root, absolute).replaceAll('\\', '/');
+  const relativeFile = path.relative(root, absolute).replaceAll('\\', '/');
+  const file = state.prefix + relativeFile;
   if (entry.isSymbolicLink()) {
     skip(state, file, 'symbolic-link');
     return true;
@@ -229,13 +325,14 @@ function inspectEntry(state, root, directory, pending, entry) {
     return true;
   }
   if (!entry.isFile()) return true;
-  const type = classify(file);
+  if (state.seenFiles.has(absolute)) return true;
+  const type = classify(file, state.platform);
   if (!type) return true;
   if (++state.stats.candidates > state.limits.files) {
     skip(state, file, 'file-count-limit');
     return false;
   }
-  readSource(state, root, absolute, file, type);
+  readSource(state, root, absolute, file, type, relativeFile);
   return true;
 }
 
@@ -281,31 +378,90 @@ function addEmbeddedUnits(state) {
   }
 }
 
-/** Completeness is relative to the documented source kinds and budgets, never a security verdict. */
-export function collectAnalysisSources(sourceDir, overrides) {
+/** Configured roots share one inventory budget; no project modules or source programs are loaded. */
+export function collectAnalysisInputs(roots, overrides, { platform = true } = {}) {
   const limits = analysisLimits(overrides);
-  const root = fs.realpathSync.native(path.resolve(sourceDir));
   const state = {
+    inputs: [],
     records: [],
     units: [],
     syntax: [],
     skipped: [],
     complete: true,
-    stats: { candidates: 0, files: 0, directories: 1, entries: 0, bytes: 0 },
+    gaps: 0,
+    stats: { candidates: 0, files: 0, directories: 0, entries: 0, bytes: 0 },
     limits,
+    platform,
+    roots: [],
+    seenFiles: new Set(),
     digest: createHash('sha256'),
   };
-  const pending = [root];
-  while (
-    pending.length &&
-    state.stats.candidates <= limits.files &&
-    state.stats.directories <= limits.directories &&
-    state.stats.entries <= limits.entries
-  )
-    inspectDirectory(state, root, pending.pop(), pending);
+  if (!Array.isArray(roots)) throw new Error('Static analysis roots must be an array');
+  const selectedRoots = roots.slice(0, limits.roots);
+  if (new Set(selectedRoots.map((root) => root?.id)).size !== selectedRoots.length)
+    throw new Error('Static analysis source root identities must be unique');
+  for (const [index, selected] of roots.entries()) {
+    if (index >= limits.roots) {
+      skip(state, '.', 'root-count-limit');
+      break;
+    }
+    inspectRoot(state, selected, roots.length > 1);
+  }
   addEmbeddedUnits(state);
   if (!state.stats.files) skip(state, '.', 'no-supported-sources');
   state.sourceDigest = state.digest.digest('hex');
   delete state.digest;
+  delete state.seenFiles;
+  delete state.rootId;
+  delete state.prefix;
+  delete state.platform;
+  delete state.gaps;
   return state;
+}
+
+function inspectRoot(state, selected, multiple) {
+  const id = selected?.id;
+  if (typeof id !== 'string' || !/^[a-z0-9-]{1,64}$/i.test(id) || typeof selected.path !== 'string')
+    throw new Error('Invalid static analysis source root');
+  state.rootId = id;
+  state.prefix = multiple ? id + '/' : '';
+  const rootInfo = { id, kind: selected.kind ?? 'source', complete: true };
+  state.roots.push(rootInfo);
+  const skippedBefore = state.gaps;
+  try {
+    const requested = path.resolve(selected.path);
+    if (excludedRoot(requested)) {
+      skip(state, id, 'ignored-root');
+    } else {
+      const root = fs.realpathSync.native(requested);
+      inspectResolvedRoot(state, root, id);
+    }
+  } catch {
+    skip(state, id, 'unreadable-source-root');
+  }
+  rootInfo.complete = skippedBefore === state.gaps;
+}
+
+const excludedRoot = (root) => root.split(/[\\/]/).some((part) => ignored.has(part.toLowerCase()));
+function inspectResolvedRoot(state, root, id) {
+  if (excludedRoot(root)) return skip(state, id, 'ignored-root');
+  const stat = fs.statSync(root);
+  if (stat.isFile()) return inspectRootFile(state, root, id);
+  if (!stat.isDirectory()) return skip(state, id, 'unsupported-source-root');
+  if (++state.stats.directories > state.limits.directories) return skip(state, id, 'directory-limit');
+  const pending = [root];
+  while (
+    pending.length &&
+    state.stats.candidates <= state.limits.files &&
+    state.stats.directories <= state.limits.directories &&
+    state.stats.entries <= state.limits.entries
+  )
+    inspectDirectory(state, root, pending.pop(), pending);
+}
+function inspectRootFile(state, root, id) {
+  const type = classify(root, state.platform);
+  const name = path.basename(root);
+  if (!type || name.startsWith('.')) return skip(state, id, 'unsupported-source-root');
+  if (++state.stats.candidates > state.limits.files) return skip(state, id, 'file-count-limit');
+  readSource(state, path.dirname(root), root, state.prefix + name, type, name);
 }

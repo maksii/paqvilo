@@ -1,84 +1,75 @@
-# Offline source quality analysis
+# Offline Power Platform source analysis
 
-Paqvilo owns an independent static analysis module for exported Power Pages sources. Doctor includes its findings as advice. Use `analyze` to enforce a quality threshold in a project or CI:
+Paqvilo owns a read-only analysis engine for local Power Platform projects. Review a folder, a Mirage project, or all sources declared by a catalogue:
 
 ```sh
+node bin/paqvilo.mjs analyze --source <folder> --json
+node bin/paqvilo.mjs analyze --project <project.yml> --fail-on warning --json
+node bin/paqvilo.mjs analyze --config <catalogue> --all --json
 node bin/paqvilo.mjs lense doctor --config <catalogue> --all --json
-node bin/paqvilo.mjs lense analyze --config <catalogue> --all --json
-node bin/paqvilo.mjs lense doctor --config <catalogue> --all --fail-on warning
 ```
 
-For an installed project, replace `node bin/paqvilo.mjs` with `npx --no-install paqvilo`. Existing source/site/environment selection rules apply. Analysis does not launch a browser, request a portal, install or execute a project package, run PAC, modify source, synchronize, upload or deploy.
+For installed projects, use `npx --no-install paqvilo`. The `lense analyze` spelling remains supported. Direct `--source` or `--project` selection does not require a portal, environment or catalogue. Catalogue analysis follows the selected site's portal sources, declared Solution roots, project metadata, Code Apps and Canvas sources. Standalone Dataverse/model-driven runtimes use their declared sources too. Configuration selects inputs without importing packs or providers.
 
-## Verdicts and evidence
+## Findings and gates
 
-`--fail-on` accepts `none`, `error`, `warning` or `hint`. Doctor defaults to `none`; its existing Lense/Sources/Mirage verdicts remain independent. `analyze` defaults to `error`. A selected threshold fails for findings at that level or above, or for incomplete inventory. `none` leaves analysis advisory even when incomplete; it does not override other Doctor failures. Standalone Mirage runtimes are outside this portal analyzer and fail an explicitly requested Doctor analysis gate.
+`--fail-on` accepts `none`, `error`, `warning` or `hint`. Doctor defaults to `none`, keeping its existing operational verdict independent from source advice. `analyze` defaults to `error`. A selected threshold fails for findings at that level or above, or incomplete supported-source inspection. `none` remains advisory and does not certify incomplete input.
 
-- **Error:** directly observed invalid or incompatible source configuration. This does not establish deployed behavior or temporary platform exemptions.
-- **Warning:** a concrete risk or quality concern requiring review; intentional configurations can be valid.
-- **Hint:** an improvement opportunity, unresolved dependency or contextual pattern requiring further evidence.
+- **Error:** a proven invalid local source contract.
+- **Warning:** a concrete risk or inconsistency requiring review; intended configurations may be valid.
+- **Hint:** a possible improvement, missing contextual evidence or unresolved dependency.
 
-Every finding contains a stable rule ID, severity, category, confidence, relative file, line/column, optional field and validated metadata record GUID, fixed message, remediation and reference links. No source excerpts, setting values, record names, URLs from source or parser error messages are copied into findings. Source filenames remain visible, so keep reports in the project's ignored state when they identify a private project. Human-readable paths escape terminal controls.
+Findings carry a stable rule ID, severity, category, confidence, source-relative location, explanation, remediation and references. Messages omit source excerpts, setting values, action names, source URLs and parser error text. Validated metadata GUIDs can identify portal records. Paths remain visible; keep private-project reports under the project's ignored `.paqvilo/`. Human-readable paths escape terminal controls.
 
-Direct text files and YAML keys have exact locations. Embedded YAML values and enhanced XML JSON fields use an approximate declaration anchor (`exactLocation: false`); content findings additionally expose `contentLine`/`contentColumn` within the decoded field. Finding IDs derive from the rule and location; moving a record can change its finding ID. They are not waiver IDs or proof of unchanged behavior.
+Locations are exact where direct text/YAML positions are available. Decoded content uses an approximate declaration anchor (`exactLocation: false`) and optional decoded-content coordinates. IDs depend on rule and location; they are not waivers and can change when source moves.
 
-`complete` describes the bounded inventory of the stated source kinds. It is not a security, accessibility or runtime pass. Reports separately list skipped inputs, truncated findings, limits, evaluated rules and checks not performed. Environment-backed/ambiguous settings remain unresolved. View-based Web API fields produce a verification hint because published view columns and runtime version are not established locally. `sourceDigest` fingerprints the files actually read, including relative paths; incomplete reports fingerprint only that partial set. It is not a deployment/build receipt.
+## Source domains
 
-## Implemented checks
+The registry separates portal/web-content checks from Dataverse/Solution/model-driven, PCF/Canvas/Code Apps, and flow/connector/MCP adapters. Reports expose individual domain recognition and limitations; rules follow actual source contracts rather than assuming every file belongs to Power Pages.
 
-| IDs                               | Source condition                                                                      | Default                                         |
-| --------------------------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `PAQ-SOURCE-001`                  | Unparsed record YAML or enhanced component content                                    | Error                                           |
-| `PP-API-001`                      | Wildcard Web API fields setting                                                       | Error                                           |
-| `PP-API-002`                      | Explicitly enabled Web API with no field list or view-based configuration             | Error                                           |
-| `PP-API-003`                      | View-based fields need published-view/version verification                            | Hint                                            |
-| `PP-API-004`                      | Mixed explicit/wildcard field list                                                    | Warning                                         |
-| `PP-CONFIG-001`                   | Duplicate active setting names in one site                                            | Warning; dependent conclusions skipped          |
-| `PP-CONFIG-002`                   | Relevant setting depends on external values or cannot be interpreted                  | Hint                                            |
-| `PP-SEC-001`–`003`                | Inner errors enabled, default HTML encoding disabled, literal identity-secret setting | Warning                                         |
-| `PP-ROLE-001`–`002`               | Multiple distinct active default anonymous/authenticated roles in one site            | Error                                           |
-| `PP-PERF-001`                     | Explicit disabled header/footer output caching                                        | Warning; review dynamic content before enabling |
-| `content.image-alt`               | Static image lacks `alt`; decorative `alt=""` and dynamic tags excluded               | Hint                                            |
-| `content.blocking-head-script`    | External executable script in an explicit head lacks async/defer/module behavior      | Hint                                            |
-| `content.fetchxml-all-attributes` | Explicit all-attribute projection                                                     | Warning                                         |
-| `content.fetchxml-unbounded`      | Non-aggregate query lacks count/top; dynamic bounds excluded                          | Hint                                            |
-| `content.fetchxml-in-loop`        | Query occurs within a Liquid loop                                                     | Hint                                            |
-| `content.css-import`              | Runtime CSS import outside comments/strings                                           | Hint                                            |
+| Source domain                       | Inspection boundary                                                                                                                  |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Power Pages and web content         | Standard/enhanced records, settings and roles; parsed HTML, CSS and Liquid/FetchXML patterns                                         |
+| Dataverse and ALM                   | Solution metadata, declared dependencies, schema/registrations and environment/connection configuration; literal query contracts     |
+| Model-driven apps                   | Exported forms, event/resource bindings and metadata associations; published/runtime state remains separate                          |
+| PCF                                 | Control manifests, properties/resources/features and package/build contracts; requirements stay host-specific                        |
+| Canvas                              | Supported PA YAML/legacy source and formula structure/patterns; formulas are not evaluated                                           |
+| Code Apps                           | Explicit app/SDK/CLI/configuration, build/dependency/lock contracts and initialization patterns                                      |
+| Power Automate                      | Exported flow structures, action/dependency graphs, connection bindings and source safety/performance hints                          |
+| Custom connectors                   | Recognized OpenAPI operations, local references, parameters and security declarations; endpoints are not contacted                   |
+| MCP apps                            | Recognized tool schemas, annotations and implementation pairing; annotations do not prove behavior                                   |
+| Native mobile and extensions        | Source/package declarations and transferable project-quality guidance; native build/dispatcher/host/device evidence remains separate |
+| Governance and process intelligence | Explicit evidence-required capabilities; application exports cannot establish tenant policy, health or business process metrics      |
 
-Web API rules follow the [current Microsoft contract](https://learn.microsoft.com/en-us/power-pages/configure/web-api-overview): explicit fields and `UseFieldsFromView` can combine columns; view support needs site 9.8.8.x or later. Analysis does not guess logical names, EntitySetName, relationship names, required columns or an unused-field replacement.
+`coverage.domains` distinguishes recognized source review, partial inspection and absent inputs. `capabilities` describes operation-specific tools and evidence for build, package, query, connector test, deployment, host/device, tenant and process operations. These are requirements, not executed checks or installed-tool proof. Missing PAC/.NET for deployment must not become an offline source-review error. Package declarations do not establish installed versions.
 
-## Inventory boundary and API
+Some recommendations need context. Public access may be deliberate; view-based Web API fields need actual view/version evidence; dynamic query builders cannot be inferred from literals; project-specific routes and server-managed-field allowlists are not universal contracts. Unsupported source remains explicit rather than becoming a clean certification.
 
-The inventory reads known portal record YAML (standard `adx_`, short keys and normalized `mspp_` fields), enhanced `powerpagecomponent.xml` content and envelope metadata, HTML/HTM/Liquid, CSS and JavaScript text. It supports aggregate YAML records and prefers existing markup sidecars over duplicated embedded values. Record normalization preserves source locations and does not resolve YAML aliases. JavaScript is inventoried; there are **no JavaScript dataflow, XSS or CSRF rules** in this first version. Generic text review also works on partial folders; it does not certify a complete portal export.
+## Bounded local inventory
 
-Dependencies, deployment profiles, hidden state (including discovery files), build/dist/out, coverage and local artifacts are excluded. `.powerpages-site` remains included. Links/junctions, unreadable/unsupported records, unknown enhanced component types, empty input and exhausted budgets are explicit incomplete results. Deployment-profile syntax remains the separate Doctor `--lint-profiles` check.
+All roots share hard ceilings: 128 roots, 10,000 files/directories/records/content units/findings, 100,000 directory entries, 2 MiB per file and 64 MiB total processed bytes. API callers may lower them. Descriptor-based confined readers and directory-open checks protect filesystem boundaries. Overlapping files are not read twice; root labels disambiguate relative locations.
 
-Default hard budgets are 10,000 files/directories/records/content units/findings, 100,000 directory entries, 2 MiB per file and 64 MiB total bytes. Reads use the existing confined descriptor-based local-file reader. Directory traversal is iterative and checked at open boundaries; no project code is imported. The API can lower budgets but cannot raise them beyond these ceilings:
+Solution ZIP, Canvas `.msapp` and mobile-extension packages are inspected in memory, never extracted. Member paths, CRCs, counts and inflated sizes are checked. Compressed and selected inflated bytes share the budget, including nested packages up to three archive levels. Larger/unsupported packages are incomplete; supply unpacked sources when appropriate.
+
+Hidden state, discovery files, dependencies, deployment-profile directories and build outputs remain excluded. `.powerpages-site` is the export-source exception. Links/junctions, unreadable/unsupported sources, parse failures, unknown source-only inputs and exhausted budgets are explicit gaps. Doctor `--lint-profiles` remains the separate deployment-profile syntax check.
+
+`complete` describes bounded supported-source inspection. It does not mean every compiler, security, accessibility or runtime check passed. `sourceDigest` fingerprints paths and original bytes actually processed; partial input yields a partial fingerprint, not a deployment receipt. Reports preserve skips, rule execution, domain limitations and operations not performed.
 
 ```js
-import { analyzeProject, analysisRules } from 'paqvilo/lense';
+import { analyzeProject, analysisRules, analysisCapabilities } from 'paqvilo/lense';
 
-const report = analyzeProject('/absolute/export', {
+const report = analyzeProject('/absolute/project', {
   failOn: 'warning',
   limits: { fileBytes: 1024 * 1024 },
 });
 ```
 
-New rules need positive cases, negative controls, malformed/incomplete input cases and secret-redaction checks. Guidance is documentary evidence, not native behavior; these tests are tagged as Paqvilo contracts/security guarantees.
+For separate declared sources, API callers may pass `sourceRoots: [{ id: 'solution-1', path: '/absolute/solution', kind: 'solution' }]`. Root IDs must be unique. Analysis never executes project modules, Liquid, Power Fx, build scripts, scanners, PAC, browsers, flows, connectors or tenant requests.
 
-## Research and improvement plan
+## Extending quality coverage
 
-The design follows a deep review of [power-cat-skills](power-cat-quality-review.md) and [power-platform-skills](power-platform-quality-review.md), plus an [ecosystem comparison](power-platform-quality-ecosystem.md). Those notes pin commits, cover broader product areas, inventory CLI/packages/scripts, identify stale or contradictory advice and separate applicable logic from deferred work. No external skill, analyzer implementation or prompt is installed or executed.
+Keep inventory, pure domain rules, diagnostics, presentation and operation evidence separate. Rules need an actual source contract, positive cases, valid negative controls, malformed/partial input and redaction tests. Native or official-package proof is required for parity claims; owned analyzer tests are contracts/security checks.
 
-Guide links use abbreviated upstream commit IDs. The [public source catalogue](../lense/analysis/sources.mjs) and each report's `sources` array retain the complete immutable commit IDs, review dates, licenses and transfer decisions. These identify public research inputs, not local test receipts.
+Project policy owns intended public access, routes, native targets, exceptions and business expectations. Additional adapters can import revision-bound SARIF, compiler/Solution Checker results and authorized runtime/accessibility evidence while preserving original severities, execution errors, skips and tool/input versions. `pac solution check` uploads a solution; builds, scanners, authentication, live tests and deployment remain separate explicit operations.
 
-| Stage                        | Implementation/model                                                                                                                 | Acceptance evidence                                                                                                          |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| Delivered                    | Owned inventory, pure rule registry, redacted/versioned findings, Doctor advice, independent CLI gate and three research inventories | Invented fixtures, negative controls, controlled filesystem race regressions, offline CLI checks and full toolkit validation |
-| Next: source graph           | Cross-file role/permission/page/parent graphs; explicit partial exports and unknown relationships; optional Solution metadata joins  | Invented schemas plus documentary compatibility tests; native recordings required before parity claims                       |
-| Next: project policy         | Project-owned thresholds and intentional exceptions with reasons/expiry; stale-exception reporting; access-policy assertions         | Consumer-project tests; no organisation names or business requirements in core                                               |
-| Next: reporting              | SARIF adapter, source-revision comparison and review UI preserving unknown/skipped states                                            | Schema validation, deterministic locations, bounded/redacted artifacts                                                       |
-| Later: host adapters         | PCF manifests/host requirements, Solution metadata and exported flows using separate host-specific rules                             | Actual parser coverage and official package/recording evidence; avoid applying PCF restrictions to arbitrary site JS         |
-| Authorized external evidence | Optional supplied Site Checker, accessibility/browser, dependency/secret scanner and Solution Checker results                        | Tool/version/input provenance and separate execution failures; never substitute external success for local/runtime evidence  |
-
-`pac solution check` uploads a solution to Power Apps Checker. Site Checker, live security scanners, browser accessibility review, authentication and reference capture require separate authorized workflows. Offline Doctor never runs them or fails because they are not installed. Preserve operation-specific requirements and expected/observed/unknown evidence rather than treating every recommendation as an error.
+The [public provenance catalogue](../lense/analysis/sources.mjs) identifies upstream inputs. Rule references and capabilities identify applicable product contracts. Task-specific reviews, source inventories and audit evidence belong under ignored `.paqvilo/`, outside published documentation and packages.

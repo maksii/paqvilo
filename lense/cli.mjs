@@ -18,7 +18,7 @@ Commands
   status   compare local web files with what the environment serves right now
   verify   prove the loop works: edits a temporary copy of the sources and checks the browser shows it
   doctor   check configuration, mappings and baseline offline (use --all for every site)
-  analyze  review portal source quality, security and performance offline
+  analyze  review Power Platform source quality, security and performance offline
   audit    independently inventory export code and expose mapping gaps (offline)
   resources discover editable files, XML fields, pages and metadata relationships offline
   agent    inspect/control a running local session: sessions, status, pages, events, state,
@@ -375,7 +375,7 @@ try {
       'sign-in-timeout',
     ],
     doctor: [...selection, ...browserSelection, 'cdp-url', 'all', 'mirage', 'lint-profiles', 'fail-on', 'json'],
-    analyze: [...selection, 'all', 'fail-on', 'json'],
+    analyze: [...selection, 'project', 'all', 'fail-on', 'json'],
     list: [...selection, ...browserSelection, 'cdp-url', 'portals', 'settings', 'json'],
     audit: [...selection, 'all', 'strict', 'json'],
     use: ['config', 'repo', 'site', 'env'],

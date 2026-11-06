@@ -1765,9 +1765,10 @@ export function portAvailable(port, host = '127.0.0.1') {
           portals: loaded.portals.map((item) => item.id),
           references: loaded.references.map((item) => item.id),
         });
-      } catch (error) {
+      } catch {
         project.ready = false;
-        project.error = error.message.split('\n')[0];
+        project.error =
+          'The project configuration could not be read or validated. Inspect its syntax, schema version and declared source paths.';
         errors.push(`Mirage project ${configured.project}: ${project.error}`);
       }
     }

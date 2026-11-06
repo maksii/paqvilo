@@ -1,8 +1,13 @@
 import { createHash } from 'node:crypto';
-import { collectAnalysisSources, ANALYSIS_LIMITS } from './inventory.mjs';
+import { collectAnalysisInputs, ANALYSIS_LIMITS } from './inventory.mjs';
 import { recordRules, analyzeRecords } from './record-rules.mjs';
 import { contentRules, analyzeContent } from './content-rules.mjs';
 import { analysisSources } from './sources.mjs';
+import { dataverseRules, analyzeDataverse } from './dataverse-rules.mjs';
+import { appRules, analyzeApps } from './app-rules.mjs';
+import { flowRules, analyzeFlows } from './flow-rules.mjs';
+import { capabilityCoverage } from './capabilities.mjs';
+import { nativeRules, analyzeNative } from './native-rules.mjs';
 
 const sourceRule = {
   id: 'PAQ-SOURCE-001',
@@ -15,12 +20,35 @@ const sourceRule = {
   references: ['https://maksii.github.io/paqvilo/'],
 };
 export const analysisRules = Object.freeze(
-  [sourceRule, ...recordRules, ...contentRules].map((rule) =>
-    Object.freeze({ ...rule, references: Object.freeze([...rule.references]) }),
+  [sourceRule, ...recordRules, ...contentRules, ...dataverseRules, ...appRules, ...flowRules, ...nativeRules].map(
+    (rule) =>
+      Object.freeze({
+        ...rule,
+        domain: rule.domain ?? ruleDomain(rule.id),
+        references: Object.freeze([...rule.references]),
+      }),
   ),
 );
 const byId = new Map(analysisRules.map((rule) => [rule.id, rule]));
 const rank = { none: 0, error: 3, warning: 2, hint: 1 };
+
+function ruleDomain(id) {
+  const domains = [
+    ['PP-', 'power-pages'],
+    ['content.', 'web-content'],
+    ['DV-', 'dataverse'],
+    ['APP-PCF-', 'pcf'],
+    ['APP-CANVAS-', 'canvas'],
+    ['APP-CODE-', 'code-apps'],
+    ['APP-DEPS-', 'project-dependencies'],
+    ['FLOW-', 'flows'],
+    ['CONN-', 'connectors'],
+    ['MCP-', 'mcp-apps'],
+    ['NATIVE-', 'mobile-extension'],
+    ['MOBILE-', 'mobile-apps'],
+  ];
+  return domains.find(([prefix]) => id.startsWith(prefix))?.[1] ?? 'source';
+}
 
 export function validateAnalysisPolicy(failOn) {
   if (!Object.hasOwn(rank, failOn))
@@ -66,9 +94,9 @@ function findingLocation(source, field, offset) {
 }
 
 /** Independent offline review; findings describe source evidence, never deployed behavior. */
-export function analyzeProject(sourceDir, { failOn = 'error', limits = ANALYSIS_LIMITS } = {}) {
+export function analyzeProject(sourceDir, { failOn = 'error', limits = ANALYSIS_LIMITS, sourceRoots } = {}) {
   validateAnalysisPolicy(failOn);
-  const input = collectAnalysisSources(sourceDir, limits);
+  const input = collectAnalysisInputs(sourceRoots ?? [{ path: sourceDir, id: 'source' }], limits);
   limits = input.limits;
   const findings = [],
     seen = new Set();
@@ -91,6 +119,7 @@ export function analyzeProject(sourceDir, { failOn = 'error', limits = ANALYSIS_
       severity: rule.severity,
       category: rule.category,
       confidence: rule.confidence,
+      domain: rule.domain,
       ...location,
       message: rule.message,
       remediation: rule.remediation,
@@ -100,6 +129,21 @@ export function analyzeProject(sourceDir, { failOn = 'error', limits = ANALYSIS_
   for (const source of input.syntax) emit(sourceRule.id, source);
   analyzeRecords(input.records, emit);
   analyzeContent(input.units, emit);
+  const adapters = [
+    analyzeDataverse(input.inputs, emit),
+    analyzeApps(input.inputs, emit),
+    analyzeFlows(input.inputs, emit),
+    analyzeNative(input.inputs, emit),
+  ];
+  const domains = analysisDomains(input, adapters);
+  const recognized =
+    input.records.length +
+    input.units.length +
+    domains
+      .filter((domain) => domain.domain !== 'power-pages' && domain.domain !== 'web-content')
+      .reduce((sum, domain) => sum + (domain.recognized ?? 0), 0);
+  if (!recognized && input.stats.files && input.complete)
+    input.skipped.push({ file: '.', reason: 'no-recognized-platform-sources' });
   findings.sort(
     (a, b) =>
       a.file.localeCompare(b.file, 'en') ||
@@ -109,7 +153,14 @@ export function analyzeProject(sourceDir, { failOn = 'error', limits = ANALYSIS_
   );
   const counts = { error: 0, warning: 0, hint: 0 };
   for (const finding of findings) counts[finding.severity]++;
-  const complete = input.complete && !truncated;
+  const complete =
+    input.complete &&
+    !truncated &&
+    recognized > 0 &&
+    domains.every((domain) => !domain.files || domain.complete !== false) &&
+    adapters.every(
+      (adapter) => adapter?.complete !== false && !adapter?.domains?.some((domain) => domain.complete === false),
+    );
   const meetsThreshold = failOn !== 'none' && findings.some((finding) => rank[finding.severity] >= rank[failOn]);
   return {
     schemaVersion: 1,
@@ -122,9 +173,10 @@ export function analyzeProject(sourceDir, { failOn = 'error', limits = ANALYSIS_
     sourceDigest: input.sourceDigest,
     sources: analysisSources,
     scope:
-      'Local portal record YAML, enhanced component XML, HTML/Liquid, CSS and JavaScript source files; deployment profiles, hidden state, dependencies and build output excluded.',
+      'Declared local Power Platform source roots and bounded in-memory Solution/Canvas packages; no project code, native tools or live services executed.',
     counts,
     findings,
+    capabilities: capabilityCoverage(domains),
     coverage: {
       ...input.stats,
       records: input.records.length,
@@ -132,15 +184,117 @@ export function analyzeProject(sourceDir, { failOn = 'error', limits = ANALYSIS_
       limits,
       findingsTruncated: truncated,
       skipped: input.skipped,
-      evaluatedRules: analysisRules.map((rule) => rule.id),
+      roots: input.roots,
+      domains,
+      availableRules: analysisRules.map((rule) => rule.id),
+      evaluatedRules: evaluatedRuleIds(input, domains, findings),
       notPerformed: [
-        'live-authorization',
-        'rendered-accessibility',
-        'javascript-dataflow',
-        'solution-checker',
-        'view-column-resolution',
-        'deployment-version-verification',
+        ...new Set([
+          'live-authorization',
+          'rendered-accessibility',
+          'javascript-dataflow',
+          'solution-checker',
+          'view-column-resolution',
+          'deployment-version-verification',
+          'native-app-build-and-compile',
+          'native-mobile-device-and-host-tests',
+          'flow-runs-and-connector-authentication',
+          'tenant-governance-and-service-health',
+          'business-process-metrics',
+          ...adapters.flatMap((adapter) => adapter?.notPerformed ?? []),
+        ]),
       ],
     },
   };
+}
+
+function evaluatedRuleIds(input, domains, findings) {
+  const established = new Set(
+    domains.filter((domain) => domain.recognized > 0 && domain.complete !== false).map((domain) => domain.domain),
+  );
+  if (input.records.length || input.syntax.length) established.add('source');
+  if (
+    ['pcf', 'code-apps', 'mobile-apps'].some((domain) => established.has(domain)) &&
+    input.inputs.some((entry) => /(?:^|\/)package\.json$/i.test(entry.file))
+  )
+    established.add('project-dependencies');
+  const reported = new Set(findings.map((finding) => finding.ruleId));
+  return analysisRules.filter((rule) => established.has(rule.domain) || reported.has(rule.id)).map((rule) => rule.id);
+}
+
+function analysisDomains(input, adapters) {
+  const domains = [
+    {
+      domain: 'power-pages',
+      files: input.records.length,
+      recognized: input.records.length,
+      complete: input.complete,
+      limitations: ['Effective permissions and rendered behavior require separate native evidence.'],
+    },
+    {
+      domain: 'web-content',
+      files: input.units.length,
+      recognized: input.units.length,
+      complete: input.complete,
+      limitations: ['HTML/CSS checks do not identify the hosting platform or implement JavaScript dataflow analysis.'],
+    },
+  ];
+  for (const adapter of adapters) {
+    if (Array.isArray(adapter?.domains)) domains.push(...adapter.domains);
+    else if (adapter?.domain) domains.push(adapter);
+  }
+  const canvasPackages = input.inputs.filter((entry) => entry.archive && entry.file.toLowerCase().endsWith('.msapp'));
+  const canvasDomain = domains.find((domain) => domain.domain === 'canvas');
+  if (canvasPackages.length && canvasDomain && !canvasDomain.files) {
+    canvasDomain.files = canvasPackages.length;
+    canvasDomain.complete = false;
+    canvasDomain.limitations = [
+      ...canvasDomain.limitations,
+      'No supported Canvas source was inspected in the declared app packages.',
+    ];
+  }
+  const missing = [
+    'dataverse',
+    'model-driven',
+    'alm',
+    'pcf',
+    'canvas',
+    'code-apps',
+    'flows',
+    'connectors',
+    'mcp-apps',
+    'mobile-apps',
+    'mobile-extension',
+  ];
+  for (const domain of missing)
+    if (!domains.some((item) => item.domain === domain))
+      domains.push({
+        domain,
+        files: 0,
+        recognized: 0,
+        complete: true,
+        limitations: ['No recognized local source for this domain was analyzed.'],
+      });
+  for (const domain of ['governance', 'process-intelligence'])
+    domains.push({
+      domain,
+      files: 0,
+      recognized: 0,
+      complete: false,
+      status: 'separate-evidence-required',
+      limitations: ['Application exports cannot establish tenant state or business analytics.'],
+    });
+  return domains.map(normalizeDomain);
+}
+
+function normalizeDomain(domain) {
+  let recognized = domain.recognized;
+  if (typeof recognized === 'boolean') recognized = recognized ? domain.files : 0;
+  let status = domain.status;
+  if (!status) {
+    status = 'not-detected';
+    if (domain.files > 0 || recognized > 0)
+      status = domain.complete === false || !recognized ? 'partial' : 'source-reviewed';
+  }
+  return { ...domain, recognized, status };
 }

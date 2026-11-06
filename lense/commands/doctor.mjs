@@ -11,6 +11,7 @@ import YAML from 'yaml';
 import { jsonErrorLocation } from '../../mirage/lib/json-diagnostics.mjs';
 import { analyzeProject, validateAnalysisPolicy } from '../analysis/index.mjs';
 import { printAnalysis, analysisFailure } from './analyze.mjs';
+import { configuredAnalysisRoots } from '../analysis/project.mjs';
 
 function addProfileDiagnostic(diagnostics, sourceDir, file, bound, code, line = 1, column = 1) {
   diagnostics.push({
@@ -231,14 +232,7 @@ async function standaloneDoctorReport(catalogue, name, args, dependencies, failO
   const cfg = (await import('../standalone-mirage.mjs')).standaloneCatalogueConfiguration(catalogue, name, {});
   const mirage = await mirageReadiness(cfg, { dependencies });
   const report = standaloneSiteReport(name, cfg, mirage, args);
-  report.analysisApplicable = false;
-  if (failOn !== 'none') {
-    report.ready = false;
-    report.errors.push({
-      code: 'analysis_unavailable',
-      message: 'Static portal analysis requires exported portal sources; this standalone runtime was not analyzed.',
-    });
-  }
+  addProjectAnalysis(report, cfg, failOn);
   return report;
 }
 
@@ -247,14 +241,30 @@ async function portalDoctorReport(cfg, args, dependencies, failOn) {
   const report = inspectCheckout(cfg, { started, session: await OverlaySession.create(cfg) });
   report.lenseReady = report.ready;
   addSourceReportDiagnostics(report, cfg, args);
-  report.analysis = analyzeProject(cfg.sourceDir, { failOn });
-  report.analysisReady = report.analysis.ready;
-  if (!report.analysis.ready) report.errors.push(analysisFailure(report.analysis));
-  report.ready = report.ready && report.analysis.ready;
+  addProjectAnalysis(report, cfg, failOn);
   report.mirage = await mirageReadiness(cfg, { dependencies });
   addProfileDiagnosticsWhenRequested(report, cfg, args);
   applyMirageReadinessGate(report, args);
   return report;
+}
+
+function addProjectAnalysis(report, cfg, failOn) {
+  try {
+    report.analysis = analyzeProject(cfg.sourceDir, { failOn, sourceRoots: configuredAnalysisRoots(cfg) });
+    report.analysisReady = report.analysis.ready;
+    if (!report.analysis.ready) report.errors.push(analysisFailure(report.analysis));
+    report.ready = report.ready && report.analysis.ready;
+  } catch {
+    report.analysisReady = false;
+    const error = {
+      code: 'analysis_unavailable',
+      message: 'Declared Power Platform sources or project metadata could not be inspected.',
+    };
+    if (failOn !== 'none') {
+      report.ready = false;
+      report.errors.push(error);
+    } else report.warnings.push(error.message);
+  }
 }
 
 async function doctorSiteReport(catalogue, site, args, processEnv, dependencies, failOn) {
