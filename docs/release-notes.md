@@ -223,6 +223,12 @@ listens to process output, exit and cancellation under the test's existing deadl
 independent startup deadline. Both retain their functional assertions and pass locally in Edge; the workbench also
 passes in Chromium. Neither fix increases sleeps or changes runtime/parity behavior.
 
+An Ubuntu browser job also exhausted its deadline before tests: the hosted APT mirror fell back for release metadata
+but stalled on package indexes. Hosted Linux browser preparation now replaces only the exact Azure archive token
+with the working official HTTPS archive, preserves other sources/priorities, and sets bounded transport retries and
+timeouts. Incomplete index updates fail explicitly. Non-hosted machines retain their package configuration. A real
+loopback APT timeout regression exercises failure without changing system packages or contacting external mirrors.
+
 Full-source Sonar review found two new maintainability findings: split declared-primary-field construction from
 the table projection, and make JSON wire normalization explicit for pack results. The latter is serialization,
 not a generic deep clone: Date/toJSON, omitted properties and non-finite numbers must match the response and saved

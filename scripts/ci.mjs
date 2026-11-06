@@ -379,7 +379,45 @@ function rootAvailable() {
   return spawnSync('sudo', ['-n', 'true'], { stdio: 'ignore', timeout: 10_000 }).status === 0; // NOSONAR: fixed tool name resolved through PATH by developer tooling
 }
 function installChromium() {
-  execute(process.execPath, chromiumInstallArguments());
+  const args = chromiumInstallArguments();
+  if (args.includes('--with-deps')) prepareHostedApt();
+  execute(process.execPath, args);
+}
+
+/** Bound hosted Ubuntu mirror failures before Playwright invokes apt as root. */
+export function prepareHostedApt({
+  platform = process.platform,
+  env = process.env,
+  read = (file) => fs.readFileSync(file, 'utf8'),
+  run = execute,
+  uid = process.getuid?.(),
+} = {}) {
+  if (platform !== 'linux' || env.GITHUB_ACTIONS !== 'true' || env.RUNNER_ENVIRONMENT !== 'github-hosted') return;
+  const write = (file, input) =>
+    run(uid === 0 ? '/usr/bin/tee' : '/usr/bin/sudo', uid === 0 ? [file] : ['-n', '--', '/usr/bin/tee', file], {
+      input,
+      stdio: ['pipe', 'ignore', 'inherit'],
+    });
+  const mirrors = '/etc/apt/apt-mirrors.txt';
+  let before;
+  try {
+    before = read(mirrors);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  if (before !== undefined) {
+    // The hosted mirror list can fall back for InRelease yet retain the failed
+    // Azure mirror for package indexes. Use the official mirror that succeeded.
+    const after = before.replace(
+      /(^|\n)([ \t]*)https?:\/\/azure\.archive\.ubuntu\.com\/ubuntu(?=[ \t\r\n]|$)/g,
+      '$1$2https://archive.ubuntu.com/ubuntu',
+    );
+    if (after !== before) write(mirrors, after);
+  }
+  write(
+    '/etc/apt/apt.conf.d/99paqvilo-ci',
+    'Acquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nAcquire::Retries "1";\nAPT::Update::Error-Mode "any";\n',
+  );
 }
 
 function requireSdkClients() {
