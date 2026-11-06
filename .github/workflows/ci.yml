@@ -155,7 +155,7 @@ jobs:
           git config --global gc.auto 0
       - name: Install the pinned .NET SDK
         if: matrix.suite != 'lense'
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
         with:
           global-json-file: global.json
       - name: Prepare the selected suite
@@ -203,7 +203,7 @@ jobs:
           key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Install the pinned .NET SDK
         if: matrix.suite != 'lense'
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
         with:
           global-json-file: global.json
       - name: Prepare the selected suite
@@ -255,7 +255,7 @@ jobs:
           git config --global gc.auto 0
       - name: Install the pinned .NET SDK
         if: matrix.suite != 'lense'
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
         with:
           global-json-file: global.json
       - name: Prepare the selected suite
