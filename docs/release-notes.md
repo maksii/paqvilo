@@ -2,6 +2,13 @@
 
 ## 0.9.8
 
+- Add `paqvilo analyze` and shared Doctor source analysis with 125 rules across Dataverse, ALM, model-driven apps,
+  Canvas, PCF, Code Apps, cloud flows, connectors, MCP, mobile declarations and Power Pages. Direct folders and
+  declared project sources work without a portal catalogue. Errors, warnings and hints remain separate; Doctor
+  is advisory unless an explicit threshold is selected. See [static analysis](static-analysis.md).
+- Inspect supported source and package contents within shared read and archive budgets without running project
+  code, formulas, builds, PAC or tenant requests. Reports retain partial/unsupported coverage and 18 separate
+  operation/evidence capabilities; local declarations do not certify compilation, authorization or native runtime behavior.
 - Load model-driven apps with only the navigation index and the selected table's metadata. Forms, views and fields
   of other tables arrive when a lookup or subgrid needs them. The complete catalogue at `/_apps/api` still returns
   every table, form, view and field, and a large catalogue is gzip-compressed when the client accepts gzip. See [startup and responsiveness](../mirage/docs/runtime-performance.md#model-driven-catalogue).

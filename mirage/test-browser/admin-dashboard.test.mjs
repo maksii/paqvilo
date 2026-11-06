@@ -9,6 +9,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 
 const SHARED = new Set(['persona-search.mjs', 'persona-picker-view.mjs']);
+const DASHBOARD_TIME = new Date('2030-01-01T00:00:00Z');
 const NODE_IDS = [
   'client:browser',
   'client:staff',
@@ -168,8 +169,12 @@ async function open(t, origin, { clock = false } = {}) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   t.after(() => context.close());
   const page = await context.newPage();
-  // The dashboard polls every 5 s; a fake page clock lets the test trigger each poll.
-  if (clock) await page.clock.install();
+  // Installing a fake clock alone still advances with wall time. Pause before
+  // navigation so only explicit test ticks can trigger the dashboard's 5 s poll.
+  if (clock) {
+    await page.clock.install({ time: DASHBOARD_TIME });
+    await page.clock.pauseAt(DASHBOARD_TIME);
+  }
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(origin + '/__sim/');
@@ -190,6 +195,11 @@ test(
     const { page, errors } = await open(t, origin, { clock: true });
     await page.getByRole('heading', { name: 'Health', exact: true }).waitFor();
     await page.getByText('The runtime is still starting.', { exact: false }).waitFor();
+    assert.equal(
+      await page.evaluate(() => Date.now()),
+      DASHBOARD_TIME.getTime(),
+      'initialization must not advance the poll clock before an explicit test tick',
+    );
     assert.equal(
       await page.locator('#navigation').getByRole('link', { name: 'Health', exact: true }).getAttribute('aria-current'),
       'page',

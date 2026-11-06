@@ -11,6 +11,70 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { verifyParity } from '../verify.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
+// Pinned Playwright exposes its in-process implementation to tests. Gate the
+// actual Chromium detach event; never synthesize a protocol failure or close a
+// foreign target. Its raw-CDP close acknowledgement arrives on another connection.
+function holdAttachedPageClose(context, page) {
+  const implementation = context._connection.toImpl(page).delegate;
+  const targetId = implementation._targetId;
+  const sessionId = implementation._mainFrameSession._client._sessionId;
+  const transport = implementation._browserContext._browser._connection._transport;
+  const receive = transport.onmessage;
+  const send = transport.send;
+  const received = Promise.withResolvers();
+  let held,
+    interceptions = 0;
+  const release = () => {
+    transport.onmessage = receive;
+    transport.send = send;
+    if (held) receive(held);
+    held = undefined;
+  };
+  transport.onmessage = (message) => {
+    if (message.method === 'Target.detachedFromTarget' && message.params.targetId === targetId) {
+      held = message;
+      received.resolve();
+    } else receive(message);
+  };
+  transport.send = function (message) {
+    send.call(this, message);
+    if (held && message.sessionId === sessionId && ['Fetch.enable', 'Fetch.disable'].includes(message.method)) {
+      interceptions++;
+      queueMicrotask(release);
+    }
+  };
+  return { received: received.promise, release, interceptions: () => interceptions };
+}
+
+async function waitForDriverPagesClosed(context, userPage) {
+  await Promise.all(
+    context
+      .pages()
+      .filter((candidate) => candidate !== userPage && !candidate.isClosed())
+      .map((candidate) => candidate.waitForEvent('close')),
+  );
+}
+
+async function captureAfterObservedClose(context, userPage, capture) {
+  const adoptedPageReady = context.waitForEvent('page');
+  const captureReady = capture();
+  const adoptedPage = await adoptedPageReady;
+  const gate = holdAttachedPageClose(context, adoptedPage);
+  try {
+    const result = await captureReady;
+    await gate.received;
+    assert.equal(adoptedPage.isClosed(), false, 'raw CDP closed the target before Playwright observed its close');
+    const closed = waitForDriverPagesClosed(context, userPage);
+    gate.release();
+    await closed;
+    assert.equal(adoptedPage.isClosed(), true, 'the close fence observes the attached page before changing routes');
+    assert.equal(gate.interceptions(), 0, 'no routing command reaches the already closed target');
+    return result;
+  } finally {
+    gate.release();
+  }
+}
+
 test(
   'parity verifies exact pixels and DOM, rejects mismatches/sign-in/runtime issues, preserves attached browser',
   { timeout: 90_000 },
@@ -420,12 +484,7 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
     assert.match(source.body, /<div id="paqvilo-panel">/);
     await live.close();
     // Tabs closed through the driver's CDP connection close in this context asynchronously.
-    await Promise.all(
-      context
-        .pages()
-        .filter((candidate) => candidate !== userPage && !candidate.isClosed())
-        .map((candidate) => candidate.waitForEvent('close')),
-    );
+    await waitForDriverPagesClosed(context, userPage);
     assert.equal(context.pages().length, 1, "only the driver's own tabs were opened and closed");
     assert.equal(new URL(userPage.url()).pathname, '/user-page');
     // Anonymous captures use an isolated context of the same browser: no cookies from the default
@@ -450,22 +509,26 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
     // Playwright adopts the pages of a context created over CDP into its persistent context, so an
     // overlay route there (as in the toolkit) fetches the isolated page with the persistent
     // context's cookies. The platform client object then names a contact and the capture is refused.
-    const direct = await anonymous.page('/portal-user', {
-      roots: ['main'],
-      settleMs: 100,
-      quietMs: 300,
-    });
+    const direct = await captureAfterObservedClose(context, userPage, () =>
+      anonymous.page('/portal-user', {
+        roots: ['main'],
+        settleMs: 100,
+        quietMs: 300,
+      }),
+    );
     assert.equal(direct.snapshot.signInSignals.portalUser, false);
     assert.equal(captureProblem('anonymous', direct), null);
     await context.route('**/portal-user-overlaid', async (route) => {
       const response = await context.request.fetch(route.request().url());
       await route.fulfill({ response });
     });
-    const overlaid = await anonymous.page('/portal-user-overlaid', {
-      roots: ['main'],
-      settleMs: 100,
-      quietMs: 300,
-    });
+    const overlaid = await captureAfterObservedClose(context, userPage, () =>
+      anonymous.page('/portal-user-overlaid', {
+        roots: ['main'],
+        settleMs: 100,
+        quietMs: 300,
+      }),
+    );
     await context.unroute('**/portal-user-overlaid');
     assert.equal(
       overlaid.snapshot.signInSignals.portalUser,
