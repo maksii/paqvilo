@@ -651,9 +651,10 @@ export function validationSteps(
   });
   const channels = browser ? localBrowserChannels(platform) : [];
   const steps = [];
-  // The Security workflow's CodeQL analysis, the longest step, so a parallel run starts it first.
+  // CodeQL uses all CPUs (--threads=0), as its dedicated hosted job does. It
+  // must not compete with timed CLR/browser lanes in a local parallel run.
   if (scope.codeql && env.GITHUB_ACTIONS !== 'true')
-    steps.push({ label: 'codeql', commands: [['scripts/codeql.mjs']] });
+    steps.push({ label: 'codeql', exclusive: true, commands: [['scripts/codeql.mjs']] });
   for (const suite of ['mirage', 'lense'].filter((suite) => suites.includes(suite))) {
     appendSuiteSteps(steps, suite, { unit, channels, changed, repeat, verify });
   }
@@ -800,23 +801,39 @@ export async function runSteps(steps, jobs, { cwd = root, logs } = {}) {
     fs.mkdirSync(logs, { recursive: true });
     console.log(`[ci] ${steps.length} steps, ${jobs} at a time; logs in ${logs}`);
   }
-  const queue = [...steps],
-    failed = [],
+  const failed = [],
     timings = [];
-  const worker = async () => {
-    for (;;) {
-      const step = queue.shift();
-      if (!step) break;
-      const start = performance.now();
-      const log = path.join(logs, step.label.replace(/[^\w.-]+/g, '-') + '.log');
-      const { output, logError } = openStepLog(parallel, log);
-      const code = await executeStepCommands(step, output, cwd, logError);
-      reportStepResult(step, code, start, log, parallel, failed, timings);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(jobs, steps.length) }, worker));
+  await runStepBatches(steps, jobs, async (step) => {
+    const start = performance.now();
+    const log = path.join(logs, step.label.replace(/[^\w.-]+/g, '-') + '.log');
+    const { output, logError } = openStepLog(parallel, log);
+    const code = await executeStepCommands(step, output, cwd, logError);
+    reportStepResult(step, code, start, log, parallel, failed, timings);
+  });
   if (parallel) console.log(`[ci] step times: ${timings.map(([label, time]) => label + ' ' + time).join(', ')}`);
   if (failed.length) throw new Error(`Validation failed: ${failed.join(', ')}.`);
+}
+
+export async function runStepBatches(steps, jobs, runStep) {
+  let queued = [];
+  const drain = async () => {
+    const queue = queued;
+    queued = [];
+    const worker = async () => {
+      for (let step = queue.shift(); step; step = queue.shift()) await runStep(step);
+    };
+    await Promise.all(Array.from({ length: Math.min(jobs, queue.length) }, worker));
+  };
+  for (const step of steps) {
+    if (!step.exclusive) {
+      queued.push(step);
+      continue;
+    }
+    await drain();
+    console.log(`[ci] Exclusive step: ${step.label}`);
+    await runStep(step);
+  }
+  await drain();
 }
 
 function openStepLog(parallel, log) {

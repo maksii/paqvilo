@@ -231,6 +231,12 @@ initial-state response gate now proves that document load can precede workspace 
 observed connected state under its unchanged owning deadline, reports startup failures directly, and retains every
 disabled/enabled, saved-state and error assertion. This exercises initialization ordering without sleeps or retries.
 
+The same local run exposed CPU oversubscription: the all-CPU CodeQL process overlapped timed CLR semantic tests,
+and an ordinary observer exceeded its existing 10-second fixture budget. CodeQL now runs as an exclusive local
+validation step, matching its dedicated hosted job. Barrier regressions prove it drains preceding work, excludes
+other lanes, preserves subsequent concurrency and continues all functional lanes after an analysis failure. Native
+parity assertions, fixture budgets and production timeout behavior are unchanged.
+
 An Ubuntu browser job also exhausted its deadline before tests: the hosted APT mirror fell back for release metadata
 but stalled on package indexes. Hosted Linux browser preparation now replaces only the exact Azure archive token
 with the working official HTTPS archive, preserves other sources/priorities, and sets bounded transport retries and
