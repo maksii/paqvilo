@@ -226,6 +226,11 @@ listens to process output, exit and cancellation under the test's existing deadl
 independent startup deadline. Both retain their functional assertions and pass locally in Edge; the workbench also
 passes in Chromium. Neither fix increases sleeps or changes runtime/parity behavior.
 
+A full Chromium run also expired its default locator wait before finding the live-write opt-in switch. A controlled
+initial-state response gate now proves that document load can precede workspace readiness; the test waits for the
+observed connected state under its unchanged owning deadline, reports startup failures directly, and retains every
+disabled/enabled, saved-state and error assertion. This exercises initialization ordering without sleeps or retries.
+
 An Ubuntu browser job also exhausted its deadline before tests: the hosted APT mirror fell back for release metadata
 but stalled on package indexes. Hosted Linux browser preparation now replaces only the exact Azure archive token
 with the working official HTTPS archive, preserves other sources/priorities, and sets bounded transport retries and
