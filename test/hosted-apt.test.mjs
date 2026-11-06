@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { prepareHostedApt } from '../scripts/ci.mjs';
 import { tempDirSync } from './fixture.mjs';
@@ -17,6 +17,10 @@ function plan(options = {}) {
     uid: 1000,
     read: () => 'http://azure.archive.ubuntu.com/ubuntu\tpriority:1\nhttps://archive.ubuntu.com/ubuntu\tpriority:2\n',
     run: (command, args, options) => {
+      if (command === '/usr/bin/apt-config') {
+        assert.deepEqual(args, ['dump', 'Acquire::Retries', 'Acquire::http::Timeout', 'Acquire::https::Timeout']);
+        return;
+      }
       assert.equal(command, '/usr/bin/sudo');
       assert.deepEqual(args.slice(0, 3), ['-n', '--', '/usr/bin/tee']);
       assert.deepEqual(options.stdio, ['pipe', 'ignore', 'inherit']);
@@ -37,7 +41,7 @@ test('only an exact hosted Azure mirror token changes; priorities and other sour
       .replace(' http://azure.archive.ubuntu.com/ubuntu ', ' https://archive.ubuntu.com/ubuntu ')
       .replace('https://azure.archive.ubuntu.com/ubuntu\t', 'https://archive.ubuntu.com/ubuntu\t'),
   );
-  assert.match(writes.get('/etc/apt/apt.conf.d/99paqvilo-ci'), /APT::Update::Error-Mode "any"/);
+  assert.match(writes.get('/etc/apt/apt.conf.d/zzz-paqvilo-ci'), /APT::Update::Error-Mode "any"/);
   assert.equal(plan({ platform: 'win32' }).size, 0);
   assert.equal(plan({ env: { GITHUB_ACTIONS: 'false' } }).size, 0);
   assert.equal(plan({ env: { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'self-hosted' } }).size, 0);
@@ -46,6 +50,7 @@ test('only an exact hosted Azure mirror token changes; priorities and other sour
   plan({
     uid: 0,
     run: (command, args, options) => {
+      if (command === '/usr/bin/apt-config') return;
       assert.equal(command, '/usr/bin/tee');
       assert.equal(args.length, 1);
       assert.ok(options.input.length);
@@ -82,6 +87,16 @@ test('only an exact hosted Azure mirror token changes; priorities and other sour
   );
 });
 
+test('the published runner mirror format keeps trailing slashes and priorities while removing the failed origin', () => {
+  // https://github.com/actions/runner-images/blob/fad015e47059f40cf0786dcb4593384f6a0720d3/images/ubuntu/scripts/build/configure-apt-sources.sh
+  const mirrors =
+    'http://azure.archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://archive.ubuntu.com/ubuntu/\tpriority:2\nhttps://security.ubuntu.com/ubuntu/\tpriority:3\n';
+  assert.equal(
+    plan({ read: () => mirrors }).get('/etc/apt/apt-mirrors.txt'),
+    mirrors.replace('http://azure.archive.ubuntu.com/ubuntu/', 'https://archive.ubuntu.com/ubuntu/'),
+  );
+});
+
 test(
   'an unresponsive loopback apt mirror times out and fails instead of accepting an incomplete index',
   {
@@ -91,6 +106,29 @@ test(
   async (t) => {
     const directory = tempDirSync('paq-apt-timeout-');
     t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+    const parts = path.join(directory, 'apt.conf.d');
+    fs.mkdirSync(parts);
+    // The image's late-sorting configuration must not override our actual bounds.
+    fs.writeFileSync(
+      path.join(parts, 'zz-retries'),
+      'Acquire::http::Timeout "999";\nAcquire::https::Timeout "999";\nAcquire::Retries "9";\n',
+    );
+    const bounds = plan().get('/etc/apt/apt.conf.d/zzz-paqvilo-ci');
+    fs.writeFileSync(path.join(parts, 'zzz-paqvilo-ci'), bounds);
+    const bootstrap = path.join(directory, 'bootstrap.conf');
+    fs.writeFileSync(bootstrap, `Dir::Etc::parts "${parts}";\nDir::Etc::main "-";\n`);
+    const effective = spawnSync(
+      '/usr/bin/apt-config',
+      ['dump', 'Acquire::Retries', 'Acquire::http::Timeout', 'Acquire::https::Timeout'],
+      {
+        env: { ...process.env, APT_CONFIG: bootstrap },
+        encoding: 'utf8',
+      },
+    );
+    assert.equal(effective.status, 0, effective.stderr);
+    assert.match(effective.stdout, /Acquire::Retries "1"/);
+    assert.match(effective.stdout, /Acquire::http::Timeout "20"/);
+    assert.match(effective.stdout, /Acquire::https::Timeout "20"/);
     let requests = 0;
     const server = http.createServer(() => {
       requests++;
@@ -110,10 +148,12 @@ test(
     // Exercise the installed timeout/error settings with a one-second test budget.
     fs.writeFileSync(
       configuration,
-      plan().get('/etc/apt/apt.conf.d/99paqvilo-ci').replaceAll('"20"', '"1"').replace('Retries "1"', 'Retries "0"') +
+      bounds.replaceAll('"20"', '"1"').replace('Retries "1"', 'Retries "0"') +
         `Dir::Etc::sourcelist "${source}";\nDir::Etc::sourceparts "-";\nDir::State::lists "${directory}/lists";\nDir::Cache "${directory}/cache";\nDebug::NoLocking "true";\n`,
     );
-    const child = spawn('/usr/bin/apt-get', ['-c', configuration, 'update'], { env: process.env });
+    const child = spawn('/usr/bin/apt-get', ['-c', configuration, 'update'], {
+      env: { ...process.env, APT_CONFIG: bootstrap },
+    });
     t.after(() => child.kill());
     let output = '';
     child.stdout.on('data', (chunk) => {

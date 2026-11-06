@@ -409,15 +409,17 @@ export function prepareHostedApt({
     // The hosted mirror list can fall back for InRelease yet retain the failed
     // Azure mirror for package indexes. Use the official mirror that succeeded.
     const after = before.replace(
-      /(^|\n)([ \t]*)https?:\/\/azure\.archive\.ubuntu\.com\/ubuntu(?=[ \t\r\n]|$)/g,
-      '$1$2https://archive.ubuntu.com/ubuntu',
+      /(^|\n)([ \t]*)https?:\/\/azure\.archive\.ubuntu\.com\/ubuntu(\/?)(?=[ \t\r\n]|$)/g,
+      '$1$2https://archive.ubuntu.com/ubuntu$3',
     );
     if (after !== before) write(mirrors, after);
   }
   write(
-    '/etc/apt/apt.conf.d/99paqvilo-ci',
+    // Runner images also install zz-retries; our bounded settings must sort later.
+    '/etc/apt/apt.conf.d/zzz-paqvilo-ci',
     'Acquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nAcquire::Retries "1";\nAPT::Update::Error-Mode "any";\n',
   );
+  run('/usr/bin/apt-config', ['dump', 'Acquire::Retries', 'Acquire::http::Timeout', 'Acquire::https::Timeout']);
 }
 
 function requireSdkClients() {

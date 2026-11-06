@@ -248,6 +248,8 @@ but stalled on package indexes. Hosted Linux browser preparation now replaces on
 with the working official HTTPS archive, preserves other sources/priorities, and sets bounded transport retries and
 timeouts. Incomplete index updates fail explicitly. Non-hosted machines retain their package configuration. A real
 loopback APT timeout regression exercises failure without changing system packages or contacting external mirrors.
+The regression also uses the runner's published trailing-slash mirror format and real APT configuration ordering:
+our bounds load after its `zz-retries` defaults, and preparation reports the effective timeout/retry settings.
 
 Full-source Sonar review found two new maintainability findings: split declared-primary-field construction from
 the table projection, and make JSON wire normalization explicit for pack results. The latter is serialization,
