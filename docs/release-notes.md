@@ -237,6 +237,12 @@ validation step, matching its dedicated hosted job. Barrier regressions prove it
 other lanes, preserves subsequent concurrency and continues all functional lanes after an analysis failure. Native
 parity assertions, fixture budgets and production timeout behavior are unchanged.
 
+Strict acceptance also caught implementation drift caused by the concurrent SDK-lock test itself: its temporary
+portal and runtime state were written beside generated SDK output in the watched toolkit tree. The fixture now
+keeps them under that output's existing `obj` exclusion. A before/after implementation-hash assertion reproduced
+the old drift and passes with the corrected layout. The evidence suite and synthetic acceptance recipe pass together;
+implementation-drift rejection, locked-file checks and every deliberate acceptance-failure variant remain active.
+
 An Ubuntu browser job also exhausted its deadline before tests: the hosted APT mirror fell back for release metadata
 but stalled on package indexes. Hosted Linux browser preparation now replaces only the exact Azure archive token
 with the working official HTTPS archive, preserves other sources/priorities, and sets bounded transport retries and

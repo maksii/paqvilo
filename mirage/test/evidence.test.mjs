@@ -208,14 +208,17 @@ test(
   },
 );
 
+// @test-kind contract+tooling: generated SDK lock fixtures must preserve the implementation hash used by concurrent acceptance runs.
 test('fresh Mirage startup tolerates an exclusively locked SDK build product', { timeout: 60000 }, async (t) => {
+  const implementationRoot = fileURLToPath(new URL('../', import.meta.url));
+  const before = await implementationSourceFingerprint(implementationRoot);
   const sdkRoot = fileURLToPath(new URL('../test-sdk/', import.meta.url));
   const owned = await makeTemporaryDirectory(path.join(sdkRoot, 'fingerprint-lock-'));
   const generated = path.join(owned, 'obj', 'apphost.exe');
-  const portal = path.join(owned, 'portal');
+  const portal = path.join(owned, 'obj', 'portal');
   await fs.mkdir(portal, { recursive: true });
   await fs.writeFile(path.join(portal, 'website.yml'), 'adx_websiteid: fixture\nadx_name: Locked fixture\n');
-  await fs.mkdir(path.dirname(generated));
+  await fs.mkdir(path.dirname(generated), { recursive: true });
   await fs.writeFile(generated, 'owned SDK build product');
   let locker;
   t.after(async () => {
@@ -252,7 +255,7 @@ test('fresh Mirage startup tolerates an exclusively locked SDK build product', {
       env: {
         ...process.env,
         PAQ_TEST_PORTAL: portal,
-        PAQ_TEST_STATE: path.join(owned, 'state.json'),
+        PAQ_TEST_STATE: path.join(owned, 'obj', 'state.json'),
       },
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -269,9 +272,14 @@ test('fresh Mirage startup tolerates an exclusively locked SDK build product', {
   t.after(() => {
     if (child.exitCode === null) child.kill();
   });
-  const [code] = await once(child, 'exit');
+  const [code] = await once(child, 'close');
   assert.equal(code, 0, stderr);
   assert.match(stdout, /MIRAGE_STARTED/);
+  assert.equal(
+    await implementationSourceFingerprint(implementationRoot),
+    before,
+    'temporary fixture data and runtime state must not invalidate independent acceptance evidence',
+  );
 });
 
 test('cached implementation fingerprints match full hashes and follow same-size edits, additions and removals', async (t) => {
