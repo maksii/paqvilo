@@ -1,3 +1,4 @@
+// @test-kind contract+security: Owned loopback browser interception preserves user drafts and user-owned browser state.
 import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -259,9 +260,10 @@ test('a same-address navigation supersedes a pending late-document repair', asyn
   assert.equal(await page.locator('#draft').inputValue(), 'new document draft');
 });
 
-test('editing while a corrective response is pending cancels only that repair and preserves the draft', async (t) => {
-  let detach, release, attaching;
+async function pendingResponseEdit(t, { delayRequestObservation = false } = {}) {
+  let detach, release, attaching, releaseObservation;
   const { browser, origin } = await lateInspectionFixture(t, '<!doctype html><input id="draft">', async () => {
+    releaseObservation?.();
     release?.();
     if (attaching) detach = await attaching;
     await detach?.();
@@ -283,8 +285,27 @@ test('editing while a corrective response is pending cancels only that repair an
   const gate = new Promise((resolve) => {
     release = resolve;
   });
+  const observed = Promise.withResolvers(),
+    observationHeld = Promise.withResolvers();
+  if (delayRequestObservation) {
+    const emit = page.emit.bind(page);
+    t.mock.method(page, 'emit', (event, ...args) => {
+      if (event === 'request' && args[0].isNavigationRequest() && !releaseObservation) {
+        releaseObservation = () => {
+          releaseObservation = () => {};
+          return emit(event, ...args);
+        };
+        observationHeld.resolve();
+        return false;
+      }
+      return emit(event, ...args);
+    });
+  }
   page.on('request', (request) => {
-    if (request.isNavigationRequest() && !repairRequest) repairRequest = request;
+    if (request.isNavigationRequest() && !repairRequest) {
+      repairRequest = request;
+      observed.resolve();
+    }
   });
   page.on('requestfailed', (request) => {
     if (request === repairRequest) settled('cancelled');
@@ -305,8 +326,21 @@ test('editing while a corrective response is pending cancels only that repair an
     },
     { onError: reported },
   );
-  await held;
-  await page.keyboard.insertText('draft entered after repair started');
+  let editingStarted = false;
+  const editing = (async () => {
+    // Fetch and Playwright observe this navigation through separate CDP sessions.
+    // Cancellation can only be asserted through Playwright after it knows the request.
+    await Promise.all([held, observed.promise]);
+    editingStarted = true;
+    await page.keyboard.insertText('draft entered after repair started');
+  })();
+  if (delayRequestObservation) {
+    await Promise.all([held, observationHeld.promise]);
+    assert.equal(repairRequest, undefined, 'the Fetch pause does not imply Playwright request observation');
+    assert.equal(editingStarted, false, 'editing waits for both navigation observation channels');
+    releaseObservation();
+  }
+  await editing;
   release();
   detach = await attaching;
   assert.equal(await completed, 'cancelled', 'the old document cannot commit a replacement after accepting an edit');
@@ -319,6 +353,14 @@ test('editing while a corrective response is pending cancels only that repair an
     true,
     'explicit navigation still applies the complete overlay',
   );
+}
+
+test('editing while a corrective response is pending cancels only that repair and preserves the draft', async (t) => {
+  await pendingResponseEdit(t);
+});
+
+test('pending-response editing waits for Playwright request delivery after the Fetch pause', async (t) => {
+  await pendingResponseEdit(t, { delayRequestObservation: true });
 });
 
 test('late repair distinguishes pristine native controls from edited form state', async (t) => {

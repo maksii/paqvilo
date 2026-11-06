@@ -9,6 +9,9 @@ import { duplicateYamlDiagnostics } from '../yaml-diagnostics.mjs';
 import { scaffoldWarning } from '../project-check.mjs';
 import YAML from 'yaml';
 import { jsonErrorLocation } from '../../mirage/lib/json-diagnostics.mjs';
+import { analyzeProject, validateAnalysisPolicy } from '../analysis/index.mjs';
+import { printAnalysis, analysisFailure } from './analyze.mjs';
+import { configuredAnalysisRoots } from '../analysis/project.mjs';
 
 function addProfileDiagnostic(diagnostics, sourceDir, file, bound, code, line = 1, column = 1) {
   diagnostics.push({
@@ -146,7 +149,10 @@ function assembleDoctorReport(args, reports, catalogue) {
   const report = {
     offline: true,
     ready,
-    checks: args.mirage ? ['lense', 'sources', 'mirage'] : ['lense'],
+    checks: [
+      ...(args.mirage ? ['lense', 'sources', 'mirage'] : ['lense']),
+      ...(args['fail-on'] && args['fail-on'] !== 'none' ? ['analysis'] : []),
+    ],
     reports,
     ...(warning ? { warnings: [warning] } : {}),
   };
@@ -222,7 +228,65 @@ export function inspectCheckout(cfg, { started = performance.now(), session = ne
   };
 }
 
+async function standaloneDoctorReport(catalogue, name, args, dependencies, failOn) {
+  const cfg = (await import('../standalone-mirage.mjs')).standaloneCatalogueConfiguration(catalogue, name, {});
+  const mirage = await mirageReadiness(cfg, { dependencies });
+  const report = standaloneSiteReport(name, cfg, mirage, args);
+  addProjectAnalysis(report, cfg, failOn);
+  return report;
+}
+
+async function portalDoctorReport(cfg, args, dependencies, failOn) {
+  const started = performance.now();
+  const report = inspectCheckout(cfg, { started, session: await OverlaySession.create(cfg) });
+  report.lenseReady = report.ready;
+  addSourceReportDiagnostics(report, cfg, args);
+  addProjectAnalysis(report, cfg, failOn);
+  report.mirage = await mirageReadiness(cfg, { dependencies });
+  addProfileDiagnosticsWhenRequested(report, cfg, args);
+  applyMirageReadinessGate(report, args);
+  return report;
+}
+
+function addProjectAnalysis(report, cfg, failOn) {
+  try {
+    report.analysis = analyzeProject(cfg.sourceDir, { failOn, sourceRoots: configuredAnalysisRoots(cfg) });
+    report.analysisReady = report.analysis.ready;
+    if (!report.analysis.ready) report.errors.push(analysisFailure(report.analysis));
+    report.ready = report.ready && report.analysis.ready;
+  } catch {
+    report.analysisReady = false;
+    const error = {
+      code: 'analysis_unavailable',
+      message: 'Declared Power Platform sources or project metadata could not be inspected.',
+    };
+    if (failOn !== 'none') {
+      report.ready = false;
+      report.errors.push(error);
+    } else report.warnings.push(error.message);
+  }
+}
+
+async function doctorSiteReport(catalogue, site, args, processEnv, dependencies, failOn) {
+  try {
+    const name = site ?? catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite;
+    // Standalone runtimes have no portal export; only their Mirage checks apply.
+    if (mirageOnlySite(catalogue.sites[name]))
+      return await standaloneDoctorReport(catalogue, name, args, dependencies, failOn);
+    const cfg = await loadConfig(doctorSiteConfigArgs(args, catalogue, site), processEnv);
+    return await portalDoctorReport(cfg, args, dependencies, failOn);
+  } catch (err) {
+    return {
+      site: site ?? catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite,
+      ready: false,
+      errors: [{ code: err.code ?? 'check_failed', message: err.message }],
+      warnings: [],
+    };
+  }
+}
+
 export async function collectDoctor(args, { processEnv = process.env } = {}) {
+  const failOn = validateAnalysisPolicy(args['fail-on'] ?? 'none');
   const catalogue = loadCatalogue(args, processEnv);
   if (args.site && !Object.hasOwn(catalogue.sites, args.site))
     throw Object.assign(
@@ -234,34 +298,8 @@ export async function collectDoctor(args, { processEnv = process.env } = {}) {
   // Opt in to gating on Mirage while preserving the Lense-only default verdict.
   const { dependencyReadiness } = await import('../../scripts/ensure-dependencies.mjs');
   const dependencies = dependencyReadiness(TOOL_ROOT);
-  for (const site of names) {
-    try {
-      // A Mirage-only site (standalone runtime, no portal export, no environment): only the Mirage checks apply.
-      const name = site ?? catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite;
-      if (mirageOnlySite(catalogue.sites[name])) {
-        const cfg = (await import('../standalone-mirage.mjs')).standaloneCatalogueConfiguration(catalogue, name, {});
-        const mirage = await mirageReadiness(cfg, { dependencies });
-        reports.push(standaloneSiteReport(name, cfg, mirage, args));
-        continue;
-      }
-      const cfg = await loadConfig(doctorSiteConfigArgs(args, catalogue, site), processEnv);
-      const started = performance.now();
-      const report = inspectCheckout(cfg, { started, session: await OverlaySession.create(cfg) });
-      report.lenseReady = report.ready;
-      addSourceReportDiagnostics(report, cfg, args);
-      report.mirage = await mirageReadiness(cfg, { dependencies });
-      addProfileDiagnosticsWhenRequested(report, cfg, args);
-      applyMirageReadinessGate(report, args);
-      reports.push(report);
-    } catch (err) {
-      reports.push({
-        site: site ?? catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite,
-        ready: false,
-        errors: [{ code: err.code ?? 'check_failed', message: err.message }],
-        warnings: [],
-      });
-    }
-  }
+  for (const site of names)
+    reports.push(await doctorSiteReport(catalogue, site, args, processEnv, dependencies, failOn));
   addDuplicatePortWarnings(reports);
   return assembleDoctorReport(args, reports, catalogue);
 }
@@ -333,6 +371,8 @@ function printDoctorItem(item, args, catalogue) {
   for (const error of item.errors) console.log(`  ERROR: ${error.message ?? error}`);
   for (const warning of item.warnings) console.log(`  WARNING: ${warning}`);
   for (const change of item.needsDeploy ?? []) console.log(`  NEEDS DEPLOY: ${change.rel}: ${change.reason}`);
+  if (item.analysis) printAnalysis(item.analysis);
+  if (item.analysisApplicable === false) console.log('  analysis: not applicable to this standalone runtime');
   const mirage = item.mirage;
   if (mirage) printMirageDetails(mirage, catalogue);
 }

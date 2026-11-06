@@ -87,6 +87,8 @@ npx --no-install paqvilo lense dev --config ./paqvilo.config.yml --site portal -
 
 Run one development command at a time. **Alt+Shift+P** opens the panel. Add `.paqvilo/` and personal configuration to your project's ignore file.
 
+Review declared Power Platform sources with `npx --no-install paqvilo analyze --config ./paqvilo.config.yml --all --json`, including standalone Dataverse/model-driven projects. Direct `--source PATH` and `--project FILE` also work without a portal. Doctor includes the same findings as advice; `--fail-on warning` enforces a stricter source gate. See [offline static analysis](docs/static-analysis.md) for source domains, rules, limits and evidence boundaries.
+
 ## Scope
 
 Paqvilo supports standard and enhanced portal exports and imports `.powerpages-site` code-site exports. Its local Liquid simulation is intended for traditional portal development; code-site import does not provide SPA build tooling.

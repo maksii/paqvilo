@@ -13,6 +13,10 @@ running the tool; extra arguments beside the standalone help request are rejecte
 For scripts in a toolkit checkout, use `node bin/paqvilo.mjs` instead of `npx`.
 `npm run` adds a preamble to stdout, so avoid it when parsing JSON.
 
+## Offline quality checks
+
+`paqvilo analyze --config FILE --all --json` reviews declared Power Platform source roots, including standalone Dataverse/model-driven projects, without builds or portal requests. Direct `--source PATH` and `--project FILE` do not require a catalogue or portal. The `lense analyze` spelling remains supported. Analysis fails on errors or incomplete supported-source inspection by default; Doctor includes the same findings as advice. Both accept `--fail-on none|error|warning|hint`; Doctor defaults to `none`. See [static analysis](static-analysis.md) for source domains, rules, inventory limits and separate evidence requirements.
+
 ## Paths and quoting
 
 Quote each path or value containing spaces or shell punctuation. Paths retain

@@ -5,21 +5,23 @@ import fs from 'node:fs';
 import { parseArgs } from 'node:util';
 import { MIRAGE_TOOLS, MIRAGE_LIFECYCLE, mirageToolHelp } from '../mirage/tool-registry.mjs';
 
-const HELP = `paqvilo — Power Pages development
+const HELP = `paqvilo — Power Platform source development
 
 Usage: paqvilo lense <command> [options]
        paqvilo mirage <command> [options]
        paqvilo init [dir] [options]
        paqvilo setup [--config FILE | --project FILE] [--open]
        paqvilo dataverse <command> [options]
+       paqvilo analyze --source DIR | --project FILE | --config FILE [options]
        paqvilo doctor --setup [--json] [--config FILE] [--browser CHANNEL]
 
   lense   Overlay local sources, inspect resources and browser sessions.
-          dev, list, use, doctor, map, status, audit, resources, verify, agent, model-driven
+          dev, list, use, doctor, analyze, map, status, audit, resources, verify, agent, model-driven
   mirage  Render exported portals with Liquid and simulated Dataverse on loopback.
           demo, init, dev, start, status, stop, serve, inspect, data
           ${Object.keys(MIRAGE_TOOLS).join(', ')}
   doctor  Check installed dependencies and browser readiness.
+  analyze Review declared Power Platform sources offline, including standalone projects.
   init    Scaffold a consumer project; --check, --ready and --refresh-editor maintain it.
   setup   Local configuration workspace at /_setup/, including incomplete projects.
   dataverse  Register a provisioning app, plan/apply metadata, publish and export.
@@ -28,6 +30,21 @@ Run paqvilo lense --help, paqvilo mirage --help or paqvilo dataverse --help for 
 `;
 const DOCTOR_HELP =
   'Usage: paqvilo doctor --setup [--json] [--config FILE] [--browser CHANNEL]\n\n  --setup    Check installed dependencies and browser readiness.\n  --json     Print the readiness report as JSON.\n  --config   Resolve the catalogue browser without importing portal sources.\n  --browser  Explicit browser channel, overriding the catalogue.';
+const ANALYZE_HELP = `Usage: paqvilo analyze [--source PATH | --project FILE | --config FILE] [options]
+
+Review declared Power Platform sources locally, including standalone Dataverse projects.
+  --source PATH    Review a source folder or supported package without a catalogue.
+  --project FILE   Review a Mirage project's declared sources without a portal.
+  --config FILE    Select a catalogue and its declared source roots.
+  --site NAME      Select a catalogue site, including a standalone runtime.
+  --all            Review every catalogue site's declared sources separately.
+  --repo DIR       Override the catalogue source checkout root.
+  --env NAME       Select the catalogue environment context; no request is made.
+  --fail-on LEVEL  none, error (default), warning or hint; incomplete inspection fails.
+  --json           Include rule, domain, inventory and separate-evidence capability details.
+
+Analysis does not run builds, project modules, native tools, flows or live requests.
+See docs/static-analysis.md for supported source formats and evidence boundaries.`;
 const argv = process.argv.slice(2);
 const [product, ...args] = argv;
 // A flag after the option terminator is a positional value, never a request for help/JSON.
@@ -115,6 +132,27 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
   } catch (error) {
     failure(error, 'SETUP_CHECK_FAILED', 'paqvilo doctor');
   }
+} else if (product === 'analyze' && hasFlag(args, '--help', '-h')) {
+  try {
+    parseArgs({
+      args,
+      options: {
+        source: { type: 'string' },
+        project: { type: 'string' },
+        config: { type: 'string' },
+        site: { type: 'string' },
+        env: { type: 'string' },
+        repo: { type: 'string' },
+        all: { type: 'boolean' },
+        json: { type: 'boolean' },
+        'fail-on': { type: 'string' },
+        help: { type: 'boolean', short: 'h' },
+      },
+    });
+    console.log(ANALYZE_HELP);
+  } catch (error) {
+    failure(error, 'INVALID_ARGUMENT', 'paqvilo analyze');
+  }
 } else if (product === 'mirage' && Object.hasOwn(MIRAGE_TOOLS, args[0]) && hasFlag(args, '--help', '-h')) {
   try {
     // This dispatcher serves standalone tool help; operational arguments belong to the tool's parser.
@@ -126,8 +164,8 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
   } catch (error) {
     failure(error, 'INVALID_ARGUMENT', `paqvilo mirage ${args[0]}`);
   }
-} else if (!['lense', 'mirage', 'dataverse'].includes(product)) {
-  const message = `Unknown command ${JSON.stringify(product)}. Choose lense, mirage, dataverse, init, setup or doctor. Run paqvilo --help for options.`;
+} else if (!['lense', 'mirage', 'dataverse', 'analyze'].includes(product)) {
+  const message = `Unknown command ${JSON.stringify(product)}. Choose lense, mirage, dataverse, analyze, init, setup or doctor. Run paqvilo --help for options.`;
   failure(new Error(message), 'UNKNOWN_PRODUCT', 'paqvilo', argv);
 } else {
   const lifecycle = new Set(MIRAGE_LIFECYCLE);
@@ -136,6 +174,9 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
   if (product === 'dataverse') {
     program = '../lense/dataverse/cli.mjs';
     forwarded = args;
+  } else if (product === 'analyze') {
+    program = '../lense/cli.mjs';
+    forwarded = ['analyze', ...args];
   } else if (product === 'lense') {
     program = '../lense/cli.mjs';
     forwarded = args;

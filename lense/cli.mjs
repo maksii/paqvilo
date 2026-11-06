@@ -18,6 +18,7 @@ Commands
   status   compare local web files with what the environment serves right now
   verify   prove the loop works: edits a temporary copy of the sources and checks the browser shows it
   doctor   check configuration, mappings and baseline offline (use --all for every site)
+  analyze  review Power Platform source quality, security and performance offline
   audit    independently inventory export code and expose mapping gaps (offline)
   resources discover editable files, XML fields, pages and metadata relationships offline
   agent    inspect/control a running local session: sessions, status, pages, events, state,
@@ -62,10 +63,12 @@ Other
   --debug-port <n>  dev: launched browser's debugger port (0 = off; incompatible with CDP attachment)
   --check           map: request every mapped URL online
   --settings        list: also show every setting .env understands
-  --all             doctor/audit: check every configured site's default environment offline
+  --all             doctor/analyze/audit: check every configured site's default environment offline
   --mirage          doctor: also gate Sources diagnostics and Mirage configuration
   --lint-profiles   doctor: lint all exported deployment-profiles as warnings
-  --json            list/map/status/doctor/audit/resources/verify: machine readable output
+  --fail-on <none|error|warning|hint> doctor/analyze: static analysis threshold
+                    doctor defaults to none (advisory); analyze defaults to error
+  --json            list/map/status/doctor/analyze/audit/resources/verify: machine readable output
   --event-cursor <token> model-driven inspect: continue its source event registration report
   --include-event-parameters model-driven inspect: explicitly include source parameter literals
 
@@ -180,6 +183,7 @@ const options = {
   strict: { type: 'boolean' },
   mirage: { type: 'boolean' },
   'lint-profiles': { type: 'boolean' },
+  'fail-on': { type: 'string' },
   json: { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
 };
@@ -300,6 +304,7 @@ const commands = {
   list: { load: () => import('./commands/list.mjs'), needsSite: false },
   use: { load: () => import('./commands/use.mjs'), needsSite: false },
   doctor: { load: () => import('./commands/doctor.mjs'), needsSite: false },
+  analyze: { load: () => import('./commands/analyze.mjs'), needsSite: false },
   audit: { load: () => import('./commands/audit.mjs'), needsSite: false },
   resources: { load: () => import('./commands/resources.mjs'), needsSite: true },
   agent: { load: () => import('./commands/agent.mjs'), needsSite: false },
@@ -369,7 +374,8 @@ try {
       'strict',
       'sign-in-timeout',
     ],
-    doctor: [...selection, ...browserSelection, 'cdp-url', 'all', 'mirage', 'lint-profiles', 'json'],
+    doctor: [...selection, ...browserSelection, 'cdp-url', 'all', 'mirage', 'lint-profiles', 'fail-on', 'json'],
+    analyze: [...selection, 'project', 'all', 'fail-on', 'json'],
     list: [...selection, ...browserSelection, 'cdp-url', 'portals', 'settings', 'json'],
     audit: [...selection, 'all', 'strict', 'json'],
     use: ['config', 'repo', 'site', 'env'],

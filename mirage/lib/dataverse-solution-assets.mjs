@@ -233,6 +233,8 @@ export function readSolutionAssetEntries(input, options = {}) {
     if (hasOverlappingRange(ranges, info.local, rangeEnd)) fail('Overlapping solution ZIP entries.');
     ranges.push([info.local, rangeEnd]);
     cursor += 46 + info.nameLength + info.extraLength + info.commentLength;
+    // Inventory callers account every validated member, including directories and excluded payloads.
+    options.onEntry?.(name);
     if (!name.endsWith('/') && !include(name)) continue;
     appendInflatedEntry(bytes, info, name, body, rangeEnd, limits, entries);
   }
