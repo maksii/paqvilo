@@ -2,7 +2,19 @@
 
 ## 0.9.8
 
-- Add `paqvilo analyze` and shared Doctor source analysis with 125 rules across Dataverse, ALM, model-driven apps,
+- Preserve platform-owned audit stamps in Update plug-in Targets without demanding visitor association grants for
+  unchanged platform values. Explicit bindings and plug-in lookup edits retain authorization and rollback.
+- Expose opt-in authenticated, local-only [pack transactions](../mirage/docs/data-packs.md#authenticated-local-endpoint-writes)
+  with declared targets, scoped CRUD, concurrency checks and bounded atomic idempotency receipts.
+  Pack routes also retain requester audit/trace attribution, including repeated global-pattern matches.
+- Recover one `ECONNRESET` for safe [configuration assignments](public-api.md), retaining a fixed diagnostic and
+  propagating other failures. Uncertain record writes and preset application are never replayed automatically.
+- Distinguish absent/empty enhanced record payloads from syntax errors with `PAQ-SOURCE-002`; withheld settings
+  remain incomplete without advice to disclose values. Keep declared primary names/keys queryable in partial
+  Solution exports, while rejecting genuinely unknown columns.
+- Bound whole-metadata resolution in rollup write scans independently of unrelated table count. Preserve structured
+  metadata invalidation, current authorization, the full plug-in pipeline and atomic rollback.
+- Add `paqvilo analyze` and shared Doctor source analysis with 126 rules across Dataverse, ALM, model-driven apps,
   Canvas, PCF, Code Apps, cloud flows, connectors, MCP, mobile declarations and Power Pages. Direct folders and
   declared project sources work without a portal catalogue. Errors, warnings and hints remain separate; Doctor
   is advisory unless an explicit threshold is selected. See [static analysis](static-analysis.md).
@@ -165,6 +177,45 @@
 
 Synthetic and native qualification are distinct. Loopback passes establish the exercised contracts; they do not
 establish native control coverage, a deployed source revision or production readiness.
+
+### Consumer feedback qualification, 2026-11-06
+
+The reported preview maps to release commit `e7fa18402f72`. On that exact source, 71 focused unit checks and
+28 browser checks passed on Node 24.22.1, Windows x64, using invented schemas and disposable loopback browsers.
+This receipt contains no customer data, source paths, tenant identifiers or authentication material.
+The following stable feedback IDs distinguish reproduced defects from qualification already supported by that release:
+
+| ID  | Review outcome and verification                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 215 | Fixed redundant whole-metadata work in write observation; `write-metadata-cost.test.mjs` compares the old per-table path, current snapshots, structured edits and rollback. Existing startup/cache tests and the source-volume browser readiness test preserve source/data coverage and local edits. See the measured workload below.                                                                                                                                                                                                |
+| 232 | No current toolkit defect reproduced: `test-browser/xray-feedback.test.mjs` checks selected sources before crowded context, paging, retained disclosure choices, unknown elements and card movement without activating native controls.                                                                                                                                                                                                                                                                                              |
+| 234 | No current toolkit defect reproduced: the same browser suite checks uniquely joined generic modal placement in lists/subgrids, multiple action forms/lists, replacements, conflicting URL/layout hints, absent exports and source changes. Unjoined context stays qualified.                                                                                                                                                                                                                                                         |
+| 237 | No current toolkit defect reproduced: the same suite checks two empty/disabled editor hosts and nested repeated IDs at 4 and 900 candidates, advanced-step replacement and explicit unknown/inaccessible boundaries, without reading values.                                                                                                                                                                                                                                                                                         |
+| 238 | Owned-browser executable fault receipt: `dev-session-close-errors.test.mjs` passed a real independently proxied `Page.getFrameTree` stall in a cancelled initializer, explicit tab and popup. Both 10-second deadlines fired; only failed tabs closed. Two unsaved drafts, watcher updates, agent session/events/pages and a new tab executing changed source survived. Actual shared transport loss stopped the owned session and removed its watcher/discovery. Test duration: 23.1 seconds. No existing user browser was faulted. |
+| 239 | No current toolkit defect reproduced: `richtext-form.test.mjs` checks empty/plain/quoted formatted HTML through repeated edit/postback/reopen, actual hidden JSON, authored jQuery and mutation observers, bounded events, paragraph structure and zero page errors. Editor-document readiness uses a controlled blank-document gate.                                                                                                                                                                                                |
+| 240 | No current toolkit defect reproduced: `shell-capture.test.mjs` checks managed GUID CSS, duplicate/query observations, non-CSS/404/oversize/unsafe inputs, origin/credential protection and failed-refresh rollback retaining the prior shell.                                                                                                                                                                                                                                                                                        |
+| 241 | Added the missing public capability; `pack-endpoint-writes.test.mjs` exercises authenticated HTTP transactions, token/target/provider refusal, children/rollback, stale revisions, capability expiry, concurrent duplicate keys, changed inputs, payload bounds and independent runtimes.                                                                                                                                                                                                                                            |
+| 242 | Added bounded configuration recovery; `runtime-configuration-recovery.test.mjs` checks before-send and after-commit resets, second-reset/server/unreachable refusal, no create replay and a retained real client after a 4,000-row preset replacement. Lost snippet creation resumes by reading its committed identity. The operating system connection-reuse cause remains unproven.                                                                                                                                                |
+| 243 | Reproduced scalar Update refusal with audit relationships and no systemuser AppendTo; fixed its authorization input. `audit-binding-authorization.test.mjs` retains audit values and Targets, denied/permitted explicit binds, plug-in edits and rollback.                                                                                                                                                                                                                                                                           |
+| 244 | Reproduced absent enhanced payload misdiagnosis; `analysis-component-payload.test.mjs` covers absent/empty/optional/null values, invalid JSON, malformed XML and unknown kinds without disclosing values. Existing secret/parser security assertions remain intact.                                                                                                                                                                                                                                                                  |
+| 245 | Corrected documentation to distinguish request validation from native-qualified 405 refusal. Existing bulk, PreValidation, elastic and permission tests retain their native assertions and row-preservation guarantees.                                                                                                                                                                                                                                                                                                              |
+| 246 | Reproduced an empty default grid failing on a declared primary name. `partial-primary-metadata.test.mjs` now verifies usable empty/populated HTTP grids, exact declared fields and rejection of unknown fields.                                                                                                                                                                                                                                                                                                                      |
+
+The separate `--large` performance probe used 256 invented tables, 10,240 forms and 20,000 records. Fresh,
+unchanged and journal-grown starts took 4.793, 2.891 and 1.742 seconds; first status responses took 26, 11 and
+8 ms. First grid API reads took 27, 20 and 20 ms. Complete catalogue reads took 8.9–10.2 seconds, with a maximum
+concurrent status heartbeat of 45 ms. All declared probe budgets passed, all 20,000 records remained, and the
+journal edit survived. Cumulative process peak RSS reached 2,755 MiB across these same-process runs. This includes
+the complete source/state and catalogue workload plus V8 retained heap capacity; it is not a per-phase retained-heap
+measurement or proof of a leak. Cold module import precedes the first exported callback; context preparation has
+its own progress phases, as described in [runtime performance](../mirage/docs/runtime-performance.md).
+
+A separate visible-browser fixture with 64 tables, 256 forms and 4,096 records measured fresh/restart runtime calls
+at 651/525 ms, usable grid search at 188/146 ms, and refresh at 89/95 ms. It searches for an actual row, observes no
+page-script errors and retains all tables/rows and a local edit without reapplying bootstrap. These sequential local
+samples are neither a randomized package comparison nor a portable hardware budget. Full source volume, native
+deployment differences and a consumer's signed-in native requalification require that consumer's own authorized
+environment; synthetic receipts establish the toolkit contracts and do not claim native/live parity.
 
 ## 0.9.7
 

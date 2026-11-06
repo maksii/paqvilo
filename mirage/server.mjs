@@ -341,6 +341,7 @@ import {
   bootstrapVariant,
 } from './lib/platform-manifest.mjs';
 import { packEndpoints } from './lib/extensions.mjs';
+import { invokePackMutation } from './lib/pack-endpoint-writes.mjs';
 import { externalFrameOrigins, portalContentSecurityPolicy } from './lib/content-policy.mjs';
 import {
   buildPermissionModel,
@@ -879,6 +880,10 @@ export async function createSimulator(options = {}) {
     metadata: solutionData,
   });
   const packEndpointList = packEndpoints(projectPacks ?? (await discoverPacks({ portal: sourcePortal })));
+  const matchPackEndpoint = (endpoint, pathname) => {
+    endpoint.pattern.lastIndex = 0;
+    return endpoint.pattern.exec(pathname);
+  };
   const registeredWebApiErrorTemplates = collectWebApiErrorTemplates(projectPacks ?? []);
   const operationPortal = () => withSolutionOperations(portal, solutionOperations);
   const bootstrapOptions = () => ({ origin, metadata: solutionData, ...(projectPacks ? { packs: projectPacks } : {}) });
@@ -5280,12 +5285,12 @@ export async function createSimulator(options = {}) {
     // Endpoints contributed by the data packs serving this portal
     // (lib/extensions.mjs); the runtime itself defines none.
     for (const endpoint of packEndpointList) {
-      const match = endpoint.pattern.exec(url.pathname);
+      const match = matchPackEndpoint(endpoint, url.pathname);
       if (!match) continue;
       if (!endpoint.methods.includes(req.method))
         throw error(`${endpoint.id} requires ${endpoint.methods.join(' or ')}.`, 405);
       const identity = currentIdentity();
-      return endpoint.handle({
+      const endpointContext = {
         req,
         res,
         url,
@@ -5297,7 +5302,28 @@ export async function createSimulator(options = {}) {
         audit: (entity, rowCount) => {
           res[auditResponse] = { entity, rowCount };
         },
-      });
+      };
+      if (endpoint.writes) {
+        const local = () =>
+          config().mode !== 'live' &&
+          config().pageMode !== 'live' &&
+          !(config().endpoints ?? []).some((item) => item.enabled !== false && item.mode === 'live');
+        if (!local()) throw error('Pack writes require local providers.', 409, 'LocalRuntimeRequired');
+        if (!(identity.contactId ?? identity.id))
+          throw error('Pack writes require sign-in.', 401, 'AuthenticationRequired');
+        if (req.headers.__requestverificationtoken !== csrf) throw error('Missing portal verification token.', 403);
+        const body = await jsonObjectBody(req);
+        const result = await invokePackMutation({
+          endpoint,
+          context: endpointContext,
+          body,
+          store,
+          local,
+          atomic: (work) => change(() => organization.runOwned(() => organization.runAtomic(work))),
+        });
+        return json(res, 200, result);
+      }
+      return endpoint.handle(endpointContext);
     }
     const formRoute = /^\/__sim\/forms\/(entityform|webform)\/([\w-]+)\/submit$/.exec(url.pathname);
     if (formRoute) {
@@ -6708,7 +6734,12 @@ export async function createSimulator(options = {}) {
     const endpoint = (cfg.endpoints ?? []).find((item) => item.enabled !== false && item.path === url.pathname);
     let kind = 'page';
     if (url.pathname.startsWith('/__sim/forms/')) kind = 'form';
-    else if (url.pathname.startsWith('/_api/') || url.pathname.startsWith('/__sim/artifacts/') || endpoint)
+    else if (
+      url.pathname.startsWith('/_api/') ||
+      url.pathname.startsWith('/__sim/artifacts/') ||
+      endpoint ||
+      packEndpointList.some((item) => matchPackEndpoint(item, url.pathname))
+    )
       kind = 'api';
     const tracked = !url.pathname.startsWith('/__sim/') || kind === 'form' || kind === 'api';
     // A file suffix marks a static asset, except on the portal's own service routes (a document download named
@@ -6925,12 +6956,7 @@ export async function createSimulator(options = {}) {
         portalError: res[auditResponse]?.error,
         simulatorCode: res.getHeader('x-sim-error-code'),
       });
-      if (
-        req.url.startsWith('/__sim') &&
-        !req.url.startsWith('/__sim/forms/') &&
-        !req.url.startsWith('/__sim/artifacts/')
-      )
-        return;
+      if (url.pathname.startsWith('/__sim') && !['form', 'api'].includes(kind)) return;
       portalRequestTotal += 1;
       requests.push({
         at: started,
@@ -7024,6 +7050,7 @@ export async function createSimulator(options = {}) {
       settings: liveDataverseSettings,
       schema: () => solutionData?.schema ?? null,
       metadataFields: (logical) => modelMetadata()?.entities?.[logical]?.fields,
+      metadataSnapshot: () => modelMetadata()?.entities,
       log: (...args) => recordDiagnostic({ code: 'DATAVERSE_API', message: String(args[0]?.message ?? args[0]) }),
     });
     organizationRecords = createModelDrivenRecordService({ organization, origin: () => localOrigin });

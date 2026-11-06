@@ -90,6 +90,12 @@ export function validateEndpoints(packId, endpoints) {
   if (!Array.isArray(endpoints)) throw new TypeError(`Pack ${packId}: endpoints must be an array`);
   for (const endpoint of endpoints) {
     if (
+      endpoint?.writes !== undefined &&
+      (typeof endpoint.writes !== 'function' ||
+        endpoint.methods?.some((method) => !['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)))
+    )
+      throw new TypeError(`Pack ${packId}: writes requires a target declaration function and mutation methods only`);
+    if (
       !endpoint ||
       typeof endpoint.id !== 'string' ||
       !(endpoint.pattern instanceof RegExp) ||

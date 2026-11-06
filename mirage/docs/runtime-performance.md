@@ -14,6 +14,11 @@ How Mirage starts, what it reuses between restarts, how to measure startup and c
 
 An embedding caller can pass `onStartup({ phase, elapsedMs })` to observe phase starts and `listener-ready`. The observer is not awaited, and its errors do not fail startup. Startup has no built-in cancellation deadline; run the process under your own supervisor when you need one.
 
+JavaScript module loading/linking occurs before an exported function can call `onStartup`. Measure a cold dynamic
+`import('paqvilo/mirage')` separately if command-to-first-event time matters. `createMirageContext({ onStartup })`
+then reports `context-configuration`, Solution import and portal preparation before the bound runtime's configuration
+event. Supply the observer at context construction when measuring the full embedding path; bound runtimes inherit it unless overridden.
+
 ## Model-driven catalogue
 
 The model-driven shell requests `/_apps/api/index` for apps, navigation and table identities, then `/_apps/api/metadata/<logical-name>` for the selected table. Forms, views, fields and relationships travel only for that table and for requested lookup or subgrid targets. The complete catalogue is still available at `/_apps/api` with every table, form, view and field; it streams one table at a time, and a large catalogue is gzip-compressed when the request accepts gzip (`gzip;q=0` keeps it uncompressed). Read it incrementally rather than as one string when a Solution has thousands of tables. API-only runtimes do not build a model-driven catalogue.
@@ -45,7 +50,7 @@ The ordinary test suite uses smaller fixtures and checks invariants instead of e
 
 - Large Solutions are memory-heavy. On the `--large` fixture, process RSS reaches roughly 1–2.5 GB, and startup takes several seconds.
 - Full checkpoints serialize the runtime state. Journaled row transactions append row changes and changed sections; broad transactions can still require whole-state comparison and serialization. Unchanged startup composition writes neither a checkpoint nor a journal entry.
-- Runtime CreateMultiple and UpsertMultiple cost a few milliseconds per row, mostly in the rollup module's write hooks, which read every table's field definitions on each write.
+- Rollup write hooks resolve one current metadata snapshot per synchronous catalogue scan, then inspect table fields from that snapshot. They do not rescan every form/view for every unrelated table. The next scan still checks structured metadata changes; this reuse never caches staff authorization or field security and does not bypass write observers or transactions.
 - Single-record Web API GET reads the table's rows once in the response formatter (for the ETag and lookup names): O(rows), without copying them.
 
 ## Write-volume seams

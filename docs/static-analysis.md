@@ -21,6 +21,11 @@ For installed projects, use `npx --no-install paqvilo`. The `lense analyze` spel
 
 Findings carry a stable rule ID, severity, category, confidence, source-relative location, explanation, remediation and references. Messages omit source excerpts, setting values, action names, source URLs and parser error text. Validated metadata GUIDs can identify portal records. Paths remain visible; keep private-project reports under the project's ignored `.paqvilo/`. Human-readable paths escape terminal controls.
 
+`PAQ-SOURCE-001` identifies syntax that cannot be parsed, including malformed XML or embedded JSON. A readable
+enhanced component envelope with absent, empty or unsupported record content receives `PAQ-SOURCE-002` and
+incomplete coverage instead. Optional or withheld settings do not require disclosing secret values; an explicitly
+empty/null setting inside a supported record payload is valid input.
+
 Locations are exact where direct text/YAML positions are available. Decoded content uses an approximate declaration anchor (`exactLocation: false`) and optional decoded-content coordinates. IDs depend on rule and location; they are not waivers and can change when source moves.
 
 ## Source domains
