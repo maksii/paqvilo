@@ -267,7 +267,9 @@ function isClrSymbolPath(file) {
     .split('/')
     .some((part) => !part || part === '.' || part === '..' || part.includes(':'));
 }
-function validateClrDebugDescriptor(value) {
+function validateClrExecutionOptions(value) {
+  if (value.defaultMode !== undefined && !['clr', 'placeholder'].includes(value.defaultMode))
+    fail('CLR defaultMode must be clr or placeholder.');
   if (value.debug !== undefined && typeof value.debug !== 'boolean')
     fail('CLR debug must be an explicit Boolean opt-in.');
   if (
@@ -282,9 +284,7 @@ export function validateClrDescriptor(value) {
   if (!value || typeof value !== 'object' || value.trust !== 'execute-local-assembly')
     fail('CLR execution requires an explicit trusted project assembly descriptor.');
   clrTimeout(value);
-  if (value.defaultMode !== undefined && !['clr', 'placeholder'].includes(value.defaultMode))
-    fail('CLR defaultMode must be clr or placeholder.');
-  validateClrDebugDescriptor(value);
+  validateClrExecutionOptions(value);
   validateClrRootPaths(value);
   validateClrAssemblyPaths(value);
   if (value.debug === true && !value.symbols?.includes(value.assembly.replace(/\.dll$/i, '.pdb')))
