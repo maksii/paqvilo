@@ -80,6 +80,8 @@ export const PLUGIN_MAX_DEPTH = 12;
 // An invocation's deadline includes its nested SDK calls (and their plug-ins). Native plug-in execution and the whole
 // message operation are limited to 2 minutes (Learn: Analyze plug-in performance), so a descriptor may ask up to that.
 const CLR_MAX_TIMEOUT_MS = 120_000;
+// Explicit local source debugging needs time to attach, inspect and step. Native timing remains the default.
+const CLR_DEBUG_TIMEOUT_MS = 30 * 60_000;
 // Learn (Troubleshoot Dataverse plug-ins): a context above 116.85 MB fails "Message size exceeded when sending context to
 // Sandbox" (-2147220970). ponytail: measured on the local wire JSON, not the platform's serialization.
 const SANDBOX_MESSAGE_LIMIT = Math.floor(116.85 * 1024 * 1024);
@@ -132,7 +134,9 @@ function clrTimeout(descriptor) {
   const value = descriptor.timeoutMs;
   if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
     fail('CLR timeoutMs must be a positive safe integer in milliseconds.');
-  return Math.max(100, Math.min(value ?? CLR_MAX_TIMEOUT_MS, CLR_MAX_TIMEOUT_MS));
+  return descriptor.debug === true
+    ? CLR_DEBUG_TIMEOUT_MS
+    : Math.max(100, Math.min(value ?? CLR_MAX_TIMEOUT_MS, CLR_MAX_TIMEOUT_MS));
 }
 
 function validateClrRootPaths(value) {
@@ -260,8 +264,28 @@ export function validateClrDescriptor(value) {
   if (!value || typeof value !== 'object' || value.trust !== 'execute-local-assembly')
     fail('CLR execution requires an explicit trusted project assembly descriptor.');
   clrTimeout(value);
+  if (value.debug !== undefined && typeof value.debug !== 'boolean')
+    fail('CLR debug must be an explicit Boolean opt-in.');
+  if (
+    value.symbols !== undefined &&
+    (!Array.isArray(value.symbols) ||
+      value.symbols.length > 100 ||
+      value.symbols.some(
+        (file) =>
+          typeof file !== 'string' ||
+          path.isAbsolute(file) ||
+          !file.endsWith('.pdb') ||
+          file
+            .replaceAll('\\', '/')
+            .split('/')
+            .some((part) => !part || part === '.' || part === '..' || part.includes(':')),
+      ))
+  )
+    fail('CLR symbols must be confined relative PDB paths.');
   validateClrRootPaths(value);
   validateClrAssemblyPaths(value);
+  if (value.debug === true && !value.symbols?.includes(value.assembly.replace(/\.dll$/i, '.pdb')))
+    fail('CLR debugging requires the original assembly matching PDB in symbols.');
   if (typeof value.typeName !== 'string' || !/^[_a-z][\w.+`]{0,249}$/i.test(value.typeName))
     fail('An exact original CLR typeName is required.');
   if (value.persistentHost !== undefined && typeof value.persistentHost !== 'boolean')
@@ -420,6 +444,9 @@ export async function prepareClrRuntime(descriptor, { compiler } = {}) {
     dependencies = await Promise.all(
       (descriptor.dependencies ?? []).map((relative) => readClrDependency(descriptor.root, relative)),
     );
+  const symbols = await Promise.all(
+    (descriptor.symbols ?? []).map((relative) => readClrDependency(descriptor.root, relative)),
+  );
   // The sandbox supplies Microsoft.Crm.Sdk.Proxy with the SDK: a plug-in that does not ship it still binds the
   // Microsoft.Crm.Sdk.Messages request classes (WhoAmIRequest, AssignRequest) when the SDK folder carries it.
   const proxyName = 'Microsoft.Crm.Sdk.Proxy.dll';
@@ -432,7 +459,7 @@ export async function prepareClrRuntime(descriptor, { compiler } = {}) {
   }
   await fs.mkdir(path.resolve(descriptor.cacheRoot), { recursive: true });
   await canonicalClrDirectory(descriptor.cacheRoot);
-  return buildClrRuntime(descriptor, { assembly, sdk, dependencies }, { compiler });
+  return buildClrRuntime(descriptor, { assembly, sdk, dependencies, symbols }, { compiler });
 }
 /**
  * The preparer of one simulator (organization host and backend, custom API main operations): steps whose descriptors
@@ -443,12 +470,16 @@ export function sharedClrRuntimePreparer() {
   const sharedRuntimes = new Map();
   return (descriptor, options) => prepareSharedClrRuntime(sharedRuntimes, descriptor, options);
 }
+const CLR_RUNTIME_FILE_FIELDS = ['root', 'assembly', 'dependencies', 'sdkRoot', 'sdkAssembly', 'cacheRoot'];
+function clrRuntimeFilesKey(descriptor, { symbols = false } = {}) {
+  return JSON.stringify(
+    [...CLR_RUNTIME_FILE_FIELDS, ...(symbols ? ['symbols'] : [])].map((name) => descriptor?.[name] ?? null),
+  );
+}
 async function prepareSharedClrRuntime(sharedRuntimes, descriptor, options) {
   const shared = { ...descriptor, persistentHost: descriptor.persistentHost ?? true };
   if (!shared.persistentHost) return prepareClrRuntime(shared, options);
-  const key = JSON.stringify(
-    ['root', 'assembly', 'dependencies', 'sdkRoot', 'sdkAssembly', 'cacheRoot'].map((name) => shared[name] ?? null),
-  );
+  const key = clrRuntimeFilesKey(shared, { symbols: true });
   const base = sharedRuntimes.get(key);
   let current = false;
   try {
@@ -482,7 +513,7 @@ function requireClrPlatform() {
  * { bytes, path } (read from disk: path is re-verified on every execution) or { bytes, name } (registered content the
  * caller holds). Synchronous, so the plug-in pipeline can prepare a registered uploaded assembly when its step first runs.
  */
-export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [] }, options = {}) {
+export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], symbols = [] }, options = {}) {
   validateClrDescriptor(descriptor);
   requireClrPlatform();
   syncFs.mkdirSync(path.resolve(descriptor.cacheRoot), { recursive: true });
@@ -490,8 +521,15 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [] }
   canonicalClrDirectorySync(descriptor.cacheRoot);
   const cacheParent = syncFs.realpathSync.native(descriptor.cacheRoot);
   const { compiler, kind = 'original-clr-assembly', securityModel } = options;
-  const originals = [assembly, sdk, ...dependencies],
+  const originals = [assembly, sdk, ...dependencies, ...symbols],
     nameOf = (file) => file.name ?? path.basename(file.path);
+  if ((descriptor.symbols ?? []).some((file) => !symbols.some((symbol) => nameOf(symbol) === path.basename(file))))
+    fail('Declared CLR symbols were not supplied.');
+  if (descriptor.debug === true) {
+    const pdb = symbols.find((file) => nameOf(file) === path.basename(descriptor.assembly).replace(/\.dll$/i, '.pdb'));
+    if (pdb?.bytes.subarray(0, 4).toString() !== 'BSJB')
+      fail('VS Code CLR debugging requires a portable PDB. Build with DebugType=portable.');
+  }
   const names = originals.map((f) => nameOf(f).toLowerCase());
   if (new Set(names).size !== names.length) fail('CLR dependency filenames must be unique.');
   const source = readClrFileSync(hostSource),
@@ -603,7 +641,24 @@ export function pluginRuntimeDescriptors(packs = []) {
   } catch (error) {
     fail(error.message);
   }
-  return new Map([...collected].map(([key, { value }]) => [key, value]));
+  const descriptors = new Map([...collected].map(([key, { value }]) => [key, value]));
+  // One step's symbol declaration must not split the shared assembly/static state of its other steps.
+  const groups = new Map();
+  for (const entry of descriptors) {
+    const key = clrRuntimeFilesKey(entry[1]);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(entry);
+  }
+  for (const entries of groups.values()) {
+    const symbols = [
+      ...new Set(entries.flatMap(([, value]) => (Array.isArray(value?.symbols) ? value.symbols : []))),
+    ].sort();
+    if (!symbols.length) continue;
+    for (const [key, value] of entries)
+      if (value && (value.symbols === undefined || Array.isArray(value.symbols)))
+        descriptors.set(key, { ...value, symbols });
+  }
+  return descriptors;
 }
 const typed = (type, value) => ({ $type: type, value });
 /* NOSONAR */ export function recordToSdkEntity(store, entity, row, columns) {
@@ -2026,7 +2081,12 @@ function executePooledClr(runtime, input, options, verified) {
       signal = new SharedArrayBuffer(4),
       flags = new Int32Array(signal);
     const worker = new Worker(new URL('./plugin-clr-pool-worker.mjs', import.meta.url), {
-      workerData: { port: port2, signal, executable: snapshot.executable, ...parentIdentity },
+      workerData: {
+        port: port2,
+        signal,
+        executable: snapshot.executable,
+        ...parentIdentity,
+      },
       transferList: [port2],
     });
     worker.on('error', () => {});
@@ -2077,6 +2137,7 @@ function executePooledClr(runtime, input, options, verified) {
     sharedVariables: input.sharedVariables ?? { $type: 'ParameterCollection', values: {} },
     assembly: snapshot.assembly,
     typeName: runtime.descriptor.typeName,
+    debug: runtime.descriptor.debug === true,
     ...runtimeConstructorSettings(
       store,
       input.context?.OwningExtension?.id,
@@ -2158,6 +2219,13 @@ function executePooledClr(runtime, input, options, verified) {
           ownedPid = message.pid;
           if (session) session.pid = ownedPid;
           diagnostic({ code: 'PLUGIN_CLR_HOST_STARTED', pid: ownedPid, pooled: Boolean(session) });
+        } else if (message.kind === 'debug-wait') {
+          if (runtime.descriptor.debug !== true || message.pid !== ownedPid)
+            fail('Unexpected CLR debugger gate.', 'LocalPluginProtocol', 500);
+          diagnostic({ code: 'PLUGIN_CLR_DEBUG_WAIT', pid: ownedPid, typeName: runtime.descriptor.typeName });
+          process.stderr.write(
+            `Mirage plug-in debugger: attach to paqvilo-plugin-host.exe PID ${ownedPid} (${runtime.descriptor.typeName}). Waiting before plug-in construction; local debug deadline is 30 minutes.\n`,
+          );
         } else if (message.kind === 'rpc') {
           let value, error;
           try {
