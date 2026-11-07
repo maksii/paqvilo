@@ -108,6 +108,49 @@ generation's explicit materialization option below.
 
 Expression operators extend declarative local backend rules. Pack endpoints are validated under the local `/__sim/` namespace; they cannot replace live provider authorization. Shell conventions specify project banner/notification rules. Parity fixtures specify project-specific comparison scenarios and denied routes. Keep all these definitions and their tests with the project.
 
+### Authenticated local endpoint writes
+
+An endpoint opts into mutation capabilities with a `writes` declaration. Use mutation HTTP methods only:
+
+```js
+{
+  id: 'update-item',
+  methods: ['POST'],
+  pattern: /^\/__sim\/update-item$/,
+  writes: ({ body }) => [{ entity: 'x_item', operation: 'update', id: body.id, ifMatch: body.etag }],
+  handle: ({ body, transaction }) => transaction(async (records) => {
+    const row = await records.update('x_item', body.id, { x_name: body.name });
+    return { id: row.x_itemid };
+  }),
+}
+```
+
+The signed-in portal request sends `__RequestVerificationToken` (the local runtime's verification token).
+Anonymous, wrong-token and live-provider requests are rejected before the handler. `writes({ body, match, identity })`
+returns 1–100 targets with `entity`, `operation` (`create`, `update`, `delete`), an `id` for update/delete,
+optional `ifMatch`/`ifNoneMatch`, and `values` for preauthorizing a scoped create. Every declared target is permission
+checked before the handler; CRUD checks its actual values again through the portal record/plug-in pipeline.
+Unknown or undeclared targets are refused. Atomic units require local standard tables; elastic and virtual tables
+are refused because their independent commits or providers cannot promise this transaction's rollback.
+
+The handler returns JSON; the host sends it only after commit. It receives `body`, `url`, `match`, `identity`, `read`,
+`error` and one `transaction(work)` call, without a raw response writer. Within `work`, `records.create(entity, values)`,
+`update(entity, id, values)`, `remove(entity, id)` and permission-scoped `read(entity, id)` share one transaction.
+Mutators return a detached object containing only the table's primary key, including delete acknowledgments.
+They expose neither internal row references nor other columns. Use `read` explicitly for permitted, masked row data;
+a write acknowledgment does not require or grant read access. Editing an acknowledgment never edits stored state.
+Capabilities expire when work ends. Failed operations or work roll back the whole unit, even if the handler catches
+their errors. All started operations settle before commit or rollback. Current authorization, field security,
+plug-ins, audit stamps, events and concurrency checks remain active. Existing GET/read handlers gain no write capability.
+
+Payloads are limited to 8 MiB, results and complete receipts to 1 MiB each, and a unit to 100 CRUD operations. An optional `Idempotency-Key`
+(1–128 letters, digits, underscores, dots or hyphens) identifies a request within its runtime, pack, endpoint and
+contact. A repeated body/path/method/query returns its committed JSON result after current permission checks;
+different inputs return 409 `IdempotencyConflict`. The latest 128 receipts persist atomically with local state.
+Delete receipts retain the preimage needed to reauthorize a duplicate after its row is gone; revoked permissions
+still deny replay. Receipts expire by bounded retention; use durable application operation identities for longer-lived deduplication.
+No transport failure automatically repeats a pack mutation. Read the committed operation identity after an uncertain response.
+
 For compatibility, direct imports of `registerExpressionOperators` and
 `registerShellConventions` from `paqvilo/mirage/lib/extensions.mjs` retain
 process-wide registrations for the lifetime of that process. Those registrations

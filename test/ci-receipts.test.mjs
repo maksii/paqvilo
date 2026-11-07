@@ -589,3 +589,72 @@ test('matching cached receipts lose qualification when an SDK fixture disappears
     );
   }
 });
+
+test('all-CPU analysis drains other work and runs alone while ordinary lanes retain concurrency', async () => {
+  const { runStepBatches, validationSteps } = await import('../scripts/ci.mjs');
+  const plan = validationSteps({ codeql: true }, [], { browser: false, env: { GITHUB_ACTIONS: 'false' } });
+  assert.equal(plan.find((step) => step.label === 'codeql').exclusive, true);
+  const before = Promise.withResolvers(),
+    beforeRelease = Promise.withResolvers();
+  const scanner = Promise.withResolvers(),
+    scannerRelease = Promise.withResolvers();
+  const tails = Promise.withResolvers(),
+    tailsRelease = Promise.withResolvers();
+  const active = new Set(),
+    completed = [];
+  let tailCount = 0;
+  const running = runStepBatches(
+    [{ label: 'before' }, { label: 'scanner', exclusive: true }, { label: 'one' }, { label: 'two' }],
+    2,
+    async (step) => {
+      active.add(step.label);
+      if (step.label === 'before') {
+        before.resolve();
+        await beforeRelease.promise;
+      } else if (step.label === 'scanner') {
+        assert.deepEqual([...active], ['scanner']);
+        scanner.resolve();
+        await scannerRelease.promise;
+      } else {
+        assert.equal(active.has('scanner'), false);
+        if (++tailCount === 2) tails.resolve();
+        await tailsRelease.promise;
+      }
+      active.delete(step.label);
+      completed.push(step.label);
+    },
+  );
+  await before.promise;
+  assert.deepEqual([...active], ['before']);
+  beforeRelease.resolve();
+  await scanner.promise;
+  assert.deepEqual(completed, ['before']);
+  assert.equal(tailCount, 0);
+  scannerRelease.resolve();
+  await tails.promise;
+  assert.deepEqual([...active].sort(), ['one', 'two']);
+  tailsRelease.resolve();
+  await running;
+  assert.deepEqual(completed.slice(0, 2), ['before', 'scanner']);
+  assert.deepEqual(completed.slice(2).sort(), ['one', 'two']);
+});
+
+test('a failed exclusive analysis still runs the remaining functional lanes and reports failure', async (t) => {
+  const { runSteps } = await import('../scripts/ci.mjs');
+  const directory = tempDirSync('paq-ci-exclusive-');
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(directory, 'fail.mjs'), 'process.exit(7);');
+  fs.writeFileSync(path.join(directory, 'after.mjs'), "import fs from 'node:fs';fs.writeFileSync('after', '');");
+  await assert.rejects(
+    runSteps(
+      [
+        { label: 'scanner', exclusive: true, commands: [['fail.mjs']] },
+        { label: 'functional', commands: [['after.mjs']] },
+      ],
+      2,
+      { cwd: directory },
+    ),
+    { message: 'Validation failed: scanner.' },
+  );
+  assert.equal(fs.existsSync(path.join(directory, 'after')), true);
+});

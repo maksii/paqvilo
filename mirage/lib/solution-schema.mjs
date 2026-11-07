@@ -2444,6 +2444,22 @@ function fieldOptionSetType(attribute, globalSet) {
   if (globalSet || attribute.optionSetName) return 'global';
 }
 
+function addDeclaredPrimaryFields(fields, table, options) {
+  // A selected layer may extend a base table without repeating the base
+  // attribute definitions. Its declared primary columns still exist. Keep
+  // these narrow declarations distinct from a complete inferred schema.
+  for (const [name, dataverseType, source] of [
+    [table.primaryIdAttribute, 'primarykey', table.primaryIdSource],
+    [table.primaryNameAttribute, 'nvarchar', table.primaryNameSource],
+  ])
+    if (name && source && source !== 'convention')
+      fields[name] ??= {
+        name,
+        dataverseType,
+        ...(options.provenance === false ? {} : { source: `${source}-primary-declaration` }),
+      };
+}
+
 /** All field definitions of a table, adding Dataverse columns never written to solution XML when the table is complete. */
 export function tableFields(schema, tableName, options = {}) {
   const table = schema.tables[tableName];
@@ -2451,6 +2467,7 @@ export function tableFields(schema, tableName, options = {}) {
   const fields = {};
   for (const attribute of Object.values(table.attributes))
     fields[attribute.name] = fieldDefinition(schema, tableName, attribute, options);
+  addDeclaredPrimaryFields(fields, table, options);
   // Implicit Dataverse columns (versionnumber) exist on stored tables, not on virtual ones.
   if (table.schemaComplete && !table.isVirtual)
     for (const [name, column] of Object.entries(IMPLICIT_SYSTEM_COLUMNS))

@@ -4,7 +4,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { createHash } from 'node:crypto';
 import { readLocalFileSync, realLocalPath } from '../local-file.mjs';
-import { componentContent, componentContentSpan, componentIdentity, componentEnvelope } from '../portal-model.mjs';
+import { componentPayload, componentContentSpan, componentIdentity, componentEnvelope } from '../portal-model.mjs';
 import { COMPONENT_KINDS } from '../../mirage/lib/portal-component-types.mjs';
 import { readSolutionAssetEntries, SOLUTION_ASSET_LIMITS } from '../../mirage/lib/dataverse-solution-assets.mjs';
 
@@ -115,17 +115,28 @@ function parseComponent(state, text, file) {
     skip(state, file, 'record-count-limit');
     return;
   }
-  const fields = componentContent(text);
+  const payload = componentPayload(text);
+  const fields = payload.value;
   const span = componentContentSpan(text);
   const envelope = componentEnvelope(text);
   const kind = COMPONENT_KINDS[Number(envelope?.powerpagecomponenttype)];
-  if (!fields || !envelope) {
+  if (!envelope) {
     state.syntax.push({ file, line: 1, column: 1 });
     state.complete = false;
     return;
   }
   if (!kind) {
     skip(state, file, 'unsupported-component-type');
+    return;
+  }
+  if (!fields) {
+    if (payload.status === 'invalid') {
+      state.syntax.push({ file, line: 1, column: 1 });
+      state.complete = false;
+      return;
+    }
+    state.incomplete.push({ file, line: 1, column: 1 });
+    skip(state, file, `component-payload-${payload.status}`);
     return;
   }
   const start = span.contentStart;
@@ -386,6 +397,7 @@ export function collectAnalysisInputs(roots, overrides, { platform = true } = {}
     records: [],
     units: [],
     syntax: [],
+    incomplete: [],
     skipped: [],
     complete: true,
     gaps: 0,

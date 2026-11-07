@@ -759,16 +759,26 @@ function readComponentAttribute(attributes, offset, attribute) {
   };
 }
 
+/** Classify the record payload independently from XML-envelope validity, without diagnostic source values. */
+export function componentPayload(xml) {
+  const span = componentContentSpan(xml);
+  if (!span) return { status: 'absent' };
+  if (componentContentSpan(xml, span.closeEnd)) return { status: 'unsupported' };
+  try {
+    const text = xmlText(xml.slice(span.contentStart, span.contentEnd));
+    if (!text.trim()) return { status: 'empty' };
+    const value = JSON.parse(text);
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? { status: 'record', value }
+      : { status: 'unsupported' };
+  } catch {
+    return { status: 'invalid' };
+  }
+}
+
 /** The JSON held in <content> of a powerpagecomponent.xml, or null. */
 export function componentContent(xml) {
-  const span = componentContentSpan(xml);
-  if (!span || componentContentSpan(xml, span.closeEnd)) return null;
-  try {
-    const value = JSON.parse(xmlText(xml.slice(span.contentStart, span.contentEnd)));
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-  } catch {
-    return null;
-  }
+  return componentPayload(xml).value ?? null;
 }
 
 const ENVELOPE_FIELDS = new Set(['powerpagecomponenttype', 'name', 'statecode', 'powerpagesiteid', 'websiteid']);

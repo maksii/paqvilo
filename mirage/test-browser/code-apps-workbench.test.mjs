@@ -1,3 +1,4 @@
+// @test-kind contract: workbench selection, parameter isolation and document replacement follow the local launch contract.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,8 +9,18 @@ const browser = sharedBrowser();
 async function listen(t, handler) {
   return (await loopbackServer(t, handler)).origin;
 }
+// @test-kind contract+security: only the selected frame may publish bounded, redacted bridge events.
 test('workbench switches local apps, keeps parameters separate and accepts only selected frame events', async (t) => {
-  const app1 = await listen(t, (_req, res) => res.end('<p>First local app</p>'));
+  const parametersArrived = Promise.withResolvers(),
+    parametersRelease = Promise.withResolvers();
+  ownedFixture(t).add(() => parametersRelease.resolve());
+  const app1 = await listen(t, async (req, res) => {
+    if (new URL(req.url, 'http://fixture').searchParams.get('record') === 'one') {
+      parametersArrived.resolve();
+      await parametersRelease.promise;
+    }
+    res.end('<p>First local app</p>');
+  });
   const app2 = await listen(t, (_req, res) => res.end('<p>Second local app</p>'));
   const js = await fs.readFile(new URL('../lib/code-apps-workbench.js', import.meta.url));
   const css = await fs.readFile(new URL('../lib/code-apps-workbench.css', import.meta.url));
@@ -72,9 +83,16 @@ test('workbench switches local apps, keeps parameters separate and accepts only 
   assert.match(await page.locator('#diagnostics').innerText(), /UPDATED/);
   assert.match(await page.locator('#app-settings').innerText(), /showHeader/);
   await page.locator('#parameters').fill('record=one');
+  const navigated = page.waitForEvent('framenavigated', {
+    predicate: (frame) => frame.parentFrame() === page.mainFrame() && frame.url() === app1 + '/?record=one',
+  });
   await page.getByRole('button', { name: 'Apply parameters' }).click();
-  await page.waitForFunction(() => document.querySelector('#preview').src.includes('record=one'));
-  const frame1 = page.frame({ url: /record=one/ });
+  await parametersArrived.promise;
+  assert.match(await page.locator('#preview').getAttribute('src'), /record=one/);
+  assert.equal(page.frame({ url: /record=one/ }), null, 'the src attribute can precede document navigation');
+  parametersRelease.resolve();
+  const frame1 = await navigated;
+  await page.frameLocator('#preview').getByText('First local app').waitFor();
   await frame1.evaluate(() =>
     parent.postMessage(
       {

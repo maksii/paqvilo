@@ -443,6 +443,10 @@ const parsePayload = (text) => {
             write = (fn) => store.transact(fn, { incremental: true });
           if (message.kind === 'create') {
             data = await write(() => writes.create(message.entitySet, payload, identity));
+            // A successful write does not grant read access to secured defaults
+            // or values added by plug-ins. Project the connector response too.
+            const logical = store.resolveMapping(message.entitySet).logicalName;
+            data = store.portalAuthorization?.maskRow?.(identity, logical, data, { portalRequest: true }) ?? data;
             status = 201;
           }
           if (message.kind === 'update') {

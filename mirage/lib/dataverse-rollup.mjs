@@ -235,18 +235,20 @@ function stateOf(api) {
 const report = (state, entry) => state.reporter.report(entry, `${entry.code}\u0000${entry.table}\u0000${entry.column}`);
 
 // The memo of rollup columns and sources, dropped when the store's table revision moves (see the header).
-function memoOf(api) {
+function memoOf(api, metadata) {
   const state = stateOf(api);
   const key = api.store.tablesRevision([]);
-  if (state.memo?.key !== key) state.memo = { key, columns: new Map(), sources: null };
+  if (state.memo?.key !== key || state.memo?.metadata !== metadata)
+    state.memo = { key, metadata, columns: new Map(), sources: null };
   return state.memo;
 }
 
 // The rollup columns of a table as { name: formulaDefinition }.
-function rollupColumnsOf(api, logical) {
-  const memo = memoOf(api);
+function rollupColumnsOf(api, logical, metadata = api.metadataSnapshot?.()) {
+  const memo = memoOf(api, metadata);
   if (memo.columns.has(logical)) return memo.columns.get(logical);
-  const definitions = api.store.fieldDefinitions(logical, api.metadataFields) ?? {};
+  const definitions =
+    api.store.fieldDefinitions(logical, metadata ? (name) => metadata[name]?.fields : api.metadataFields) ?? {};
   const result = {};
   for (const [name, definition] of Object.entries(definitions)) {
     const column = facts(definition);
@@ -264,11 +266,16 @@ function parsedOf(state, formula) {
 
 // The rollup columns (of any table) whose 1:N source is the given child table: [{ table, column, link }].
 function rollupsSourcedFrom(api, state, child) {
-  const memo = memoOf(api);
+  // Resolve a current metadata snapshot once for this synchronous catalogue
+  // scan. A write transaction deliberately cannot reuse a request read epoch:
+  // rescanning every form for each unrelated table made this observer quadratic.
+  // No permissions, observers or write operations execute inside this scan.
+  const metadata = api.metadataSnapshot?.();
+  const memo = memoOf(api, metadata);
   if (!memo.sources) {
     memo.sources = new Map();
     for (const logical of Object.keys(api.store.state.mappings)) {
-      for (const [column, formula] of Object.entries(rollupColumnsOf(api, logical))) {
+      for (const [column, formula] of Object.entries(rollupColumnsOf(api, logical, metadata))) {
         const rule = parsedOf(state, formula);
         if (!rule.child || !rule.link) continue;
         if (!memo.sources.has(rule.child)) memo.sources.set(rule.child, []);

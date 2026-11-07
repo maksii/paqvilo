@@ -19,14 +19,34 @@ const sourceRule = {
   remediation: 'Correct source syntax and rerun analysis. Diagnostic output deliberately omits source values.',
   references: ['https://maksii.github.io/paqvilo/'],
 };
+const payloadRule = {
+  id: 'PAQ-SOURCE-002',
+  title: 'Enhanced record payload unavailable',
+  severity: 'warning',
+  category: 'reliability',
+  confidence: 'high',
+  message:
+    'The XML envelope is readable, but its record payload is absent, empty or unsupported; dependent checks are incomplete.',
+  remediation:
+    'Check the export format and record availability. Retain incomplete coverage for withheld settings; do not disclose or invent secret values.',
+  references: ['https://maksii.github.io/paqvilo/'],
+};
 export const analysisRules = Object.freeze(
-  [sourceRule, ...recordRules, ...contentRules, ...dataverseRules, ...appRules, ...flowRules, ...nativeRules].map(
-    (rule) =>
-      Object.freeze({
-        ...rule,
-        domain: rule.domain ?? ruleDomain(rule.id),
-        references: Object.freeze([...rule.references]),
-      }),
+  [
+    sourceRule,
+    payloadRule,
+    ...recordRules,
+    ...contentRules,
+    ...dataverseRules,
+    ...appRules,
+    ...flowRules,
+    ...nativeRules,
+  ].map((rule) =>
+    Object.freeze({
+      ...rule,
+      domain: rule.domain ?? ruleDomain(rule.id),
+      references: Object.freeze([...rule.references]),
+    }),
   ),
 );
 const byId = new Map(analysisRules.map((rule) => [rule.id, rule]));
@@ -127,6 +147,7 @@ export function analyzeProject(sourceDir, { failOn = 'error', limits = ANALYSIS_
     });
   };
   for (const source of input.syntax) emit(sourceRule.id, source);
+  for (const source of input.incomplete) emit(payloadRule.id, source);
   analyzeRecords(input.records, emit);
   analyzeContent(input.units, emit);
   const adapters = [

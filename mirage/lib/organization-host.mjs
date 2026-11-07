@@ -1430,7 +1430,15 @@ function hostLifecycle(c) {
       c.epoch++;
       return result;
     },
-    async createOrganization({ settings, change, schema, metadataFields, log = () => {}, initializing = false }) {
+    async createOrganization({
+      settings,
+      change,
+      schema,
+      metadataFields,
+      metadataSnapshot,
+      log = () => {},
+      initializing = false,
+    }) {
       await lifecycle.loadExtensions();
       c.installed = c.extensions;
       c.organization = await createOrganizationRuntime({
@@ -1440,6 +1448,7 @@ function hostLifecycle(c) {
         change,
         schema,
         metadataFields,
+        metadataSnapshot,
         readMetadata: c.sources.readMetadata,
         log,
         extensions: c.extensions,

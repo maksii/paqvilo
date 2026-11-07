@@ -99,6 +99,19 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
   }
   origin = runtimeOrigin(origin);
   let cookie = '';
+  const transportDiagnostics = [];
+  const configuration = async (assign) => {
+    try {
+      return await assign();
+    } catch (error) {
+      let cause = error;
+      for (let depth = 0; depth < 4 && cause?.code !== 'ECONNRESET'; depth++) cause = cause?.cause;
+      if (cause?.code !== 'ECONNRESET') throw error;
+      transportDiagnostics.push({ code: 'RUNTIME_CONFIGURATION_RETRY', cause: 'ECONNRESET', attempt: 1 });
+      if (transportDiagnostics.length > 32) transportDiagnostics.shift();
+      return assign();
+    }
+  };
   // A fetch TypeError named for what happened instead of a bare "fetch failed": a connection the runtime accepted and
   // then closed or reset (undici `terminated`, UND_ERR_SOCKET, ECONNRESET, EPIPE; any failure while reading a body) is
   // RuntimeConnectionLost; no connection at all (refused, unresolvable, a bad port) is RuntimeUnreachable.
@@ -179,12 +192,14 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
   const status = await request('/status');
   if (cfg && !samePath(status.sourceDir, cfg.sourceDir))
     throw new Error('Runtime source does not match the catalogue site');
-  const setPortalValue = async (section, name, value) => {
-    const existing = await request(`/${section}`);
-    return existing.some((item) => item.id === name)
-      ? request(`/${section}/${encodeURIComponent(name)}`, { method: 'PATCH', body: { value } })
-      : request(`/${section}`, { method: 'POST', body: { name, value } });
-  };
+  const setPortalValue = (section, name, value) =>
+    configuration(async () => {
+      const existing = await request(`/${section}`);
+      return existing.some((item) => item.id === name)
+        ? request(`/${section}/${encodeURIComponent(name)}`, { method: 'PATCH', body: { value } })
+        : request(`/${section}`, { method: 'POST', body: { name, value } });
+    });
+  const configurationRequest = (route, options) => configuration(() => request(route, options));
   // /_sim/api/trace (sim-trace-routes.mjs): the read methods of the in-process simulator.trace, settings, status,
   // configure and clear, and subscribe over the runtime's /_sim/events trace channel.
   const traceTree = (traceId) => request(`/trace/id/${encodeURIComponent(traceId)}`).catch(unretained);
@@ -278,6 +293,7 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
   });
   return Object.freeze({
     origin,
+    transportDiagnostics: () => structuredClone(transportDiagnostics),
     createSession: (options = {}) =>
       options.personaKey || options.scenario
         ? createPersonaSession({ ...options, origin, fetchImpl })
@@ -321,15 +337,19 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
         .map((line) => JSON.parse(line));
     },
     platformSettings: () => request('/platform-settings'),
-    setPlatformSettings: (overrides) => request('/platform-settings', { method: 'PATCH', body: overrides }),
-    resetPlatformSetting: (key) => request(`/platform-settings/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+    setPlatformSettings: (overrides) =>
+      configurationRequest('/platform-settings', { method: 'PATCH', body: overrides }),
+    resetPlatformSetting: (key) =>
+      configurationRequest(`/platform-settings/${encodeURIComponent(key)}`, { method: 'DELETE' }),
     siteSettings: () => request('/portal-settings'),
     setSiteSetting: (name, value) => setPortalValue('portal-settings', name, value),
-    resetSiteSetting: (name) => request(`/portal-settings/${encodeURIComponent(name)}`, { method: 'DELETE' }),
-    resetSnippet: (name) => request(`/portal-snippets/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    resetSiteSetting: (name) =>
+      configurationRequest(`/portal-settings/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    resetSnippet: (name) => configurationRequest(`/portal-snippets/${encodeURIComponent(name)}`, { method: 'DELETE' }),
     experiments: (id) => request(`/experiments${id === undefined ? '' : '/' + encodeURIComponent(id)}`),
     saveExperiment: (preset) => request('/experiments', { method: 'POST', body: preset }),
-    applyExperiment: (id) => request(`/experiments/${encodeURIComponent(id)}/apply`, { method: 'POST', body: {} }),
+    applyExperiment: (id) =>
+      configurationRequest(`/experiments/${encodeURIComponent(id)}/apply`, { method: 'POST', body: {} }),
     deleteExperiment: (id) => request(`/experiments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     async signIn(context = null, { contactId, roles, configuredPersona = false } = {}) {
       const state = await request('/state?summary=1');

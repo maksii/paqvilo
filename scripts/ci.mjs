@@ -379,7 +379,47 @@ function rootAvailable() {
   return spawnSync('sudo', ['-n', 'true'], { stdio: 'ignore', timeout: 10_000 }).status === 0; // NOSONAR: fixed tool name resolved through PATH by developer tooling
 }
 function installChromium() {
-  execute(process.execPath, chromiumInstallArguments());
+  const args = chromiumInstallArguments();
+  if (args.includes('--with-deps')) prepareHostedApt();
+  execute(process.execPath, args);
+}
+
+/** Bound hosted Ubuntu mirror failures before Playwright invokes apt as root. */
+export function prepareHostedApt({
+  platform = process.platform,
+  env = process.env,
+  read = (file) => fs.readFileSync(file, 'utf8'),
+  run = execute,
+  uid = process.getuid?.(),
+} = {}) {
+  if (platform !== 'linux' || env.GITHUB_ACTIONS !== 'true' || env.RUNNER_ENVIRONMENT !== 'github-hosted') return;
+  const write = (file, input) =>
+    run(uid === 0 ? '/usr/bin/tee' : '/usr/bin/sudo', uid === 0 ? [file] : ['-n', '--', '/usr/bin/tee', file], {
+      input,
+      stdio: ['pipe', 'ignore', 'inherit'],
+    });
+  const mirrors = '/etc/apt/apt-mirrors.txt';
+  let before;
+  try {
+    before = read(mirrors);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  if (before !== undefined) {
+    // The hosted mirror list can fall back for InRelease yet retain the failed
+    // Azure mirror for package indexes. Use the official mirror that succeeded.
+    const after = before.replace(
+      /(^|\n)([ \t]*)https?:\/\/azure\.archive\.ubuntu\.com\/ubuntu(\/?)(?=[ \t\r\n]|$)/g,
+      '$1$2https://archive.ubuntu.com/ubuntu$3',
+    );
+    if (after !== before) write(mirrors, after);
+  }
+  write(
+    // Runner images also install zz-retries; our bounded settings must sort later.
+    '/etc/apt/apt.conf.d/zzz-paqvilo-ci',
+    'Acquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nAcquire::Retries "1";\nAPT::Update::Error-Mode "any";\n',
+  );
+  run('/usr/bin/apt-config', ['dump', 'Acquire::Retries', 'Acquire::http::Timeout', 'Acquire::https::Timeout']);
 }
 
 function requireSdkClients() {
@@ -613,9 +653,10 @@ export function validationSteps(
   });
   const channels = browser ? localBrowserChannels(platform) : [];
   const steps = [];
-  // The Security workflow's CodeQL analysis, the longest step, so a parallel run starts it first.
+  // CodeQL uses all CPUs (--threads=0), as its dedicated hosted job does. It
+  // must not compete with timed CLR/browser lanes in a local parallel run.
   if (scope.codeql && env.GITHUB_ACTIONS !== 'true')
-    steps.push({ label: 'codeql', commands: [['scripts/codeql.mjs']] });
+    steps.push({ label: 'codeql', exclusive: true, commands: [['scripts/codeql.mjs']] });
   for (const suite of ['mirage', 'lense'].filter((suite) => suites.includes(suite))) {
     appendSuiteSteps(steps, suite, { unit, channels, changed, repeat, verify });
   }
@@ -762,23 +803,39 @@ export async function runSteps(steps, jobs, { cwd = root, logs } = {}) {
     fs.mkdirSync(logs, { recursive: true });
     console.log(`[ci] ${steps.length} steps, ${jobs} at a time; logs in ${logs}`);
   }
-  const queue = [...steps],
-    failed = [],
+  const failed = [],
     timings = [];
-  const worker = async () => {
-    for (;;) {
-      const step = queue.shift();
-      if (!step) break;
-      const start = performance.now();
-      const log = path.join(logs, step.label.replace(/[^\w.-]+/g, '-') + '.log');
-      const { output, logError } = openStepLog(parallel, log);
-      const code = await executeStepCommands(step, output, cwd, logError);
-      reportStepResult(step, code, start, log, parallel, failed, timings);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(jobs, steps.length) }, worker));
+  await runStepBatches(steps, jobs, async (step) => {
+    const start = performance.now();
+    const log = path.join(logs, step.label.replace(/[^\w.-]+/g, '-') + '.log');
+    const { output, logError } = openStepLog(parallel, log);
+    const code = await executeStepCommands(step, output, cwd, logError);
+    reportStepResult(step, code, start, log, parallel, failed, timings);
+  });
   if (parallel) console.log(`[ci] step times: ${timings.map(([label, time]) => label + ' ' + time).join(', ')}`);
   if (failed.length) throw new Error(`Validation failed: ${failed.join(', ')}.`);
+}
+
+export async function runStepBatches(steps, jobs, runStep) {
+  let queued = [];
+  const drain = async () => {
+    const queue = queued;
+    queued = [];
+    const worker = async () => {
+      for (let step = queue.shift(); step; step = queue.shift()) await runStep(step);
+    };
+    await Promise.all(Array.from({ length: Math.min(jobs, queue.length) }, worker));
+  };
+  for (const step of steps) {
+    if (!step.exclusive) {
+      queued.push(step);
+      continue;
+    }
+    await drain();
+    console.log(`[ci] Exclusive step: ${step.label}`);
+    await runStep(step);
+  }
+  await drain();
 }
 
 function openStepLog(parallel, log) {

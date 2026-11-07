@@ -5533,6 +5533,10 @@ export class DataStore {
     }
     const external = typeof metadata === 'function' ? metadata(mapping?.logicalName ?? logical) : null;
     return {
+      ...(mapping?.idColumn ? { [mapping.idColumn]: { dataverseType: 'primarykey' } } : {}),
+      ...(mapping?.nameColumn && mapping.nameColumn !== mapping.idColumn
+        ? { [mapping.nameColumn]: { dataverseType: 'nvarchar' } }
+        : {}),
       ...mapping?.fieldMetadata,
       ...mapping?.fields,
       ...external,
@@ -6075,8 +6079,12 @@ export class DataStore {
       }
     }
     if (onBehalf && options.assignOwner) row.modifiedonbehalfby = clone(row.modifiedby);
+    const platformStamps = {};
     for (const name of UPDATE_TARGET_STAMPS)
-      if (authorizedWrite && !own(target, name) && own(row, name)) target[name] = clone(row[name]);
+      if (authorizedWrite && !own(target, name) && own(row, name)) {
+        target[name] = clone(row[name]);
+        platformStamps[name] = clone(row[name]);
+      }
     if (assigneeName !== null) target.owneridyominame = assigneeName;
     // A write of a date-time value also stamps the row's time zone rule version (native Update 20/40 and async).
     if (
@@ -6114,13 +6122,15 @@ export class DataStore {
     if (onBehalf) row.modifiedonbehalfby = clone(row.modifiedby);
     if (authorizedWrite && this.pluginPipeline) {
       this.assertAllowed(mapping.logicalName, 'update', row, identity);
-      this.validateBindings(
-        mapping,
-        this.pluginBindingInput(mapping, rawInput, target, identity),
-        row,
-        identity,
-        latest,
-      );
+      const bindingInput = this.pluginBindingInput(mapping, rawInput, target, identity);
+      // Retain the native stamped Target for observers, but authorize only
+      // caller bindings and changes observers made to the platform baseline.
+      // Raw navigation bindings remain in bindingInput even if their value
+      // happens to equal the platform's stamp.
+      for (const [name, value] of Object.entries(platformStamps))
+        if (!own(rawInput, name) && isDeepStrictEqual(target[name], value) && isDeepStrictEqual(row[name], value))
+          delete bindingInput[name];
+      this.validateBindings(mapping, bindingInput, row, identity, latest);
     }
     options.mainOperation?.(mapping, 'update', row, latest, target, { identity, options });
     // The derived currency columns the main operation wrote reach the stage-40 and asynchronous Targets of a written money

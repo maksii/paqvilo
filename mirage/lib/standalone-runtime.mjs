@@ -594,6 +594,7 @@ function standaloneAdminAssetHeaders(res, file, index) {
       change,
       schema: () => sources.schema,
       metadataFields: (logical) => metadata().entities?.[logical]?.fields,
+      metadataSnapshot: () => metadata().entities,
       log: options.log ?? (() => {}),
     });
     bootstrapTimings.organizationMs = Math.round(performance.now() - stageAt);

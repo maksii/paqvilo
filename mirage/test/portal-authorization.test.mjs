@@ -1,3 +1,4 @@
+// @test-kind security: portal identities, table grants and column profiles cannot broaden access or bypass write authorization.
 // Enhanced Power Pages authorization at run time (portal-authorization.mjs), powerpagesite enhancedauthorization 0-3.
 import test from 'node:test';
 import { simulatorFixture } from './fixtures/source-site.mjs';
@@ -7,6 +8,7 @@ import { signInHeaders } from '../testing.mjs';
 import { platformChangeDiagnostics } from '../lib/platform-changes.mjs';
 import { buildSourceGraph } from '../lib/source-graph.mjs';
 import { portalAuthorizationModel } from '../lib/portal-authorization.mjs';
+import { runExportedServerLogic } from '../lib/exported-operations.mjs';
 
 const text = { dataverseType: 'nvarchar' };
 const files = (state) => ({
@@ -134,10 +136,10 @@ const initial = () => ({
   },
 });
 
-async function site(t, state) {
+async function site(t, state, overrides = {}) {
   const sim = await simulatorFixture(t, {
     prefix: 'portal-authorization-',
-    files: files(state),
+    files: { ...files(state), ...overrides },
     port: 0,
     watch: false,
     initial: initial(),
@@ -166,6 +168,30 @@ async function site(t, state) {
 }
 const mappedUser = (sim) =>
   sim.store.tableRows('systemuser').find((row) => row.fullname === 'Alex Local' && row.systemmanagedusertype === 1);
+
+async function grantSecretRead(sim) {
+  const user = mappedUser(sim);
+  await sim.store.transact(() => {
+    const tables = sim.store.state.tables;
+    const profile = { id: '77777777-7777-4777-8777-777777777720', logical_name: 'fieldsecurityprofile' };
+    tables.fieldsecurityprofile.push({ fieldsecurityprofileid: profile.id, name: 'Invented readers' });
+    tables.fieldpermission.push({
+      fieldpermissionid: '77777777-7777-4777-8777-777777777721',
+      fieldsecurityprofileid: profile,
+      entityname: 'x_item',
+      attributelogicalname: 'x_secret',
+      canread: 4,
+      cancreate: 0,
+      canupdate: 0,
+      canreadunmasked: 0,
+    });
+    tables.systemuserprofiles.push({
+      systemuserprofileid: '77777777-7777-4777-8777-777777777722',
+      systemuserid: { id: user.systemuserid, logical_name: 'systemuser' },
+      fieldsecurityprofileid: profile,
+    });
+  });
+}
 
 // What the visitor may read and write, as the portal answers it.
 async function matrix({ call, ids }) {
@@ -219,6 +245,7 @@ test('the same site grants exactly what its table permissions allow in the stand
   }
 });
 
+// @test-kind security: current column-read profiles mask or expose protected values without granting column writes.
 test('a secured column is masked through the Dataverse column security profile in the enhanced states only', async (t) => {
   for (const state of [0, 3]) {
     const fixture = await site(t, state);
@@ -236,31 +263,43 @@ test('a secured column is masked through the Dataverse column security profile i
     assert.deepEqual(await page(), ['<li>Foreign=</li>', '<li>Own=</li>']);
     assert.equal((await fixture.call('PATCH', '/_api/x_items(i1)', { x_secret: 'changed' })).status, 403);
     // A profile granting read (not update) assigned to the mapped user unmasks it; the write stays refused.
-    const user = mappedUser(fixture.sim);
-    await fixture.sim.store.transact(() => {
-      const tables = fixture.sim.store.state.tables;
-      const profile = { id: '77777777-7777-4777-8777-777777777720', logical_name: 'fieldsecurityprofile' };
-      tables.fieldsecurityprofile.push({ fieldsecurityprofileid: profile.id, name: 'Invented readers' });
-      tables.fieldpermission.push({
-        fieldpermissionid: '77777777-7777-4777-8777-777777777721',
-        fieldsecurityprofileid: profile,
-        entityname: 'x_item',
-        attributelogicalname: 'x_secret',
-        canread: 4,
-        cancreate: 0,
-        canupdate: 0,
-        canreadunmasked: 0,
-      });
-      tables.systemuserprofiles.push({
-        systemuserprofileid: '77777777-7777-4777-8777-777777777722',
-        systemuserid: { id: user.systemuserid, logical_name: 'systemuser' },
-        fieldsecurityprofileid: profile,
-      });
-    });
+    await grantSecretRead(fixture.sim);
     assert.equal(await read(), 's1');
     assert.deepEqual(await page(), ['<li>Foreign=s2</li>', '<li>Own=s1</li>']);
     assert.equal((await fixture.call('PATCH', '/_api/x_items(i1)', { x_secret: 'changed' })).status, 403);
   }
+});
+
+// @test-kind security: connector create responses project plug-in-generated secured values under the current reader without changing stored data.
+test('server logic create responses mask protected plugin defaults and observe newly granted read access', async (t) => {
+  const { sim, call } = await site(t, 3, {
+    'sample.js': "function post(){return Server.Connector.Dataverse.CreateRecord('x_items',Server.Context.Body);}",
+  });
+  await call('GET', '/_api/x_items?$select=x_name');
+  sim.store.setPluginPipeline(({ stage, target }) => {
+    if (stage === 20 && target) target.x_secret = 'Protected fixture';
+  });
+  const create = async () => {
+    const reply = JSON.parse(
+      await runExportedServerLogic({
+        record: sim.portal.serverLogics[0],
+        portal: sim.portal,
+        store: sim.store,
+        identity: { id: 'alex', contactId: 'alex', roles: ['Member'], roleIds: [MEMBER] },
+        method: 'POST',
+        body: JSON.stringify({ x_name: 'Created' }),
+      }),
+    );
+    assert.equal(reply.StatusCode, 201, JSON.stringify(reply));
+    const body = JSON.parse(reply.Body);
+    const stored = sim.store.tableRows('x_item').find((row) => row.x_itemid === body.x_itemid);
+    assert.equal(stored.x_secret, 'Protected fixture');
+    assert.equal(body.x_name, 'Created');
+    return body;
+  };
+  assert.equal((await create()).x_secret, null);
+  await grantSecretRead(sim);
+  assert.equal((await create()).x_secret, 'Protected fixture');
 });
 
 test('the Dataverse privilege of the mapped security role decides an enhanced grant', async (t) => {
@@ -373,6 +412,7 @@ test('server logic and list action writes run as the mapped user under column se
 });
 
 // Guard: no portal module writes the store directly; the one write path is portalRecordWrites (and its no-organization fallback).
+// @test-kind tooling+security: portal write callers must use the shared authorization and plug-in pipeline boundary.
 test('portal modules write only through portalRecordWrites', async () => {
   const lib = new URL('../lib/', import.meta.url);
   const modules = (await fs.readdir(lib)).filter((name) =>
@@ -489,6 +529,7 @@ test('an undocumented enhanced authorization value runs the standard model and i
   assert.equal(mappedUser(fixture.sim), undefined);
 });
 
+// @test-kind contract: preflight describes the selected local authorization model without claiming native parity.
 test('the preflight row of every enhanced state is satisfied with a fidelity note', () => {
   assert.deepEqual(
     [0, 1, 2, 3, 9].map((state) => portalAuthorizationModel({ enhancedauthorization: state }).model),

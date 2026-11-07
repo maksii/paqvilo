@@ -1,3 +1,4 @@
+// @test-kind contract+security: owned CLI target selection preserves caution, source mappings and retired-origin capability boundaries.
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,6 +13,7 @@ import { chromium } from 'playwright-core';
 
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { freeDebugPort } from './helpers/debug-port.mjs';
+import { waitForChildOutput } from './helpers/child-readiness.mjs';
 
 const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -220,7 +222,12 @@ async function modelTargetsFixture(t) {
   };
   // Printed after the owned browser (with its debugging port) and the agent discovery file exist,
   // so neither a starting CDP listener nor a partially written discovery file is observed.
-  await wait(() => /^Opening model-driven app at /m.test(output), 'owned browser and agent');
+  await waitForChildOutput(child, {
+    signal: t.signal,
+    pattern: /^Opening model-driven app at /m,
+    readOutput: () => output,
+    label: 'owned browser and agent',
+  });
   t.diagnostic('model-target phase: owned CLI started');
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
   t.diagnostic('model-target phase: CDP connected');

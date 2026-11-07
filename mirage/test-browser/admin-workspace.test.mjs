@@ -161,6 +161,36 @@ async function fixture(t, { liveBridge, project, observed, allowLiveWrites } = {
   return { app, context, page, errors, notice, directory, evidence };
 }
 
+async function openWorkspace({ page, app, errors }, t, view) {
+  const failed = Promise.withResolvers();
+  const onError = (error) => failed.reject(error);
+  const onAbort = () => failed.reject(t.signal.reason);
+  page.on('pageerror', onError);
+  t.signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    await Promise.race([
+      (async () => {
+        await page.goto(`${app.url}/_sim/#${view}`, { waitUntil: 'domcontentloaded', timeout: 0 });
+        if (errors.length) throw new Error(errors.join('\n'));
+        await page.waitForFunction(
+          () => {
+            const label = document.getElementById('connection-label')?.textContent;
+            if (label === 'Connection interrupted')
+              throw new Error(document.getElementById('notification')?.textContent || label);
+            return label === 'Simulator connected';
+          },
+          null,
+          { timeout: 0 },
+        );
+      })(),
+      failed.promise,
+    ]);
+  } finally {
+    page.off('pageerror', onError);
+    t.signal.removeEventListener('abort', onAbort);
+  }
+}
+
 test(
   'deep links open records and portal items; access rules, personas and diagnostics links work through the admin',
   { timeout: 180_000 },
@@ -659,6 +689,7 @@ test(
   },
 );
 
+// @test-kind contract+security: startup readiness precedes flag assertions; a missing opt-in cannot grant live writes.
 test(
   'the live-writes switch is disabled, with the reason, unless the runtime was started with --allow-live-writes',
   { timeout: 180_000 },
@@ -666,7 +697,7 @@ test(
     // Started without the flag (the default): the switch cannot be turned on, and saving the
     // routing form keeps live writes off.
     const locked = await fixture(t);
-    await locked.page.goto(`${locked.app.url}/_sim/#connection`);
+    await openWorkspace(locked, t, 'connection');
     const writes = locked.page.locator('#live-writes');
     await writes.waitFor();
     assert.deepEqual([await writes.isDisabled(), await writes.isChecked()], [true, false]);
@@ -684,7 +715,24 @@ test(
 
     // Started with the flag: the switch is available, and turning it on is saved.
     const allowed = await fixture(t, { allowLiveWrites: true });
-    await allowed.page.goto(`${allowed.app.url}/_sim/#connection`);
+    const arrived = Promise.withResolvers(),
+      release = Promise.withResolvers();
+    ownedFixture(t).add(() => release.resolve());
+    await allowed.page.route(`${allowed.app.url}/__sim/api/state?summary=1`, async (route) => {
+      arrived.resolve();
+      await release.promise;
+      await route.continue();
+    });
+    const opening = openWorkspace(allowed, t, 'connection');
+    await arrived.promise;
+    await allowed.page.waitForLoadState('domcontentloaded');
+    assert.equal(
+      await allowed.page.locator('#live-writes').count(),
+      0,
+      'document load does not establish workspace readiness',
+    );
+    release.resolve();
+    await opening;
     const toggle = allowed.page.locator('#live-writes');
     await toggle.waitFor();
     assert.equal(await toggle.isDisabled(), false);
