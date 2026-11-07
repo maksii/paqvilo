@@ -11,7 +11,7 @@ export function decodeClrMessage(line) {
   }
   if (!message || typeof message !== 'object' || Array.isArray(message))
     return { error: protocolFailure('CLR host returned an invalid protocol message.') };
-  if (!['rpc', 'result', 'failure', 'trace', 'telemetry'].includes(message.kind))
+  if (!['rpc', 'result', 'failure', 'trace', 'telemetry', 'debug-wait'].includes(message.kind))
     return { error: protocolFailure('Unknown CLR host message.') };
   return { message };
 }

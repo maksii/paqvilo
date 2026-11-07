@@ -229,7 +229,7 @@ export function claimRecordDirectory(directory, { ownerKey, location, earlierLoc
     matches = adopt || !location || [location, earlierLocation].includes(owner.format === 1 ? owner.key : owner.state);
   if (!matches) throw new Error('Record directory belongs to a different state');
   // Record where the owning state now lives, migrating an earlier marker.
-  migrateRecordOwner(directory, owner, location);
+  migrateRecordOwner(directory, owner, location, io);
   return { key: owner.key, owned: true };
 }
 
@@ -248,19 +248,42 @@ function ensureRecordOwner(directory, ownerKey, location, io) {
   return owner;
 }
 
-function migrateRecordOwner(directory, owner, location) {
+const markerSharingErrors = new Set(['EPERM', 'EACCES', 'EBUSY']);
+function recordOwnerNeedsMigration(directory, owner, location) {
+  const current = readOwner(directory);
+  if (current && current.key === owner.key && current.format === 2 && current.state === location) return false;
+  if (!current || current.key !== owner.key || current.format !== owner.format || current.state !== owner.state)
+    throw integrity('Record directory owner changed during migration');
+  return true;
+}
+function replaceRecordOwner(directory, temporary, owner, location, io) {
+  const wait = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (attempt && !recordOwnerNeedsMigration(directory, owner, location)) return;
+    try {
+      io.renameSync(temporary, path.join(directory, OWNER));
+      return;
+    } catch (error) {
+      if (!markerSharingErrors.has(error?.code) || attempt === 99) throw error;
+      // The same bounded sharing-contention allowance used when reading a newly published marker.
+      Atomics.wait(wait, 0, 0, 2);
+    }
+  }
+}
+function migrateRecordOwner(directory, owner, location, io) {
   if (!location || (owner.format === 2 && owner.state === location)) return;
   const temporary = path.join(directory, temporaryRecordName('owner.tmp'));
   try {
-    fs.writeFileSync(temporary, JSON.stringify({ format: 2, key: owner.key, state: location }), {
+    io.writeFileSync(temporary, JSON.stringify({ format: 2, key: owner.key, state: location }), {
       flag: 'wx',
       mode: 0o600,
     });
-    fs.renameSync(temporary, path.join(directory, OWNER));
-  } catch {
+    replaceRecordOwner(directory, temporary, owner, location, io);
+  } catch (error) {
+    if (error?.code === 'StateIntegrity') throw error;
     // The marker stays valid with its earlier location, e.g. while another reader holds it.
   } finally {
-    fs.rmSync(temporary, { force: true });
+    io.rmSync(temporary, { force: true });
   }
 }
 

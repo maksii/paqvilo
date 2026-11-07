@@ -1,3 +1,4 @@
+// @test-kind contract: record ownership, publication, migration and live-reader leases preserve persistent state integrity
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -200,6 +201,61 @@ test('a directory published before owner keys loads after moving and migrates it
   assert.equal(republished.owner, legacyKey);
   assert.equal(republished.aliases, false);
   assert.ok(republished.files.every((file) => file.prefix.format === 2));
+});
+
+// @test-kind contract+security: controlled sharing failures recover migration without overwriting changed ownership or losing the valid preceding marker
+test('owner migration retries sharing failures, bounds refusal and preserves concurrent ownership', (t) => {
+  const key = 'a'.repeat(64);
+  const migration = (name, rename) => {
+    const directory = owned(t, 'invented-owner-' + name + '-');
+    const file = path.join(directory, '.record-owner.json');
+    fs.writeFileSync(file, JSON.stringify({ format: 1, key }));
+    const location = stateRecordOwner(path.join(directory, 'state.json'));
+    let attempts = 0;
+    const claim = () => {
+      const replace = fs.renameSync;
+      fs.renameSync = (...args) => rename(++attempts, file, replace, ...args);
+      try {
+        return claimRecordDirectory(directory, { ownerKey: key, location });
+      } finally {
+        fs.renameSync = replace;
+      }
+    };
+    return { directory, file, location, claim, attempts: () => attempts };
+  };
+  for (const code of ['EPERM', 'EACCES', 'EBUSY']) {
+    const recovered = migration('recover', (attempt, file, replace, ...args) => {
+      if (attempt < 3) throw Object.assign(Error('Invented sharing conflict'), { code });
+      return replace(...args);
+    });
+    assert.deepEqual(recovered.claim(), { key, owned: true });
+    assert.deepEqual(marker(recovered.directory), { format: 2, key, state: recovered.location });
+    assert.equal(recovered.attempts(), 3);
+    assert.deepEqual(fs.readdirSync(recovered.directory), ['.record-owner.json']);
+  }
+  for (const [failure, attempts] of [
+    [Object.assign(Error('Invented permanent sharing conflict'), { code: 'EPERM' }), 100],
+    [Object.assign(Error('Invented disk refusal'), { code: 'EIO' }), 1],
+    [null, 1],
+    [undefined, 1],
+  ]) {
+    const refused = migration('refuse', () => {
+      throw failure;
+    });
+    assert.deepEqual(refused.claim(), { key, owned: true });
+    assert.equal(refused.attempts(), attempts);
+    assert.deepEqual(marker(refused.directory), { format: 1, key });
+    assert.deepEqual(fs.readdirSync(refused.directory), ['.record-owner.json']);
+  }
+  const replacement = { format: 2, key: 'b'.repeat(64), state: 'c'.repeat(64) };
+  const raced = migration('race', (attempt, file) => {
+    fs.writeFileSync(file, JSON.stringify(replacement));
+    throw Object.assign(Error('Invented sharing conflict after another publication'), { code: 'EPERM' });
+  });
+  assert.throws(raced.claim, { code: 'StateIntegrity' });
+  assert.equal(raced.attempts(), 1);
+  assert.deepEqual(marker(raced.directory), replacement);
+  assert.deepEqual(fs.readdirSync(raced.directory), ['.record-owner.json']);
 });
 
 test(

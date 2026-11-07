@@ -325,6 +325,103 @@ Source-defined Custom APIs run registered stages 10/20/40 around their main oper
 
 An original Custom API main operation uses a pluginRuntimes descriptor keyed by the exact customapiid, with a typeName matching its exported plugin type. Its stage-30 OwningExtension comes from the exported internal SDK step, or context.mainOperationStepId plus bounded context.mainOperationStepEvidence. The API id is not substituted for a native processing-step id. The descriptor runtime is prepared when the organization starts or refreshes and again with every write to a customapi, plugintype, pluginassembly or sdkmessageprocessingstep row, so a custom API registered at runtime can be first called from a plug-in's synchronous SDK Execute; a preparation that failed is raised on that call with its cause. A caught fault from the main operation aborts the calling plug-in's transaction like any other caught OrganizationService fault: the request answers 400 `0x8009000c` after the catching plug-in returns (native catchCoded). Without a descriptor, a custom API whose plug-in type is in an assembly with uploaded content runs those bytes as its main operation by default, like a registered step (same cache and sweep, 2-minute deadline, `0x80040224` when it cannot load, the same identity defaults); its OwningExtension is the exported internal stage-30 step when there is exactly one, else a local id derived from the custom API id (uuidV5) named "CustomApi '<name>' implementation" (the platform creates that step with its own id).
 
+## Debug original C# in VS Code
+
+Use Windows x64, the Microsoft **C#** extension (`ms-dotnettools.csharp`), and a
+Debug build with portable symbols (`<DebugType>portable</DebugType>` in the C#
+project). Microsoft's [desktop CLR debugger](https://github.com/dotnet/vscode-csharp/blob/main/docs/debugger/Desktop-.NET-Framework.md)
+uses `"type": "clr"` for .NET Framework and requires portable PDBs. Building with
+`dotnet build -c Debug` does not publish anything online.
+
+Extend the trusted `pluginRuntimes` descriptor for the exact exported step:
+
+```js
+{
+  // Existing trust, root, assembly, SDK, identity and backend profile fields stay required.
+  defaultMode: 'clr',
+  assembly: 'bin/Debug/net462/Example.Plugins.dll',
+  symbols: ['bin/Debug/net462/Example.Plugins.pdb'],
+  debug: true,
+}
+```
+
+`symbols` lists PDB files relative to the same trusted root as the assembly.
+They are confined, snapshotted, hashed and checked on every execution along with
+the DLL. Debug mode requires the original assembly's portable PDB. Source and
+symbols must come from the same build; the debugger verifies their binding.
+Dependencies can declare their PDBs in the same list.
+Project descriptors naming the same assembly/toolchain files share their declared
+symbol set, so enabling debugging on one step preserves the other steps' shared
+assembly and static state.
+
+1. Start Mirage with the project's normal `mirage dev` command. The explicit
+   `defaultMode: 'clr'` descriptor selects original execution for its exact
+   exported step/type on every start, including dry-run sessions. Without that
+   opt-in the default stays Placeholder; use `/_sim/` **Backend operations** to
+   select Original CLR for a session. UI overrides still take precedence; **Use
+   source default** restores the descriptor's choice. Discovery alone enables nothing.
+2. Open the original C# source and set breakpoints, including in constructors.
+   Trigger the operation from the local app, portal or Dataverse client. The
+   terminal prints the owned `paqvilo-plugin-host.exe` PID. Execution waits
+   before constructing the plug-in until a managed debugger attaches.
+3. Run **Mirage plug-in: attach .NET Framework** from VS Code's Run and Debug
+   menu and select that PID. `paqvilo init --refresh-editor` generates this
+   configuration and recommends Microsoft's C# extension. In an existing
+   project with custom editor files, review the generated proposal.
+4. Inspect locals, `InputParameters`, images, `SharedVariables`, outputs and the
+   call stack; step into or over your C# and continue. SDK requests still pass
+   through Mirage's organization pipeline, and nested steps run in the shared
+   assembly host. The request stays pending while execution is paused.
+5. Before rebuilding, stop Mirage, build, and start it again, then attach to the new PID.
+   A changed source DLL or PDB is refused by an existing prepared runtime. This
+   prevents execution of stale bytes or misleading source lines.
+
+### Daily edit, build and debug loop
+
+Point the trusted descriptor's `root`, `assembly` and `symbols` at your C#
+project's normal Debug output, as above. Mirage copies those local DLL/PDB bytes
+into its execution snapshot when it starts. No online deployment, profiler
+capture, manual cache edits or separate DLL copying is needed for this path.
+The exported step/type identity and backend profile are a one-time project setup;
+editing an existing implementation does not require registering its steps again.
+
+For each code change:
+
+1. Edit and save the C# source in VS Code.
+2. Stop the foreground dev task with Ctrl+C, or close its dedicated browser.
+   Stop any remaining project runtime with `paqvilo mirage stop --project
+./mirage.project.yml`, then run `dotnet build ./plugins/Example.Plugins.csproj
+-c Debug`. A failed build must stop the sequence.
+3. Run the project's usual `mirage dev` command with its debug opt-in enabled,
+   trigger the operation, and attach using the generated CLR configuration and
+   the new PID printed in the terminal. The new host loads the rebuilt DLL/PDB.
+4. Break in the changed source, inspect its values, then continue and verify the
+   changed result in the local app or API.
+
+Put stop, build and dev in one project npm script or VS Code task for daily use;
+join the commands with `&&` so a build failure cannot start stale output. Editor
+refresh generates tasks for project-authored npm scripts. Stop before rebuilding
+also ends an existing debugger's host. Reattach to the next host; hot reload and
+editing a running snapshot are not supported. If a build tool writes elsewhere,
+update the descriptor to that actual output directory before restarting.
+
+Debug mode gives the invocation, including attach time and nested SDK calls, a
+bounded **30-minute** local deadline instead of the descriptor's ordinary
+deadline. It therefore does not qualify native timing or timeout behavior.
+Without `debug: true`, the original deadline remains capped at two minutes.
+Turn debug mode off for parity and performance checks. All identity, privilege,
+transaction, byte-integrity, depth and parent-process ownership checks remain
+active. Closing the owning Mirage process also terminates a host waiting for
+the debugger. Detaching does not change registrations; a later invocation with
+debug mode enabled waits for attachment again.
+
+This is a local live pipeline. Microsoft's online
+[Plug-in Profiler](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/tutorial-debug-plug-in)
+instead captures a remote execution context and replays a selected plug-in
+locally. A working breakpoint proves debugging of the loaded original assembly;
+it does not prove every native platform handler or an untested pipeline matches.
+Use native recordings and exact-byte replays for those behavior claims.
+
 ## Configure source facts
 
 PAC can export an SDK message ID without its name. The Create, Update, Delete, Retrieve and RetrieveMultiple ids are platform constants Mirage knows; for other messages supply `observed.sdkMessages` entries with the exact ID, name and evidence from your environment. Mirage does not guess the operation from a step label.

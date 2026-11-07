@@ -17,6 +17,7 @@ import { readStartupPhases } from '../startup-progress.mjs';
 import { readLocalFile } from '../local-file.mjs';
 import { mirageStopCommand, mirageCommandHint, listenerPort } from '../stop-command.mjs';
 import { persistCommandPayload, pruneCommandPayloads } from '../command-payload.mjs';
+import { withMirageDebugOutput } from '../mirage-debug-output-scope.mjs';
 
 const TOOL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIRAGE_ROOT = path.join(TOOL_ROOT, 'mirage');
@@ -1204,20 +1205,20 @@ async function start(cfg, args, { paths = miragePaths(cfg, args), command = 'mir
   for (const session of candidates) {
     const currentIdentity = await processIdentityAsync(session.pid, { signal: startup.signal });
     startup.check();
-    if (
+    const owner =
       currentIdentity &&
-      owned.some(
+      owned.find(
         (item) =>
           item.pid === session.pid &&
           item.discovery === session.discovery &&
           item.processIdentity === currentIdentity &&
           identityMatches(item.identity, identity),
-      )
-    ) {
+      );
+    if (owner) {
       const runtime = await readRuntime(session.url, session.id ?? null, { signal: startup.signal });
       startup.check();
       if (runtime) {
-        existing = { ...session, ready: true, runtime };
+        existing = { ...session, log: owner.log, ready: true, runtime };
         break;
       }
     }
@@ -1381,6 +1382,7 @@ async function start(cfg, args, { paths = miragePaths(cfg, args), command = 'mir
             ...session,
             owned: true,
             started: true,
+            log,
             launch,
             writesFiles: [identity.stateFile, discovery, log, paths.ownershipFile].filter(
               (file) => file && fsSync.existsSync(file),
@@ -2188,7 +2190,10 @@ async function runPortals({ cfg, args, action, plans, paths, initialSite }) {
     );
     console.log('stop        Ctrl+C here or close the browser: the browser and the Mirages started here stop');
     const { default: runDev } = await import('./dev.mjs');
-    return await runDev(selection.initial, { ...args, devSelection: selection });
+    return await withMirageDebugOutput(
+      portalSessions.map((portal) => portal.session),
+      () => runDev(selection.initial, { ...args, devSelection: selection }),
+    );
   } finally {
     await stopStarted(portals, paths);
   }
@@ -2883,13 +2888,13 @@ function validateAllowedOptions(args, action, allowedOptions) {
         const started = await startProjectCodeApps(cfg, launch, session, controller);
         const { apps } = started;
         servers = started.servers;
-        return await (
-          await import('../standalone-mirage.mjs')
-        ).developStandalone(
-          { ...cfg, runtime: launch.runtime },
-          { ...effective, path: effective.path ?? (apps.length ? '/_apps/code/' : undefined) },
-          session,
-          { signal: controller.signal },
+        return await withMirageDebugOutput([session], async () =>
+          (await import('../standalone-mirage.mjs')).developStandalone(
+            { ...cfg, runtime: launch.runtime },
+            { ...effective, path: effective.path ?? (apps.length ? '/_apps/code/' : undefined) },
+            session,
+            { signal: controller.signal },
+          ),
         );
       } catch (error) {
         if (controller.signal.aborted && controller.signal.reason?.message === 'Code App development stopped.')
@@ -2964,7 +2969,9 @@ function validateAllowedOptions(args, action, allowedOptions) {
     };
     const { default: runDev } = await import('./dev.mjs');
     try {
-      const result = await runDev(localCfg, { ...effective, mirageTarget: localCfg, codeAppSignal: controller.signal });
+      const result = await withMirageDebugOutput([session], () =>
+        runDev(localCfg, { ...effective, mirageTarget: localCfg, codeAppSignal: controller.signal }),
+      );
       if (controller.signal.aborted && controller.signal.reason?.message !== 'Code App development stopped.')
         throw controller.signal.reason;
       return controller.signal.aborted ? 0 : result;
