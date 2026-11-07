@@ -260,28 +260,29 @@ function validateOperationCreatedOn(value) {
   }
 }
 
-export function validateClrDescriptor(value) {
-  if (!value || typeof value !== 'object' || value.trust !== 'execute-local-assembly')
-    fail('CLR execution requires an explicit trusted project assembly descriptor.');
-  clrTimeout(value);
+function isClrSymbolPath(file) {
+  if (typeof file !== 'string' || path.isAbsolute(file) || !file.endsWith('.pdb')) return false;
+  return !file
+    .replaceAll('\\', '/')
+    .split('/')
+    .some((part) => !part || part === '.' || part === '..' || part.includes(':'));
+}
+function validateClrDebugDescriptor(value) {
   if (value.debug !== undefined && typeof value.debug !== 'boolean')
     fail('CLR debug must be an explicit Boolean opt-in.');
   if (
     value.symbols !== undefined &&
     (!Array.isArray(value.symbols) ||
       value.symbols.length > 100 ||
-      value.symbols.some(
-        (file) =>
-          typeof file !== 'string' ||
-          path.isAbsolute(file) ||
-          !file.endsWith('.pdb') ||
-          file
-            .replaceAll('\\', '/')
-            .split('/')
-            .some((part) => !part || part === '.' || part === '..' || part.includes(':')),
-      ))
+      value.symbols.some((file) => !isClrSymbolPath(file)))
   )
     fail('CLR symbols must be confined relative PDB paths.');
+}
+export function validateClrDescriptor(value) {
+  if (!value || typeof value !== 'object' || value.trust !== 'execute-local-assembly')
+    fail('CLR execution requires an explicit trusted project assembly descriptor.');
+  clrTimeout(value);
+  validateClrDebugDescriptor(value);
   validateClrRootPaths(value);
   validateClrAssemblyPaths(value);
   if (value.debug === true && !value.symbols?.includes(value.assembly.replace(/\.dll$/i, '.pdb')))
@@ -508,6 +509,16 @@ function requireClrPlatform() {
       501,
     );
 }
+function validateClrSymbolFiles(descriptor, symbols) {
+  const nameOf = (file) => file.name ?? path.basename(file.path);
+  if ((descriptor.symbols ?? []).some((file) => !symbols.some((symbol) => nameOf(symbol) === path.basename(file))))
+    fail('Declared CLR symbols were not supplied.');
+  if (descriptor.debug === true) {
+    const pdb = symbols.find((file) => nameOf(file) === path.basename(descriptor.assembly).replace(/\.dll$/i, '.pdb'));
+    if (pdb?.bytes.subarray(0, 4).toString() !== 'BSJB')
+      fail('VS Code CLR debugging requires a portable PDB. Build with DebugType=portable.');
+  }
+}
 /**
  * Snapshots already-read bytes into a new owned directory under descriptor.cacheRoot and compiles the host there. Each file is
  * { bytes, path } (read from disk: path is re-verified on every execution) or { bytes, name } (registered content the
@@ -523,13 +534,7 @@ export function buildClrRuntime(descriptor, { assembly, sdk, dependencies = [], 
   const { compiler, kind = 'original-clr-assembly', securityModel } = options;
   const originals = [assembly, sdk, ...dependencies, ...symbols],
     nameOf = (file) => file.name ?? path.basename(file.path);
-  if ((descriptor.symbols ?? []).some((file) => !symbols.some((symbol) => nameOf(symbol) === path.basename(file))))
-    fail('Declared CLR symbols were not supplied.');
-  if (descriptor.debug === true) {
-    const pdb = symbols.find((file) => nameOf(file) === path.basename(descriptor.assembly).replace(/\.dll$/i, '.pdb'));
-    if (pdb?.bytes.subarray(0, 4).toString() !== 'BSJB')
-      fail('VS Code CLR debugging requires a portable PDB. Build with DebugType=portable.');
-  }
+  validateClrSymbolFiles(descriptor, symbols);
   const names = originals.map((f) => nameOf(f).toLowerCase());
   if (new Set(names).size !== names.length) fail('CLR dependency filenames must be unique.');
   const source = readClrFileSync(hostSource),
@@ -652,7 +657,7 @@ export function pluginRuntimeDescriptors(packs = []) {
   for (const entries of groups.values()) {
     const symbols = [
       ...new Set(entries.flatMap(([, value]) => (Array.isArray(value?.symbols) ? value.symbols : []))),
-    ].sort();
+    ].sort((left, right) => left.localeCompare(right));
     if (!symbols.length) continue;
     for (const [key, value] of entries)
       if (value && (value.symbols === undefined || Array.isArray(value.symbols)))
