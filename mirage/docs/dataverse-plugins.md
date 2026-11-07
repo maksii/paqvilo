@@ -338,6 +338,7 @@ Extend the trusted `pluginRuntimes` descriptor for the exact exported step:
 ```js
 {
   // Existing trust, root, assembly, SDK, identity and backend profile fields stay required.
+  defaultMode: 'clr',
   assembly: 'bin/Debug/net462/Example.Plugins.dll',
   symbols: ['bin/Debug/net462/Example.Plugins.pdb'],
   debug: true,
@@ -353,10 +354,12 @@ Project descriptors naming the same assembly/toolchain files share their declare
 symbol set, so enabling debugging on one step preserves the other steps' shared
 assembly and static state.
 
-1. Start Mirage with the project's normal `mirage dev` command. In
-   `/_sim/` **Backend operations**, choose **Original CLR** for the steps you
-   intend to execute. A trusted descriptor supplies the implementation; the
-   explicit local execution choice still applies.
+1. Start Mirage with the project's normal `mirage dev` command. The explicit
+   `defaultMode: 'clr'` descriptor selects original execution for its exact
+   exported step/type on every start, including dry-run sessions. Without that
+   opt-in the default stays Placeholder; use `/_sim/` **Backend operations** to
+   select Original CLR for a session. UI overrides still take precedence; **Use
+   source default** restores the descriptor's choice. Discovery alone enables nothing.
 2. Open the original C# source and set breakpoints, including in constructors.
    Trigger the operation from the local app, portal or Dataverse client. The
    terminal prints the owned `paqvilo-plugin-host.exe` PID. Execution waits
@@ -385,7 +388,8 @@ editing an existing implementation does not require registering its steps again.
 For each code change:
 
 1. Edit and save the C# source in VS Code.
-2. Stop that project's Mirage session with `paqvilo mirage stop --project
+2. Stop the foreground dev task with Ctrl+C, or close its dedicated browser.
+   Stop any remaining project runtime with `paqvilo mirage stop --project
 ./mirage.project.yml`, then run `dotnet build ./plugins/Example.Plugins.csproj
 -c Debug`. A failed build must stop the sequence.
 3. Run the project's usual `mirage dev` command with its debug opt-in enabled,

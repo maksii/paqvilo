@@ -16,6 +16,7 @@ import {
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { editorFiles } from '../../lense/project-editor.mjs';
+import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 
 const user = '10000000-0000-0000-0000-000000000001';
 const debugStep = '10000000-0000-0000-0000-000000000002';
@@ -37,6 +38,10 @@ test('debugging requires explicit opt-in and declared portable symbol paths; edi
   assert.equal(validateClrDescriptor(base).debug, undefined);
   assert.throws(() => validateClrDescriptor({ ...base, debug: 'true' }), /Boolean/);
   assert.throws(() => validateClrDescriptor({ ...base, debug: true }), /matching PDB/);
+  assert.equal(validateClrDescriptor({ ...base, defaultMode: 'clr' }).defaultMode, 'clr');
+  assert.equal(validateClrDescriptor({ ...base, defaultMode: 'placeholder' }).defaultMode, 'placeholder');
+  for (const defaultMode of [true, false, 'handler', 'disabled', 'CLR', null])
+    assert.throws(() => validateClrDescriptor({ ...base, defaultMode }), /defaultMode/);
   for (const symbols of [
     ['../Original.pdb'],
     ['/Original.pdb'],
@@ -77,6 +82,39 @@ test('debugging requires explicit opt-in and declared portable symbol paths; edi
   assert.deepEqual(descriptors.get(user).symbols, ['Original.pdb']);
   assert.deepEqual(descriptors.get(debugStep).symbols, ['Original.pdb']);
   assert.equal(normal.symbols, undefined, 'collecting shared symbols does not mutate the project pack');
+});
+
+// @test-kind contract+security: a project can explicitly select its trusted original DLL on cold starts without enabling discovered or mismatched types
+test('source CLR default is exact-type opt-in and explicit local overrides retain precedence', () => {
+  const step = {
+    id: debugStep,
+    typeName: 'Invented.Original',
+    enabled: true,
+    message: 'Create',
+    entity: 'x_item',
+    stage: 20,
+    rank: 1,
+    mode: 0,
+    images: [],
+  };
+  const catalogue = (declared, overrides = {}, handlers = new Map()) =>
+    pluginCatalogue({
+      plugins: { steps: [step] },
+      descriptors: new Map(declared ? [[debugStep, declared]] : []),
+      overrides,
+      handlers,
+    })[0];
+  const base = descriptor(os.tmpdir());
+  assert.equal(catalogue().mode, 'placeholder');
+  assert.equal(catalogue(base).mode, 'placeholder');
+  assert.equal(catalogue({ ...base, defaultMode: 'placeholder' }).mode, 'placeholder');
+  const enabled = { ...base, defaultMode: 'clr' };
+  assert.equal(catalogue(enabled).defaultMode, 'clr');
+  assert.equal(catalogue(enabled).mode, 'clr');
+  assert.equal(catalogue({ ...enabled, typeName: 'Invented.Other' }).mode, 'placeholder');
+  for (const mode of ['disabled', 'mock', 'placeholder'])
+    assert.equal(catalogue(enabled, { [`plugin-step:${debugStep}`]: { mode } }).mode, mode);
+  assert.equal(catalogue(enabled, {}, new Map([[debugStep, () => {}]])).mode, 'handler');
 });
 
 async function fixture(t) {

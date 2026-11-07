@@ -282,6 +282,8 @@ export function validateClrDescriptor(value) {
   if (!value || typeof value !== 'object' || value.trust !== 'execute-local-assembly')
     fail('CLR execution requires an explicit trusted project assembly descriptor.');
   clrTimeout(value);
+  if (value.defaultMode !== undefined && !['clr', 'placeholder'].includes(value.defaultMode))
+    fail('CLR defaultMode must be clr or placeholder.');
   validateClrDebugDescriptor(value);
   validateClrRootPaths(value);
   validateClrAssemblyPaths(value);
