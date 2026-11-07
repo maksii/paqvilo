@@ -119,6 +119,31 @@ test('declared symbols reach the immutable execution copy and changes fail close
 });
 
 test(
+  'rebuilding edited original C# loads changed behavior in a newly prepared runtime',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const fx = await fixture(t);
+    const first = await prepareClrRuntime(fx.descriptor);
+    const traces = (runtime) => {
+      const notes = [];
+      executeClrPlugin(runtime, {}, { diagnostic: (note) => notes.push(note) });
+      return notes.filter((note) => note.code === 'PLUGIN_CLR_TRACE').map((note) => note.message);
+    };
+    assert.deepEqual(traces(first), ['original-executed']);
+    const source = path.join(fx.root, 'Original.cs');
+    await fs.writeFile(
+      source,
+      (await fs.readFile(source, 'utf8')).replace('original-executed', 'edited-source-executed'),
+    );
+    compileClr(source, path.join(fx.root, 'Original.dll'), { references: [clrSdk()] });
+    assert.throws(() => executeClrPlugin(first, {}, {}), /changed after preparation/);
+    const rebuilt = await prepareClrRuntime(fx.descriptor);
+    assert.notEqual(rebuilt.directory, first.directory, 'the rebuilt bytes get their own execution snapshot');
+    assert.deepEqual(traces(rebuilt), ['edited-source-executed']);
+  },
+);
+
+test(
   'normal and debugging steps share an assembly host; the gate waits beyond the ordinary budget and an orphan still exits',
   { skip: CLR_SKIP },
   async (t) => {

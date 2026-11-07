@@ -369,9 +369,37 @@ assembly and static state.
    call stack; step into or over your C# and continue. SDK requests still pass
    through Mirage's organization pipeline, and nested steps run in the shared
    assembly host. The request stays pending while execution is paused.
-5. After rebuilding, stop Mirage and start it again, then attach to the new PID.
+5. Before rebuilding, stop Mirage, build, and start it again, then attach to the new PID.
    A changed source DLL or PDB is refused by an existing prepared runtime. This
    prevents execution of stale bytes or misleading source lines.
+
+### Daily edit, build and debug loop
+
+Point the trusted descriptor's `root`, `assembly` and `symbols` at your C#
+project's normal Debug output, as above. Mirage copies those local DLL/PDB bytes
+into its execution snapshot when it starts. No online deployment, profiler
+capture, manual cache edits or separate DLL copying is needed for this path.
+The exported step/type identity and backend profile are a one-time project setup;
+editing an existing implementation does not require registering its steps again.
+
+For each code change:
+
+1. Edit and save the C# source in VS Code.
+2. Stop that project's Mirage session with `paqvilo mirage stop --project
+./mirage.project.yml`, then run `dotnet build ./plugins/Example.Plugins.csproj
+-c Debug`. A failed build must stop the sequence.
+3. Run the project's usual `mirage dev` command with its debug opt-in enabled,
+   trigger the operation, and attach using the generated CLR configuration and
+   the new PID printed in the terminal. The new host loads the rebuilt DLL/PDB.
+4. Break in the changed source, inspect its values, then continue and verify the
+   changed result in the local app or API.
+
+Put stop, build and dev in one project npm script or VS Code task for daily use;
+join the commands with `&&` so a build failure cannot start stale output. Editor
+refresh generates tasks for project-authored npm scripts. Stop before rebuilding
+also ends an existing debugger's host. Reattach to the next host; hot reload and
+editing a running snapshot are not supported. If a build tool writes elsewhere,
+update the descriptor to that actual output directory before restarting.
 
 Debug mode gives the invocation, including attach time and nested SDK calls, a
 bounded **30-minute** local deadline instead of the descriptor's ordinary
