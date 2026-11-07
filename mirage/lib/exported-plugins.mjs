@@ -1337,7 +1337,7 @@ export function pluginCatalogue({
           () => 'handler',
           () =>
             chooseLazily(
-              () => uploaded,
+              () => uploaded || (clrAvailable && (runtime?.descriptor ?? descriptor)?.defaultMode === 'clr'),
               () => 'clr',
               () => 'placeholder',
             ),

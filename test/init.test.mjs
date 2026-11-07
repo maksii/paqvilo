@@ -1,3 +1,4 @@
+// @test-kind contract: generated project files, script identities, editor refresh and offline readiness remain consistent and preserve project choices
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -121,13 +122,16 @@ test('multiple sites/packs, chrome, custom paths and dependency specification ar
       assert.equal(task.args[task.args.indexOf('--browser') + 1], 'chrome');
     }
   }
-  for (const launch of launches.configurations) {
+  const browserLaunches = launches.configurations.filter((launch) => launch.type !== 'clr');
+  for (const launch of browserLaunches) {
     assert.equal(launch.type, 'chrome');
     assert.ok(labels.has(launch.preLaunchTask));
     assert.equal(launch.webRoot, '${workspaceFolder}/../exports');
   }
   // A debugger launch per site for Lense and Mirage, and the project-wide Lense and Mirage launches.
-  assert.equal(launches.configurations.length, 2 * options.sites.length + 2);
+  assert.equal(browserLaunches.length, 2 * options.sites.length + 2);
+  assert.equal(launches.configurations.filter((launch) => launch.type === 'clr').length, 1);
+  assert.equal(launches.configurations.length, browserLaunches.length + 1);
   assert.ok(new RegExp(DEV_BACKGROUND.endsPattern).test(DEV_READY));
   const context = await createMirageContext({ config: pathToFileURL(path.join(first, 'paqvilo.config.yml')) });
   assert.deepEqual(
@@ -204,8 +208,13 @@ test('site IDs that resemble workflow names preserve project-wide picker and deb
   assert.equal(new Set(tasks.tasks.map((task) => task.label)).size, tasks.tasks.length);
   const launches = await readJson(directory, '.vscode/launch.json');
   // A debugger launch per site for Lense and Mirage, and the project-wide Lense and Mirage launches.
-  assert.equal(launches.configurations.length, 2 * 3 + 2);
-  for (const launch of launches.configurations) {
+  const browserLaunches = launches.configurations.filter((launch) => launch.type === 'msedge');
+  assert.equal(browserLaunches.length, 2 * 3 + 2);
+  const clrLaunches = launches.configurations.filter((launch) => launch.type === 'clr');
+  assert.equal(clrLaunches.length, 1);
+  assert.equal(clrLaunches[0].processId, '${command:pickProcess}');
+  assert.equal(launches.configurations.length, browserLaunches.length + clrLaunches.length);
+  for (const launch of browserLaunches) {
     const task = tasks.tasks.find((task) => task.label === launch.preLaunchTask);
     assert.equal(task.args[task.args.indexOf('--debug-port') + 1], String(launch.port));
   }
@@ -320,6 +329,7 @@ test('completion rejects unusable site/environment selections and personal overr
   );
 });
 
+// @test-kind security: editor output path validation refuses unsafe destinations before changing other documents
 test('unsafe editor outputs fail before other documents change, and generated alternatives are reported as created', async (t) => {
   const directory = await project(t);
   await prepareProject(directory, { name: 'safe' });
@@ -392,6 +402,7 @@ test('generated smoke exercises enhanced and code-site exports instead of silent
   );
 });
 
+// @test-kind security: scaffold writes cannot replace unrelated content or follow symbolic output paths
 test('CLI help, JSON errors and exclusive writes protect unrelated content and symbolic paths', async (t) => {
   const directory = await project(t);
   const unrelated = path.join(directory, 'project');
@@ -443,6 +454,7 @@ test('CLI help, JSON errors and exclusive writes protect unrelated content and s
   assert.deepEqual(await fs.readdir(nested), ['pack'], 'preflight refuses before writing any files');
 });
 
+// @test-kind security: project checks inspect definitions without executing external pack code or changing project files
 test('completion checks report schema, packs, origins, paths and markers without writing or importing packs', async (t) => {
   const directory = await project(t);
   const plan = await prepareProject(directory, { name: 'sample' });

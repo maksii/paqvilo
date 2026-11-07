@@ -329,6 +329,26 @@ test(
     setup.owner.add(() => external.close());
     const sibling = external.pages()[0];
     await sibling.setContent('<input value="external draft">');
+    // The owner and Lense use independent CDP connections. Delay only the
+    // owner's close notification: the browser can already have closed the new
+    // target while this connection still reports both pages (hosted Edge).
+    let releaseOwnerClose;
+    const ownerCloseGate = new Promise((resolve) => {
+      releaseOwnerClose = resolve;
+    });
+    const ownedPage = new Promise((resolve) =>
+      external.once('page', (page) => {
+        const close = page._onClose.bind(page);
+        t.mock.method(page, '_onClose', () => {
+          void ownerCloseGate.then(close);
+        });
+        const closed = page.waitForEvent('close').then(
+          () => null,
+          (error) => error,
+        );
+        resolve({ page, closed });
+      }),
+    );
     const nativeSetTimeout = globalThis.setTimeout;
     const nativeClearTimeout = globalThis.clearTimeout;
     const matchedTimers = [];
@@ -386,14 +406,24 @@ test(
       );
       nativeClearTimeout(requestFallback);
       requestFallback = null;
+      const target = await ownedPage;
+      assert.notEqual(target.page, sibling);
       fireDeadline();
       const result = await settled;
       assert.equal(result.status, 'rejected', 'the actual deadline callback must reject the pending navigation');
       assert.equal(result.error.code, 'startup_timeout');
       assert.equal(result.error.phase, 'document navigation');
+      assert.equal(
+        external.pages().length,
+        2,
+        'the controlled owner notification delay reproduces the stale page view',
+      );
+      releaseOwnerClose();
+      assert.ifError(await target.closed);
       assert.equal(external.pages().length, 1);
       assert.equal(await sibling.locator('input').inputValue(), 'external draft');
     } finally {
+      releaseOwnerClose();
       setup.releaseDocument();
       if (requestFallback) nativeClearTimeout(requestFallback);
       if (matchedTimers.length === 1) fireDeadline();

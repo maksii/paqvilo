@@ -82,9 +82,18 @@ export function editorFiles({
       });
     }
   }
+  configurations.push({
+    name: label('Mirage plug-in: attach .NET Framework'),
+    type: 'clr',
+    request: 'attach',
+    processId: '${command:pickProcess}',
+    justMyCode: true,
+    requireExactSource: true,
+  });
   return {
     '.vscode/tasks.json': owned({ version: '2.0.0', tasks }),
     '.vscode/launch.json': owned({ version: '0.2.0', configurations }),
+    '.vscode/extensions.json': owned({ recommendations: ['ms-dotnettools.csharp'] }),
     [`${name}.code-workspace`]: owned({ folders: folders.map((folder) => ({ path: folder })) }),
   };
 }

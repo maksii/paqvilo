@@ -71,7 +71,7 @@ port.on('message', (message) => {
       active.has(id) ||
       !Number.isInteger(message.timeout) ||
       message.timeout < 100 ||
-      message.timeout > 120_000
+      message.timeout > (message.input?.debug === true ? 30 * 60_000 : 120_000)
     ) {
       if (typeof id === 'string' && id) active.set(id, active.get(id) ?? null);
       return stop({ kind: 'failure', code: 'LocalPluginProtocol', message: 'Invalid pooled CLR invocation.' });
